@@ -23,7 +23,7 @@ function arg(flag, def) {
 
 const inPath = arg('--in', '');
 const outPath = arg('--out', '');
-const batchSize = parseInt(arg('--batch', '12'), 10);
+const batchSize = parseInt(arg('--batch', '8'), 10);
 // Parallel albums in flight. Default 4 — LM Studio serves up to 4 requests at once.
 // Overridable via the SENT_CONC env var or the --concurrency flag (flag wins).
 const concurrency = Math.max(1, parseInt(arg('--concurrency', process.env.SENT_CONC || '4'), 10));
@@ -132,34 +132,59 @@ async function callModel(songs, attempt = 0) {
   }
 }
 
+function applyResults(group, tracks, results) {
+  const bySk = new Map();
+  for (const r of results || []) bySk.set(r.sk, r);
+  for (const s of group) {
+    const r = bySk.get(s.sk);
+    const t = tracks[s.sk];
+    if (r && Array.isArray(r.keywords) && r.keywords.length) {
+      t.sentimentKeywords = r.keywords.map((k) => String(k).toLowerCase().trim()).filter(Boolean).slice(0, 7);
+      t.sentimentSource = r.source === 'lyrics' && t.lyrics ? 'lyrics' : r.source === 'lyrics' ? 'inferred' : r.source || 'inferred';
+    } else {
+      t.sentimentKeywords = t.sentimentKeywords || [];
+      t.sentimentSource = 'failed';
+    }
+  }
+}
+
+// Adaptive batching: if a batch overflows the model's context (full lyrics on a
+// big album can exceed even 32k), split it in half and retry — never truncate.
+async function processGroup(group, tracks) {
+  let results;
+  try {
+    results = await callModel(group);
+  } catch (e) {
+    if (e.message === 'CONTEXT_OVERFLOW' && group.length > 1) {
+      const mid = Math.ceil(group.length / 2);
+      await processGroup(group.slice(0, mid), tracks);
+      await processGroup(group.slice(mid), tracks);
+      return;
+    }
+    if (e.message === 'CONTEXT_OVERFLOW') {
+      // one song's lyrics overflow the whole context on their own (extremely rare)
+      const t = tracks[group[0].sk];
+      t.sentimentKeywords = t.sentimentKeywords || [];
+      t.sentimentSource = 'failed';
+      return;
+    }
+    throw e;
+  }
+  applyResults(group, tracks, results);
+}
+
 async function sentimentForAlbum(album) {
   const tracks = album.tracks || [];
   if (!tracks.length) return;
-  // sk = index into this album's track list
   const songs = tracks.map((t, sk) => ({
     sk,
     artist: t.artist || album.artist,
     title: t.name,
     genre: album.genre,
     year: t.year || album.year,
-    lyrics: t.lyrics || null, // full lyrics — both local models have 32k context
+    lyrics: t.lyrics || null, // full lyrics — never truncated
   }));
-  for (const group of chunk(songs, batchSize)) {
-    const results = await callModel(group);
-    const bySk = new Map();
-    for (const r of results || []) bySk.set(r.sk, r);
-    for (const s of group) {
-      const r = bySk.get(s.sk);
-      const t = tracks[s.sk];
-      if (r && Array.isArray(r.keywords) && r.keywords.length) {
-        t.sentimentKeywords = r.keywords.map((k) => String(k).toLowerCase().trim()).filter(Boolean).slice(0, 7);
-        t.sentimentSource = r.source === 'lyrics' && t.lyrics ? 'lyrics' : r.source === 'lyrics' ? 'inferred' : r.source || 'inferred';
-      } else {
-        t.sentimentKeywords = t.sentimentKeywords || [];
-        t.sentimentSource = 'failed';
-      }
-    }
-  }
+  for (const group of chunk(songs, batchSize)) await processGroup(group, tracks);
 }
 
 // ---- main -------------------------------------------------------------------
