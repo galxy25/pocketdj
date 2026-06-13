@@ -1,13 +1,40 @@
 ---
 name: publish-s3
-description: Publish/deploy the PocketDJ PWA to AWS S3 (static hosting, optionally behind CloudFront). Use when asked to "publish the app", "deploy to s3", or "ship pocketdj". Covers building, syncing dist/, the critical service-worker cache-header tiers, and SPA-routing fallback. Manual deploy — no AWS creds are wired in the repo.
+description: Publish/deploy the PocketDJ PWA to AWS S3 static hosting (dev or prod). Use when asked to "publish the app", "deploy to s3", "ship pocketdj", "deploy dev/prod". One command (scripts/deploy.sh) builds + syncs dist/ with the right cache tiers; this doc explains the details + SPA fallback.
 ---
 
 # Publish PocketDJ to S3
 
-PocketDJ is an offline-first PWA. Deploy is: build, then sync `dist/` to a bucket.
-The repo has **no AWS credentials wired in** — this is a documented manual deploy.
-You need `aws` CLI configured (`aws configure` / a profile) and a target bucket.
+PocketDJ is an offline-first PWA. Deploy = build, then sync `dist/` to a bucket.
+
+## Quick deploy (this repo)
+
+Infra is already set up: AWS profile **`levi`** (account `011183829623`, region
+**us-west-2**), two public static-website buckets, and `scripts/deploy.sh`.
+
+```bash
+scripts/deploy.sh dev      # -> http://pocketdj-dev-web-011183829623.s3-website-us-west-2.amazonaws.com
+scripts/deploy.sh prod     # -> http://pocketdj-prod-web-011183829623.s3-website-us-west-2.amazonaws.com
+SKIP_BUILD=1 scripts/deploy.sh dev   # reuse existing dist/
+```
+
+`deploy.sh` builds (generating demo data if missing), then does the two-tier
+cache sync below. **A background agent can run it** — it just shells out to
+`aws --profile levi`. Override with `AWS_PROFILE_OVERRIDE` / `AWS_REGION_OVERRIDE`.
+
+To (re)provision a bucket from scratch (new account/region), see the
+create-bucket + website + public-policy steps in §4 and the project setup notes.
+
+The rest of this doc explains what `deploy.sh` does and why, plus the manual path.
+
+## 1. Build
+
+```bash
+npm run build      # tsc -b && vite build  ->  dist/
+```
+
+`dist/` contains: `index.html`, hashed `assets/*`, `sw.js`, `workbox-*.js`,
+`registerSW.js`, `manifest.webmanifest`, static svgs, and the demo data json.
 
 ## 1. Build
 
