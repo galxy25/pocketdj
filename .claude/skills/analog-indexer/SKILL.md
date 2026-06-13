@@ -90,6 +90,45 @@ To fill those from the web, the agent-based `workflow/index-vinyl.workflow.js`
 (built via `lib/build-run.mjs`) does iTunes **and** a plain web/Wikipedia search for
 the tracklist. Run it over just the unmatched candidates when you want to recover them.
 
+## Playwright scraping fallback (`lib/enrich-playwright.mjs`)
+
+When the **iTunes Search API gets IP-rate-limited at scale** (403/429), use the
+headless-Playwright enricher as an alternative full-run path. It mirrors
+`enrich.mjs`'s CLI, shard output (`batch-XXXX.json` = `{ batchIndex, albums }`),
+and the EnrichedAlbum shape, so `cli.mjs merge` works unchanged.
+
+```
+node lib/enrich-playwright.mjs <parsed.json> --out-dir <dir> \
+  [--concurrency 3] [--size 100] [--limit N] [--slice A:B] [--progress-file PATH]
+```
+
+Two captcha-free sources, both queried from **inside a real Chromium page context**
+so requests carry a genuine browser fingerprint:
+
+1. **Discogs public API** (`api.discogs.com`, **no token needed**) — PRIMARY. Richest
+   data: structured tracklist (with vinyl side positions `A1`/`B2` → disc number),
+   year, genres+styles, country, hi-res cover. Throttled to one call per ~2.6 s on a
+   single shared lane (unauthenticated Discogs ≈ 25 req/min); backs off 30 s on 429/403.
+   Note: Discogs search returns the most-prevalent *pressing*, so the year can be a
+   reissue year (e.g. Master of Puppets → 2014), not the original release.
+2. **Wikipedia** (REST search `/w/rest.php/v1/search/page` → article scrape) — FALLBACK
+   when Discogs misses/throttles. Infobox (genre, year, cover) + `table.tracklist`.
+
+Politeness: `--concurrency` is clamped to **2–4** browser pages (one reused page per
+worker, image/font/css requests blocked), small random inter-album delays, realistic
+desktop-Chrome User-Agent, and a per-album timeout (`--album-timeout`, default 45 s)
+so one slow page can't stall the pool. Never throws out of the pool — failures emit
+`status:"unmatched"` with `tracks:[]`. Lyrics/sentiment are left empty (the Haiku pass
++ merge fill those, same as the iTunes path).
+
+Progress: appends `enriched <done>/<total> matched=<m> at <ISO>` lines to
+`--progress-file` (a monitor can `tail -f` it). The **website** HTML for Discogs
+(`discogs.com/search`) and Google both serve bot captchas to headless Chromium — this
+is why we hit the Discogs *API* and Wikipedia, not their search pages.
+
+Validated on the 15-album curated sample (`index-out/sample-lines.txt`): 15/15 matched
+strong, all with real tracklists/durations/covers, all via Discogs.
+
 ## Resuming the long full run
 
 - Enrich is restartable: it overwrites shards by batch; re-running re-fetches.
