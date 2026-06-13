@@ -126,6 +126,14 @@ Progress: appends `enriched <done>/<total> matched=<m> at <ISO>` lines to
 (`discogs.com/search`) and Google both serve bot captchas to headless Chromium — this
 is why we hit the Discogs *API* and Wikipedia, not their search pages.
 
+**Resumable + album-by-album durability:** each completed album is appended
+immediately to `<out-dir>/enriched.jsonl` (one EnrichedAlbum per line), so a
+crash/kill loses nothing. On start it reads that file and **skips already-done
+candidates** (`resuming N done, M remaining`) — so you can stop and re-run the
+exact same command to continue. Shard files are (re)built from the full JSONL at
+the end, and `cli.mjs merge` also reads `enriched.jsonl` directly, so even a run
+that never reached its end still merges everything it scraped.
+
 Validated on the 15-album curated sample (`index-out/sample-lines.txt`): 15/15 matched
 strong, all with real tracklists/durations/covers, all via Discogs.
 

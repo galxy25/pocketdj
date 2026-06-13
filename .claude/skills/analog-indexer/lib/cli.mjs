@@ -77,6 +77,23 @@ if (cmd === 'parse') {
     const raw = JSON.parse(readFileSync(join(shardsDir, f), 'utf8'));
     return assembleShard(raw.albums || []);
   });
+  // Also fold in the resumable per-album record (enrich-playwright.mjs writes
+  // enriched.jsonl during the run). mergeShards dedups by content id, so overlap
+  // with batch shards is idempotent — and a crashed run still merges from here.
+  const jsonlPath = join(shardsDir, 'enriched.jsonl');
+  if (existsSync(jsonlPath)) {
+    const albums = [];
+    for (const line of readFileSync(jsonlPath, 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        albums.push(JSON.parse(t));
+      } catch {
+        /* skip partial line */
+      }
+    }
+    if (albums.length) shards.push(assembleShard(albums));
+  }
   const { index, coverageReport, runLog } = mergeShards(shards, {
     source,
     sourceName: 'My Vinyl',

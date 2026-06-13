@@ -24,7 +24,7 @@
 // Lyrics/sentiment are left empty here (a later Haiku pass + merge fill those,
 // same as the iTunes path).
 
-import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { normalize, tokenSet, diceTokens, coverage } from './normalize.js';
@@ -506,16 +506,19 @@ async function enrichOne(page, cand, ci) {
 }
 
 // bounded-concurrency pool, one dedicated page per worker (reuse the page).
-async function pool(items, browser, n) {
-  const out = new Array(items.length);
+// `items` are {cand, ci} pairs (only the NOT-yet-done ones — resume filters them).
+// Each completed album is appended to jsonlPath IMMEDIATELY (durable, album-by-album)
+// so a crash/restart loses nothing. Node is single-threaded, so appendFileSync calls
+// can't interleave — each line is written atomically.
+async function pool(items, browser, n, base) {
+  // base = { total, startDone, startMatched, jsonlPath }
   let idx = 0;
-  let done = 0;
-  let matched = 0;
-  const total = items.length;
+  let done = base.startDone; // includes albums recovered on resume
+  let matched = base.startMatched;
+  const total = base.total;
 
-  async function reportProgress() {
+  function reportProgress() {
     const line = `enriched ${done}/${total} matched=${matched} at ${new Date().toISOString()}`;
-    process.stderr.write('  ' + line + '\n');
     if (progressFile) {
       try {
         appendFileSync(progressFile, line + '\n');
@@ -542,10 +545,19 @@ async function pool(items, browser, n) {
     try {
       while (idx < items.length) {
         const i = idx++;
-        out[i] = await enrichOne(page, items[i], i);
+        const { cand, ci } = items[i];
+        const album = await enrichOne(page, cand, ci);
+        // durable per-album write FIRST, then count + report status album-by-album
+        try {
+          appendFileSync(base.jsonlPath, JSON.stringify(album) + '\n');
+        } catch {
+          /* ignore — next checkpoint still has the data in memory */
+        }
         done += 1;
-        if (out[i].status === 'matched') matched += 1;
-        if (done % 10 === 0 || done === total) await reportProgress();
+        if (album.status === 'matched') matched += 1;
+        reportProgress(); // album by album
+        if (done % 25 === 0 || idx >= items.length)
+          process.stderr.write(`  enriched ${done}/${total} matched=${matched}\n`);
       }
     } finally {
       await ctx.close().catch(() => {});
@@ -553,7 +565,23 @@ async function pool(items, browser, n) {
   }
 
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, run));
-  return { out, matched };
+  return { done, matched };
+}
+
+// Read all EnrichedAlbum lines from a JSONL file (skips blank/partial lines).
+function readJsonl(path) {
+  if (!existsSync(path)) return [];
+  const out = [];
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      out.push(JSON.parse(t));
+    } catch {
+      /* skip a partial last line from a crash mid-write */
+    }
+  }
+  return out;
 }
 
 // ============================ main ============================================
@@ -565,52 +593,74 @@ if (slice) {
 }
 if (limit > 0) candidates = candidates.slice(0, limit);
 
+mkdirSync(outDir, { recursive: true });
+const JSONL = join(outDir, 'enriched.jsonl');
+
+// ---- RESUME: skip candidates already recorded in enriched.jsonl --------------
+const doneSet = new Set();
+let resumedMatched = 0;
+for (const a of readJsonl(JSONL)) {
+  if (typeof a.candidateIndex === 'number') {
+    doneSet.add(a.candidateIndex);
+    if (a.status === 'matched') resumedMatched += 1;
+  }
+}
+const indexed = candidates.map((cand, i) => ({ cand, ci: i }));
+const todo = indexed.filter((x) => !doneSet.has(x.ci));
+
 process.stderr.write(
-  `enriching ${candidates.length} albums via Playwright (concurrency ${concurrency}, sources: discogs+wikipedia)\n`,
+  `enriching ${candidates.length} albums via Playwright (concurrency ${concurrency}, sources: discogs+wikipedia); ` +
+    `resuming ${doneSet.size} already done, ${todo.length} remaining\n`,
 );
 if (progressFile) {
   try {
     appendFileSync(
       progressFile,
-      `start ${candidates.length} albums concurrency=${concurrency} at ${new Date().toISOString()}\n`,
+      `start ${candidates.length} albums (resume ${doneSet.size} done, ${todo.length} remaining) concurrency=${concurrency} at ${new Date().toISOString()}\n`,
     );
   } catch {
     /* ignore */
   }
 }
 
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-let result;
-try {
-  result = await pool(candidates, browser, concurrency);
-} finally {
-  await browser.close().catch(() => {});
+if (todo.length > 0) {
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  try {
+    await pool(todo, browser, concurrency, {
+      total: candidates.length,
+      startDone: doneSet.size,
+      startMatched: resumedMatched,
+      jsonlPath: JSONL,
+    });
+  } finally {
+    await browser.close().catch(() => {});
+  }
 }
-const enriched = result.out;
 
-mkdirSync(outDir, { recursive: true });
-const shards = chunk(enriched, shardSize);
+// ---- build shard files from the FULL durable record (resumed + new) ----------
+const all = readJsonl(JSONL).sort((a, b) => (a.candidateIndex ?? 0) - (b.candidateIndex ?? 0));
+const shards = chunk(all, shardSize);
 shards.forEach((albums, bi) => {
   writeFileSync(
     join(outDir, `batch-${String(bi).padStart(4, '0')}.json`),
     JSON.stringify({ batchIndex: bi, albums }),
   );
 });
-const matched = enriched.filter((a) => a.status === 'matched').length;
-const tracks = enriched.reduce((n, a) => n + a.tracks.length, 0);
-const bySrc = enriched.reduce((m, a) => {
+const matched = all.filter((a) => a.status === 'matched').length;
+const tracks = all.reduce((n, a) => n + (a.tracks ? a.tracks.length : 0), 0);
+const bySrc = all.reduce((m, a) => {
   for (const s of a.sources || []) m[s] = (m[s] || 0) + 1;
   return m;
 }, {});
 process.stderr.write(
-  `done: ${matched}/${enriched.length} matched, ${tracks} tracks -> ${shards.length} shards in ${outDir} ` +
+  `done: ${matched}/${all.length} matched, ${tracks} tracks -> ${shards.length} shards in ${outDir} ` +
     `(${Object.entries(bySrc).map(([k, v]) => `${k}=${v}`).join(' ')})\n`,
 );
 if (progressFile) {
   try {
     appendFileSync(
       progressFile,
-      `done ${matched}/${enriched.length} matched ${tracks} tracks at ${new Date().toISOString()}\n`,
+      `done ${matched}/${all.length} matched ${tracks} tracks at ${new Date().toISOString()}\n`,
     );
   } catch {
     /* ignore */
