@@ -24,8 +24,9 @@ function arg(flag, def) {
 const inPath = arg('--in', '');
 const outPath = arg('--out', '');
 const batchSize = parseInt(arg('--batch', '12'), 10);
-// parallel albums in flight — LM Studio serves several at once (its "Parallel" slots)
-const concurrency = Math.max(1, parseInt(arg('--concurrency', '4'), 10));
+// Parallel albums in flight. Default 4 — LM Studio serves up to 4 requests at once.
+// Overridable via the SENT_CONC env var or the --concurrency flag (flag wins).
+const concurrency = Math.max(1, parseInt(arg('--concurrency', process.env.SENT_CONC || '4'), 10));
 const limit = parseInt(arg('--limit', '0'), 10);
 const slice = arg('--slice', '');
 const progressFile = arg('--progress-file', '');
