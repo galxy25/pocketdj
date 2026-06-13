@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Enrich-batch agent output",
+  "description": "Mirror of ENRICH_SCHEMA in workflow/index-vinyl.workflow.js. One album per input candidateIndex.",
+  "type": "object",
+  "required": ["albums"],
+  "properties": {
+    "albums": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidateIndex", "status", "artist", "name", "tracks", "sources"],
+        "properties": {
+          "candidateIndex": { "type": "integer" },
+          "status": { "enum": ["matched", "unmatched"] },
+          "matchConfidence": { "enum": ["strong", "weak"] },
+          "score": { "type": "number" },
+          "itunesCollectionId": { "type": "integer" },
+          "sources": { "type": "array", "items": { "type": "string" } },
+          "artist": { "type": "string" },
+          "name": { "type": "string" },
+          "coverArt": { "type": "string" },
+          "genre": { "type": "string" },
+          "year": { "type": "integer" },
+          "country": { "type": "string" },
+          "tracks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["trackNumber", "name"],
+              "properties": {
+                "discNumber": { "type": "integer" },
+                "trackNumber": { "type": "integer" },
+                "name": { "type": "string" },
+                "artist": { "type": "string" },
+                "year": { "type": "integer" },
+                "lengthMs": { "type": "integer" },
+                "explicit": { "type": "boolean" },
+                "lyrics": { "type": ["string", "null"] },
+                "lyricsStatus": { "enum": ["found", "notfound", "error"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

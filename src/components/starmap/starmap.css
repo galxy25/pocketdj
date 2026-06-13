@@ -1,0 +1,145 @@
+/* Star map + solar system visualization styles (dark "night sky" theme). */
+
+.pdj-starmap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(1200px 800px at 30% 20%, #131a2b 0%, var(--pdj-bg) 60%),
+    var(--pdj-bg);
+  overflow: hidden;
+  touch-action: none;
+}
+
+.pdj-starmap__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+.pdj-starmap__svg.is-panning {
+  cursor: grabbing;
+}
+
+.pdj-starmap__toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 8px;
+  z-index: 2;
+}
+
+.pdj-starmap__btn {
+  background: var(--pdj-bg-overlay);
+  color: var(--pdj-fg);
+  border: 1px solid var(--pdj-border);
+  border-radius: var(--pdj-radius);
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.pdj-starmap__btn:hover {
+  border-color: var(--pdj-accent);
+}
+
+.pdj-starmap__loading,
+.pdj-starmap__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--pdj-fg-dim);
+  font-size: 0.95rem;
+}
+
+/* SVG elements */
+.pdj-star {
+  cursor: pointer;
+  outline: none;
+}
+.pdj-star:hover .pdj-star__halo,
+.pdj-star:focus-visible .pdj-star__halo {
+  opacity: 0.9;
+}
+.pdj-star:focus-visible .pdj-star__ring {
+  stroke: var(--pdj-accent);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+.pdj-star__halo {
+  opacity: 0.45;
+  transition: opacity 0.12s ease;
+}
+.pdj-star__ring {
+  fill: none;
+  stroke: var(--pdj-border);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+.pdj-constellation__line {
+  fill: none;
+  stroke: var(--pdj-accent);
+  stroke-width: 1;
+  opacity: 0.18;
+}
+.pdj-constellation__label {
+  fill: var(--pdj-fg-dim);
+  font-family: var(--pdj-font);
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+
+/* Solar system */
+.pdj-solar {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(900px 700px at 50% 50%, #161d30 0%, var(--pdj-bg) 70%),
+    var(--pdj-bg);
+  overflow: hidden;
+}
+.pdj-solar__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.pdj-solar__header {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  z-index: 2;
+}
+.pdj-solar__title {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--pdj-fg);
+}
+.pdj-solar__artist {
+  color: var(--pdj-fg-dim);
+  font-size: 0.9rem;
+}
+.pdj-solar__orbit {
+  fill: none;
+  stroke: var(--pdj-border);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+.pdj-planet {
+  cursor: pointer;
+  outline: none;
+}
+.pdj-planet:focus-visible {
+  stroke: var(--pdj-fg);
+  stroke-width: 2;
+}

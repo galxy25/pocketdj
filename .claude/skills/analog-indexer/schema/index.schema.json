@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://pocketdj.app/schema/index.schema.json",
+  "title": "PocketDJ Analog Index",
+  "description": "The canonical index produced by the analog-indexer skill and consumed by the PocketDJ app. Keep in sync with src/types/index-json.ts.",
+  "type": "object",
+  "required": ["manifest", "albums", "songs"],
+  "additionalProperties": false,
+  "properties": {
+    "manifest": {
+      "type": "object",
+      "required": ["source", "generatedAt", "schemaVersion", "sourceType", "counts", "deferredFields"],
+      "additionalProperties": true,
+      "properties": {
+        "source": { "type": "string" },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "schemaVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "sourceType": { "const": "analog" },
+        "sourceName": { "type": "string" },
+        "deferredFields": { "type": "array", "items": { "type": "string" } },
+        "counts": {
+          "type": "object",
+          "required": ["albums", "songs"],
+          "additionalProperties": true,
+          "properties": {
+            "lines": { "type": "integer" },
+            "vinylLines": { "type": "integer" },
+            "albums": { "type": "integer" },
+            "songs": { "type": "integer" },
+            "albumsMatched": { "type": "integer" },
+            "albumsUnmatched": { "type": "integer" },
+            "songsWithLyrics": { "type": "integer" },
+            "sentimentFromLyrics": { "type": "integer" },
+            "sentimentInferred": { "type": "integer" }
+          }
+        },
+        "batches": {
+          "type": "object",
+          "properties": {
+            "size": { "type": "integer" },
+            "count": { "type": "integer" },
+            "completed": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "albums": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "artist", "name", "trackList"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^alb_" },
+          "artist": { "type": "string" },
+          "name": { "type": "string" },
+          "coverArt": { "type": "string" },
+          "genre": { "type": "string" },
+          "year": { "type": "integer" },
+          "country": { "type": "string" },
+          "trackList": { "type": "array", "items": { "type": "string", "pattern": "^sng_" } },
+          "fileType": { "type": "string" },
+          "pointer": { "$ref": "#/definitions/pointer" },
+          "enrichment": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "status": { "enum": ["matched", "unmatched"] },
+              "matchConfidence": { "enum": ["strong", "weak"] },
+              "itunesCollectionId": { "type": "integer" },
+              "score": { "type": "number" },
+              "sources": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "songs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "artist", "name"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^sng_" },
+          "albumId": { "type": "string", "pattern": "^alb_" },
+          "artist": { "type": "string" },
+          "name": { "type": "string" },
+          "trackNumber": { "type": "integer" },
+          "year": { "type": "integer" },
+          "lyrics": { "type": ["string", "null"] },
+          "lyricsStatus": { "enum": ["found", "notfound", "error"] },
+          "sentimentKeywords": { "type": "array", "items": { "type": "string" } },
+          "sentimentSource": { "enum": ["lyrics", "inferred", "failed"] },
+          "explicit": { "type": "boolean" },
+          "bpm": { "type": "null" },
+          "key": { "type": "null" },
+          "length": { "type": "integer", "description": "milliseconds" },
+          "fileType": { "type": "string" },
+          "pointer": { "$ref": "#/definitions/pointer" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "pointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fileLocation": { "type": "string" },
+        "filename": { "type": "string" },
+        "originalFilename": { "type": "string" },
+        "disc": { "type": "integer" },
+        "track": { "type": "integer" },
+        "timestamps": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["startMs", "endMs"],
+              "properties": { "startMs": { "type": "integer" }, "endMs": { "type": "integer" } }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

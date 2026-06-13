@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sentiment agent output (Haiku)",
+  "description": "Mirror of SENT_SCHEMA in workflow/index-vinyl.workflow.js.",
+  "type": "object",
+  "required": ["results"],
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ci", "track", "keywords", "source"],
+        "properties": {
+          "ci": { "type": "integer", "description": "candidateIndex" },
+          "track": { "type": "integer", "description": "trackNumber" },
+          "keywords": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "source": { "enum": ["lyrics", "inferred"] }
+        }
+      }
+    }
+  }
+}
