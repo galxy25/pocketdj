@@ -28,3 +28,20 @@ test('clicking a star opens the solar system with one planet per track', async (
   await expect(page.locator('[data-testid^="planet-"]')).toHaveCount(album.trackList.length);
   await writeProof('solar-system', page, tx);
 });
+
+test('every track is labelled by default; clicking a planet opens the song popup (Esc closes)', async ({ page }) => {
+  const tx = captureTranscript(page);
+  await setupApp(page);
+  const album = (FIXTURE.albums as FixtureAlbum[]).find((a) => a.trackList.length >= 3)!;
+  await page.goto(`/map/${album.id}`);
+  // names show for ALL tracks by default
+  await expect(page.locator('[data-testid="track-label"]')).toHaveCount(album.trackList.length);
+  // click a planet -> metadata popup
+  await page.locator('[data-testid^="planet-sng_"]').first().click();
+  await expect(page.getByTestId('song-modal')).toBeVisible();
+  await expect(page.getByTestId('song-detail')).toBeVisible();
+  // Escape closes it
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('song-modal')).toBeHidden();
+  await writeProof('song-detail', page, tx);
+});

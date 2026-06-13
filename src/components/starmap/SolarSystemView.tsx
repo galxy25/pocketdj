@@ -11,6 +11,7 @@ import { getAlbumSongs, getItem } from '../../storage/repo';
 import { artObjectURL } from '../../storage/artCache';
 import { computeSolarSystem } from '../../starmap/solarSystem';
 import { msToClock } from '../../lib/format';
+import { SongDetailModal } from './SongDetailModal';
 import './starmap.css';
 
 // Distinct planet tints keyed off sentiment / explicit flags. Uses the palette's
@@ -29,6 +30,8 @@ export function SolarSystemView() {
   const [songs, setSongs] = useState<SongItem[] | null>(null);
   const [sunUrl, setSunUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -151,26 +154,53 @@ export function SolarSystemView() {
           const songId = planet.songId;
           const dur = songLength(songs, songId);
           const label = `${planet.trackNumber}. ${planet.name}${dur ? ` (${dur})` : ''}`;
+          const isHover = hoveredId === songId;
           return (
-            <circle
-              key={songId}
-              className="pdj-planet"
-              data-testid={'planet-' + songId}
-              role="button"
-              tabIndex={0}
-              cx={px}
-              cy={py}
-              r={planet.r}
-              fill={planetFill(planet)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
-              }}
-            >
-              <title>{label}</title>
-            </circle>
+            <g key={songId}>
+              <circle
+                className={'pdj-planet' + (isHover ? ' is-hover' : '')}
+                data-testid={'planet-' + songId}
+                role="button"
+                tabIndex={0}
+                aria-label={label}
+                cx={px}
+                cy={py}
+                r={planet.r}
+                fill={planetFill(planet)}
+                onMouseEnter={() => setHoveredId(songId)}
+                onMouseLeave={() => setHoveredId((h) => (h === songId ? null : h))}
+                onFocus={() => setHoveredId(songId)}
+                onBlur={() => setHoveredId((h) => (h === songId ? null : h))}
+                onClick={() => setSelectedId(songId)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelectedId(songId);
+                  }
+                }}
+              >
+                <title>{planet.name}</title>
+              </circle>
+              {/* Track names are shown by default for every planet; hover emphasizes. */}
+              <text
+                className={'pdj-planet__label' + (isHover ? ' is-hover' : '')}
+                data-testid="track-label"
+                x={px}
+                y={py - planet.r - 5}
+                textAnchor="middle"
+              >
+                {planet.name.length > 22 ? planet.name.slice(0, 21) + '…' : planet.name}
+              </text>
+            </g>
           );
         })}
       </svg>
+
+      <SongDetailModal
+        song={songs?.find((s) => s.id === selectedId) ?? null}
+        albumName={system.name}
+        onClose={() => setSelectedId(null)}
+      />
     </div>
   );
 }

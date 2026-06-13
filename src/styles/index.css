@@ -144,3 +144,18 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-form__row > span { color: var(--pdj-fg-dim); font-size: 0.8rem; }
 .pdj-form__row textarea { resize: vertical; }
 .pdj-form__actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+
+/* ---------- solar system: planet hover label + song detail popup ---------- */
+.pdj-planet { cursor: pointer; transition: filter 0.08s; }
+.pdj-planet.is-hover { filter: brightness(1.35) drop-shadow(0 0 4px currentColor); }
+.pdj-planet__label { fill: var(--pdj-fg-dim); font-size: 9px; font-weight: 500; paint-order: stroke; stroke: rgba(7,12,24,0.92); stroke-width: 2.5px; pointer-events: none; }
+.pdj-planet__label.is-hover { fill: var(--pdj-fg); font-size: 11px; font-weight: 700; }
+.pdj-songdetail { display: flex; flex-direction: column; gap: 0.4rem; }
+.pdj-songdetail__row { display: grid; grid-template-columns: 6rem 1fr; gap: 0.6rem; align-items: baseline; }
+.pdj-songdetail__label { color: var(--pdj-fg-dim); font-size: 0.78rem; }
+.pdj-songdetail__value { font-size: 0.88rem; }
+.pdj-songdetail__tags { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
+.pdj-songdetail__plug code { color: var(--pdj-accent-2); font-size: 0.7rem; }
+.pdj-songdetail__lyrics { margin-top: 0.4rem; border-top: 1px solid var(--pdj-border); padding-top: 0.5rem; }
+.pdj-songdetail__lyrics-head { color: var(--pdj-fg-dim); font-size: 0.78rem; margin-bottom: 0.25rem; }
+.pdj-songdetail__lyrics pre { margin: 0; max-height: 14rem; overflow: auto; white-space: pre-wrap; font-family: var(--pdj-font); font-size: 0.82rem; line-height: 1.4; color: var(--pdj-fg); }
