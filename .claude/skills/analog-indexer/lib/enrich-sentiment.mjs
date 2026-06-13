@@ -108,6 +108,13 @@ async function callModel(songs, attempt = 0) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    if (res.status === 400) {
+      const t = await res.text();
+      // Prompt longer than the model's loaded context — don't retry, defer the
+      // album so it auto-recovers once the model is reloaded with a bigger context.
+      if (/context|n_ctx|n_keep/i.test(t)) throw new Error('CONTEXT_OVERFLOW');
+      throw new Error('HTTP 400');
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     const content = j.choices?.[0]?.message?.content || '';
@@ -115,6 +122,7 @@ async function callModel(songs, attempt = 0) {
     if (parsed && Array.isArray(parsed.results)) return parsed.results;
     throw new Error('no parseable results');
   } catch (e) {
+    if (e.message === 'CONTEXT_OVERFLOW') throw e; // propagate — handled by the album loop
     if (attempt < 2) {
       await sleep(1500 * (attempt + 1));
       return callModel(songs, attempt + 1);
@@ -173,6 +181,7 @@ process.stderr.write(
 
 let done = doneSet.size;
 let songCount = 0;
+let deferred = 0;
 const total = albums.length;
 
 // bounded-concurrency pool over albums (parallel model calls). appendFileSync is
@@ -182,10 +191,18 @@ async function pool(items, n) {
   async function run() {
     while (idx < items.length) {
       const album = items[idx++];
+      let defer = false;
       try {
         await sentimentForAlbum(album);
       } catch (e) {
-        process.stderr.write(`  album ${album.candidateIndex} sentiment error: ${e.message}\n`);
+        if (e.message === 'CONTEXT_OVERFLOW') defer = true;
+        else process.stderr.write(`  album ${album.candidateIndex} sentiment error: ${e.message}\n`);
+      }
+      // Context-overflow albums are left PENDING (not written) so they auto-retry
+      // next pass — e.g. once the model is reloaded with a larger context.
+      if (defer) {
+        deferred += 1;
+        continue;
       }
       songCount += (album.tracks || []).filter((t) => (t.sentimentKeywords || []).length && t.sentimentSource !== 'failed').length;
       appendFileSync(outPath, JSON.stringify(album) + '\n');
@@ -205,4 +222,6 @@ async function pool(items, n) {
 }
 
 await pool(todo, concurrency);
-process.stderr.write(`done: sentiment for ${done}/${total} albums -> ${outPath}\n`);
+process.stderr.write(
+  `done: sentiment ${done}/${total} albums${deferred ? `, ${deferred} deferred (context too small — will retry)` : ''} -> ${outPath}\n`,
+);
