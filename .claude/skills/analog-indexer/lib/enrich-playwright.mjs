@@ -666,3 +666,9 @@ if (progressFile) {
     /* ignore */
   }
 }
+// Signal downstream stages (lyrics/sentiment) that the metadata stage is complete.
+try {
+  writeFileSync(JSONL + '.done', new Date().toISOString() + '\n');
+} catch {
+  /* ignore */
+}

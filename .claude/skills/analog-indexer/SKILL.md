@@ -15,7 +15,44 @@ genre, year, country, cover art, tracklist, track length, explicit flag, lyrics,
 and Haiku **sentiment keywords**. It DEFERS `bpm`, `key`, and per-track
 `timestamps` (those need the audio file).
 
-## Architecture (Node does the fetching; a Workflow does only the LLM work)
+## Pipeline architecture (current — manifest-driven, all local)
+
+The indexer is a chain of **sub-indexers**, each filling its own fields and passing
+records forward. The **manifest** (`index-out/manifest.jsonl`) is the index doubling
+as a record of *what each stage did per album* — so any stage can be re-run
+**selectively** (process only items where its stage isn't `done`). Resumability and
+selective re-indexing are the same mechanism.
+
+```
+parse → [1 metadata] → [2 lyrics] → [3 sentiment] → [4 audio: future] → merge
+         Discogs/Wiki    Genius       local Gemma      BPM/key (needs the file)
+         (Playwright)     (Playwright) (LM Studio)
+```
+
+Each album carries `stages: { metadata, lyrics, sentiment, audio }` with per-item
+status. All stages are **plain Node** (no cloud key): sentiment calls a **local model
+via LM Studio's OpenAI-compatible API** (`http://127.0.0.1:1234`, default
+`google/gemma-4-26b-a4b`).
+
+Sub-indexers (`lib/`): `enrich-playwright.mjs` (metadata), `enrich-lyrics.mjs`
+(lyrics), `enrich-sentiment.mjs` (sentiment). Orchestrator: `lib/pipeline.mjs`;
+manifest helpers: `lib/manifest.mjs`.
+
+```
+# metadata stage runs as the Playwright scraper (background), writing enriched.jsonl
+node lib/pipeline.mjs import-metadata index-out/shards-pw/enriched.jsonl   # fold into manifest
+node lib/pipeline.mjs status                       # per-stage coverage
+node lib/pipeline.mjs run --stages lyrics,sentiment   # auto-chain remaining stages over pending items
+node lib/pipeline.mjs redo lyrics --failed          # selectively re-index (reset failed -> run again)
+node lib/pipeline.mjs merge --out-dir index-out/full  # write index.json (carries each item's `indexing` status)
+```
+
+`--limit N` bounds a run; sentiment uses the local model (a 26B *reasoning* model ≈
+70 s/album — set a smaller/faster LM Studio model via `enrich-sentiment.mjs --model`
+for the full catalog). Everything below documents the individual stages + the older
+iTunes/Workflow path.
+
+## Architecture (legacy iTunes path — Node does the fetching; a Workflow does only the LLM work)
 
 The deterministic enrichment (iTunes match + tracklist + country + lyrics) is just
 HTTP and needs no model — so it runs **concurrently in Node** (≈0.7s/album, vs
@@ -136,6 +173,62 @@ that never reached its end still merges everything it scraped.
 
 Validated on the 15-album curated sample (`index-out/sample-lines.txt`): 15/15 matched
 strong, all with real tracklists/durations/covers, all via Discogs.
+
+## Lyrics stage (`lib/enrich-lyrics.mjs`)
+
+A headless-Playwright **sub-indexer that scrapes per-song lyrics**, run as a stage
+AFTER metadata enrichment. It READS the EnrichedAlbum JSONL the Playwright enricher
+writes (`enriched.jsonl`) and ADDS each track's `lyrics` (trimmed ~3000 chars) +
+`lyricsStatus` (`'found'`/`'notfound'`), carrying every record forward verbatim.
+
+```
+node lib/enrich-lyrics.mjs --in <metadata.jsonl> --out <lyrics.jsonl> \
+  [--concurrency 3] [--cap N] [--limit N] [--slice A:B] [--progress-file PATH] [--song-timeout 25000]
+```
+
+Mirrors `enrich-playwright.mjs` exactly: Chromium launch, one reused page per worker,
+`page.route` asset-blocking, the **in-page fetch/navigation pattern** (fetches run
+inside `page.evaluate` so they carry a real browser fingerprint), polite per-provider
+throttle lanes + 403 backoff, a per-**song** timeout (`--song-timeout`, default 25 s)
+so one stuck page can't stall the pool, a bounded-concurrency pool (clamped **1–3**
+pages), and **resumable** album-by-album durability (each completed album appended to
+`--out`; on restart it reads `--out`, skips done `candidateIndex`s, logs
+`resuming N done, M remaining`). Unmatched/empty albums pass through untouched.
+`--cap N` limits lookups to the first N tracks per album.
+
+Per track (`track.artist` ‖ album `artist` + `track.name`) it cycles two providers:
+
+1. **Genius** (PRIMARY): in-page GET `genius.com/api/search/multi?q=…`, pick the best
+   song hit by fuzzy title match, `page.goto` the song path, scrape every
+   `[data-lyrics-container]` (`innerText` keeps `[Verse]/[Chorus]` headers; a helper
+   strips the leading "N Contributors / … Lyrics" page chrome and the trailing "Embed").
+   > **Same-origin gotcha (load-bearing):** `genius.com/api/*` is CORS-locked, so an
+   > in-page `fetch` from any other origin returns `status:0` "Failed to fetch". The
+   > worker page must be ON `genius.com` first — `enrich-lyrics.mjs` lands on the
+   > genius.com home once per worker (cheap; assets are route-blocked) and reuses that
+   > origin for subsequent API fetches. Without this, **zero** lyrics resolve.
+2. **AZLyrics** (FALLBACK): `page.goto` the slugged URL
+   `azlyrics.com/lyrics/<artistSlug>/<titleSlug>.html` (slug = lowercase, `[a-z0-9]`
+   only, drop a leading "the"); the lyrics live in an unlabeled `<div>` after the
+   `<!-- Usage of azlyrics.com … -->` comment inside `div.col-xs-12.col-lg-8.text-center`.
+   Own throttle lane (≥1.5 s spacing) + long backoff on 403.
+   > **Bot wall (current):** AZLyrics serves headless Chromium a **200-status
+   > "request for access" interstitial** (≈245-byte body) for *every* request, even
+   > known-good songs. The stage detects that page (title/body match) and backs the
+   > AZLyrics lane off 60 s rather than returning garbage. **So in practice all lyrics
+   > come from Genius today.** Mitigations if AZLyrics coverage is ever needed: a
+   > persistent/stealth browser context (cookies, `playwright-extra` stealth), a
+   > residential/non-datacenter egress IP, or a non-headless run.
+
+Scraped text is validated (>60 chars **and** has line breaks, not an error/redirect
+page) before being accepted, then trimmed to ~3000 chars. Progress: appends
+`lyrics <albumsDone>/<total> songsWithLyrics=<k> at <ISO>` to `--progress-file`.
+
+**Validated** (`head -3 enriched.jsonl` → 2 unmatched pass-through + 1 matched album,
+`--concurrency 2 --cap 4`): 4/4 capped tracks resolved via Genius, records carried
+forward verbatim. A mainstream sample (ABBA / A Tribe Called Quest / Aaliyah, cap 4)
+resolved **12/12** capped tracks via Genius. Resume re-run correctly skipped all done
+albums (no browser launched, no duplicate lines).
 
 ## Resuming the long full run
 
