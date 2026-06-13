@@ -6,7 +6,7 @@
 // component only loads data, caches the layout by content hash, resolves cover
 // thumbnails lazily, and draws the SVG with lightweight pan/zoom.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { WheelEvent as ReactWheelEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { StarMapLayout, Star } from '../../types/starmap';
 import { useAppStore } from '../../store/useAppStore';
@@ -105,28 +105,36 @@ export function StarMapScene() {
     setViewBox(initialViewBox);
   }, [initialViewBox]);
 
-  const onWheel = useCallback(
-    (e: ReactWheelEvent<SVGSVGElement>) => {
-      if (!viewBox || !svgRef.current) return;
+  // Wheel-zoom must be a NATIVE, non-passive listener: React's onWheel is passive,
+  // so calling preventDefault() there throws "Unable to preventDefault inside passive
+  // event listener". Keep the latest state in a ref so the listener stays stable.
+  const wheelState = useRef({ viewBox, layout });
+  wheelState.current = { viewBox, layout };
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      const { viewBox: vb, layout: lay } = wheelState.current;
+      if (!vb) return;
       e.preventDefault();
-      const rect = svgRef.current.getBoundingClientRect();
-      // Pointer position in scene coordinates (zoom anchored at the cursor).
-      const px = viewBox.x + ((e.clientX - rect.left) / rect.width) * viewBox.w;
-      const py = viewBox.y + ((e.clientY - rect.top) / rect.height) * viewBox.h;
+      const rect = el.getBoundingClientRect();
+      const px = vb.x + ((e.clientX - rect.left) / rect.width) * vb.w;
+      const py = vb.y + ((e.clientY - rect.top) / rect.height) * vb.h;
       const factor = e.deltaY > 0 ? 1.1 : 1 / 1.1;
       const minW = 200;
-      const maxW = (layout?.width ?? 2000) * 2.5;
-      const newW = Math.max(minW, Math.min(maxW, viewBox.w * factor));
-      const newH = newW * (viewBox.h / viewBox.w);
+      const maxW = (lay?.width ?? 2000) * 2.5;
+      const newW = Math.max(minW, Math.min(maxW, vb.w * factor));
+      const newH = newW * (vb.h / vb.w);
       setViewBox({
-        x: px - ((px - viewBox.x) * newW) / viewBox.w,
-        y: py - ((py - viewBox.y) * newH) / viewBox.h,
+        x: px - ((px - vb.x) * newW) / vb.w,
+        y: py - ((py - vb.y) * newH) / vb.h,
         w: newW,
         h: newH,
       });
-    },
-    [viewBox, layout],
-  );
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, []);
 
   const onPointerDown = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
@@ -183,7 +191,6 @@ export function StarMapScene() {
         data-testid="starmap-scene"
         viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
         preserveAspectRatio="xMidYMid meet"
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPan}

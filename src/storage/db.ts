@@ -12,7 +12,7 @@ export interface ArtRecord {
   thumb?: Blob;
   full?: Blob;
   url?: string;
-  status: 'ok' | 'missing' | 'pending';
+  status: 'ok' | 'missing' | 'pending' | 'url';
   w?: number;
   h?: number;
 }

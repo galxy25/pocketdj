@@ -37,10 +37,27 @@ async function toThumb(blob: Blob): Promise<{ thumb: Blob; w: number; h: number 
  * Ensure a cover URL is cached. Returns the art key (so the AlbumItem can store
  * coverArtKey). On failure, records status:'missing' so we don't retry forever.
  */
+// Hosts known to send permissive CORS headers, so we can fetch + thumbnail them
+// into an offline blob. Everything else (e.g. Discogs' i.discogs.com CDN) is
+// displayed directly via <img> — fetching it would only log a CORS error.
+const CORS_FRIENDLY_HOST = /(^|\.)mzstatic\.com$/i;
+function isCorsFriendly(url: string): boolean {
+  try {
+    return CORS_FRIENDLY_HOST.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export async function cacheArtUrl(url: string): Promise<string> {
   const key = artKeyForUrl(url);
   const existing = await getArt(key);
   if (existing && existing.status !== 'pending') return key;
+  // Skip the doomed CORS fetch for non-friendly hosts — display the URL directly.
+  if (!isCorsFriendly(url)) {
+    await putArt({ key, url, status: 'url' });
+    return key;
+  }
   try {
     const res = await fetch(url, { mode: 'cors' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -48,8 +65,11 @@ export async function cacheArtUrl(url: string): Promise<string> {
     const { thumb, w, h } = await toThumb(blob);
     await putArt({ key, thumb, url, status: 'ok', w, h });
   } catch (error) {
-    await putArt({ key, url, status: 'missing' });
-    txn('art.cache', { key, status: 'missing', error: String(error) });
+    // CORS-blocked sources (e.g. Discogs CDN sends no Access-Control-Allow-Origin)
+    // can't be fetched/thumbnailed for an offline blob — but the browser can still
+    // DISPLAY them via <img>/<image src=url>. Keep the URL for direct display.
+    await putArt({ key, url, status: 'url' });
+    txn('art.cache', { key, status: 'url', error: String(error) });
   }
   return key;
 }
@@ -101,18 +121,26 @@ export async function artObjectURL(key: string | undefined): Promise<string | nu
     return cached;
   }
   const rec: ArtRecord | undefined = await getArt(key);
-  if (!rec?.thumb) return null;
-  const url = URL.createObjectURL(rec.thumb);
-  live.set(key, url);
-  if (live.size > MAX_LIVE) {
-    const oldest = live.keys().next().value as string | undefined;
-    if (oldest) {
-      const u = live.get(oldest)!;
-      URL.revokeObjectURL(u);
-      live.delete(oldest);
+  // Cached thumbnail blob (CORS-friendly sources + placeholders) -> object URL.
+  if (rec?.thumb) {
+    const url = URL.createObjectURL(rec.thumb);
+    live.set(key, url);
+    if (live.size > MAX_LIVE) {
+      const oldest = live.keys().next().value as string | undefined;
+      if (oldest) {
+        const u = live.get(oldest)!;
+        if (u.startsWith('blob:')) URL.revokeObjectURL(u);
+        live.delete(oldest);
+      }
     }
+    return url;
   }
-  return url;
+  // CORS-blocked source we couldn't thumbnail -> display the remote URL directly.
+  if (rec?.url && rec.status === 'url') {
+    live.set(key, rec.url);
+    return rec.url;
+  }
+  return null;
 }
 
 /** Release all object URLs (e.g. on unmount of a big view). */
