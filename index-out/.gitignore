@@ -1,0 +1,6 @@
+# Indexer working directory — everything here is generated except the curated
+# sample input list. The real sample index the app loads lives in
+# public/sample-index.json (committed).
+*
+!.gitignore
+!sample-lines.txt

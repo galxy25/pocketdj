@@ -1,0 +1,243 @@
+/* Star map + solar system visualization styles (dark "night sky" theme). */
+
+.pdj-starmap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(1200px 800px at 30% 20%, #131a2b 0%, var(--pdj-bg) 60%),
+    var(--pdj-bg);
+  overflow: hidden;
+  touch-action: none;
+}
+
+.pdj-starmap__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  /* Take over touch gestures (pan + pinch-zoom) instead of letting mobile Safari
+     scroll/zoom the page — pinch-zoom is handled in JS via pointer events. */
+  touch-action: none;
+}
+.pdj-starmap__svg.is-panning {
+  cursor: grabbing;
+}
+
+.pdj-starmap__toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 2;
+}
+
+/* Focused drill-in breadcrumb (which category's sub-genres are shown). */
+.pdj-starmap__crumb {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  padding: 6px 12px;
+  background: var(--pdj-bg-overlay);
+  border: 1px solid var(--pdj-border);
+  border-radius: var(--pdj-radius);
+  color: var(--pdj-fg-dim);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.pdj-starmap__btn {
+  background: var(--pdj-bg-overlay);
+  color: var(--pdj-fg);
+  border: 1px solid var(--pdj-border);
+  border-radius: var(--pdj-radius);
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.pdj-starmap__btn:hover {
+  border-color: var(--pdj-accent);
+}
+
+.pdj-starmap__loading,
+.pdj-starmap__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--pdj-fg-dim);
+  font-size: 0.95rem;
+}
+
+/* SVG elements */
+.pdj-star {
+  cursor: pointer;
+  outline: none;
+}
+.pdj-star:hover .pdj-star__halo,
+.pdj-star:focus-visible .pdj-star__halo {
+  opacity: 0.9;
+}
+.pdj-star:focus-visible .pdj-star__ring {
+  stroke: var(--pdj-accent);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+.pdj-star__halo {
+  opacity: 0.45;
+  transition: opacity 0.12s ease;
+}
+.pdj-star__ring {
+  fill: none;
+  stroke: var(--pdj-border);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+.pdj-constellation__line {
+  fill: none;
+  stroke: var(--pdj-accent);
+  stroke-width: 1;
+  opacity: 0.18;
+}
+.pdj-constellation__label {
+  fill: var(--pdj-fg-dim);
+  font-family: var(--pdj-font);
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+
+/* ---- Tier 1: dimmed, non-interactive album stars ---- */
+/* On the categories view the whole constellation (the hazy overlay) is the click
+   target, so individual stars are muted and ignore the pointer entirely. */
+.pdj-star.is-dimmed {
+  cursor: default;
+  pointer-events: none;
+  opacity: 0.42;
+}
+.pdj-star.is-dimmed .pdj-star__halo {
+  opacity: 0.18;
+}
+.pdj-star.is-dimmed .pdj-star__ring {
+  opacity: 0.3;
+}
+
+/* ---- Tier 1: hazy glowing constellation overlay (the click target) ---- */
+.pdj-constellation__field {
+  cursor: pointer;
+  outline: none;
+}
+.pdj-constellation__field-shape {
+  fill: url(#pdj-field-glow);
+  filter: url(#pdj-field-blur);
+  opacity: 0.16;
+  transition: opacity 0.18s ease;
+  /* Gentle ambient pulse so the blobs read as "alive / interactive". */
+  animation: pdj-field-pulse 6s ease-in-out infinite;
+}
+.pdj-constellation__field:hover .pdj-constellation__field-shape,
+.pdj-constellation__field:focus-visible .pdj-constellation__field-shape,
+.pdj-constellation__field.is-hover .pdj-constellation__field-shape {
+  opacity: 0.34;
+}
+.pdj-constellation__field:focus-visible .pdj-constellation__field-shape {
+  stroke: var(--pdj-accent);
+  stroke-width: 2;
+}
+
+@keyframes pdj-field-pulse {
+  0%,
+  100% {
+    opacity: 0.13;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pdj-constellation__field-shape {
+    animation: none;
+  }
+}
+
+/* ---- Tier 2: album name label below each star ---- */
+/* Renders only at tier 2 (tier 1 stays unlabeled to avoid clutter). The label
+   sits just below the star circle. Long names are ellipsis-clipped to keep the
+   sky readable; a subtle dark text-shadow ensures legibility over the dark bg. */
+.pdj-star__label {
+  fill: var(--pdj-fg);
+  font-family: var(--pdj-font);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  /* High-contrast shadow for readability over the dark star field. */
+  filter: drop-shadow(0 1px 3px #00000099);
+  /* Clip long names with an ellipsis using textLength + lengthAdjust tricks are
+     SVG-only; we achieve truncation by clamping the rendered width here. A real
+     text-overflow: ellipsis isn't available in SVG, so we keep max visual width
+     narrow and let it overlap gracefully rather than hide half the name. */
+  dominant-baseline: hanging;
+}
+/* When a star is dimmed (tier-1), the label is not rendered, but guard opacity
+   anyway in case the element is conditionally shown during transitions. */
+.pdj-star.is-dimmed .pdj-star__label {
+  opacity: 0;
+}
+
+/* Solar system */
+.pdj-solar {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(900px 700px at 50% 50%, #161d30 0%, var(--pdj-bg) 70%),
+    var(--pdj-bg);
+  overflow: hidden;
+}
+.pdj-solar__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.pdj-solar__header {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  z-index: 2;
+}
+.pdj-solar__title {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--pdj-fg);
+}
+.pdj-solar__artist {
+  color: var(--pdj-fg-dim);
+  font-size: 0.9rem;
+}
+.pdj-solar__orbit {
+  fill: none;
+  stroke: var(--pdj-border);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+.pdj-planet {
+  cursor: pointer;
+  outline: none;
+}
+.pdj-planet:focus-visible {
+  stroke: var(--pdj-fg);
+  stroke-width: 2;
+}
