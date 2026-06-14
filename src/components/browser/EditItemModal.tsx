@@ -110,7 +110,18 @@ function SongFields({ song, set }: { song: SongItem; set: (p: Partial<SongItem>)
           onChange={(e) => set({ sentimentKeywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
         />
       </label>
+      <label className="pdj-form__row">
+        <span>BPM</span>
+        <input
+          type="number"
+          step="0.1"
+          data-testid="field-bpm"
+          value={song.bpm ?? ''}
+          onChange={(e) => set({ bpm: e.target.value === '' ? null : Number(e.target.value) })}
+        />
+      </label>
       <Text label="Key" id="key" value={song.key ?? ''} onChange={(v) => set({ key: v || null })} />
+      <Text label="Key (Camelot)" id="camelot" value={song.camelot ?? ''} onChange={(v) => set({ camelot: v || null })} />
       <label className="pdj-form__row">
         <span>Lyrics</span>
         <textarea

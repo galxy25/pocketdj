@@ -108,6 +108,22 @@ describe('fieldsFor', () => {
     expect(songIds).not.toContain('trackCount');
   });
 
+  it('audio sort fields (bpm/key/camelot) are song-only, sortable', () => {
+    const songIds = fieldsFor('song').map((f) => f.id);
+    for (const id of ['bpm', 'key', 'camelot']) {
+      expect(songIds).toContain(id);
+      expect(getField(id)!.sortable).toBe(true);
+    }
+    const albumIds = fieldsFor('album').map((f) => f.id);
+    for (const id of ['bpm', 'key', 'camelot']) {
+      expect(albumIds).not.toContain(id);
+    }
+    // bpm is the only between-filterable audio field; camelot/key are plain strings.
+    expect(getField('bpm')!.numeric).toBe(true);
+    expect(getField('camelot')!.numeric).toBe(false);
+    expect(getField('key')!.numeric).toBe(false);
+  });
+
   it('shared fields (artist/name/year/fileType) appear for both types', () => {
     const a = new Set(fieldsFor('album').map((f) => f.id));
     const s = new Set(fieldsFor('song').map((f) => f.id));

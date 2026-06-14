@@ -12,6 +12,7 @@ import { artObjectURL } from '../../storage/artCache';
 import { computeSolarSystem } from '../../starmap/solarSystem';
 import { msToClock } from '../../lib/format';
 import { SongDetailModal } from './SongDetailModal';
+import { AudioTracksModal } from './AudioTracksModal';
 import './starmap.css';
 
 // Distinct planet tints keyed off sentiment / explicit flags. Uses the palette's
@@ -32,6 +33,7 @@ export function SolarSystemView() {
   const [loading, setLoading] = useState(true);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [audioOpen, setAudioOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,8 +126,21 @@ export function SolarSystemView() {
 
         {/* Sun = album cover. */}
         <circle cx={c} cy={c} r={sunR * 1.8} fill="url(#pdj-sun-glow)" />
-        <g data-testid="solar-sun">
-          <title>{`${system.artist} — ${system.name}`}</title>
+        <g
+          className="pdj-solar__sun"
+          data-testid="solar-sun"
+          role="button"
+          tabIndex={0}
+          aria-label={`${system.artist} — ${system.name}: audio analysis`}
+          onClick={() => setAudioOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setAudioOpen(true);
+            }
+          }}
+        >
+          <title>{`${system.artist} — ${system.name} (audio analysis)`}</title>
           {sunUrl ? (
             <>
               <clipPath id={sunClipId}>
@@ -201,6 +216,8 @@ export function SolarSystemView() {
         albumName={system.name}
         onClose={() => setSelectedId(null)}
       />
+
+      <AudioTracksModal album={album} open={audioOpen} onClose={() => setAudioOpen(false)} />
     </div>
   );
 }

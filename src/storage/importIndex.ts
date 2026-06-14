@@ -3,7 +3,7 @@
 // hydrates cover art (download real URLs / generate placeholders) for offline use.
 import type { IndexJson, IndexAlbum, IndexSong } from '../types/index-json';
 import { INDEX_SCHEMA_MAJOR } from '../types/index-json';
-import type { AlbumItem, SongItem, DataSource, MusicItem, FileType } from '../types/model';
+import type { AlbumItem, AudioTrack, SongItem, DataSource, MusicItem, FileType } from '../types/model';
 import { bulkPutItems, putSource, getAlbums, putItem, countItems } from './repo';
 import { cacheArtUrl, generatePlaceholder } from './artCache';
 import { pMap } from '../lib/concurrency';
@@ -53,6 +53,7 @@ export async function importIndexJson(index: IndexJson, opts: { sourceName?: str
 }
 
 function mapAlbum(a: IndexAlbum, sourceId: string, now: number): AlbumItem {
+  const rollup = audioRollup(a.audioTracks);
   return {
     id: a.id,
     sourceId,
@@ -69,8 +70,67 @@ function mapAlbum(a: IndexAlbum, sourceId: string, now: number): AlbumItem {
       : undefined,
     fileType: asFileType(a.fileType),
     enrichment: a.enrichment as AlbumItem['enrichment'],
+    audioTracks: a.audioTracks,
+    audioDurationSec: a.audioDurationSec,
+    audioBpm: rollup.audioBpm,
+    audioCamelot: rollup.audioCamelot,
+    audioKey: rollup.audioKey,
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+/** Median of a non-empty numeric list (lower-middle of the two for even counts). */
+function median(nums: number[]): number {
+  const sorted = [...nums].sort((x, y) => x - y);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Most-common value in a list of strings. Ties are broken deterministically by
+ * the value's FIRST appearance order (stable), so re-imports are idempotent.
+ */
+function mostCommon(values: string[]): string | null {
+  if (values.length === 0) return null;
+  const counts = new Map<string, number>();
+  const firstSeen = new Map<string, number>();
+  values.forEach((v, i) => {
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+    if (!firstSeen.has(v)) firstSeen.set(v, i);
+  });
+  let best: string | null = null;
+  let bestCount = -1;
+  for (const [v, c] of counts) {
+    if (c > bestCount || (c === bestCount && firstSeen.get(v)! < firstSeen.get(best!)!)) {
+      best = v;
+      bestCount = c;
+    }
+  }
+  return best;
+}
+
+/**
+ * Derive the album-level audio rollup from its detected segments. Used to group
+ * + sort albums on the star map without re-scanning every track. All three are
+ * `null` when there are no audioTracks (audio stage hasn't run yet).
+ *   audioBpm     = MEDIAN of the segment BPMs, rounded.
+ *   audioCamelot = most-common segment camelot.
+ *   audioKey     = most-common segment key.
+ */
+export function audioRollup(
+  tracks: Pick<AudioTrack, 'bpm' | 'key' | 'camelot'>[] | undefined | null,
+): { audioBpm: number | null; audioCamelot: string | null; audioKey: string | null } {
+  if (!tracks || tracks.length === 0) {
+    return { audioBpm: null, audioCamelot: null, audioKey: null };
+  }
+  const bpms = tracks.map((t) => t.bpm).filter((b): b is number => typeof b === 'number' && isFinite(b));
+  const camelots = tracks.map((t) => t.camelot).filter((c): c is string => typeof c === 'string' && c.length > 0);
+  const keys = tracks.map((t) => t.key).filter((k): k is string => typeof k === 'string' && k.length > 0);
+  return {
+    audioBpm: bpms.length ? Math.round(median(bpms)) : null,
+    audioCamelot: mostCommon(camelots),
+    audioKey: mostCommon(keys),
   };
 }
 
@@ -89,8 +149,9 @@ function mapSong(s: IndexSong, sourceId: string, now: number): SongItem {
     sentimentKeywords: s.sentimentKeywords ?? [],
     sentimentSource: s.sentimentSource,
     explicit: !!s.explicit,
-    bpm: null,
-    key: null,
+    bpm: s.bpm ?? null,
+    key: s.key ?? null,
+    camelot: s.camelot ?? null,
     lengthMs: s.length,
     pointer: s.pointer
       ? {
@@ -98,8 +159,10 @@ function mapSong(s: IndexSong, sourceId: string, now: number): SongItem {
           filename: s.pointer.filename ?? s.pointer.originalFilename,
           disc: s.pointer.disc,
           track: s.pointer.track,
-          startMs: s.pointer.timestamps?.startMs ?? null,
-          endMs: s.pointer.timestamps?.endMs ?? null,
+          // apply-audio.mjs writes startMs/endMs flat on the pointer; fall back
+          // to the nested `timestamps` shape for older index files.
+          startMs: s.pointer.startMs ?? s.pointer.timestamps?.startMs ?? null,
+          endMs: s.pointer.endMs ?? s.pointer.timestamps?.endMs ?? null,
         }
       : undefined,
     fileType: asFileType(s.fileType),

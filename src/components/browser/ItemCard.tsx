@@ -20,8 +20,8 @@ export function AlbumCard({ album, onEdit }: { album: AlbumItem; onEdit: (id: st
     >
       <Thumbnail artKey={album.coverArtKey} alt={`${album.artist} – ${album.name}`} size={150} className="pdj-card__art" />
       <div className="pdj-card__body">
-        <div className="pdj-card__title">{album.name}</div>
-        <div className="pdj-card__artist">{album.artist}</div>
+        <div className="pdj-card__title" title={album.name}>{album.name}</div>
+        <div className="pdj-card__artist" title={album.artist}>{album.artist}</div>
         <div className="pdj-card__meta">{meta || '—'}</div>
         {album.country && <div className="pdj-card__country">{album.country}</div>}
       </div>
@@ -44,16 +44,42 @@ export function AlbumCard({ album, onEdit }: { album: AlbumItem; onEdit: (id: st
   );
 }
 
-export function SongRow({ song, onEdit }: { song: SongItem; onEdit: (id: string) => void }) {
+export function SongRow({
+  song,
+  onEdit,
+  onOpen,
+}: {
+  song: SongItem;
+  onEdit: (id: string) => void;
+  onOpen: (id: string) => void;
+}) {
   return (
-    <div className="pdj-song" data-testid={`song-row-${song.id}`}>
+    <div
+      className="pdj-song"
+      data-testid={`song-row-${song.id}`}
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(song.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen(song.id);
+        }
+      }}
+      title={`${song.name} — view details`}
+    >
       <span className="pdj-song__track">{song.trackNumber ?? '–'}</span>
-      <span className="pdj-song__name">
+      <span className="pdj-song__name" title={song.name}>
         {song.name}
         {song.explicit && <span className="pdj-song__explicit" title="Explicit">E</span>}
       </span>
-      <span className="pdj-song__artist">{song.artist}</span>
+      <span className="pdj-song__artist" title={song.artist}>{song.artist}</span>
       <span className="pdj-song__len">{msToClock(song.lengthMs)}</span>
+      <span className="pdj-song__bpm" title="BPM">{song.bpm != null ? song.bpm : '–'}</span>
+      <span className="pdj-song__key" title={song.key ?? 'Key'}>
+        {song.key ? <span className="pdj-song__keyname">{song.key}</span> : <span className="pdj-song__keyname">–</span>}
+        {song.camelot && <span className="pdj-song__camelot">{song.camelot}</span>}
+      </span>
       <span className="pdj-song__tags">
         {(song.sentimentKeywords ?? []).slice(0, 3).map((k) => (
           <span key={k} className="pdj-tag">
@@ -66,7 +92,10 @@ export function SongRow({ song, onEdit }: { song: SongItem; onEdit: (id: string)
         <button
           className="pdj-iconbtn"
           data-testid={`edit-item-open-${song.id}`}
-          onClick={() => onEdit(song.id)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit(song.id);
+          }}
           aria-label="Edit song"
         >
           ✎

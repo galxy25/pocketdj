@@ -1,6 +1,9 @@
 # dependencies
 node_modules/
 
+# audio indexer python virtualenv (large, host-local)
+.venv-audio/
+
 # build output
 dist/
 dist-ssr/

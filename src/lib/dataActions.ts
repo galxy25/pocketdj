@@ -7,6 +7,7 @@ import type { IndexJson } from '../types/index-json';
 import { useAppStore } from '../store/useAppStore';
 import { useDataStore } from '../store/useDataStore';
 import { getSources } from '../storage/repo';
+import { clearAllStores } from '../storage/db';
 
 async function refreshAll() {
   await useAppStore.getState().refreshSources();
@@ -67,4 +68,30 @@ export async function importUserFile(file: File, onProgress?: (done: number, tot
 
 export async function exportData() {
   return downloadExportZip();
+}
+
+/**
+ * Force a full refresh ON THIS DEVICE: drop the service-worker caches + the cached app
+ * shell + the IndexedDB catalog, then reload so the newest app code AND the latest seed
+ * data are pulled fresh from the server. This is the fix for "I'm still seeing old
+ * data/UI on my phone" — the SW caches the shell, and auto-seed only runs on an empty DB,
+ * so a previously-loaded catalog otherwise sticks across deploys.
+ */
+export async function forceRefreshCatalog(): Promise<void> {
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
+    }
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch {
+    /* best-effort cache clear; still wipe + reload below */
+  }
+  await clearAllStores();
+  // Reload: with the SW gone the browser fetches the freshest shell, and seedIfEmpty
+  // re-pulls current-index.json into a now-empty DB.
+  window.location.reload();
 }

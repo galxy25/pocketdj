@@ -107,16 +107,38 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-card__flag { position: absolute; top: 6px; right: 6px; background: rgba(255,110,138,0.18); color: var(--pdj-danger); font-size: 0.62rem; padding: 1px 5px; border-radius: 5px; }
 
 /* ---------- song rows ---------- */
-.pdj-song { display: grid; grid-template-columns: 2.2rem minmax(8rem, 2fr) minmax(6rem, 1fr) 3rem 2fr auto; align-items: center; gap: 0.6rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--pdj-border); font-size: 0.84rem; }
+.pdj-song { display: grid; grid-template-columns: 2.2rem minmax(7rem, 1.8fr) minmax(5rem, 1fr) 3rem 3rem 7rem minmax(0, 1.3fr) auto; align-items: center; gap: 0.6rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--pdj-border); font-size: 0.84rem; cursor: pointer; }
+.pdj-song:focus-visible { outline: 2px solid var(--pdj-accent-2); outline-offset: -2px; }
+.pdj-song__bpm { color: var(--pdj-fg-dim); text-align: right; font-variant-numeric: tabular-nums; }
+.pdj-song__key { display: flex; align-items: baseline; gap: 0.3rem; min-width: 0; }
+.pdj-song__keyname { color: var(--pdj-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pdj-song__camelot { flex: none; color: var(--pdj-accent-2); font-weight: 600; font-size: 0.78rem; background: var(--pdj-bg-overlay); border-radius: 4px; padding: 0 4px; }
+
+/* ---------- settings panel ---------- */
+.pdj-settings { display: flex; flex-direction: column; gap: 0.7rem; min-width: 15rem; }
+.pdj-settings__stat { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.88rem; }
+.pdj-settings__stat span { color: var(--pdj-fg-dim); }
+.pdj-settings__hint { color: var(--pdj-fg-dim); font-size: 0.82rem; line-height: 1.45; margin: 0.25rem 0 0; }
+.pdj-settings .pdj-btn { width: 100%; margin-top: 0.2rem; }
 .pdj-song:hover { background: var(--pdj-bg-raised); }
 .pdj-song__track { color: var(--pdj-fg-dim); text-align: right; font-variant-numeric: tabular-nums; }
 .pdj-song__name { font-weight: 500; }
 .pdj-song__explicit { display: inline-block; margin-left: 0.35rem; background: var(--pdj-bg-overlay); color: var(--pdj-fg-dim); font-size: 0.6rem; padding: 0 4px; border-radius: 3px; vertical-align: middle; }
 .pdj-song__artist, .pdj-song__len { color: var(--pdj-fg-dim); }
+.pdj-song__artist { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pdj-song__len { text-align: right; font-variant-numeric: tabular-nums; }
 .pdj-song__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; overflow: hidden; }
 .pdj-song__actions { display: flex; align-items: center; gap: 0.2rem; }
 .pdj-tag { background: var(--pdj-bg-overlay); color: var(--pdj-accent); font-size: 0.65rem; padding: 1px 6px; border-radius: 10px; white-space: nowrap; }
+/* Narrow screens (phones): the 8-column row overflows, pushing BPM/key off-screen. Drop
+   the secondary columns (artist, length, sentiment tags) so track · title · BPM · key
+   fit and stay visible. Placed AFTER the base rules so its display:none actually wins. */
+@media (max-width: 680px) {
+  .pdj-song { grid-template-columns: 1.8rem minmax(0, 1fr) 2.6rem 4.6rem auto; gap: 0.45rem; }
+  .pdj-song__artist, .pdj-song__len, .pdj-song__tags { display: none; }
+  /* keep titles to one line so rows stay uniform + BPM/key align */
+  .pdj-song__name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
 
 /* ---------- thumbnail ---------- */
 .pdj-thumb { background: var(--pdj-bg-overlay); display: flex; align-items: center; justify-content: center; overflow: hidden; }
@@ -159,3 +181,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-songdetail__lyrics { margin-top: 0.4rem; border-top: 1px solid var(--pdj-border); padding-top: 0.5rem; }
 .pdj-songdetail__lyrics-head { color: var(--pdj-fg-dim); font-size: 0.78rem; margin-bottom: 0.25rem; }
 .pdj-songdetail__lyrics pre { margin: 0; max-height: 14rem; overflow: auto; white-space: pre-wrap; font-family: var(--pdj-font); font-size: 0.82rem; line-height: 1.4; color: var(--pdj-fg); }
+/* Full-width, thumb-reachable close for touch — sits at the bottom of the song detail. */
+.pdj-songdetail__close { margin-top: 0.6rem; width: 100%; min-height: 44px; border: 1px solid var(--pdj-border); border-radius: 9px; background: var(--pdj-bg-overlay); color: var(--pdj-fg); font-size: 0.95rem; font-weight: 600; cursor: pointer; }
+.pdj-songdetail__close:hover { background: var(--pdj-bg-raised); }
+.pdj-songdetail__close:active { background: var(--pdj-border); }
+/* Bigger ✕ tap target for the song modal header (≥44×44 on touch). */
+[data-testid="song-modal"] .pdj-modal__header .pdj-iconbtn { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; }

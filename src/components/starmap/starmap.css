@@ -63,6 +63,46 @@
   border-color: var(--pdj-accent);
 }
 
+/* ---- Grouping-mode segmented control (Genre / BPM / Key, + key notation) ---- */
+.pdj-starmap__segmented {
+  display: inline-flex;
+  align-items: stretch;
+  background: var(--pdj-bg-overlay);
+  border: 1px solid var(--pdj-border);
+  border-radius: var(--pdj-radius);
+  overflow: hidden;
+}
+.pdj-starmap__seg {
+  appearance: none;
+  background: transparent;
+  color: var(--pdj-fg-dim);
+  border: none;
+  /* Hairline dividers between segments (skip the first). */
+  border-left: 1px solid var(--pdj-border);
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.pdj-starmap__seg:first-child {
+  border-left: none;
+}
+.pdj-starmap__seg:hover {
+  color: var(--pdj-fg);
+}
+.pdj-starmap__seg.is-active {
+  background: var(--pdj-accent);
+  color: var(--pdj-bg);
+  font-weight: 600;
+}
+.pdj-starmap__seg:focus-visible {
+  outline: 2px solid var(--pdj-accent);
+  outline-offset: -2px;
+}
+
 .pdj-starmap__loading,
 .pdj-starmap__empty {
   display: flex;
@@ -168,6 +208,70 @@
   }
 }
 
+/* ---- BPM / KEY modes: hazy NEBULA constellations ---- */
+/* Each nebula is one bpm range or key: a soft luminous cloud holding a seeded
+   decorative scatter of faint stars + a label + the song count. The whole group
+   is the click target (-> the pre-filtered browser song table). */
+.pdj-nebula {
+  cursor: pointer;
+  outline: none;
+}
+.pdj-nebula.is-unknown {
+  cursor: default;
+}
+.pdj-nebula__glow {
+  fill: url(#pdj-field-glow);
+  filter: url(#pdj-field-blur);
+  opacity: 0.2;
+  transition: opacity 0.18s ease;
+  /* Gentle ambient pulse so the clouds read as "alive / interactive". */
+  animation: pdj-field-pulse 6s ease-in-out infinite;
+}
+.pdj-nebula:hover .pdj-nebula__glow,
+.pdj-nebula:focus-visible .pdj-nebula__glow {
+  opacity: 0.4;
+}
+.pdj-nebula.is-unknown .pdj-nebula__glow {
+  /* Desaturate the catch-all so it reads as "no clean filter" / non-interactive. */
+  opacity: 0.12;
+}
+.pdj-nebula:focus-visible .pdj-nebula__glow {
+  stroke: var(--pdj-accent);
+  stroke-width: 2;
+}
+.pdj-nebula__star {
+  fill: var(--pdj-fg);
+  opacity: 0.65;
+}
+.pdj-nebula:hover .pdj-nebula__star,
+.pdj-nebula:focus-visible .pdj-nebula__star {
+  opacity: 0.95;
+}
+.pdj-nebula__label {
+  fill: var(--pdj-fg);
+  font-family: var(--pdj-font);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 3px #00000099);
+  dominant-baseline: hanging;
+}
+.pdj-nebula__count {
+  fill: var(--pdj-fg-dim);
+  font-family: var(--pdj-font);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 3px #00000099);
+  dominant-baseline: hanging;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pdj-nebula__glow {
+    animation: none;
+  }
+}
+
 /* ---- Tier 2: album name label below each star ---- */
 /* Renders only at tier 2 (tier 1 stays unlabeled to avoid clutter). The label
    sits just below the star circle. Long names are ellipsis-clipped to keep the
@@ -240,4 +344,78 @@
 .pdj-planet:focus-visible {
   stroke: var(--pdj-fg);
   stroke-width: 2;
+}
+
+/* Sun (album cover) is clickable -> opens the audio-tracks popup. */
+.pdj-solar__sun {
+  cursor: pointer;
+  outline: none;
+}
+.pdj-solar__sun:focus-visible > circle:last-of-type {
+  stroke: var(--pdj-fg);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+/* Audio-tracks popup (AUDIO ground truth, shown from the sun click). */
+.pdj-audiotracks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.pdj-audiotracks__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+.pdj-audiotracks__table th {
+  text-align: left;
+  color: var(--pdj-fg-dim);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  padding: 0 0.6rem 0.35rem 0;
+  border-bottom: 1px solid var(--pdj-border);
+}
+.pdj-audiotracks__table td {
+  padding: 0.32rem 0.6rem 0.32rem 0;
+  border-bottom: 1px solid var(--pdj-border);
+  vertical-align: baseline;
+}
+.pdj-audiotracks__table tr:last-child td {
+  border-bottom: none;
+}
+.pdj-audiotracks__num {
+  color: var(--pdj-fg-dim);
+  width: 1.5rem;
+}
+.pdj-audiotracks__time,
+.pdj-audiotracks__bpm {
+  white-space: nowrap;
+}
+.pdj-audiotracks__key {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.pdj-audiotracks__keyname {
+  color: var(--pdj-fg);
+}
+.pdj-audiotracks__camelot {
+  color: var(--pdj-accent-2);
+}
+.pdj-audiotracks__caption {
+  margin: 0;
+  color: var(--pdj-fg-dim);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+.pdj-audiotracks__empty {
+  color: var(--pdj-fg-dim);
+  font-size: 0.88rem;
+  padding: 1.5rem 0.5rem;
+  text-align: center;
 }

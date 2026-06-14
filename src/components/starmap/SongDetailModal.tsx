@@ -25,6 +25,7 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
           <Row label="Explicit">{song.explicit ? 'Yes' : 'No'}</Row>
           <Row label="BPM">{song.bpm ?? '— (pending audio)'}</Row>
           <Row label="Key">{song.key ?? '— (pending audio)'}</Row>
+          <Row label="Camelot">{song.camelot ?? '— (pending audio)'}</Row>
           <Row label="Sentiment">
             {song.sentimentKeywords.length ? (
               <span className="pdj-songdetail__tags">
@@ -61,6 +62,14 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
           ) : (
             <Row label="Lyrics">{song.lyricsStatus === 'notfound' ? 'Not found' : '—'}</Row>
           )}
+          <button
+            type="button"
+            className="pdj-songdetail__close"
+            data-testid="song-detail-close"
+            onClick={onClose}
+          >
+            Close
+          </button>
         </div>
       )}
     </Modal>
