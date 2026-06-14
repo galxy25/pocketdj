@@ -31,6 +31,15 @@ const TARGETS = [
     expectNoDupNames: true,
     expectCountAround: 15,
   },
+  {
+    // de-orphaned: two web-confirmed bonus tracks ("Jigga My Nigga", "Girl's Best Friend")
+    // were dangling off the 15-track list; re-attached as #16/#17.
+    label: 'Jay-Z — Vol. 3 Life and Times of S. Carter',
+    match: (a) => /jay-?z/i.test(a.artist) && /life and times of s\. carter/i.test(a.name),
+    expectNoDupNames: true,
+    expectCountAround: 17,
+    expectNames: ['jigga my nigga', "girl's best friend"], // must be PRESENT (no longer orphaned)
+  },
 ];
 
 function fail(msg) {
@@ -114,6 +123,13 @@ try {
       } else {
         console.log(`  ✓ ~${t.expectCountAround} distinct tracks (got ${rows.length})`);
       }
+    }
+
+    if (t.expectNames) {
+      const present = new Set(rows.map((r) => r.name.toLowerCase().trim()));
+      const missing = t.expectNames.filter((n) => ![...present].some((p) => p.includes(n)));
+      if (missing.length) fail(`${t.label}: expected (de-orphaned) tracks missing -> ${missing.join(' | ')}`);
+      else console.log(`  ✓ de-orphaned tracks present: ${t.expectNames.join(', ')}`);
     }
   }
 } catch (e) {

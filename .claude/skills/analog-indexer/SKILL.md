@@ -324,6 +324,7 @@ wipes tracks.
 | `apply-sentiment-upgrade.mjs` | `<dir>/out/*.jsonl` | `song.sentimentKeywords` + `sentimentSource` |
 | `dedup-tracks.mjs` | (none — deterministic) | removes duplicate `SongItem`s + their `album.trackList` entries |
 | `renumber-tracks.mjs` | `web-tracklists.jsonl` (optional) | per-song `trackNumber` + `album.trackList` ORDER |
+| `reattach-orphans.mjs` | (none — deterministic) | adds a dangling song's id back into its album's `trackList` |
 
 ### Track-cleanup fold — `lib/dedup-tracks.mjs` + `lib/renumber-tracks.mjs`
 
@@ -374,8 +375,24 @@ node lib/renumber-tracks.mjs --index index-out/current/index.json \
   --canonical web-tracklists.jsonl     # omit --canonical to renumber sequentially
 ```
 
-Golden tests: `tests/unit/dedup-tracks.test.mjs`, `tests/unit/renumber-tracks.test.mjs`
-(both modeled on the real Sade / Isley cases; run via `npm test`).
+**ORPHAN SWEEP (`lib/reattach-orphans.mjs`, deterministic, no network).** A messy merge can
+leave a `SongItem` pointing at the correct album (`song.albumId === album.id`) yet absent
+from that album's `trackList` — e.g. Jay-Z "Vol. 3... Life and Times of S. Carter" listed 15
+tracks but its two web-confirmed BONUS tracks ("Jigga My Nigga" #16, "Girl's Best Friend"
+#17, scraped from a different source file) were left dangling. `getAlbumSongs()` finds songs
+by `albumId`, so a dangling song would silently never render. This fold re-inserts each such
+song's id into its album's `trackList` at the position implied by its `trackNumber` (append
+if none). It only edits `trackList` membership — never song fields or album metadata; a song
+whose `albumId` resolves to no album (a TRUE orphan) is reported but left untouched. Run it
+after dedup; run renumber-tracks afterward if the re-attached numbers need repair.
+
+```bash
+node lib/reattach-orphans.mjs --index index-out/current/index.json   # [--dry-run] [--report path.json]
+```
+
+Golden tests: `tests/unit/dedup-tracks.test.mjs`, `tests/unit/renumber-tracks.test.mjs`,
+`tests/unit/reattach-orphans.test.mjs` (modeled on the real Sade / Isley / Jay-Z cases; run
+via `npm test`).
 
 ### 5. Audio stage — `audio/audio_index.py` + `scripts/audio-index.sh`
 
@@ -432,9 +449,10 @@ merged `index.json` copied there (see the `publish-s3` skill).
 - `lib/enrich-playwright.mjs` `lib/enrich-google.mjs` `lib/enrich-lyrics.mjs`
   `lib/enrich-sentiment.mjs` `lib/synth-singles.mjs` — the sub-indexers.
 - `lib/sentiment-todo.mjs` `lib/sentiment-claude-merge.mjs` — the Claude sentiment path.
-- `lib/dedup-tracks.mjs` `lib/renumber-tracks.mjs` — the two-pass TRACK-CLEANUP fold
-  (dedup duplicate tracks, then repair track numbers via web-search canonical order or
-  sequential fallback). Golden tests in `tests/unit/{dedup,renumber}-tracks.test.mjs`.
+- `lib/dedup-tracks.mjs` `lib/renumber-tracks.mjs` `lib/reattach-orphans.mjs` — the
+  TRACK-CLEANUP folds (dedup duplicate tracks, repair track numbers via web-search canonical
+  order or sequential fallback, and re-attach dangling songs to their album). Golden tests in
+  `tests/unit/{dedup,renumber,reattach}-*.test.mjs`.
 - `lib/build-sentiment.mjs` `lib/build-run.mjs` — Workflow script builders.
 - `workflow/sentiment.workflow.js` `workflow/index-vinyl.workflow.js` — Workflow templates.
 - `scripts/run-pipeline.sh` `scripts/run-backfill.sh` `scripts/finish-pipeline.sh` —
