@@ -20,6 +20,45 @@ export function placeholderKey(seed: string): string {
   return 'ph_' + hashKey(seed);
 }
 
+/**
+ * The stable art-cache key for an album, derived WITHOUT any network — identical to the
+ * key cacheArtSources / cacheArtUrl / generatePlaceholder produce. Assigning this at
+ * import time lets the app render immediately and fetch each thumbnail lazily / in the
+ * background instead of blocking the first paint on hydrating all covers.
+ */
+export function artKeyFor(d: { coverArtSources?: ArtSource[]; coverArtUrl?: string; id: string }): string {
+  if (d.coverArtSources && d.coverArtSources.length) {
+    return artKeyForUrl(d.coverArtSources.map((s) => `${s.type}:${s.url}`).join('|'));
+  }
+  if (d.coverArtUrl) return artKeyForUrl(d.coverArtUrl);
+  return placeholderKey(d.id);
+}
+
+// ---- progressive-load notifications ----
+// A component that requests an art key before its thumbnail has been cached subscribes
+// here; when the background warm pass stores that thumbnail, the component re-acquires
+// and the cover pops in — so the UI is interactive immediately and fills in over time.
+const artSubs = new Map<string, Set<() => void>>();
+export function subscribeArt(key: string, cb: () => void): () => void {
+  let set = artSubs.get(key);
+  if (!set) {
+    set = new Set();
+    artSubs.set(key, set);
+  }
+  set.add(cb);
+  return () => {
+    const s = artSubs.get(key);
+    if (s) {
+      s.delete(cb);
+      if (!s.size) artSubs.delete(key);
+    }
+  };
+}
+function notifyArt(key: string): void {
+  const s = artSubs.get(key);
+  if (s) for (const cb of [...s]) cb();
+}
+
 /** Decode + downscale an image blob to a webp thumbnail (longest edge THUMB). */
 async function toThumb(blob: Blob): Promise<{ thumb: Blob; w: number; h: number }> {
   const bitmap = await createImageBitmap(blob);
@@ -57,6 +96,7 @@ export async function cacheArtUrl(url: string): Promise<string> {
   // Skip the doomed CORS fetch for non-friendly hosts — display the URL directly.
   if (!isCorsFriendly(url)) {
     await putArt({ key, url, status: 'url' });
+    notifyArt(key);
     return key;
   }
   try {
@@ -65,11 +105,13 @@ export async function cacheArtUrl(url: string): Promise<string> {
     const blob = await res.blob();
     const { thumb, w, h } = await toThumb(blob);
     await putArt({ key, thumb, url, status: 'ok', w, h });
+    notifyArt(key);
   } catch (error) {
     // CORS-blocked sources (e.g. Discogs CDN sends no Access-Control-Allow-Origin)
     // can't be fetched/thumbnailed for an offline blob — but the browser can still
     // DISPLAY them via <img>/<image src=url>. Keep the URL for direct display.
     await putArt({ key, url, status: 'url' });
+    notifyArt(key);
     txn('art.cache', { key, status: 'url', error: String(error) });
   }
   return key;
@@ -118,6 +160,7 @@ export async function cacheArtSources(sources: ArtSource[]): Promise<string> {
       const blob = await res.blob();
       const { thumb, w, h } = await toThumb(blob);
       await putArt({ key, thumb, url: s.url, status: 'ok', w, h });
+      notifyArt(key);
       return key;
     } catch (error) {
       txn('art.cache', { key, source: s.url, miss: String(error) });
@@ -126,6 +169,7 @@ export async function cacheArtSources(sources: ArtSource[]): Promise<string> {
   // No cacheable source resolved (e.g. offline at first load, only a remote backup) —
   // keep the first source's URL for direct <img> display when online.
   await putArt({ key, url: sources[0].url, status: 'url' });
+  notifyArt(key);
   return key;
 }
 
@@ -176,6 +220,7 @@ export async function generatePlaceholder(seed: string): Promise<string> {
   }
   const thumb = await canvas.convertToBlob({ type: 'image/webp', quality: 0.8 });
   await putArt({ key, thumb, status: 'ok', w: size, h: size });
+  notifyArt(key);
   txn('art.generate', { key, seed });
   return key;
 }

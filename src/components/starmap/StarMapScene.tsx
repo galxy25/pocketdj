@@ -33,6 +33,7 @@ import { getAlbums, getSongs, getMeta, setMeta } from '../../storage/repo';
 import { useArtUrl } from '../common/useArtUrl';
 import { ConstellationGrid, type ConstellationCell } from './ConstellationGrid';
 import { useIsMobile } from '../../lib/useIsMobile';
+import { camelotColor, keyToCamelot } from '../../lib/camelot';
 import { computeLayout, computeNebulaLayout } from '../../starmap/layout';
 import { groupSongs } from '../../starmap/grouping';
 import type { GroupBy, KeyNotation } from '../../starmap/grouping';
@@ -402,12 +403,20 @@ export function StarMapScene() {
   const gridCells = useMemo<ConstellationCell[]>(() => {
     if (focusCategory) return [];
     if (audioMode && nebulaLayout) {
-      return nebulaLayout.nebulae.map((n) => ({
-        id: n.id,
-        label: n.label,
-        countLabel: `${n.songCount} song${n.songCount === 1 ? '' : 's'}`,
-        onActivate: () => openNebulaInBrowser(n.filter),
-      }));
+      return nebulaLayout.nebulae.map((n) => {
+        const base = {
+          id: n.id,
+          label: n.label,
+          countLabel: `${n.songCount} song${n.songCount === 1 ? '' : 's'}`,
+          onActivate: () => openNebulaInBrowser(n.filter),
+        };
+        // BPM cards show a metronome; Key cards take the Camelot color of their key
+        // (neutral glow for the "Unknown" nebula, which has no key/filter).
+        if (groupBy === 'bpm') return { ...base, icon: 'metronome' as const };
+        const f = n.filter;
+        const code = f && 'value' in f ? (f.field === 'key' ? keyToCamelot(f.value) : f.value) : null;
+        return { ...base, accentColor: camelotColor(code) ?? undefined };
+      });
     }
     if (!audioMode && layout) {
       return layout.constellations.map((c) => {
@@ -417,8 +426,8 @@ export function StarMapScene() {
           label: c.label,
           countLabel: `${members.length} album${members.length === 1 ? '' : 's'}`,
           // Randomly sampled each load so a different slice of the collection surfaces
-          // every visit (helps rediscover hidden gems per genre).
-          coverKeys: sampleCoverKeys(members, 4),
+          // every visit (helps rediscover hidden gems per genre). Up to 8 per card.
+          coverKeys: sampleCoverKeys(members, 8),
           onActivate: () => drillInto(c.genre),
         };
       });

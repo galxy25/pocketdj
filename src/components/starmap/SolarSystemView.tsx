@@ -95,8 +95,13 @@ export function SolarSystemView() {
   return (
     <div className="pdj-solar">
       <div className="pdj-solar__header">
-        <button type="button" className="pdj-starmap__btn" onClick={() => navigate('/map')}>
-          ← Back to sky
+        <button
+          type="button"
+          className="pdj-starmap__btn"
+          data-testid="solar-back"
+          onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/map'))}
+        >
+          ← Back
         </button>
         <h1 className="pdj-solar__title">{system.name}</h1>
         <span className="pdj-solar__artist">{system.artist}</span>

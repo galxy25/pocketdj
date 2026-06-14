@@ -4,8 +4,8 @@
 import type { IndexJson, IndexAlbum, IndexSong } from '../types/index-json';
 import { INDEX_SCHEMA_MAJOR } from '../types/index-json';
 import type { AlbumItem, AudioTrack, SongItem, DataSource, MusicItem, FileType } from '../types/model';
-import { bulkPutItems, putSource, getAlbums, putItem, countItems } from './repo';
-import { cacheArtUrl, cacheArtSources, generatePlaceholder } from './artCache';
+import { bulkPutItems, putSource, getAlbums, countItems } from './repo';
+import { cacheArtUrl, cacheArtSources, generatePlaceholder, artKeyFor } from './artCache';
 import { pMap } from '../lib/concurrency';
 import { hashKey } from '../lib/prng';
 import { txn } from '../lib/log';
@@ -62,6 +62,9 @@ function mapAlbum(a: IndexAlbum, sourceId: string, now: number): AlbumItem {
     name: a.name,
     coverArtUrl: a.coverArt,
     coverArtSources: a.coverArtSources,
+    // Derived with no network so covers can resolve immediately; the actual thumbnail is
+    // fetched lazily (on render) / warmed in the background — first paint never blocks on art.
+    coverArtKey: artKeyFor({ coverArtSources: a.coverArtSources, coverArtUrl: a.coverArt, id: a.id }),
     genre: a.genre,
     year: a.year,
     country: a.country,
@@ -173,34 +176,35 @@ function mapSong(s: IndexSong, sourceId: string, now: number): SongItem {
 }
 
 /**
- * Resolve cover art for all albums in a source: download real URLs into blobs,
- * or generate a deterministic placeholder. Updates each album's coverArtKey.
- * Bounded concurrency; reports progress.
+ * WARM the cover-art cache for all albums in a source: download real URLs into blobs (or
+ * generate a deterministic placeholder), keyed by the same key already on each album
+ * (artKeyFor, set at import). This is idempotent and meant to run in the BACKGROUND —
+ * it never blocks first paint. As each thumbnail lands it notifies subscribers
+ * (useArtUrl), so mounted covers pop in progressively. Bounded concurrency.
+ *
+ * Albums no longer need a putItem here (their coverArtKey was assigned at import), so a
+ * fresh device caches everything for offline use without a write storm.
  */
 export async function hydrateArt(
   sourceId: string,
   onProgress?: (done: number, total: number) => void,
 ): Promise<{ cached: number; placeholders: number }> {
-  const albums = (await getAlbums(sourceId)).filter((a) => !a.coverArtKey);
+  const albums = await getAlbums(sourceId);
   let cached = 0;
   let placeholders = 0;
   await pMap(
     albums,
     async (a: AlbumItem) => {
-      let key: string;
       if (a.coverArtSources && a.coverArtSources.length) {
-        // Progressive sources: prefer the CDN (cacheable) entry, fall back to remote.
-        key = await cacheArtSources(a.coverArtSources);
+        await cacheArtSources(a.coverArtSources);
         cached++;
       } else if (a.coverArtUrl) {
-        key = await cacheArtUrl(a.coverArtUrl);
+        await cacheArtUrl(a.coverArtUrl);
         cached++;
       } else {
-        key = await generatePlaceholder(a.id);
+        await generatePlaceholder(a.id);
         placeholders++;
       }
-      a.coverArtKey = key;
-      await putItem(a);
     },
     6,
     onProgress,

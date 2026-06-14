@@ -59,7 +59,9 @@ export async function seedIfEmpty(onProgress?: (done: number, total: number) => 
   }
   const index = (await res.json()) as IndexJson;
   const { source, counts } = await importIndexJson(index, { sourceName: 'My Vinyl' });
-  await hydrateArt(source.id, onProgress);
+  // Render NOW — covers warm in the BACKGROUND and pop in progressively (useArtUrl
+  // subscribes), so first paint isn't blocked on caching ~1,160 thumbnails.
+  void hydrateArt(source.id, onProgress);
   await refreshAll();
   return counts;
 }
