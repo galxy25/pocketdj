@@ -322,6 +322,60 @@ wipes tracks.
 | `apply-audio.mjs` | `audio.jsonl` | `album.audioTracks` (+ per-song `bpm`/`key`/`camelot`/`pointer.startMs/endMs`) |
 | `apply-backfill.mjs` | `covers-backfill.jsonl`, `lyrics-backfill.jsonl` | `album.coverArt` (if missing), `song.lyrics` (if missing) |
 | `apply-sentiment-upgrade.mjs` | `<dir>/out/*.jsonl` | `song.sentimentKeywords` + `sentimentSource` |
+| `dedup-tracks.mjs` | (none — deterministic) | removes duplicate `SongItem`s + their `album.trackList` entries |
+| `renumber-tracks.mjs` | `web-tracklists.jsonl` (optional) | per-song `trackNumber` + `album.trackList` ORDER |
+
+### Track-cleanup fold — `lib/dedup-tracks.mjs` + `lib/renumber-tracks.mjs`
+
+Messy metadata merges leave albums with **duplicate or mis-numbered tracks** (e.g. Sade
+"Diamond Life" listed "Smooth Operator"/"Cherry Pie"/"Sally" twice — one copy with
+bpm/key, one bare — and the Isley Brothers "Between the Sheets" listed 15 *distinct*
+tracks all mis-numbered 1,1,1,2,2,2,…). Two folds clean this up, **run in this order**,
+both **idempotent** and both obeying the metadata-ownership rule (they touch only song
+rows / `trackNumber` / `trackList` order — never `coverArt(Sources)`, `audioTracks`, audio
+bpm/key/camelot on a kept song, enrichment status, lyrics, sentiment, or album metadata):
+
+**PASS 1 — DEDUP (`lib/dedup-tracks.mjs`, deterministic, no network).** Per album, groups
+songs by their NORMALIZED EXACT name (`normSongName`: lowercase, collapse whitespace,
+strip *surrounding* punctuation — but KEEPS interior text/parentheticals so distinct
+*versions* never merge: "Between the Sheets" ≠ "Between the Sheets (Instrumental Version)";
+"Smooth Operator" ≠ "Smooth Operator / Snake Bite"). For each duplicate group it KEEPS the
+copy with the FULLEST set of info (`completeness` score weighted toward audio fields
+bpm/key/camelot/pointer timestamps + real lyrics; tie → keep the first) and DROPS the rest
+— removing each dropped `songId` from `album.trackList` AND from `index.songs` (no orphans).
+Kept songs keep their original `sng_*` id (a later lyrics/sentiment backfold still finds
+them).
+
+```bash
+node lib/dedup-tracks.mjs --index index-out/current/index.json   # [--dry-run] [--report path.json]
+```
+
+**PASS 2 — TRACK-NUMBER REPAIR (`lib/renumber-tracks.mjs`).** Runs AFTER dedup. Flags an
+album as "still wrong" when duplicate `trackNumber`s remain, OR its `trackList` length
+differs a lot from the audio-segment count (`album.audioTracks` — a GUIDE for the expected
+count, not gospel; loose threshold). An album that is *already* a clean `1..N` in order is
+left untouched (so a pure count-mismatch with correct numbering is a no-op). For each
+flagged album it assigns `trackNumber` from a canonical order:
+
+- **CANONICAL (web-search).** Provide the real release's ordered titles via
+  `--canonical web-tracklists.jsonl`; the fold matches the album's deduped songs to that
+  order by fuzzy name (Dice over normalized tokens) and numbers them by canonical position.
+  The tracklists come from **parallel Claude WebSearch agents** — the same backfill pattern
+  as the `web.jsonl` recovery stage (see `backfill-websearch` memory): dump the flagged
+  albums to per-batch files, fan them out to agents that web-search `artist + album → ordered
+  titles` and write `{"albumId"|"artist"+"album","tracks":[...]}` lines into
+  `web-tracklists.jsonl`.
+- **SEQUENTIAL fallback.** If no canonical entry is supplied / the match is too sparse, the
+  survivors are renumbered `1..N` in their current `trackList` order (the Isley case).
+
+```bash
+# optional web-search canonical order (parallel WebSearch agents -> web-tracklists.jsonl):
+node lib/renumber-tracks.mjs --index index-out/current/index.json \
+  --canonical web-tracklists.jsonl     # omit --canonical to renumber sequentially
+```
+
+Golden tests: `tests/unit/dedup-tracks.test.mjs`, `tests/unit/renumber-tracks.test.mjs`
+(both modeled on the real Sade / Isley cases; run via `npm test`).
 
 ### 5. Audio stage — `audio/audio_index.py` + `scripts/audio-index.sh`
 
@@ -378,6 +432,9 @@ merged `index.json` copied there (see the `publish-s3` skill).
 - `lib/enrich-playwright.mjs` `lib/enrich-google.mjs` `lib/enrich-lyrics.mjs`
   `lib/enrich-sentiment.mjs` `lib/synth-singles.mjs` — the sub-indexers.
 - `lib/sentiment-todo.mjs` `lib/sentiment-claude-merge.mjs` — the Claude sentiment path.
+- `lib/dedup-tracks.mjs` `lib/renumber-tracks.mjs` — the two-pass TRACK-CLEANUP fold
+  (dedup duplicate tracks, then repair track numbers via web-search canonical order or
+  sequential fallback). Golden tests in `tests/unit/{dedup,renumber}-tracks.test.mjs`.
 - `lib/build-sentiment.mjs` `lib/build-run.mjs` — Workflow script builders.
 - `workflow/sentiment.workflow.js` `workflow/index-vinyl.workflow.js` — Workflow templates.
 - `scripts/run-pipeline.sh` `scripts/run-backfill.sh` `scripts/finish-pipeline.sh` —
