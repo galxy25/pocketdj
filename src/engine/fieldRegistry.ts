@@ -26,9 +26,12 @@ export const FIELDS: FieldDefWithGet[] = [
   { id: 'fileType', label: 'File type', appliesTo: ['album', 'song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
     get: (i) => (i as AlbumItem | SongItem).fileType },
 
+  // Genre: albums carry the raw genre string; songs carry the album's TOP-LEVEL category
+  // (e.g. "soul") so you can filter "soul songs with BPM 80–90".
+  { id: 'genre', label: 'Genre', appliesTo: ['album', 'song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
+    get: (i) => (i.type === 'album' ? (i as AlbumItem).genre : (i as SongItem).genre) },
+
   // album-only
-  { id: 'genre', label: 'Genre', appliesTo: ['album'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
-    get: album((a) => a.genre) },
   { id: 'country', label: 'Country', appliesTo: ['album'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
     get: album((a) => a.country) },
   { id: 'trackCount', label: 'Track count', appliesTo: ['album'], kind: 'number', numeric: true, ops: NUM_OPS, sortable: true,

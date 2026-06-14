@@ -149,6 +149,9 @@ export interface SongItem extends BaseItem {
   year?: number;
   artist: string;
   name: string;
+  /** Top-level genre CATEGORY of the owning album (derived at import via categorize) —
+   *  so songs are filterable/sortable by genre, e.g. "soul songs with BPM 80–90". */
+  genre?: string;
   lyrics?: string;
   lyricsStatus?: LyricsStatus;
   /** Mood/theme keywords from Haiku sentiment analysis. */

@@ -66,11 +66,11 @@ describe('applyFilters — empty / passthrough', () => {
   });
 
   it('passes items through when the clause field does not apply to the item type', () => {
-    // `genre` applies only to album; a song must pass through it untouched.
+    // `country` applies only to album; a song must pass through it untouched.
     const s = song({ id: 'keep' });
-    const a = album({ id: 'drop', genre: 'rock' });
-    const out = applyFilters([s, a], state(clause({ field: 'genre', op: 'eq', value: 'jazz' })));
-    // song passes (field N/A), album excluded (genre mismatch)
+    const a = album({ id: 'drop', country: 'UK' });
+    const out = applyFilters([s, a], state(clause({ field: 'country', op: 'eq', value: 'US' })));
+    // song passes (field N/A), album excluded (country mismatch)
     expect(ids(out)).toEqual(['keep']);
   });
 });
