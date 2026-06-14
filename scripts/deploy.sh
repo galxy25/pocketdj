@@ -37,12 +37,18 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
 fi
 [ -d dist ] || { echo "no dist/ — run a build first"; exit 1; }
 
-NOCACHE=(index.html sw.js registerSW.js manifest.webmanifest)
+# index.html + SW must be no-cache so the auto-updating SW always sees a fresh deploy.
+# current-index.json (the auto-seed catalog) is also no-cache so catalog updates and the
+# Settings "re-pull seed" actually fetch fresh data instead of a stale immutable copy.
+NOCACHE=(index.html sw.js registerSW.js manifest.webmanifest current-index.json)
 EXCL=()
 for f in "${NOCACHE[@]}"; do EXCL+=(--exclude "$f"); done
 
 echo "▶ Syncing immutable assets…"
-aws s3 sync dist/ "s3://$BUCKET" --profile "$PROFILE" --delete \
+# IMPORTANT: --delete prunes anything in the bucket not in dist/. The album-art mirror
+# (scripts/mirror-art.sh) uploads thumbnails to the SAME bucket under art/, which is NOT
+# part of dist/ — exclude it so a deploy never wipes the cover-art cache.
+aws s3 sync dist/ "s3://$BUCKET" --profile "$PROFILE" --delete --exclude "art/*" \
   --cache-control "public,max-age=31536000,immutable" "${EXCL[@]}"
 
 echo "▶ Syncing no-cache shell + service worker…"

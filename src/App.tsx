@@ -6,6 +6,7 @@ import { StarMapScene } from './components/starmap/StarMapScene';
 import { SolarSystemView } from './components/starmap/SolarSystemView';
 import { installDebug } from './lib/debug';
 import { seedIfEmpty } from './lib/dataActions';
+import { requestPersistentStorage } from './storage/artCache';
 
 const router = createBrowserRouter([
   {
@@ -29,6 +30,8 @@ export function App() {
   useEffect(() => {
     installDebug();
     let cancelled = false;
+    // Ask to keep cover-art blobs from being evicted (durable offline across restart).
+    void requestPersistentStorage();
     (async () => {
       try {
         await seedIfEmpty((done, total) => {

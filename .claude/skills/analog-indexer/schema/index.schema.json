@@ -55,6 +55,19 @@
           "artist": { "type": "string" },
           "name": { "type": "string" },
           "coverArt": { "type": "string" },
+          "coverArtSources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["type", "url"],
+              "additionalProperties": false,
+              "properties": {
+                "type": { "enum": ["cdn", "remote"] },
+                "url": { "type": "string" },
+                "cors": { "type": "boolean" }
+              }
+            }
+          },
           "genre": { "type": "string" },
           "year": { "type": "integer" },
           "country": { "type": "string" },

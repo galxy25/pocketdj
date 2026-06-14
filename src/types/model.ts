@@ -75,6 +75,20 @@ interface BaseItem {
   updatedAt: number;
 }
 
+/**
+ * One album-art source in a progressive (ordered, most-preferred-first) list.
+ * `cdn` = our own CORS-friendly origin (cacheable into an offline blob — the default);
+ * `remote` = a third-party service URL (online-only backup). The app prefers the first
+ * cacheable source and falls back to the next on miss, so art can migrate to the CDN
+ * incrementally without breaking albums that only have a remote URL yet.
+ */
+export interface ArtSource {
+  type: 'cdn' | 'remote';
+  url: string;
+  /** Hint: may we fetch+thumbnail it into an offline blob (same-origin / CORS-ok)? */
+  cors?: boolean;
+}
+
 export interface AlbumItem extends BaseItem {
   type: 'album';
   artist: string;
@@ -83,6 +97,8 @@ export interface AlbumItem extends BaseItem {
   coverArtKey?: string;
   /** Original cover-art URL (kept for re-fetch / repair). */
   coverArtUrl?: string;
+  /** Progressive art sources (ordered; CDN default + remote backup). Preferred over coverArtUrl. */
+  coverArtSources?: ArtSource[];
   genre?: string;
   year?: number;
   country?: string;

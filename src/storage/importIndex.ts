@@ -5,7 +5,7 @@ import type { IndexJson, IndexAlbum, IndexSong } from '../types/index-json';
 import { INDEX_SCHEMA_MAJOR } from '../types/index-json';
 import type { AlbumItem, AudioTrack, SongItem, DataSource, MusicItem, FileType } from '../types/model';
 import { bulkPutItems, putSource, getAlbums, putItem, countItems } from './repo';
-import { cacheArtUrl, generatePlaceholder } from './artCache';
+import { cacheArtUrl, cacheArtSources, generatePlaceholder } from './artCache';
 import { pMap } from '../lib/concurrency';
 import { hashKey } from '../lib/prng';
 import { txn } from '../lib/log';
@@ -61,6 +61,7 @@ function mapAlbum(a: IndexAlbum, sourceId: string, now: number): AlbumItem {
     artist: a.artist,
     name: a.name,
     coverArtUrl: a.coverArt,
+    coverArtSources: a.coverArtSources,
     genre: a.genre,
     year: a.year,
     country: a.country,
@@ -187,7 +188,11 @@ export async function hydrateArt(
     albums,
     async (a: AlbumItem) => {
       let key: string;
-      if (a.coverArtUrl) {
+      if (a.coverArtSources && a.coverArtSources.length) {
+        // Progressive sources: prefer the CDN (cacheable) entry, fall back to remote.
+        key = await cacheArtSources(a.coverArtSources);
+        cached++;
+      } else if (a.coverArtUrl) {
         key = await cacheArtUrl(a.coverArtUrl);
         cached++;
       } else {

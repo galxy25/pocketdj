@@ -30,7 +30,7 @@ import type { StarMapLayout, NebulaLayout, Star, Tier } from '../../types/starma
 import { useAppStore } from '../../store/useAppStore';
 import { useBrowserStore } from '../../store/useBrowserStore';
 import { getAlbums, getSongs, getMeta, setMeta } from '../../storage/repo';
-import { artObjectURL } from '../../storage/artCache';
+import { useArtUrl } from '../common/useArtUrl';
 import { computeLayout, computeNebulaLayout } from '../../starmap/layout';
 import { groupSongs } from '../../starmap/grouping';
 import type { GroupBy, KeyNotation } from '../../starmap/grouping';
@@ -98,7 +98,6 @@ export function StarMapScene() {
   const [layout, setLayout] = useState<StarMapLayout | null>(null);
   const [nebulaLayout, setNebulaLayout] = useState<NebulaLayout | null>(null);
   const [loading, setLoading] = useState(true);
-  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
 
   // The active scene's geometry, regardless of which mode produced it.
   const scene = audioMode ? nebulaLayout : layout;
@@ -221,7 +220,6 @@ export function StarMapScene() {
       if (audioMode) {
         setNebulaLayout(resolved as NebulaLayout);
         setLayout(null);
-        setCoverUrls({});
       } else {
         setLayout(resolved as StarMapLayout);
         setNebulaLayout(null);
@@ -233,26 +231,9 @@ export function StarMapScene() {
     };
   }, [activeSourceId, tier, focusCategory, groupBy, keyNotation, audioMode]);
 
-  // ---- lazily resolve cover object URLs for stars that have art (genre only) ----
-  useEffect(() => {
-    if (!layout) return;
-    let cancelled = false;
-    (async () => {
-      const updates: Record<string, string> = {};
-      for (const star of layout.stars) {
-        if (!star.coverArtKey) continue;
-        const url = await artObjectURL(star.coverArtKey);
-        if (cancelled) return;
-        if (url) updates[star.albumId] = url;
-      }
-      if (!cancelled && Object.keys(updates).length) {
-        setCoverUrls((prev) => ({ ...prev, ...updates }));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [layout]);
+  // Cover art is loaded per-star inside StarNode via the shared, ref-counted useArtUrl
+  // hook — so every cover stays valid while it's on screen (no LRU revocation), and the
+  // image-loading path is identical to the browser grid + solar-system sun.
 
   // ---- pan / zoom via viewBox (resets when the active scene changes) ----
   const initialViewBox = useMemo<ViewBox | null>(
@@ -593,7 +574,6 @@ export function StarMapScene() {
                 key={star.albumId}
                 star={star}
                 tier={(layout as StarMapLayout).tier}
-                coverUrl={coverUrls[star.albumId]}
                 onActivate={() => navigate('/map/' + star.albumId)}
               />
             ))}
@@ -627,11 +607,12 @@ interface StarNodeProps {
   star: Star;
   /** Current layout tier; tier-2 stars render a visible album-name caption. */
   tier: Tier;
-  coverUrl?: string;
   onActivate: () => void;
 }
 
-function StarNode({ star, tier, coverUrl, onActivate }: StarNodeProps) {
+function StarNode({ star, tier, onActivate }: StarNodeProps) {
+  // Shared ref-counted cover URL (IndexedDB blob) — stays valid while this star is mounted.
+  const coverUrl = useArtUrl(star.coverArtKey);
   const clipId = 'clip-' + star.albumId;
   const title = `${star.artist} — ${star.name}${star.year != null ? ` (${star.year})` : ''}`;
   // On tier 1, stars are dimmed and NOT a click/keyboard target (the hazy

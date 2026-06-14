@@ -8,7 +8,7 @@ import type { AlbumItem, SongItem } from '../../types/model';
 import type { Planet, SolarSystem } from '../../types/starmap';
 import { isAlbum } from '../../types/model';
 import { getAlbumSongs, getItem } from '../../storage/repo';
-import { artObjectURL } from '../../storage/artCache';
+import { useArtUrl } from '../common/useArtUrl';
 import { computeSolarSystem } from '../../starmap/solarSystem';
 import { msToClock } from '../../lib/format';
 import { SongDetailModal } from './SongDetailModal';
@@ -29,7 +29,8 @@ export function SolarSystemView() {
 
   const [album, setAlbum] = useState<AlbumItem | null>(null);
   const [songs, setSongs] = useState<SongItem[] | null>(null);
-  const [sunUrl, setSunUrl] = useState<string | null>(null);
+  // Sun cover via the shared ref-counted art cache (same path as the browser + stars).
+  const sunUrl = useArtUrl(album?.coverArtKey);
   const [loading, setLoading] = useState(true);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -40,7 +41,6 @@ export function SolarSystemView() {
     setLoading(true);
     setAlbum(null);
     setSongs(null);
-    setSunUrl(null);
     (async () => {
       if (!albumId) {
         setLoading(false);
@@ -53,10 +53,6 @@ export function SolarSystemView() {
       setAlbum(found);
       setSongs(albumSongs);
       setLoading(false);
-      if (found?.coverArtKey) {
-        const url = await artObjectURL(found.coverArtKey);
-        if (!cancelled) setSunUrl(url);
-      }
     })();
     return () => {
       cancelled = true;

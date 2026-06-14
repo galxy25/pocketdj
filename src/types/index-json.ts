@@ -47,12 +47,26 @@ export interface IndexCounts {
   sentimentInferred: number;
 }
 
+/** One album-art source in a progressive (ordered) list. See model.ArtSource. */
+export interface IndexArtSource {
+  type: 'cdn' | 'remote';
+  url: string;
+  cors?: boolean;
+}
+
 export interface IndexAlbum {
   id: string;
   artist: string;
   name: string;
-  /** Cacheable cover-art URL (e.g. iTunes 600x600). May be absent. */
+  /** Cacheable cover-art URL (e.g. iTunes 600x600). May be absent. The remote/backup source. */
   coverArt?: string;
+  /**
+   * Progressive art sources, ordered most-preferred-first: our CDN-hosted thumbnail
+   * (CORS-friendly, cacheable offline) as the default + the original remote URL as a
+   * backup. When present, the app prefers this over `coverArt`. Populated incrementally
+   * by the art-mirror step (lib/mirror-art.mjs); absent until an album is mirrored.
+   */
+  coverArtSources?: IndexArtSource[];
   genre?: string;
   year?: number;
   country?: string;

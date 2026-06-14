@@ -21,6 +21,7 @@ export type ApiOp =
   | 'db.deleteSource'
   | 'art.cache'
   | 'art.generate'
+  | 'storage.persist'
   | 'import.index'
   | 'import.zip'
   | 'export.zip'

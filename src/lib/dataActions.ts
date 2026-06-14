@@ -48,7 +48,11 @@ export async function seedIfEmpty(onProgress?: (done: number, total: number) => 
     return null;
   }
   const url = `${import.meta.env.BASE_URL}current-index.json`;
-  const res = await fetch(url);
+  // `cache: 'reload'` bypasses the browser HTTP cache so a fresh first-boot / force-refresh
+  // always pulls the latest catalog — not a stale copy left over from when the seed was
+  // (mistakenly) served immutable. The seed is fetched rarely (empty DB only), so the cost
+  // is negligible.
+  const res = await fetch(url, { cache: 'reload' });
   if (!res.ok) {
     await refreshAll();
     return null; // no seed file deployed — render empty rather than block
