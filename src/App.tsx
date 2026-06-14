@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { BrowserView } from './components/browser/BrowserView';
+import { AlbumTrackTable } from './components/browser/AlbumTrackTable';
 import { StarMapScene } from './components/starmap/StarMapScene';
 import { SolarSystemView } from './components/starmap/SolarSystemView';
 import { installDebug } from './lib/debug';
 import { seedIfEmpty } from './lib/dataActions';
+import { requestPersistentStorage } from './storage/artCache';
 
 const router = createBrowserRouter([
   {
@@ -14,6 +16,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/map" replace /> },
       { path: 'browse', element: <BrowserView /> },
+      { path: 'album/:albumId', element: <AlbumTrackTable /> },
       { path: 'map', element: <StarMapScene /> },
       { path: 'map/:albumId', element: <SolarSystemView /> },
       { path: '*', element: <Navigate to="/map" replace /> },
@@ -29,6 +32,8 @@ export function App() {
   useEffect(() => {
     installDebug();
     let cancelled = false;
+    // Ask to keep cover-art blobs from being evicted (durable offline across restart).
+    void requestPersistentStorage();
     (async () => {
       try {
         await seedIfEmpty((done, total) => {

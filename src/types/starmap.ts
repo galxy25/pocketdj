@@ -79,6 +79,67 @@ export interface StarMapLayout {
   focusCategory?: string;
 }
 
+// ---------------------------------------------------------------------------
+// NEBULA layout — the BPM / KEY star-map modes.
+//
+// In BPM/KEY modes a constellation (a bpm range or a key) is NOT one star per
+// album/song. It is a hazy NEBULA: a soft glow of radius `r` holding a SEEDED,
+// DECORATIVE scatter of ~15–30 small faint stars (NOT 1:1 with songs), a label,
+// and the song COUNT. Clicking a nebula opens the browser pre-filtered (`filter`)
+// to exactly that constellation's songs. Produced by computeNebulaLayout().
+// ---------------------------------------------------------------------------
+
+/** One decorative scatter star inside a nebula (relative to the SCENE, not the
+ * nebula center — already offset). Purely visual; carries no song identity. */
+export interface NebulaStar {
+  x: number;
+  y: number;
+  r: number;
+}
+
+/**
+ * The browser filter that selects exactly this nebula's songs, or `null` for the
+ * catch-all "Unknown" nebula (missing bpm/key has no clean predicate). Shape
+ * mirrors a FilterClause (src/types/filter.ts) minus the runtime `id`. Re-declared
+ * here (instead of imported from ../starmap/grouping) so the type module has no
+ * dependency on the grouping module; the two MUST stay in sync.
+ */
+export type NebulaFilter =
+  | { field: 'bpm'; op: 'between'; min: number; max: number }
+  | { field: 'camelot' | 'key'; op: 'eq'; value: string };
+
+/** One nebula = one constellation (bpm range or key) in BPM/KEY mode. */
+export interface Nebula {
+  /** Stable grouping key + data-testid suffix + scatter seed (e.g. "120", "8A"). */
+  id: string;
+  /** Human display label drawn on the map (e.g. "120–130", "8A", "A minor"). */
+  label: string;
+  /** Number of songs in this constellation (shown as the caption, drives `r`). */
+  songCount: number;
+  /** Nebula center in scene coordinates. */
+  x: number;
+  y: number;
+  /** Glow radius (size ~ sqrt(songCount)); the scatter stars sit within it. */
+  r: number;
+  /** Browser filter selecting these songs (null for the "Unknown" nebula). */
+  filter: NebulaFilter | null;
+  /** Seeded decorative scatter (~15–30 stars), already in scene coordinates. */
+  stars: NebulaStar[];
+}
+
+export interface NebulaLayout {
+  nebulae: Nebula[];
+  width: number;
+  height: number;
+  /**
+   * Content hash of the constellation set this layout was computed for (cache
+   * key). Derived from constellation ids + counts, so the layout caches per
+   * (song set + mode) like the genre layout's albumSetHash. Named to match the
+   * StarMapLayout cache plumbing in StarMapScene.
+   */
+  albumSetHash: string;
+}
+
 export interface Planet {
   songId: string;
   trackNumber: number;

@@ -170,6 +170,78 @@ describe('sortItems — boolean', () => {
   });
 });
 
+describe('sortItems — bpm (numeric, nulls last)', () => {
+  it('asc orders by numeric bpm', () => {
+    const items = [
+      song({ id: 'b128', bpm: 128 }),
+      song({ id: 'b90', bpm: 90 }),
+      song({ id: 'b174', bpm: 174 }),
+    ];
+    expect(ids(sortItems(items, sort('bpm', 'asc')))).toEqual(['b90', 'b128', 'b174']);
+  });
+
+  it('desc reverses bpm order', () => {
+    const items = [
+      song({ id: 'b90', bpm: 90 }),
+      song({ id: 'b174', bpm: 174 }),
+      song({ id: 'b128', bpm: 128 }),
+    ];
+    expect(ids(sortItems(items, sort('bpm', 'desc')))).toEqual(['b174', 'b128', 'b90']);
+  });
+
+  it('null bpm sorts last regardless of direction', () => {
+    const items = [
+      song({ id: 'has', bpm: 120 }),
+      song({ id: 'none', bpm: null }),
+      song({ id: 'has2', bpm: 100 }),
+    ];
+    expect(ids(sortItems(items, sort('bpm', 'asc')))).toEqual(['has2', 'has', 'none']);
+    expect(ids(sortItems(items, sort('bpm', 'desc')))).toEqual(['has', 'has2', 'none']);
+  });
+});
+
+describe('sortItems — key (Camelot harmonic order, not alphabetical)', () => {
+  it('orders by wheel number then letter (A before B), NOT lexicographically', () => {
+    // Lexicographic order would be "10A","11A","1A","2A","2B" — the camelot field
+    // must instead yield 1A,2A,2B,10A,11A.
+    const items = [
+      song({ id: 't10A', camelot: '10A' }),
+      song({ id: 't2B', camelot: '2B' }),
+      song({ id: 't1A', camelot: '1A' }),
+      song({ id: 't11A', camelot: '11A' }),
+      song({ id: 't2A', camelot: '2A' }),
+    ];
+    expect(ids(sortItems(items, sort('camelot', 'asc')))).toEqual([
+      't1A', 't2A', 't2B', 't10A', 't11A',
+    ]);
+  });
+
+  it('desc reverses harmonic order', () => {
+    const items = [
+      song({ id: 't1A', camelot: '1A' }),
+      song({ id: 't12B', camelot: '12B' }),
+      song({ id: 't6A', camelot: '6A' }),
+    ];
+    expect(ids(sortItems(items, sort('camelot', 'desc')))).toEqual(['t12B', 't6A', 't1A']);
+  });
+
+  it('null/unparseable camelot sorts last regardless of direction', () => {
+    const items = [
+      song({ id: 'good', camelot: '5A' }),
+      song({ id: 'bad', camelot: 'not-a-key' }),
+      song({ id: 'none', camelot: null }),
+      song({ id: 'good2', camelot: '3B' }),
+    ];
+    expect(ids(sortItems(items, sort('camelot', 'asc')))).toEqual([
+      'good2', 'good', 'bad', 'none',
+    ]);
+    // nulls/unparseable still last on desc; their input order is preserved among themselves.
+    expect(ids(sortItems(items, sort('camelot', 'desc')))).toEqual([
+      'good', 'good2', 'bad', 'none',
+    ]);
+  });
+});
+
 describe('sortItems — mixed item types (field accessor returns undefined for the other type)', () => {
   it('songs (no genre field) sort as null/last when sorting albums by genre', () => {
     const items = [

@@ -1,12 +1,15 @@
 // Edit any metadata field of an item and persist it. Save -> repo.putItem (emits
 // a db.putItem transcript line) -> the browser re-derives. Renders the right
 // editor per field type (text / number / mm:ss / checkbox / tag list).
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MusicItem, AlbumItem, SongItem } from '../../types/model';
 import { isAlbum } from '../../types/model';
-import { getItem, putItem } from '../../storage/repo';
+import { getItem, putItem, deleteSong } from '../../storage/repo';
+import { artKeyFor, cacheArtUrl, generatePlaceholder } from '../../storage/artCache';
 import { Modal } from '../common/Modal';
 import { msToClock, clockToMs } from '../../lib/format';
+import { CATEGORY_NAMES } from '../../starmap/constellationMap';
+import { MUSICAL_KEYS, CAMELOT_KEYS, keyToCamelot, camelotToKey } from '../../lib/camelot';
 
 interface Props {
   itemId: string | null;
@@ -16,10 +19,18 @@ interface Props {
 
 export function EditItemModal({ itemId, onClose, onSaved }: Props) {
   const [item, setItem] = useState<MusicItem | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const origCover = useRef<string>('');
 
   useEffect(() => {
     let live = true;
-    if (itemId) getItem(itemId).then((it) => live && setItem(it ?? null));
+    setConfirming(false);
+    if (itemId)
+      getItem(itemId).then((it) => {
+        if (!live) return;
+        setItem(it ?? null);
+        origCover.current = it && isAlbum(it) ? it.coverArtUrl ?? '' : '';
+      });
     else setItem(null);
     return () => {
       live = false;
@@ -28,9 +39,31 @@ export function EditItemModal({ itemId, onClose, onSaved }: Props) {
 
   const open = itemId != null;
 
+  async function del() {
+    if (!item || isAlbum(item)) return;
+    await deleteSong(item.id);
+    onSaved();
+    onClose();
+  }
+
   async function save() {
     if (!item) return;
-    await putItem(item);
+    let toSave: MusicItem = item;
+    if (isAlbum(item)) {
+      const url = (item.coverArtUrl ?? '').trim();
+      // Only rebuild the cover when the URL actually changed — otherwise we'd drop the
+      // offline-durable CDN mirror. On change: point at the new URL, re-derive the key,
+      // and warm it so it displays.
+      if (url !== origCover.current.trim()) {
+        const sources = url ? [{ type: 'remote' as const, url }] : undefined;
+        const a: AlbumItem = { ...item, coverArtUrl: url || undefined, coverArtSources: sources };
+        a.coverArtKey = artKeyFor({ coverArtSources: sources, coverArtUrl: url || undefined, id: a.id });
+        toSave = a;
+        if (url) void cacheArtUrl(url);
+        else void generatePlaceholder(a.id);
+      }
+    }
+    await putItem(toSave);
     onSaved();
     onClose();
   }
@@ -43,6 +76,24 @@ export function EditItemModal({ itemId, onClose, onSaved }: Props) {
     <Modal open={open} onClose={onClose} title={item ? `Edit ${item.type}` : 'Edit'} testId="edit-modal">
       {!item ? (
         <p>Loading…</p>
+      ) : confirming ? (
+        <div className="pdj-confirm" data-testid="delete-confirm">
+          <p className="pdj-confirm__msg">
+            Delete “{item.name}” from the index? This can’t be undone.
+          </p>
+          <div className="pdj-confirm__actions">
+            <button
+              className="pdj-btn pdj-btn--lg pdj-btn--ghost"
+              data-testid="delete-nope"
+              onClick={() => setConfirming(false)}
+            >
+              Nope
+            </button>
+            <button className="pdj-btn pdj-btn--lg pdj-btn--danger" data-testid="delete-yes" onClick={del}>
+              Delete
+            </button>
+          </div>
+        </div>
       ) : (
         <div className="pdj-form">
           <Text label="Artist" id="artist" value={item.artist} onChange={(v) => set({ artist: v })} />
@@ -56,6 +107,15 @@ export function EditItemModal({ itemId, onClose, onSaved }: Props) {
           )}
 
           <div className="pdj-form__actions">
+            {!isAlbum(item) && (
+              <button
+                className="pdj-btn pdj-btn--danger pdj-form__delete"
+                data-testid="track-delete-open"
+                onClick={() => setConfirming(true)}
+              >
+                Delete track
+              </button>
+            )}
             <button className="pdj-btn pdj-btn--ghost" data-testid="field-cancel" onClick={onClose}>
               Cancel
             </button>
@@ -72,7 +132,9 @@ export function EditItemModal({ itemId, onClose, onSaved }: Props) {
 function AlbumFields({ album, set }: { album: AlbumItem; set: (p: Partial<AlbumItem>) => void }) {
   return (
     <>
-      <Text label="Genre" id="genre" value={album.genre} onChange={(v) => set({ genre: v })} />
+      {/* Top-level genres as a dropdown; free text still allowed for sub-genres. */}
+      <Combo label="Genre" id="genre" value={album.genre} options={CATEGORY_NAMES} onChange={(v) => set({ genre: v })} />
+      <Text label="Cover URL" id="coverUrl" value={album.coverArtUrl} onChange={(v) => set({ coverArtUrl: v })} />
       <Text label="Country" id="country" value={album.country} onChange={(v) => set({ country: v })} />
       <Text label="File type" id="fileType" value={album.fileType} onChange={(v) => set({ fileType: v as AlbumItem['fileType'] })} />
     </>
@@ -110,7 +172,21 @@ function SongFields({ song, set }: { song: SongItem; set: (p: Partial<SongItem>)
           onChange={(e) => set({ sentimentKeywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
         />
       </label>
-      <Text label="Key" id="key" value={song.key ?? ''} onChange={(v) => set({ key: v || null })} />
+      <label className="pdj-form__row">
+        <span>BPM</span>
+        <input
+          type="number"
+          step="0.1"
+          data-testid="field-bpm"
+          value={song.bpm ?? ''}
+          onChange={(e) => set({ bpm: e.target.value === '' ? null : Number(e.target.value) })}
+        />
+      </label>
+      <KeySelect
+        keyValue={song.key ?? ''}
+        camelot={song.camelot ?? ''}
+        onChange={(key, camelot) => set({ key: key || null, camelot: camelot || null })}
+      />
       <label className="pdj-form__row">
         <span>Lyrics</span>
         <textarea
@@ -144,5 +220,68 @@ function Num({ label, id, value, onChange }: { label: string; id: string; value?
         onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
       />
     </label>
+  );
+}
+
+/** Free-text input with a dropdown of suggested values (top-level genres). */
+function Combo({ label, id, value, options, onChange }: { label: string; id: string; value?: string; options: string[]; onChange: (v: string) => void }) {
+  const listId = `dl-${id}`;
+  return (
+    <label className="pdj-form__row">
+      <span>{label}</span>
+      <input data-testid={`field-${id}`} list={listId} value={value ?? ''} onChange={(e) => onChange(e.target.value)} />
+      <datalist id={listId}>
+        {options.map((o) => (
+          <option key={o} value={o} />
+        ))}
+      </datalist>
+    </label>
+  );
+}
+
+/** Two linked dropdowns of VALID keys — picking one auto-fills the other (musical ⇄ Camelot). */
+function KeySelect({ keyValue, camelot, onChange }: { keyValue: string; camelot: string; onChange: (key: string, camelot: string) => void }) {
+  // keep any non-standard stored value visible rather than silently dropping it
+  const keyOpts = keyValue && !MUSICAL_KEYS.includes(keyValue) ? [keyValue, ...MUSICAL_KEYS] : MUSICAL_KEYS;
+  const camOpts = camelot && !CAMELOT_KEYS.includes(camelot) ? [camelot, ...CAMELOT_KEYS] : CAMELOT_KEYS;
+  return (
+    <>
+      <label className="pdj-form__row">
+        <span>Key</span>
+        <select
+          data-testid="field-key"
+          value={keyValue}
+          onChange={(e) => {
+            const k = e.target.value;
+            onChange(k, k ? keyToCamelot(k) ?? camelot : '');
+          }}
+        >
+          <option value="">—</option>
+          {keyOpts.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="pdj-form__row">
+        <span>Key (Camelot)</span>
+        <select
+          data-testid="field-camelot"
+          value={camelot}
+          onChange={(e) => {
+            const c = e.target.value;
+            onChange(c ? camelotToKey(c) ?? keyValue : '', c);
+          }}
+        >
+          <option value="">—</option>
+          {camOpts.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
   );
 }

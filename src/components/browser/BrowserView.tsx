@@ -12,7 +12,10 @@ import { FilterBuilder } from './FilterBuilder';
 import { SortControl } from './SortControl';
 import { ItemGrid } from './ItemGrid';
 import { EditItemModal } from './EditItemModal';
+import { SongDetailModal } from '../starmap/SongDetailModal';
 import { ImportExportBar } from './ImportExportBar';
+import { getItem } from '../../storage/repo';
+import { isAlbum, isSong, type SongItem } from '../../types/model';
 
 const CARD_MIN = 184;
 
@@ -33,6 +36,8 @@ export function BrowserView() {
   const ready = scopeKey === `${activeSourceId}:${itemType}`;
 
   const [editId, setEditId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailAlbumName, setDetailAlbumName] = useState('');
   const [columns, setColumns] = useState(4);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -57,6 +62,32 @@ export function BrowserView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [items, filterHash(filter), sortHash(sort)],
   );
+
+  const songsById = useMemo(() => {
+    const map = new Map<string, SongItem>();
+    for (const it of items) if (isSong(it)) map.set(it.id, it);
+    return map;
+  }, [items]);
+  const detailSong = detailId ? songsById.get(detailId) ?? null : null;
+
+  // Resolve the album name for the opened song. The loaded scope only holds
+  // songs, so fetch the owning album by id; fall back to the song's artist.
+  useEffect(() => {
+    if (!detailSong) {
+      setDetailAlbumName('');
+      return;
+    }
+    let live = true;
+    setDetailAlbumName(detailSong.artist || '');
+    if (detailSong.albumId) {
+      getItem(detailSong.albumId).then((it) => {
+        if (live && it && isAlbum(it)) setDetailAlbumName(it.name);
+      });
+    }
+    return () => {
+      live = false;
+    };
+  }, [detailSong]);
 
   return (
     <div className="pdj-browser">
@@ -95,7 +126,13 @@ export function BrowserView() {
         {loading || !ready ? (
           <div className="pdj-grid__empty">Loading…</div>
         ) : (
-          <ItemGrid items={filtered} itemType={itemType} columns={columns} onEdit={setEditId} />
+          <ItemGrid
+            items={filtered}
+            itemType={itemType}
+            columns={columns}
+            onEdit={setEditId}
+            onOpen={setDetailId}
+          />
         )}
       </div>
 
@@ -103,6 +140,12 @@ export function BrowserView() {
         itemId={editId}
         onClose={() => setEditId(null)}
         onSaved={() => useDataStore.getState().reload()}
+      />
+
+      <SongDetailModal
+        song={detailSong}
+        albumName={detailAlbumName}
+        onClose={() => setDetailId(null)}
       />
     </div>
   );

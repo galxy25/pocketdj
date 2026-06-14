@@ -28,11 +28,17 @@ stage did per album*, so any stage is **resumable** and can be re-run **selectiv
 are the same mechanism. A slow stage never blocks a faster upstream one.
 
 ```
-parse → [1 metadata] → [2 backfill + singles] → [3 lyrics] → [4 sentiment] → merge
-         Discogs/Wiki    WebSearch agents /        Genius/      Claude agents /
-         (Playwright)     browser fallback;         AZLyrics     local Gemma (LM Studio)
+parse → [1 metadata] → [2 backfill + singles] → [3 lyrics] → [4 sentiment] → merge → [5 audio]
+         Discogs/Wiki    WebSearch agents /        Genius/      Claude agents /            librosa
+         (Playwright)     browser fallback;         AZLyrics     local Gemma (LM Studio)    (Docker)
                           synth-singles             (Playwright)
 ```
+
+Stages 1–4 produce the merged `index.json`. Stage 5 (**audio** — BPM/key/timestamps) and
+the **backfill folds** (covers, lyrics, upgraded sentiment) run OUT OF BAND and are folded
+into the already-merged index in place by the `lib/apply-*.mjs` scripts — see
+"Out-of-band stages & live-index folds" below. They need the audio files / a second data
+pass, so they aren't part of the streaming merge.
 
 Stage files in the shard dir (overlaid in this read order by `lib/manifest.mjs`
 `buildFromStages`):
@@ -45,7 +51,10 @@ Stage files in the shard dir (overlaid in this read order by `lib/manifest.mjs`
 | `lyrics.jsonl` | lyrics | `enrich-lyrics.mjs` |
 | `sentiment.jsonl` | sentiment | `enrich-sentiment.mjs` (local) or `sentiment-claude-merge.mjs` (Claude) |
 
-`audio` (BPM/key/timestamps) is a future stage — it needs the audio file.
+The **audio** stage (BPM/key/timestamps) and the cover/lyrics/sentiment **backfills** are
+out-of-band: they produce their own JSONL (`audio.jsonl`, `covers-backfill.jsonl`,
+`lyrics-backfill.jsonl`, sentiment-upgrade `out/*.jsonl`) and are folded into the merged
+`index.json` by the `lib/apply-*.mjs` scripts rather than the streaming overlay.
 
 **Manifest merge ownership (load-bearing).** `buildFromStages` reads the stage files in
 the order above. The metadata + recovery stages (`enriched`/`google`/`web`) **OWN the
@@ -169,8 +178,8 @@ node lib/synth-singles.mjs --dir index-out/shards-pw
 ## 3. Lyrics stage (`lib/enrich-lyrics.mjs`)
 
 Headless-Playwright sub-indexer run AFTER metadata. Reads `enriched.jsonl`, ADDS each
-track's `lyrics` (trimmed) + `lyricsStatus` (`found`/`notfound`), carries every record
-forward verbatim, writes `lyrics.jsonl`.
+track's `lyrics` (whitespace-trimmed, stored verbatim) + `lyricsStatus` (`found`/`notfound`),
+carries every record forward verbatim, writes `lyrics.jsonl`.
 
 ```bash
 node lib/enrich-lyrics.mjs --in index-out/shards-pw/enriched.jsonl \
@@ -196,7 +205,8 @@ Per track it cycles two providers:
 = 20000 chars** is almost always a whole-page dump (nav/comments/blobs), NOT lyrics —
 it's REJECTED (returned as `''` → treated as `notfound`) rather than poisoning the index
 with garbage. Accepted text is also validated (>60 chars, has line breaks, not an
-error/redirect page) and trimmed (~3000 chars). Resumable + durable like the other
+error/redirect page) and whitespace-trimmed — there is NO length truncation; the only size
+guard is the oversized-scrape reject above. Resumable + durable like the other
 stages; unmatched/empty albums pass through untouched. `--cap N` limits to the first N
 tracks per album.
 
@@ -252,6 +262,162 @@ node lib/sentiment-claude-merge.mjs --todo /tmp/sent-todo.jsonl \
 `lib/build-sentiment.mjs --stitch`; the `sentiment-todo` + `sentiment-claude-merge` pair
 is the current full-index path because it reads the streaming overlay directly.)
 
+### C. Incremental sweep — local sentiment IN PARALLEL with lyrics (`scripts/sentiment-sweep.sh`)
+
+When lyrics are still streaming in (e.g. a long backfill pass), don't wait for them to
+finish before tagging sentiment. `sentiment-sweep.sh` re-runs the **local** sub-indexer
+over the **growing** lyrics-output file every `POLL` seconds; because `enrich-sentiment.mjs`
+is resumable (skips albums already in `--out`), each pass only tags the newly-arrived
+albums. It keeps sweeping until the upstream producer process exits, then does one final
+catch-up pass. Lyrics is network-bound and the local model is GPU-bound, so the two run
+concurrently without contending.
+
+```bash
+IN=/tmp/lyrics-out.jsonl OUT=/tmp/sentiment-out.jsonl SENT_CONC=2 scripts/sentiment-sweep.sh
+# knobs: IN, OUT, SENT_CONC, POLL (default 180), SENT_MODEL, UNTIL_PROC (default enrich-lyrics.mjs)
+```
+
+### D. Re-derive `inferred` → `lyrics`-sourced (the Claude/Haiku UPGRADE workflow)
+
+A song tagged `sentimentSource:"inferred"` (sentiment guessed from title/artist/genre
+because it had no lyrics yet) should be **re-derived from the real lyrics** once it has
+them — a quality pass, not new coverage. `workflow/sentiment-upgrade.workflow.js` does
+this with **Opus orchestrating + Haiku doing per-song analysis** (cloud, so the local
+model stays free for other work). Three steps:
+
+```bash
+# 1. extract candidates (songs WITH lyrics whose sentiment isn't lyrics-sourced) into
+#    on-disk batch files. NO --max-chars cap by default: Claude handles long lyrics well
+#    (and reliably detects scrape-artifact "lyrics" and infers instead) — that's a
+#    strength of the Claude path. Cap only when targeting the small LOCAL model.
+node lib/extract-sentiment-targets.mjs --index index-out/current/index.json --dir /tmp/sent-upgrade
+#    -> prints "args {"numBatches": N, "dir": "/tmp/sent-upgrade"}"
+
+# 2. run the workflow (Opus orchestrates; N Haiku agents each read one batch file from
+#    DISK and WRITE /tmp/sent-upgrade/out/out-NNN.jsonl). Lyrics stay on disk, off the
+#    workflow args/return channel, so the orchestration payload stays tiny.
+#    Workflow({ name: "sentiment-upgrade", args: { numBatches: N, dir: "/tmp/sent-upgrade" } })
+
+# 3. fold the results back into the index in place (idempotent; touches only song-level
+#    sentiment fields — never album status/tracks; honors source:"lyrics" only when the
+#    song still has lyrics):
+node lib/apply-sentiment-upgrade.mjs --index index-out/current/index.json --dir /tmp/sent-upgrade
+```
+
+**Reusable pattern (Opus-orchestrate + Haiku per-item, disk-batched):** shard the work
+to per-batch files on disk → one Haiku `agent()` per batch with a strict `schema` return
+→ each agent reads its batch and writes a result JSONL → a small `lib/apply-*.mjs` folds
+the result files into the index by stable id. Keep large payloads (lyrics, audio) on disk,
+not in `args`/return. Re-run any short batch with a single targeted agent before folding.
+
+## Out-of-band stages & live-index folds (`lib/apply-*.mjs`)
+
+The audio stage and the cover/lyrics/sentiment backfills run AFTER the streaming merge and
+are folded into the already-built `index.json` **in place**, keyed by stable `alb_*/sng_*`
+ids. Every fold is **idempotent** and obeys the same **metadata-ownership rule** as the
+merge: it only writes its own fields and never downgrades an album's matched status or
+wipes tracks.
+
+| fold | input | writes |
+| --- | --- | --- |
+| `apply-audio.mjs` | `audio.jsonl` | `album.audioTracks` (+ per-song `bpm`/`key`/`camelot`/`pointer.startMs/endMs`) |
+| `apply-backfill.mjs` | `covers-backfill.jsonl`, `lyrics-backfill.jsonl` | `album.coverArt` (if missing), `song.lyrics` (if missing) |
+| `apply-sentiment-upgrade.mjs` | `<dir>/out/*.jsonl` | `song.sentimentKeywords` + `sentimentSource` |
+| `dedup-tracks.mjs` | (none — deterministic) | removes duplicate `SongItem`s + their `album.trackList` entries |
+| `renumber-tracks.mjs` | `web-tracklists.jsonl` (optional) | per-song `trackNumber` + `album.trackList` ORDER |
+| `reattach-orphans.mjs` | (none — deterministic) | adds a dangling song's id back into its album's `trackList` |
+
+### Track-cleanup fold — `lib/dedup-tracks.mjs` + `lib/renumber-tracks.mjs`
+
+Messy metadata merges leave albums with **duplicate or mis-numbered tracks** (e.g. Sade
+"Diamond Life" listed "Smooth Operator"/"Cherry Pie"/"Sally" twice — one copy with
+bpm/key, one bare — and the Isley Brothers "Between the Sheets" listed 15 *distinct*
+tracks all mis-numbered 1,1,1,2,2,2,…). Two folds clean this up, **run in this order**,
+both **idempotent** and both obeying the metadata-ownership rule (they touch only song
+rows / `trackNumber` / `trackList` order — never `coverArt(Sources)`, `audioTracks`, audio
+bpm/key/camelot on a kept song, enrichment status, lyrics, sentiment, or album metadata):
+
+**PASS 1 — DEDUP (`lib/dedup-tracks.mjs`, deterministic, no network).** Per album, groups
+songs by their NORMALIZED EXACT name (`normSongName`: lowercase, collapse whitespace,
+strip *surrounding* punctuation — but KEEPS interior text/parentheticals so distinct
+*versions* never merge: "Between the Sheets" ≠ "Between the Sheets (Instrumental Version)";
+"Smooth Operator" ≠ "Smooth Operator / Snake Bite"). For each duplicate group it KEEPS the
+copy with the FULLEST set of info (`completeness` score weighted toward audio fields
+bpm/key/camelot/pointer timestamps + real lyrics; tie → keep the first) and DROPS the rest
+— removing each dropped `songId` from `album.trackList` AND from `index.songs` (no orphans).
+Kept songs keep their original `sng_*` id (a later lyrics/sentiment backfold still finds
+them).
+
+```bash
+node lib/dedup-tracks.mjs --index index-out/current/index.json   # [--dry-run] [--report path.json]
+```
+
+**PASS 2 — TRACK-NUMBER REPAIR (`lib/renumber-tracks.mjs`).** Runs AFTER dedup. Flags an
+album as "still wrong" when duplicate `trackNumber`s remain, OR its `trackList` length
+differs a lot from the audio-segment count (`album.audioTracks` — a GUIDE for the expected
+count, not gospel; loose threshold). An album that is *already* a clean `1..N` in order is
+left untouched (so a pure count-mismatch with correct numbering is a no-op). For each
+flagged album it assigns `trackNumber` from a canonical order:
+
+- **CANONICAL (web-search).** Provide the real release's ordered titles via
+  `--canonical web-tracklists.jsonl`; the fold matches the album's deduped songs to that
+  order by fuzzy name (Dice over normalized tokens) and numbers them by canonical position.
+  The tracklists come from **parallel Claude WebSearch agents** — the same backfill pattern
+  as the `web.jsonl` recovery stage (see `backfill-websearch` memory): dump the flagged
+  albums to per-batch files, fan them out to agents that web-search `artist + album → ordered
+  titles` and write `{"albumId"|"artist"+"album","tracks":[...]}` lines into
+  `web-tracklists.jsonl`.
+- **SEQUENTIAL fallback.** If no canonical entry is supplied / the match is too sparse, the
+  survivors are renumbered `1..N` in their current `trackList` order (the Isley case).
+
+```bash
+# optional web-search canonical order (parallel WebSearch agents -> web-tracklists.jsonl):
+node lib/renumber-tracks.mjs --index index-out/current/index.json \
+  --canonical web-tracklists.jsonl     # omit --canonical to renumber sequentially
+```
+
+**ORPHAN SWEEP (`lib/reattach-orphans.mjs`, deterministic, no network).** A messy merge can
+leave a `SongItem` pointing at the correct album (`song.albumId === album.id`) yet absent
+from that album's `trackList` — e.g. Jay-Z "Vol. 3... Life and Times of S. Carter" listed 15
+tracks but its two web-confirmed BONUS tracks ("Jigga My Nigga" #16, "Girl's Best Friend"
+#17, scraped from a different source file) were left dangling. `getAlbumSongs()` finds songs
+by `albumId`, so a dangling song would silently never render. This fold re-inserts each such
+song's id into its album's `trackList` at the position implied by its `trackNumber` (append
+if none). It only edits `trackList` membership — never song fields or album metadata; a song
+whose `albumId` resolves to no album (a TRUE orphan) is reported but left untouched. Run it
+after dedup; run renumber-tracks afterward if the re-attached numbers need repair.
+
+```bash
+node lib/reattach-orphans.mjs --index index-out/current/index.json   # [--dry-run] [--report path.json]
+```
+
+Golden tests: `tests/unit/dedup-tracks.test.mjs`, `tests/unit/renumber-tracks.test.mjs`,
+`tests/unit/reattach-orphans.test.mjs` (modeled on the real Sade / Isley / Jay-Z cases; run
+via `npm test`).
+
+### 5. Audio stage — `audio/audio_index.py` + `scripts/audio-index.sh`
+
+Per-song **BPM / key / Camelot / start–end timestamps** from the raw audio. It's Python
+(librosa), run OUT OF BAND (no audio in the app), in **Docker** for a reproducible linux
+toolchain. For each album it copies the source file to scratch, **silence-segments** it
+into tracks (`librosa.effects.split`, defaults top_db 24 / min_gap 0.8s / min_track 40s),
+runs a windowed (~90s) **BPM** (`librosa.beat.beat_track`) + **key** (Krumhansl-Schmuckler
+chroma → Camelot wheel) per segment, then **deletes the copied file + segments in a
+`finally`** so scratch never grows. Each album is analyzed in an isolated subprocess with a
+timeout; the macOS arm64 librosa wheel segfaults under in-process concurrency, so we get
+parallelism by running **multiple single-concurrency Docker containers**, sharded round-robin.
+
+```bash
+# build once, then run AUDIO_CONC sharded containers over a mounted source dir:
+docker build -t pocketdj-audio .claude/skills/analog-indexer/audio
+AUDIO_CONC=3 SRC=/Volumes/RipBurnMix scripts/audio-index.sh
+#   -> index-out/shards-pw/audio-parts/audio.shard-K.jsonl, merged to audio.jsonl
+node lib/apply-audio.mjs --index index-out/current/index.json   # fold BPM/key into the index
+```
+
+Output records are `{albumId, originalFilename, durationSec, segments:[{i,startMs,endMs,
+durationMs,bpm,key,camelot,keyStrength}], ok}`. The album→file link is `album.pointer.originalFilename`.
+
 ## Outputs
 
 - `index-out/full/index.json` — canonical index (see `docs/SCHEMA.md`,
@@ -284,6 +450,10 @@ merged `index.json` copied there (see the `publish-s3` skill).
 - `lib/enrich-playwright.mjs` `lib/enrich-google.mjs` `lib/enrich-lyrics.mjs`
   `lib/enrich-sentiment.mjs` `lib/synth-singles.mjs` — the sub-indexers.
 - `lib/sentiment-todo.mjs` `lib/sentiment-claude-merge.mjs` — the Claude sentiment path.
+- `lib/dedup-tracks.mjs` `lib/renumber-tracks.mjs` `lib/reattach-orphans.mjs` — the
+  TRACK-CLEANUP folds (dedup duplicate tracks, repair track numbers via web-search canonical
+  order or sequential fallback, and re-attach dangling songs to their album). Golden tests in
+  `tests/unit/{dedup,renumber,reattach}-*.test.mjs`.
 - `lib/build-sentiment.mjs` `lib/build-run.mjs` — Workflow script builders.
 - `workflow/sentiment.workflow.js` `workflow/index-vinyl.workflow.js` — Workflow templates.
 - `scripts/run-pipeline.sh` `scripts/run-backfill.sh` `scripts/finish-pipeline.sh` —

@@ -1,7 +1,6 @@
-// Renders a cover-art thumbnail from an art cache key, resolving the blob to an
-// object URL (LRU-managed in artCache). Falls back to a styled placeholder.
-import { useEffect, useState } from 'react';
-import { artObjectURL } from '../../storage/artCache';
+// Renders a cover-art thumbnail from an art cache key via the shared, ref-counted
+// art-URL cache (useArtUrl). Falls back to a styled placeholder.
+import { useArtUrl } from './useArtUrl';
 
 interface Props {
   artKey?: string;
@@ -11,20 +10,7 @@ interface Props {
 }
 
 export function Thumbnail({ artKey, alt, size = 56, className }: Props) {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    setUrl(null);
-    if (artKey) {
-      artObjectURL(artKey).then((u) => {
-        if (live) setUrl(u);
-      });
-    }
-    return () => {
-      live = false;
-    };
-  }, [artKey]);
+  const url = useArtUrl(artKey);
 
   return (
     <div

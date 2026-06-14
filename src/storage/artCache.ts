@@ -4,6 +4,7 @@
 // pin a bitmap each.
 import { getArt, putArt } from './repo';
 import type { ArtRecord } from './db';
+import type { ArtSource } from '../types/model';
 import { hashKey, seededRng } from '../lib/prng';
 import { txn } from '../lib/log';
 
@@ -17,6 +18,45 @@ export function artKeyForUrl(url: string): string {
 /** Stable cache key for a procedural placeholder seeded by an id. */
 export function placeholderKey(seed: string): string {
   return 'ph_' + hashKey(seed);
+}
+
+/**
+ * The stable art-cache key for an album, derived WITHOUT any network — identical to the
+ * key cacheArtSources / cacheArtUrl / generatePlaceholder produce. Assigning this at
+ * import time lets the app render immediately and fetch each thumbnail lazily / in the
+ * background instead of blocking the first paint on hydrating all covers.
+ */
+export function artKeyFor(d: { coverArtSources?: ArtSource[]; coverArtUrl?: string; id: string }): string {
+  if (d.coverArtSources && d.coverArtSources.length) {
+    return artKeyForUrl(d.coverArtSources.map((s) => `${s.type}:${s.url}`).join('|'));
+  }
+  if (d.coverArtUrl) return artKeyForUrl(d.coverArtUrl);
+  return placeholderKey(d.id);
+}
+
+// ---- progressive-load notifications ----
+// A component that requests an art key before its thumbnail has been cached subscribes
+// here; when the background warm pass stores that thumbnail, the component re-acquires
+// and the cover pops in — so the UI is interactive immediately and fills in over time.
+const artSubs = new Map<string, Set<() => void>>();
+export function subscribeArt(key: string, cb: () => void): () => void {
+  let set = artSubs.get(key);
+  if (!set) {
+    set = new Set();
+    artSubs.set(key, set);
+  }
+  set.add(cb);
+  return () => {
+    const s = artSubs.get(key);
+    if (s) {
+      s.delete(cb);
+      if (!s.size) artSubs.delete(key);
+    }
+  };
+}
+function notifyArt(key: string): void {
+  const s = artSubs.get(key);
+  if (s) for (const cb of [...s]) cb();
 }
 
 /** Decode + downscale an image blob to a webp thumbnail (longest edge THUMB). */
@@ -56,6 +96,7 @@ export async function cacheArtUrl(url: string): Promise<string> {
   // Skip the doomed CORS fetch for non-friendly hosts — display the URL directly.
   if (!isCorsFriendly(url)) {
     await putArt({ key, url, status: 'url' });
+    notifyArt(key);
     return key;
   }
   try {
@@ -64,14 +105,90 @@ export async function cacheArtUrl(url: string): Promise<string> {
     const blob = await res.blob();
     const { thumb, w, h } = await toThumb(blob);
     await putArt({ key, thumb, url, status: 'ok', w, h });
+    notifyArt(key);
   } catch (error) {
     // CORS-blocked sources (e.g. Discogs CDN sends no Access-Control-Allow-Origin)
     // can't be fetched/thumbnailed for an offline blob — but the browser can still
     // DISPLAY them via <img>/<image src=url>. Keep the URL for direct display.
     await putArt({ key, url, status: 'url' });
+    notifyArt(key);
     txn('art.cache', { key, status: 'url', error: String(error) });
   }
   return key;
+}
+
+/**
+ * Can we fetch this URL cross-origin and draw it to a canvas (→ offline blob)?
+ * True for same-origin URLs (root-relative `/art/...` or matching origin — e.g. our
+ * CDN behind the same CloudFront) and for known CORS-friendly hosts. `src.cors === true`
+ * forces it. Anything else can only be displayed via a live <img src> (online only).
+ */
+function isSourceCacheable(src: ArtSource): boolean {
+  if (src.cors === true) return true;
+  if (src.url.startsWith('/')) return true; // root-relative ⇒ same origin as the app
+  try {
+    const u = new URL(src.url, typeof location !== 'undefined' ? location.href : 'https://x/');
+    if (typeof location !== 'undefined' && u.origin === location.origin) return true;
+    return isCorsFriendly(src.url);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Progressive cover resolution over an ordered source list (CDN default + remote backup).
+ * Tries every CACHEABLE source first (fetch → thumbnail → durable IndexedDB blob, so it
+ * survives offline + restart); only if none can be cached does it fall back to displaying
+ * the first source's URL directly (online-only). Idempotent: a source list that already
+ * resolved to a blob is reused. Keyed by the ordered URLs so re-mirroring (a new CDN
+ * source appears) re-caches into a fresh durable blob.
+ */
+export async function cacheArtSources(sources: ArtSource[]): Promise<string> {
+  if (!sources.length) throw new Error('cacheArtSources: empty sources');
+  const key = artKeyForUrl(sources.map((s) => `${s.type}:${s.url}`).join('|'));
+  const existing = await getArt(key);
+  if (existing && existing.status === 'ok') return key; // already a durable blob
+  // cacheable sources first (preserve relative order within each group)
+  const ordered = sources
+    .map((s, i) => ({ s, i, cacheable: isSourceCacheable(s) }))
+    .sort((a, b) => Number(b.cacheable) - Number(a.cacheable) || a.i - b.i);
+  for (const { s, cacheable } of ordered) {
+    if (!cacheable) continue;
+    try {
+      const res = await fetch(s.url, { mode: 'cors' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const { thumb, w, h } = await toThumb(blob);
+      await putArt({ key, thumb, url: s.url, status: 'ok', w, h });
+      notifyArt(key);
+      return key;
+    } catch (error) {
+      txn('art.cache', { key, source: s.url, miss: String(error) });
+    }
+  }
+  // No cacheable source resolved (e.g. offline at first load, only a remote backup) —
+  // keep the first source's URL for direct <img> display when online.
+  await putArt({ key, url: sources[0].url, status: 'url' });
+  notifyArt(key);
+  return key;
+}
+
+/**
+ * Ask the browser to keep our IndexedDB/Cache storage from being evicted under pressure.
+ * Important on iOS so cover-art blobs survive app/phone restart. Best-effort + idempotent.
+ */
+export async function requestPersistentStorage(): Promise<boolean> {
+  try {
+    if (navigator.storage?.persisted && (await navigator.storage.persisted())) return true;
+    if (navigator.storage?.persist) {
+      const granted = await navigator.storage.persist();
+      txn('storage.persist', { granted });
+      return granted;
+    }
+  } catch {
+    /* not supported — ignore */
+  }
+  return false;
 }
 
 /** Deterministic gradient placeholder thumbnail (offline, no network). */
@@ -103,48 +220,70 @@ export async function generatePlaceholder(seed: string): Promise<string> {
   }
   const thumb = await canvas.convertToBlob({ type: 'image/webp', quality: 0.8 });
   await putArt({ key, thumb, status: 'ok', w: size, h: size });
+  notifyArt(key);
   txn('art.generate', { key, seed });
   return key;
 }
 
-// ---- objectURL LRU for rendering ----
-const MAX_LIVE = 400;
-const live = new Map<string, string>(); // key -> objectURL (insertion-ordered LRU)
+// ---- reference-counted objectURL registry ------------------------------------
+// One display URL per art key, SHARED across every surface that renders it (browser
+// grid, star-map stars, solar-system sun). A blob URL is created on first acquire and
+// revoked only when the LAST consumer releases it — so rendering ~1,361 covers at once
+// (the star map) never revokes a URL that's still on screen. This replaced a fixed-size
+// LRU (cap 400) that revoked in-use URLs, leaving most star-map covers broken.
+// Use the `useArtUrl` hook (components/common/useArtUrl) rather than calling these directly.
+type ArtEntry = { url: string; refs: number; blob: boolean };
+const registry = new Map<string, ArtEntry>();
+const inflight = new Map<string, Promise<ArtEntry | null>>();
 
-export async function artObjectURL(key: string | undefined): Promise<string | null> {
-  if (!key) return null;
-  const cached = live.get(key);
-  if (cached) {
-    // refresh LRU position
-    live.delete(key);
-    live.set(key, cached);
-    return cached;
-  }
+async function loadArtEntry(key: string): Promise<ArtEntry | null> {
   const rec: ArtRecord | undefined = await getArt(key);
-  // Cached thumbnail blob (CORS-friendly sources + placeholders) -> object URL.
-  if (rec?.thumb) {
-    const url = URL.createObjectURL(rec.thumb);
-    live.set(key, url);
-    if (live.size > MAX_LIVE) {
-      const oldest = live.keys().next().value as string | undefined;
-      if (oldest) {
-        const u = live.get(oldest)!;
-        if (u.startsWith('blob:')) URL.revokeObjectURL(u);
-        live.delete(oldest);
-      }
-    }
-    return url;
-  }
-  // CORS-blocked source we couldn't thumbnail -> display the remote URL directly.
-  if (rec?.url && rec.status === 'url') {
-    live.set(key, rec.url);
-    return rec.url;
-  }
+  // Cached thumbnail blob (CORS-friendly sources + placeholders) -> revocable object URL.
+  if (rec?.thumb) return { url: URL.createObjectURL(rec.thumb), refs: 0, blob: true };
+  // Un-thumbnailable source we kept as a URL -> display it directly (not revocable).
+  if (rec?.url && rec.status === 'url') return { url: rec.url, refs: 0, blob: false };
   return null;
 }
 
-/** Release all object URLs (e.g. on unmount of a big view). */
-export function releaseArtURLs(): void {
-  for (const u of live.values()) URL.revokeObjectURL(u);
-  live.clear();
+/**
+ * Acquire the shared display URL for an art key, incrementing its ref count. Every
+ * NON-NULL result must be paired with exactly one `releaseArtUrl(key)`. Returns null
+ * when the key has no art record (then no ref was taken — do not release).
+ */
+export async function acquireArtUrl(key: string | undefined): Promise<string | null> {
+  if (!key) return null;
+  const hit = registry.get(key);
+  if (hit) {
+    hit.refs++;
+    return hit.url;
+  }
+  let p = inflight.get(key);
+  if (!p) {
+    p = loadArtEntry(key);
+    inflight.set(key, p);
+  }
+  const loaded = await p;
+  inflight.delete(key);
+  if (!loaded) return null;
+  // Another consumer may have registered this key while we awaited.
+  const existing = registry.get(key);
+  if (existing) {
+    existing.refs++;
+    if (loaded.blob && loaded.url !== existing.url) URL.revokeObjectURL(loaded.url);
+    return existing.url;
+  }
+  loaded.refs = 1;
+  registry.set(key, loaded);
+  return loaded.url;
+}
+
+/** Release one reference to an art key's URL; revokes the blob URL when refs reach 0. */
+export function releaseArtUrl(key: string | undefined): void {
+  if (!key) return;
+  const e = registry.get(key);
+  if (!e) return;
+  if (--e.refs <= 0) {
+    if (e.blob) URL.revokeObjectURL(e.url);
+    registry.delete(key);
+  }
 }

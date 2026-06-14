@@ -47,6 +47,9 @@ export const FIELDS: FieldDefWithGet[] = [
     get: song((s) => s.bpm) },
   { id: 'key', label: 'Key', appliesTo: ['song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
     get: song((s) => s.key) },
+  // Camelot sorts in harmonic-wheel order (see sortEngine), NOT alphabetically.
+  { id: 'camelot', label: 'Key (Camelot)', appliesTo: ['song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
+    get: song((s) => s.camelot) },
 ];
 
 const BY_ID = new Map(FIELDS.map((f) => [f.id, f]));

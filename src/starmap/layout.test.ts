@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { computeLayout } from './layout';
+import { computeLayout, computeNebulaLayout } from './layout';
+import { groupSongs } from './grouping';
 import { categorize } from './constellationMap';
-import type { AlbumItem } from '../types/model';
+import type { AlbumItem, SongItem } from '../types/model';
 
 function album(over: Partial<AlbumItem> & { id: string }): AlbumItem {
   return {
@@ -206,5 +207,148 @@ describe('computeLayout — scene geometry sanity', () => {
     const rock = layout.constellations.find((c) => c.genre === 'rock')!;
     // rock-old (1990) before rock-new (2000) in the polyline order
     expect(rock.starIds).toEqual(['rock-old', 'rock-new']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeNebulaLayout — BPM / KEY nebula modes (song-grouped, NOT album stars).
+// ---------------------------------------------------------------------------
+
+function song(over: Partial<SongItem> & { id: string }): SongItem {
+  return {
+    sourceId: 's1',
+    type: 'song',
+    createdAt: 0,
+    updatedAt: 0,
+    artist: 'Artist',
+    name: 'Name',
+    sentimentKeywords: [],
+    explicit: false,
+    bpm: null,
+    key: null,
+    ...over,
+  };
+}
+
+const audioSongs = (): SongItem[] => [
+  song({ id: 'fast', bpm: 128, camelot: '8A', key: 'A minor' }),
+  song({ id: 'fast2', bpm: 124, camelot: '9B', key: 'D major' }),
+  song({ id: 'slow', bpm: 95, camelot: '5A', key: 'C minor' }),
+  song({ id: 'noaudio', bpm: null, camelot: null, key: null }),
+];
+
+describe('computeNebulaLayout — BPM mode', () => {
+  it('one nebula per constellation, ordered ascending with Unknown last', () => {
+    const layout = computeNebulaLayout(groupSongs(audioSongs(), 'bpm'));
+    expect(layout.nebulae.map((n) => n.label)).toEqual(['90–100', '120–130', 'Unknown']);
+  });
+
+  it('each nebula carries its song count + browser filter', () => {
+    const layout = computeNebulaLayout(groupSongs(audioSongs(), 'bpm'));
+    const fast = layout.nebulae.find((n) => n.id === '120')!;
+    expect(fast.songCount).toBe(2);
+    expect(fast.filter).toEqual({ field: 'bpm', op: 'between', min: 120, max: 130 });
+    const unknown = layout.nebulae.find((n) => n.id === 'Unknown')!;
+    expect(unknown.filter).toBeNull();
+  });
+
+  it('nebula radius scales with sqrt(songCount) (bigger constellation = bigger glow)', () => {
+    const small = computeNebulaLayout(groupSongs([song({ id: 'a', bpm: 120 })], 'bpm'));
+    const big = computeNebulaLayout(
+      groupSongs(
+        Array.from({ length: 50 }, (_, i) => song({ id: 'x' + i, bpm: 120 })),
+        'bpm',
+      ),
+    );
+    expect(big.nebulae[0].r).toBeGreaterThan(small.nebulae[0].r);
+  });
+
+  it('scatters ~15–30 decorative stars within the glow radius', () => {
+    const layout = computeNebulaLayout(groupSongs(audioSongs(), 'bpm'));
+    for (const n of layout.nebulae) {
+      expect(n.stars.length).toBeGreaterThanOrEqual(15);
+      expect(n.stars.length).toBeLessThanOrEqual(30);
+      for (const s of n.stars) {
+        const d = Math.hypot(s.x - n.x, s.y - n.y);
+        expect(d).toBeLessThanOrEqual(n.r);
+        expect(s.r).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe('computeNebulaLayout — KEY mode', () => {
+  it('camelot: nebulae labeled + ordered by the camelot wheel', () => {
+    const layout = computeNebulaLayout(groupSongs(audioSongs(), 'key', 'camelot'));
+    expect(layout.nebulae.map((n) => n.label)).toEqual(['5A', '8A', '9B', 'Unknown']);
+    expect(layout.nebulae.find((n) => n.id === '8A')!.filter).toEqual({
+      field: 'camelot',
+      op: 'eq',
+      value: '8A',
+    });
+  });
+
+  it('musical: nebulae labeled by key name, pitch-ordered', () => {
+    const layout = computeNebulaLayout(groupSongs(audioSongs(), 'key', 'musical'));
+    expect(layout.nebulae.map((n) => n.label)).toEqual([
+      'C minor',
+      'D major',
+      'A minor',
+      'Unknown',
+    ]);
+    expect(layout.nebulae.find((n) => n.id === 'A minor')!.filter).toEqual({
+      field: 'key',
+      op: 'eq',
+      value: 'A minor',
+    });
+  });
+});
+
+describe('computeNebulaLayout — geometry + determinism', () => {
+  it('width/height are positive finite numbers', () => {
+    const layout = computeNebulaLayout(groupSongs(audioSongs(), 'bpm'));
+    expect(Number.isFinite(layout.width)).toBe(true);
+    expect(Number.isFinite(layout.height)).toBe(true);
+    expect(layout.width).toBeGreaterThan(0);
+    expect(layout.height).toBeGreaterThan(0);
+  });
+
+  it('empty constellation list yields an empty but valid layout', () => {
+    const layout = computeNebulaLayout([]);
+    expect(layout.nebulae).toEqual([]);
+    expect(Number.isFinite(layout.width)).toBe(true);
+    expect(Number.isFinite(layout.height)).toBe(true);
+  });
+
+  it('is deterministic — same constellations => identical nebulae + hash', () => {
+    const a = computeNebulaLayout(groupSongs(audioSongs(), 'bpm'));
+    const b = computeNebulaLayout(groupSongs(audioSongs(), 'bpm'));
+    expect(a.albumSetHash).toBe(b.albumSetHash);
+    expect(a.nebulae).toEqual(b.nebulae);
+    expect(a.width).toBe(b.width);
+    expect(a.height).toBe(b.height);
+  });
+
+  it('different constellation sets => different hashes', () => {
+    const a = computeNebulaLayout(groupSongs(audioSongs(), 'bpm')).albumSetHash;
+    const b = computeNebulaLayout(
+      groupSongs([...audioSongs(), song({ id: 'extra', bpm: 150 })], 'bpm'),
+    ).albumSetHash;
+    expect(a).not.toBe(b);
+  });
+
+  it('nebulae do not overlap (bounding-circle gap is non-negative)', () => {
+    // A handful of equal-size nebulae packed into bands should not collide.
+    const songs = Array.from({ length: 8 }, (_, i) =>
+      song({ id: 's' + i, bpm: 60 + i * 10 }),
+    );
+    const layout = computeNebulaLayout(groupSongs(songs, 'bpm'));
+    const ns = layout.nebulae;
+    for (let i = 0; i < ns.length; i++) {
+      for (let j = i + 1; j < ns.length; j++) {
+        const d = Math.hypot(ns[i].x - ns[j].x, ns[i].y - ns[j].y);
+        expect(d).toBeGreaterThanOrEqual(ns[i].r + ns[j].r);
+      }
+    }
   });
 });

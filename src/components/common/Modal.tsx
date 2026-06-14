@@ -1,5 +1,9 @@
-// Minimal accessible modal. Closes on backdrop click + Escape.
+// Minimal accessible modal. Closes on backdrop click + Escape. Rendered through a
+// portal to <body> so the fixed backdrop overlays everything — escaping stacking
+// contexts created by ancestors (e.g. the top bar's backdrop-filter, which otherwise
+// traps the fixed positioning and lets the star map show through).
 import { useEffect, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 interface Props {
   open: boolean;
@@ -20,7 +24,7 @@ export function Modal({ open, onClose, title, testId, children }: Props) {
   }, [open, onClose]);
 
   if (!open) return null;
-  return (
+  return createPortal(
     <div className="pdj-modal__backdrop" onClick={onClose}>
       <div
         className="pdj-modal"
@@ -38,6 +42,7 @@ export function Modal({ open, onClose, title, testId, children }: Props) {
         </header>
         <div className="pdj-modal__body">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

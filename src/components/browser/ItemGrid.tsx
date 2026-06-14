@@ -13,11 +13,13 @@ interface Props {
   items: MusicItem[];
   itemType: 'album' | 'song';
   onEdit: (id: string) => void;
+  /** Open the read-only detail modal for a song (row click / Enter). */
+  onOpen: (id: string) => void;
   /** album cards per row, computed from container width */
   columns: number;
 }
 
-export function ItemGrid({ items, itemType, onEdit, columns }: Props) {
+export function ItemGrid({ items, itemType, onEdit, onOpen, columns }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
   const isAlbum = itemType === 'album';
   const perRow = isAlbum ? Math.max(1, columns) : 1;
@@ -61,7 +63,7 @@ export function ItemGrid({ items, itemType, onEdit, columns }: Props) {
                 isAlbum ? (
                   <AlbumCard key={it.id} album={it as AlbumItem} onEdit={onEdit} />
                 ) : (
-                  <SongRow key={it.id} song={it as SongItem} onEdit={onEdit} />
+                  <SongRow key={it.id} song={it as SongItem} onEdit={onEdit} onOpen={onOpen} />
                 ),
               )}
             </div>

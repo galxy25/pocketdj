@@ -1,8 +1,11 @@
-// Song metadata popup shown when a planet (song) is clicked in the solar system.
-// Reuses the shared Modal, which provides the top-right ✕, Escape, and backdrop
-// close. Read-only view of everything we know about the song.
-import type { ReactNode } from 'react';
-import type { SongItem } from '../../types/model';
+// Song metadata popup shown when a track is clicked in the browser or solar system.
+// Reuses the shared Modal (top-right ✕, Escape, backdrop close). LAZY-loads lyrics: the
+// lean seed ships without lyrics, so when this card opens for a song whose lyricsStatus
+// is "found" but whose lyrics aren't stored yet, we fetch /lyrics/<songId>.txt and cache
+// it in IndexedDB — so an install only ever stores the lyrics you actually look at.
+import { useEffect, useState, type ReactNode } from 'react';
+import { isSong, type SongItem } from '../../types/model';
+import { getItem, putItem } from '../../storage/repo';
 import { Modal } from '../common/Modal';
 import { msToClock } from '../../lib/format';
 
@@ -13,6 +16,51 @@ interface Props {
 }
 
 export function SongDetailModal({ song, albumName, onClose }: Props) {
+  const [lyrics, setLyrics] = useState<string | undefined>(undefined);
+  const [lyricsStatus, setLyricsStatus] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!song) {
+      setLyrics(undefined);
+      setLyricsStatus(undefined);
+      return;
+    }
+    setLyrics(song.lyrics);
+    setLyricsStatus(song.lyricsStatus);
+    if (song.lyrics) return; // already have them
+    if (song.lyricsStatus && song.lyricsStatus !== 'found') return; // known: none to fetch
+    let live = true;
+    (async () => {
+      // 1) cached in IndexedDB from a previous view?
+      const cached = await getItem(song.id);
+      if (!live) return;
+      if (cached && isSong(cached) && cached.lyrics) {
+        setLyrics(cached.lyrics);
+        return;
+      }
+      // 2) lazy-fetch from the lyrics CDN, then store so it's cached + offline-durable
+      try {
+        const res = await fetch(`${import.meta.env.BASE_URL}lyrics/${song.id}.txt`);
+        if (!live) return;
+        if (!res.ok) {
+          setLyricsStatus('notfound');
+          return;
+        }
+        const text = (await res.text()).trim();
+        if (!live || !text) return;
+        setLyrics(text);
+        setLyricsStatus('found');
+        const base = cached && isSong(cached) ? cached : song;
+        await putItem({ ...base, lyrics: text, lyricsStatus: 'found' });
+      } catch {
+        /* offline or missing — leave as-is */
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [song]);
+
   return (
     <Modal open={song != null} onClose={onClose} title={song ? song.name : 'Song'} testId="song-modal">
       {song && (
@@ -25,6 +73,7 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
           <Row label="Explicit">{song.explicit ? 'Yes' : 'No'}</Row>
           <Row label="BPM">{song.bpm ?? '— (pending audio)'}</Row>
           <Row label="Key">{song.key ?? '— (pending audio)'}</Row>
+          <Row label="Camelot">{song.camelot ?? '— (pending audio)'}</Row>
           <Row label="Sentiment">
             {song.sentimentKeywords.length ? (
               <span className="pdj-songdetail__tags">
@@ -53,14 +102,24 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
               </span>
             </Row>
           )}
-          {song.lyrics ? (
+          {lyrics ? (
             <div className="pdj-songdetail__lyrics">
               <div className="pdj-songdetail__lyrics-head">Lyrics</div>
-              <pre>{song.lyrics}</pre>
+              <pre>{lyrics}</pre>
             </div>
           ) : (
-            <Row label="Lyrics">{song.lyricsStatus === 'notfound' ? 'Not found' : '—'}</Row>
+            <Row label="Lyrics">
+              {lyricsStatus === 'notfound' ? 'Not found' : lyricsStatus === 'found' ? 'Loading…' : '—'}
+            </Row>
           )}
+          <button
+            type="button"
+            className="pdj-songdetail__close"
+            data-testid="song-detail-close"
+            onClick={onClose}
+          >
+            Close
+          </button>
         </div>
       )}
     </Modal>

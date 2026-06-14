@@ -47,6 +47,21 @@ export async function putItem(item: MusicItem): Promise<void> {
   txn('db.putItem', { id: item.id, type: item.type, sourceId: item.sourceId });
 }
 
+/** Delete a song from the index: removes the item AND drops it from its album's trackIds. */
+export async function deleteSong(songId: string): Promise<void> {
+  const db = await getDB();
+  const song = (await db.get('items', songId)) as SongItem | undefined;
+  await db.delete('items', songId);
+  if (song?.albumId) {
+    const album = (await db.get('items', song.albumId)) as AlbumItem | undefined;
+    if (album && Array.isArray(album.trackIds)) {
+      album.trackIds = album.trackIds.filter((id) => id !== songId);
+      await db.put('items', album);
+    }
+  }
+  txn('db.deleteSong', { id: songId, album: song?.albumId });
+}
+
 /** Bulk insert in chunked transactions (never one txn per record at 15k scale). */
 export async function bulkPutItems(items: MusicItem[]): Promise<void> {
   const db = await getDB();

@@ -1,10 +1,13 @@
-// Top bar: brand + view switch (Star Map ⇄ Browser).
+// Top bar: brand + view switch (Star Map ⇄ Browser) + settings.
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { SettingsModal } from './SettingsModal';
 
 export function TopBar() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const onMap = pathname.startsWith('/map');
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <header className="pdj-topbar">
@@ -29,7 +32,17 @@ export function TopBar() {
         >
           ☰ Browser
         </button>
+        <button
+          className="pdj-iconbtn"
+          data-testid="open-settings"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Settings"
+          title="Settings"
+        >
+          ⚙
+        </button>
       </nav>
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </header>
   );
 }

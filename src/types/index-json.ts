@@ -47,12 +47,26 @@ export interface IndexCounts {
   sentimentInferred: number;
 }
 
+/** One album-art source in a progressive (ordered) list. See model.ArtSource. */
+export interface IndexArtSource {
+  type: 'cdn' | 'remote';
+  url: string;
+  cors?: boolean;
+}
+
 export interface IndexAlbum {
   id: string;
   artist: string;
   name: string;
-  /** Cacheable cover-art URL (e.g. iTunes 600x600). May be absent. */
+  /** Cacheable cover-art URL (e.g. iTunes 600x600). May be absent. The remote/backup source. */
   coverArt?: string;
+  /**
+   * Progressive art sources, ordered most-preferred-first: our CDN-hosted thumbnail
+   * (CORS-friendly, cacheable offline) as the default + the original remote URL as a
+   * backup. When present, the app prefers this over `coverArt`. Populated incrementally
+   * by the art-mirror step (lib/mirror-art.mjs); absent until an album is mirrored.
+   */
+  coverArtSources?: IndexArtSource[];
   genre?: string;
   year?: number;
   country?: string;
@@ -67,6 +81,25 @@ export interface IndexAlbum {
     score?: number;
     sources?: string[];
   };
+  /** AUDIO stage: detected segments (apply-audio.mjs). Count may differ from trackList. */
+  audioTracks?: IndexAudioTrack[];
+  /** AUDIO stage: total analyzed audio duration, in seconds. */
+  audioDurationSec?: number;
+}
+
+/** One detected audio segment, on disk. Mirrors model.AudioTrack 1:1. */
+export interface IndexAudioTrack {
+  /** 1-based audio segment order. */
+  trackNumber: number;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  bpm: number;
+  /** e.g. "F# major". */
+  key: string;
+  /** Camelot notation, e.g. "2B". */
+  camelot: string;
+  keyStrength?: number;
 }
 
 export interface IndexSong {
@@ -81,10 +114,12 @@ export interface IndexSong {
   sentimentKeywords?: string[];
   sentimentSource?: 'lyrics' | 'inferred' | 'failed';
   explicit?: boolean;
-  /** DEFERRED: always null. */
-  bpm?: null;
-  /** DEFERRED: always null. */
-  key?: null;
+  /** AUDIO stage: best-effort BPM by segment order. Null/absent until analyzed. */
+  bpm?: number | null;
+  /** AUDIO stage: best-effort key, e.g. "F# major". Null/absent until analyzed. */
+  key?: string | null;
+  /** AUDIO stage: best-effort Camelot, e.g. "2B". Null/absent until analyzed. */
+  camelot?: string | null;
   /** Length in milliseconds. */
   length?: number;
   fileType?: string;
@@ -98,4 +133,7 @@ export interface IndexPointer {
   disc?: number;
   track?: number;
   timestamps?: null | { startMs: number; endMs: number };
+  /** AUDIO stage writes these flat on the pointer (apply-audio.mjs). */
+  startMs?: number | null;
+  endMs?: number | null;
 }
