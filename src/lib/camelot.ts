@@ -55,3 +55,33 @@ export function keyToCamelot(key?: string | null): string | null {
   if (!key) return null;
   return MUSICAL_TO_CAMELOT[key.trim()] ?? null;
 }
+
+// ---- valid-value lists + reverse map (for the edit-modal key dropdowns) ----
+
+/** All 24 Camelot codes in wheel order: 1A, 1B, 2A, … 12B. */
+export const CAMELOT_KEYS: string[] = Array.from({ length: 12 }, (_, i) => i + 1).flatMap((n) => [
+  `${n}A`,
+  `${n}B`,
+]);
+
+/** The 24 canonical musical keys (sharp spellings, matching the audio analyzer), pitch-ordered. */
+const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+export const MUSICAL_KEYS: string[] = [
+  ...NOTES.map((n) => `${n} minor`),
+  ...NOTES.map((n) => `${n} major`),
+];
+
+const CAMELOT_TO_KEY: Record<string, string> = {
+  '1A': 'G# minor', '1B': 'B major', '2A': 'D# minor', '2B': 'F# major',
+  '3A': 'A# minor', '3B': 'C# major', '4A': 'F minor', '4B': 'G# major',
+  '5A': 'C minor', '5B': 'D# major', '6A': 'G minor', '6B': 'A# major',
+  '7A': 'D minor', '7B': 'F major', '8A': 'A minor', '8B': 'C major',
+  '9A': 'E minor', '9B': 'G major', '10A': 'B minor', '10B': 'D major',
+  '11A': 'F# minor', '11B': 'A major', '12A': 'C# minor', '12B': 'E major',
+};
+
+/** Convert a Camelot code ("8A") to its canonical musical key name, or null. */
+export function camelotToKey(code?: string | null): string | null {
+  if (!code) return null;
+  return CAMELOT_TO_KEY[code.trim()] ?? null;
+}

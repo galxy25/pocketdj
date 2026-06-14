@@ -11,6 +11,7 @@ import { SongRow } from './ItemCard';
 import { EditItemModal } from './EditItemModal';
 import { SongDetailModal } from '../starmap/SongDetailModal';
 import { AudioTracksTable } from '../starmap/AudioTracksTable';
+import { AudioEditModal } from '../starmap/AudioEditModal';
 
 export function AlbumTrackTable() {
   const { albumId } = useParams<{ albumId: string }>();
@@ -20,6 +21,7 @@ export function AlbumTrackTable() {
   const [loading, setLoading] = useState(true);
   const [editId, setEditId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [audioEditOpen, setAudioEditOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!albumId) {
@@ -110,12 +112,32 @@ export function AlbumTrackTable() {
         )}
       </div>
 
+      <div className="pdj-albumtable__editbar">
+        <button
+          className="pdj-btn pdj-btn--sm pdj-btn--ghost"
+          data-testid="edit-album"
+          onClick={() => setEditId(album.id)}
+        >
+          ✎ Edit album info
+        </button>
+      </div>
+
       <div className="pdj-albumtable__audio" data-testid="album-audio-footer">
         <h3 className="pdj-albumtable__audiohead">Album audio analysis</h3>
         <AudioTracksTable album={album} />
+        <div className="pdj-albumtable__editbar">
+          <button
+            className="pdj-btn pdj-btn--sm pdj-btn--ghost"
+            data-testid="edit-audio"
+            onClick={() => setAudioEditOpen(true)}
+          >
+            ✎ Edit audio analysis
+          </button>
+        </div>
       </div>
 
       <EditItemModal itemId={editId} onClose={() => setEditId(null)} onSaved={load} />
+      <AudioEditModal album={album} open={audioEditOpen} onClose={() => setAudioEditOpen(false)} onSaved={load} />
       <SongDetailModal song={detailSong} albumName={album.name} onClose={() => setDetailId(null)} />
     </div>
   );

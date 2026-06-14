@@ -198,3 +198,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-albumtable__meta { color: var(--pdj-fg-dim); font-size: 0.78rem; margin-top: 2px; }
 .pdj-albumtable__audio { margin-top: 1.3rem; padding-top: 0.7rem; border-top: 1px solid var(--pdj-border); }
 .pdj-albumtable__audiohead { margin: 0 0 0.5rem; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--pdj-fg-dim); }
+.pdj-albumtable__editbar { display: flex; justify-content: flex-end; margin-top: 0.6rem; }
+/* Audio-analysis editor rows */
+.pdj-audioedit { display: flex; flex-direction: column; gap: 0.5rem; }
+.pdj-audioedit__row { display: grid; grid-template-columns: 1.4rem repeat(5, 1fr); gap: 0.4rem; align-items: end; padding-bottom: 0.4rem; border-bottom: 1px solid var(--pdj-border); }
+.pdj-audioedit__num { font-variant-numeric: tabular-nums; color: var(--pdj-fg-dim); align-self: center; }
+.pdj-audioedit__row label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pdj-audioedit__row label span { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--pdj-fg-dim); }
+.pdj-audioedit__row input, .pdj-audioedit__row select { width: 100%; min-width: 0; }
