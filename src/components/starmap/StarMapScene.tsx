@@ -426,8 +426,8 @@ export function StarMapScene() {
           label: c.label,
           countLabel: `${members.length} album${members.length === 1 ? '' : 's'}`,
           // Randomly sampled each load so a different slice of the collection surfaces
-          // every visit (helps rediscover hidden gems per genre). Up to 8 per card.
-          coverKeys: sampleCoverKeys(members, 8),
+          // every visit (helps rediscover hidden gems per genre). Up to 16 per card.
+          coverKeys: sampleCoverKeys(members, 16),
           onActivate: () => drillInto(c.genre),
         };
       });

@@ -497,13 +497,15 @@
   stroke-linecap: round;
   pointer-events: none;
 }
+/* Fixed-size thumbnails; columns auto-fit the width, so MORE covers => MORE ROWS,
+   never smaller thumbnails (≈4 across on a phone; 16 covers => ~4 rows). */
 .pdj-cgrid__covers {
   position: relative;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 34px);
+  justify-content: start;
   gap: 4px;
   margin-bottom: auto;
-  max-width: 100%;
 }
 .pdj-cgrid__cover {
   border-radius: 7px;

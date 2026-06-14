@@ -52,7 +52,7 @@ export function ConstellationGrid({ cells }: { cells: ConstellationCell[] }) {
           {c.icon === 'metronome' && <Metronome />}
           {c.coverKeys && c.coverKeys.length > 0 && (
             <span className="pdj-cgrid__covers" aria-hidden>
-              {c.coverKeys.slice(0, 8).map((k, i) => (
+              {c.coverKeys.slice(0, 16).map((k, i) => (
                 <Thumbnail key={i} artKey={k} alt="" size={34} className="pdj-cgrid__cover" />
               ))}
             </span>
