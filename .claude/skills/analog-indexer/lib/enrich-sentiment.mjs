@@ -23,15 +23,27 @@ function arg(flag, def) {
 
 const inPath = arg('--in', '');
 const outPath = arg('--out', '');
-const batchSize = parseInt(arg('--batch', '8'), 10);
-// Parallel albums in flight. Default 4 — LM Studio serves up to 4 requests at once.
-// Overridable via the SENT_CONC env var or the --concurrency flag (flag wins).
-const concurrency = Math.max(1, parseInt(arg('--concurrency', process.env.SENT_CONC || '4'), 10));
+// One song per request (batch 1): each song gets the model's full reasoning budget,
+// and there's no batch to overflow/split. Overridable via --batch.
+const batchSize = parseInt(arg('--batch', '1'), 10);
+// Parallel albums in flight. Default 2 — keep the two 64k-output requests light on the
+// model. Overridable via the SENT_CONC env var or the --concurrency flag (flag wins).
+const concurrency = Math.max(1, parseInt(arg('--concurrency', process.env.SENT_CONC || '2'), 10));
 const limit = parseInt(arg('--limit', '0'), 10);
 const slice = arg('--slice', '');
 const progressFile = arg('--progress-file', '');
 const endpoint = arg('--endpoint', 'http://127.0.0.1:1234').replace(/\/$/, '');
 const model = arg('--model', 'google/gemma-4-e4b');
+// Output cap. The actual output is tiny (3-7 keywords ≈ 50 tokens of JSON), so a huge
+// cap doesn't improve quality — it just lets the *reasoning* model ramble/loop for tens
+// of thousands of tokens at the model's slow speed, stalling a song for many minutes
+// (observed: 64k hung a song 20+ min). 2000 gives ample reasoning headroom (~40× the
+// real output) while bounding generation. Override via SENT_MAX_TOKENS.
+const maxTokens = parseInt(arg('--max-tokens', process.env.SENT_MAX_TOKENS || '2000'), 10);
+// Per-request wall-clock timeout (ms). Without this, ONE rambling generation pins a
+// model slot indefinitely and stalls the whole stage (observed). On timeout we abort,
+// mark the song failed, and move on — keeping throughput bounded. Override via SENT_TIMEOUT.
+const reqTimeout = parseInt(arg('--timeout', process.env.SENT_TIMEOUT || '75000'), 10);
 
 if (!inPath || !outPath) {
   process.stderr.write('usage: enrich-sentiment.mjs --in <in.jsonl> --out <out.jsonl> [options]\n');
@@ -85,7 +97,9 @@ async function callModel(songs, attempt = 0) {
   const body = {
     model,
     temperature: 0.2,
-    max_tokens: 2200,
+    // max_tokens only when explicitly capped (>0); otherwise omit so the model
+    // generates to its own context limit (see maxTokens above).
+    ...(maxTokens > 0 ? { max_tokens: maxTokens } : {}),
     messages: [
       {
         role: 'system',
@@ -102,11 +116,14 @@ async function callModel(songs, attempt = 0) {
       },
     ],
   };
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), reqTimeout);
   try {
     const res = await fetch(`${endpoint}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: ac.signal,
     });
     if (res.status === 400) {
       const t = await res.text();
@@ -115,6 +132,12 @@ async function callModel(songs, attempt = 0) {
       if (/context|n_ctx|n_keep/i.test(t)) throw new Error('CONTEXT_OVERFLOW');
       throw new Error('HTTP 400');
     }
+    // Model not loaded / server reloading / overloaded -> DEFER (don't burn the album
+    // as failed; it auto-retries next pass once the model is back). LM Studio returns
+    // 503/502/504 while a model is (re)loading, 429 when the request queue is full.
+    if (res.status === 503 || res.status === 502 || res.status === 504 || res.status === 429) {
+      throw new Error('MODEL_UNAVAILABLE');
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     const content = j.choices?.[0]?.message?.content || '';
@@ -122,13 +145,26 @@ async function callModel(songs, attempt = 0) {
     if (parsed && Array.isArray(parsed.results)) return parsed.results;
     throw new Error('no parseable results');
   } catch (e) {
-    if (e.message === 'CONTEXT_OVERFLOW') throw e; // propagate — handled by the album loop
+    if (e.message === 'CONTEXT_OVERFLOW' || e.message === 'MODEL_UNAVAILABLE') throw e; // propagate — defer the album
+    // Per-request timeout fired: a rambling/stuck generation pinned the slot. Don't
+    // retry (it'd just hang again) — mark this song failed and free the slot.
+    if (e.name === 'AbortError') {
+      process.stderr.write(`  sentiment call timed out after ${reqTimeout}ms — skipping song\n`);
+      return null;
+    }
+    // A raw fetch rejection (connection refused / reset while the server reloads)
+    // is also "model unavailable" — defer, don't fail.
+    if (/fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|terminated|network/i.test(e.message)) {
+      throw new Error('MODEL_UNAVAILABLE');
+    }
     if (attempt < 2) {
       await sleep(1500 * (attempt + 1));
       return callModel(songs, attempt + 1);
     }
     process.stderr.write(`  sentiment call failed: ${e.message}\n`);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -173,6 +209,13 @@ async function processGroup(group, tracks) {
   applyResults(group, tracks, results);
 }
 
+// A real song's lyrics are at most a few thousand chars. Anything far larger is a
+// SCRAPE ARTIFACT (the lyrics stage grabbed a whole page / duplicated content — we've
+// seen 70k–825k char blobs), which is ~tens of thousands of tokens and chokes/stalls
+// the model. We don't truncate the STORED lyrics (kept verbatim); we just don't feed an
+// implausible blob to the sentiment model — infer from title/artist/genre instead.
+const SANE_LYRICS_CHARS = 16000;
+
 async function sentimentForAlbum(album) {
   const tracks = album.tracks || [];
   if (!tracks.length) return;
@@ -182,7 +225,8 @@ async function sentimentForAlbum(album) {
     title: t.name,
     genre: album.genre,
     year: t.year || album.year,
-    lyrics: t.lyrics || null, // full lyrics — never truncated
+    // real lyrics passed verbatim; oversized scrape garbage -> null (infer from metadata)
+    lyrics: t.lyrics && t.lyrics.length <= SANE_LYRICS_CHARS ? t.lyrics : null,
   }));
   for (const group of chunk(songs, batchSize)) await processGroup(group, tracks);
 }
@@ -220,11 +264,11 @@ async function pool(items, n) {
       try {
         await sentimentForAlbum(album);
       } catch (e) {
-        if (e.message === 'CONTEXT_OVERFLOW') defer = true;
+        if (e.message === 'CONTEXT_OVERFLOW' || e.message === 'MODEL_UNAVAILABLE') defer = true;
         else process.stderr.write(`  album ${album.candidateIndex} sentiment error: ${e.message}\n`);
       }
-      // Context-overflow albums are left PENDING (not written) so they auto-retry
-      // next pass — e.g. once the model is reloaded with a larger context.
+      // Context-overflow / model-unavailable albums are left PENDING (not written) so
+      // they auto-retry next pass — e.g. once the model is reloaded (bigger context).
       if (defer) {
         deferred += 1;
         continue;

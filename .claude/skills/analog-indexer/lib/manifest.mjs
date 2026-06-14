@@ -22,8 +22,14 @@ export const STAGES = ['metadata', 'lyrics', 'sentiment', 'audio'];
 // In the STREAMING pipeline each stage owns an append-only file; the index/manifest
 // is derived from FILE MEMBERSHIP (which stage's file contains the album) plus the
 // carried-forward data. This is the source of truth for `status` and `merge`.
+// Read order matters. Metadata-RECOVERY shards (google/web web-search backfill) come
+// right after the base metadata so their matched-with-tracks records supersede the
+// trackless "unmatched" pass-through — but BEFORE lyrics/sentiment, which then layer
+// onto whatever tracks survived. Singles are folded into enriched.jsonl upstream.
 const STAGE_FILES = [
   ['metadata', 'enriched.jsonl'],
+  ['google', 'google.jsonl'], // browser web-search recovery (captcha-prone fallback)
+  ['web', 'web.jsonl'], // Claude WebSearch recovery
   ['lyrics', 'lyrics.jsonl'],
   ['sentiment', 'sentiment.jsonl'],
 ];
@@ -35,10 +41,29 @@ export function buildFromStages(dir) {
       const ci = r.candidateIndex;
       if (ci == null) continue;
       const prev = map.get(ci);
-      const merged = { ...(prev || {}), ...r }; // later stage carries forward + supersedes
+      // The metadata + RECOVERY stages (google/web) OWN the album-level fields (status,
+      // artist, name, year, genre…). The lyrics + sentiment stages only contribute TRACK
+      // data (lyrics, keywords) + their own stamp — their carried-forward copy of the album
+      // fields can be STALE for recovered albums (it was written while the album was still
+      // "unmatched"), so we must NOT let them override the recovery's metadata or wipe its
+      // tracks. So: meta/recovery stages merge whole; lyrics/sentiment only swap in tracks.
+      const isMeta = stage === 'metadata' || stage === 'google' || stage === 'web';
+      let merged;
+      if (isMeta) {
+        merged = { ...(prev || {}), ...r };
+      } else {
+        merged = { ...(prev || {}) };
+        if (r.tracks && r.tracks.length) merged.tracks = r.tracks;
+      }
       merged.stages = { ...(prev?.stages || {}) };
       if (stage === 'metadata') {
         merged.stages.metadata = { status: r.status === 'matched' ? 'done' : 'unmatched' };
+      } else if (stage === 'google') {
+        // Recovery: now matched-with-tracks. Restamp metadata done; note the source.
+        merged.stages.metadata = { status: 'done', source: 'google-fallback' };
+      } else if (stage === 'web') {
+        // Claude WebSearch recovery — only matched records are written here.
+        merged.stages.metadata = { status: 'done', source: 'web-lookup' };
       } else if (stage === 'lyrics') {
         merged.stages.lyrics = { status: 'done', found: (r.tracks || []).filter((t) => t.lyricsStatus === 'found').length };
       } else if (stage === 'sentiment') {

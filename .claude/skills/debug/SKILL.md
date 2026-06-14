@@ -36,13 +36,16 @@ Filter console output for the transcript prefix and read the op stream:
 
 - Grep console messages for `PDJ_API` to get the ordered list of data ops.
 - Each line is JSON: `{"t":…,"op":"…", …details}`.
-- Common ops: `db.open`, `db.putItem`, `db.bulkPutItems`, `import.index`,
-  `import.zip`, `export.zip`, `art.cache`, `art.generate`, `filter.apply`,
-  `sort.apply`, `starmap.layout`, `mock.load`.
+- The full op vocabulary (the `ApiOp` union in `src/lib/log.ts`): `db.open`,
+  `db.putSource`, `db.putItem`, `db.bulkPutItems`, `db.getItemsBySource`,
+  `db.getAllItems`, `db.deleteSource`, `art.cache`, `art.generate`, `import.index`,
+  `import.zip`, `export.zip`, `filter.apply`, `sort.apply`, `starmap.layout`,
+  `starmap.tier`, `mock.load`.
 
 If a feature "isn't working", check whether its expected op fired (e.g. no
 `filter.apply` line means the filter never ran; no `db.bulkPutItems` after an
-import means data never landed).
+import means data never landed; drilling a constellation should emit
+`starmap.tier` then a fresh `starmap.layout`).
 
 ## 4. Inspect / reset state with the dev handle
 
@@ -69,10 +72,19 @@ The data of record is IndexedDB DB `pocketdj`. Inspect it via:
 Cover art lives in the `art` store as blobs (never in the SW cache), so missing
 art is an IndexedDB / `art.cache` problem, not a build/cache problem.
 
+## Auto-seed on boot
+
+On first boot (empty DB) the app **auto-seeds** from `public/current-index.json`
+(`src/lib/dataActions.ts seedIfEmpty`), so the deployed site shows the catalog with no
+console interaction. If you're debugging a seed issue, `window.__pdj.clear()` then reload
+re-triggers it. (If you want a truly empty app, clear and load something explicit
+instead of reloading.)
+
 ## Loading data while debugging
 
 - Mock data: `npm run gen:mock` -> writes `public/mock-index.json`, then use the
   in-app "Load demo data" button or `window.__pdj.loadMock()`.
 - A real index: the indexer (`.claude/skills/analog-indexer/`) produces
-  `index-out/index.json`; load it via `window.__pdj.loadIndex(json)` or the
-  in-app Import button.
+  `index-out/full/index.json`; load it via `window.__pdj.loadIndex(json)` or the
+  in-app Import button. (The shipped seed `public/current-index.json` is a copy of
+  this merged index.)

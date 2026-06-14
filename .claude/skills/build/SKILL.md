@@ -37,11 +37,19 @@ dist/
   registerSW.js           # registers the SW (autoUpdate)
   manifest.webmanifest    # PWA manifest
   favicon.svg, star-placeholder.svg, ...
+  current-index.json      # bundled catalog the app auto-seeds from on first boot
+  mock-index.json         # demo data for the in-app "Load demo data" button
 ```
 
-The SW uses `registerType: 'autoUpdate'` and `navigateFallback: '/index.html'`
-(SPA routing). `globPatterns` precaches only `**/*.{js,css,html,svg,png,woff2}` —
-the **app shell**.
+Config lives in `vite.config.ts` (`VitePWA`, `strategies: 'generateSW'`). The SW uses
+`registerType: 'autoUpdate'` and `navigateFallback: '/index.html'` (SPA routing).
+`globPatterns` precaches only `**/*.{js,css,html,svg,png,woff2}` — the **app shell**.
+`devOptions.enabled: false`, so the SW is off in `npm run dev` (test it via `npm run
+preview`).
+
+The app auto-seeds IndexedDB from `current-index.json` on first boot; that file is
+`public/current-index.json` copied into `dist/`. To ship a fresh catalog, replace it
+(e.g. from the indexer's `index-out/full/index.json`) before building.
 
 ## Important: cover art is NOT precached
 

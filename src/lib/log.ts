@@ -27,6 +27,7 @@ export type ApiOp =
   | 'filter.apply'
   | 'sort.apply'
   | 'starmap.layout'
+  | 'starmap.tier'
   | 'mock.load';
 
 /** Emit one transcript line. Always single-line JSON for easy grepping. */

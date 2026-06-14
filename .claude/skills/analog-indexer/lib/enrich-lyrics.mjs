@@ -182,14 +182,23 @@ function stripGeniusChrome(text) {
   return t.trim();
 }
 
+// A real song's lyrics top out around a few thousand chars. If a "scrape" yields far
+// more, the selector grabbed a whole page / unrelated content (we've seen 70k–825k char
+// blobs) — that's NOT lyrics, so REJECT it (return '' → treated as notfound) rather than
+// store garbage. This is validation, not truncation of real lyrics.
+const MAX_PLAUSIBLE_LYRICS = 20000;
+
 function cleanLyrics(text) {
-  // No truncation — store full lyrics (longest songs are well under any model's
-  // 32k+ context; the sentiment stage sends them whole).
-  return String(text || '')
+  const out = String(text || '')
     .replace(/\r\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n') // collapse big gaps
     .replace(/[ \t]+\n/g, '\n')
     .trim();
+  if (out.length > MAX_PLAUSIBLE_LYRICS) {
+    process.stderr.write(`  rejected oversized lyrics scrape (${out.length} chars) — likely a page dump, not lyrics\n`);
+    return '';
+  }
+  return out;
 }
 
 // slug for AZLyrics: lowercase, keep only [a-z0-9], drop a leading "the".

@@ -6,6 +6,7 @@ import { downloadExportZip } from '../storage/exportZip';
 import type { IndexJson } from '../types/index-json';
 import { useAppStore } from '../store/useAppStore';
 import { useDataStore } from '../store/useDataStore';
+import { getSources } from '../storage/repo';
 
 async function refreshAll() {
   await useAppStore.getState().refreshSources();
@@ -29,6 +30,30 @@ export async function loadIndexUrl(url: string, sourceName?: string, onProgress?
   if (!res.ok) throw new Error(`index not found (${res.status})`);
   const index = (await res.json()) as IndexJson;
   const { source, counts } = await importIndexJson(index, { sourceName });
+  await hydrateArt(source.id, onProgress);
+  await refreshAll();
+  return counts;
+}
+
+/**
+ * First-run seed: if the DB has no sources yet, load the bundled catalog
+ * (public/current-index.json) so the deployed site shows data with no console /
+ * manual import — used on app boot (mobile-friendly). No-op if data already exists.
+ */
+export async function seedIfEmpty(onProgress?: (done: number, total: number) => void): Promise<{ albums: number; songs: number } | null> {
+  const sources = await getSources();
+  if (sources.length > 0) {
+    await refreshAll();
+    return null;
+  }
+  const url = `${import.meta.env.BASE_URL}current-index.json`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    await refreshAll();
+    return null; // no seed file deployed — render empty rather than block
+  }
+  const index = (await res.json()) as IndexJson;
+  const { source, counts } = await importIndexJson(index, { sourceName: 'My Vinyl' });
   await hydrateArt(source.id, onProgress);
   await refreshAll();
   return counts;

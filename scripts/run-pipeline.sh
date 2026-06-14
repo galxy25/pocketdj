@@ -28,8 +28,15 @@ PROG=${PROG:-index-out/pipe-progress.log}
 LIB=.claude/skills/analog-indexer/lib
 
 LYR_CONC=${LYR_CONC:-3}
-SENT_CONC=${SENT_CONC:-4}
+SENT_CONC=${SENT_CONC:-2}
+SENT_BATCH=${SENT_BATCH:-1}
+SENT_MAX_TOKENS=${SENT_MAX_TOKENS:-2000}   # tiny output; bigger only lets the reasoning model ramble/stall
+SENT_TIMEOUT=${SENT_TIMEOUT:-75000}        # per-request wall-clock cap so one stuck song can't pin a slot
 SENT_MODEL=${SENT_MODEL:-google/gemma-4-e4b}
+# Sentiment path: 'local' = the local-model worker below; 'claude' = handled OUT OF BAND
+# by the sentiment-claude Workflow (Claude sub-agents — much faster for a full index),
+# so this script runs lyrics only. Default local (fast enough for incremental adds).
+SENT_MODE=${SENT_MODE:-local}
 POLL=${POLL:-20}
 
 count() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
@@ -49,7 +56,8 @@ lyrics_worker() {
 sentiment_worker() {
   while true; do
     node "$LIB/enrich-sentiment.mjs" --in "$LYR" --out "$SENT" \
-      --concurrency "$SENT_CONC" --model "$SENT_MODEL" --progress-file "$PROG" 2>>/tmp/pocketdj-sentiment.log || true
+      --concurrency "$SENT_CONC" --batch "$SENT_BATCH" --max-tokens "$SENT_MAX_TOKENS" \
+      --timeout "$SENT_TIMEOUT" --model "$SENT_MODEL" --progress-file "$PROG" 2>>/tmp/pocketdj-sentiment.log || true
     if [ -f "$LYR.done" ] && [ "$(count "$SENT")" -ge "$(count "$LYR")" ]; then
       : > "$SENT.done"; echo "[sentiment] complete ($(count "$SENT") albums)"; break
     fi
@@ -57,10 +65,15 @@ sentiment_worker() {
   done
 }
 
-echo "streaming pipeline: lyrics(conc=$LYR_CONC) + sentiment(conc=$SENT_CONC, $SENT_MODEL) — metadata runs decoupled"
+echo "streaming pipeline: lyrics(conc=$LYR_CONC) + sentiment[$SENT_MODE] — metadata runs decoupled"
 lyrics_worker &
 LPID=$!
-sentiment_worker &
-SPID=$!
-trap 'kill $LPID $SPID 2>/dev/null' INT TERM
+if [ "$SENT_MODE" = "local" ]; then
+  sentiment_worker &
+  SPID=$!
+  trap 'kill $LPID $SPID 2>/dev/null' INT TERM
+else
+  echo "[sentiment] mode=$SENT_MODE — local worker OFF; run the sentiment-claude Workflow for this stage"
+  trap 'kill $LPID 2>/dev/null' INT TERM
+fi
 wait

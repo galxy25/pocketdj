@@ -57,3 +57,19 @@ aws s3 cp "s3://$BUCKET/manifest.webmanifest" "s3://$BUCKET/manifest.webmanifest
   --cache-control "no-cache" --metadata-directive REPLACE >/dev/null 2>&1 || true
 
 echo "✓ Deployed [$ENV]: $ENDPOINT"
+
+# If a CloudFront distribution fronts this env (for HTTPS/PWA), invalidate it so the new
+# index.html + hashed assets propagate together (avoids serving a stale shell that points
+# at just-deleted asset hashes). Distribution ids per env:
+CF_ID=""
+case "$ENV" in
+  dev)  CF_ID="${CF_ID_DEV:-E123GKAO9JVETP}" ;;
+  prod) CF_ID="${CF_ID_PROD:-E1SP8M1SIF7Q8D}" ;;
+esac
+if [ -n "$CF_ID" ]; then
+  INV=$(aws cloudfront create-invalidation --distribution-id "$CF_ID" --paths "/*" \
+    --profile "$PROFILE" --query 'Invalidation.Id' --output text 2>/dev/null || true)
+  DOMAIN=$(aws cloudfront get-distribution --id "$CF_ID" --profile "$PROFILE" \
+    --query 'Distribution.DomainName' --output text 2>/dev/null || true)
+  [ -n "$DOMAIN" ] && echo "✓ CloudFront [$ENV]: https://$DOMAIN (invalidation $INV)"
+fi
