@@ -27,8 +27,9 @@
 //      after the "<!-- Usage of azlyrics.com ... -->" comment. AZLyrics rate-limits /
 //      403s aggressively, so it gets its OWN throttle lane (>=1.5s spacing) + 403 backoff.
 //
-// Output: the SAME records, with each track's `lyrics` (string, trimmed ~3000 chars)
-// and `lyricsStatus` ('found'|'notfound') filled. One album record appended per line
+// Output: the SAME records, with each track's `lyrics` (string, stored verbatim — only
+// whitespace-trimmed; NO length truncation, the sole size guard is the >MAX_PLAUSIBLE_LYRICS
+// oversized-scrape reject) and `lyricsStatus` ('found'|'notfound') filled. One per line
 // as it completes (durable, album-by-album). Unmatched/empty albums pass through
 // unchanged (their tracks, if any, keep lyricsStatus 'notfound').
 

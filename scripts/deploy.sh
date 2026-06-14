@@ -46,9 +46,10 @@ for f in "${NOCACHE[@]}"; do EXCL+=(--exclude "$f"); done
 
 echo "▶ Syncing immutable assets…"
 # IMPORTANT: --delete prunes anything in the bucket not in dist/. The album-art mirror
-# (scripts/mirror-art.sh) uploads thumbnails to the SAME bucket under art/, which is NOT
-# part of dist/ — exclude it so a deploy never wipes the cover-art cache.
-aws s3 sync dist/ "s3://$BUCKET" --profile "$PROFILE" --delete --exclude "art/*" \
+# (scripts/mirror-art.sh -> art/) and the lyrics CDN (scripts/lyrics-cdn.sh -> lyrics/)
+# upload to the SAME bucket but are NOT part of dist/ — exclude them so a deploy never
+# wipes those caches.
+aws s3 sync dist/ "s3://$BUCKET" --profile "$PROFILE" --delete --exclude "art/*" --exclude "lyrics/*" \
   --cache-control "public,max-age=31536000,immutable" "${EXCL[@]}"
 
 echo "▶ Syncing no-cache shell + service worker…"

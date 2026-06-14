@@ -178,8 +178,8 @@ node lib/synth-singles.mjs --dir index-out/shards-pw
 ## 3. Lyrics stage (`lib/enrich-lyrics.mjs`)
 
 Headless-Playwright sub-indexer run AFTER metadata. Reads `enriched.jsonl`, ADDS each
-track's `lyrics` (trimmed) + `lyricsStatus` (`found`/`notfound`), carries every record
-forward verbatim, writes `lyrics.jsonl`.
+track's `lyrics` (whitespace-trimmed, stored verbatim) + `lyricsStatus` (`found`/`notfound`),
+carries every record forward verbatim, writes `lyrics.jsonl`.
 
 ```bash
 node lib/enrich-lyrics.mjs --in index-out/shards-pw/enriched.jsonl \
@@ -205,7 +205,8 @@ Per track it cycles two providers:
 = 20000 chars** is almost always a whole-page dump (nav/comments/blobs), NOT lyrics —
 it's REJECTED (returned as `''` → treated as `notfound`) rather than poisoning the index
 with garbage. Accepted text is also validated (>60 chars, has line breaks, not an
-error/redirect page) and trimmed (~3000 chars). Resumable + durable like the other
+error/redirect page) and whitespace-trimmed — there is NO length truncation; the only size
+guard is the oversized-scrape reject above. Resumable + durable like the other
 stages; unmatched/empty albums pass through untouched. `--cap N` limits to the first N
 tracks per album.
 
