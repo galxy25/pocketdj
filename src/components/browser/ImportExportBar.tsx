@@ -24,16 +24,20 @@ export function ImportExportBar() {
 
   return (
     <div className="pdj-iebar" data-testid="import-export-bar">
-      <button
-        className="pdj-btn pdj-btn--sm"
-        data-testid="load-mock"
-        disabled={!!busy}
-        onClick={() =>
-          withBusy('Load demo', () => loadMockData((done, total) => setProgress({ done, total })))
-        }
-      >
-        Load demo data
-      </button>
+      {/* Demo data is a dev/test affordance — hidden in deployed (production) builds,
+          which ship a real seeded catalog. Still available on the local dev server. */}
+      {import.meta.env.DEV && (
+        <button
+          className="pdj-btn pdj-btn--sm"
+          data-testid="load-mock"
+          disabled={!!busy}
+          onClick={() =>
+            withBusy('Load demo', () => loadMockData((done, total) => setProgress({ done, total })))
+          }
+        >
+          Load demo data
+        </button>
+      )}
 
       <button
         className="pdj-btn pdj-btn--sm pdj-btn--ghost"

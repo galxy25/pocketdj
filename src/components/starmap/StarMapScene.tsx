@@ -31,6 +31,8 @@ import { useAppStore } from '../../store/useAppStore';
 import { useBrowserStore } from '../../store/useBrowserStore';
 import { getAlbums, getSongs, getMeta, setMeta } from '../../storage/repo';
 import { useArtUrl } from '../common/useArtUrl';
+import { ConstellationGrid, type ConstellationCell } from './ConstellationGrid';
+import { useIsMobile } from '../../lib/useIsMobile';
 import { computeLayout, computeNebulaLayout } from '../../starmap/layout';
 import { groupSongs } from '../../starmap/grouping';
 import type { GroupBy, KeyNotation } from '../../starmap/grouping';
@@ -252,10 +254,6 @@ export function StarMapScene() {
   const pinchRef = useRef<{ startDist: number; startVb: ViewBox; sceneMidX: number; sceneMidY: number } | null>(null);
   const [panning, setPanning] = useState(false);
 
-  const resetView = useCallback(() => {
-    setViewBox(initialViewBox);
-  }, [initialViewBox]);
-
   // Wheel-zoom must be a NATIVE, non-passive listener: React's onWheel is passive,
   // so calling preventDefault() there throws "Unable to preventDefault inside passive
   // event listener". Keep the latest state in a ref so the listener stays stable.
@@ -386,6 +384,38 @@ export function StarMapScene() {
     return map;
   }, [layout]);
 
+  // ---- mobile: constellation cards instead of the pan/zoom scatter ----
+  const isMobile = useIsMobile();
+  // One card per constellation/nebula (multi-constellation views only; not the focused
+  // tier-2 album scatter). Tapping runs the constellation's normal action.
+  const gridCells = useMemo<ConstellationCell[]>(() => {
+    if (focusCategory) return [];
+    if (audioMode && nebulaLayout) {
+      return nebulaLayout.nebulae.map((n) => ({
+        id: n.id,
+        label: n.label,
+        countLabel: `${n.songCount} song${n.songCount === 1 ? '' : 's'}`,
+        onActivate: () => openNebulaInBrowser(n.filter),
+      }));
+    }
+    if (!audioMode && layout) {
+      return layout.constellations.map((c) => {
+        const members = starsByConstellation.get(c.genre) ?? [];
+        return {
+          id: c.genre,
+          label: c.label,
+          countLabel: `${members.length} album${members.length === 1 ? '' : 's'}`,
+          coverKeys: members
+            .map((s) => s.coverArtKey)
+            .filter((k): k is string => !!k)
+            .slice(0, 4),
+          onActivate: () => drillInto(c.genre),
+        };
+      });
+    }
+    return [];
+  }, [focusCategory, audioMode, nebulaLayout, layout, starsByConstellation, openNebulaInBrowser, drillInto]);
+
   // ---- mode toolbar (shared by every render branch, incl. empty/loading) ----
   const toolbar = (
     <div className="pdj-starmap__toolbar">
@@ -401,39 +431,43 @@ export function StarMapScene() {
       )}
 
       {/* Grouping-mode segmented control: Genre (2-tier album drill-in) / BPM /
-          Key (single-tier song NEBULAE). Deep-linked via ?group=. */}
-      <div className="pdj-starmap__segmented" role="group" aria-label="Group stars by">
-        <button
-          type="button"
-          className={'pdj-starmap__seg' + (groupBy === 'genre' ? ' is-active' : '')}
-          data-testid="starmap-mode-genre"
-          aria-pressed={groupBy === 'genre'}
-          onClick={() => setGroupBy('genre')}
-        >
-          Genre
-        </button>
-        <button
-          type="button"
-          className={'pdj-starmap__seg' + (groupBy === 'bpm' ? ' is-active' : '')}
-          data-testid="starmap-mode-bpm"
-          aria-pressed={groupBy === 'bpm'}
-          onClick={() => setGroupBy('bpm')}
-        >
-          BPM
-        </button>
-        <button
-          type="button"
-          className={'pdj-starmap__seg' + (groupBy === 'key' ? ' is-active' : '')}
-          data-testid="starmap-mode-key"
-          aria-pressed={groupBy === 'key'}
-          onClick={() => setGroupBy('key')}
-        >
-          Key
-        </button>
-      </div>
+          Key (single-tier song NEBULAE). Deep-linked via ?group=. HIDDEN once drilled
+          into a sub-genre (tier 2) — sub-constellations only exist in Genre mode, so the
+          mode switch is irrelevant there (just use "← All genres" to come back). */}
+      {!focusCategory && (
+        <div className="pdj-starmap__segmented" role="group" aria-label="Group stars by">
+          <button
+            type="button"
+            className={'pdj-starmap__seg' + (groupBy === 'genre' ? ' is-active' : '')}
+            data-testid="starmap-mode-genre"
+            aria-pressed={groupBy === 'genre'}
+            onClick={() => setGroupBy('genre')}
+          >
+            Genre
+          </button>
+          <button
+            type="button"
+            className={'pdj-starmap__seg' + (groupBy === 'bpm' ? ' is-active' : '')}
+            data-testid="starmap-mode-bpm"
+            aria-pressed={groupBy === 'bpm'}
+            onClick={() => setGroupBy('bpm')}
+          >
+            BPM
+          </button>
+          <button
+            type="button"
+            className={'pdj-starmap__seg' + (groupBy === 'key' ? ' is-active' : '')}
+            data-testid="starmap-mode-key"
+            aria-pressed={groupBy === 'key'}
+            onClick={() => setGroupBy('key')}
+          >
+            Key
+          </button>
+        </div>
+      )}
 
-      {/* Key-notation sub-toggle: only meaningful in Key mode. */}
-      {groupBy === 'key' && (
+      {/* Key-notation sub-toggle: only meaningful in Key mode (never while focused). */}
+      {!focusCategory && groupBy === 'key' && (
         <div
           className="pdj-starmap__segmented"
           role="group"
@@ -464,9 +498,6 @@ export function StarMapScene() {
         </div>
       )}
 
-      <button type="button" className="pdj-starmap__btn" onClick={resetView}>
-        Reset view
-      </button>
     </div>
   );
 
@@ -509,6 +540,9 @@ export function StarMapScene() {
         </div>
       )}
 
+      {isMobile && gridCells.length > 0 ? (
+        <ConstellationGrid cells={gridCells} />
+      ) : (
       <svg
         ref={svgRef}
         className={'pdj-starmap__svg' + (panning ? ' is-panning' : '')}
@@ -592,6 +626,7 @@ export function StarMapScene() {
           </>
         )}
       </svg>
+      )}
     </div>
   );
 }
