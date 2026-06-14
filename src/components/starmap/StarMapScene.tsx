@@ -72,6 +72,17 @@ function layoutCacheKey(
   );
 }
 
+/** Randomly pick up to `n` distinct cover-art keys from a constellation's members.
+ * Re-rolled on each mount so a different slice of the collection shows every visit. */
+function sampleCoverKeys(members: Star[], n: number): string[] {
+  const pool = members.map((s) => s.coverArtKey).filter((k): k is string => !!k);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, n);
+}
+
 export function StarMapScene() {
   const activeSourceId = useAppStore((s) => s.activeSourceId);
   const setItemType = useAppStore((s) => s.setItemType);
@@ -405,10 +416,9 @@ export function StarMapScene() {
           id: c.genre,
           label: c.label,
           countLabel: `${members.length} album${members.length === 1 ? '' : 's'}`,
-          coverKeys: members
-            .map((s) => s.coverArtKey)
-            .filter((k): k is string => !!k)
-            .slice(0, 4),
+          // Randomly sampled each load so a different slice of the collection surfaces
+          // every visit (helps rediscover hidden gems per genre).
+          coverKeys: sampleCoverKeys(members, 4),
           onActivate: () => drillInto(c.genre),
         };
       });

@@ -187,3 +187,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-songdetail__close:active { background: var(--pdj-border); }
 /* Bigger ✕ tap target for the song modal header (≥44×44 on touch). */
 [data-testid="song-modal"] .pdj-modal__header .pdj-iconbtn { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; }
+
+/* ---- Single-album browser view (/album/:id): track table + audio footer ---- */
+.pdj-albumtable { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 1rem; max-width: 64rem; margin: 0 auto; }
+.pdj-albumtable__head { display: flex; align-items: center; gap: 0.85rem; padding-bottom: 0.85rem; border-bottom: 1px solid var(--pdj-border); margin-bottom: 0.5rem; }
+.pdj-albumtable__art { width: 72px; height: 72px; border-radius: 10px; overflow: hidden; flex: 0 0 auto; }
+.pdj-albumtable__title { min-width: 0; flex: 1; }
+.pdj-albumtable__name { font-size: 1.2rem; font-weight: 800; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pdj-albumtable__artist { color: var(--pdj-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pdj-albumtable__meta { color: var(--pdj-fg-dim); font-size: 0.78rem; margin-top: 2px; }
+.pdj-albumtable__audio { margin-top: 1.3rem; padding-top: 0.7rem; border-top: 1px solid var(--pdj-border); }
+.pdj-albumtable__audiohead { margin: 0 0 0.5rem; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--pdj-fg-dim); }

@@ -14,8 +14,8 @@ export function AlbumCard({ album, onEdit }: { album: AlbumItem; onEdit: (id: st
       data-testid={`item-card-${album.id}`}
       role="button"
       tabIndex={0}
-      onClick={() => navigate(`/map/${album.id}`)}
-      onKeyDown={(e) => e.key === 'Enter' && navigate(`/map/${album.id}`)}
+      onClick={() => navigate(`/album/${album.id}`)}
+      onKeyDown={(e) => e.key === 'Enter' && navigate(`/album/${album.id}`)}
       title={`${album.artist} — ${album.name}`}
     >
       <Thumbnail artKey={album.coverArtKey} alt={`${album.artist} – ${album.name}`} size={150} className="pdj-card__art" />
