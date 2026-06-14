@@ -4,6 +4,7 @@
 //   between-> min + max (numeric only)
 import type { FilterClause, FilterOp } from '../../types/filter';
 import { getField, fieldsFor } from '../../engine/fieldRegistry';
+import { CATEGORY_NAMES } from '../../starmap/constellationMap';
 import { useBrowserStore } from '../../store/useBrowserStore';
 import { useAppStore } from '../../store/useAppStore';
 import { clockToMs, msToClock } from '../../lib/format';
@@ -109,24 +110,34 @@ export function FilterRow({ clause, index }: Props) {
           <option value="false">false</option>
         </select>
       ) : (
-        <input
-          data-testid="filter-value"
-          className="pdj-filter-value"
-          type={field?.numeric && !isLength ? 'number' : 'text'}
-          placeholder={isLength ? 'm:ss' : 'value'}
-          value={
-            isLength && typeof clause.value === 'number' ? msToClock(clause.value) : (clause.value as string | number) ?? ''
-          }
-          onChange={(e) =>
-            update(clause.id, {
-              value: isLength
-                ? clockToMs(e.target.value)
-                : field?.numeric
-                  ? numOrUndef(e.target.value)
-                  : e.target.value,
-            })
-          }
-        />
+        <>
+          <input
+            data-testid="filter-value"
+            className="pdj-filter-value"
+            type={field?.numeric && !isLength ? 'number' : 'text'}
+            placeholder={isLength ? 'm:ss' : 'value'}
+            list={field?.id === 'genre' ? 'pdj-filter-genres' : undefined}
+            value={
+              isLength && typeof clause.value === 'number' ? msToClock(clause.value) : (clause.value as string | number) ?? ''
+            }
+            onChange={(e) =>
+              update(clause.id, {
+                value: isLength
+                  ? clockToMs(e.target.value)
+                  : field?.numeric
+                    ? numOrUndef(e.target.value)
+                    : e.target.value,
+              })
+            }
+          />
+          {field?.id === 'genre' && (
+            <datalist id="pdj-filter-genres">
+              {CATEGORY_NAMES.map((g) => (
+                <option key={g} value={g} />
+              ))}
+            </datalist>
+          )}
+        </>
       )}
 
       <button className="pdj-iconbtn" data-testid={`filter-remove-${index}`} onClick={() => remove(clause.id)} aria-label="Remove filter">

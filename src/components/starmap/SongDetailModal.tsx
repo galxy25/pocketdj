@@ -68,6 +68,7 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
           <Row label="Track">{song.trackNumber ?? '—'}</Row>
           <Row label="Artist">{song.artist}</Row>
           <Row label="Album">{albumName}</Row>
+          <Row label="Genre">{song.genre ?? '—'}</Row>
           <Row label="Year">{song.year ?? '—'}</Row>
           <Row label="Length">{msToClock(song.lengthMs) || '—'}</Row>
           <Row label="Explicit">{song.explicit ? 'Yes' : 'No'}</Row>

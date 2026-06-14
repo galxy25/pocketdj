@@ -103,7 +103,8 @@ describe('fieldsFor', () => {
     expect(songIds).toContain('explicit');
     expect(songIds).toContain('lengthMs');
     expect(songIds).toContain('sentimentKeywords');
-    expect(songIds).not.toContain('genre');
+    // genre now applies to songs too (the album's top-level category — for "soul songs…")
+    expect(songIds).toContain('genre');
     expect(songIds).not.toContain('country');
     expect(songIds).not.toContain('trackCount');
   });

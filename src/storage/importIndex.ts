@@ -6,6 +6,7 @@ import { INDEX_SCHEMA_MAJOR } from '../types/index-json';
 import type { AlbumItem, AudioTrack, SongItem, DataSource, MusicItem, FileType } from '../types/model';
 import { bulkPutItems, putSource, getAlbums, countItems } from './repo';
 import { cacheArtUrl, cacheArtSources, generatePlaceholder, artKeyFor } from './artCache';
+import { categorize } from '../starmap/constellationMap';
 import { pMap } from '../lib/concurrency';
 import { hashKey } from '../lib/prng';
 import { txn } from '../lib/log';
@@ -34,7 +35,12 @@ export async function importIndexJson(index: IndexJson, opts: { sourceName?: str
   const sourceId = sourceIdFor(index.manifest.sourceType, sourceName);
 
   const albums: AlbumItem[] = index.albums.map((a) => mapAlbum(a, sourceId, now));
-  const songs: SongItem[] = index.songs.map((s) => mapSong(s, sourceId, now));
+  // Stamp each song with its album's TOP-LEVEL genre category (derived, not stored) so
+  // songs are filterable/sortable by genre in the browser.
+  const categoryByAlbum = new Map(index.albums.map((a) => [a.id, categorize(a.genre).category]));
+  const songs: SongItem[] = index.songs.map((s) =>
+    mapSong(s, sourceId, now, s.albumId ? categoryByAlbum.get(s.albumId) : undefined),
+  );
 
   await bulkPutItems([...albums, ...songs]);
 
@@ -138,7 +144,7 @@ export function audioRollup(
   };
 }
 
-function mapSong(s: IndexSong, sourceId: string, now: number): SongItem {
+function mapSong(s: IndexSong, sourceId: string, now: number, genre?: string): SongItem {
   return {
     id: s.id,
     sourceId,
@@ -148,6 +154,7 @@ function mapSong(s: IndexSong, sourceId: string, now: number): SongItem {
     year: s.year,
     artist: s.artist,
     name: s.name,
+    genre,
     lyrics: s.lyrics ?? undefined,
     lyricsStatus: s.lyricsStatus,
     sentimentKeywords: s.sentimentKeywords ?? [],
