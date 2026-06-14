@@ -17,6 +17,10 @@ npm test               # vitest run — pure-module unit tests
 npm run test:e2e       # Playwright (Chromium) e2e — see Testing
 ```
 
+A screen-by-screen product walkthrough with real screenshots lives in
+[`docs/STORYBOOK.md`](docs/STORYBOOK.md); regenerate the shots with the dev server
+running via `node scripts/screenshots/capture.mjs`.
+
 ## Tech choices
 
 | Concern | Choice | Why |
@@ -35,21 +39,25 @@ npm run test:e2e       # Playwright (Chromium) e2e — see Testing
 
 ```
 src/
-  types/        model.ts (DataSource/AlbumItem/SongItem union), index-json.ts (import shape),
-                filter.ts, starmap.ts (Star/Constellation/Planet/SolarSystem + Tier)
+  types/        model.ts (DataSource/AlbumItem/SongItem union, AudioTrack, ArtSource), index-json.ts (import shape),
+                filter.ts, starmap.ts (Star/Constellation/Nebula/Planet/SolarSystem + Tier)
   storage/      db.ts (idb schema), repo.ts (ONLY db access + transcript logging),
-                artCache.ts (cover blobs / URL display / placeholders + objectURL LRU),
+                artCache.ts (progressive cover sources / blobs / ref-counted display registry / placeholders),
                 importIndex.ts, exportZip.ts, importZip.ts
-  engine/       fieldRegistry.ts (filterable/sortable fields), filterEngine.ts (eq/neq/in/between), sortEngine.ts
-  starmap/      constellationMap.ts (genre -> {category, subgenre}), layout.ts (two-tier geometry),
-                solarSystem.ts (orbits)   — all pure, renderer-agnostic
+  engine/       fieldRegistry.ts (filterable/sortable fields, incl. camelot), filterEngine.ts (eq/neq/in/between), sortEngine.ts
+  starmap/      constellationMap.ts (genre -> {category, subgenre}), grouping.ts (songs -> BPM/key nebulae + filter),
+                layout.ts (genre two-tier geometry + nebula layout), solarSystem.ts (orbits)  — all pure, renderer-agnostic
   store/        useAppStore (source/type/view), useBrowserStore (filter/sort, persisted), useDataStore (item cache)
-  components/   layout/ (AppShell, TopBar), browser/ (selector, FilterBuilder, ItemGrid, EditItemModal,
-                PlugInIndicator, ImportExportBar…), starmap/ (StarMapScene, ConstellationField,
-                SolarSystemView, SongDetailModal), common/
-  lib/          log.ts (PDJ_API transcript), dataActions.ts (seed/import/export), debug.ts (window.__pdj),
-                format.ts, prng.ts, concurrency.ts
-scripts/        generate-mock-index.ts, deploy.sh (S3+CloudFront), run-pipeline.sh / run-backfill.sh (indexer)
+  components/   layout/ (AppShell, TopBar, SettingsModal), browser/ (selector, FilterBuilder, ItemGrid, ItemCard,
+                AlbumTrackTable, EditItemModal, PlugInIndicator, ImportExportBar…),
+                starmap/ (StarMapScene, ConstellationField, ConstellationGrid, NebulaField, SolarSystemView,
+                SongDetailModal, AudioTracksModal/Table, AudioEditModal),
+                common/ (Modal, Thumbnail, useArtUrl)
+  lib/          log.ts (PDJ_API transcript), dataActions.ts (seed/import/export/forceRefresh), debug.ts (window.__pdj),
+                format.ts, prng.ts, concurrency.ts, camelot.ts (Camelot wheel: rank/color/key<->camelot), useIsMobile.ts
+scripts/        generate-mock-index.ts, deploy.sh (S3+CloudFront), run-pipeline.sh / run-backfill.sh (indexer),
+                screenshots/capture.mjs (storybook screenshots)
+docs/           STORYBOOK.md + storybook/*.png (product walkthrough)
 .claude/skills/analog-indexer/   the indexer (lib/, workflow/, schema/, docs/, SKILL.md)
 tests/e2e/      Playwright specs + fixtures + proof/<feature>/ artifacts
 ```
@@ -57,13 +65,24 @@ tests/e2e/      Playwright specs + fixtures + proof/<feature>/ artifacts
 ## Data model
 
 Discriminated union on `type` (`src/types/model.ts`). `AlbumItem` (artist, name,
-`coverArtKey`/`coverArtUrl`, genre, year, country, `trackIds[]`, `pointer`,
-`fileType`, `enrichment`) and `SongItem` (albumId, trackNumber, year, lyrics,
-`lyricsStatus`, `sentimentKeywords[]`, `sentimentSource`, explicit, `lengthMs`,
-`pointer`, and **`bpm`/`key` = `null`** — deferred until audio analysis). Numeric
-fields that support `between` (`year`, `lengthMs`, `trackNumber`, `bpm`,
-`trackCount`) are stored as plain numbers; formatting happens at the edge
-(`lib/format.ts`).
+`coverArtKey`/`coverArtUrl`/**`coverArtSources[]`**, genre, year, country,
+`trackIds[]`, `pointer`, `fileType`, `enrichment`, plus the audio rollup below) and
+`SongItem` (albumId, trackNumber, year, lyrics, `lyricsStatus`,
+`sentimentKeywords[]`, `sentimentSource`, explicit, `lengthMs`, `pointer`, and the
+audio fields **`bpm`/`key`/`camelot`** = `null` until analyzed). Numeric fields
+that support `between` (`year`, `lengthMs`, `trackNumber`, `bpm`, `trackCount`) are
+stored as plain numbers; formatting happens at the edge (`lib/format.ts`).
+
+**Audio model.** The audio stage produces per-album **`audioTracks[]`** (each an
+`AudioTrack`: `trackNumber`, `startMs`/`endMs`/`durationMs`, `bpm`, `key`,
+`camelot`, optional `keyStrength`). This segmentation is detected from the recording
+and **independent of the metadata tracklist**, so `audioTracks.length` may differ
+from `trackIds.length` by design. `importIndex.ts` derives an **album-level rollup**
+at import time so the star map can group/sort without re-scanning every track:
+`audioBpm` = median BPM (rounded), `audioCamelot` / `audioKey` = the most-common
+value. Like song `bpm`/`key`, these are `null` (never `undefined`) when an album has
+no audio, so "no audio yet" stays explicit. **`ArtSource`** (`{ type: 'cdn' |
+'remote', url, cors? }`) backs the progressive cover-art sources — see *Cover art*.
 
 The **index JSON** the indexer emits (contract in `src/types/index-json.ts`, JSON
 Schema in `.claude/skills/analog-indexer/schema/index.schema.json`, loader rules in
@@ -80,20 +99,41 @@ open the DB. Albums and songs share `items`, discriminated by `type`; the virtua
 **"All"** source (`ALL_SOURCE_ID`) is simply "no source predicate". Bulk writes are
 chunked (~500/txn) so a full import never does one txn per record.
 
-**Cover art** (`artCache.ts`) is handled two ways, decided per host:
-- **CORS-friendly hosts** (Apple's `mzstatic.com`) are fetched, thumbnailed to a
-  256px **webp blob** via `OffscreenCanvas`, and stored in `art` (status `ok`) —
-  fully offline.
-- **CORS-blocked CDNs** (Discogs' `i.discogs.com` sends no
-  `Access-Control-Allow-Origin`) can't be fetched into a blob, but the browser can
-  still *display* them. We store the URL with status `url` and render via
-  `<image src=url>` directly (no doomed fetch, no console errors).
-- **Missing art** gets a deterministic gradient **placeholder** thumbnail (seeded
-  by album id, with scattered "stars" to match the night-sky theme).
+**Cover art — progressive, offline-durable** (`artCache.ts`). An album's art is an
+ordered, most-preferred-first list of **`coverArtSources`** (a **`cdn`** default —
+our own CORS-friendly/S3-mirrored origin — plus a **`remote`** third-party backup),
+falling back to the legacy single `coverArtUrl`. Resolution (`cacheArtSources`):
+- Try every **cacheable** source first (same-origin / root-relative `/art/…` /
+  known CORS-friendly host / `cors:true`): fetch → thumbnail to a 256px **webp blob**
+  via `OffscreenCanvas` → store in `art` (status `ok`). Fully offline + survives
+  restart. This is why art can migrate to the CDN incrementally without breaking
+  albums that still only have a remote URL.
+- If *no* source is cacheable (e.g. a Discogs CDN URL with no
+  `Access-Control-Allow-Origin`, or offline at first load), keep the first source's
+  URL (status `url`) and display it via `<img src>` directly — no doomed fetch.
+- **Missing art** gets a deterministic gradient **placeholder** thumbnail (seeded by
+  album id, with scattered "stars" to match the night-sky theme).
 
-Rendering resolves art through an **objectURL LRU** (cap ~400 live) so ~1,400 stars
-don't each pin a bitmap; blob URLs are revoked on eviction, `url`-status records
-return the remote URL as-is.
+**`artKeyFor({ coverArtSources?, coverArtUrl?, id })`** derives the SAME cache key
+the async paths produce, *without any network* — sources keyed by their ordered
+`type:url` join, else `coverArtUrl`, else a placeholder keyed by `id`. The importer
+assigns this at import time so the UI renders immediately and each thumbnail fetches
+lazily, instead of blocking first paint on hydrating every cover. (Re-mirroring —
+a new ordered source list — yields a fresh key, so the durable blob is re-cached.)
+
+**Ref-counted display registry + progressive subscribe.** Rendering no longer uses
+the old fixed-size LRU (which revoked in-use URLs and left most star-map covers
+broken). Instead `acquireArtUrl`/`releaseArtUrl` keep **one shared blob URL per art
+key, reference-counted** across every surface (browser grid, star-map stars, solar
+sun); the URL is revoked only when the **last** consumer releases it, so rendering
+~1,361 covers at once never breaks. Components go through the **`useArtUrl(key)`**
+hook (`components/common/useArtUrl.ts`): it acquires the shared URL (taking exactly
+one ref, released on unmount) and, if the thumbnail isn't cached yet, **subscribes**
+(`subscribeArt`) — when a background warm pass stores that thumbnail (`notifyArt`),
+the hook re-acquires and the cover **pops in**. Net effect: the UI is interactive at
+once and fills in progressively. **`requestPersistentStorage()`** (called on boot)
+asks the browser to keep these blobs from being evicted, so covers are durable
+across app/phone restart (important on iOS).
 
 **Portability**: `exportZip.ts` streams `manifest.json` + `sources.json` +
 `items.json` + `art/*.webp` into one `.zip`; `importZip.ts` rehydrates with **zero
@@ -111,6 +151,49 @@ fields like `sentimentKeywords` use set-intersection for `in`; `boolean` uses
 `getItems(scope) → applyFilters → sort → virtualize`, memoized on
 `(items, filterHash, sortHash)`. Each `applyFilters` emits a `filter.apply`
 transcript line carrying `in`/`out` counts (tests assert on it).
+
+## Single-album view & edit modals
+
+**`AlbumTrackTable.tsx`** (`/album/:albumId`) is the per-album work surface, reached
+by tapping an album card (`ItemCard` → `navigate('/album/'+id)`). It shows the album
+header (cover via `useArtUrl`, title/artist/`year · genre · N tracks`) over a track
+table (one row per song — the same `bpm`/`key`/`camelot` row as song-browser mode,
+tap → `SongDetailModal`), plus an **album audio-analysis** footer (`AudioTracksTable`,
+read-only). Buttons: **◎ Solar** (→ `/map/:id`), **✎ Edit album info**
+(`EditItemModal`), **✎ Edit audio analysis** (`AudioEditModal`), and **← Back**
+(`navigate(-1)`). Back is **filter-preserving**: it pops history rather than routing
+to a fresh `/browse`, and the filter/sort live in the **persisted** `useBrowserStore`,
+so you return to exactly the list you came from.
+
+**`EditItemModal.tsx`** edits an album or song in place (persists to IndexedDB):
+- **Album**: Artist, Title, Year, **Genre** (a combo input suggesting the canonical
+  category names yet accepting free text), **Cover URL** (paste a new cover to
+  re-fetch), Country, File type.
+- **Song**: Artist, Title, Track #, Year, Length (m:ss), Explicit, sentiment
+  keywords, and the audio fields with **Key** and **Camelot** as **valid-value
+  dropdowns** (`MUSICAL_KEYS` / `CAMELOT_KEYS`) that **stay in sync** — picking one
+  fills the other via `keyToCamelot`/`camelotToKey`.
+- **Delete track** (songs only) swaps the form for a mobile-friendly confirm —
+  *"Delete '<name>' …"* with a safe **Nope** and a red **Delete** — so a destructive
+  edit needs a deliberate second tap.
+
+**`AudioEditModal.tsx`** edits an album's `audioTracks` — one row per detected
+segment with Start/End (m:ss), BPM, and linked Key/Camelot dropdowns — staged
+locally until **Save**. (`AudioTracksModal` is the same table read-only, opened by
+clicking the solar-system sun.)
+
+## Settings popout & force refresh
+
+**`TopBar`**'s **⚙** gear opens **`SettingsModal.tsx`** (catalog counts + source
+name + one action). **↻ Force refresh & re-pull catalog** runs
+`dataActions.forceRefreshCatalog()`: it **unregisters the service worker**, **deletes
+all `caches`**, **`clearAllStores()`** (wipes the IndexedDB catalog), then
+`location.reload()`. With the SW gone the browser fetches the freshest app shell, and
+`seedIfEmpty` re-pulls `current-index.json` into the now-empty DB. This is the fix
+for "my phone still shows old data/UI after a deploy": the SW caches the shell and
+auto-seed only runs on an empty DB, so a previously-loaded catalog otherwise sticks.
+The seed fetch itself uses **`cache: 'reload'`** so even the seed JSON bypasses the
+HTTP cache and is always the latest.
 
 ## Star map (two-tier)
 
@@ -147,7 +230,50 @@ future 3D/animated renderer can consume the same `{x, y, r}` data.
   tier-1 hazy glowing hull/blob that is the drill-in click target.
 - **`solarSystem.ts` / `SolarSystemView.tsx`** (`/map/:albumId`): cover = sun,
   songs = planets (orbit radius by track number, planet radius by length, seeded
-  static angle). `SongDetailModal` shows a clicked song.
+  static angle). `SongDetailModal` shows a clicked song; **clicking the sun** opens
+  `AudioTracksModal` (the album's audio segmentation); a **☰ Browser** button jumps
+  to the album's single-album track table (`/album/:albumId`).
+
+### Grouping modes: BPM / Key nebulae
+
+The star map's **Genre / BPM / Key** toggle (`?group=` in the URL) changes what's
+grouped. Genre stays the album-based two-tier map above. **BPM and Key are
+song-based "nebula" modes**, owned by the pure `grouping.ts`:
+
+- **`groupSongs(songs, groupBy, keyNotation)`** buckets *all songs* (not albums)
+  into ordered **constellations**, each carrying the exact browser **filter** that
+  selects its songs — so "tap a nebula" pre-filters the Browser table:
+  - **BPM**: decade buckets `floor(bpm/10)*10` → labels like `120–130`, ascending;
+    filter `{ field:'bpm', op:'between', min, max }`. Null/non-finite BPM → one
+    **Unknown** constellation, last.
+  - **Key + camelot**: group by `camelot` (e.g. `8A`), ordered by the Camelot wheel
+    (`camelotRank`); filter `{ field:'camelot', op:'eq', value }`.
+  - **Key + musical**: group by `key` (e.g. `A minor`), ordered by pitch then minor
+    before major; filter `{ field:'key', op:'eq', value }`. Unparseable/missing key
+    → an **Unknown** constellation, last, that carries **no** filter (there's no
+    clean "missing" predicate, so it's read-only).
+- **`layout.ts → computeNebulaLayout`** turns each constellation into a hazy
+  **nebula** (`NebulaField.tsx` — soft glow + a small decorative star scatter that
+  is *not* 1:1 with the song count). In **Key** mode each nebula is tinted by
+  **`camelotColor`** (`lib/camelot.ts`); the Unknown nebula stays neutral.
+- **`lib/camelot.ts`** is the pure Camelot-wheel helper shared by grouping, the
+  nebula tint, and the editor dropdowns: `camelotRank` (wheel order; A=even/B=odd so
+  a numeric compare sorts the wheel), `camelotColor` (12 hues × A-deeper/B-brighter
+  lightness), `keyToCamelot`/`camelotToKey` (accepts sharp+flat input, emits
+  canonical sharp), and the published valid-value lists `CAMELOT_KEYS` (24) /
+  `MUSICAL_KEYS` (24) that back the dropdowns.
+
+### Mobile constellation grid
+
+On phones (`lib/useIsMobile.ts`, ≤680px) the pan/zoom SVG scatter is illegible, so
+the **tier-1 genre map** and both **nebula modes** render `ConstellationGrid.tsx`
+instead: a vertical-scrolling 2-column grid of **cards**, each a big title + count
+with a mode-specific visual — **genre** cards show a mosaic of up to **16
+randomly-sampled covers** (via `useArtUrl`/`Thumbnail`), **BPM** cards a metronome
+glyph, **key** cards the Camelot color fill (neutral for Unknown). Tapping a card
+runs its action (drill into the genre's sub-genres, or open the Browser pre-filtered
+to the nebula's songs). Drilling into a genre still uses the SVG scatter (album
+stars are sparse enough to tap).
 
 ## PWA / offline + auto-seed
 
@@ -279,9 +405,13 @@ shell + asset hashes propagate together. URLs:
 ## Testing
 
 **Unit (Vitest).** `npm test` runs `environment: node` tests over the pure modules
-(`src/engine/*`, `src/lib/{format,prng,concurrency}`, `src/starmap/*`, and the
+(`src/engine/*`, `src/lib/{format,prng,concurrency,camelot,camelotColor}`,
+`src/starmap/*` incl. `grouping`, `src/storage/{importIndex,artKeyFor}`, and the
 indexer's `lib/*.js` + `manifest.mjs`/`synth-singles.mjs` logic). Coverage includes
-both `src/**` and the indexer lib.
+both `src/**` and the indexer lib. The Camelot wheel (`camelotColor`,
+`keyToCamelot`/`camelotToKey` round-trips, `CAMELOT_KEYS`/`MUSICAL_KEYS`) and the
+network-free `artKeyFor` key derivation are covered in
+`src/lib/camelotColor.test.ts` and `src/storage/artKeyFor.test.ts`.
 
 **E2E (Playwright + Chromium).** `tests/e2e/` (`browser.spec.ts`,
 `importexport.spec.ts`, `starmap.spec.ts`). The project convention: **every feature
@@ -318,6 +448,7 @@ indexing playbooks.
 
 ## Roadmap
 
-Playback; digital / S3 / streaming source types; the 2-channel mixer fade UI; audio
-analysis to fill `bpm`/`key`/timestamps; an animated & 3D star-map renderer (the
-geometry modules already emit renderer-agnostic data for it).
+Playback; digital / S3 / streaming source types; the 2-channel mixer fade UI; an
+animated & 3D star-map renderer (the geometry modules already emit renderer-agnostic
+data for it). Audio analysis (BPM/key/Camelot/timestamps) is now **shipped** — see
+the audio stage in the indexer and the BPM/Key star-map modes.

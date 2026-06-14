@@ -1,0 +1,333 @@
+# PocketDJ — Product Storybook
+
+**PocketDJ** is an offline-first PWA that "puts a DJ in your pocket": it turns a
+personal music collection (here, a digitized **vinyl** crate of 1,361 albums /
+12,525 songs) into something you can *explore* and *perform from* on a phone —
+even with no signal. Every album and song is enriched with metadata, mood
+keywords, and **audio analysis** (BPM, musical key, and Camelot-wheel code), and
+all cover art is cached locally so the app is fully usable offline and durable
+across restarts.
+
+**The user story.** *As a DJ / crate-digger, I want to browse my whole collection
+on my phone — by genre, by tempo, or by harmonic key — find the right record
+fast, see each track's BPM/key so I can beat- and key-match, drill into a single
+album, and fix up any wrong metadata, all without a network connection.* PocketDJ
+serves that story with two complementary lenses on the same data: a visual,
+**spatial "star map"** for discovery and a precise, **filterable browser** for
+look-up — joined by a per-album **solar-system** view and **single-album** track
+table for the close-up work.
+
+The screens below follow a natural journey: **discover** (star map → solar
+system), **look up** (browser → single album), then **maintain** (edit modals,
+settings). All shots are from the real local app at mobile width (402×874) unless
+labeled *desktop*.
+
+---
+
+## 1. Star map — genre mode (mobile grid)
+
+![Star map, genre grid](storybook/01-starmap-genre-mobile.png)
+
+The landing screen. On a phone the star map renders as a vertically-scrolling
+**2-column grid of constellation cards** (the pan/zoom SVG night-sky is illegible
+on a phone, so the grid replaces it). Each genre card is a big **TITLE**, an
+album **count**, and a **4×4 mosaic of ~16 randomly-sampled covers** from that
+genre, so you recognize the constellation at a glance.
+
+**Affordances**
+- **Genre / BPM / Key** segmented toggle (top right) — switches how the whole
+  collection is grouped. Genre is selected here.
+- **⚙ gear** (far top right) — opens the Settings popout.
+- **✦ Star Map / ☰ Browser** pills (top bar) — switch between the two main views.
+- **A constellation card** — tap to *drill into* that genre's sub-genres (see §2).
+- The grid free-scrolls to the rest of the genres below the fold.
+
+**User story:** this is the **discovery** entry point — "show me my crate, grouped
+the way a DJ thinks about it." Genre is the default mental model; the cover mosaic
+makes each pile instantly recognizable.
+
+---
+
+## 2. Star map — drilled into a genre (sub-genres)
+
+![Genre drilled into sub-genres](storybook/02-starmap-genre-drilled-mobile.png)
+
+Tapping a genre card drills in. The mode toggle **hides**, a breadcrumb
+(**"OTHER · SUB-GENRES"**) appears, and a **"← All genres"** back button takes you
+up a level. Inside the focused genre, albums are drawn as **clickable stars** in a
+constellation scatter (each art-backed star shows a small cover and its album-name
+caption); tapping a star opens that album's **solar system** (§4).
+
+**Affordances**
+- **← All genres** — return to the genre grid (§1).
+- **A star** — open `/map/:albumId`, the album's solar system.
+
+**User story:** narrows discovery from "a genre" down to "the actual records in
+it," keeping the spatial, browse-by-feel experience while getting you one tap from
+any single album.
+
+---
+
+## 3. Star map — BPM mode
+
+![Star map, BPM grid](storybook/03-starmap-bpm-mobile.png)
+
+The same collection, regrouped by **tempo**. Each card is a **BPM range** (30–40,
+40–50, 50–60, 60–70 …) marked with a **metronome glyph** and the number of songs
+in that band.
+
+**Affordances**
+- **BPM** is selected in the mode toggle.
+- **A BPM card** — opens the browser pre-filtered to songs in that tempo band.
+
+**User story:** direct support for **beat-matching** — "what have I got around 120
+BPM?" is the core question when building a set, and this is the one-tap answer.
+
+---
+
+## 4. Star map — Key mode (Camelot colors)
+
+![Star map, key grid](storybook/04-starmap-key-mobile.png)
+
+Regrouped by **musical key**, with each card **tinted by the Camelot color** of its
+key. The 12 wheel numbers map to 12 hues around the color circle; **B (major)**
+reads brighter, **A (minor)** deeper — so 1A/1B are red, 2A/2B amber, and so on
+around the wheel. An **"Unknown"** card (songs with no analyzed key) stays a
+neutral grey.
+
+**Affordances**
+- **Key** is selected; a **Camelot / Musical** sub-toggle switches the key
+  *notation* shown on the cards (Camelot codes like `8A` vs. musical names like
+  `A minor`).
+- **A key card** — opens the browser pre-filtered to songs in that key.
+
+**User story:** **harmonic mixing** — the Camelot wheel is exactly the tool DJs use
+to pick key-compatible tracks, and coloring the cards by it makes adjacent
+(mixable) keys visually obvious.
+
+---
+
+## 5. Settings popout
+
+![Settings modal](storybook/05-settings-modal-mobile.png)
+
+Opened from the **⚙ gear**. Shows the catalog size (albums · songs) and the active
+source, plus a single maintenance action.
+
+**Affordances**
+- **↻ Force refresh & re-pull catalog** — clears this device's cached app shell +
+  data and re-pulls the latest catalog from the server (the fix for "I'm seeing
+  old data or a stale layout"). The button shows "Refreshing…" while it works.
+
+**User story:** the offline cache is a feature, but occasionally you *want* the
+newest catalog — this is the escape hatch that re-syncs without reinstalling.
+
+---
+
+## 6. Solar system view (`/map/:id`)
+
+![Solar system](storybook/06-solar-system-mobile.png)
+
+A single album rendered as a **solar system**: the **album cover is the sun** at the
+center and each **song is a planet** orbiting it. Planet *size* scales with track
+length; planet *color* flags content (explicit tracks read red, tracks with mood
+keywords use the secondary accent). Each planet is captioned with its song name.
+
+**Affordances**
+- **← Back** — return to the star map (or wherever you came from).
+- **☰ Browser** — jump to this album's single-album track table (§8).
+- **Tap the sun (cover)** — open the album **audio-tracks popup** (§7).
+- **Tap a planet** — open that song's read-only detail card (like §9).
+
+**User story:** a playful, at-a-glance close-up of one record — see its shape (how
+many tracks, how long, how spicy) before committing, and pivot straight into the
+precise views.
+
+---
+
+## 7. Solar system — audio-tracks popup
+
+![Audio tracks popup](storybook/07-solar-audio-popup-mobile.png)
+
+Tapping the sun opens **"<album> — Audio"**: the album's **independent audio
+segmentation** in a table of **# · Start–End · BPM · Key** (each key shown with its
+Camelot tag, e.g. `7A`). The caption notes that this segmentation is detected from
+the recording and *may differ from the metadata tracklist*, with the total
+analyzed runtime.
+
+**User story:** the ground-truth tempo/key data a DJ actually mixes on, surfaced
+right where you're looking at the record. (The same table appears, editable, in §8
+and §15.)
+
+---
+
+## 8. Single-album view (`/album/:id`)
+
+![Album track table](storybook/12-album-tracktable-mobile.png)
+
+The precise per-album work surface: a **header** (cover, title, artist,
+year · genre · track count) over a **track table**. Each row shows the track number,
+title, **BPM**, **key**, and **Camelot** tag, plus a "plug in" affordance for the
+physical/file pointer. A **"ALBUM AUDIO ANALYSIS"** footer repeats the
+audio-segmentation table from §7.
+
+**Affordances**
+- **← Back** — returns to the browser **with your filters/sort preserved**.
+- **◎ Solar** — open this album's solar system (§6).
+- **A track row** — open that song's detail card (§9).
+- **✎ Edit album info** — open the album editor (§14).
+- **✎ Edit audio analysis** (in the footer) — open the audio editor (§15).
+
+**User story:** the "I've found the record, now show me everything about it"
+view — every track's mixable data in one scannable table, with edit hooks for
+fixing anything wrong.
+
+---
+
+## 9. Song detail modal
+
+![Song detail modal](storybook/13-song-detail-modal-mobile.png)
+
+Tapping a track row (here, or a planet in §6) opens a **read-only** song card:
+track #, artist, album, year, length, explicit flag, **BPM / Key / Camelot**
+(or "— pending audio" when not yet analyzed), sentiment keyword tags, the physical
+"plug in" pointer, and lyrics when found.
+
+**Affordances**
+- **✕ / Close** — dismiss (Escape or backdrop-tap also close).
+
+**User story:** the full single-track read-out for when you need every detail of
+one song without leaving the album.
+
+---
+
+## 10. Browser — albums (mobile)
+
+![Browser albums, mobile](storybook/08-browser-albums-mobile.png)
+
+The look-up lens. A **responsive grid of album cards** (cover, title, artist,
+year · genre · track count). Cards lazy-load their cached covers. Tapping a card
+opens the single-album view (§8); each card has a **✎** edit shortcut.
+
+**Affordances** (toolbar, fuller view in §12)
+- **Source** selector, **Albums / Songs** type toggle, **Sort**, result count, and
+  the import/export bar.
+- **⚙** settings, **✦ Star Map / ☰ Browser** view switch (top bar).
+
+**User story:** "I know roughly what I want — let me filter and sort to it,"
+complementary to the spatial star map.
+
+---
+
+## 11. Browser — songs (mobile)
+
+![Browser songs, mobile](storybook/09-browser-songs-mobile.png)
+
+Flipping the type toggle to **Songs** swaps the album grid for a **dense song
+list**. Each row is track # · title · **BPM** · **key** · **Camelot** tag · "plug
+in" · **✎**. The result count (here `12525 / 12525`) updates as you filter.
+
+**Affordances**
+- **Albums / Songs** toggle (Songs active).
+- A **row** opens the song detail card (§9); **✎** opens the song editor (§16).
+
+**User story:** the track-level look-up — scan, filter, and sort 12k songs by the
+exact fields that matter for mixing.
+
+---
+
+## 12. Browser — filter & sort (desktop)
+
+![Browser filter, desktop](storybook/11-browser-filter-desktop.png)
+
+The full toolbar, shown at desktop width. The **filter builder** composes
+AND-clauses of *field · operator · value* (e.g. *Genre is Disco*, *BPM between
+120–128*); operators include is / is-not / in-list / between, with field-aware
+value editors. **Sort** picks a field + direction (↑/↓). The **import/export bar**
+loads demo data, imports a `.json`/`.zip`, or exports the whole catalog as a `.zip`
+for portability.
+
+**Affordances**
+- **+ Filter** — add a clause; **Clear** removes all; each row has **✕** to remove.
+- **Sort** field dropdown + **↑/↓** direction.
+- **Load demo data / Import… / Export**.
+
+**User story:** the power-user query surface — express the exact crate slice you
+want and carry your library between devices.
+
+---
+
+## 13. Browser — albums (desktop)
+
+![Browser albums, desktop](storybook/10-browser-albums-desktop.png)
+
+The same album browser at desktop width: a wider multi-column grid showing many
+covers at once, for fast visual scanning on a laptop.
+
+---
+
+## 14. Edit album modal
+
+![Edit album modal](storybook/14-edit-album-modal-mobile.png)
+
+Opened from **✎ Edit album info** (§8) or a card's **✎**. Edits the album's
+metadata: **Artist, Title, Year**, a **Genre** combo (suggests the canonical
+category names *and* accepts free text), a **Cover URL** field (paste a new cover
+to re-fetch), **Country**, and **File type**.
+
+**Affordances**
+- **Cancel** / **Save** (Save persists to the local IndexedDB catalog).
+
+**User story:** fix wrong enrichment in place — bad genre, missing year, or a
+broken cover — without re-running the indexer.
+
+---
+
+## 15. Edit audio-analysis modal
+
+![Edit audio modal](storybook/15-edit-audio-modal-mobile.png)
+
+Opened from **✎ Edit audio analysis** in the album footer (§8). One editable row
+per detected audio segment: **Start / End** (m:ss), **BPM**, **Key**, and
+**Camelot**. The **Key** and **Camelot** dropdowns are linked — picking one fills
+the other from the Camelot↔key mapping — so the pair always stays consistent.
+
+**Affordances**
+- **Cancel** / **Save**.
+
+**User story:** correct the auto-detected tempo/key when the analyzer got a track
+wrong — critical, because the whole BPM/Key discovery flow trusts these numbers.
+
+---
+
+## 16. Edit song modal
+
+![Edit song modal](storybook/16-edit-song-modal-mobile.png)
+
+The song editor (opened from a song row's **✎**). Edits **Artist, Title, Track #,
+Year, Length, Explicit**, **sentiment keywords**, and the audio fields — with
+**Key** and **Camelot** as **valid-value dropdowns** (the 24 musical keys / 24
+Camelot codes, kept in sync). It also exposes a destructive **Delete track**
+action (§17).
+
+**Affordances**
+- **Cancel** / **Save**, and **Delete track** (red).
+
+**User story:** per-song corrections — fix a mistagged key, mark a track explicit,
+or remove a track that doesn't belong.
+
+---
+
+## 17. Delete-track confirm
+
+![Delete track confirm](storybook/17-delete-track-confirm-mobile.png)
+
+**Delete track** swaps the editor for a mobile-friendly confirm: *"Delete '<song>'
+from the index? This can't be undone."* with a safe **Nope** and a red **Delete**.
+
+**Affordances**
+- **Nope** — back out (no change).
+- **Delete** — remove the track from the local catalog.
+
+**User story:** a deliberate two-step guard so a destructive edit can't happen by a
+stray tap — important on a touch screen.
