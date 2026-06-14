@@ -105,6 +105,16 @@ export function SolarSystemView() {
         </button>
         <h1 className="pdj-solar__title">{system.name}</h1>
         <span className="pdj-solar__artist">{system.artist}</span>
+        <button
+          type="button"
+          className="pdj-starmap__btn"
+          data-testid="solar-to-browser"
+          style={{ marginLeft: 'auto' }}
+          onClick={() => navigate('/album/' + album.id)}
+          title="View this album's tracks in the browser"
+        >
+          ☰ Browser
+        </button>
       </div>
 
       <svg
