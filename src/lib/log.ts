@@ -15,6 +15,7 @@ export type ApiOp =
   | 'db.open'
   | 'db.putSource'
   | 'db.putItem'
+  | 'db.deleteSong'
   | 'db.bulkPutItems'
   | 'db.getItemsBySource'
   | 'db.getAllItems'

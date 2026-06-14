@@ -166,6 +166,15 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-form__row > span { color: var(--pdj-fg-dim); font-size: 0.8rem; }
 .pdj-form__row textarea { resize: vertical; }
 .pdj-form__actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+.pdj-form__delete { margin-right: auto; }
+.pdj-btn--danger { background: var(--pdj-danger); color: #1a0b10; border-color: transparent; font-weight: 700; }
+.pdj-btn--danger:hover { filter: brightness(1.08); }
+.pdj-btn--lg { font-size: 1rem; padding: 0.85rem 1.2rem; min-height: 48px; }
+/* Mobile-friendly delete confirm (big Delete / Nope buttons). */
+.pdj-confirm { display: flex; flex-direction: column; gap: 1.3rem; padding: 0.6rem 0; }
+.pdj-confirm__msg { margin: 0; font-size: 1rem; line-height: 1.4; }
+.pdj-confirm__actions { display: flex; gap: 0.8rem; }
+.pdj-confirm__actions .pdj-btn { flex: 1; }
 
 /* ---------- solar system: planet hover label + song detail popup ---------- */
 .pdj-planet { cursor: pointer; transition: filter 0.08s; }

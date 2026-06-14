@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MusicItem, AlbumItem, SongItem } from '../../types/model';
 import { isAlbum } from '../../types/model';
-import { getItem, putItem } from '../../storage/repo';
+import { getItem, putItem, deleteSong } from '../../storage/repo';
 import { artKeyFor, cacheArtUrl, generatePlaceholder } from '../../storage/artCache';
 import { Modal } from '../common/Modal';
 import { msToClock, clockToMs } from '../../lib/format';
@@ -19,10 +19,12 @@ interface Props {
 
 export function EditItemModal({ itemId, onClose, onSaved }: Props) {
   const [item, setItem] = useState<MusicItem | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const origCover = useRef<string>('');
 
   useEffect(() => {
     let live = true;
+    setConfirming(false);
     if (itemId)
       getItem(itemId).then((it) => {
         if (!live) return;
@@ -36,6 +38,13 @@ export function EditItemModal({ itemId, onClose, onSaved }: Props) {
   }, [itemId]);
 
   const open = itemId != null;
+
+  async function del() {
+    if (!item || isAlbum(item)) return;
+    await deleteSong(item.id);
+    onSaved();
+    onClose();
+  }
 
   async function save() {
     if (!item) return;
@@ -67,6 +76,24 @@ export function EditItemModal({ itemId, onClose, onSaved }: Props) {
     <Modal open={open} onClose={onClose} title={item ? `Edit ${item.type}` : 'Edit'} testId="edit-modal">
       {!item ? (
         <p>Loading…</p>
+      ) : confirming ? (
+        <div className="pdj-confirm" data-testid="delete-confirm">
+          <p className="pdj-confirm__msg">
+            Delete “{item.name}” from the index? This can’t be undone.
+          </p>
+          <div className="pdj-confirm__actions">
+            <button
+              className="pdj-btn pdj-btn--lg pdj-btn--ghost"
+              data-testid="delete-nope"
+              onClick={() => setConfirming(false)}
+            >
+              Nope
+            </button>
+            <button className="pdj-btn pdj-btn--lg pdj-btn--danger" data-testid="delete-yes" onClick={del}>
+              Delete
+            </button>
+          </div>
+        </div>
       ) : (
         <div className="pdj-form">
           <Text label="Artist" id="artist" value={item.artist} onChange={(v) => set({ artist: v })} />
@@ -80,6 +107,15 @@ export function EditItemModal({ itemId, onClose, onSaved }: Props) {
           )}
 
           <div className="pdj-form__actions">
+            {!isAlbum(item) && (
+              <button
+                className="pdj-btn pdj-btn--danger pdj-form__delete"
+                data-testid="track-delete-open"
+                onClick={() => setConfirming(true)}
+              >
+                Delete track
+              </button>
+            )}
             <button className="pdj-btn pdj-btn--ghost" data-testid="field-cancel" onClick={onClose}>
               Cancel
             </button>
