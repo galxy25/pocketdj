@@ -1,0 +1,16 @@
+/* Actions row for the song detail card: the "Add to…" affordance sits beside the
+   existing full-width Close button. Colocated so it doesn't touch the shared
+   index.css concurrently. */
+.pdj-songdetail__actions {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+.pdj-songdetail__actions .pdj-songdetail__close {
+  flex: 1;
+  margin-top: 0; /* row supplies the spacing now */
+}
+.pdj-songdetail__actions > button:first-child {
+  flex: 0 0 auto;
+}

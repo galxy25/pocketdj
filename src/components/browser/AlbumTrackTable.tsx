@@ -12,6 +12,8 @@ import { EditItemModal } from './EditItemModal';
 import { SongDetailModal } from '../starmap/SongDetailModal';
 import { AudioTracksTable } from '../starmap/AudioTracksTable';
 import { AudioEditModal } from '../starmap/AudioEditModal';
+import { AddToCollectionButton } from '../common/AddToCollectionButton';
+import './albumTrackTableActions.css';
 
 export function AlbumTrackTable() {
   const { albumId } = useParams<{ albumId: string }>();
@@ -120,6 +122,7 @@ export function AlbumTrackTable() {
         >
           ✎ Edit album info
         </button>
+        <AddToCollectionButton item={{ kind: 'album', id: album.id, name: album.name }} />
       </div>
 
       <div className="pdj-albumtable__audio" data-testid="album-audio-footer">

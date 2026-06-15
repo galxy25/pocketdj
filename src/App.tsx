@@ -5,21 +5,38 @@ import { BrowserView } from './components/browser/BrowserView';
 import { AlbumTrackTable } from './components/browser/AlbumTrackTable';
 import { StarMapScene } from './components/starmap/StarMapScene';
 import { SolarSystemView } from './components/starmap/SolarSystemView';
+import { PocketsView } from './components/pockets/PocketsView';
+import { PocketDetail } from './components/pockets/PocketDetail';
+import { PlaylistsView } from './components/playlists/PlaylistsView';
+import { PlaylistDetail } from './components/playlists/PlaylistDetail';
+import { SetlistView } from './components/playlists/SetlistView';
 import { installDebug } from './lib/debug';
 import { seedIfEmpty } from './lib/dataActions';
 import { requestPersistentStorage } from './storage/artCache';
+import { useBrowserStore } from './store/useBrowserStore';
+
+/** Land in Collection at the user's remembered sub-view (star Map vs. List). */
+function CollectionHome() {
+  const view = useBrowserStore((s) => s.collectionView);
+  return <Navigate to={view === 'list' ? '/browse' : '/map'} replace />;
+}
 
 const router = createBrowserRouter([
   {
     path: '/',
     element: <AppShell />,
     children: [
-      { index: true, element: <Navigate to="/map" replace /> },
+      { index: true, element: <CollectionHome /> },
       { path: 'browse', element: <BrowserView /> },
       { path: 'album/:albumId', element: <AlbumTrackTable /> },
       { path: 'map', element: <StarMapScene /> },
       { path: 'map/:albumId', element: <SolarSystemView /> },
-      { path: '*', element: <Navigate to="/map" replace /> },
+      { path: 'pockets', element: <PocketsView /> },
+      { path: 'pockets/:id', element: <PocketDetail /> },
+      { path: 'playlists', element: <PlaylistsView /> },
+      { path: 'playlists/:id', element: <PlaylistDetail /> },
+      { path: 'playlists/:id/setlist/:setlistId', element: <SetlistView /> },
+      { path: '*', element: <CollectionHome /> },
     ],
   },
 ], {

@@ -2,6 +2,7 @@
 // so Playwright can verify behavior (proof-of-verification).
 import { getDB, type ArtRecord, type MetaRecord } from './db';
 import type { DataSource, MusicItem, AlbumItem, SongItem, ItemType } from '../types/model';
+import type { Pocket, Playlist, Setlist } from '../types/collections';
 import { ALL_SOURCE_ID } from '../types/model';
 import { txn } from '../lib/log';
 
@@ -148,4 +149,135 @@ export async function getMeta<T = unknown>(key: string): Promise<T | undefined> 
 export async function setMeta(key: string, value: unknown): Promise<void> {
   const db = await getDB();
   await db.put('meta', { key, value });
+}
+
+// ---- pockets (cross-source user collections) ----
+export async function getPockets(): Promise<Pocket[]> {
+  const db = await getDB();
+  return db.getAll('pockets');
+}
+
+export async function getPocket(id: string): Promise<Pocket | undefined> {
+  const db = await getDB();
+  return db.get('pockets', id);
+}
+
+export async function putPocket(p: Pocket): Promise<void> {
+  const db = await getDB();
+  p.updatedAt = Date.now();
+  await db.put('pockets', p);
+  txn('pocket.update', {
+    id: p.id,
+    name: p.name,
+    songs: p.songIds.length,
+    albums: p.albumIds.length,
+    children: p.childPocketIds.length,
+  });
+}
+
+export async function deletePocket(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('pockets', id);
+  txn('pocket.delete', { id });
+}
+
+export async function bulkPutPockets(pockets: Pocket[]): Promise<void> {
+  const db = await getDB();
+  for (let i = 0; i < pockets.length; i += CHUNK) {
+    const slice = pockets.slice(i, i + CHUNK);
+    const tx = db.transaction('pockets', 'readwrite');
+    const store = tx.objectStore('pockets');
+    await Promise.all(slice.map((p) => store.put(p)));
+    await tx.done;
+  }
+  txn('db.bulkPutItems', { store: 'pockets', count: pockets.length });
+}
+
+// ---- playlists (templates) ----
+export async function getPlaylists(): Promise<Playlist[]> {
+  const db = await getDB();
+  return db.getAll('playlists');
+}
+
+export async function getPlaylist(id: string): Promise<Playlist | undefined> {
+  const db = await getDB();
+  return db.get('playlists', id);
+}
+
+export async function putPlaylist(p: Playlist): Promise<void> {
+  const db = await getDB();
+  p.updatedAt = Date.now();
+  await db.put('playlists', p);
+  txn('playlist.update', { id: p.id, name: p.name, sequences: p.sequences.length });
+}
+
+/** Delete a playlist AND cascade-delete every setlist generated from it. */
+export async function deletePlaylist(id: string): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(['playlists', 'setlists'], 'readwrite');
+  await tx.objectStore('playlists').delete(id);
+  let cursor = await tx.objectStore('setlists').index('by_playlist').openCursor(id);
+  let n = 0;
+  while (cursor) {
+    await cursor.delete();
+    n++;
+    cursor = await cursor.continue();
+  }
+  await tx.done;
+  txn('playlist.delete', { id, setlists: n });
+}
+
+export async function bulkPutPlaylists(playlists: Playlist[]): Promise<void> {
+  const db = await getDB();
+  for (let i = 0; i < playlists.length; i += CHUNK) {
+    const slice = playlists.slice(i, i + CHUNK);
+    const tx = db.transaction('playlists', 'readwrite');
+    const store = tx.objectStore('playlists');
+    await Promise.all(slice.map((p) => store.put(p)));
+    await tx.done;
+  }
+  txn('db.bulkPutItems', { store: 'playlists', count: playlists.length });
+}
+
+// ---- setlists (frozen performance instances) ----
+/** All setlists for one playlist, newest first. */
+export async function getSetlists(playlistId: string): Promise<Setlist[]> {
+  const db = await getDB();
+  const rows = (await db.getAllFromIndex('setlists', 'by_playlist', playlistId)) as Setlist[];
+  rows.sort((a, b) => b.generatedAt - a.generatedAt);
+  return rows;
+}
+
+export async function getAllSetlists(): Promise<Setlist[]> {
+  const db = await getDB();
+  return db.getAll('setlists');
+}
+
+export async function getSetlist(id: string): Promise<Setlist | undefined> {
+  const db = await getDB();
+  return db.get('setlists', id);
+}
+
+export async function putSetlist(s: Setlist): Promise<void> {
+  const db = await getDB();
+  await db.put('setlists', s);
+  txn('setlist.create', { id: s.id, playlistId: s.playlistId, tracks: s.tracks.length, totalMs: s.totalMs });
+}
+
+export async function deleteSetlist(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('setlists', id);
+  txn('setlist.delete', { id });
+}
+
+export async function bulkPutSetlists(setlists: Setlist[]): Promise<void> {
+  const db = await getDB();
+  for (let i = 0; i < setlists.length; i += CHUNK) {
+    const slice = setlists.slice(i, i + CHUNK);
+    const tx = db.transaction('setlists', 'readwrite');
+    const store = tx.objectStore('setlists');
+    await Promise.all(slice.map((s) => store.put(s)));
+    await tx.done;
+  }
+  txn('db.bulkPutItems', { store: 'setlists', count: setlists.length });
 }

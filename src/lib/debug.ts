@@ -1,6 +1,6 @@
 // Dev-only debug handle: window.__pdj. Lets Playwright assert DB state and drive
 // data loading without scraping the UI.
-import { countItems } from '../storage/repo';
+import { countItems, getPockets, getPlaylists, getAllSetlists } from '../storage/repo';
 import { clearAllStores } from '../storage/db';
 import { loadMockData, exportData } from './dataActions';
 import { importIndexJson, hydrateArt } from '../storage/importIndex';
@@ -10,6 +10,8 @@ import { useDataStore } from '../store/useDataStore';
 
 export interface PdjDebug {
   counts: () => Promise<{ albums: number; songs: number }>;
+  /** Collection-store tallies (pockets / playlists / setlists) for e2e assertions. */
+  collections: () => Promise<{ pockets: number; playlists: number; setlists: number }>;
   loadMock: () => Promise<{ albums: number; songs: number }>;
   loadIndex: (index: IndexJson, sourceName?: string) => Promise<{ albums: number; songs: number }>;
   exportZip: () => Promise<unknown>;
@@ -19,6 +21,14 @@ export interface PdjDebug {
 export function installDebug() {
   const api: PdjDebug = {
     counts: () => countItems(),
+    collections: async () => {
+      const [pockets, playlists, setlists] = await Promise.all([
+        getPockets(),
+        getPlaylists(),
+        getAllSetlists(),
+      ]);
+      return { pockets: pockets.length, playlists: playlists.length, setlists: setlists.length };
+    },
     loadMock: () => loadMockData(),
     loadIndex: async (index, sourceName) => {
       const { source, counts } = await importIndexJson(index, { sourceName });

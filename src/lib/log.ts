@@ -30,7 +30,19 @@ export type ApiOp =
   | 'sort.apply'
   | 'starmap.layout'
   | 'starmap.tier'
-  | 'mock.load';
+  | 'mock.load'
+  // collections: pockets / playlists / setlists
+  | 'pocket.create'
+  | 'pocket.update'
+  | 'pocket.delete'
+  | 'pocket.addItem'
+  | 'playlist.create'
+  | 'playlist.update'
+  | 'playlist.delete'
+  | 'playlist.addItem'
+  | 'playlist.realize'
+  | 'setlist.create'
+  | 'setlist.delete';
 
 /** Emit one transcript line. Always single-line JSON for easy grepping. */
 export function txn(op: ApiOp, detail: Record<string, unknown> = {}): void {

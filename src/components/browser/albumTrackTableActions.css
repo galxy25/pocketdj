@@ -1,0 +1,6 @@
+/* The album editbar now holds two buttons (Edit album info + Add to…). The shared
+   .pdj-albumtable__editbar is a flex row justified to the end; add a gap so the
+   buttons don't sit flush. Colocated to avoid touching index.css concurrently. */
+.pdj-albumtable__editbar {
+  gap: 0.5rem;
+}

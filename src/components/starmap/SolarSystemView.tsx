@@ -13,6 +13,7 @@ import { computeSolarSystem } from '../../starmap/solarSystem';
 import { msToClock } from '../../lib/format';
 import { SongDetailModal } from './SongDetailModal';
 import { AudioTracksModal } from './AudioTracksModal';
+import { AddToCollectionButton } from '../common/AddToCollectionButton';
 import './starmap.css';
 
 // Distinct planet tints keyed off sentiment / explicit flags. Uses the palette's
@@ -105,6 +106,10 @@ export function SolarSystemView() {
         </button>
         <h1 className="pdj-solar__title">{system.name}</h1>
         <span className="pdj-solar__artist">{system.artist}</span>
+        <AddToCollectionButton
+          className="pdj-starmap__btn"
+          item={{ kind: 'album', id: album.id, name: album.name }}
+        />
         <button
           type="button"
           className="pdj-starmap__btn"
