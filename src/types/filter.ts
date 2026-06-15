@@ -49,6 +49,9 @@ export interface FieldDef {
   ops: FilterOp[];
   /** Whether the field can be used as a sort key. */
   sortable: boolean;
+  /** Closed value set — drives a single-select (eq/neq) or multi-select (in) dropdown in
+   *  the FilterBuilder instead of a free-text input (genre, key, Camelot). */
+  options?: string[];
 }
 
 export const EMPTY_FILTER: FilterState = { clauses: [] };

@@ -9,9 +9,32 @@ function norm(v: unknown): string {
   return String(v ?? '').trim().toLowerCase();
 }
 
+/**
+ * A half-built clause (one the user added but hasn't given an operand to yet)
+ * must NOT silently exclude the whole catalog. Treat it as a no-op so an empty
+ * filter row never zeroes the results. The signal is `value === undefined`
+ * (a freshly-added clause carries no `value`); an explicit empty string ('')
+ * is a real "match missing/empty" query and is intentionally NOT incomplete.
+ */
+function isIncomplete(clause: FilterClause): boolean {
+  switch (clause.op) {
+    case 'eq':
+    case 'neq':
+      return clause.value === undefined || clause.value === null;
+    case 'in':
+      return !clause.values || clause.values.length === 0;
+    case 'between':
+      return clause.min == null && clause.max == null;
+    default:
+      return false;
+  }
+}
+
 function matchClause(item: MusicItem, clause: FilterClause): boolean {
   const field = getField(clause.field);
   if (!field) return true; // unknown field -> don't exclude
+  // A half-built clause (no operand yet) is a no-op, not an exclude-all.
+  if (isIncomplete(clause)) return true;
   // A clause whose field doesn't apply to this item type passes through.
   if (!field.appliesTo.includes(item.type)) return true;
 
