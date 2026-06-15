@@ -93,6 +93,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-chip:hover { color: var(--pdj-fg); border-color: var(--pdj-accent); }
 .pdj-chip.is-on { background: var(--pdj-accent); color: #07101f; border-color: var(--pdj-accent); font-weight: 600; }
 
+/* ---------- multi-key sort builder ---------- */
+.pdj-sort-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem; }
+.pdj-sort-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.pdj-sort-stack .pdj-iconbtn { min-width: 36px; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+.pdj-sort-stack select { min-height: 36px; }
+
 /* ---------- grid / cards ---------- */
 .pdj-grid__scroll { position: absolute; inset: 0; overflow: auto; padding: 1rem; }
 .pdj-grid__row { display: grid; gap: 1rem; padding-bottom: 1rem; }
