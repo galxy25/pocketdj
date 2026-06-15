@@ -4,7 +4,8 @@
 // file input handles both.
 import { unzip, strFromU8 } from 'fflate';
 import type { DataSource, MusicItem } from '../types/model';
-import { putSource, bulkPutItems, putArt } from './repo';
+import type { Pocket, Playlist, Setlist } from '../types/collections';
+import { putSource, bulkPutItems, putArt, bulkPutPockets, bulkPutPlaylists, bulkPutSetlists } from './repo';
 import { importIndexJson, hydrateArt } from './importIndex';
 import type { IndexJson } from '../types/index-json';
 import { txn } from '../lib/log';
@@ -23,6 +24,21 @@ export interface ImportZipResult {
   sources: number;
   items: number;
   art: number;
+  pockets: number;
+  playlists: number;
+  setlists: number;
+}
+
+/** Parse an optional collections JSON entry; tolerate absence (v1 zips) + malformed. */
+function readJsonArray<T>(files: Unzipped, path: string): T[] {
+  const raw = files[path];
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(strFromU8(raw));
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Import a PocketDJ export zip (sources + items + art). */
@@ -39,6 +55,14 @@ export async function importExportZip(buf: ArrayBuffer): Promise<ImportZipResult
   for (const s of sources) await putSource(s);
   await bulkPutItems(items);
 
+  // Cross-source collections (absent in v1 zips → empty arrays, no-op).
+  const pockets = readJsonArray<Pocket>(files, 'pockets.json');
+  const playlists = readJsonArray<Playlist>(files, 'playlists.json');
+  const setlists = readJsonArray<Setlist>(files, 'setlists.json');
+  if (pockets.length) await bulkPutPockets(pockets);
+  if (playlists.length) await bulkPutPlaylists(playlists);
+  if (setlists.length) await bulkPutSetlists(setlists);
+
   let art = 0;
   for (const [path, bytes] of Object.entries(files)) {
     const m = path.match(/^art\/(.+)\.webp$/);
@@ -49,8 +73,22 @@ export async function importExportZip(buf: ArrayBuffer): Promise<ImportZipResult
     }
   }
 
-  txn('import.zip', { sources: sources.length, items: items.length, art });
-  return { sources: sources.length, items: items.length, art };
+  txn('import.zip', {
+    sources: sources.length,
+    items: items.length,
+    art,
+    pockets: pockets.length,
+    playlists: playlists.length,
+    setlists: setlists.length,
+  });
+  return {
+    sources: sources.length,
+    items: items.length,
+    art,
+    pockets: pockets.length,
+    playlists: playlists.length,
+    setlists: setlists.length,
+  };
 }
 
 /**

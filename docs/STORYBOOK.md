@@ -331,3 +331,189 @@ from the index? This can't be undone."* with a safe **Nope** and a red **Delete*
 
 **User story:** a deliberate two-step guard so a destructive edit can't happen by a
 stray tap — important on a touch screen.
+
+---
+
+# Part II — Pockets, Playlists & Setlists (perform from the crate)
+
+The screens above are about *exploring and maintaining* the collection. This part
+is about **performing from it**. Three nouns:
+
+- A **Pocket** is a reusable, harmonically-coherent grouping of songs/albums (and
+  it can nest other pockets — a DAG). Think "Classic Soul Anthems."
+- A **Playlist** is a **template**: an ordered set of **Sequences** ("chapters"),
+  where each sequence holds songs, albums, or pocket references and can carry a
+  **time budget**.
+- A **Setlist** is a **frozen instance** produced by hitting **▶ Play**: PocketDJ
+  *realizes* the template into a concrete, ordered track list — expanding albums,
+  **sampling** over-budget pockets to fit the slot, and **autofilling** temporal
+  gaps with harmonic bridge tracks — then persists it so you can hand it to the DJ:
+  *"spin these tracks, in this order."*
+
+The top bar also changes here: Star Map and Browser are merged into one
+**Collection** mode (with a remembered **Map / List** sub-toggle), sitting beside
+the new **Pockets** and **Playlists** modes. On a phone the brand stacks above the
+mode tabs so nothing competes for width (visible in every shot below).
+
+---
+
+## 18. Pockets — list
+
+![Pockets list](storybook/18-pockets-list-mobile.png)
+
+The Pockets mode landing screen: a **New pocket** creator and a list of existing
+pockets, each a card with a **kind badge** (`HARMONIC`), the name, and member
+counts (*songs · albums · child pockets*).
+
+**Affordances**
+- **New pocket name… + Create** — make a pocket, then jump into it.
+- **A pocket card** — open its detail (§19).
+- The new **bag** icon marks the Pockets tab; the **▶ play** icon marks Playlists.
+
+**User story:** "keep a few reusable crates of records that mix well together, so I
+can drop a whole vibe into any set."
+
+---
+
+## 19. Pocket — detail
+
+![Pocket detail](storybook/19-pocket-detail-mobile.png)
+
+Inside a pocket: an editable **name**, a **Delete**, and the **Members** list. Each
+song is a **two-line row** — title + artist on top, then its **BPM** and
+**Camelot key** badges (e.g. `57 BPM · 9A`) so the harmonic coherence of the pocket
+is visible at a glance. A **Child pockets** section nests other pockets (cycle-
+guarded). Tapping a song opens the same **song detail** popover used everywhere
+else (§24).
+
+**Affordances**
+- **Tap a song** — open its detail popover.
+- **Remove** — drop a member.
+- **Add child pocket** — nest another pocket (rejected if it would create a cycle).
+- Members are added from anywhere via **＋ Add to…** (§20).
+
+**User story:** curate the crate and *see the key/tempo spread* while you do it — a
+pocket is only as good as how well its records mix.
+
+---
+
+## 20. Add to a pocket or playlist
+
+![Add-to-collection picker](storybook/20-add-to-collection-picker-mobile.png)
+
+The shared **＋ Add to…** picker, reachable from any song or album — the browser
+song detail, the album view, and the solar-system popovers. It lists your
+**Playlists** (with a sequence count) and **Pockets**, plus **＋ New playlist /
+＋ New pocket** to create-and-add in one step. (Here it's layered over a song's
+detail card — note *Lyrics — Not found* behind it, the lazy lyrics loader behaving
+correctly when none exist.)
+
+**Affordances**
+- **A playlist row** — add the item (to a chosen sequence if it has more than one).
+- **A pocket row** — add the item to that pocket.
+- **＋ New playlist / ＋ New pocket** — create and add in one action.
+
+**User story:** wherever you find a record, you're one tap from filing it into a set
+or a crate.
+
+---
+
+## 21. Playlists — list
+
+![Playlists list](storybook/21-playlists-list-mobile.png)
+
+The Playlists mode landing: a **New playlist** creator and the list of playlist
+**templates**, each showing its sequence and item counts.
+
+**Affordances**
+- **New playlist name… + Create** — start a template and open it.
+- **A playlist card** — open its detail/editor (§22).
+
+**User story:** "keep the sets I perform — Family BBQ, Sunday Brunch — as living
+templates I can re-roll any time."
+
+---
+
+## 22. Playlist — the template (sequences)
+
+![Playlist detail / template](storybook/22-playlist-detail-mobile.png)
+
+The template editor. The header has the editable **name**, the primary **▶ Play**
+button, and **Delete**. Below are the **Sequences** (chapters): here *Warm-up
+(pocket)* carries a **10:00 target** and holds the **Soul Anthems** pocket (10
+items); *Closers (songs)* holds two hand-picked songs. Each item can be **moved**
+between sequences or **removed**, and **＋ Add sequence** adds a chapter. At the
+bottom, **Set lists** is the history of everything you've generated from this
+template.
+
+**Affordances**
+- **▶ Play** — realize the template into a new Setlist (§23) and open it.
+- **target (m:ss)** — give a sequence a time budget; pockets sample to fit it.
+- **Move to / Remove / ＋ Add pocket / ＋ Add sequence** — shape the chapters.
+- **A set list row** — open a previously generated performance.
+
+**User story:** compose the *shape* of the night — a warm-up pulled from a pocket,
+a fixed pair of closers — without nailing down the exact tracks yet.
+
+---
+
+## 23. Setlist — a generated performance (the ▶ Play payoff)
+
+![Setlist](storybook/23-setlist-take2-mobile.png)
+
+Hitting **▶ Play** freezes a **Setlist**: *"Family BBQ — take 2 · 18:08 total."*
+Tracks are grouped under **section headers that map to the playlist's sequences**.
+The *Warm-up (pocket)* section came in at **9:50 — under its 10:00 budget**: from a
+44-minute, 10-song pocket the engine **sampled** a coherent subset and **autofilled
+harmonic bridges** (the `↔ bridge` tracks, key-matched at `10B`) to smooth the
+transitions; the *Closers* are the `explicit` hand-picks. Every row shows **BPM +
+Camelot key**, a **provenance badge** (`pocket` / `↔ bridge` / `explicit`), and a
+dormant **Mix suggestions** seam (coming soon). **Play again → a different take**
+(the pocket samples fresh each time).
+
+**Affordances**
+- **⤓ Save CSV** — export the set via the native OS file picker (name + location).
+  Columns: `#, Artist, Title, BPM, Key, Length, Source, Sequence, Song ID` — the
+  **Song ID** lets a downstream process resolve each track's audio segment in O(1).
+- **Delete** — discard this take.
+- **Tap a track** — open its song detail (§24).
+
+**User story:** the mission payoff — a real, saved set list you can read off ("spin
+these, in this order"), export, or regenerate for a different feel.
+
+---
+
+## 24. Setlist — tap a track for song detail
+
+![Setlist song detail](storybook/24-setlist-song-detail-mobile.png)
+
+Tapping any setlist track (or pocket member, or browser row) opens the shared
+read-only **song detail** popover — track #, artist, album, genre, year, length,
+explicit flag, **BPM / Key / Camelot**, sentiment tags, the analog **plug-in**
+pointer, and lyrics — closed by a **mobile-friendly ✕** in the top-right.
+
+**Affordances**
+- **✕ (top-right) / Close / Escape / backdrop** — dismiss.
+- **＋ Add to…** — file this track into a pocket or playlist (§20).
+
+**User story:** one consistent detail card everywhere, so you can always check a
+track's key/tempo before you commit it to a mix.
+
+---
+
+## 25. Collection — Map / List (the merged top-level mode)
+
+![Collection Map/List toggle](storybook/25-collection-map-list-toggle-mobile.png)
+
+Star Map and Browser are now one **Collection** mode. A contextual **✦ Map / ☰
+List** sub-toggle (under the main tabs) flips between the spatial star map and the
+filterable list, and **remembers your choice** — clicking **Collection** later, or
+relaunching the app, lands you back on the view you last used.
+
+**Affordances**
+- **⊞ Collection** — go to your remembered sub-view.
+- **✦ Map / ☰ List** — switch sub-view (persisted).
+- **🛍 Pockets / ▶ Playlists / ⚙** — the other modes + settings.
+
+**User story:** "discovery and look-up are two takes on the same crate — keep them
+together under one roof, and remember how I like to look at it."

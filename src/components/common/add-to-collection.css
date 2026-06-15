@@ -1,0 +1,81 @@
+/* Shared "Add to…" affordance — picker modal sections + rows. */
+
+.pdj-addcol__section {
+  margin-bottom: 1.1rem;
+}
+.pdj-addcol__section:last-child {
+  margin-bottom: 0;
+}
+
+.pdj-addcol__heading {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--pdj-fg-dim);
+  margin: 0 0 0.45rem;
+}
+
+.pdj-addcol__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.pdj-addcol__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  background: var(--pdj-bg-raised);
+  color: var(--pdj-fg);
+  border: 1px solid var(--pdj-border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+}
+.pdj-addcol__row:hover {
+  border-color: var(--pdj-accent);
+}
+
+.pdj-addcol__row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdj-addcol__row-meta {
+  color: var(--pdj-fg-dim);
+  font-size: 0.75rem;
+  flex: 0 0 auto;
+}
+
+.pdj-addcol__empty {
+  color: var(--pdj-fg-dim);
+  font-size: 0.8rem;
+  margin: 0 0 0.45rem;
+}
+
+.pdj-addcol__seq {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0.6rem;
+}
+.pdj-addcol__seq label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--pdj-fg-dim);
+}
+
+.pdj-addcol__new {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+.pdj-addcol__new input {
+  flex: 1 1 auto;
+  min-width: 0;
+}

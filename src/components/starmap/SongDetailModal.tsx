@@ -7,7 +7,14 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { isSong, type SongItem } from '../../types/model';
 import { getItem, putItem } from '../../storage/repo';
 import { Modal } from '../common/Modal';
+import { AddToCollectionButton } from '../common/AddToCollectionButton';
 import { msToClock } from '../../lib/format';
+import './songDetailActions.css';
+
+/** Guard against a missing lyrics file falling through to the SPA index.html (the old
+ *  "page-dump" bug): never treat markup as lyrics — whether it came from storage or the network. */
+const looksLikeMarkup = (t?: string | null): boolean =>
+  /^<(?:!doctype|html|\?xml|head|body|script|div)\b/i.test((t ?? '').trim());
 
 interface Props {
   song: SongItem | null;
@@ -25,29 +32,47 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
       setLyricsStatus(undefined);
       return;
     }
-    setLyrics(song.lyrics);
-    setLyricsStatus(song.lyricsStatus);
-    if (song.lyrics) return; // already have them
-    if (song.lyricsStatus && song.lyricsStatus !== 'found') return; // known: none to fetch
+    const storedLyrics = song.lyrics && !looksLikeMarkup(song.lyrics) ? song.lyrics : undefined;
+    setLyrics(storedLyrics);
+    // A record poisoned with markup by the old bug reports lyricsStatus:'found' — don't trust it.
+    setLyricsStatus(storedLyrics ? song.lyricsStatus : song.lyricsStatus === 'found' ? undefined : song.lyricsStatus);
+    if (storedLyrics) return; // already have valid lyrics
+    if (!storedLyrics && song.lyricsStatus && song.lyricsStatus !== 'found' && !song.lyrics) return; // known: none to fetch
     let live = true;
     (async () => {
       // 1) cached in IndexedDB from a previous view?
       const cached = await getItem(song.id);
       if (!live) return;
-      if (cached && isSong(cached) && cached.lyrics) {
+      if (cached && isSong(cached) && cached.lyrics && !looksLikeMarkup(cached.lyrics)) {
         setLyrics(cached.lyrics);
         return;
+      }
+      // Scrub a previously-poisoned record (markup saved as lyrics) so it isn't shown again.
+      if (song.lyrics && looksLikeMarkup(song.lyrics)) {
+        const base = cached && isSong(cached) ? cached : song;
+        const { lyrics: _poisoned, ...rest } = base;
+        void _poisoned;
+        await putItem({ ...rest, lyricsStatus: 'notfound' });
       }
       // 2) lazy-fetch from the lyrics CDN, then store so it's cached + offline-durable
       try {
         const res = await fetch(`${import.meta.env.BASE_URL}lyrics/${song.id}.txt`);
         if (!live) return;
-        if (!res.ok) {
+        const ctype = res.headers.get('content-type') || '';
+        // A missing lyrics file falls through to the SPA index.html (often HTTP 200) on both
+        // the Vite dev server and the S3/CloudFront site — so a plain !res.ok check isn't enough.
+        // Reject html content-types AND bodies that look like markup, so we never render the
+        // app's own HTML as "lyrics".
+        if (!res.ok || ctype.includes('text/html')) {
           setLyricsStatus('notfound');
           return;
         }
         const text = (await res.text()).trim();
-        if (!live || !text) return;
+        if (!live) return;
+        if (!text || /^<(?:!doctype|html|\?xml|head|body|script|div)\b/i.test(text)) {
+          setLyricsStatus('notfound');
+          return;
+        }
         setLyrics(text);
         setLyricsStatus('found');
         const base = cached && isSong(cached) ? cached : song;
@@ -113,14 +138,17 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
               {lyricsStatus === 'notfound' ? 'Not found' : lyricsStatus === 'found' ? 'Loading…' : '—'}
             </Row>
           )}
-          <button
-            type="button"
-            className="pdj-songdetail__close"
-            data-testid="song-detail-close"
-            onClick={onClose}
-          >
-            Close
-          </button>
+          <div className="pdj-songdetail__actions">
+            <AddToCollectionButton item={{ kind: 'song', id: song.id, name: song.name }} />
+            <button
+              type="button"
+              className="pdj-songdetail__close"
+              data-testid="song-detail-close"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          </div>
         </div>
       )}
     </Modal>

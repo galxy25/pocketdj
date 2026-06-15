@@ -1,0 +1,275 @@
+/* Pockets mode — list (PocketsView) + detail (PocketDetail). */
+
+.pdj-pockets {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1.2rem 1.2rem 3rem;
+  width: 100%;
+  max-width: 56rem;
+  margin: 0 auto;
+}
+
+.pdj-pockets__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.pdj-pockets__title {
+  margin: 0;
+  font-size: 1.4rem;
+}
+.pdj-pockets__sub {
+  color: var(--pdj-fg-dim);
+  font-size: 0.82rem;
+}
+
+/* Create control (text input + button). */
+.pdj-pockets__create {
+  display: flex;
+  gap: 0.45rem;
+  margin-bottom: 1.2rem;
+}
+.pdj-pockets__create input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* List of pockets. */
+.pdj-pockets__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.pdj-pockets__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.8rem;
+  flex-wrap: wrap;
+  text-decoration: none;
+  background: var(--pdj-bg-raised);
+  color: var(--pdj-fg);
+  border: 1px solid var(--pdj-border);
+  border-radius: var(--pdj-radius);
+  padding: 0.7rem 0.9rem;
+  transition: border-color 0.08s;
+}
+.pdj-pockets__row:hover {
+  border-color: var(--pdj-accent);
+}
+.pdj-pockets__row-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.pdj-pockets__row-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pdj-pockets__row-meta {
+  color: var(--pdj-fg-dim);
+  font-size: 0.78rem;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.pdj-pockets__empty {
+  color: var(--pdj-fg-dim);
+  font-size: 0.9rem;
+  text-align: center;
+  padding: 2.5rem 1rem;
+  border: 1px dashed var(--pdj-border);
+  border-radius: var(--pdj-radius);
+}
+
+/* Kind badge (harmonic / performance). */
+.pdj-pockets__kind {
+  flex: 0 0 auto;
+  background: var(--pdj-bg-overlay);
+  color: var(--pdj-accent-2);
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+
+/* ---- Detail ---- */
+
+.pdj-pocket {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1.2rem 1.2rem 3rem;
+  width: 100%;
+  max-width: 56rem;
+  margin: 0 auto;
+}
+
+.pdj-pocket__back {
+  display: inline-block;
+  margin-bottom: 0.8rem;
+  font-size: 0.82rem;
+}
+
+.pdj-pocket__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.pdj-pocket__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1.3rem;
+  font-weight: 700;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--pdj-fg);
+  padding: 0.2rem 0.4rem;
+}
+.pdj-pocket__name:hover {
+  border-color: var(--pdj-border);
+}
+.pdj-pocket__name:focus {
+  border-color: var(--pdj-accent);
+  background: var(--pdj-bg-raised);
+}
+
+.pdj-pocket__note {
+  color: var(--pdj-fg-dim);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 0 0 1.4rem;
+}
+
+.pdj-pocket__section {
+  margin-bottom: 1.6rem;
+}
+.pdj-pocket__heading {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--pdj-fg-dim);
+  margin: 0 0 0.55rem;
+}
+
+.pdj-pocket__members {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.pdj-pocket__member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  background: var(--pdj-bg-raised);
+  border: 1px solid var(--pdj-border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+}
+.pdj-pocket__member-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+/* Clickable member (opens song detail / album view): becomes a 2-line block. */
+.pdj-pocket__member-main--btn {
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.pdj-pocket__member-main--btn:hover .pdj-pocket__member-name { color: var(--pdj-accent); }
+.pdj-pocket__member-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.pdj-pocket__member-meta { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.pdj-pocket__bpm, .pdj-pocket__key {
+  font-size: 0.66rem;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.pdj-pocket__bpm { background: rgba(110, 168, 255, 0.12); color: var(--pdj-accent); }
+.pdj-pocket__key { background: var(--pdj-bg-overlay); color: var(--pdj-accent-2); font-weight: 600; }
+.pdj-pocket__nokey { font-size: 0.66rem; color: var(--pdj-fg-dim); opacity: 0.7; }
+.pdj-pocket__member-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+}
+.pdj-pocket__member-artist {
+  color: var(--pdj-fg-dim);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdj-pocket__member-type {
+  flex: 0 0 auto;
+  background: var(--pdj-bg-overlay);
+  color: var(--pdj-accent);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.pdj-pocket__empty {
+  color: var(--pdj-fg-dim);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+/* Add-child control. */
+.pdj-pocket__add-child {
+  display: flex;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.pdj-pocket__add-child select {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.pdj-pocket__warn {
+  color: var(--pdj-danger);
+  font-size: 0.78rem;
+  margin: 0.5rem 0 0;
+}
+
+.pdj-pocket__missing {
+  padding: 3rem 1rem;
+  text-align: center;
+  color: var(--pdj-fg-dim);
+}

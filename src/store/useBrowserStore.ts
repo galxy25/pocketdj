@@ -7,9 +7,15 @@ import type { FilterClause, FilterState, SortState, SortDir, FilterOp } from '..
 let clauseSeq = 0;
 const newClauseId = () => `c${Date.now().toString(36)}_${clauseSeq++}`;
 
+/** Which sub-view of the unified "Collection" mode (star Map vs. List/Browser). */
+export type CollectionView = 'map' | 'list';
+
 interface BrowserState {
   filter: FilterState;
   sort: SortState[];
+  /** Remembered Collection sub-view; restored on the next visit to Collection. */
+  collectionView: CollectionView;
+  setCollectionView: (v: CollectionView) => void;
   addClause: (field: string, op?: FilterOp) => void;
   updateClause: (id: string, patch: Partial<FilterClause>) => void;
   removeClause: (id: string) => void;
@@ -25,6 +31,8 @@ export const useBrowserStore = create<BrowserState>()(
     (set) => ({
       filter: { clauses: [] },
       sort: [],
+      collectionView: 'map',
+      setCollectionView: (v) => set({ collectionView: v }),
       addClause: (field, op = 'eq') =>
         set((s) => ({ filter: { clauses: [...s.filter.clauses, { id: newClauseId(), field, op }] } })),
       updateClause: (id, patch) =>
@@ -50,7 +58,7 @@ export const useBrowserStore = create<BrowserState>()(
       name: 'pocketdj-browser-prefs',
       storage: createJSONStorage(() => localStorage),
       version: 1,
-      partialize: (s) => ({ filter: s.filter, sort: s.sort }),
+      partialize: (s) => ({ filter: s.filter, sort: s.sort, collectionView: s.collectionView }),
       // zustand 5.x persist runs `migrate` only when
       // `typeof persisted.version === 'number' && persisted.version !== options.version`.
       // Existing on-disk blobs already carry `version: 0` (persist's default written by

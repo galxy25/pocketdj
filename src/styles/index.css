@@ -59,9 +59,15 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-brand { display: flex; align-items: center; gap: 0.5rem; font-size: 1.2rem; cursor: pointer; }
 .pdj-brand__mark { color: var(--pdj-accent-2); font-size: 1.3rem; }
 .pdj-brand__name b { color: var(--pdj-accent); }
+.pdj-topbar__nav { display: flex; align-items: center; gap: 0.5rem; }
+.pdj-nav-ico { vertical-align: -0.18em; margin-right: 0.05rem; }
 .pdj-viewswitch { display: flex; gap: 0.25rem; background: var(--pdj-bg-raised); border: 1px solid var(--pdj-border); border-radius: 9px; padding: 2px; }
 .pdj-viewswitch button { background: transparent; border: none; color: var(--pdj-fg-dim); padding: 0.35rem 0.7rem; border-radius: 7px; font-size: 0.85rem; }
 .pdj-viewswitch button.is-active { background: var(--pdj-accent); color: #07101f; font-weight: 600; }
+/* Contextual Map/List toggle, shown only inside Collection. Accent-2 marks it as a sub-level. */
+.pdj-subswitch { display: flex; gap: 0.2rem; background: var(--pdj-bg-overlay); border: 1px solid var(--pdj-border); border-radius: 9px; padding: 2px; }
+.pdj-subswitch button { background: transparent; border: none; color: var(--pdj-fg-dim); padding: 0.3rem 0.65rem; border-radius: 7px; font-size: 0.8rem; cursor: pointer; }
+.pdj-subswitch button.is-active { background: var(--pdj-accent-2); color: #07101f; font-weight: 600; }
 
 /* ---------- browser ---------- */
 .pdj-browser { display: flex; flex-direction: column; flex: 1; min-width: 0; }
@@ -145,6 +151,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
    the secondary columns (artist, length, sentiment tags) so track · title · BPM · key
    fit and stay visible. Placed AFTER the base rules so its display:none actually wins. */
 @media (max-width: 680px) {
+  /* Stack the brand on top of the mode tabs so the title + Star Map/Browser/
+     Pockets/Playlists don't compete for horizontal width on phones. */
+  .pdj-topbar { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+  .pdj-brand { justify-content: center; }
+  .pdj-topbar__nav { flex-direction: column; align-items: center; gap: 0.4rem; width: 100%; }
+  .pdj-viewswitch { justify-content: center; flex-wrap: wrap; }
+  .pdj-subswitch { justify-content: center; }
+
   .pdj-song { grid-template-columns: 1.8rem minmax(0, 1fr) 2.6rem 4.6rem auto; gap: 0.45rem; }
   .pdj-song__artist, .pdj-song__len, .pdj-song__tags { display: none; }
   /* keep titles to one line so rows stay uniform + BPM/key align */

@@ -1,0 +1,457 @@
+/* Playlists + Setlist mode. Reuses the global pdj- tokens/classes; only the
+   feature-specific layout lives here (colocated, imported by the components). */
+
+.pdj-playlists {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.1rem 1.25rem 2.5rem;
+  width: 100%;
+}
+
+.pdj-playlists__header {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 1.1rem;
+}
+.pdj-playlists__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.pdj-playlists__subtitle {
+  color: var(--pdj-fg-dim);
+  font-size: 0.85rem;
+  margin: 0.15rem 0 0;
+}
+.pdj-playlists__spacer {
+  flex: 1 1 auto;
+}
+
+/* shared back link */
+.pdj-pl__back {
+  display: inline-block;
+  color: var(--pdj-fg-dim);
+  font-size: 0.85rem;
+  text-decoration: none;
+  margin-bottom: 0.9rem;
+}
+.pdj-pl__back:hover {
+  color: var(--pdj-fg);
+}
+
+/* --- list of playlists --- */
+.pdj-playlists__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.pdj-playlists__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  background: var(--pdj-bg-raised);
+  border: 1px solid var(--pdj-border);
+  border-radius: var(--pdj-radius);
+  padding: 0.7rem 0.9rem;
+  color: var(--pdj-fg);
+  text-decoration: none;
+}
+.pdj-playlists__row:hover {
+  border-color: var(--pdj-accent);
+}
+.pdj-playlists__row-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdj-playlists__row-meta {
+  color: var(--pdj-fg-dim);
+  font-size: 0.78rem;
+  flex: 0 0 auto;
+}
+
+.pdj-pl__empty {
+  color: var(--pdj-fg-dim);
+  font-size: 0.9rem;
+  text-align: center;
+  padding: 2.5rem 1rem;
+  border: 1px dashed var(--pdj-border);
+  border-radius: var(--pdj-radius);
+}
+
+/* --- detail header --- */
+.pdj-pl__head {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+.pdj-pl__name-input {
+  font-size: 1.2rem;
+  font-weight: 700;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--pdj-fg);
+  border-radius: 7px;
+  padding: 0.2rem 0.4rem;
+  min-width: 14rem;
+  flex: 1 1 auto;
+}
+.pdj-pl__name-input:hover {
+  border-color: var(--pdj-border);
+}
+.pdj-pl__name-input:focus {
+  border-color: var(--pdj-accent);
+  outline: none;
+  background: var(--pdj-bg-raised);
+}
+.pdj-pl__play {
+  font-size: 0.95rem;
+  padding: 0.5rem 1rem;
+}
+.pdj-pl__count {
+  color: var(--pdj-fg-dim);
+  font-size: 0.82rem;
+  margin: 0 0 1.1rem;
+}
+
+.pdj-pl__section-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--pdj-fg-dim);
+  margin: 1.4rem 0 0.55rem;
+}
+
+/* --- a sequence (chapter) --- */
+.pdj-seq {
+  background: var(--pdj-bg-raised);
+  border: 1px solid var(--pdj-border);
+  border-radius: var(--pdj-radius);
+  padding: 0.7rem 0.8rem;
+  margin-bottom: 0.7rem;
+}
+.pdj-seq__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.pdj-seq__name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--pdj-fg);
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+.pdj-seq__name:hover {
+  border-color: var(--pdj-border);
+}
+.pdj-seq__name:focus {
+  border-color: var(--pdj-accent);
+  outline: none;
+  background: var(--pdj-bg);
+}
+.pdj-seq__target {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--pdj-fg-dim);
+  font-size: 0.75rem;
+}
+.pdj-seq__target input {
+  width: 4.2rem;
+  font-family: var(--pdj-mono);
+  text-align: center;
+}
+
+.pdj-seq__nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.pdj-seq__empty {
+  color: var(--pdj-fg-dim);
+  font-size: 0.78rem;
+  font-style: italic;
+  padding: 0.2rem 0.1rem 0.45rem;
+}
+
+/* one node row inside a sequence */
+.pdj-node {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--pdj-bg);
+  border: 1px solid var(--pdj-border);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+}
+.pdj-node__kind {
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--pdj-fg-dim);
+  border: 1px solid var(--pdj-border);
+  border-radius: 5px;
+  padding: 0.1rem 0.35rem;
+}
+.pdj-node__label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+.pdj-node__meta {
+  color: var(--pdj-fg-dim);
+  font-size: 0.72rem;
+  flex: 0 0 auto;
+}
+.pdj-node__move {
+  font-size: 0.75rem;
+  max-width: 8rem;
+}
+
+.pdj-seq__add {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+.pdj-seq__add select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* --- setlist history rows --- */
+.pdj-setlist-hist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.pdj-setlist-hist__row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  background: var(--pdj-bg-raised);
+  border: 1px solid var(--pdj-border);
+  border-radius: 9px;
+  padding: 0.55rem 0.75rem;
+}
+.pdj-setlist-hist__link {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  color: var(--pdj-fg);
+  text-decoration: none;
+  overflow: hidden;
+}
+.pdj-setlist-hist__link:hover .pdj-setlist-hist__name {
+  color: var(--pdj-accent);
+}
+.pdj-setlist-hist__name {
+  font-weight: 600;
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdj-setlist-hist__meta {
+  color: var(--pdj-fg-dim);
+  font-size: 0.75rem;
+  flex: 0 0 auto;
+}
+
+/* =========================================================================
+   Setlist view — the frozen, read-only DJ set list
+   ========================================================================= */
+.pdj-setlist {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.1rem 1.25rem 3rem;
+  width: 100%;
+}
+.pdj-setlist__head {
+  margin-bottom: 0.4rem;
+}
+.pdj-setlist__title {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+.pdj-setlist__tagline {
+  color: var(--pdj-fg-dim);
+  font-size: 0.85rem;
+  font-style: italic;
+  margin: 0.2rem 0 0.5rem;
+}
+.pdj-setlist__stats {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+.pdj-setlist__stat {
+  color: var(--pdj-fg-dim);
+  font-size: 0.85rem;
+}
+.pdj-setlist__stat b {
+  color: var(--pdj-fg);
+  font-family: var(--pdj-mono);
+}
+.pdj-setlist__spacer {
+  flex: 1 1 auto;
+}
+
+.pdj-setlist__tracks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.pdj-track {
+  display: grid;
+  grid-template-columns: 2rem 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--pdj-bg-raised);
+  border: 1px solid var(--pdj-border);
+  border-radius: 9px;
+  padding: 0.5rem 0.7rem;
+}
+.pdj-track__pos {
+  font-family: var(--pdj-mono);
+  color: var(--pdj-fg-dim);
+  font-size: 0.85rem;
+  text-align: right;
+}
+.pdj-track__main {
+  min-width: 0;
+}
+/* Clickable track → opens the song detail popover. */
+.pdj-track__main--btn {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.pdj-track__main--btn:hover .pdj-track__title { color: var(--pdj-accent); }
+
+/* Setlist grouped into sequence (chapter) sections. */
+.pdj-setlist__sections { display: flex; flex-direction: column; gap: 1.1rem; }
+.pdj-setlist__section { display: flex; flex-direction: column; gap: 0.45rem; }
+.pdj-setlist__section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0 0.15rem 0.3rem;
+  border-bottom: 1px solid var(--pdj-border);
+}
+.pdj-setlist__section-name { font-weight: 700; font-size: 0.95rem; color: var(--pdj-fg); }
+.pdj-setlist__section-count {
+  color: var(--pdj-fg-dim);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pdj-track__title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdj-track__artist {
+  color: var(--pdj-fg-dim);
+  font-weight: 400;
+}
+.pdj-track__sub {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+.pdj-track__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+}
+.pdj-track__len {
+  font-family: var(--pdj-mono);
+  font-size: 0.82rem;
+  color: var(--pdj-fg);
+}
+
+/* small data badges */
+.pdj-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.68rem;
+  border-radius: 5px;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--pdj-border);
+  color: var(--pdj-fg-dim);
+  line-height: 1.3;
+}
+.pdj-badge--bpm {
+  font-family: var(--pdj-mono);
+}
+.pdj-badge--camelot {
+  font-family: var(--pdj-mono);
+  color: var(--pdj-accent);
+  border-color: color-mix(in srgb, var(--pdj-accent) 45%, var(--pdj-border));
+}
+/* provenance chips */
+.pdj-badge--src-explicit {
+  color: #9be5b0;
+  border-color: color-mix(in srgb, #9be5b0 45%, var(--pdj-border));
+}
+.pdj-badge--src-pocket {
+  color: var(--pdj-accent);
+  border-color: color-mix(in srgb, var(--pdj-accent) 45%, var(--pdj-border));
+}
+.pdj-badge--src-autofill {
+  color: #e6c46e;
+  border-color: color-mix(in srgb, #e6c46e 45%, var(--pdj-border));
+}
+
+/* dormant per-track mix-suggestions disclosure (reserved seam) */
+.pdj-track__mix {
+  grid-column: 1 / -1;
+  margin-top: 0.15rem;
+}
+.pdj-track__mix summary {
+  list-style: none;
+  cursor: not-allowed;
+  color: var(--pdj-fg-dim);
+  font-size: 0.72rem;
+  opacity: 0.65;
+  user-select: none;
+}
+.pdj-track__mix summary::-webkit-details-marker {
+  display: none;
+}
