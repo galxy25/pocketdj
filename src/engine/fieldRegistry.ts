@@ -2,6 +2,8 @@
 // (which fields, which operators, numeric => "between") and the sort control.
 import type { FieldDef, FilterOp } from '../types/filter';
 import type { MusicItem, AlbumItem, SongItem } from '../types/model';
+import { categorize, CATEGORY_NAMES } from '../starmap/constellationMap';
+import { MUSICAL_KEYS, CAMELOT_KEYS } from '../lib/camelot';
 
 const STR_OPS: FilterOp[] = ['eq', 'neq', 'in'];
 const NUM_OPS: FilterOp[] = ['eq', 'neq', 'in', 'between'];
@@ -26,10 +28,13 @@ export const FIELDS: FieldDefWithGet[] = [
   { id: 'fileType', label: 'File type', appliesTo: ['album', 'song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
     get: (i) => (i as AlbumItem | SongItem).fileType },
 
-  // Genre: albums carry the raw genre string; songs carry the album's TOP-LEVEL category
-  // (e.g. "soul") so you can filter "soul songs with BPM 80–90".
+  // Genre: filters on the TOP-LEVEL category for BOTH albums and songs (same as the star
+  // map), so e.g. "genre = soul" returns the same album set the soul constellation shows.
+  // Albums map their raw genre string through categorize() here (display/edit keep the raw
+  // genre); songs already carry the derived category.
   { id: 'genre', label: 'Genre', appliesTo: ['album', 'song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
-    get: (i) => (i.type === 'album' ? (i as AlbumItem).genre : (i as SongItem).genre) },
+    options: CATEGORY_NAMES,
+    get: (i) => (i.type === 'album' ? categorize((i as AlbumItem).genre).category : (i as SongItem).genre) },
 
   // album-only
   { id: 'country', label: 'Country', appliesTo: ['album'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
@@ -49,9 +54,11 @@ export const FIELDS: FieldDefWithGet[] = [
   { id: 'bpm', label: 'BPM', appliesTo: ['song'], kind: 'number', numeric: true, ops: NUM_OPS, sortable: true,
     get: song((s) => s.bpm) },
   { id: 'key', label: 'Key', appliesTo: ['song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
+    options: MUSICAL_KEYS,
     get: song((s) => s.key) },
   // Camelot sorts in harmonic-wheel order (see sortEngine), NOT alphabetically.
   { id: 'camelot', label: 'Key (Camelot)', appliesTo: ['song'], kind: 'string', numeric: false, ops: STR_OPS, sortable: true,
+    options: CAMELOT_KEYS,
     get: song((s) => s.camelot) },
 ];
 

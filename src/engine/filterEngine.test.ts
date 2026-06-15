@@ -75,6 +75,39 @@ describe('applyFilters — empty / passthrough', () => {
   });
 });
 
+describe('applyFilters — incomplete clauses (no operand yet) pass through', () => {
+  // Regression: a filter row added but never filled in must NOT exclude everything.
+  it('eq with undefined value is a no-op (passes everything)', () => {
+    const items = [album({ id: 'a', artist: 'X' }), album({ id: 'b', artist: 'Y' })];
+    const out = applyFilters(items, state(clause({ field: 'artist', op: 'eq' })));
+    expect(ids(out)).toEqual(['a', 'b']);
+  });
+
+  it('an empty added clause alongside a real one does not zero the real one', () => {
+    const items = [album({ id: 'a', genre: 'soul' }), album({ id: 'b', genre: 'rock' })];
+    const out = applyFilters(
+      items,
+      state(
+        clause({ id: 'c1', field: 'genre', op: 'in', values: ['soul'] }),
+        clause({ id: 'c2', field: 'artist', op: 'eq' }), // empty, never filled
+      ),
+    );
+    expect(ids(out)).toEqual(['a']);
+  });
+
+  it('between with neither bound is a no-op', () => {
+    const items = [album({ id: 'a', year: 1990 }), album({ id: 'b', year: 2000 })];
+    const out = applyFilters(items, state(clause({ field: 'year', op: 'between' })));
+    expect(ids(out)).toEqual(['a', 'b']);
+  });
+
+  it('explicit empty-string eq is NOT incomplete (still matches missing/empty)', () => {
+    const items = [album({ id: 'a', country: undefined }), album({ id: 'b', country: 'US' })];
+    const out = applyFilters(items, state(clause({ field: 'country', op: 'eq', value: '' })));
+    expect(ids(out)).toEqual(['a']);
+  });
+});
+
 describe('applyFilters — string fields (case/whitespace-insensitive)', () => {
   it('eq matches normalized (trim + lowercase)', () => {
     const items = [album({ id: 'a', artist: '  Daft Punk ' }), album({ id: 'b', artist: 'Other' })];
@@ -98,12 +131,11 @@ describe('applyFilters — string fields (case/whitespace-insensitive)', () => {
     expect(ids(out)).toEqual(['a', 'c']);
   });
 
-  it('in with no values matches everything (empty list -> map().includes() of nothing)', () => {
-    // Note: string-field `in` with no values yields [].includes(s) === false,
-    // so it excludes everything (unlike string[] `in` which special-cases empty).
-    const items = [album({ id: 'a', genre: 'Rock' })];
+  it('in with no values is an incomplete clause -> passes everything through', () => {
+    // A half-built `in` row (no values picked yet) must not zero the catalog.
+    const items = [album({ id: 'a', genre: 'Rock' }), album({ id: 'b', genre: 'Jazz' })];
     const out = applyFilters(items, state(clause({ field: 'genre', op: 'in', values: [] })));
-    expect(ids(out)).toEqual([]);
+    expect(ids(out)).toEqual(['a', 'b']);
   });
 
   it('treats null/undefined string value as empty string for eq', () => {

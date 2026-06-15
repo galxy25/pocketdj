@@ -4,7 +4,6 @@
 //   between-> min + max (numeric only)
 import type { FilterClause, FilterOp } from '../../types/filter';
 import { getField, fieldsFor } from '../../engine/fieldRegistry';
-import { CATEGORY_NAMES } from '../../starmap/constellationMap';
 import { useBrowserStore } from '../../store/useBrowserStore';
 import { useAppStore } from '../../store/useAppStore';
 import { clockToMs, msToClock } from '../../lib/format';
@@ -34,6 +33,13 @@ export function FilterRow({ clause, index }: Props) {
     const f = getField(id);
     const op = f && f.ops.includes(clause.op) ? clause.op : (f?.ops[0] ?? 'eq');
     update(clause.id, { field: id, op, value: undefined, values: undefined, min: undefined, max: undefined });
+  };
+
+  // Toggle one option in the in-list values (tap-friendly chip multi-select).
+  const toggleValue = (o: string) => {
+    const cur = (clause.values ?? []).map(String);
+    const next = cur.includes(o) ? cur.filter((v) => v !== o) : [...cur, o];
+    update(clause.id, { values: next });
   };
 
   return (
@@ -86,20 +92,42 @@ export function FilterRow({ clause, index }: Props) {
           />
         </span>
       ) : clause.op === 'in' ? (
-        <input
-          data-testid="filter-value"
-          className="pdj-filter-value"
-          placeholder="comma,separated,values"
-          value={(clause.values ?? []).join(', ')}
-          onChange={(e) =>
-            update(clause.id, {
-              values: e.target.value
-                .split(',')
-                .map((v) => v.trim())
-                .filter(Boolean),
-            })
-          }
-        />
+        field?.options ? (
+          // Tap-friendly toggle chips for the closed value set (genre / key / Camelot).
+          // Replaces <select multiple>, which needs cmd/ctrl-click and is unusable on touch.
+          <div className="pdj-chips" data-testid="filter-value" role="group" aria-label={`${field.label} values`}>
+            {field.options.map((o) => {
+              const on = (clause.values ?? []).map(String).includes(o);
+              return (
+                <button
+                  key={o}
+                  type="button"
+                  className={'pdj-chip' + (on ? ' is-on' : '')}
+                  aria-pressed={on}
+                  data-testid={`filter-chip-${o}`}
+                  onClick={() => toggleValue(o)}
+                >
+                  {o}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <input
+            data-testid="filter-value"
+            className="pdj-filter-value"
+            placeholder="comma,separated,values"
+            value={(clause.values ?? []).join(', ')}
+            onChange={(e) =>
+              update(clause.id, {
+                values: e.target.value
+                  .split(',')
+                  .map((v) => v.trim())
+                  .filter(Boolean),
+              })
+            }
+          />
+        )
       ) : field?.kind === 'boolean' ? (
         <select
           data-testid="filter-value"
@@ -109,35 +137,40 @@ export function FilterRow({ clause, index }: Props) {
           <option value="true">true</option>
           <option value="false">false</option>
         </select>
+      ) : field?.options ? (
+        // single-select dropdown for is / is-not on a closed value set
+        <select
+          data-testid="filter-value"
+          className="pdj-filter-value"
+          value={(clause.value as string) ?? ''}
+          onChange={(e) => update(clause.id, { value: e.target.value })}
+        >
+          <option value="">—</option>
+          {field.options.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
       ) : (
-        <>
-          <input
-            data-testid="filter-value"
-            className="pdj-filter-value"
-            type={field?.numeric && !isLength ? 'number' : 'text'}
-            placeholder={isLength ? 'm:ss' : 'value'}
-            list={field?.id === 'genre' ? 'pdj-filter-genres' : undefined}
-            value={
-              isLength && typeof clause.value === 'number' ? msToClock(clause.value) : (clause.value as string | number) ?? ''
-            }
-            onChange={(e) =>
-              update(clause.id, {
-                value: isLength
-                  ? clockToMs(e.target.value)
-                  : field?.numeric
-                    ? numOrUndef(e.target.value)
-                    : e.target.value,
-              })
-            }
-          />
-          {field?.id === 'genre' && (
-            <datalist id="pdj-filter-genres">
-              {CATEGORY_NAMES.map((g) => (
-                <option key={g} value={g} />
-              ))}
-            </datalist>
-          )}
-        </>
+        <input
+          data-testid="filter-value"
+          className="pdj-filter-value"
+          type={field?.numeric && !isLength ? 'number' : 'text'}
+          placeholder={isLength ? 'm:ss' : 'value'}
+          value={
+            isLength && typeof clause.value === 'number' ? msToClock(clause.value) : (clause.value as string | number) ?? ''
+          }
+          onChange={(e) =>
+            update(clause.id, {
+              value: isLength
+                ? clockToMs(e.target.value)
+                : field?.numeric
+                  ? numOrUndef(e.target.value)
+                  : e.target.value,
+            })
+          }
+        />
       )}
 
       <button className="pdj-iconbtn" data-testid={`filter-remove-${index}`} onClick={() => remove(clause.id)} aria-label="Remove filter">

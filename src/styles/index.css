@@ -87,6 +87,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-filter-between { display: inline-flex; align-items: center; gap: 0.3rem; }
 .pdj-filter-between input { width: 6rem; }
 .pdj-filter-value { min-width: 12rem; }
+/* Tap-friendly toggle chips for in-list multi-select (works on touch; no cmd-click). */
+.pdj-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; max-width: 26rem; }
+.pdj-chip { display: inline-flex; align-items: center; min-height: 2rem; background: var(--pdj-bg-raised); color: var(--pdj-fg-dim); border: 1px solid var(--pdj-border); border-radius: 999px; padding: 0.25rem 0.7rem; font-size: 0.8rem; line-height: 1; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.pdj-chip:hover { color: var(--pdj-fg); border-color: var(--pdj-accent); }
+.pdj-chip.is-on { background: var(--pdj-accent); color: #07101f; border-color: var(--pdj-accent); font-weight: 600; }
 
 /* ---------- grid / cards ---------- */
 .pdj-grid__scroll { position: absolute; inset: 0; overflow: auto; padding: 1rem; }
