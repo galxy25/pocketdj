@@ -26,6 +26,8 @@ interface PlaylistManifest {
   app: 'pocketdj';
   kind: 'playlist';
   schemaVersion: 1;
+  /** True if the catalog items + art were bundled (self-contained, cross-catalog). */
+  portable?: boolean;
   exportedAt: string;
   playlistName: string;
   counts: { items: number; pockets: number; setlists: number; art: number };
@@ -43,11 +45,15 @@ function deflate(files: AsyncZippable): Promise<Uint8Array> {
 // ---------------------------------------------------------------------------
 export async function buildPlaylistZip(
   playlistId: string,
+  opts: { portable?: boolean } = {},
 ): Promise<{ blob: Blob; manifest: PlaylistManifest } | null> {
   const playlist = await getPlaylist(playlistId);
   if (!playlist) return null;
+  const portable = !!opts.portable;
 
-  // Pockets referenced by the playlist, DAG-expanded (nested children included).
+  // Pockets referenced by the playlist are USER data (not catalog), so they always
+  // travel with the playlist (DAG-expanded). Their member catalog ids are only
+  // needed when bundling the catalog (portable mode).
   const rootPocketIds = new Set<string>();
   const itemIds = new Set<string>();
   const walk = (nodes: PlaylistNode[]) => {
@@ -75,57 +81,70 @@ export async function buildPlaylistZip(
     p.childPocketIds.forEach((c) => queue.push(c));
   }
 
-  // Resolve items, then expand: albums → their tracks, songs → their album (cover art).
-  const items = new Map<string, MusicItem>();
-  for (const it of await Promise.all([...itemIds].map((x) => getItem(x)))) if (it) items.set(it.id, it);
-  for (let pass = 0; pass < 2; pass++) {
-    const need = new Set<string>();
-    for (const it of items.values()) {
-      if (isAlbum(it)) it.trackIds.forEach((t) => !items.has(t) && need.add(t));
-      else if (isSong(it) && it.albumId && !items.has(it.albumId)) need.add(it.albumId);
-    }
-    if (need.size === 0) break;
-    for (const it of await Promise.all([...need].map((x) => getItem(x)))) if (it) items.set(it.id, it);
-  }
-  const itemList = [...items.values()];
-
-  // Cover-art blobs for referenced albums.
-  const artKeys = new Set<string>();
-  for (const it of itemList) if (isAlbum(it) && it.coverArtKey) artKeys.add(it.coverArtKey);
-  const arts = (await Promise.all([...artKeys].map((k) => getArt(k)))).filter((a) => a && a.thumb) as NonNullable<
-    Awaited<ReturnType<typeof getArt>>
-  >[];
-
-  const setlists = await getSetlists(playlistId);
-
   const files: AsyncZippable = {};
   files['playlist.json'] = [strToU8(JSON.stringify(playlist)), { level: 6 }];
-  files['items.json'] = [strToU8(JSON.stringify(itemList)), { level: 6 }];
   files['pockets.json'] = [strToU8(JSON.stringify(pockets)), { level: 6 }];
-  files['setlists.json'] = [strToU8(JSON.stringify(setlists)), { level: 6 }];
+
+  // SLIM (default): reference the catalog by id — the importing app already has the
+  // index (it auto-seeds the same one). PORTABLE: bundle the referenced catalog
+  // items + cover-art blobs + set-list history so it imports on a device with a
+  // different/empty catalog.
+  let itemCount = 0;
   let artCount = 0;
-  for (const a of arts) {
-    files[`art/${a.key}.webp`] = [new Uint8Array(await a.thumb!.arrayBuffer()), { level: 0 }];
-    artCount++;
+  let setlistCount = 0;
+  if (portable) {
+    const items = new Map<string, MusicItem>();
+    for (const it of await Promise.all([...itemIds].map((x) => getItem(x)))) if (it) items.set(it.id, it);
+    for (let pass = 0; pass < 2; pass++) {
+      const need = new Set<string>();
+      for (const it of items.values()) {
+        if (isAlbum(it)) it.trackIds.forEach((t) => !items.has(t) && need.add(t));
+        else if (isSong(it) && it.albumId && !items.has(it.albumId)) need.add(it.albumId);
+      }
+      if (need.size === 0) break;
+      for (const it of await Promise.all([...need].map((x) => getItem(x)))) if (it) items.set(it.id, it);
+    }
+    const itemList = [...items.values()];
+    itemCount = itemList.length;
+    files['items.json'] = [strToU8(JSON.stringify(itemList)), { level: 6 }];
+
+    const artKeys = new Set<string>();
+    for (const it of itemList) if (isAlbum(it) && it.coverArtKey) artKeys.add(it.coverArtKey);
+    const arts = (await Promise.all([...artKeys].map((k) => getArt(k)))).filter((a) => a && a.thumb) as NonNullable<
+      Awaited<ReturnType<typeof getArt>>
+    >[];
+    for (const a of arts) {
+      files[`art/${a.key}.webp`] = [new Uint8Array(await a.thumb!.arrayBuffer()), { level: 0 }];
+      artCount++;
+    }
+
+    const setlists = await getSetlists(playlistId);
+    setlistCount = setlists.length;
+    files['setlists.json'] = [strToU8(JSON.stringify(setlists)), { level: 6 }];
   }
+
   const manifest: PlaylistManifest = {
     app: 'pocketdj',
     kind: 'playlist',
     schemaVersion: 1,
+    portable,
     exportedAt: new Date().toISOString(),
     playlistName: playlist.name,
-    counts: { items: itemList.length, pockets: pockets.length, setlists: setlists.length, art: artCount },
+    counts: { items: itemCount, pockets: pockets.length, setlists: setlistCount, art: artCount },
   };
   files['manifest.json'] = strToU8(JSON.stringify(manifest));
 
   const bytes = await deflate(files);
   const blob = new Blob([bytes as BlobPart], { type: 'application/zip' });
-  txn('export.playlist', { playlistId, ...manifest.counts, bytes: blob.size });
+  txn('export.playlist', { playlistId, portable, ...manifest.counts, bytes: blob.size });
   return { blob, manifest };
 }
 
-export async function downloadPlaylistZip(playlistId: string): Promise<PlaylistManifest | null> {
-  const built = await buildPlaylistZip(playlistId);
+export async function downloadPlaylistZip(
+  playlistId: string,
+  opts: { portable?: boolean } = {},
+): Promise<PlaylistManifest | null> {
+  const built = await buildPlaylistZip(playlistId, opts);
   if (!built) return null;
   const base = built.manifest.playlistName.replace(/[\\/:*?"<>|]+/g, '').trim() || 'playlist';
   const url = URL.createObjectURL(built.blob);
