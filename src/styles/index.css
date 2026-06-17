@@ -290,3 +290,37 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
   flex: 1 1 0;
   min-width: 130px;
 }
+
+/* "Hide songs already in…" multi-select dropdown (scales better than chips). */
+.pdj-browser__subbar { padding: 6px 10px; }
+.pdj-exfilter { position: relative; display: inline-block; }
+.pdj-exfilter__trigger {
+  font-size: 0.74rem; padding: 6px 10px; border-radius: 8px; min-height: 34px;
+  border: 1px solid var(--pdj-border); background: var(--pdj-bg-overlay); color: var(--pdj-fg); cursor: pointer;
+}
+.pdj-exfilter__trigger.is-active { border-color: var(--pdj-accent); color: var(--pdj-accent); }
+.pdj-exfilter__caret { opacity: 0.6; }
+.pdj-exfilter__menu {
+  position: absolute; z-index: 50; top: calc(100% + 4px); left: 0;
+  min-width: 230px; max-width: 84vw; max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--pdj-bg-raised); border: 1px solid var(--pdj-border); border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5); padding: 6px;
+}
+.pdj-exfilter__opt {
+  display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px;
+  font-size: 0.78rem; cursor: pointer; min-height: 36px;
+}
+.pdj-exfilter__opt:hover { background: var(--pdj-bg-overlay); }
+.pdj-exfilter__opt input { width: 18px; height: 18px; flex: 0 0 auto; }
+.pdj-exfilter__opt em { color: var(--pdj-text-dim, #9aa); font-style: normal; font-size: 0.7rem; }
+.pdj-exfilter__opt--any { font-weight: 600; }
+.pdj-exfilter__group { border: none; margin: 0; padding: 0; min-width: 0; }
+.pdj-exfilter__group:disabled { opacity: 0.4; }
+.pdj-exfilter__head {
+  font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--pdj-text-dim, #9aa); padding: 8px 8px 2px;
+}
+.pdj-exfilter__clear {
+  width: 100%; margin-top: 4px; padding: 8px; font-size: 0.74rem;
+  background: none; border: none; border-top: 1px solid var(--pdj-border); color: var(--pdj-accent); cursor: pointer;
+}

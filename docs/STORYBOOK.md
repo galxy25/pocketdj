@@ -517,3 +517,86 @@ relaunching the app, lands you back on the view you last used.
 
 **User story:** "discovery and look-up are two takes on the same crate — keep them
 together under one roof, and remember how I like to look at it."
+
+---
+
+## 26. Playlists & performance — 2026 update (what's new)
+
+The playlist/pocket/setlist surfaces got a big pass. The shots in §5, §9, §11, §20,
+§21, §22 and §23 above were **re-captured** for this update; the capabilities are
+summarized here.
+
+### Playlist template — enriched, reorderable items
+
+![Playlist detail, enriched](storybook/22-playlist-detail-mobile.png)
+
+Each item row now carries its **album cover art** and **BPM / Camelot** badges, and
+the header shows a **song count + total runtime** both **per chapter** and for the
+**whole playlist**. Every item has:
+
+- **▲ / ▼ reorder** — move it up/down within its chapter (mobile-friendly tap
+  targets; disabled at the ends). The **→ chapter** dropdown still moves it *between*
+  chapters.
+- **＋ note** — an inline **performer note** (e.g. *"open cold — let it breathe"*).
+- Tapping the **name** opens the full **song metadata** modal.
+
+You can also drop a **free-text cue** that isn't a catalog item — *"sample of This
+Land Is Mine Land"* — straight into a chapter (the **CUE** row). And **⤓ Export**
+saves the playlist to a portable file (see below).
+
+### Setlist — editable, with notes & cues
+
+![Setlist with notes + cue](storybook/23-setlist-take2-mobile.png)
+
+The realized set list (▶ Play) now has an **editable name**, **per-track performer
+notes**, and renders any **free-text cues** as no-audio rows. The **Save CSV** export
+gains a **Note** column, so your cues + notes travel to whatever you spin from.
+
+### Song metadata — cover art + jump to the album
+
+![Song detail with cover art + album link](storybook/13-song-detail-modal-mobile.png)
+
+The shared song-detail card (used everywhere a song is tapped — browser, album
+table, playlist, set list — **except** the solar view, which *is* the album art)
+now shows the **album cover** and an **Album → ↗** link that opens the album view in
+a new tab.
+
+### "Add to…" remembers your last choice
+
+![Add-to picker, last used](storybook/20-add-to-collection-picker-mobile.png)
+
+The Add-to picker surfaces your **last-used** playlist/pocket first (with a *last
+used* badge) and defaults the sequence to the one you last added into — fewer taps
+when you're building a set fast.
+
+### Song list — hide songs you've already placed
+
+![Browser songs, exclude dropdown](storybook/09-browser-songs-mobile.png)
+
+A **"Hide added"** multi-select dropdown filters the song list. Hide songs already
+in **any playlist/pocket** (show only *unplaced* songs), or scope to a **checked
+subset** of collections. A checkbox dropdown (not chips) so it scales to many
+playlists/pockets and stays mobile-friendly. Full data **Import/Export moved to
+Settings**, so the browser toolbar no longer duplicates it.
+
+### Settings — backup/restore, safe refresh, migrations
+
+![Settings: backup, refresh, migrations, reset](storybook/05-settings-modal-mobile.png)
+
+- **⤓ Export all data / ⤒ Import data** — back up *everything* (catalog, art,
+  pockets, playlists, set lists) to one file and restore it on another device or a
+  fresh/offline install. Side by side.
+- **↻ Force refresh** now **preserves your pockets, playlists & set lists** — it
+  re-pulls only the catalog, so updating the app no longer wipes client-side work.
+- **Data version + ⬆ Run migrations** — a versioned, non-destructive migration
+  framework (baseline **v0**) that keeps collections compatible across app updates.
+- **⚠ Reset everything** — a separate, clearly-labeled nuclear wipe (collections
+  included), behind a confirm.
+
+### Export / import a single playlist
+
+A playlist exports to a tiny **`.playlist.pocketdj.zip`** that **references the
+catalog by id** (the app re-seeds the same index), so it's ~4 KB instead of bundling
+hundreds of KB of catalog + art — yet imports with every song resolved. A
+`portable` mode still bundles everything for a device with a different/empty catalog.
+Import lands it as *"… (imported)"* without clobbering existing playlists.

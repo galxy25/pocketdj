@@ -625,3 +625,25 @@
     font-size: 0.7rem;
   }
 }
+
+/* Mobile: give the item name room (wrap instead of 1-char truncation) and keep
+   the move-to-chapter dropdown compact so the reorder/remove controls fit. */
+@media (max-width: 680px) {
+  .pdj-node__label--btn,
+  .pdj-node__label {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .pdj-node__move {
+    max-width: 6.5rem;
+  }
+}
+
+@media (max-width: 680px) {
+  /* free width for the item name: the cover art already conveys song/album,
+     so drop the redundant kind badge (keep it for text "cue" rows) + tighten move. */
+  .pdj-node__kind:not(.pdj-node__kind--cue) { display: none; }
+  .pdj-node__move { max-width: 5.5rem; }
+  .pdj-node { gap: 6px; }
+}

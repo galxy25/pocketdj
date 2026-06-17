@@ -10,6 +10,7 @@ import { applyFilters, filterHash } from '../../engine/filterEngine';
 import { sortItems, sortHash } from '../../engine/sortEngine';
 import { membersOf, isMember } from '../../engine/membership';
 import { DataSourceSelector } from './DataSourceSelector';
+import { ExcludeFilter } from './ExcludeFilter';
 import { FilterBuilder } from './FilterBuilder';
 import { SortControl } from './SortControl';
 import { ItemGrid } from './ItemGrid';
@@ -37,15 +38,11 @@ export function BrowserView() {
   const playlists = useCollectionsStore((s) => s.playlists);
   const pockets = useCollectionsStore((s) => s.pockets);
   const loadCollections = useCollectionsStore((s) => s.load);
-  // Selected collection ids to exclude members of (empty = show all).
+  // "Not in any playlist/pocket" — show only songs absent from EVERY collection.
+  const [excludeAny, setExcludeAny] = useState(false);
+  // Otherwise, specific collection ids to exclude members of (empty = show all).
   const [excludeIds, setExcludeIds] = useState<Set<string>>(new Set());
   useEffect(() => void loadCollections(), [loadCollections]);
-  const toggleExclude = (id: string) =>
-    setExcludeIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
 
   // Only render once the loaded set matches the current (source, type) scope —
   // prevents a frame where, e.g., album items render as songs mid-switch.
@@ -79,12 +76,17 @@ export function BrowserView() {
     [items, filterHash(filter), sortHash(sort)],
   );
 
-  // Song mode: optionally exclude songs already in the selected playlists/pockets.
+  // Song mode: optionally hide songs already in collections — either in ANY
+  // playlist/pocket (excludeAny → only "unplaced" songs show) or in a chosen
+  // subset (the chip multi-select).
   const visible = useMemo(() => {
-    if (itemType !== 'song' || excludeIds.size === 0) return filtered;
-    const m = membersOf(excludeIds, playlists, pockets);
+    if (itemType !== 'song' || (!excludeAny && excludeIds.size === 0)) return filtered;
+    const ids = excludeAny
+      ? new Set<string>([...playlists.map((p) => p.id), ...pockets.map((p) => p.id)])
+      : excludeIds;
+    const m = membersOf(ids, playlists, pockets);
     return filtered.filter((it) => it.type !== 'song' || !isMember(it, m));
-  }, [filtered, itemType, excludeIds, playlists, pockets]);
+  }, [filtered, itemType, excludeAny, excludeIds, playlists, pockets]);
 
   const songsById = useMemo(() => {
     const map = new Map<string, SongItem>();
@@ -146,44 +148,15 @@ export function BrowserView() {
       <FilterBuilder />
 
       {itemType === 'song' && (playlists.length > 0 || pockets.length > 0) && (
-        <div className="pdj-exclude" data-testid="exclude-filter">
-          <span className="pdj-exclude__label">Exclude songs in</span>
-          <div className="pdj-exclude__chips">
-            {playlists.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className={`pdj-chip ${excludeIds.has(p.id) ? 'is-on' : ''}`}
-                data-testid={`exclude-chip-${p.id}`}
-                aria-pressed={excludeIds.has(p.id)}
-                onClick={() => toggleExclude(p.id)}
-              >
-                ♫ {p.name}
-              </button>
-            ))}
-            {pockets.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className={`pdj-chip ${excludeIds.has(p.id) ? 'is-on' : ''}`}
-                data-testid={`exclude-chip-${p.id}`}
-                aria-pressed={excludeIds.has(p.id)}
-                onClick={() => toggleExclude(p.id)}
-              >
-                ◖ {p.name}
-              </button>
-            ))}
-            {excludeIds.size > 0 && (
-              <button
-                type="button"
-                className="pdj-chip pdj-chip--clear"
-                data-testid="exclude-clear"
-                onClick={() => setExcludeIds(new Set())}
-              >
-                ✕ clear
-              </button>
-            )}
-          </div>
+        <div className="pdj-browser__subbar">
+          <ExcludeFilter
+            playlists={playlists}
+            pockets={pockets}
+            excludeAny={excludeAny}
+            setExcludeAny={setExcludeAny}
+            excludeIds={excludeIds}
+            setExcludeIds={setExcludeIds}
+          />
         </div>
       )}
 
