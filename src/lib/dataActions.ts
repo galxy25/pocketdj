@@ -7,7 +7,7 @@ import type { IndexJson } from '../types/index-json';
 import { useAppStore } from '../store/useAppStore';
 import { useDataStore } from '../store/useDataStore';
 import { getSources } from '../storage/repo';
-import { clearAllStores } from '../storage/db';
+import { clearAllStores, clearCatalogStores } from '../storage/db';
 
 async function refreshAll() {
   await useAppStore.getState().refreshSources();
@@ -77,13 +77,33 @@ export async function exportData() {
 }
 
 /**
- * Force a full refresh ON THIS DEVICE: drop the service-worker caches + the cached app
- * shell + the IndexedDB catalog, then reload so the newest app code AND the latest seed
- * data are pulled fresh from the server. This is the fix for "I'm still seeing old
- * data/UI on my phone" — the SW caches the shell, and auto-seed only runs on an empty DB,
- * so a previously-loaded catalog otherwise sticks across deploys.
+ * Force a refresh ON THIS DEVICE: drop the service-worker caches + the cached app shell +
+ * the IndexedDB CATALOG, then reload so the newest app code AND the latest seed data are
+ * pulled fresh. This is the fix for "I'm still seeing old data/UI on my phone" — the SW
+ * caches the shell, and auto-seed only runs on an empty catalog, so a previously-loaded
+ * catalog otherwise sticks across deploys.
+ *
+ * IMPORTANT: this PRESERVES your cross-source collections (pockets/playlists/setlists) and
+ * the data version — only the catalog is cleared + re-pulled. Use `resetEverything()` for
+ * a full wipe.
  */
 export async function forceRefreshCatalog(): Promise<void> {
+  await dropShellCaches();
+  await clearCatalogStores(); // keep pockets/playlists/setlists + meta
+  // Reload: with the SW gone the browser fetches the freshest shell, and seedIfEmpty
+  // re-pulls current-index.json into a now-empty catalog (collections are untouched).
+  window.location.reload();
+}
+
+/** Nuclear reset: also deletes the user's pockets/playlists/setlists. */
+export async function resetEverything(): Promise<void> {
+  await dropShellCaches();
+  await clearAllStores();
+  window.location.reload();
+}
+
+/** Unregister service workers + delete Cache API entries (best-effort). */
+async function dropShellCaches(): Promise<void> {
   try {
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
@@ -94,10 +114,6 @@ export async function forceRefreshCatalog(): Promise<void> {
       await Promise.all(keys.map((k) => caches.delete(k)));
     }
   } catch {
-    /* best-effort cache clear; still wipe + reload below */
+    /* best-effort */
   }
-  await clearAllStores();
-  // Reload: with the SW gone the browser fetches the freshest shell, and seedIfEmpty
-  // re-pulls current-index.json into a now-empty DB.
-  window.location.reload();
 }
