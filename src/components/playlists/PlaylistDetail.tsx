@@ -80,15 +80,18 @@ function NodeRow(props: {
   playlistId: string;
   sequences: SequenceNode[];
   currentSeqId: string;
+  index: number;
+  count: number;
   item?: MusicItem;
   coverArtKey?: string;
   nameFor: (node: PlaylistNode) => string;
   metaFor: (node: PlaylistNode) => string;
   onOpenSong: (songId: string) => void;
 }) {
-  const { node, playlistId, sequences, currentSeqId, item, coverArtKey } = props;
+  const { node, playlistId, sequences, currentSeqId, index, count, item, coverArtKey } = props;
   const removeNode = useCollectionsStore((s) => s.removeNode);
   const moveNode = useCollectionsStore((s) => s.moveNode);
+  const reorderNode = useCollectionsStore((s) => s.reorderNode);
   const setPlaylistNodeNote = useCollectionsStore((s) => s.setPlaylistNodeNote);
 
   const kindLabel = isSongNode(node)
@@ -136,6 +139,30 @@ function NodeRow(props: {
           {meta && <span className="pdj-node__meta">{meta}</span>}
           <NoteEditor note={note} onSave={(n) => void setPlaylistNodeNote(playlistId, node.nodeId, n)} />
         </div>
+      </div>
+      <div className="pdj-node__reorder">
+        <button
+          type="button"
+          className="pdj-iconbtn pdj-iconbtn--reorder"
+          data-testid={`node-up-${node.nodeId}`}
+          aria-label="Move up"
+          title="Move up"
+          disabled={index === 0}
+          onClick={() => void reorderNode(playlistId, node.nodeId, -1)}
+        >
+          ▲
+        </button>
+        <button
+          type="button"
+          className="pdj-iconbtn pdj-iconbtn--reorder"
+          data-testid={`node-down-${node.nodeId}`}
+          aria-label="Move down"
+          title="Move down"
+          disabled={index === count - 1}
+          onClick={() => void reorderNode(playlistId, node.nodeId, 1)}
+        >
+          ▼
+        </button>
       </div>
       {sequences.length > 1 && (
         <select
@@ -270,7 +297,7 @@ function SequenceSection(props: {
         {seq.children.length === 0 ? (
           <p className="pdj-seq__empty">Empty — add a pocket or a cue below, or items from the browser.</p>
         ) : (
-          seq.children.map((node) => {
+          seq.children.map((node, idx) => {
             const refId = isSongNode(node) ? node.songId : isAlbumNode(node) ? node.albumId : undefined;
             const item = refId ? itemsById.get(refId) : undefined;
             const coverArtKey =
@@ -286,6 +313,8 @@ function SequenceSection(props: {
                 playlistId={playlist.id}
                 sequences={playlist.sequences}
                 currentSeqId={seq.nodeId}
+                index={idx}
+                count={seq.children.length}
                 item={item}
                 coverArtKey={coverArtKey}
                 nameFor={props.nameFor}

@@ -32,6 +32,7 @@ import {
   renameSequence as opRenameSequence,
   setSequenceTarget as opSetSequenceTarget,
   moveNode as opMoveNode,
+  reorderNode as opReorderNode,
   removeNode as opRemoveNode,
 } from '../engine/playlistOps';
 import { buildSetlist, type RealizeCtx } from '../engine/realize';
@@ -81,6 +82,8 @@ interface CollectionsState {
   removeSequence: (playlistId: string, sequenceNodeId: string) => Promise<void>;
   setSequenceTarget: (playlistId: string, sequenceNodeId: string, targetMs?: number) => Promise<void>;
   moveNode: (playlistId: string, nodeId: string, toSequenceNodeId: string) => Promise<void>;
+  /** Move a node up (-1) or down (+1) within its sequence. */
+  reorderNode: (playlistId: string, nodeId: string, delta: number) => Promise<void>;
   removeNode: (playlistId: string, nodeId: string) => Promise<void>;
 
   // ---- setlists ----
@@ -280,6 +283,12 @@ export const useCollectionsStore = create<CollectionsState>((set, get) => {
       const p = playlistById(playlistId);
       if (!p) return;
       await savePlaylist(opMoveNode(p, nodeId, toSequenceNodeId));
+    },
+    reorderNode: async (playlistId, nodeId, delta) => {
+      const p = playlistById(playlistId);
+      if (!p) return;
+      const next = opReorderNode(p, nodeId, delta);
+      if (next !== p) await savePlaylist(next);
     },
     removeNode: async (playlistId, nodeId) => {
       const p = playlistById(playlistId);
