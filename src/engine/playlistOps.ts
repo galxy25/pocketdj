@@ -281,3 +281,50 @@ export function moveNode(pl: Playlist, nodeId: string, toSequenceNodeId: string)
   // 2) Append (the original node reference — untouched) to the destination.
   return appendToSequenceAt(detached, sequenceIndex(detached, toSequenceNodeId), moving);
 }
+
+/** Swap a node with its previous/next sibling inside whatever children array holds it. */
+function reorderWithin(
+  children: PlaylistNode[],
+  nodeId: string,
+  delta: number,
+): { changed: boolean; children: PlaylistNode[] } {
+  const i = children.findIndex((c) => c.nodeId === nodeId);
+  if (i >= 0) {
+    const j = i + delta;
+    if (j < 0 || j >= children.length) return { changed: false, children }; // at a boundary
+    const next = children.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    return { changed: true, children: next };
+  }
+  // Not at this level — recurse into nested sequences (first match wins).
+  let changed = false;
+  const next = children.map((c) => {
+    if (changed || !isSequenceNode(c)) return c;
+    const r = reorderWithin(c.children, nodeId, delta);
+    if (r.changed) {
+      changed = true;
+      return withChildren(c, r.children);
+    }
+    return c;
+  });
+  return { changed, children: next };
+}
+
+/**
+ * Move a node UP (delta -1) or DOWN (delta +1) by one position within its own
+ * sequence (the children array that holds it, at any nesting depth). No-op (same
+ * reference) at a boundary or if the id isn't found.
+ */
+export function reorderNode(pl: Playlist, nodeId: string, delta: number): Playlist {
+  let changed = false;
+  const sequences = pl.sequences.map((seq) => {
+    if (changed) return seq;
+    const r = reorderWithin(seq.children, nodeId, delta);
+    if (r.changed) {
+      changed = true;
+      return withChildren(seq, r.children);
+    }
+    return seq;
+  });
+  return changed ? withSequences(pl, sequences) : pl;
+}
