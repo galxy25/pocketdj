@@ -79,3 +79,14 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+
+/* "last used" badge on the remembered Add-to target (F11). */
+.pdj-addcol__last {
+  margin-left: 6px;
+  font-size: 0.6rem;
+  color: var(--pdj-accent);
+  background: var(--pdj-bg-overlay);
+  padding: 1px 6px;
+  border-radius: 9px;
+  vertical-align: middle;
+}

@@ -231,6 +231,7 @@ export function SolarSystemView() {
         song={songs?.find((s) => s.id === selectedId) ?? null}
         albumName={system.name}
         onClose={() => setSelectedId(null)}
+        showCoverArt={false}
       />
 
       <AudioTracksModal album={album} open={audioOpen} onClose={() => setAudioOpen(false)} />

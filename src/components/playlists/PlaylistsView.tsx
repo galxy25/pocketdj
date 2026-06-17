@@ -2,11 +2,12 @@
 // ordered set of "sequences"/chapters); create one to start, then open it to
 // edit + ▶ Play it into a frozen Setlist. Cross-source, so it reads from the
 // collections store, not the browser's current scope.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useCollectionsStore } from '../../store/useCollectionsStore';
 import type { Playlist, PlaylistNode } from '../../types/collections';
 import { isSequenceNode } from '../../types/collections';
+import { importPlaylistZip } from '../../storage/playlistTransfer';
 import './playlists.css';
 
 /** Total item count across a playlist's sequences (recursive: counts nested nodes). */
@@ -32,10 +33,28 @@ export function PlaylistsView() {
 
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-importing the same file
+    if (!file) return;
+    setImporting(true);
+    try {
+      const r = await importPlaylistZip(await file.arrayBuffer());
+      await load();
+      navigate(`/playlists/${r.playlistId}`);
+    } catch (err) {
+      alert(`Import failed: ${(err as Error).message}`);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const confirmCreate = async () => {
     const trimmed = name.trim();
@@ -56,6 +75,24 @@ export function PlaylistsView() {
           </p>
         </div>
         <div className="pdj-playlists__spacer" />
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".zip"
+          style={{ display: 'none' }}
+          data-testid="playlist-import-input"
+          onChange={(e) => void onImportFile(e)}
+        />
+        <button
+          type="button"
+          className="pdj-btn pdj-btn--ghost"
+          data-testid="playlist-import"
+          disabled={importing}
+          title="Import a playlist exported from PocketDJ"
+          onClick={() => fileRef.current?.click()}
+        >
+          {importing ? '…' : '⤒ Import'}
+        </button>
         {adding ? (
           <div className="pdj-addcol__new">
             <input

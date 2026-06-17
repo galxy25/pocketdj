@@ -2,10 +2,16 @@
 // playlist (optionally targeting a specific sequence) or pocket, or spin up a
 // new one inline. Closing on a successful add is the key contract; the four
 // detail surfaces mount this via <AddToCollectionButton />.
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { useCollectionsStore } from '../../store/useCollectionsStore';
 import type { Playlist } from '../../types/collections';
+import {
+  loadAddToPrefs,
+  rememberPlaylist,
+  rememberPocket,
+  lastFirst,
+} from '../../lib/addToPrefs';
 import './add-to-collection.css';
 
 interface Props {
@@ -72,12 +78,19 @@ function NewEntry(props: {
 /** One playlist row — expands to a sequence picker when the playlist has >1 sequence. */
 function PlaylistRow(props: {
   playlist: Playlist;
+  lastSeqId?: string;
+  isLast?: boolean;
   onAdd: (playlistId: string, sequenceNodeId?: string) => void | Promise<void>;
 }) {
-  const { playlist } = props;
+  const { playlist, lastSeqId, isLast } = props;
   const multi = playlist.sequences.length > 1;
   const [picking, setPicking] = useState(false);
-  const [seqId, setSeqId] = useState(playlist.sequences[0]?.nodeId ?? '');
+  // Default the sequence to the one last used for this playlist, when it still exists.
+  const defaultSeq =
+    (lastSeqId && playlist.sequences.some((s) => s.nodeId === lastSeqId) ? lastSeqId : undefined) ??
+    playlist.sequences[0]?.nodeId ??
+    '';
+  const [seqId, setSeqId] = useState(defaultSeq);
 
   if (multi && picking) {
     return (
@@ -119,7 +132,10 @@ function PlaylistRow(props: {
         else void props.onAdd(playlist.id);
       }}
     >
-      <span className="pdj-addcol__row-name">{playlist.name}</span>
+      <span className="pdj-addcol__row-name">
+        {playlist.name}
+        {isLast && <span className="pdj-addcol__last">last used</span>}
+      </span>
       <span className="pdj-addcol__row-meta">
         {multi ? `${playlist.sequences.length} sequences` : 'add'}
       </span>
@@ -138,6 +154,11 @@ export function AddToCollectionPicker(props: Props): JSX.Element | null {
   const addSongToPocket = useCollectionsStore((s) => s.addSongToPocket);
   const addAlbumToPocket = useCollectionsStore((s) => s.addAlbumToPocket);
 
+  const prefs = useMemo(() => (open ? loadAddToPrefs() : {}), [open]);
+  // Surface the last-used target first (and badge it).
+  const orderedPlaylists = useMemo(() => lastFirst(playlists, prefs.playlistId), [playlists, prefs.playlistId]);
+  const orderedPockets = useMemo(() => lastFirst(pockets, prefs.pocketId), [pockets, prefs.pocketId]);
+
   // Refresh the cache once whenever the picker opens.
   useEffect(() => {
     if (open) void load();
@@ -148,11 +169,13 @@ export function AddToCollectionPicker(props: Props): JSX.Element | null {
   const addToPocket = async (pocketId: string) => {
     if (item.kind === 'song') await addSongToPocket(pocketId, item.id);
     else await addAlbumToPocket(pocketId, item.id);
+    rememberPocket(pocketId);
     onClose();
   };
 
   const addToList = async (playlistId: string, sequenceNodeId?: string) => {
     await addToPlaylist(playlistId, { kind: item.kind, id: item.id }, sequenceNodeId);
+    rememberPlaylist(playlistId, sequenceNodeId);
     onClose();
   };
 
@@ -164,8 +187,14 @@ export function AddToCollectionPicker(props: Props): JSX.Element | null {
           <p className="pdj-addcol__empty">No playlists yet — create one.</p>
         ) : (
           <div className="pdj-addcol__list">
-            {playlists.map((p) => (
-              <PlaylistRow key={p.id} playlist={p} onAdd={addToList} />
+            {orderedPlaylists.map((p) => (
+              <PlaylistRow
+                key={p.id}
+                playlist={p}
+                lastSeqId={prefs.sequenceByPlaylist?.[p.id]}
+                isLast={p.id === prefs.playlistId}
+                onAdd={addToList}
+              />
             ))}
           </div>
         )}
@@ -186,7 +215,7 @@ export function AddToCollectionPicker(props: Props): JSX.Element | null {
           <p className="pdj-addcol__empty">No pockets yet — create one.</p>
         ) : (
           <div className="pdj-addcol__list">
-            {pockets.map((p) => (
+            {orderedPockets.map((p) => (
               <button
                 key={p.id}
                 type="button"
@@ -194,7 +223,10 @@ export function AddToCollectionPicker(props: Props): JSX.Element | null {
                 data-testid={`add-collection-pocket-${p.id}`}
                 onClick={() => void addToPocket(p.id)}
               >
-                <span className="pdj-addcol__row-name">{p.name}</span>
+                <span className="pdj-addcol__row-name">
+                  {p.name}
+                  {p.id === prefs.pocketId && <span className="pdj-addcol__last">last used</span>}
+                </span>
                 <span className="pdj-addcol__row-meta">add</span>
               </button>
             ))}

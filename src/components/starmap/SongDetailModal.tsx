@@ -4,9 +4,10 @@
 // is "found" but whose lyrics aren't stored yet, we fetch /lyrics/<songId>.txt and cache
 // it in IndexedDB — so an install only ever stores the lyrics you actually look at.
 import { useEffect, useState, type ReactNode } from 'react';
-import { isSong, type SongItem } from '../../types/model';
+import { isSong, isAlbum, type SongItem } from '../../types/model';
 import { getItem, putItem } from '../../storage/repo';
 import { Modal } from '../common/Modal';
+import { Thumbnail } from '../common/Thumbnail';
 import { AddToCollectionButton } from '../common/AddToCollectionButton';
 import { msToClock } from '../../lib/format';
 import './songDetailActions.css';
@@ -20,11 +21,30 @@ interface Props {
   song: SongItem | null;
   albumName: string;
   onClose: () => void;
+  /** Show the album cover art. Off for the solar/star-map view (it IS the album art). */
+  showCoverArt?: boolean;
 }
 
-export function SongDetailModal({ song, albumName, onClose }: Props) {
+export function SongDetailModal({ song, albumName, onClose, showCoverArt = true }: Props) {
   const [lyrics, setLyrics] = useState<string | undefined>(undefined);
   const [lyricsStatus, setLyricsStatus] = useState<string | undefined>(undefined);
+  const [coverArtKey, setCoverArtKey] = useState<string | undefined>(undefined);
+
+  // Resolve the owning album's cover art (song.albumId → album.coverArtKey).
+  useEffect(() => {
+    setCoverArtKey(undefined);
+    if (!showCoverArt || !song?.albumId) return;
+    let live = true;
+    (async () => {
+      const a = await getItem(song.albumId as string);
+      if (live && a && isAlbum(a)) setCoverArtKey(a.coverArtKey);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [song, showCoverArt]);
+
+  const albumHref = song?.albumId ? `${import.meta.env.BASE_URL}album/${song.albumId}` : undefined;
 
   useEffect(() => {
     if (!song) {
@@ -90,9 +110,29 @@ export function SongDetailModal({ song, albumName, onClose }: Props) {
     <Modal open={song != null} onClose={onClose} title={song ? song.name : 'Song'} testId="song-modal">
       {song && (
         <div className="pdj-songdetail" data-testid="song-detail">
+          {showCoverArt && (
+            <div className="pdj-songdetail__cover" data-testid="song-detail-cover">
+              <Thumbnail artKey={coverArtKey} alt={albumName || song.name} size={120} />
+            </div>
+          )}
           <Row label="Track">{song.trackNumber ?? '—'}</Row>
           <Row label="Artist">{song.artist}</Row>
-          <Row label="Album">{albumName}</Row>
+          <Row label="Album">
+            {albumHref ? (
+              <a
+                className="pdj-songdetail__albumlink"
+                href={albumHref}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="song-detail-album-link"
+                title="Open album in a new tab"
+              >
+                {albumName || '(album)'} ↗
+              </a>
+            ) : (
+              albumName || '—'
+            )}
+          </Row>
           <Row label="Genre">{song.genre ?? '—'}</Row>
           <Row label="Year">{song.year ?? '—'}</Row>
           <Row label="Length">{msToClock(song.lengthMs) || '—'}</Row>

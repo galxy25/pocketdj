@@ -12,6 +12,7 @@ import { PlaylistDetail } from './components/playlists/PlaylistDetail';
 import { SetlistView } from './components/playlists/SetlistView';
 import { installDebug } from './lib/debug';
 import { seedIfEmpty } from './lib/dataActions';
+import { runMigrations } from './storage/migrations';
 import { requestPersistentStorage } from './storage/artCache';
 import { useBrowserStore } from './store/useBrowserStore';
 
@@ -56,6 +57,7 @@ export function App() {
         await seedIfEmpty((done, total) => {
           if (!cancelled && total) setStatus(`Loading your vinyl… ${done}/${total}`);
         });
+        await runMigrations(); // forward-migrate collections to the current data version
       } catch {
         /* render the app anyway — user can import manually */
       }

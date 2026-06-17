@@ -50,25 +50,40 @@ export interface Pocket {
 // Playlist template — a recursive tree of nodes grouped into sequences
 // ---------------------------------------------------------------------------
 
-export type PlaylistNode = SongNode | AlbumNode | PocketNode | SequenceNode;
+export type PlaylistNode = SongNode | AlbumNode | PocketNode | SequenceNode | TextNode;
 
 /** A single song placed directly into a sequence. */
 export interface SongNode {
   nodeId: string;
   kind: 'song';
   songId: string;
+  /** Optional performer note for this item (shown in the UI + carried into export). */
+  note?: string;
 }
 /** A whole album (expands to its tracks at realize). */
 export interface AlbumNode {
   nodeId: string;
   kind: 'album';
   albumId: string;
+  note?: string;
 }
 /** A reference to a pocket (resolved lazily — this is what makes auto-update free). */
 export interface PocketNode {
   nodeId: string;
   kind: 'pocket';
   pocketId: string;
+  note?: string;
+}
+/**
+ * A free-text cue that is NOT backed by a catalog item — e.g. "sample of This
+ * Land Is Mine Land", a mic break, or any out-of-index moment. Carried verbatim
+ * into the realized setlist (as a no-audio track) and into exports.
+ */
+export interface TextNode {
+  nodeId: string;
+  kind: 'text';
+  text: string;
+  note?: string;
 }
 /** A chapter (or sub-chapter): an ordered list of child nodes with an optional time budget. */
 export interface SequenceNode {
@@ -134,6 +149,10 @@ export interface SetlistTrack {
   source: TrackSource;
   /** Name of the sequence (chapter) this track came from. */
   sequenceName?: string;
+  /** Performer note carried from the template node (and editable on the setlist). Included in export. */
+  note?: string;
+  /** True for a free-text cue (TextNode) with no backing catalog item / audio. */
+  isText?: boolean;
   /** Pocket it was sampled from, when source === 'pocket'. */
   pocketId?: string;
   /** DEFERRED — per-track mix suggestions (see MixSuggestion). */
@@ -207,3 +226,9 @@ export const isSongNode = (n: PlaylistNode): n is SongNode => n.kind === 'song';
 export const isAlbumNode = (n: PlaylistNode): n is AlbumNode => n.kind === 'album';
 export const isPocketNode = (n: PlaylistNode): n is PocketNode => n.kind === 'pocket';
 export const isSequenceNode = (n: PlaylistNode): n is SequenceNode => n.kind === 'sequence';
+export const isTextNode = (n: PlaylistNode): n is TextNode => n.kind === 'text';
+
+/** A fresh free-text cue node. */
+export function makeTextNode(text: string): TextNode {
+  return { nodeId: newNodeId(), kind: 'text', text };
+}

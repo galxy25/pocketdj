@@ -17,6 +17,7 @@ import {
   getSongs,
   getAlbums,
   getSetlists as repoGetSetlists,
+  getSetlist as repoGetSetlist,
   putSetlist,
   deleteSetlist as repoDeleteSetlist,
 } from '../storage/repo';
@@ -24,6 +25,8 @@ import {
   addSong,
   addAlbum,
   addPocket as addPocketNode,
+  addText as opAddText,
+  setNodeNote as opSetNodeNote,
   addSequence as opAddSequence,
   removeSequence as opRemoveSequence,
   renameSequence as opRenameSequence,
@@ -69,6 +72,10 @@ interface CollectionsState {
     ref: { kind: 'song' | 'album' | 'pocket'; id: string },
     sequenceNodeId?: string,
   ) => Promise<void>;
+  /** Append a free-text cue (out-of-index item) to a playlist sequence. */
+  addTextToPlaylist: (playlistId: string, text: string, sequenceNodeId?: string) => Promise<void>;
+  /** Set/clear a performer note on a playlist item node. */
+  setPlaylistNodeNote: (playlistId: string, nodeId: string, note: string | undefined) => Promise<void>;
   addSequence: (playlistId: string, name: string) => Promise<void>;
   renameSequence: (playlistId: string, sequenceNodeId: string, name: string) => Promise<void>;
   removeSequence: (playlistId: string, sequenceNodeId: string) => Promise<void>;
@@ -81,6 +88,10 @@ interface CollectionsState {
   play: (playlistId: string) => Promise<Setlist | null>;
   getSetlists: (playlistId: string) => Promise<Setlist[]>;
   deleteSetlist: (id: string) => Promise<void>;
+  /** Rename a persisted setlist. */
+  renameSetlist: (id: string, name: string) => Promise<Setlist | null>;
+  /** Set/clear a performer note on a setlist track (by index). */
+  setSetlistTrackNote: (id: string, trackIndex: number, note: string | undefined) => Promise<Setlist | null>;
 }
 
 /** Replace an entity by id (or append) in an immutable list copy. */
@@ -233,6 +244,18 @@ export const useCollectionsStore = create<CollectionsState>((set, get) => {
       await savePlaylist(next);
       txn('playlist.addItem', { playlistId, kind: ref.kind, id: ref.id, sequence: seqId });
     },
+    addTextToPlaylist: async (playlistId, text, sequenceNodeId) => {
+      const p = playlistById(playlistId);
+      if (!p || !text.trim()) return;
+      const seqId = sequenceNodeId ?? p.sequences[0].nodeId;
+      await savePlaylist(opAddText(p, seqId, text.trim()));
+      txn('playlist.addItem', { playlistId, kind: 'text', sequence: seqId });
+    },
+    setPlaylistNodeNote: async (playlistId, nodeId, note) => {
+      const p = playlistById(playlistId);
+      if (!p) return;
+      await savePlaylist(opSetNodeNote(p, nodeId, note));
+    },
     addSequence: async (playlistId, name) => {
       const p = playlistById(playlistId);
       if (!p) return;
@@ -293,6 +316,25 @@ export const useCollectionsStore = create<CollectionsState>((set, get) => {
     deleteSetlist: async (id) => {
       await repoDeleteSetlist(id);
       set((s) => ({ rev: s.rev + 1 }));
+    },
+    renameSetlist: async (id, name) => {
+      const s = await repoGetSetlist(id);
+      if (!s) return null;
+      const next = { ...s, name };
+      await putSetlist(next);
+      set((st) => ({ rev: st.rev + 1 }));
+      return next;
+    },
+    setSetlistTrackNote: async (id, trackIndex, note) => {
+      const s = await repoGetSetlist(id);
+      if (!s || trackIndex < 0 || trackIndex >= s.tracks.length) return null;
+      const clean = note && note.trim() ? note.trim() : undefined;
+      const tracks = s.tracks.slice();
+      tracks[trackIndex] = { ...tracks[trackIndex], note: clean };
+      const next = { ...s, tracks };
+      await putSetlist(next);
+      set((st) => ({ rev: st.rev + 1 }));
+      return next;
     },
   };
 });
