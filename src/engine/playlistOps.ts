@@ -23,9 +23,13 @@ import {
   type SongNode,
   type AlbumNode,
   type PocketNode,
+  type TextNode,
   makeSequence,
   newNodeId,
   isSequenceNode,
+  isSongNode,
+  isAlbumNode,
+  isPocketNode,
 } from '../types/collections';
 
 /** The default sequence (sequences[0]) — bare "add to playlist" lands here. */
@@ -172,6 +176,70 @@ export function addAlbum(pl: Playlist, sequenceNodeId: string, albumId: string):
 export function addPocket(pl: Playlist, sequenceNodeId: string, pocketId: string): Playlist {
   const node: PocketNode = { nodeId: newNodeId(), kind: 'pocket', pocketId };
   return addNode(pl, sequenceNodeId, node);
+}
+
+/** Convenience: append a free-text cue (out-of-index item) to a sequence. */
+export function addText(pl: Playlist, sequenceNodeId: string, text: string): Playlist {
+  const node: TextNode = { nodeId: newNodeId(), kind: 'text', text };
+  return addNode(pl, sequenceNodeId, node);
+}
+
+/** Recursively map the node with `nodeId`, returning the SAME tree when unchanged. */
+function mapNode(
+  node: PlaylistNode,
+  nodeId: string,
+  fn: (n: PlaylistNode) => PlaylistNode,
+): PlaylistNode {
+  if (node.nodeId === nodeId) return fn(node);
+  if (!isSequenceNode(node)) return node;
+  let changed = false;
+  const children = node.children.map((c) => {
+    const next = mapNode(c, nodeId, fn);
+    if (next !== c) changed = true;
+    return next;
+  });
+  return changed ? withChildren(node, children) : node;
+}
+
+/**
+ * Set (or clear, with `undefined`/'') a performer note on any item node. No-op if
+ * the id is unknown or the node is a sequence (sequences carry names, not notes).
+ */
+export function setNodeNote(pl: Playlist, nodeId: string, note: string | undefined): Playlist {
+  const clean = note && note.trim() ? note.trim() : undefined;
+  let changed = false;
+  const sequences = pl.sequences.map((seq) => {
+    const next = mapNode(
+      seq,
+      nodeId,
+      (n) => (isSequenceNode(n) ? n : ({ ...n, note: clean } as PlaylistNode)),
+    ) as SequenceNode;
+    if (next !== seq) changed = true;
+    return next;
+  });
+  return changed ? withSequences(pl, sequences) : pl;
+}
+
+/** Directly-placed refs in a playlist (no album/pocket expansion). For membership/filtering. */
+export interface PlaylistRefs {
+  songIds: Set<string>;
+  albumIds: Set<string>;
+  pocketIds: Set<string>;
+}
+
+/** Walk all sequences and collect the song/album/pocket ids placed directly in the template. */
+export function collectPlaylistRefs(pl: Playlist): PlaylistRefs {
+  const refs: PlaylistRefs = { songIds: new Set(), albumIds: new Set(), pocketIds: new Set() };
+  const walk = (nodes: PlaylistNode[]) => {
+    for (const n of nodes) {
+      if (isSongNode(n)) refs.songIds.add(n.songId);
+      else if (isAlbumNode(n)) refs.albumIds.add(n.albumId);
+      else if (isPocketNode(n)) refs.pocketIds.add(n.pocketId);
+      else if (isSequenceNode(n)) walk(n.children);
+    }
+  };
+  walk(pl.sequences);
+  return refs;
 }
 
 /**

@@ -26,7 +26,7 @@ import type {
   Setlist,
   TrackSource,
 } from '../types/collections';
-import { isSongNode, isAlbumNode, isPocketNode, isSequenceNode, newSetlistId } from '../types/collections';
+import { isSongNode, isAlbumNode, isPocketNode, isSequenceNode, isTextNode, newSetlistId } from '../types/collections';
 import { seededRng } from '../lib/prng';
 import { txn } from '../lib/log';
 import { harmonicDistance, DEFAULT_WEIGHTS } from './harmonics';
@@ -73,16 +73,26 @@ const AUTOFILL_CAP = 200;
 // ---------------------------------------------------------------------------
 
 interface Placed {
-  song: SongItem;
+  /** The catalog song — absent for a free-text cue (TextNode). */
+  song?: SongItem;
+  /** Free-text cue label (TextNode), with no backing song/audio. */
+  text?: string;
   source: TrackSource;
   pocketId?: string;
   /** Name of the (sub-)sequence this track was realized in — drives the snapshot. */
   sequenceName: string;
+  /** Performer note carried from the template node. */
+  note?: string;
 }
 
 /** Duration a placed/candidate song contributes to the budget + totals. */
 function songMs(song: SongItem): number {
   return typeof song.lengthMs === 'number' && song.lengthMs > 0 ? song.lengthMs : DEFAULT_TRACK_MS;
+}
+
+/** Duration a placement contributes — 0 for a text cue (no audio). */
+function placedItemMs(p: Placed): number {
+  return p.song ? songMs(p.song) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +214,7 @@ interface SeqResult {
 
 function placedMs(placed: Placed[]): number {
   let total = 0;
-  for (const p of placed) total += songMs(p.song);
+  for (const p of placed) total += placedItemMs(p);
   return total;
 }
 
@@ -257,7 +267,13 @@ function placeNode(
 ): void {
   if (isSongNode(node)) {
     const song = ctx.songsById.get(node.songId);
-    if (song) addPlaced(placed, used, { song, source: 'explicit', sequenceName });
+    if (song) addPlaced(placed, used, { song, source: 'explicit', sequenceName, note: node.note });
+    return;
+  }
+
+  if (isTextNode(node)) {
+    // A free-text cue with no audio — always placed (never deduped), contributes 0ms.
+    placed.push({ text: node.text, source: 'explicit', sequenceName, note: node.note });
     return;
   }
 
@@ -297,6 +313,10 @@ function placeNode(
 
 /** Append a placement unless its song is already present anywhere (dedupe by songId). */
 function addPlaced(placed: Placed[], used: Set<string>, p: Placed): void {
+  if (!p.song) {
+    placed.push(p); // song-less (text) placements are never deduped
+    return;
+  }
   if (used.has(p.song.id)) return;
   used.add(p.song.id);
   placed.push(p);
@@ -334,18 +354,21 @@ function autofill(
     if (shortest == null || remaining < shortest) break;
 
     // Rank seams worst-first; take the roughest one that yields a FITTING bridge.
+    // Skip seams adjacent to a text cue (no song to harmonically bridge across).
     const seams: number[] = [];
-    for (let i = 0; i < placed.length - 1; i++) seams.push(i);
+    for (let i = 0; i < placed.length - 1; i++) {
+      if (placed[i].song && placed[i + 1].song) seams.push(i);
+    }
     seams.sort(
       (i, j) =>
-        harmonicDistance(placed[j].song, placed[j + 1].song, weights) -
-        harmonicDistance(placed[i].song, placed[i + 1].song, weights),
+        harmonicDistance(placed[j].song!, placed[j + 1].song!, weights) -
+        harmonicDistance(placed[i].song!, placed[i + 1].song!, weights),
     );
 
     let insertedAt = -1;
     let bridgeSong: SongItem | null = null;
     for (const i of seams) {
-      const target = interpolatePath(placed[i].song, placed[i + 1].song, 1)[0];
+      const target = interpolatePath(placed[i].song!, placed[i + 1].song!, 1)[0];
       if (!target) continue;
       // maxMs = remaining → only candidates that actually fit are considered.
       const bridge = nearestCandidate(target, ctx.candidates, used, weights, remaining);
@@ -379,6 +402,21 @@ function shortestUsableMs(candidates: SongItem[], used: Set<string>): number | n
 // ---------------------------------------------------------------------------
 
 function snapshot(p: Placed): SetlistTrack {
+  if (!p.song) {
+    // Free-text cue → a no-audio setlist track.
+    const track: SetlistTrack = {
+      songId: '',
+      artist: '',
+      name: p.text ?? '',
+      bpm: null,
+      camelot: null,
+      source: p.source,
+      sequenceName: p.sequenceName,
+      isText: true,
+    };
+    if (p.note !== undefined) track.note = p.note;
+    return track;
+  }
   const s = p.song;
   const track: SetlistTrack = {
     songId: s.id,
@@ -391,6 +429,7 @@ function snapshot(p: Placed): SetlistTrack {
     sequenceName: p.sequenceName,
   };
   if (p.pocketId !== undefined) track.pocketId = p.pocketId;
+  if (p.note !== undefined) track.note = p.note;
   // mixSuggestions intentionally left undefined (deferred — see mixSuggest.ts).
   return track;
 }
@@ -427,7 +466,10 @@ export function realize(playlist: Playlist, ctx: RealizeCtx, opts: RealizeOption
   }
 
   let totalMs = 0;
-  for (const t of tracks) totalMs += typeof t.lengthMs === 'number' && t.lengthMs > 0 ? t.lengthMs : DEFAULT_TRACK_MS;
+  for (const t of tracks) {
+    if (t.isText) continue; // text cues carry no audio duration
+    totalMs += typeof t.lengthMs === 'number' && t.lengthMs > 0 ? t.lengthMs : DEFAULT_TRACK_MS;
+  }
 
   const stats = {
     sequences: playlist.sequences.length,
