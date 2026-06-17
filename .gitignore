@@ -4,6 +4,18 @@ node_modules/
 # audio indexer python virtualenv (large, host-local)
 .venv-audio/
 
+# burned setlists (large host-local audio carved from raw rips by burn-setlist)
+/burned-setlists/
+/1 — take 3/
+
+# ripped setlists (large host-local audio recorded from Apple Music by the rip skill)
+*_ripped/
+
+# per-setlist generated artifacts (match/backfill outputs; regenerable, host-local)
+/* - apple-music.csv
+/* - backfill.csv
+/* - backfill.json
+
 # build output
 dist/
 dist-ssr/
