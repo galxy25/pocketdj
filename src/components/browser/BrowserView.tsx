@@ -5,8 +5,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { useBrowserStore } from '../../store/useBrowserStore';
 import { useDataStore } from '../../store/useDataStore';
+import { useCollectionsStore } from '../../store/useCollectionsStore';
 import { applyFilters, filterHash } from '../../engine/filterEngine';
 import { sortItems, sortHash } from '../../engine/sortEngine';
+import { membersOf, isMember } from '../../engine/membership';
 import { DataSourceSelector } from './DataSourceSelector';
 import { FilterBuilder } from './FilterBuilder';
 import { SortControl } from './SortControl';
@@ -30,6 +32,20 @@ export function BrowserView() {
   const loading = useDataStore((s) => s.loading);
   const scopeKey = useDataStore((s) => s.scopeKey);
   const load = useDataStore((s) => s.load);
+
+  // Collections for the "exclude songs already in playlist/pocket" filter (song mode).
+  const playlists = useCollectionsStore((s) => s.playlists);
+  const pockets = useCollectionsStore((s) => s.pockets);
+  const loadCollections = useCollectionsStore((s) => s.load);
+  // Selected collection ids to exclude members of (empty = show all).
+  const [excludeIds, setExcludeIds] = useState<Set<string>>(new Set());
+  useEffect(() => void loadCollections(), [loadCollections]);
+  const toggleExclude = (id: string) =>
+    setExcludeIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   // Only render once the loaded set matches the current (source, type) scope —
   // prevents a frame where, e.g., album items render as songs mid-switch.
@@ -62,6 +78,13 @@ export function BrowserView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [items, filterHash(filter), sortHash(sort)],
   );
+
+  // Song mode: optionally exclude songs already in the selected playlists/pockets.
+  const visible = useMemo(() => {
+    if (itemType !== 'song' || excludeIds.size === 0) return filtered;
+    const m = membersOf(excludeIds, playlists, pockets);
+    return filtered.filter((it) => it.type !== 'song' || !isMember(it, m));
+  }, [filtered, itemType, excludeIds, playlists, pockets]);
 
   const songsById = useMemo(() => {
     const map = new Map<string, SongItem>();
@@ -114,7 +137,7 @@ export function BrowserView() {
         </div>
         <SortControl />
         <span className="pdj-browser__count" data-testid="result-count">
-          {filtered.length} / {items.length}
+          {visible.length} / {items.length}
         </span>
         <div className="pdj-browser__spacer" />
         <ImportExportBar />
@@ -122,12 +145,54 @@ export function BrowserView() {
 
       <FilterBuilder />
 
+      {itemType === 'song' && (playlists.length > 0 || pockets.length > 0) && (
+        <div className="pdj-exclude" data-testid="exclude-filter">
+          <span className="pdj-exclude__label">Exclude songs in</span>
+          <div className="pdj-exclude__chips">
+            {playlists.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`pdj-chip ${excludeIds.has(p.id) ? 'is-on' : ''}`}
+                data-testid={`exclude-chip-${p.id}`}
+                aria-pressed={excludeIds.has(p.id)}
+                onClick={() => toggleExclude(p.id)}
+              >
+                ♫ {p.name}
+              </button>
+            ))}
+            {pockets.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`pdj-chip ${excludeIds.has(p.id) ? 'is-on' : ''}`}
+                data-testid={`exclude-chip-${p.id}`}
+                aria-pressed={excludeIds.has(p.id)}
+                onClick={() => toggleExclude(p.id)}
+              >
+                ◖ {p.name}
+              </button>
+            ))}
+            {excludeIds.size > 0 && (
+              <button
+                type="button"
+                className="pdj-chip pdj-chip--clear"
+                data-testid="exclude-clear"
+                onClick={() => setExcludeIds(new Set())}
+              >
+                ✕ clear
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="pdj-browser__results" ref={wrapRef}>
         {loading || !ready ? (
           <div className="pdj-grid__empty">Loading…</div>
         ) : (
           <ItemGrid
-            items={filtered}
+            items={visible}
             itemType={itemType}
             columns={columns}
             onEdit={setEditId}

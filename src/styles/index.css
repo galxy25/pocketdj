@@ -240,3 +240,42 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-audioedit__row label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pdj-audioedit__row label span { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--pdj-fg-dim); }
 .pdj-audioedit__row input, .pdj-audioedit__row select { width: 100%; min-width: 0; }
+
+/* Exclude-songs-in-collection filter (mobile-friendly chip multi-select). */
+.pdj-exclude {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+}
+.pdj-exclude__label {
+  font-size: 0.72rem;
+  color: var(--pdj-text-dim, #9aa);
+  white-space: nowrap;
+}
+.pdj-exclude__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pdj-chip {
+  font-size: 0.72rem;
+  padding: 4px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--pdj-border, #345);
+  background: var(--pdj-bg-overlay);
+  color: var(--pdj-text, #cde);
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 30px; /* comfortable tap target on mobile */
+}
+.pdj-chip.is-on {
+  background: var(--pdj-accent);
+  border-color: var(--pdj-accent);
+  color: #061018;
+  font-weight: 600;
+}
+.pdj-chip--clear {
+  opacity: 0.7;
+}
