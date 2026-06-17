@@ -21,6 +21,7 @@ import { msToClock, clockToMs } from '../../lib/format';
 import { Thumbnail } from '../common/Thumbnail';
 import { SongDetailModal } from '../starmap/SongDetailModal';
 import { seqStats } from '../../engine/playlistStats';
+import { downloadPlaylistZip } from '../../storage/playlistTransfer';
 import './playlists.css';
 
 // ---------------------------------------------------------------------------
@@ -565,6 +566,15 @@ export function PlaylistDetail() {
           onClick={() => void onPlay()}
         >
           {playing ? '…' : '▶'} Play
+        </button>
+        <button
+          type="button"
+          className="pdj-btn pdj-btn--sm pdj-btn--ghost"
+          data-testid="playlist-export"
+          title="Export this playlist (with its songs, pockets + art) as a portable zip"
+          onClick={() => void downloadPlaylistZip(playlist.id)}
+        >
+          ⤓ Export
         </button>
         <button
           type="button"
