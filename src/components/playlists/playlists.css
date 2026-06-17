@@ -546,3 +546,52 @@
   border-radius: 6px;
   color: inherit;
 }
+
+/* ---- setlist: editable title, per-track notes, text cues ---- */
+.pdj-setlist__title-input {
+  background: none;
+  border: none;
+  border-bottom: 1px dashed transparent;
+  color: inherit;
+  font: inherit;
+  width: 100%;
+  padding: 0 0 2px;
+}
+.pdj-setlist__title-input:hover,
+.pdj-setlist__title-input:focus {
+  border-bottom-color: var(--pdj-border, #345);
+  outline: none;
+}
+.pdj-track--cue {
+  opacity: 0.92;
+}
+.pdj-track--cue .pdj-track__title {
+  font-style: italic;
+}
+.pdj-track__note,
+.pdj-node__note {
+  cursor: pointer;
+}
+.pdj-track__note {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.66rem;
+  color: var(--pdj-text-dim, #9aa);
+}
+.pdj-track__note--add {
+  opacity: 0.5;
+}
+.pdj-track__note:hover {
+  color: var(--pdj-accent);
+}
+.pdj-track__note-input {
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  background: var(--pdj-bg-overlay);
+  border: 1px solid var(--pdj-accent);
+  border-radius: 6px;
+  color: inherit;
+  min-width: 140px;
+}

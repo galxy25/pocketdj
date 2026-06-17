@@ -37,14 +37,54 @@ function ProvenanceBadge({ source }: { source: TrackSource }) {
   );
 }
 
+function TrackNote({ note, onSave }: { note?: string; onSave: (n: string | undefined) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note ?? '');
+  useEffect(() => setDraft(note ?? ''), [note]);
+  if (editing)
+    return (
+      <input
+        className="pdj-track__note-input"
+        autoFocus
+        value={draft}
+        placeholder="performer note…"
+        aria-label="Track note"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          setEditing(false);
+          onSave(draft.trim() || undefined);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          else if (e.key === 'Escape') {
+            setDraft(note ?? '');
+            setEditing(false);
+          }
+        }}
+      />
+    );
+  return (
+    <button
+      type="button"
+      className={`pdj-track__note ${note ? '' : 'pdj-track__note--add'}`}
+      onClick={() => setEditing(true)}
+      title="Edit note"
+    >
+      {note ? `📝 ${note}` : '＋ note'}
+    </button>
+  );
+}
+
 function TrackRow({
   track,
   index,
   onOpen,
+  onSaveNote,
 }: {
   track: SetlistTrack;
   index: number;
   onOpen: (songId: string) => void;
+  onSaveNote: (index: number, note: string | undefined) => void;
 }) {
   const hasMix = !!track.mixSuggestions && track.mixSuggestions.length > 0;
   // Reconcile with setlist.totalMs: the engine substitutes DEFAULT_TRACK_MS for
@@ -52,6 +92,27 @@ function TrackRow({
   // a blank cell (which would otherwise disagree with the displayed total).
   const shownMs =
     typeof track.lengthMs === 'number' && track.lengthMs > 0 ? track.lengthMs : DEFAULT_TRACK_MS;
+
+  if (track.isText) {
+    return (
+      <li className="pdj-track pdj-track--cue" data-testid={`setlist-track-${index}`}>
+        <span className="pdj-track__pos">{index + 1}</span>
+        <div className="pdj-track__main">
+          <div className="pdj-track__title">
+            <span className="pdj-badge" title="Out-of-index cue">
+              cue
+            </span>{' '}
+            {track.name}
+          </div>
+          <div className="pdj-track__sub">
+            <TrackNote note={track.note} onSave={(n) => onSaveNote(index, n)} />
+          </div>
+        </div>
+        <div className="pdj-track__right" />
+      </li>
+    );
+  }
+
   return (
     <li className="pdj-track" data-testid={`setlist-track-${index}`}>
       <span className="pdj-track__pos">{index + 1}</span>
@@ -83,6 +144,7 @@ function TrackRow({
       </button>
       <div className="pdj-track__right">
         <span className="pdj-track__len">{msToClock(shownMs)}</span>
+        <TrackNote note={track.note} onSave={(n) => onSaveNote(index, n)} />
       </div>
 
       {/* Reserved seam: per-track mix suggestions. Dormant until the engine fills
@@ -103,9 +165,12 @@ export function SetlistView() {
   const { id = '', setlistId = '' } = useParams();
   const navigate = useNavigate();
   const deleteSetlist = useCollectionsStore((s) => s.deleteSetlist);
+  const renameSetlist = useCollectionsStore((s) => s.renameSetlist);
+  const setSetlistTrackNote = useCollectionsStore((s) => s.setSetlistTrackNote);
 
   const [setlist, setSetlist] = useState<Setlist | null>(null);
   const [loading, setLoading] = useState(true);
+  const [nameDraft, setNameDraft] = useState('');
   // Song-detail popover (same modal as the browser; closes via its top-right ✕).
   const [openSong, setOpenSong] = useState<SongItem | null>(null);
   const [openAlbumName, setOpenAlbumName] = useState('');
@@ -117,6 +182,7 @@ export function SetlistView() {
     void getSetlist(setlistId).then((sl) => {
       if (!live) return;
       setSetlist(sl ?? null);
+      setNameDraft(sl?.name ?? '');
       setLoading(false);
     });
     return () => {
@@ -130,6 +196,21 @@ export function SetlistView() {
     navigate(`/playlists/${id}`);
   };
 
+  const commitName = () => {
+    if (!setlist) return;
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === (setlist.name ?? '')) {
+      setNameDraft(setlist.name ?? '');
+      return;
+    }
+    void renameSetlist(setlist.id, trimmed).then((s) => s && setSetlist(s));
+  };
+
+  const onSaveTrackNote = (index: number, note: string | undefined) => {
+    if (!setlist) return;
+    void setSetlistTrackNote(setlist.id, index, note).then((s) => s && setSetlist(s));
+  };
+
   // Export the frozen set list as a CSV. Prefers the native OS save dialog
   // (File System Access API — name + location), falls back to an anchor download.
   const saveCsv = async () => {
@@ -140,10 +221,10 @@ export function SetlistView() {
     };
     // `Song ID` is the index item id (sng_…): a downstream audio builder can O(1)-look it
     // up in index.json to resolve the track number + audio segment start/end timestamps.
-    const header = ['#', 'Artist', 'Title', 'BPM', 'Key', 'Length', 'Source', 'Sequence', 'Song ID'];
+    const header = ['#', 'Artist', 'Title', 'BPM', 'Key', 'Length', 'Source', 'Sequence', 'Note', 'Song ID'];
     const lines = [header.join(',')];
     setlist.tracks.forEach((t, i) => {
-      const ms = typeof t.lengthMs === 'number' && t.lengthMs > 0 ? t.lengthMs : DEFAULT_TRACK_MS;
+      const ms = t.isText ? 0 : typeof t.lengthMs === 'number' && t.lengthMs > 0 ? t.lengthMs : DEFAULT_TRACK_MS;
       lines.push(
         [
           i + 1,
@@ -151,9 +232,10 @@ export function SetlistView() {
           t.name,
           t.bpm ?? '',
           t.camelot ?? '',
-          msToClock(ms),
-          t.source,
+          t.isText ? '' : msToClock(ms),
+          t.isText ? 'cue' : t.source,
           t.sequenceName ?? '',
+          t.note ?? '',
           t.songId,
         ]
           .map(cell)
@@ -234,7 +316,19 @@ export function SetlistView() {
       </Link>
 
       <header className="pdj-setlist__head">
-        <h1 className="pdj-setlist__title">{setlist.name ?? 'Set list'}</h1>
+        <input
+          className="pdj-setlist__title pdj-setlist__title-input"
+          value={nameDraft}
+          placeholder="Set list"
+          aria-label="Set list name"
+          data-testid="setlist-rename"
+          onChange={(e) => setNameDraft(e.target.value)}
+          onBlur={commitName}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            else if (e.key === 'Escape') setNameDraft(setlist.name ?? '');
+          }}
+        />
         <p className="pdj-setlist__tagline">Spin these tracks, in this order.</p>
       </header>
 
@@ -294,6 +388,7 @@ export function SetlistView() {
                     track={track}
                     index={index}
                     onOpen={openSongDetail}
+                    onSaveNote={onSaveTrackNote}
                   />
                 ))}
               </ol>
@@ -320,7 +415,8 @@ function groupBySequence(
       sections.push(last);
     }
     last.items.push({ track, index });
-    last.ms += typeof track.lengthMs === 'number' && track.lengthMs > 0 ? track.lengthMs : DEFAULT_TRACK_MS;
+    if (!track.isText)
+      last.ms += typeof track.lengthMs === 'number' && track.lengthMs > 0 ? track.lengthMs : DEFAULT_TRACK_MS;
   });
   return sections;
 }
