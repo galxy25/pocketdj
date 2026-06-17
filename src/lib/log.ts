@@ -28,6 +28,7 @@ export type ApiOp =
   | 'export.zip'
   | 'import.playlist'
   | 'export.playlist'
+  | 'migrate.run'
   | 'filter.apply'
   | 'sort.apply'
   | 'starmap.layout'
