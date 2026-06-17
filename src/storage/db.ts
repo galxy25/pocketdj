@@ -99,7 +99,7 @@ export function getDB(): Promise<IDBPDatabase<PocketDJDB>> {
   return _db;
 }
 
-/** Test/dev helper: wipe everything. */
+/** Test/dev helper: wipe everything (catalog AND user collections + meta). */
 export async function clearAllStores(): Promise<void> {
   const db = await getDB();
   const tx = db.transaction(
@@ -114,6 +114,23 @@ export async function clearAllStores(): Promise<void> {
     tx.objectStore('pockets').clear(),
     tx.objectStore('playlists').clear(),
     tx.objectStore('setlists').clear(),
+  ]);
+  await tx.done;
+}
+
+/**
+ * Clear ONLY the catalog (sources/items/art) — what gets re-pulled from the seed.
+ * PRESERVES the user's cross-source collections (pockets/playlists/setlists) and
+ * `meta` (incl. the data version), so a "refresh to get the latest app/catalog"
+ * never throws away client-side work.
+ */
+export async function clearCatalogStores(): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(['sources', 'items', 'art'], 'readwrite');
+  await Promise.all([
+    tx.objectStore('sources').clear(),
+    tx.objectStore('items').clear(),
+    tx.objectStore('art').clear(),
   ]);
   await tx.done;
 }

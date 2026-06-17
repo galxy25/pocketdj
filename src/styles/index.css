@@ -279,3 +279,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-chip--clear {
   opacity: 0.7;
 }
+
+/* Settings: side-by-side export/import buttons. */
+.pdj-settings__row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pdj-settings__row > .pdj-btn {
+  flex: 1 1 0;
+  min-width: 130px;
+}
