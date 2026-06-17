@@ -14,3 +14,23 @@
 .pdj-songdetail__actions > button:first-child {
   flex: 0 0 auto;
 }
+
+/* Album cover art at the top of the song metadata card (all views except solar). */
+.pdj-songdetail__cover {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 0.75rem;
+}
+.pdj-songdetail__cover img,
+.pdj-songdetail__cover .pdj-thumb {
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+/* Link from the Album row out to the album view (opens in a new tab). */
+.pdj-songdetail__albumlink {
+  color: var(--pdj-accent);
+  text-decoration: none;
+}
+.pdj-songdetail__albumlink:hover {
+  text-decoration: underline;
+}

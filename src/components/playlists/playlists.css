@@ -455,3 +455,94 @@
 .pdj-track__mix summary::-webkit-details-marker {
   display: none;
 }
+
+/* ---- enriched playlist node rows (cover art, bpm/key, notes, cues) ---- */
+.pdj-node__art {
+  flex: 0 0 auto;
+  border-radius: 5px;
+}
+.pdj-node__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pdj-node__label--btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdj-node__label--btn:hover {
+  color: var(--pdj-accent);
+  text-decoration: underline;
+}
+.pdj-node__sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pdj-node__badge {
+  font-size: 0.62rem;
+  color: var(--pdj-accent);
+  background: var(--pdj-bg-overlay);
+  padding: 1px 6px;
+  border-radius: 9px;
+  white-space: nowrap;
+}
+.pdj-node__kind--cue {
+  color: var(--pdj-accent);
+  font-style: italic;
+}
+.pdj-node__note {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.66rem;
+  cursor: pointer;
+  color: var(--pdj-text-dim, #9aa);
+}
+.pdj-node__note--add {
+  opacity: 0.55;
+}
+.pdj-node__note--view {
+  color: var(--pdj-text, #cde);
+}
+.pdj-node__note:hover {
+  color: var(--pdj-accent);
+}
+.pdj-node__note-input {
+  flex: 1 1 140px;
+  min-width: 100px;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  background: var(--pdj-bg-overlay);
+  border: 1px solid var(--pdj-accent);
+  border-radius: 6px;
+  color: inherit;
+}
+.pdj-seq__stats {
+  font-size: 0.68rem;
+  color: var(--pdj-text-dim, #9aa);
+  white-space: nowrap;
+}
+.pdj-seq__text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  background: var(--pdj-bg-overlay);
+  border: 1px solid var(--pdj-border, #345);
+  border-radius: 6px;
+  color: inherit;
+}
