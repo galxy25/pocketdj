@@ -119,7 +119,8 @@ export async function esSearch(params: SearchParams, creds: SigV4Creds): Promise
   const json = JSON.parse(text);
   const hits = json.hits?.hits ?? [];
   return {
-    items: hits.map((h: { _source: EsHitSource }) => hitToItem(h._source)),
+    // `_id` is authoritative for the item id (robust even if _source.id is absent).
+    items: hits.map((h: { _id: string; _source: EsHitSource }) => hitToItem({ ...h._source, id: h._id })),
     total: typeof json.hits?.total === 'object' ? json.hits.total.value : json.hits?.total ?? hits.length,
     tookMs: Math.round(performance.now() - t0),
   };

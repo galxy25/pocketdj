@@ -42,6 +42,17 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: false,
+    // Dev-only mirror of the prod CloudFront `/pocketdj/*` behavior: forward online
+    // search to the OpenSearch Serverless (aoss) origin with changeOrigin so the
+    // Host matches what the browser SigV4-signs. Lets online mode work in `vite dev`.
+    // (Production is served by CloudFront, which has its own equivalent behavior.)
+    proxy: {
+      '/pocketdj': {
+        target: 'https://zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com',
+        changeOrigin: true,
+        secure: true,
+      },
+    },
   },
   build: {
     target: 'es2022',

@@ -219,8 +219,8 @@ async function main() {
     const slice = docs.slice(i, i + BATCH);
     let ndjson = '';
     for (const d of slice) {
-      const { id, ...src } = d;
-      ndjson += JSON.stringify({ index: { _index: a.index, _id: id } }) + '\n' + JSON.stringify(src) + '\n';
+      // keep `id` IN the source too (it's also the doc _id) so hits carry it.
+      ndjson += JSON.stringify({ index: { _index: a.index, _id: d.id } }) + '\n' + JSON.stringify(d) + '\n';
     }
     const r = await esRequest({ method: 'POST', path: `/${a.index}/_bulk`, body: ndjson, contentType: 'application/x-ndjson', ...ctx });
     if (!r.ok) { console.error(`bulk batch ${i} HTTP ${r.status}: ${r.text.slice(0, 300)}`); errors += slice.length; continue; }
