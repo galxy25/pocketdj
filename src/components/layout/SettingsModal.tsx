@@ -3,15 +3,15 @@
 // Refresh, data-version migrations, and a separate nuclear Reset.
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../common/Modal';
-import { forceRefreshCatalog, resetEverything } from '../../lib/dataActions';
+import { forceRefreshCatalog, resetEverything, loadAppleMusicLibrary, removeSource } from '../../lib/dataActions';
 import { downloadExportZip } from '../../storage/exportZip';
 import { importFile } from '../../storage/importZip';
-import { countItems, getSources } from '../../storage/repo';
+import { countItems } from '../../storage/repo';
+import { useAppStore } from '../../store/useAppStore';
 import { CURRENT_DATA_VERSION, getDataVersion, runMigrations } from '../../storage/migrations';
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [counts, setCounts] = useState<{ albums: number; songs: number } | null>(null);
-  const [source, setSource] = useState('—');
   const [busy, setBusy] = useState(false);
   const [dataVersion, setDataVersion] = useState<number | null>(null);
   const [migrating, setMigrating] = useState(false);
@@ -20,20 +20,59 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [transferMsg, setTransferMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Sources + multi-source selection (shared with the browser via useAppStore).
+  const sources = useAppStore((s) => s.sources);
+  const sourceMode = useAppStore((s) => s.sourceMode);
+  const selectedSourceIds = useAppStore((s) => s.selectedSourceIds);
+  const selectAllSources = useAppStore((s) => s.selectAllSources);
+  const selectNoSources = useAppStore((s) => s.selectNoSources);
+  const toggleSource = useAppStore((s) => s.toggleSource);
+  const refreshSources = useAppStore((s) => s.refreshSources);
+  const [amBusy, setAmBusy] = useState(false);
+  const [amMsg, setAmMsg] = useState('');
+
+  const isAll = sourceMode === 'all';
+  const checked = (id: string) => isAll || selectedSourceIds.includes(id);
+  const hasAppleMusic = sources.some((s) => s.type === 'digital' && s.name === 'Apple Music (Local)');
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     (async () => {
-      const [c, srcs, dv] = await Promise.all([countItems(), getSources(), getDataVersion()]);
+      const [c, dv] = await Promise.all([countItems(), getDataVersion(), refreshSources()]);
       if (cancelled) return;
       setCounts(c);
-      setSource(srcs[0]?.name ?? '—');
       setDataVersion(dv);
     })();
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, refreshSources]);
+
+  const loadAppleMusic = async () => {
+    setAmBusy(true);
+    setAmMsg('');
+    try {
+      const c = await loadAppleMusicLibrary();
+      setAmMsg(`Loaded ${c.albums} albums · ${c.songs} songs.`);
+      setCounts(await countItems());
+    } catch (e) {
+      setAmMsg((e as Error).message);
+    } finally {
+      setAmBusy(false);
+    }
+  };
+
+  const unloadSource = async (id: string, name: string) => {
+    if (!window.confirm(`Remove "${name}" and its imported playlists from this device?`)) return;
+    setAmBusy(true);
+    try {
+      await removeSource(id);
+      setCounts(await countItems());
+    } finally {
+      setAmBusy(false);
+    }
+  };
 
   const refresh = async () => {
     setBusy(true);
@@ -98,9 +137,66 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           <span>Catalog</span>
           <strong>{counts ? `${counts.albums} albums · ${counts.songs} songs` : '…'}</strong>
         </div>
-        <div className="pdj-settings__stat">
-          <span>Source</span>
-          <strong>{source}</strong>
+        <div className="pdj-settings__sources" data-testid="settings-sources">
+          <div className="pdj-settings__stat">
+            <span>Sources</span>
+            <strong>{isAll ? 'All shown' : `${selectedSourceIds.filter((id) => sources.some((s) => s.id === id)).length} of ${sources.length} shown`}</strong>
+          </div>
+          <p className="pdj-settings__hint">
+            Choose which sources to show across the app (browser, map, counts).
+          </p>
+          <label className="pdj-srcrow pdj-srcrow--all">
+            <input
+              type="checkbox"
+              checked={isAll}
+              data-testid="settings-source-all"
+              onChange={() => (isAll ? selectNoSources() : selectAllSources())}
+            />
+            <span>All sources <em>(incl. ones added later)</em></span>
+          </label>
+          {sources.map((s) => (
+            <div className="pdj-srcrow" key={s.id}>
+              <label className="pdj-srcrow__label">
+                <input
+                  type="checkbox"
+                  checked={checked(s.id)}
+                  data-testid={`settings-source-${s.id}`}
+                  onChange={() => toggleSource(s.id)}
+                />
+                <span>
+                  {s.type === 'digital' ? '♪' : '⬤'} {s.name}{' '}
+                  <em>({s.itemCount.albums} · {s.itemCount.songs})</em>
+                </span>
+              </label>
+              <button
+                type="button"
+                className="pdj-iconbtn"
+                title={`Remove ${s.name}`}
+                aria-label={`Remove ${s.name}`}
+                data-testid={`settings-source-remove-${s.id}`}
+                disabled={amBusy}
+                onClick={() => void unloadSource(s.id, s.name)}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          {!hasAppleMusic && (
+            <button
+              type="button"
+              className="pdj-btn pdj-btn--ghost"
+              data-testid="settings-load-apple-music"
+              disabled={amBusy}
+              onClick={() => void loadAppleMusic()}
+            >
+              {amBusy ? 'Loading…' : '＋ Load Apple Music (Local) library'}
+            </button>
+          )}
+          {amMsg && (
+            <p className="pdj-settings__hint" data-testid="settings-source-msg">
+              {amMsg}
+            </p>
+          )}
         </div>
 
         <hr className="pdj-settings__rule" />

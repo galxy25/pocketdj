@@ -291,6 +291,21 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
   min-width: 130px;
 }
 
+/* Sources panel: which data sources the app shows (multi-select) + load/remove. */
+.pdj-settings__sources { display: flex; flex-direction: column; gap: 6px; }
+.pdj-srcrow {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border-radius: 8px; background: var(--pdj-bg-overlay);
+}
+.pdj-srcrow--all { background: transparent; }
+.pdj-srcrow__label, .pdj-srcrow--all {
+  flex: 1 1 auto; display: flex; align-items: center; gap: 9px;
+  font-size: 0.84rem; cursor: pointer; min-height: 30px;
+}
+.pdj-srcrow input[type='checkbox'] { width: 18px; height: 18px; flex: 0 0 auto; }
+.pdj-srcrow em { color: var(--pdj-fg-dim); font-style: normal; }
+.pdj-settings__sources > .pdj-btn { margin-top: 4px; }
+
 /* "Hide songs already in…" multi-select dropdown (scales better than chips). */
 .pdj-browser__subbar { padding: 6px 10px; }
 .pdj-exfilter { position: relative; display: inline-block; }

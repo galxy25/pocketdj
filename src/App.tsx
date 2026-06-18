@@ -11,7 +11,7 @@ import { PlaylistsView } from './components/playlists/PlaylistsView';
 import { PlaylistDetail } from './components/playlists/PlaylistDetail';
 import { SetlistView } from './components/playlists/SetlistView';
 import { installDebug } from './lib/debug';
-import { seedIfEmpty, ensureDigitalSeed } from './lib/dataActions';
+import { seedIfEmpty } from './lib/dataActions';
 import { runMigrations } from './storage/migrations';
 import { requestPersistentStorage } from './storage/artCache';
 import { useBrowserStore } from './store/useBrowserStore';
@@ -62,9 +62,6 @@ export function App() {
         /* render the app anyway — user can import manually */
       }
       if (!cancelled) setReady(true);
-      // Background: import the Apple Music (Local) library after first paint so it
-      // never blocks boot. No-ops once imported / when not deployed.
-      void ensureDigitalSeed().catch(() => {});
     })();
     return () => {
       cancelled = true;

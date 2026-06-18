@@ -6,7 +6,7 @@ import { downloadExportZip } from '../storage/exportZip';
 import type { IndexJson } from '../types/index-json';
 import { useAppStore } from '../store/useAppStore';
 import { useDataStore } from '../store/useDataStore';
-import { getSources } from '../storage/repo';
+import { getSources, deleteSource, getPlaylists, deletePlaylist } from '../storage/repo';
 import { clearAllStores, clearCatalogStores } from '../storage/db';
 
 async function refreshAll() {
@@ -68,28 +68,31 @@ export async function seedIfEmpty(onProgress?: (done: number, total: number) => 
 }
 
 /**
- * Background seed for the digital source (Apple Music (Local)). Runs AFTER the
- * vinyl seed + first paint so it never blocks boot. No-ops once a digital source
- * exists, and silently skips when the bundled index isn't deployed. Imports the
- * library (songs + iTunes playlist mirrors) and refreshes the stores so the new
- * source appears in the multi-source selector. No cover art (digital, by design).
+ * OPT-IN load of the bundled Apple Music (Local) library (songs + iTunes playlist
+ * mirrors). Triggered from Settings — never auto-runs on boot. Idempotent: re-import
+ * upserts by stable id. No cover art (digital, by design — added later via rip/burn).
+ * Throws if the index isn't deployed so the UI can report it.
  */
-export async function ensureDigitalSeed(): Promise<{ albums: number; songs: number } | null> {
-  const sources = await getSources();
-  if (sources.some((s) => s.type === 'digital')) return null; // already imported
+export async function loadAppleMusicLibrary(): Promise<{ albums: number; songs: number }> {
   const url = `${import.meta.env.BASE_URL}apple-music-index.json`;
-  let res: Response;
-  try {
-    res = await fetch(url, { cache: 'reload' });
-  } catch {
-    return null; // offline / not deployed
-  }
-  if (!res.ok) return null;
+  const res = await fetch(url, { cache: 'reload' });
+  if (!res.ok) throw new Error(`Apple Music index not available (${res.status})`);
   const index = (await res.json()) as IndexJson;
   const { counts } = await importIndexJson(index, { sourceName: 'Apple Music (Local)' });
-  // No hydrateArt: digital albums carry no art (added later via rip/burn only).
   await refreshAll();
   return counts;
+}
+
+/**
+ * Unload a data source: removes its items + the source record, and drops any
+ * imported playlist MIRRORS that belonged to it (hand-built playlists are kept,
+ * degrading gracefully for any of its items they referenced).
+ */
+export async function removeSource(sourceId: string): Promise<void> {
+  await deleteSource(sourceId);
+  const mirrors = (await getPlaylists()).filter((p) => p.importedFrom?.sourceId === sourceId);
+  for (const p of mirrors) await deletePlaylist(p.id);
+  await refreshAll();
 }
 
 export async function importUserFile(file: File, onProgress?: (done: number, total: number) => void) {
