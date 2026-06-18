@@ -10,7 +10,7 @@ import { applyFilters, filterHash } from '../../engine/filterEngine';
 import { sortItems, sortHash } from '../../engine/sortEngine';
 import { membersOf, isMember } from '../../engine/membership';
 import { DataSourceSelector } from './DataSourceSelector';
-import { ExcludeFilter } from './ExcludeFilter';
+import { MembershipFilter } from './MembershipFilter';
 import { FilterBuilder } from './FilterBuilder';
 import { SortControl } from './SortControl';
 import { ItemGrid } from './ItemGrid';
@@ -46,10 +46,12 @@ export function BrowserView() {
   const playlists = useCollectionsStore((s) => s.playlists);
   const pockets = useCollectionsStore((s) => s.pockets);
   const loadCollections = useCollectionsStore((s) => s.load);
-  // "Not in any playlist/pocket" — show only songs absent from EVERY collection.
+  // HIDE filter: drop songs already in ANY (excludeAny) or a chosen subset (excludeIds).
   const [excludeAny, setExcludeAny] = useState(false);
-  // Otherwise, specific collection ids to exclude members of (empty = show all).
   const [excludeIds, setExcludeIds] = useState<Set<string>>(new Set());
+  // SHOW filter: keep ONLY songs in ANY (includeAny) or a chosen subset (includeIds).
+  const [includeAny, setIncludeAny] = useState(false);
+  const [includeIds, setIncludeIds] = useState<Set<string>>(new Set());
   useEffect(() => void loadCollections(), [loadCollections]);
 
   // Only render once the loaded set matches the current (scope, type) — prevents
@@ -86,17 +88,23 @@ export function BrowserView() {
     [items, filterHash(filter), sortHash(sort)],
   );
 
-  // Song mode: optionally hide songs already in collections — either in ANY
-  // playlist/pocket (excludeAny → only "unplaced" songs show) or in a chosen
-  // subset (the chip multi-select).
+  // Song mode: apply the SHOW filter (keep only songs in the selected collections)
+  // and/or the HIDE filter (drop songs in the selected collections). "any" expands
+  // to every collection. Both can be on at once (intersection of constraints).
   const visible = useMemo(() => {
-    if (itemType !== 'song' || (!excludeAny && excludeIds.size === 0)) return filtered;
-    const ids = excludeAny
-      ? new Set<string>([...playlists.map((p) => p.id), ...pockets.map((p) => p.id)])
-      : excludeIds;
-    const m = membersOf(ids, playlists, pockets);
-    return filtered.filter((it) => it.type !== 'song' || !isMember(it, m));
-  }, [filtered, itemType, excludeAny, excludeIds, playlists, pockets]);
+    const hideActive = excludeAny || excludeIds.size > 0;
+    const showActive = includeAny || includeIds.size > 0;
+    if (itemType !== 'song' || (!hideActive && !showActive)) return filtered;
+    const allIds = () => new Set<string>([...playlists.map((p) => p.id), ...pockets.map((p) => p.id)]);
+    const hideM = hideActive ? membersOf(excludeAny ? allIds() : excludeIds, playlists, pockets) : null;
+    const showM = showActive ? membersOf(includeAny ? allIds() : includeIds, playlists, pockets) : null;
+    return filtered.filter((it) => {
+      if (it.type !== 'song') return true;
+      if (showM && !isMember(it, showM)) return false;
+      if (hideM && isMember(it, hideM)) return false;
+      return true;
+    });
+  }, [filtered, itemType, excludeAny, excludeIds, includeAny, includeIds, playlists, pockets]);
 
   const songsById = useMemo(() => {
     const map = new Map<string, SongItem>();
@@ -159,13 +167,23 @@ export function BrowserView() {
 
       {itemType === 'song' && (playlists.length > 0 || pockets.length > 0) && (
         <div className="pdj-browser__subbar">
-          <ExcludeFilter
+          <MembershipFilter
+            variant="show"
             playlists={playlists}
             pockets={pockets}
-            excludeAny={excludeAny}
-            setExcludeAny={setExcludeAny}
-            excludeIds={excludeIds}
-            setExcludeIds={setExcludeIds}
+            any={includeAny}
+            setAny={setIncludeAny}
+            ids={includeIds}
+            setIds={setIncludeIds}
+          />
+          <MembershipFilter
+            variant="hide"
+            playlists={playlists}
+            pockets={pockets}
+            any={excludeAny}
+            setAny={setExcludeAny}
+            ids={excludeIds}
+            setIds={setExcludeIds}
           />
         </div>
       )}

@@ -307,7 +307,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-settings__sources > .pdj-btn { margin-top: 4px; }
 
 /* "Hide songs already in…" multi-select dropdown (scales better than chips). */
-.pdj-browser__subbar { padding: 6px 10px; }
+.pdj-browser__subbar { padding: 6px 10px; display: flex; flex-wrap: wrap; gap: 8px; }
 .pdj-exfilter { position: relative; display: inline-block; }
 .pdj-exfilter__trigger {
   font-size: 0.74rem; padding: 6px 10px; border-radius: 8px; min-height: 34px;

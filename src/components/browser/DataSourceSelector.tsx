@@ -1,5 +1,5 @@
 // Multi-source picker: show data for ALL sources, NONE, or a chosen subset.
-// A compact trigger + a scrollable checkbox menu (same pattern as ExcludeFilter),
+// A compact trigger + a scrollable checkbox menu (same pattern as MembershipFilter),
 // which scales as more sources (vinyl, Apple Music, …) are added. Mobile-friendly.
 import { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
