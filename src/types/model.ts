@@ -14,8 +14,9 @@
 
 export type ItemType = 'album' | 'song';
 
-/** The only data-source type implemented this iteration. Future: 'digital', 'streaming'. */
-export type DataSourceType = 'analog';
+/** Data-source kinds. 'analog' = digitized vinyl; 'digital' = a local digital
+ *  library (e.g. Apple Music / iTunes Library.xml). Future: 'streaming'. */
+export type DataSourceType = 'analog' | 'digital';
 
 /** File container of the underlying recording. `unknown` for items with no file yet. */
 export type FileType = 'mp3' | 'aiff' | 'm4a' | 'flac' | 'wav' | 'aac' | 'unknown';

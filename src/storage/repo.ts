@@ -77,12 +77,38 @@ export async function bulkPutItems(items: MusicItem[]): Promise<void> {
 }
 
 /**
- * Items for a scope. `sourceId === ALL_SOURCE_ID` (or undefined) = the virtual
- * "All" source: every item, no source predicate.
+ * Items for a scope. The scope may be:
+ *   - undefined or ALL_SOURCE_ID  → the virtual "All" source (every item)
+ *   - a single sourceId (string)  → that one source
+ *   - an array of sourceIds       → the UNION of those sources ([] = none → no items)
+ * The array form backs multi-source selection (show a chosen subset of sources).
  */
-export async function getItems(sourceId: string | undefined, type?: ItemType): Promise<MusicItem[]> {
+export async function getItems(
+  scope: string | string[] | undefined,
+  type?: ItemType,
+): Promise<MusicItem[]> {
   const db = await getDB();
-  const all = sourceId == null || sourceId === ALL_SOURCE_ID;
+
+  // Multi-source subset (or explicit "none").
+  if (Array.isArray(scope)) {
+    const ids = scope.filter((id) => id && id !== ALL_SOURCE_ID);
+    if (ids.length === 0) {
+      txn('db.getItemsBySource', { sourceId: 'none', type: type ?? 'all', count: 0 });
+      return [];
+    }
+    const batches = await Promise.all(
+      ids.map((id) =>
+        type
+          ? (db.getAllFromIndex('items', 'by_source_type', [id, type]) as Promise<MusicItem[]>)
+          : (db.getAllFromIndex('items', 'by_source', id) as Promise<MusicItem[]>),
+      ),
+    );
+    const result = batches.flat();
+    txn('db.getItemsBySource', { sourceId: ids.join(','), type: type ?? 'all', count: result.length });
+    return result;
+  }
+
+  const all = scope == null || scope === ALL_SOURCE_ID;
   let result: MusicItem[];
   if (all) {
     result = type
@@ -90,21 +116,21 @@ export async function getItems(sourceId: string | undefined, type?: ItemType): P
       : await db.getAll('items');
     txn('db.getAllItems', { type: type ?? 'all', count: result.length });
   } else if (type) {
-    result = (await db.getAllFromIndex('items', 'by_source_type', [sourceId, type])) as MusicItem[];
-    txn('db.getItemsBySource', { sourceId, type, count: result.length });
+    result = (await db.getAllFromIndex('items', 'by_source_type', [scope, type])) as MusicItem[];
+    txn('db.getItemsBySource', { sourceId: scope, type, count: result.length });
   } else {
-    result = await db.getAllFromIndex('items', 'by_source', sourceId);
-    txn('db.getItemsBySource', { sourceId, type: 'all', count: result.length });
+    result = await db.getAllFromIndex('items', 'by_source', scope);
+    txn('db.getItemsBySource', { sourceId: scope, type: 'all', count: result.length });
   }
   return result;
 }
 
-export async function getAlbums(sourceId?: string): Promise<AlbumItem[]> {
-  return (await getItems(sourceId, 'album')) as AlbumItem[];
+export async function getAlbums(scope?: string | string[]): Promise<AlbumItem[]> {
+  return (await getItems(scope, 'album')) as AlbumItem[];
 }
 
-export async function getSongs(sourceId?: string): Promise<SongItem[]> {
-  return (await getItems(sourceId, 'song')) as SongItem[];
+export async function getSongs(scope?: string | string[]): Promise<SongItem[]> {
+  return (await getItems(scope, 'song')) as SongItem[];
 }
 
 /** Songs of one album, ordered by trackNumber. */

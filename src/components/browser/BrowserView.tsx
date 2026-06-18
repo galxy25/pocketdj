@@ -2,7 +2,7 @@
 // virtualized result. Pipeline: load(scope) -> applyFilters -> sort -> virtualize,
 // memoized on (items, filterHash, sortHash).
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, scopeFor, scopeKeyOf } from '../../store/useAppStore';
 import { useBrowserStore } from '../../store/useBrowserStore';
 import { useDataStore } from '../../store/useDataStore';
 import { useCollectionsStore } from '../../store/useCollectionsStore';
@@ -23,9 +23,17 @@ import { isAlbum, isSong, type SongItem } from '../../types/model';
 const CARD_MIN = 184;
 
 export function BrowserView() {
-  const activeSourceId = useAppStore((s) => s.activeSourceId);
+  const sourceMode = useAppStore((s) => s.sourceMode);
+  const selectedSourceIds = useAppStore((s) => s.selectedSourceIds);
+  const sources = useAppStore((s) => s.sources);
   const itemType = useAppStore((s) => s.itemType);
   const setItemType = useAppStore((s) => s.setItemType);
+  // Resolved multi-source scope (ALL_SOURCE_ID | id[] | []) + its cache key.
+  const scope = useMemo(
+    () => scopeFor(sourceMode, selectedSourceIds, sources),
+    [sourceMode, selectedSourceIds, sources],
+  );
+  const noSources = Array.isArray(scope) && scope.length === 0;
   const filter = useBrowserStore((s) => s.filter);
   const sort = useBrowserStore((s) => s.sort);
 
@@ -44,9 +52,9 @@ export function BrowserView() {
   const [excludeIds, setExcludeIds] = useState<Set<string>>(new Set());
   useEffect(() => void loadCollections(), [loadCollections]);
 
-  // Only render once the loaded set matches the current (source, type) scope —
-  // prevents a frame where, e.g., album items render as songs mid-switch.
-  const ready = scopeKey === `${activeSourceId}:${itemType}`;
+  // Only render once the loaded set matches the current (scope, type) — prevents
+  // a frame where, e.g., album items render as songs mid-switch.
+  const ready = scopeKey === `${scopeKeyOf(scope)}:${itemType}`;
 
   const [editId, setEditId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -54,10 +62,12 @@ export function BrowserView() {
   const [columns, setColumns] = useState(4);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  // (re)load when scope changes
+  // (re)load when scope changes (keyed on the resolved scope, not the selection)
+  const scopeKeyDep = scopeKeyOf(scope);
   useEffect(() => {
-    load(activeSourceId, itemType);
-  }, [activeSourceId, itemType, load]);
+    load(scope, itemType);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKeyDep, itemType, load]);
 
   // measure columns for the album grid
   useEffect(() => {
@@ -161,7 +171,9 @@ export function BrowserView() {
       )}
 
       <div className="pdj-browser__results" ref={wrapRef}>
-        {loading || !ready ? (
+        {noSources ? (
+          <div className="pdj-grid__empty">No sources selected — pick at least one source above.</div>
+        ) : loading || !ready ? (
           <div className="pdj-grid__empty">Loading…</div>
         ) : (
           <ItemGrid

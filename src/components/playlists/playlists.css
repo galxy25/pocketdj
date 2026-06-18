@@ -219,6 +219,20 @@
   font-size: 0.72rem;
   flex: 0 0 auto;
 }
+/* Out-of-index item (referenced song/album not in the current index / selected
+   sources) — degrade gracefully: muted row, still reorderable/removable. */
+.pdj-node--missing {
+  opacity: 0.7;
+}
+.pdj-node__label--missing {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--pdj-fg-dim);
+}
 .pdj-node__move {
   font-size: 0.75rem;
   max-width: 8rem;

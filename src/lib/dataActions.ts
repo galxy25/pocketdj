@@ -31,7 +31,8 @@ export async function loadIndexUrl(url: string, sourceName?: string, onProgress?
   if (!res.ok) throw new Error(`index not found (${res.status})`);
   const index = (await res.json()) as IndexJson;
   const { source, counts } = await importIndexJson(index, { sourceName });
-  await hydrateArt(source.id, onProgress);
+  // Digital sources have no art (and may be huge) → skip the placeholder pass.
+  await hydrateArt(source.id, onProgress, { placeholders: source.type !== 'digital' });
   await refreshAll();
   return counts;
 }
@@ -62,6 +63,31 @@ export async function seedIfEmpty(onProgress?: (done: number, total: number) => 
   // Render NOW — covers warm in the BACKGROUND and pop in progressively (useArtUrl
   // subscribes), so first paint isn't blocked on caching ~1,160 thumbnails.
   void hydrateArt(source.id, onProgress);
+  await refreshAll();
+  return counts;
+}
+
+/**
+ * Background seed for the digital source (Apple Music (Local)). Runs AFTER the
+ * vinyl seed + first paint so it never blocks boot. No-ops once a digital source
+ * exists, and silently skips when the bundled index isn't deployed. Imports the
+ * library (songs + iTunes playlist mirrors) and refreshes the stores so the new
+ * source appears in the multi-source selector. No cover art (digital, by design).
+ */
+export async function ensureDigitalSeed(): Promise<{ albums: number; songs: number } | null> {
+  const sources = await getSources();
+  if (sources.some((s) => s.type === 'digital')) return null; // already imported
+  const url = `${import.meta.env.BASE_URL}apple-music-index.json`;
+  let res: Response;
+  try {
+    res = await fetch(url, { cache: 'reload' });
+  } catch {
+    return null; // offline / not deployed
+  }
+  if (!res.ok) return null;
+  const index = (await res.json()) as IndexJson;
+  const { counts } = await importIndexJson(index, { sourceName: 'Apple Music (Local)' });
+  // No hydrateArt: digital albums carry no art (added later via rip/burn only).
   await refreshAll();
   return counts;
 }

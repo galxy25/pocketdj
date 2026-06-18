@@ -17,6 +17,21 @@ export interface IndexJson {
   manifest: IndexManifest;
   albums: IndexAlbum[];
   songs: IndexSong[];
+  /**
+   * Optional source-native playlists (e.g. iTunes/Apple Music user playlists).
+   * Imported into app Playlists, attributed to this index's data source, and
+   * degrade gracefully when a referenced song isn't in the loaded catalog.
+   */
+  playlists?: IndexPlaylist[];
+}
+
+/** A source-native playlist: an ordered list of song refs (IndexSong.id). */
+export interface IndexPlaylist {
+  /** Stable, source-scoped id (e.g. "pl_" + hash of the source persistent id). */
+  id: string;
+  name: string;
+  /** Ordered refs to IndexSong.id. Refs not present in `songs` are kept as cues. */
+  songIds: string[];
 }
 
 export interface IndexManifest {
@@ -26,8 +41,8 @@ export interface IndexManifest {
   generatedAt: string;
   /** SemVer; the app asserts the MAJOR matches INDEX_SCHEMA_MAJOR. */
   schemaVersion: string;
-  sourceType: 'analog';
-  /** Suggested data-source name when importing, e.g. "My Vinyl". */
+  sourceType: 'analog' | 'digital';
+  /** Suggested data-source name when importing, e.g. "My Vinyl" or "Apple Music (Local)". */
   sourceName?: string;
   counts: IndexCounts;
   /** Fields intentionally left null this iteration (need the audio file). */
