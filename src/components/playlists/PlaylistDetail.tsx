@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useCollectionsStore } from '../../store/useCollectionsStore';
+import { useAppStore } from '../../store/useAppStore';
 import type { Playlist, PlaylistNode, Pocket, SequenceNode, Setlist } from '../../types/collections';
 import {
   isAlbumNode,
@@ -84,11 +85,12 @@ function NodeRow(props: {
   count: number;
   item?: MusicItem;
   coverArtKey?: string;
+  missing?: boolean;
   nameFor: (node: PlaylistNode) => string;
   metaFor: (node: PlaylistNode) => string;
   onOpenSong: (songId: string) => void;
 }) {
-  const { node, playlistId, sequences, currentSeqId, index, count, item, coverArtKey } = props;
+  const { node, playlistId, sequences, currentSeqId, index, count, item, coverArtKey, missing } = props;
   const removeNode = useCollectionsStore((s) => s.removeNode);
   const moveNode = useCollectionsStore((s) => s.moveNode);
   const reorderNode = useCollectionsStore((s) => s.reorderNode);
@@ -110,11 +112,19 @@ function NodeRow(props: {
   const label = props.nameFor(node);
 
   return (
-    <div className="pdj-node" data-testid={`node-${node.nodeId}`}>
+    <div
+      className={`pdj-node${missing ? ' pdj-node--missing' : ''}`}
+      data-testid={`node-${node.nodeId}`}
+      data-missing={missing ? 'true' : undefined}
+    >
       {showArt && <Thumbnail artKey={coverArtKey} alt={label} size={36} className="pdj-node__art" />}
       <span className={`pdj-node__kind pdj-node__kind--${kindLabel}`}>{kindLabel}</span>
       <div className="pdj-node__body">
-        {song ? (
+        {missing ? (
+          <span className="pdj-node__label pdj-node__label--missing" title="This item isn't in your current index / selected sources">
+            ⚠ {label}
+          </span>
+        ) : song ? (
           <button
             type="button"
             className="pdj-node__label pdj-node__label--btn"
@@ -207,6 +217,7 @@ function SequenceSection(props: {
   pocketsById: Map<string, Pocket>;
   nameFor: (node: PlaylistNode) => string;
   metaFor: (node: PlaylistNode) => string;
+  isMissing: (node: PlaylistNode) => boolean;
   onOpenSong: (songId: string) => void;
 }) {
   const { playlist, seq, pockets, canRemove, itemsById, pocketsById } = props;
@@ -317,6 +328,7 @@ function SequenceSection(props: {
                 count={seq.children.length}
                 item={item}
                 coverArtKey={coverArtKey}
+                missing={props.isMissing(node)}
                 nameFor={props.nameFor}
                 metaFor={props.metaFor}
                 onOpenSong={props.onOpenSong}
@@ -403,6 +415,15 @@ export function PlaylistDetail() {
   const [nameDraft, setNameDraft] = useState('');
   // Resolved catalog items (songs/albums) keyed by id — drives labels, art, bpm/key, stats.
   const [itemsById, setItemsById] = useState<Record<string, MusicItem>>({});
+  // Ids that resolved to NOTHING (item not in the current index/sources). Tracked
+  // separately so the row can degrade gracefully ("not in index · <source>")
+  // instead of showing "Loading…" forever.
+  const [missingIds, setMissingIds] = useState<Set<string>>(new Set());
+  const sources = useAppStore((s) => s.sources);
+  const sourceNameById = useMemo(
+    () => new Map(sources.map((s) => [s.id, s.name])),
+    [sources],
+  );
   // Open song-metadata modal.
   const [openSong, setOpenSong] = useState<SongItem | null>(null);
   const [openAlbumName, setOpenAlbumName] = useState('');
@@ -445,46 +466,62 @@ export function PlaylistDetail() {
     // cover art: pull the owning album of any resolved song.
     for (const it of Object.values(itemsById)) if (isSong(it) && it.albumId) need.add(it.albumId);
 
-    const missing = [...need].filter((x) => !(x in itemsById));
+    const missing = [...need].filter((x) => !(x in itemsById) && !missingIds.has(x));
     if (missing.length === 0) return;
     let live = true;
     void Promise.all(missing.map((x) => getItem(x))).then((items) => {
       if (!live) return;
-      setItemsById((prev) => {
-        const next = { ...prev };
-        items.forEach((it, i) => {
-          if (it) next[missing[i]] = it;
-        });
-        // mark unresolved ids so we don't refetch forever
-        missing.forEach((mid, i) => {
-          if (!items[i]) next[mid] = next[mid];
-        });
-        return next;
-      });
+      const found: Record<string, MusicItem> = {};
+      const notFound: string[] = [];
+      items.forEach((it, i) => (it ? (found[missing[i]] = it) : notFound.push(missing[i])));
+      if (Object.keys(found).length) setItemsById((prev) => ({ ...prev, ...found }));
+      // Record ids that resolved to nothing so we don't refetch forever AND the
+      // UI can show them as out-of-index cues (graceful degradation).
+      if (notFound.length) setMissingIds((prev) => new Set([...prev, ...notFound]));
     });
     return () => {
       live = false;
     };
-  }, [playlist, itemsById, pocketById]);
+  }, [playlist, itemsById, pocketById, missingIds]);
 
   const itemsMap = useMemo(() => new Map(Object.entries(itemsById)), [itemsById]);
+
+  // Label for an item ref that isn't in the loaded catalog — names the source it
+  // was attributed to (from the node's sourceId) so the cue reads meaningfully.
+  const outOfIndexLabel = useCallback(
+    (sourceId?: string): string => {
+      const name = sourceId ? sourceNameById.get(sourceId) : undefined;
+      return name ? `Not in index · ${name}` : 'Not in current index';
+    },
+    [sourceNameById],
+  );
+
+  /** True when a song/album node's item resolved to nothing (out of index). */
+  const isMissingNode = useCallback(
+    (node: PlaylistNode): boolean =>
+      (isSongNode(node) && !itemsById[node.songId] && missingIds.has(node.songId)) ||
+      (isAlbumNode(node) && !itemsById[node.albumId] && missingIds.has(node.albumId)),
+    [itemsById, missingIds],
+  );
 
   const nameFor = useCallback(
     (node: PlaylistNode): string => {
       if (isSongNode(node)) {
         const it = itemsById[node.songId];
-        return it ? `${it.artist} — ${it.name}` : 'Loading…';
+        if (it) return `${it.artist} — ${it.name}`;
+        return missingIds.has(node.songId) ? outOfIndexLabel(node.sourceId) : 'Loading…';
       }
       if (isAlbumNode(node)) {
         const it = itemsById[node.albumId];
-        return it ? `${it.artist} — ${it.name}` : 'Loading…';
+        if (it) return `${it.artist} — ${it.name}`;
+        return missingIds.has(node.albumId) ? outOfIndexLabel(node.sourceId) : 'Loading…';
       }
       if (isPocketNode(node)) return pocketById.get(node.pocketId)?.name ?? '(missing pocket)';
       if (isTextNode(node)) return node.text;
       if (isSequenceNode(node)) return node.name;
       return '';
     },
-    [itemsById, pocketById],
+    [itemsById, pocketById, missingIds, outOfIndexLabel],
   );
 
   const metaFor = useCallback(
@@ -632,6 +669,7 @@ export function PlaylistDetail() {
           pocketsById={pocketById}
           nameFor={nameFor}
           metaFor={metaFor}
+          isMissing={isMissingNode}
           onOpenSong={onOpenSong}
         />
       ))}

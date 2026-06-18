@@ -4,7 +4,9 @@
 import type { IndexJson, IndexAlbum, IndexSong } from '../types/index-json';
 import { INDEX_SCHEMA_MAJOR } from '../types/index-json';
 import type { AlbumItem, AudioTrack, SongItem, DataSource, MusicItem, FileType } from '../types/model';
-import { bulkPutItems, putSource, getAlbums, countItems } from './repo';
+import type { Playlist, SongNode, SequenceNode } from '../types/collections';
+import { newNodeId } from '../types/collections';
+import { bulkPutItems, putSource, getAlbums, countItems, bulkPutPlaylists } from './repo';
 import { cacheArtUrl, cacheArtSources, generatePlaceholder, artKeyFor } from './artCache';
 import { categorize } from '../starmap/constellationMap';
 import { pMap } from '../lib/concurrency';
@@ -44,9 +46,23 @@ export async function importIndexJson(index: IndexJson, opts: { sourceName?: str
 
   await bulkPutItems([...albums, ...songs]);
 
+  // Import source-native playlists (e.g. iTunes) as MIRROR playlists attributed to
+  // this source. Stable, source-scoped ids so re-import upserts (never duplicates,
+  // never clobbers hand-built playlists). Refs to songs missing from this index are
+  // still placed (sourceId-stamped) so the UI can degrade gracefully.
+  let playlistsImported = 0;
+  if (index.playlists?.length) {
+    const present = new Set(songs.map((s) => s.id));
+    const mirrors: Playlist[] = index.playlists.map((p) =>
+      mapPlaylist(p, sourceId, sourceName, present, now),
+    );
+    await bulkPutPlaylists(mirrors);
+    playlistsImported = mirrors.length;
+  }
+
   const source: DataSource = {
     id: sourceId,
-    type: 'analog',
+    type: index.manifest.sourceType,
     name: sourceName,
     createdAt: now,
     updatedAt: now,
@@ -54,8 +70,48 @@ export async function importIndexJson(index: IndexJson, opts: { sourceName?: str
   };
   await putSource(source);
 
-  txn('import.index', { sourceId, albums: albums.length, songs: songs.length, source: index.manifest.source });
+  txn('import.index', {
+    sourceId, albums: albums.length, songs: songs.length,
+    playlists: playlistsImported, source: index.manifest.source,
+  });
   return { source, counts: { albums: albums.length, songs: songs.length } };
+}
+
+/**
+ * Map a source-native playlist onto an app Playlist MIRROR. The app id is derived
+ * from (sourceId, external id) so re-import is idempotent. Every song becomes a
+ * SongNode stamped with sourceId; refs absent from this index are still added
+ * (the UI shows them as out-of-source cues — graceful degradation).
+ */
+function mapPlaylist(
+  p: { id: string; name: string; songIds: string[] },
+  sourceId: string,
+  _sourceName: string,
+  present: Set<string>,
+  now: number,
+): Playlist {
+  const id = 'pls_' + hashKey(`${sourceId}:${p.id}`);
+  const children: SongNode[] = p.songIds.map((songId) => ({
+    nodeId: newNodeId(),
+    kind: 'song',
+    songId,
+    sourceId,
+  }));
+  const seq: SequenceNode = {
+    nodeId: newNodeId(),
+    kind: 'sequence',
+    name: p.name,
+    children,
+  };
+  void present; // referenced for intent; absence is handled at view time
+  return {
+    id,
+    name: p.name,
+    sequences: [seq],
+    importedFrom: { sourceId, externalId: p.id },
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 function mapAlbum(a: IndexAlbum, sourceId: string, now: number): AlbumItem {
@@ -195,7 +251,14 @@ function mapSong(s: IndexSong, sourceId: string, now: number, genre?: string): S
 export async function hydrateArt(
   sourceId: string,
   onProgress?: (done: number, total: number) => void,
+  opts: { placeholders?: boolean } = {},
 ): Promise<{ cached: number; placeholders: number }> {
+  // Digital sources (e.g. Apple Music) carry no art and there can be tens of
+  // thousands of albums — generating a placeholder blob for each would be a huge,
+  // pointless write storm. Callers pass { placeholders: false } there; art-less
+  // tiles fall back to the CSS night-sky cell at render time. (Per product: cover
+  // art for digital is only added later via a rip/burn.)
+  const makePlaceholders = opts.placeholders !== false;
   const albums = await getAlbums(sourceId);
   let cached = 0;
   let placeholders = 0;
@@ -208,7 +271,7 @@ export async function hydrateArt(
       } else if (a.coverArtUrl) {
         await cacheArtUrl(a.coverArtUrl);
         cached++;
-      } else {
+      } else if (makePlaceholders) {
         await generatePlaceholder(a.id);
         placeholders++;
       }

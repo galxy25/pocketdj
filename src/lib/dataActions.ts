@@ -6,7 +6,7 @@ import { downloadExportZip } from '../storage/exportZip';
 import type { IndexJson } from '../types/index-json';
 import { useAppStore } from '../store/useAppStore';
 import { useDataStore } from '../store/useDataStore';
-import { getSources } from '../storage/repo';
+import { getSources, deleteSource, getPlaylists, deletePlaylist } from '../storage/repo';
 import { clearAllStores, clearCatalogStores } from '../storage/db';
 
 async function refreshAll() {
@@ -31,7 +31,8 @@ export async function loadIndexUrl(url: string, sourceName?: string, onProgress?
   if (!res.ok) throw new Error(`index not found (${res.status})`);
   const index = (await res.json()) as IndexJson;
   const { source, counts } = await importIndexJson(index, { sourceName });
-  await hydrateArt(source.id, onProgress);
+  // Digital sources have no art (and may be huge) → skip the placeholder pass.
+  await hydrateArt(source.id, onProgress, { placeholders: source.type !== 'digital' });
   await refreshAll();
   return counts;
 }
@@ -64,6 +65,34 @@ export async function seedIfEmpty(onProgress?: (done: number, total: number) => 
   void hydrateArt(source.id, onProgress);
   await refreshAll();
   return counts;
+}
+
+/**
+ * OPT-IN load of the bundled Apple Music (Local) library (songs + iTunes playlist
+ * mirrors). Triggered from Settings — never auto-runs on boot. Idempotent: re-import
+ * upserts by stable id. No cover art (digital, by design — added later via rip/burn).
+ * Throws if the index isn't deployed so the UI can report it.
+ */
+export async function loadAppleMusicLibrary(): Promise<{ albums: number; songs: number }> {
+  const url = `${import.meta.env.BASE_URL}apple-music-index.json`;
+  const res = await fetch(url, { cache: 'reload' });
+  if (!res.ok) throw new Error(`Apple Music index not available (${res.status})`);
+  const index = (await res.json()) as IndexJson;
+  const { counts } = await importIndexJson(index, { sourceName: 'Apple Music (Local)' });
+  await refreshAll();
+  return counts;
+}
+
+/**
+ * Unload a data source: removes its items + the source record, and drops any
+ * imported playlist MIRRORS that belonged to it (hand-built playlists are kept,
+ * degrading gracefully for any of its items they referenced).
+ */
+export async function removeSource(sourceId: string): Promise<void> {
+  await deleteSource(sourceId);
+  const mirrors = (await getPlaylists()).filter((p) => p.importedFrom?.sourceId === sourceId);
+  for (const p of mirrors) await deletePlaylist(p.id);
+  await refreshAll();
 }
 
 export async function importUserFile(file: File, onProgress?: (done: number, total: number) => void) {

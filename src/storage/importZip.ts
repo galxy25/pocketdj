@@ -107,7 +107,7 @@ export async function importFile(
   }
   const index = JSON.parse(new TextDecoder().decode(buf)) as IndexJson;
   const { source, counts } = await importIndexJson(index);
-  await hydrateArt(source.id, onProgress);
+  await hydrateArt(source.id, onProgress, { placeholders: source.type !== 'digital' });
   return { kind: 'index', summary: `${counts.albums} albums, ${counts.songs} songs` };
 }
 

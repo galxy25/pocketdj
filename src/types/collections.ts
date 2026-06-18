@@ -59,6 +59,13 @@ export interface SongNode {
   songId: string;
   /** Optional performer note for this item (shown in the UI + carried into export). */
   note?: string;
+  /**
+   * Data source the item came from (attribution). Lets the UI degrade gracefully
+   * when the item isn't in the loaded catalog/selected sources — it can name the
+   * source ("from Apple Music (Local)") instead of showing a blank row. Optional
+   * so hand-built, single-source collections need not carry it.
+   */
+  sourceId?: string;
 }
 /** A whole album (expands to its tracks at realize). */
 export interface AlbumNode {
@@ -66,6 +73,8 @@ export interface AlbumNode {
   kind: 'album';
   albumId: string;
   note?: string;
+  /** Data source attribution — see SongNode.sourceId. */
+  sourceId?: string;
 }
 /** A reference to a pocket (resolved lazily — this is what makes auto-update free). */
 export interface PocketNode {
@@ -104,6 +113,13 @@ export interface Playlist {
   sequences: SequenceNode[];
   /** Optional whole-playlist time budget (informational; per-sequence budgets drive realize). */
   targetMs?: number;
+  /**
+   * Set when this playlist is a MIRROR of a source-native playlist (e.g. an
+   * iTunes/Apple Music user playlist). Re-importing the source refreshes mirrors
+   * by stable id; hand-built playlists never carry this and are never clobbered.
+   * The UI can badge the provenance and offer "refresh from source".
+   */
+  importedFrom?: { sourceId: string; externalId: string };
   createdAt: number;
   updatedAt: number;
 }

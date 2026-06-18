@@ -27,7 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { StarMapLayout, NebulaLayout, Star, Tier } from '../../types/starmap';
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, scopeFor, scopeKeyOf } from '../../store/useAppStore';
 import { useBrowserStore } from '../../store/useBrowserStore';
 import { getAlbums, getSongs, getMeta, setMeta } from '../../storage/repo';
 import { useArtUrl } from '../common/useArtUrl';
@@ -85,7 +85,14 @@ function sampleCoverKeys(members: Star[], n: number): string[] {
 }
 
 export function StarMapScene() {
-  const activeSourceId = useAppStore((s) => s.activeSourceId);
+  const sourceMode = useAppStore((s) => s.sourceMode);
+  const selectedSourceIds = useAppStore((s) => s.selectedSourceIds);
+  const sources = useAppStore((s) => s.sources);
+  const scope = useMemo(
+    () => scopeFor(sourceMode, selectedSourceIds, sources),
+    [sourceMode, selectedSourceIds, sources],
+  );
+  const scopeKey = scopeKeyOf(scope);
   const setItemType = useAppStore((s) => s.setItemType);
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -193,11 +200,11 @@ export function StarMapScene() {
     (async () => {
       let next: StarMapLayout | NebulaLayout;
       if (audioMode) {
-        const songs = await getSongs(activeSourceId);
+        const songs = await getSongs(scope);
         if (cancelled) return;
         next = computeNebulaLayout(groupSongs(songs, groupBy, keyNotation));
       } else {
-        const albums = await getAlbums(activeSourceId);
+        const albums = await getAlbums(scope);
         if (cancelled) return;
         next = computeLayout(albums, { tier, focusCategory });
       }
@@ -243,7 +250,8 @@ export function StarMapScene() {
     return () => {
       cancelled = true;
     };
-  }, [activeSourceId, tier, focusCategory, groupBy, keyNotation, audioMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey, tier, focusCategory, groupBy, keyNotation, audioMode]);
 
   // Cover art is loaded per-star inside StarNode via the shared, ref-counted useArtUrl
   // hook — so every cover stays valid while it's on screen (no LRU revocation), and the

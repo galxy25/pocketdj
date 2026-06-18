@@ -2,7 +2,7 @@
 // data loading without scraping the UI.
 import { countItems, getPockets, getPlaylists, getAllSetlists } from '../storage/repo';
 import { clearAllStores } from '../storage/db';
-import { loadMockData, exportData } from './dataActions';
+import { loadMockData, loadIndexUrl, exportData } from './dataActions';
 import { importIndexJson, hydrateArt } from '../storage/importIndex';
 import type { IndexJson } from '../types/index-json';
 import { useAppStore } from '../store/useAppStore';
@@ -14,6 +14,8 @@ export interface PdjDebug {
   collections: () => Promise<{ pockets: number; playlists: number; setlists: number }>;
   loadMock: () => Promise<{ albums: number; songs: number }>;
   loadIndex: (index: IndexJson, sourceName?: string) => Promise<{ albums: number; songs: number }>;
+  /** Fetch + import an index.json by URL (e.g. /apple-music-index.json). */
+  loadIndexUrl: (url: string, sourceName?: string) => Promise<{ albums: number; songs: number }>;
   exportZip: () => Promise<unknown>;
   clear: () => Promise<void>;
 }
@@ -32,11 +34,12 @@ export function installDebug() {
     loadMock: () => loadMockData(),
     loadIndex: async (index, sourceName) => {
       const { source, counts } = await importIndexJson(index, { sourceName });
-      await hydrateArt(source.id);
+      await hydrateArt(source.id, undefined, { placeholders: source.type !== 'digital' });
       await useAppStore.getState().refreshSources();
       await useDataStore.getState().reload();
       return counts;
     },
+    loadIndexUrl: (url, sourceName) => loadIndexUrl(url, sourceName),
     exportZip: () => exportData(),
     clear: async () => {
       await clearAllStores();

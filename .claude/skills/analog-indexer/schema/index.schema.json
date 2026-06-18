@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://pocketdj.app/schema/index.schema.json",
-  "title": "PocketDJ Analog Index",
-  "description": "The canonical index produced by the analog-indexer skill and consumed by the PocketDJ app. Keep in sync with src/types/index-json.ts.",
+  "title": "PocketDJ Index",
+  "description": "The canonical index produced by the indexers (analog vinyl + digital Apple Music) and consumed by the PocketDJ app. Keep in sync with src/types/index-json.ts.",
   "type": "object",
   "required": ["manifest", "albums", "songs"],
   "additionalProperties": false,
@@ -15,7 +15,7 @@
         "source": { "type": "string" },
         "generatedAt": { "type": "string", "format": "date-time" },
         "schemaVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-        "sourceType": { "const": "analog" },
+        "sourceType": { "enum": ["analog", "digital"] },
         "sourceName": { "type": "string" },
         "deferredFields": { "type": "array", "items": { "type": "string" } },
         "counts": {
@@ -106,11 +106,26 @@
           "sentimentKeywords": { "type": "array", "items": { "type": "string" } },
           "sentimentSource": { "enum": ["lyrics", "inferred", "failed"] },
           "explicit": { "type": "boolean" },
-          "bpm": { "type": "null" },
-          "key": { "type": "null" },
+          "bpm": { "type": ["number", "null"] },
+          "key": { "type": ["string", "null"] },
+          "camelot": { "type": ["string", "null"] },
           "length": { "type": "integer", "description": "milliseconds" },
           "fileType": { "type": "string" },
           "pointer": { "$ref": "#/definitions/pointer" }
+        }
+      }
+    },
+    "playlists": {
+      "type": "array",
+      "description": "Source-native playlists (e.g. iTunes user playlists), imported as app Playlist mirrors.",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "songIds"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "songIds": { "type": "array", "items": { "type": "string" } }
         }
       }
     }
