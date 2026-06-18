@@ -309,6 +309,38 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-browser__mode { white-space: nowrap; }
 .pdj-browser__mode.is-online { border-color: var(--pdj-accent); color: var(--pdj-accent); }
 
+/* ▶/⤓ rip buttons + live phase chip (on song rows / album cards). */
+.pdj-rip { display: inline-flex; align-items: center; gap: 2px; }
+.pdj-rip__btn {
+  min-width: 26px; height: 26px; padding: 0 5px; border-radius: 6px;
+  border: 1px solid var(--pdj-border); background: var(--pdj-bg-overlay); color: var(--pdj-fg);
+  cursor: pointer; font-size: 0.8rem; line-height: 1;
+}
+.pdj-rip__btn:hover:not(:disabled) { border-color: var(--pdj-accent); color: var(--pdj-accent); }
+.pdj-rip__btn:disabled { opacity: 0.35; cursor: default; }
+.pdj-rip--active { font-size: 0.72rem; color: var(--pdj-accent); white-space: nowrap; display: inline-flex; gap: 4px; align-items: center; }
+.pdj-rip__spin { display: inline-block; animation: pdj-spin 1s linear infinite; }
+@keyframes pdj-spin { to { transform: rotate(360deg); } }
+
+/* Bottom mini player. */
+.pdj-player {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  background: var(--pdj-bg-raised); border-top: 1px solid var(--pdj-border);
+  box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+}
+.pdj-app:has(.pdj-player) .pdj-main { padding-bottom: 60px; }
+.pdj-player__btn {
+  min-width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--pdj-border);
+  background: var(--pdj-bg-overlay); color: var(--pdj-fg); cursor: pointer; font-size: 0.95rem;
+}
+.pdj-player__meta { min-width: 0; flex: 0 1 auto; }
+.pdj-player__title { font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38vw; }
+.pdj-player__artist { font-size: 0.7rem; color: var(--pdj-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38vw; }
+.pdj-player__time { font-size: 0.7rem; color: var(--pdj-fg-dim); flex: 0 0 auto; }
+.pdj-player__seek { flex: 1 1 auto; min-width: 60px; accent-color: var(--pdj-accent); }
+.pdj-settings__rip { display: flex; flex-direction: column; gap: 4px; }
+
 /* Sources panel: which data sources the app shows (multi-select) + load/remove. */
 .pdj-settings__sources { display: flex; flex-direction: column; gap: 6px; }
 .pdj-srcrow {

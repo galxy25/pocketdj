@@ -1,0 +1,235 @@
+#!/usr/bin/env node
+// PocketDJ rip-on-demand API (runs on the iMac). The PWA calls this over the LAN /
+// Tailscale to rip a song/album that isn't yet in the public S3 rips cache.
+//
+// Phase 1: ANALOG fast path only — resolve the album's recording at
+// $POCKETDJ_ANALOG_BASE/<originalFilename>, ffmpeg-transcode the WHOLE album to
+// mp3 256k, upload to s3://<bucket>/rips/<albumId>.mp3, and register every song of
+// that album in rips/manifest.json (each with its startMs for later auto-seek).
+// Apple Music (real-time capture via the rip skill / Claude agent) is Phase 2.
+//
+// Poll model: POST /rip → {jobId}; GET /jobs/:id → {phase,progress,url,error};
+// phases queued→searching→ripping→uploading→ready (or error). Single-flight per
+// album/song, concurrency 1.
+//
+// Dependency-free: node:http + shells to `ffmpeg` and `aws` (profile levi).
+//
+//   POCKETDJ_ANALOG_BASE=~/Downloads RIP_TOKEN=secret node scripts/rip-server.mjs
+//   curl localhost:8787/health
+import http from 'node:http';
+import { spawn, execFile } from 'node:child_process';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { homedir, hostname } from 'node:os';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO = resolve(__dirname, '..');
+
+const CFG = {
+  port: parseInt(process.env.RIP_PORT || '8787', 10),
+  token: process.env.RIP_TOKEN || '', // bearer; empty = no auth (local dev)
+  profile: process.env.AWS_PROFILE || 'levi',
+  region: process.env.AWS_REGION || 'us-west-2',
+  bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
+  analogBase: (process.env.POCKETDJ_ANALOG_BASE || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
+  sources: (process.env.RIP_SOURCES || `${REPO}/public/current-index.json,${REPO}/public/apple-music-index.json`)
+    .split(',').map((s) => s.trim()).filter(Boolean),
+  tmp: join(homedir(), '.pocketdj', 'rips'),
+};
+const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
+const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
+mkdirSync(join(CFG.tmp, 'jobs'), { recursive: true });
+
+// ---------------- catalog (songId/albumId → metadata) ----------------
+const songById = new Map();
+const albumById = new Map();
+const songsByAlbum = new Map();
+function loadCatalog() {
+  for (const f of CFG.sources) {
+    if (!existsSync(f)) { console.warn('  source missing:', f); continue; }
+    const idx = JSON.parse(readFileSync(f, 'utf8'));
+    const sourceType = idx.manifest?.sourceType || 'analog';
+    const sourceName = idx.manifest?.sourceName || idx.manifest?.source || 'unknown';
+    for (const a of idx.albums || []) albumById.set(a.id, { ...a, sourceType, sourceName });
+    for (const s of idx.songs || []) {
+      const rec = { ...s, sourceType, sourceName };
+      songById.set(s.id, rec);
+      if (s.albumId) {
+        if (!songsByAlbum.has(s.albumId)) songsByAlbum.set(s.albumId, []);
+        songsByAlbum.get(s.albumId).push(rec);
+      }
+    }
+    console.error(`  loaded ${f} (${(idx.albums || []).length} albums, ${(idx.songs || []).length} songs)`);
+  }
+}
+
+// ---------------- manifest (in-memory mirror of s3://.../rips/manifest.json) ----------------
+let manifest = {};
+function aws(args) {
+  return new Promise((res, rej) => {
+    execFile('aws', [...args, '--profile', CFG.profile, '--region', CFG.region], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) rej(new Error(stderr || err.message)); else res(stdout);
+    });
+  });
+}
+async function loadManifest() {
+  try {
+    const out = await aws(['s3', 'cp', `s3://${CFG.bucket}/rips/manifest.json`, '-']);
+    manifest = JSON.parse(out || '{}');
+  } catch { manifest = {}; }
+  console.error(`  manifest: ${Object.keys(manifest).length} songs cached`);
+}
+async function saveManifest() {
+  const tmp = join(CFG.tmp, 'manifest.json');
+  writeFileSync(tmp, JSON.stringify(manifest));
+  await aws(['s3', 'cp', tmp, `s3://${CFG.bucket}/rips/manifest.json`, '--content-type', 'application/json']);
+}
+
+// ---------------- jobs ----------------
+const jobs = new Map();         // jobId -> job
+const inflight = new Map();      // resourceKey -> jobId
+const queue = [];
+let working = false;
+
+function setPhase(job, phase, extra = {}) {
+  Object.assign(job, { phase, ...extra, updatedAt: Date.now() });
+  try { writeFileSync(join(CFG.tmp, 'jobs', `${job.jobId}.json`), JSON.stringify(job)); } catch { /* ignore */ }
+}
+function jobView(job) {
+  if (!job) return null;
+  const v = { jobId: job.jobId, songId: job.songId, phase: job.phase, message: job.message || null, url: job.url || null, error: job.error || null };
+  if (job.phase === 'ripping' && job.realtime && job.ripStartedAt && job.totalMs) {
+    const elapsedMs = Math.min(Date.now() - job.ripStartedAt, job.totalMs);
+    v.progress = { elapsedMs, totalMs: job.totalMs, pct: Math.round((elapsedMs / job.totalMs) * 100) };
+  } else if (job.phase === 'ripping') {
+    v.progress = { indeterminate: true };
+  }
+  return v;
+}
+function fail(job, error) { job.error = error; setPhase(job, 'error'); if (job.resourceKey) inflight.delete(job.resourceKey); }
+
+function enqueue(job) { queue.push(job); pump(); }
+async function pump() {
+  if (working) return;
+  const job = queue.shift();
+  if (!job) return;
+  working = true;
+  try { await runJob(job); } catch (e) { fail(job, e.message); }
+  working = false;
+  pump();
+}
+
+async function runJob(job) {
+  setPhase(job, 'searching');
+  const song = songById.get(job.songId);
+  if (!song) return fail(job, 'unknown songId');
+  if (song.sourceType !== 'analog') {
+    return fail(job, 'Apple Music ripping arrives in Phase 2 (real-time capture). Analog songs work now.');
+  }
+  const album = albumById.get(song.albumId);
+  if (!album?.pointer?.originalFilename) return fail(job, 'no analog file reference for this album');
+  const src = join(CFG.analogBase, album.pointer.originalFilename);
+  if (!existsSync(src)) return fail(job, `analog file not found: ${src}`);
+
+  // transcode the WHOLE album to mp3 256 (user seeks; startMs recorded for auto-seek)
+  setPhase(job, 'ripping', { realtime: false, message: 'transcoding album' });
+  const out = join(CFG.tmp, `${album.id}.mp3`);
+  await new Promise((res, rej) => {
+    const ff = spawn('ffmpeg', ['-y', '-i', src, '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k', out]);
+    let err = '';
+    ff.stderr.on('data', (d) => { err += d; });
+    ff.on('close', (code) => (code === 0 ? res() : rej(new Error('ffmpeg failed: ' + err.slice(-300)))));
+  });
+
+  setPhase(job, 'uploading', { message: 'uploading to S3' });
+  const key = `rips/${album.id}.mp3`;
+  await aws(['s3', 'cp', out, `s3://${CFG.bucket}/${key}`, '--content-type', 'audio/mpeg']);
+  const bytes = statSync(out).size;
+
+  // register EVERY song of the album (one upload makes the whole album playable)
+  const rippedAt = Date.now();
+  for (const s of songsByAlbum.get(album.id) || []) {
+    manifest[s.id] = {
+      key, ext: 'mp3', bytes, source: 'analog', albumId: album.id,
+      startMs: s.pointer?.startMs ?? null, durationMs: s.length ?? null, rippedAt,
+    };
+  }
+  await saveManifest();
+
+  job.url = publicUrl(key);
+  setPhase(job, 'ready', { message: `album ${album.name} ready` });
+  inflight.delete(job.resourceKey);
+}
+
+// ---------------- HTTP ----------------
+function send(res, status, body) {
+  const payload = typeof body === 'string' ? body : JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization,content-type',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+  });
+  res.end(payload);
+}
+function authed(req) {
+  if (!CFG.token) return true;
+  const h = req.headers['authorization'] || '';
+  return h === `Bearer ${CFG.token}`;
+}
+async function readJson(req) {
+  return new Promise((res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { res(b ? JSON.parse(b) : {}); } catch { res({}); } }); });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  const path = url.pathname;
+  if (req.method === 'OPTIONS') return send(res, 204, '');
+
+  if (path === '/health') {
+    return send(res, 200, { ok: true, host: hostname(), version: 1, analogBase: CFG.analogBase, bucket: CFG.bucket,
+      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token });
+  }
+  if (!authed(req)) return send(res, 401, { error: 'unauthorized' });
+
+  // GET /status/:songId
+  let m = path.match(/^\/status\/(.+)$/);
+  if (m && req.method === 'GET') {
+    const songId = decodeURIComponent(m[1]);
+    if (manifest[songId]) return send(res, 200, { ready: true, url: publicUrl(manifest[songId].key), entry: manifest[songId] });
+    const active = [...jobs.values()].find((j) => j.songId === songId && j.phase !== 'ready' && j.phase !== 'error');
+    return send(res, 200, { ready: false, job: jobView(active) });
+  }
+  // GET /jobs/:id
+  m = path.match(/^\/jobs\/(.+)$/);
+  if (m && req.method === 'GET') {
+    const job = jobs.get(decodeURIComponent(m[1]));
+    return job ? send(res, 200, jobView(job)) : send(res, 404, { error: 'no such job' });
+  }
+  // POST /rip {songId}
+  if (path === '/rip' && req.method === 'POST') {
+    const { songId } = await readJson(req);
+    const song = songId && songById.get(songId);
+    if (!song) return send(res, 404, { error: 'unknown songId' });
+    if (manifest[songId]) return send(res, 200, { jobId: null, songId, phase: 'ready', url: publicUrl(manifest[songId].key) });
+    const resourceKey = song.sourceType === 'analog' ? song.albumId : songId;
+    const existingId = inflight.get(resourceKey);
+    if (existingId && jobs.has(existingId)) return send(res, 200, jobView(jobs.get(existingId)));
+    const job = { jobId: randomUUID(), songId, resourceKey, phase: 'queued', createdAt: Date.now() };
+    jobs.set(job.jobId, job);
+    inflight.set(resourceKey, job.jobId);
+    setPhase(job, 'queued');
+    enqueue(job);
+    return send(res, 200, jobView(job));
+  }
+  return send(res, 404, { error: 'not found' });
+});
+
+console.error('PocketDJ rip-server starting…');
+loadCatalog();
+await loadManifest();
+server.listen(CFG.port, () => {
+  console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
+});
