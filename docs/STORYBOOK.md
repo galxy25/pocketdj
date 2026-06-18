@@ -600,3 +600,60 @@ catalog by id** (the app re-seeds the same index), so it's ~4 KB instead of bund
 hundreds of KB of catalog + art — yet imports with every song resolved. A
 `portable` mode still bundles everything for a device with a different/empty catalog.
 Import lands it as *"… (imported)"* without clobbering existing playlists.
+
+---
+
+## 27. Multi-source, collection filters & online search — 2026 update
+
+PocketDJ is no longer vinyl-only: it indexes **multiple data sources** into one
+catalog, adds a **show/hide** pair of collection filters to the song list, and gains
+an optional **online search** mode backed by OpenSearch. The browser shots in
+§8–§11 now show two sources.
+
+### A second source — Apple Music (Local)
+
+![Multi-source selector](storybook/27-multi-source-selector-mobile.png)
+
+Alongside the digitized vinyl crate, the app can index your **Apple Music library**
+(from the macOS `Library.xml`) as a second, **digital** source — here **12,220
+albums / 92,865 songs** next to vinyl's **1,361 / 12,525**. The **Sources** picker is
+a multi-select: show **all**, **none**, or a **subset** (e.g. just vinyl, or just
+Apple Music). Digital albums carry real genre/year/track metadata but no cover art
+(the ♪ tile) — art is added only via a rip/burn. The selection **persists**, and the
+star map, counts and browser all respect it. Items are kept distinct per source, so
+the same album owned on vinyl *and* in Apple Music never collide.
+
+### Settings ▸ Sources — load / remove sources
+
+![Settings: Sources panel + Online search](storybook/28-settings-sources-mobile.png)
+
+Apple Music is **opt-in**: a fresh device boots vinyl-only (fast), and you add the
+library with **＋ Load Apple Music (Local)** in Settings ▸ Sources. The same
+multi-select lives here too, plus a per-source **✕ remove** (which also drops that
+source's imported playlists). Importing the library also **mirrors your iTunes
+playlists** into app playlists. (This shot also shows the **Online search** panel —
+see below.)
+
+### Show *and* hide — collection filters on the song list
+
+![Show / hide collection filters](storybook/29-show-hide-filters-mobile.png)
+
+The song list now has a **pair** of membership filters. **Hide added** (from §26)
+drops songs already placed; the new **Show added** keeps **only** songs that *are* in
+a chosen playlist/pocket (or *any*). Both can be on at once — the browser
+**intersects** them (e.g. "everything in *Peak Hour* that isn't already in *Saturday
+Set*"). The dropdowns list your playlists + pockets, including the **imported iTunes**
+ones.
+
+### Online search (OpenSearch) — opt-in ⚡
+
+![Online search via OpenSearch](storybook/30-online-search-mobile.png)
+
+A search box spans the catalog. **Offline** (the default) it filters the loaded set
+by title/artist locally. Once you paste a **read-only search key/secret** into
+**Settings ▸ Online search** (§28), an **⚡ Online** toggle appears: it queries
+**OpenSearch Serverless** across **title, artist, album, lyrics and sentiment** over
+the *entire* indexed catalog — here **80 of 470** matches for *"midnight"* in
+**389 ms**, with explicit (**E**) and BPM/key badges intact. The browser signs each
+request itself (SigV4) and reaches the collection same-origin via a CloudFront proxy,
+so there's no separate server to run and the collection scales to **$0 when idle**.
