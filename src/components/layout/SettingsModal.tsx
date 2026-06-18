@@ -8,6 +8,7 @@ import { downloadExportZip } from '../../storage/exportZip';
 import { importFile } from '../../storage/importZip';
 import { countItems } from '../../storage/repo';
 import { useAppStore } from '../../store/useAppStore';
+import { useSearchStore } from '../../store/useSearchStore';
 import { CURRENT_DATA_VERSION, getDataVersion, runMigrations } from '../../storage/migrations';
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -30,6 +31,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const refreshSources = useAppStore((s) => s.refreshSources);
   const [amBusy, setAmBusy] = useState(false);
   const [amMsg, setAmMsg] = useState('');
+
+  // Online search (OpenSearch) credentials — the read-only djpocketsearch IAM key/secret.
+  const searchCreds = useSearchStore((s) => s.creds);
+  const setSearchCreds = useSearchStore((s) => s.setCreds);
+  const clearSearchCreds = useSearchStore((s) => s.clearCreds);
+  const [akid, setAkid] = useState('');
+  const [secret, setSecret] = useState('');
 
   const isAll = sourceMode === 'all';
   const checked = (id: string) => isAll || selectedSourceIds.includes(id);
@@ -196,6 +204,66 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <p className="pdj-settings__hint" data-testid="settings-source-msg">
               {amMsg}
             </p>
+          )}
+        </div>
+
+        <hr className="pdj-settings__rule" />
+
+        <div className="pdj-settings__search" data-testid="settings-search">
+          <div className="pdj-settings__stat">
+            <span>Online search</span>
+            <strong>{searchCreds ? 'connected' : 'off'}</strong>
+          </div>
+          <p className="pdj-settings__hint">
+            Enter your read-only <code>djpocketsearch</code> IAM key &amp; secret to enable the
+            <strong> Online</strong> search toggle in the browser (searches the full catalog via
+            OpenSearch). Leave blank to stay fully offline.
+          </p>
+          {searchCreds ? (
+            <div className="pdj-settings__row">
+              <span className="pdj-settings__hint" style={{ flex: '1 1 auto', margin: 0 }}>
+                Key <code>{searchCreds.accessKeyId.slice(0, 8)}…</code> saved on this device.
+              </span>
+              <button
+                type="button"
+                className="pdj-btn pdj-btn--ghost"
+                data-testid="settings-search-clear"
+                onClick={() => { clearSearchCreds(); setAkid(''); setSecret(''); }}
+              >
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <>
+              <input
+                className="pdj-input"
+                placeholder="Access key ID"
+                autoComplete="off"
+                spellCheck={false}
+                data-testid="settings-search-akid"
+                value={akid}
+                onChange={(e) => setAkid(e.target.value)}
+              />
+              <input
+                className="pdj-input"
+                type="password"
+                placeholder="Secret access key"
+                autoComplete="off"
+                spellCheck={false}
+                data-testid="settings-search-secret"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+              />
+              <button
+                type="button"
+                className="pdj-btn"
+                data-testid="settings-search-save"
+                disabled={!akid.trim() || !secret.trim()}
+                onClick={() => { setSearchCreds(akid, secret); setAkid(''); setSecret(''); }}
+              >
+                Save &amp; enable online search
+              </button>
+            </>
           )}
         </div>
 

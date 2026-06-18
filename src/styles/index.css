@@ -291,6 +291,24 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
   min-width: 130px;
 }
 
+/* Text input (settings creds, browser search). */
+.pdj-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  margin: 4px 0;
+  border-radius: 8px;
+  border: 1px solid var(--pdj-border);
+  background: var(--pdj-bg-overlay);
+  color: var(--pdj-fg);
+  font-size: 0.85rem;
+  min-height: 34px;
+}
+.pdj-input:focus { outline: none; border-color: var(--pdj-accent); }
+.pdj-browser__search { width: auto; min-width: 150px; max-width: 220px; margin: 0; }
+.pdj-browser__mode { white-space: nowrap; }
+.pdj-browser__mode.is-online { border-color: var(--pdj-accent); color: var(--pdj-accent); }
+
 /* Sources panel: which data sources the app shows (multi-select) + load/remove. */
 .pdj-settings__sources { display: flex; flex-direction: column; gap: 6px; }
 .pdj-srcrow {
