@@ -6,6 +6,9 @@
 // when the rip server is offline — the server is only needed to CREATE a rip.
 import { create } from 'zustand';
 import { zip } from 'fflate';
+import { getItem, putItem } from '../storage/repo';
+import { useDataStore } from './useDataStore';
+import { isSong } from '../types/model';
 
 const PUBLIC_BASE = 'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com';
 const MANIFEST_URL = `${PUBLIC_BASE}/rips/manifest.json`;
@@ -15,6 +18,9 @@ export interface ManifestEntry {
   key: string; ext: string; bytes: number;
   source: 'analog' | 'digital'; albumId?: string;
   startMs?: number | null; durationMs?: number | null; rippedAt: number;
+  // background audio analysis (filled after the rip):
+  bpm?: number | null; musicalKey?: string | null; camelot?: string | null;
+  waveform?: string | null; analyzed?: boolean;
 }
 export type RipPhase = 'queued' | 'searching' | 'ripping' | 'uploading' | 'ready' | 'error';
 export interface JobView {
@@ -22,7 +28,7 @@ export interface JobView {
   message?: string | null; url?: string | null; error?: string | null;
   progress?: { elapsedMs?: number; totalMs?: number; pct?: number; indeterminate?: boolean };
 }
-export interface NowPlaying { songId: string; title: string; artist: string; url: string; startMs?: number | null; }
+export interface NowPlaying { songId: string; title: string; artist: string; url: string; startMs?: number | null; waveform?: string | null; }
 export interface QueueItem { id: string; title: string; artist: string; }
 export interface BulkProgress { done: number; total: number; label: string; }
 
@@ -107,7 +113,11 @@ export const useRipsStore = create<RipState>((set, get) => {
     refreshManifest: async () => {
       try {
         const r = await fetch(`${MANIFEST_URL}?t=${Date.now()}`, { cache: 'no-store' });
-        if (r.ok) set({ manifest: await r.json() });
+        if (r.ok) {
+          const manifest = await r.json();
+          set({ manifest });
+          void applyAnalysisToCatalog(manifest); // roll bpm/key/camelot into the catalog
+        }
       } catch { /* offline — keep whatever we have */ }
     },
     urlFor: (songId) => {
@@ -148,7 +158,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       const e = get().manifest[song.id];
       const startMs = opts && 'startMs' in opts ? opts.startMs ?? null : e?.startMs ?? null;
       // single play clears any setlist queue (no next/prev)
-      set({ queue: null, queueIndex: -1, nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs } });
+      set({ queue: null, queueIndex: -1, nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs, waveform: e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
     },
     download: async (song) => {
       const url = await get().ensureUrl(song.id);
@@ -173,7 +183,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       set({ queueIndex: i });
       const url = await get().ensureUrl(t.id);
       const e = get().manifest[t.id];
-      set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: e?.startMs ?? null } });
+      set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: e?.startMs ?? null, waveform: e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
     },
     next: () => { const { queue, queueIndex } = get(); if (queue && queueIndex + 1 < queue.length) void get().playAt(queueIndex + 1); },
     prev: () => { const { queue, queueIndex } = get(); if (queue && queueIndex > 0) void get().playAt(queueIndex - 1); },
@@ -217,4 +227,32 @@ export const useRipsStore = create<RipState>((set, get) => {
 function dedupe(tracks: QueueItem[]): QueueItem[] {
   const seen = new Set<string>();
   return tracks.filter((t) => t.id && !seen.has(t.id) && seen.add(t.id));
+}
+
+/**
+ * Roll the rip analysis (bpm/key/camelot) into the catalog: patch IndexedDB song
+ * items so the data shows up in the default index — filterable, sortable, on the
+ * star map, in song detail. Only fills from entries that carry analysis; never
+ * overwrites an existing value with null. Reloads the browser once if anything
+ * changed. Runs in the background after the manifest loads.
+ */
+async function applyAnalysisToCatalog(manifest: Record<string, ManifestEntry>): Promise<void> {
+  let patched = 0;
+  for (const [songId, e] of Object.entries(manifest)) {
+    if (e.bpm == null && !e.musicalKey && !e.camelot) continue;
+    try {
+      const it = await getItem(songId);
+      if (!it || !isSong(it)) continue;
+      // FILL gaps only — never clobber existing catalog values (analog songs already
+      // carry accurate audio-stage bpm/key; digital songs are null and get filled).
+      const bpm = it.bpm ?? e.bpm ?? null;
+      const key = it.key ?? e.musicalKey ?? null;
+      const camelot = it.camelot ?? e.camelot ?? null;
+      if (it.bpm !== bpm || it.key !== key || it.camelot !== camelot) {
+        await putItem({ ...it, bpm, key, camelot });
+        patched++;
+      }
+    } catch { /* ignore one bad item */ }
+  }
+  if (patched) void useDataStore.getState().reload();
 }
