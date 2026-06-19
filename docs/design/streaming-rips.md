@@ -1,6 +1,38 @@
 # Design — Stream / download any song (rip‑on‑demand)
 
-**Status:** design approved (decisions locked 2026‑06‑18). Phase 1 not yet built.
+**Status:** SHIPPED to prod 2026‑06‑19 — Phase 1 (analog) + Phase 2 (Apple Music
+real‑time) + setlist Rip‑all/Play‑all/Burn + a durable filesystem queue. See
+"Running it" and "What shipped" below.
+
+## Running it
+
+1. **Rip server** (on the iMac): `node scripts/rip-server.mjs`
+   (env: `POCKETDJ_ANALOG_BASE` for analog recordings — default `~/Downloads`;
+   `RIP_TOKEN` to require a bearer token; `RIP_AGENT=1` to run rips via a headless
+   Claude agent instead of the direct worker; `POCKETDJ_LIBRARY_XML` — default
+   `~/Downloads/Library.xml`).
+2. **Expose it over HTTPS** so the deployed PWA can reach it (mixed‑content +
+   tailnet): `tailscale serve --bg http://localhost:8787`
+   → `https://<node>.<tailnet>.ts.net`.
+3. **App** ▸ Settings ▸ Rip server → that URL (+ token if set) ▸ Test connection.
+   Then ▶/⤓ on any song/album, or a set list's **Rip all / Play all / Burn**.
+4. **Reindex the rip catalog** = the rip server reads the same `public/*.json`
+   indexes; regenerate those (analog‑indexer / apple‑music‑indexer) + restart it.
+
+## What shipped (vs. the design below)
+
+- `scripts/rip-server.mjs` — the API (`/health`, `/status/:songId`, `POST /rip`,
+  `GET /jobs/:id`), single‑flight queue, **durable filesystem queue**
+  (`~/.pocketdj/rips/queue/<songId>.json`, re‑enqueued on restart, idempotent).
+- `scripts/rip-one.mjs` — single‑song worker: drives the `rip` skill (real‑time
+  Audio Hijack capture) → mp3 256 → upload, writing live phases to the status file.
+  Run directly (default) or via a Claude agent (`RIP_AGENT=1`) that can add a
+  missing track to the library + retry.
+- App: `useRipsStore` (manifest, config, per‑song job polling, play‑through queue,
+  rip‑all, burn), `RipButtons`, `MiniPlayer`, Settings ▸ Rip server, and the
+  set list **Rip all / Play all / Burn**.
+- Verified end‑to‑end on a real device: an Apple Music track ripped → uploaded →
+  streamed; analog fast path; durable‑queue resume.
 
 ## Goal
 
@@ -207,15 +239,15 @@ the agent for Apple Music captures.
 
 ## Phased build plan
 
-- **Phase 1 — plumbing + analog fast path.** Public rips bucket + manifest; iMac API
-  (`/health`, `/status`, `/rip`, `/jobs`) with the analog ffmpeg fast path (no agent
-  yet); client Settings panel + ▶/⤓ on songs + mini player; cache‑hit + fast‑path +
-  poll UX.
-- **Phase 2 — Apple Music rips.** Wire the Claude agent + `rip` skill real‑time
-  capture into the queue; `searching/ripping/uploading` phases end‑to‑end.
-- **Phase 3 — albums & polish.** Play‑all / download‑all; queue UI; nicer player.
-- **Phase 4 — private delivery.** Private bucket + app‑credential (presigned or
-  CloudFront‑signed) fetch; live‑relay progressive streaming (optional).
+- **Phase 1 — plumbing + analog fast path.** ✅ DONE. Public rips bucket + manifest;
+  iMac API; analog ffmpeg fast path; Settings panel + ▶/⤓ + mini player; poll UX.
+- **Phase 2 — Apple Music rips.** ✅ DONE. `rip` skill real‑time capture via
+  `rip-one.mjs` (direct or `RIP_AGENT=1` Claude agent); searching/ripping/uploading.
+- **Phase 3 — set list batch + durable queue.** ✅ DONE. Set list **Rip all /
+  Play all** (rip‑ahead, auto‑advancing mini player) / **Burn** (zip download);
+  durable filesystem queue (restart‑resumable, idempotent).
+- **Phase 4 — private delivery.** ⏳ FUTURE. Private bucket + app‑credential
+  (presigned or CloudFront‑signed) fetch; live‑relay progressive streaming.
 
 ## Open items
 
