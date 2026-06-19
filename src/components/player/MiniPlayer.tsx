@@ -2,6 +2,7 @@
 // tracks it auto-seeks to the track's startMs within the whole-album file (the user
 // can still scrub freely). Mounted once in AppShell.
 import { useEffect, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { useRipsStore } from '../../store/useRipsStore';
 
 const clock = (s: number) => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
@@ -38,6 +39,11 @@ export function MiniPlayer() {
   const a = audioRef.current;
   const toggle = () => { if (!a) return; if (a.paused) void a.play(); else a.pause(); };
   const seek = (v: number) => { if (a) a.currentTime = v; };
+  const pct = dur ? Math.min(100, (t / dur) * 100) : 0;
+  const seekFromClick = (e: MouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    seek(((e.clientX - r.left) / r.width) * (dur || 0));
+  };
 
   return (
     <div className="pdj-player" data-testid="mini-player">
@@ -63,12 +69,20 @@ export function MiniPlayer() {
         <div className="pdj-player__artist">{now.artist}</div>
       </div>
       <span className="pdj-player__time">{clock(t)}</span>
-      <input
-        className="pdj-player__seek"
-        type="range" min={0} max={dur || 0} step={0.5} value={t}
-        data-testid="player-seek"
-        onChange={(e) => seek(Number(e.target.value))}
-      />
+      {now.waveform ? (
+        <div className="pdj-player__wave" data-testid="player-wave" onClick={seekFromClick} title="Scrub">
+          <img className="pdj-player__wave-img" src={now.waveform} alt="waveform" loading="lazy" />
+          <div className="pdj-player__wave-played" style={{ width: `${pct}%` }} />
+          <div className="pdj-player__wave-head" style={{ left: `${pct}%` }} />
+        </div>
+      ) : (
+        <input
+          className="pdj-player__seek"
+          type="range" min={0} max={dur || 0} step={0.5} value={t}
+          data-testid="player-seek"
+          onChange={(e) => seek(Number(e.target.value))}
+        />
+      )}
       <span className="pdj-player__time">{clock(dur)}</span>
       <button type="button" className="pdj-player__btn" data-testid="player-close" onClick={() => { a?.pause(); setNow(null); }} aria-label="Close">✕</button>
     </div>

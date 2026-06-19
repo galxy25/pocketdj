@@ -31,6 +31,14 @@ real‑time) + setlist Rip‑all/Play‑all/Burn + a durable filesystem queue. S
 - App: `useRipsStore` (manifest, config, per‑song job polling, play‑through queue,
   rip‑all, burn), `RipButtons`, `MiniPlayer`, Settings ▸ Rip server, and the
   set list **Rip all / Play all / Burn**.
+- **Background audio analysis** (`scripts/lib/audio-analyze.mjs`): after each rip,
+  BPM + key + Camelot (Docker `pocketdj-audio`/librosa) + a **waveform PNG**
+  (ffmpeg) → uploaded to `rips/waveforms/<id>.png`. BPM/key/Camelot are written into
+  the manifest and **rolled into the catalog** client‑side (fill‑gaps only). The
+  waveform is **lazy‑loaded** and rendered as a clickable **scrub bar** in the player.
+  Runs for both API‑ and skill‑ripped songs (`scripts/analyze-rip.mjs --dir
+  <_ripped>` bridges the skill's setlist output → upload + analyze + `POST /analysis`).
+  Durable: un‑analyzed manifest entries are re‑queued on server restart.
 - Verified end‑to‑end on a real device: an Apple Music track ripped → uploaded →
   streamed; analog fast path; durable‑queue resume.
 

@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { analyzeAudio } from './lib/audio-analyze.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
@@ -198,6 +199,7 @@ async function runJob(job) {
   job.url = publicUrl(key);
   setPhase(job, 'ready', { message: `album ${album.name} ready` });
   inflight.delete(job.resourceKey);
+  enqueueAnalysis(song.id); // background: album waveform (per-song bpm/key kept from catalog)
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -242,10 +244,57 @@ async function runDigitalJob(job, song) {
     await saveManifest();
     job.url = publicUrl(st.key);
     setPhase(job, 'ready', { message: `${song.name} ready` });
+    enqueueAnalysis(song.id); // background: bpm/key/camelot + waveform for this song
   } else {
     fail(job, st.error || 'rip failed');
   }
   inflight.delete(job.resourceKey);
+}
+
+// ---------------- background audio analysis (bpm/key + waveform) ----------------
+// Keyed by the AUDIO FILE (a digital song's mp3, or an album's mp3 shared by its
+// songs). Concurrency 1 (the Docker librosa run is heavy). The manifest is the
+// durable state: entries without `analyzed` are resumed on startup.
+const analysisQ = [];
+let analyzing = false;
+function enqueueAnalysis(songId) { if (songId && !analysisQ.includes(songId)) analysisQ.push(songId); pumpAnalysis(); }
+async function pumpAnalysis() {
+  if (analyzing) return;
+  const songId = analysisQ.shift();
+  if (!songId) return;
+  analyzing = true;
+  try { await analyzeManifestSong(songId); } catch (e) { console.error('  analysis failed', songId, e.message); }
+  analyzing = false;
+  pumpAnalysis();
+}
+async function analyzeManifestSong(songId) {
+  const e = manifest[songId];
+  if (!e || !e.key) return;
+  const audioBase = e.key.replace(/^rips\//, '').replace(/\.mp3$/, ''); // albumId (analog) | songId (digital)
+  const withKey = e.source !== 'analog'; // analog plays the whole album → keep the catalog's per-song bpm/key
+  const local = join(CFG.tmp, `${audioBase}.dl.mp3`);
+  try { await aws(['s3', 'cp', `s3://${CFG.bucket}/${e.key}`, local]); } catch { return; }
+  console.error(`  analyzing ${audioBase} (key=${withKey})…`);
+  const a = await analyzeAudio({ file: local, songId: audioBase, bucket: CFG.bucket, region: CFG.region, profile: CFG.profile, tmp: CFG.tmp, withKey });
+  try { rmSync(local); } catch { /* ignore */ }
+  // apply to every manifest entry that shares this audio file
+  for (const ent of Object.values(manifest)) {
+    if (ent.key !== e.key) continue;
+    if (a.waveform) ent.waveform = a.waveform;
+    if (withKey) { ent.bpm = a.bpm; ent.musicalKey = a.musicalKey; ent.camelot = a.camelot; if (a.durationSec) ent.durationMs = Math.round(a.durationSec * 1000); }
+    ent.analyzed = true;
+  }
+  await saveManifest();
+  console.error(`  ✓ analyzed ${audioBase}: bpm=${a.bpm} key=${a.musicalKey} wave=${!!a.waveform}`);
+}
+function resumeAnalysis() {
+  const seen = new Set();
+  let n = 0;
+  for (const [songId, e] of Object.entries(manifest)) {
+    if (e.analyzed || seen.has(e.key)) continue;
+    seen.add(e.key); enqueueAnalysis(songId); n++;
+  }
+  if (n) console.error(`  queued ${n} pending analysis job(s)`);
 }
 
 // ---------------- HTTP ----------------
@@ -315,6 +364,24 @@ const server = http.createServer(async (req, res) => {
     enqueue(job);
     return send(res, 200, jobView(job));
   }
+  // POST /analysis {songId, key?, bpm, musicalKey, camelot, waveform, durationMs?}
+  // External analysis submission (the batch tool, for skill-ripped songs). Merges into
+  // the manifest (creating the entry if a `key` is supplied for a freshly-uploaded mp3).
+  if (path === '/analysis' && req.method === 'POST') {
+    const a = await readJson(req);
+    if (!a.songId) return send(res, 400, { error: 'songId required' });
+    const e = manifest[a.songId] || (a.key ? { key: a.key, ext: 'mp3', source: a.source || 'digital', rippedAt: Date.now() } : null);
+    if (!e) return send(res, 404, { error: 'unknown songId and no key to create it' });
+    if (a.bpm != null) e.bpm = a.bpm;
+    if (a.musicalKey != null) e.musicalKey = a.musicalKey;
+    if (a.camelot != null) e.camelot = a.camelot;
+    if (a.waveform) e.waveform = a.waveform;
+    if (a.durationMs != null) e.durationMs = a.durationMs;
+    e.analyzed = true;
+    manifest[a.songId] = e;
+    await saveManifest();
+    return send(res, 200, { ok: true, songId: a.songId });
+  }
   return send(res, 404, { error: 'not found' });
 });
 
@@ -322,6 +389,7 @@ console.error('PocketDJ rip-server starting…');
 loadCatalog();
 await loadManifest();
 resumePending(); // re-enqueue any rip requests left pending by a previous run
+resumeAnalysis(); // analyze any ripped songs that don't have bpm/key/waveform yet
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });

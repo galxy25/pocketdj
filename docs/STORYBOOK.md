@@ -675,8 +675,17 @@ back. Rip once → instant forever (and playable anywhere, since the cache is ju
 Each song row and album card gets **▶ Play** and **⤓ Download**. Tap ▶ and — if it
 isn't already ripped — the button shows the live phase **Searching… → Ripping mm:ss →
 Uploading…** (polled from the rip server), then a **mini player** docks at the bottom
-with scrub, **⏮/⏭**, and **auto-seek** to the track inside a whole-album rip.
-Already-ripped songs play instantly.
+with **⏮/⏭** and **auto-seek** to the track inside a whole-album rip. Already-ripped
+songs play instantly.
+
+**Audio analysis + waveform scrub.** Every ripped song is analyzed in the background:
+**BPM, musical key & Camelot** are computed (librosa) and **rolled into the default
+index** — so they're filterable, sortable, on the star map, and in song detail, just
+like the rest of the catalog (existing audio-stage values are kept; only gaps are
+filled). A **waveform** image is generated (ffmpeg) and uploaded alongside the rip;
+the player lazy-loads it (like cover art / lyrics) and renders it as a **clickable
+scrub bar** — click anywhere on the waveform to seek. The same analysis runs on songs
+ripped via the **`rip` skill** (a setlist's `_ripped/` folder) through the batch tool.
 
 ### Settings ▸ Rip server
 
