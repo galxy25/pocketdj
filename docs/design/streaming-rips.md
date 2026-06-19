@@ -287,10 +287,12 @@ MP3 is a flat stream of self‑contained frames with no trailing index, so a bro
 (Shoutcast/Icecast) plays in Safari/iOS today. We exploit that:
 
 1. The capture writes a **growing `.mp3`** on the iMac:
-   - **Apple Music:** Audio Hijack's Recorder is set to **MP3 256** (instead of
-     m4a/aiff), so its in‑progress recording file grows frame‑by‑frame during capture.
-     *(m4a/ALAC are **not** progressively streamable — the MP4 `moov` index is written
-     at the end — so the recorder format must be MP3 or ADTS‑AAC for this to work.)*
+   - **Apple Music:** Audio Hijack's Recorder **already records MP3** (verified:
+     captured files probe as `format_name=mp3`), so its in‑progress recording file
+     grows frame‑by‑frame during capture — directly tail‑streamable, **no reconfig
+     needed**. *(m4a/ALAC would **not** be progressively streamable — the MP4 `moov`
+     index is written at the end — so the recorder must stay on MP3/ADTS‑AAC; the
+     server detects the extension and falls back to rip‑then‑play if it ever changes.)*
    - **Analog:** `ffmpeg` already writes mp3 256 progressively as it transcodes.
 2. New rip‑server route **`GET /stream/<songId>.mp3`**: finds the in‑progress
    recording file for that song's active job and **tail‑streams** it —
@@ -334,8 +336,8 @@ MP3 is a flat stream of self‑contained frames with no trailing index, so a bro
   (clean up the read stream / watcher). Bounded so a stuck capture can't leak fds.
 - **Apple Music:** `rip.mjs` / `rip-one.mjs` detect the new AH recording file *right
   after `AH.start()`* (diff `AH_REC_DIR`), publish its path as `streamFile`, and set
-  `streamReady` once it crosses the pre‑roll size. Requires the AH Recorder block set
-  to **MP3 256** (one‑time session config; documented in the `rip` SKILL).
+  `streamReady` once it crosses the pre‑roll size. AH already records MP3 (verified),
+  so no session reconfig is needed — the `rip` SKILL just documents the requirement.
 - **Analog:** tee ffmpeg so it writes the growing per‑request mp3 that `/stream`
   tails, in addition to the album archive (or transcode the requested track region
   first so its frames appear immediately).
@@ -379,8 +381,9 @@ Segments can be served from the rip server (Tailnet) or pushed to S3/CloudFront
 ## Phase plan
 
 - **Phase 5a — progressive live stream.** Server `/stream/<songId>.mp3` tail‑endpoint
-  + `streaming` phase + pre‑roll; AH Recorder → MP3; analog tee. Client live‑URL fast
-  path + `● LIVE` player state + durable S3 swap. Verify latency on desktop + iPhone.
+  + `streaming` phase + pre‑roll; analog ffmpeg tee. (AH already records MP3 — no
+  reconfig.) Client live‑URL fast path + `● LIVE` player state + durable S3 swap.
+  Verify latency on desktop + iPhone.
 - **Phase 5b — live HLS (optional).** Only if 5a's robustness/seek/off‑Tailnet limits
   bite. Segmented producer + `hls.js`; reuse the S3/CloudFront delivery from Phase 4.
 
