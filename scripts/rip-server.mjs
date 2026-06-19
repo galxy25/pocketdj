@@ -18,7 +18,7 @@
 //   curl localhost:8787/health
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -43,6 +43,8 @@ const CFG = {
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
 mkdirSync(join(CFG.tmp, 'jobs'), { recursive: true });
+const QUEUE_DIR = join(CFG.tmp, 'queue');
+mkdirSync(QUEUE_DIR, { recursive: true });
 
 // ---------------- catalog (songId/albumId → metadata) ----------------
 const songById = new Map();
@@ -112,6 +114,15 @@ function jobView(job) {
 }
 function fail(job, error) { job.error = error; setPhase(job, 'error'); if (job.resourceKey) inflight.delete(job.resourceKey); }
 
+// ---- durable queue: a pending rip request survives a restart ----
+// One file per songId; written on accept, deleted when the job finishes (ready/error).
+// On startup any leftover files are re-enqueued (idempotent — skipped if already ripped).
+const queueFile = (songId) => join(QUEUE_DIR, `${songId}.json`);
+function persistQueue(job) {
+  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, createdAt: job.createdAt })); } catch { /* ignore */ }
+}
+function clearQueue(songId) { try { rmSync(queueFile(songId)); } catch { /* not present */ } }
+
 function enqueue(job) { queue.push(job); pump(); }
 async function pump() {
   if (working) return;
@@ -119,8 +130,32 @@ async function pump() {
   if (!job) return;
   working = true;
   try { await runJob(job); } catch (e) { fail(job, e.message); }
+  clearQueue(job.songId); // terminal (ready or error) → drop the durable request
   working = false;
   pump();
+}
+
+// Re-enqueue requests left in the queue dir by a previous run (crash/restart safe).
+function resumePending() {
+  let resumed = 0;
+  let files = [];
+  try { files = readdirSync(QUEUE_DIR).filter((f) => f.endsWith('.json')); } catch { return; }
+  for (const f of files) {
+    let rec; try { rec = JSON.parse(readFileSync(join(QUEUE_DIR, f), 'utf8')); } catch { continue; }
+    const songId = rec?.songId;
+    const song = songId && songById.get(songId);
+    if (!song) { clearQueue(songId || f.replace('.json', '')); continue; }
+    if (manifest[songId]) { clearQueue(songId); continue; } // already ripped while we were down
+    const resourceKey = song.sourceType === 'analog' ? song.albumId : songId;
+    if (inflight.has(resourceKey)) continue;
+    const job = { jobId: randomUUID(), songId, resourceKey, phase: 'queued', createdAt: rec.createdAt || Date.now() };
+    jobs.set(job.jobId, job);
+    inflight.set(resourceKey, job.jobId);
+    setPhase(job, 'queued');
+    enqueue(job);
+    resumed++;
+  }
+  if (resumed) console.error(`  resumed ${resumed} pending rip(s) from the queue`);
 }
 
 const jobFile = (jobId) => join(CFG.tmp, 'jobs', `${jobId}.json`);
@@ -275,6 +310,7 @@ const server = http.createServer(async (req, res) => {
     const job = { jobId: randomUUID(), songId, resourceKey, phase: 'queued', createdAt: Date.now() };
     jobs.set(job.jobId, job);
     inflight.set(resourceKey, job.jobId);
+    persistQueue(job); // durable: survives a restart
     setPhase(job, 'queued');
     enqueue(job);
     return send(res, 200, jobView(job));
@@ -285,6 +321,7 @@ const server = http.createServer(async (req, res) => {
 console.error('PocketDJ rip-server starting…');
 loadCatalog();
 await loadManifest();
+resumePending(); // re-enqueue any rip requests left pending by a previous run
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });

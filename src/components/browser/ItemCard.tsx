@@ -8,7 +8,9 @@ import { msToClock } from '../../lib/format';
 
 export function AlbumCard({ album, onEdit }: { album: AlbumItem; onEdit: (id: string) => void }) {
   const navigate = useNavigate();
-  const meta = [album.year, album.genre, `${album.trackIds.length} tracks`].filter(Boolean).join(' · ');
+  // trackIds is absent on online-search (ES) hits — guard so the card never crashes.
+  const trackIds = album.trackIds ?? [];
+  const meta = [album.year, album.genre, `${trackIds.length} tracks`].filter(Boolean).join(' · ');
   return (
     <div
       className="pdj-card"
@@ -27,9 +29,9 @@ export function AlbumCard({ album, onEdit }: { album: AlbumItem; onEdit: (id: st
         {album.country && <div className="pdj-card__country">{album.country}</div>}
       </div>
       <div className="pdj-card__actions" onClick={(e) => e.stopPropagation()}>
-        {album.trackIds.length > 0 && (
+        {trackIds.length > 0 && (
           <RipButtons
-            song={{ id: album.trackIds[0], title: album.name, artist: album.artist }}
+            song={{ id: trackIds[0], title: album.name, artist: album.artist }}
             playOpts={{ startMs: 0 }}
             compact
           />

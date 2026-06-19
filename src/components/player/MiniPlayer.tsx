@@ -9,6 +9,11 @@ const clock = (s: number) => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math
 export function MiniPlayer() {
   const now = useRipsStore((s) => s.nowPlaying);
   const setNow = useRipsStore((s) => s.setNowPlaying);
+  const queue = useRipsStore((s) => s.queue);
+  const queueIndex = useRipsStore((s) => s.queueIndex);
+  const next = useRipsStore((s) => s.next);
+  const prev = useRipsStore((s) => s.prev);
+  const hasQueue = !!queue && queue.length > 1;
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
@@ -42,11 +47,17 @@ export function MiniPlayer() {
         onPause={() => setPlaying(false)}
         onTimeUpdate={(e) => setT(e.currentTarget.currentTime)}
         onDurationChange={(e) => setDur(e.currentTarget.duration)}
-        onEnded={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); if (hasQueue) next(); }}
       />
+      {hasQueue && (
+        <button type="button" className="pdj-player__btn" data-testid="player-prev" onClick={prev} disabled={queueIndex <= 0} aria-label="Previous">⏮</button>
+      )}
       <button type="button" className="pdj-player__btn" data-testid="player-toggle" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}>
         {playing ? '⏸' : '▶'}
       </button>
+      {hasQueue && (
+        <button type="button" className="pdj-player__btn" data-testid="player-next" onClick={next} disabled={queueIndex >= (queue!.length - 1)} aria-label="Next">⏭</button>
+      )}
       <div className="pdj-player__meta">
         <div className="pdj-player__title" title={`${now.artist} — ${now.title}`}>{now.title}</div>
         <div className="pdj-player__artist">{now.artist}</div>

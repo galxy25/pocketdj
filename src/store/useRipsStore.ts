@@ -5,6 +5,7 @@
 // The manifest is PUBLIC (fetched straight from S3), so we know what's cached even
 // when the rip server is offline — the server is only needed to CREATE a rip.
 import { create } from 'zustand';
+import { zip } from 'fflate';
 
 const PUBLIC_BASE = 'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com';
 const MANIFEST_URL = `${PUBLIC_BASE}/rips/manifest.json`;
@@ -22,6 +23,8 @@ export interface JobView {
   progress?: { elapsedMs?: number; totalMs?: number; pct?: number; indeterminate?: boolean };
 }
 export interface NowPlaying { songId: string; title: string; artist: string; url: string; startMs?: number | null; }
+export interface QueueItem { id: string; title: string; artist: string; }
+export interface BulkProgress { done: number; total: number; label: string; }
 
 interface Persisted { serverUrl: string; token: string; }
 function load(): Persisted {
@@ -41,6 +44,9 @@ interface RipState {
   manifest: Record<string, ManifestEntry>;
   jobs: Record<string, JobView>;   // keyed by songId, active/last rip
   nowPlaying: NowPlaying | null;
+  queue: QueueItem[] | null;       // play-through queue (a setlist)
+  queueIndex: number;
+  bulk: BulkProgress | null;       // Rip-All / Burn progress
 
   init: () => Promise<void>;
   setConfig: (serverUrl: string, token: string) => void;
@@ -52,6 +58,15 @@ interface RipState {
   play: (song: { id: string; title: string; artist: string }, opts?: { startMs?: number | null }) => Promise<void>;
   download: (song: { id: string; title: string; artist: string }) => Promise<void>;
   setNowPlaying: (n: NowPlaying | null) => void;
+  /** Play a setlist start→finish: rips each just-in-time, advances on track end. */
+  playQueue: (tracks: QueueItem[], start?: number) => Promise<void>;
+  playAt: (i: number) => Promise<void>;
+  next: () => void;
+  prev: () => void;
+  /** Rip every track (queued on the server; rip-ahead while earlier ones play). */
+  ripAll: (tracks: QueueItem[]) => Promise<void>;
+  /** Burn: rip any missing, then download all tracks as one zip. */
+  burn: (name: string, tracks: QueueItem[]) => Promise<void>;
 }
 
 export const useRipsStore = create<RipState>((set, get) => {
@@ -64,6 +79,9 @@ export const useRipsStore = create<RipState>((set, get) => {
     manifest: {},
     jobs: {},
     nowPlaying: null,
+    queue: null,
+    queueIndex: -1,
+    bulk: null,
 
     init: async () => {
       await get().refreshManifest();
@@ -129,7 +147,8 @@ export const useRipsStore = create<RipState>((set, get) => {
       const url = await get().ensureUrl(song.id);
       const e = get().manifest[song.id];
       const startMs = opts && 'startMs' in opts ? opts.startMs ?? null : e?.startMs ?? null;
-      set({ nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs } });
+      // single play clears any setlist queue (no next/prev)
+      set({ queue: null, queueIndex: -1, nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs } });
     },
     download: async (song) => {
       const url = await get().ensureUrl(song.id);
@@ -141,5 +160,61 @@ export const useRipsStore = create<RipState>((set, get) => {
       setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
     },
     setNowPlaying: (n) => set({ nowPlaying: n }),
+
+    // ---- setlist play-through ----
+    playQueue: async (tracks, start = 0) => {
+      set({ queue: tracks, queueIndex: -1 });
+      await get().playAt(start);
+    },
+    playAt: async (i) => {
+      const q = get().queue;
+      if (!q || i < 0 || i >= q.length) return;
+      const t = q[i];
+      set({ queueIndex: i });
+      const url = await get().ensureUrl(t.id);
+      const e = get().manifest[t.id];
+      set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: e?.startMs ?? null } });
+    },
+    next: () => { const { queue, queueIndex } = get(); if (queue && queueIndex + 1 < queue.length) void get().playAt(queueIndex + 1); },
+    prev: () => { const { queue, queueIndex } = get(); if (queue && queueIndex > 0) void get().playAt(queueIndex - 1); },
+
+    // ---- bulk: rip all / burn ----
+    ripAll: async (tracks) => {
+      const list = dedupe(tracks);
+      let done = 0;
+      set({ bulk: { done, total: list.length, label: 'Ripping' } });
+      await Promise.all(list.map((t) =>
+        get().ensureUrl(t.id).catch(() => {}).finally(() => { done++; set({ bulk: { done, total: list.length, label: 'Ripping' } }); })));
+      set({ bulk: null });
+    },
+    burn: async (name, tracks) => {
+      const list = dedupe(tracks);
+      let done = 0;
+      set({ bulk: { done, total: list.length, label: 'Burning' } });
+      const files: Record<string, Uint8Array> = {};
+      for (const t of list) {
+        try {
+          const url = await get().ensureUrl(t.id);
+          const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+          const fname = `${String(done + 1).padStart(2, '0')} - ${t.artist} - ${t.title}.mp3`.replace(/[/\\?%*:|"<>]/g, '_');
+          files[fname] = buf;
+        } catch { /* skip a track that can't be ripped */ }
+        done++;
+        set({ bulk: { done, total: list.length, label: 'Burning' } });
+      }
+      const data: Uint8Array = await new Promise((res, rej) => zip(files, { level: 0 }, (err, d) => (err ? rej(err) : res(d))));
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([data.buffer as ArrayBuffer], { type: 'application/zip' }));
+      a.download = `${name}.zip`.replace(/[/\\?%*:|"<>]/g, '_');
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+      set({ bulk: null });
+    },
   };
 });
+
+/** Unique tracks by id, preserving order. */
+function dedupe(tracks: QueueItem[]): QueueItem[] {
+  const seen = new Set<string>();
+  return tracks.filter((t) => t.id && !seen.has(t.id) && seen.add(t.id));
+}
