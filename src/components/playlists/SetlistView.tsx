@@ -8,6 +8,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getSetlist, getItem } from '../../storage/repo';
 import { isSong, type SongItem } from '../../types/model';
 import { useCollectionsStore } from '../../store/useCollectionsStore';
+import { useRipsStore } from '../../store/useRipsStore';
 import { SongDetailModal } from '../starmap/SongDetailModal';
 import { DEFAULT_TRACK_MS } from '../../engine/realize';
 import type { Setlist, SetlistTrack, TrackSource } from '../../types/collections';
@@ -167,6 +168,12 @@ export function SetlistView() {
   const deleteSetlist = useCollectionsStore((s) => s.deleteSetlist);
   const renameSetlist = useCollectionsStore((s) => s.renameSetlist);
   const setSetlistTrackNote = useCollectionsStore((s) => s.setSetlistTrackNote);
+  // Rip-on-demand: play through (rips ahead), rip all, or burn (download all).
+  const playQueue = useRipsStore((s) => s.playQueue);
+  const ripAll = useRipsStore((s) => s.ripAll);
+  const burn = useRipsStore((s) => s.burn);
+  const bulk = useRipsStore((s) => s.bulk);
+  const hasRip = useRipsStore((s) => !!s.serverUrl || Object.keys(s.manifest).length > 0);
 
   const [setlist, setSetlist] = useState<Setlist | null>(null);
   const [loading, setLoading] = useState(true);
@@ -309,6 +316,11 @@ export function SetlistView() {
     );
   }
 
+  // Playable (non-cue) tracks, in order, for Rip All / Play all / Burn.
+  const playableTracks = setlist.tracks
+    .filter((t) => !t.isText && t.songId)
+    .map((t) => ({ id: t.songId, title: t.name, artist: t.artist }));
+
   return (
     <div className="pdj-setlist" data-testid="setlist-view">
       <Link to={`/playlists/${id}`} className="pdj-pl__back">
@@ -343,6 +355,41 @@ export function SetlistView() {
           {new Date(setlist.generatedAt).toLocaleString()}
         </span>
         <div className="pdj-setlist__spacer" />
+        {bulk && (
+          <span className="pdj-setlist__stat" data-testid="setlist-bulk">
+            {bulk.label}… {bulk.done}/{bulk.total}
+          </span>
+        )}
+        <button
+          type="button"
+          className="pdj-btn pdj-btn--sm"
+          data-testid="setlist-play-all"
+          disabled={!hasRip || !!bulk || playableTracks.length === 0}
+          onClick={() => void playQueue(playableTracks)}
+          title="Rip (if needed) & play the set list start to finish"
+        >
+          ▶ Play all
+        </button>
+        <button
+          type="button"
+          className="pdj-btn pdj-btn--sm"
+          data-testid="setlist-rip-all"
+          disabled={!hasRip || !!bulk || playableTracks.length === 0}
+          onClick={() => void ripAll(playableTracks)}
+          title="Rip every track so playback is instant"
+        >
+          ⬇ Rip all
+        </button>
+        <button
+          type="button"
+          className="pdj-btn pdj-btn--sm"
+          data-testid="setlist-burn"
+          disabled={!hasRip || !!bulk || playableTracks.length === 0}
+          onClick={() => void burn(setlist.name || 'setlist', playableTracks)}
+          title="Burn: download every track as one zip (rips any that aren't yet)"
+        >
+          🔥 Burn
+        </button>
         <button
           type="button"
           className="pdj-btn pdj-btn--sm"

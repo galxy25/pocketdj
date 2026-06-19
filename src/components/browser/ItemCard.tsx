@@ -3,11 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import type { AlbumItem, SongItem } from '../../types/model';
 import { Thumbnail } from '../common/Thumbnail';
 import { PlugInIndicator } from './PlugInIndicator';
+import { RipButtons } from '../player/RipButtons';
 import { msToClock } from '../../lib/format';
 
 export function AlbumCard({ album, onEdit }: { album: AlbumItem; onEdit: (id: string) => void }) {
   const navigate = useNavigate();
-  const meta = [album.year, album.genre, `${album.trackIds.length} tracks`].filter(Boolean).join(' · ');
+  // trackIds is absent on online-search (ES) hits — guard so the card never crashes.
+  const trackIds = album.trackIds ?? [];
+  const meta = [album.year, album.genre, `${trackIds.length} tracks`].filter(Boolean).join(' · ');
   return (
     <div
       className="pdj-card"
@@ -25,7 +28,14 @@ export function AlbumCard({ album, onEdit }: { album: AlbumItem; onEdit: (id: st
         <div className="pdj-card__meta">{meta || '—'}</div>
         {album.country && <div className="pdj-card__country">{album.country}</div>}
       </div>
-      <div className="pdj-card__actions">
+      <div className="pdj-card__actions" onClick={(e) => e.stopPropagation()}>
+        {trackIds.length > 0 && (
+          <RipButtons
+            song={{ id: trackIds[0], title: album.name, artist: album.artist }}
+            playOpts={{ startMs: 0 }}
+            compact
+          />
+        )}
         <PlugInIndicator id={album.id} pointer={album.pointer} />
         <button
           className="pdj-iconbtn"
@@ -87,7 +97,8 @@ export function SongRow({
           </span>
         ))}
       </span>
-      <span className="pdj-song__actions">
+      <span className="pdj-song__actions" onClick={(e) => e.stopPropagation()}>
+        <RipButtons song={{ id: song.id, title: song.name, artist: song.artist }} compact />
         <PlugInIndicator id={song.id} pointer={song.pointer} />
         <button
           className="pdj-iconbtn"

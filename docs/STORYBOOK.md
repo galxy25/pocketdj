@@ -657,3 +657,43 @@ the *entire* indexed catalog — here **80 of 470** matches for *"midnight"* in
 **389 ms**, with explicit (**E**) and BPM/key badges intact. The browser signs each
 request itself (SigV4) and reaches the collection same-origin via a CloudFront proxy,
 so there's no separate server to run and the collection scales to **$0 when idle**.
+
+---
+
+## 28. Stream & download — rip on demand (2026 update)
+
+The offline-first crate is now **playable end to end**. Any song or album can be
+**streamed or downloaded** from a ▶/⤓ button: on a cache miss the app asks the iMac
+(over Tailscale) to **rip** the track — analog from a local recording, Apple Music in
+real time via Audio Hijack — upload an **mp3** to a public S3 cache, then stream it
+back. Rip once → instant forever (and playable anywhere, since the cache is just S3).
+
+### ▶ / ⤓ on every song & album + a mini player
+
+![Rip buttons + mini player](storybook/32-mini-player-mobile.png)
+
+Each song row and album card gets **▶ Play** and **⤓ Download**. Tap ▶ and — if it
+isn't already ripped — the button shows the live phase **Searching… → Ripping mm:ss →
+Uploading…** (polled from the rip server), then a **mini player** docks at the bottom
+with scrub, **⏮/⏭**, and **auto-seek** to the track inside a whole-album rip.
+Already-ripped songs play instantly.
+
+### Settings ▸ Rip server
+
+![Settings: rip server](storybook/33-settings-rip-server-mobile.png)
+
+Point the app at the **iMac running the rip server** — its Tailscale HTTPS URL
+(`https://…ts.net`) from your phone, or `http://localhost:8787` on the same machine —
+and **Test connection**. The rips live in a public S3 cache (deterministic
+`rips/<id>.mp3`), so the server is only needed to *create* a rip; once ripped, a song
+plays from anywhere even with the server off.
+
+### Setlist ▸ Rip all · Play all · Burn
+
+![Setlist rip actions](storybook/34-setlist-actions-mobile.png)
+
+A realized set list gains three actions: **⬇ Rip all** (rip every track so playback is
+instant), **▶ Play all** (play the set start→finish, **ripping ahead** so the next
+track is ready before the current ends, auto-advancing the mini player), and **🔥 Burn**
+(rip any that aren't yet, then download the whole set as one **zip**). Progress shows
+as *Ripping / Burning N/M*.

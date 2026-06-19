@@ -9,6 +9,7 @@ import { importFile } from '../../storage/importZip';
 import { countItems } from '../../storage/repo';
 import { useAppStore } from '../../store/useAppStore';
 import { useSearchStore } from '../../store/useSearchStore';
+import { useRipsStore } from '../../store/useRipsStore';
 import { CURRENT_DATA_VERSION, getDataVersion, runMigrations } from '../../storage/migrations';
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -39,6 +40,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [akid, setAkid] = useState('');
   const [secret, setSecret] = useState('');
 
+  // Rip server (stream/download via the iMac rip-on-demand API).
+  const ripUrl = useRipsStore((s) => s.serverUrl);
+  const ripToken = useRipsStore((s) => s.token);
+  const ripOk = useRipsStore((s) => s.serverOk);
+  const ripInfo = useRipsStore((s) => s.serverInfo);
+  const setRipConfig = useRipsStore((s) => s.setConfig);
+  const checkRip = useRipsStore((s) => s.checkHealth);
+  const [ripUrlDraft, setRipUrlDraft] = useState(ripUrl);
+  const [ripTokenDraft, setRipTokenDraft] = useState(ripToken);
+
   const isAll = sourceMode === 'all';
   const checked = (id: string) => isAll || selectedSourceIds.includes(id);
   const hasAppleMusic = sources.some((s) => s.type === 'digital' && s.name === 'Apple Music (Local)');
@@ -51,11 +62,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       if (cancelled) return;
       setCounts(c);
       setDataVersion(dv);
+      if (ripUrl) void checkRip(); // refresh rip-server status/ripped-count
     })();
     return () => {
       cancelled = true;
     };
-  }, [open, refreshSources]);
+  }, [open, refreshSources, ripUrl, checkRip]);
 
   const loadAppleMusic = async () => {
     setAmBusy(true);
@@ -264,6 +276,65 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 Save &amp; enable online search
               </button>
             </>
+          )}
+        </div>
+
+        <hr className="pdj-settings__rule" />
+
+        <div className="pdj-settings__rip" data-testid="settings-rip">
+          <div className="pdj-settings__stat">
+            <span>Rip server</span>
+            <strong>{ripOk == null ? (ripUrl ? 'unchecked' : 'off') : ripOk ? 'online' : 'offline'}</strong>
+          </div>
+          <p className="pdj-settings__hint">
+            Stream / download any song. Point this at the iMac running the rip server
+            (its Tailscale HTTPS URL, e.g. <code>https://levis-imac.ts.net</code>, or
+            <code>http://localhost:8787</code> on the same machine).
+          </p>
+          <input
+            className="pdj-input"
+            placeholder="Rip server URL"
+            autoComplete="off"
+            spellCheck={false}
+            data-testid="settings-rip-url"
+            value={ripUrlDraft}
+            onChange={(e) => setRipUrlDraft(e.target.value)}
+          />
+          <input
+            className="pdj-input"
+            type="password"
+            placeholder="Token (optional)"
+            autoComplete="off"
+            spellCheck={false}
+            data-testid="settings-rip-token"
+            value={ripTokenDraft}
+            onChange={(e) => setRipTokenDraft(e.target.value)}
+          />
+          <div className="pdj-settings__row">
+            <button
+              type="button"
+              className="pdj-btn"
+              data-testid="settings-rip-save"
+              onClick={() => setRipConfig(ripUrlDraft, ripTokenDraft)}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="pdj-btn pdj-btn--ghost"
+              data-testid="settings-rip-test"
+              disabled={!ripUrlDraft.trim()}
+              onClick={() => { setRipConfig(ripUrlDraft, ripTokenDraft); void checkRip(); }}
+            >
+              Test connection
+            </button>
+          </div>
+          {ripOk != null && (
+            <p className="pdj-settings__hint" data-testid="settings-rip-status">
+              {ripOk
+                ? `Online · ${ripInfo?.catalog?.songs ?? '?'} songs · ${ripInfo?.cached ?? 0} ripped`
+                : 'Offline — already-ripped songs still play; new rips need the server reachable.'}
+            </p>
           )}
         </div>
 
