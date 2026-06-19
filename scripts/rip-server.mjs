@@ -34,6 +34,8 @@ const CFG = {
   region: process.env.AWS_REGION || 'us-west-2',
   bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
   analogBase: (process.env.POCKETDJ_ANALOG_BASE || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
+  libraryXml: (process.env.POCKETDJ_LIBRARY_XML || join(homedir(), 'Downloads', 'Library.xml')).replace(/^~/, homedir()),
+  useAgent: process.env.RIP_AGENT === '1', // Phase 2: run the rip skill via a headless Claude agent (adaptive)
   sources: (process.env.RIP_SOURCES || `${REPO}/public/current-index.json,${REPO}/public/apple-music-index.json`)
     .split(',').map((s) => s.trim()).filter(Boolean),
   tmp: join(homedir(), '.pocketdj', 'rips'),
@@ -121,13 +123,13 @@ async function pump() {
   pump();
 }
 
+const jobFile = (jobId) => join(CFG.tmp, 'jobs', `${jobId}.json`);
+
 async function runJob(job) {
   setPhase(job, 'searching');
   const song = songById.get(job.songId);
   if (!song) return fail(job, 'unknown songId');
-  if (song.sourceType !== 'analog') {
-    return fail(job, 'Apple Music ripping arrives in Phase 2 (real-time capture). Analog songs work now.');
-  }
+  if (song.sourceType !== 'analog') return runDigitalJob(job, song);
   const album = albumById.get(song.albumId);
   if (!album?.pointer?.originalFilename) return fail(job, 'no analog file reference for this album');
   const src = join(CFG.analogBase, album.pointer.originalFilename);
@@ -160,6 +162,54 @@ async function runJob(job) {
 
   job.url = publicUrl(key);
   setPhase(job, 'ready', { message: `album ${album.name} ready` });
+  inflight.delete(job.resourceKey);
+}
+
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+// Phase 2: Apple Music real-time capture via the `rip` skill (rip-one.mjs worker).
+// Default: run the worker directly (deterministic). RIP_AGENT=1: run it via a headless
+// Claude agent that can adaptively add a missing track to the library + retry.
+async function runDigitalJob(job, song) {
+  const album = albumById.get(song.albumId);
+  const sf = jobFile(job.jobId);
+  const args = [
+    '--song-id', song.id, '--artist', song.artist || '', '--title', song.name || '',
+    '--album', album?.name || '', '--length-ms', String(song.length || 0),
+    '--status', sf, '--library-xml', CFG.libraryXml,
+    '--bucket', CFG.bucket, '--region', CFG.region, '--profile', CFG.profile, '--tmp', CFG.tmp,
+  ];
+  await new Promise((res) => {
+    let p;
+    if (CFG.useAgent) {
+      const cmd = 'node scripts/rip-one.mjs ' + args.map(shq).join(' ');
+      const prompt =
+        `Rip one Apple Music song for PocketDJ. Run this command exactly:\n\n${cmd}\n\n` +
+        `When it prints a line starting with RESULT {"ok":true …} you are done — stop. ` +
+        `If it fails because the track isn't in the Apple Music library, add "${song.artist} — ${song.name}" ` +
+        `to the library (search Music.app), then re-run the command once. Do nothing else.`;
+      p = spawn('claude', ['-p', prompt, '--dangerously-skip-permissions'], { cwd: REPO });
+    } else {
+      p = spawn('node', [join(REPO, 'scripts/rip-one.mjs'), ...args], { cwd: REPO });
+    }
+    p.stdout.on('data', (d) => process.stderr.write(d));
+    p.stderr.on('data', (d) => process.stderr.write(d));
+    p.on('close', () => res());
+  });
+  // the worker wrote phases to the status file; read its final state
+  let st = {};
+  try { st = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* ignore */ }
+  if (st.phase === 'uploaded' && st.key) {
+    manifest[song.id] = {
+      key: st.key, ext: 'mp3', bytes: st.bytes || 0, source: 'digital',
+      albumId: song.albumId, startMs: null, durationMs: song.length ?? null, rippedAt: Date.now(),
+    };
+    await saveManifest();
+    job.url = publicUrl(st.key);
+    setPhase(job, 'ready', { message: `${song.name} ready` });
+  } else {
+    fail(job, st.error || 'rip failed');
+  }
   inflight.delete(job.resourceKey);
 }
 
@@ -202,11 +252,16 @@ const server = http.createServer(async (req, res) => {
     const active = [...jobs.values()].find((j) => j.songId === songId && j.phase !== 'ready' && j.phase !== 'error');
     return send(res, 200, { ready: false, job: jobView(active) });
   }
-  // GET /jobs/:id
+  // GET /jobs/:id — prefer the on-disk status file (a digital worker writes its live
+  // phases there) merged over the in-memory job (which carries the final url).
   m = path.match(/^\/jobs\/(.+)$/);
   if (m && req.method === 'GET') {
-    const job = jobs.get(decodeURIComponent(m[1]));
-    return job ? send(res, 200, jobView(job)) : send(res, 404, { error: 'no such job' });
+    const id = decodeURIComponent(m[1]);
+    const job = jobs.get(id);
+    if (!job) return send(res, 404, { error: 'no such job' });
+    let st = job;
+    try { st = { ...job, ...JSON.parse(readFileSync(jobFile(id), 'utf8')) }; } catch { /* in-memory only */ }
+    return send(res, 200, jobView(st));
   }
   // POST /rip {songId}
   if (path === '/rip' && req.method === 'POST') {
