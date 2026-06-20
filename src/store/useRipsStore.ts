@@ -9,6 +9,7 @@ import { zip } from 'fflate';
 import { getItem, putItem } from '../storage/repo';
 import { useDataStore } from './useDataStore';
 import { isSong } from '../types/model';
+import { SILENT_MP3 } from '../lib/silentAudio';
 
 const PUBLIC_BASE = 'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com';
 const MANIFEST_URL = `${PUBLIC_BASE}/rips/manifest.json`;
@@ -54,8 +55,13 @@ interface RipState {
   queue: QueueItem[] | null;       // play-through queue (a setlist)
   queueIndex: number;
   bulk: BulkProgress | null;       // Rip-All / Burn progress
+  audioEl: HTMLAudioElement | null; // the shared <audio> (registered by MiniPlayer)
 
   init: () => Promise<void>;
+  /** MiniPlayer registers its <audio> element here so play() can unlock it for iOS. */
+  setAudioEl: (el: HTMLAudioElement | null) => void;
+  /** Unlock the <audio> element within a user gesture (iOS autoplay). Call on tap. */
+  primeAudio: () => void;
   setConfig: (serverUrl: string, token: string) => void;
   checkHealth: () => Promise<boolean>;
   refreshManifest: () => Promise<void>;
@@ -94,10 +100,27 @@ export const useRipsStore = create<RipState>((set, get) => {
     queue: null,
     queueIndex: -1,
     bulk: null,
+    audioEl: null,
 
     init: async () => {
       await get().refreshManifest();
       if (get().serverUrl) await get().checkHealth();
+    },
+    setAudioEl: (el) => set({ audioEl: el }),
+    // iOS Safari only lets an <audio> element play programmatically once it has been
+    // play()'d from a user gesture. A live rip's URL resolves seconds after the tap
+    // (after polling), so by then the gesture is gone and play() is blocked silently.
+    // Priming with a tiny silent clip *inside* the tap unlocks the element for later.
+    primeAudio: () => {
+      const a = get().audioEl;
+      if (!a) return;
+      try {
+        a.src = SILENT_MP3;
+        a.muted = true;
+        const p = a.play();
+        if (p && typeof p.then === 'function') p.then(() => { a.pause(); a.muted = false; }).catch(() => { a.muted = false; });
+        else a.muted = false;
+      } catch { /* ignore — best-effort unlock */ }
     },
     setConfig: (serverUrl, token) => {
       const s = serverUrl.trim().replace(/\/$/, '');
@@ -179,6 +202,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       throw new Error('rip timed out');
     },
     play: async (song, opts) => {
+      get().primeAudio(); // unlock <audio> within the tap gesture (iOS) before any await
       const url = await get().ensureUrl(song.id, { allowLive: true });
       const live = url.startsWith(`${get().serverUrl}/stream/`);
       const e = get().manifest[song.id];
@@ -207,6 +231,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       if (!q || i < 0 || i >= q.length) return;
       const t = q[i];
       set({ queueIndex: i });
+      get().primeAudio(); // unlock <audio> within the tap gesture (iOS) before any await
       const url = await get().ensureUrl(t.id, { allowLive: true });
       const live = url.startsWith(`${get().serverUrl}/stream/`);
       const e = get().manifest[t.id];
