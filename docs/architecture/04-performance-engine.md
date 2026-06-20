@@ -46,40 +46,217 @@ a different "take"), forming a performance history.
 
 ## 2. The realize engine
 
-**Source of truth:** `src/engine/` (realize) + `src/types/collections.ts` (shapes).
+**Why.** The whole point of the three-noun pipeline is that the DJ *composes a shape*
+once and *rolls a concrete set* many times. That demands a function that is (a) **pure
+and deterministic** — same template + same seed ⇒ byte-for-byte the same setlist, so a
+performance can be reproduced or shared — and (b) **musically aware** — it must respect
+each chapter's time budget *and* smooth the roughest transitions automatically. `realize`
+is that function.
 
-**What realize does, step by step:**
+**Source of truth.** `src/engine/realize.ts` (the engine), `src/engine/harmonics.ts`
+(`harmonicDistance`, `DEFAULT_WEIGHTS`, `HarmonicWeights`), `src/engine/interpolate.ts`
+(`interpolatePath`, `nearestCandidate`), `src/lib/prng.ts` (`seededRng` =
+`mulberry32(fnv1a(seed))`), `src/types/collections.ts` (shapes). The native port lives
+in `apple/PocketDJ/Performance/` (`RealizeEngine.swift`, `Harmonics.swift`,
+`Interpolate.swift`, `SeededRNG.swift`) and reproduces the same numbers.
+
+### 2.1 The pipeline at a glance
 
 ```
- realize(playlist, seed):
-   for each SequenceNode (chapter), in order:
-     1. resolve children → flat candidate tracks
-          SongNode  → the song
-          AlbumNode → its trackIds, in order            (snapshot artist/bpm/camelot/len)
-          PocketNode→ pocket members (recursively, DAG) tagged source:'pocket'
-          TextNode  → a no-audio CUE row (isText:true)  carried verbatim
-     2. if sequence has targetMs:
-          • if candidates OVER budget → SAMPLE a coherent subset (seeded RNG)
-          • if candidates UNDER budget → AUTOFILL with harmonic bridge tracks
-                                          tagged source:'autofill'  (↔ bridge in UI)
-     3. tag every track with sequenceName + provenance (explicit|pocket|autofill)
-   → Setlist { seed, totalMs, tracks:[ SetlistTrack… ] }
+ realize(playlist, ctx, seed):                                   PURE · DETERMINISTIC
+   rng  = seededRng(seed ?? playlist.id)        ← mulberry32(fnv1a(seed)): float in [0,1)
+   used = ∅  (songIds placed anywhere — dedupes ACROSS chapters + guards autofill)
+
+   for each SequenceNode (chapter) in playlist.sequences, IN ORDER:        ── §2.2 ──
+     realizeSequence(seq, inheritedRemaining = ∞):
+        targetMs = min(seq.targetMs>0 ? seq.targetMs : ∞, inheritedRemaining)
+        hasBudget = targetMs is finite and > 0
+
+        (A) WALK children left→right; each consumes budget BEFORE the next:  ── §2.3 ──
+              remaining = hasBudget ? targetMs − placedMs(placed) : ∞
+              placeNode(node, remaining):
+                SongNode   → ctx.songsById[songId]      source:'explicit'  (dedup)
+                TextNode   → no-audio CUE row           source:'explicit'  (NEVER dedup, 0 ms)
+                AlbumNode  → album.trackIds in order     source:'explicit'  (dedup each)
+                PocketNode → resolvePocketSongs(DAG)  →  source:'pocket'
+                               anchorIdx = ⌊rng()·n⌋  → harmonicChain → fitPrefix(remaining)
+                Sub-seq    → realizeSequence(node, inheritedRemaining = remaining)  (recurse)
+
+        (B) if hasBudget:  autofill(placed, targetMs)   ← fill the temporal gap  ── §2.4 ──
+
+   snapshot every Placed → SetlistTrack (artist/bpm/camelot/length inline)        ── §2.5 ──
+   totalMs = Σ (lengthMs>0 ? lengthMs : DEFAULT_TRACK_MS)   over non-text tracks
+   → Performance { tracks, totalMs, stats{ sequences, explicit, pocketSampled, autofilled } }
+
+ buildSetlist(...) = realize(...) wrapped with newSetlistId() + generatedAt (the ONLY
+                     non-deterministic bits live in the wrapper, never in realize itself)
 ```
 
-**Reading the steps.** For each chapter the engine resolves its nodes into candidate
-tracks — songs pass through, albums expand to their `trackIds`, pocket references
-expand recursively (the DAG is walked, cycles already guarded at add-time), and
-free-text cues become no-audio rows. If the chapter has a **time budget**, the engine
-either **samples** an over-budget candidate set down (using the setlist's `seed` so
-the take is reproducible yet fresh each Play) or **autofills** an under-budget gap
-with key-matched **bridge** tracks. Every emitted `SetlistTrack` is tagged with its
-`sequenceName` and `source` provenance (`explicit` / `pocket` / `autofill`), and is
-**snapshotted** (artist/bpm/camelot/length stored inline) so the setlist reads
-standalone even if the catalog or pockets change afterward.
+**Reading the diagram, box by box.**
 
-The `seed` is the determinism knob: re-running `realize` with the same seed
-reproduces the exact setlist; pressing Play again uses a fresh seed for a different
-take.
+- **`rng = seededRng(seed ?? playlist.id)`** — every random choice in the run pulls from
+  one seeded stream, consumed strictly in walk order. The seed defaults to the playlist
+  id (so a fresh playlist still realizes deterministically); `buildSetlist` stores the
+  seed it used in `Setlist.seed`, and re-running `realize` with that seed reproduces the
+  exact track list. See §2.6.
+- **`used` set** — every `songId` placed *anywhere* in the performance is recorded here.
+  It dedupes across chapters (a song explicitly placed in chapter 1 won't be re-sampled
+  by a pocket in chapter 2) and it is the guard that stops autofill from inserting a song
+  already in the set. Text cues are exempt (they carry no song id).
+- **`for each SequenceNode … IN ORDER`** — chapters are realized sequentially; their
+  placed tracks are concatenated in chapter order, which is what gives the setlist its
+  warm-up → peak → closers shape.
+- **`targetMs = min(own, inheritedRemaining)`** — the effective budget of a sub-sequence
+  is the smaller of its *own* `targetMs` and *whatever the parent has left*, so a
+  budget-less sub-chapter under a budgeted parent samples/prefixes to fit the parent's
+  leftover time instead of overflowing it.
+- **(A) WALK children** — earlier blocks consume budget before later pockets sample, so a
+  pocket near the end of a chapter only fills the time the explicit picks left behind. The
+  five node kinds are detailed in §2.3.
+- **(B) autofill** — runs only under a real budget that isn't yet full; it bridges the
+  *worst* harmonic seams first (§2.4).
+- **snapshot** — each placement is frozen into a `SetlistTrack` with its metadata copied
+  inline (§2.5), so the setlist reads standalone even if the catalog or pockets change.
+
+### 2.2 The catalog context (`RealizeCtx`)
+
+`realize` resolves ids against a read-only **`RealizeCtx`** (`realize.ts`):
+`songsById`, `albumsById`, `pocketsById`, and a **`candidates`** pool — *the full catalog
+of songs that have BOTH a `bpm` AND a `camelot`*. The candidate pool is the only thing
+autofill is allowed to draw bridges from: a bridge must be beat- and key-mixable, so songs
+missing either field can never be inserted (they can still be placed explicitly or via a
+pocket — they just can't be an *autofill* bridge). The native store builds this context
+from `AppModel`'s `songsById` / `albumsById` plus a `candidates` filter on
+`bpm != nil && camelot != nil` (`CollectionsStore.realize`).
+
+### 2.3 Resolving the five node kinds
+
+For each chapter the walk turns nodes into ordered `Placed` records:
+
+- **`SongNode`** → `ctx.songsById[songId]`, `source: 'explicit'`, carrying the node's
+  `note`. Deduped by `songId`.
+- **`TextNode`** → a no-audio **cue** row (`isText: true`), `source: 'explicit'`,
+  contributing **0 ms**. Cues are **never** deduped (you may want the same "mic break"
+  twice).
+- **`AlbumNode`** → expands to `album.trackIds` *in tracklist order*, each resolved via
+  `songsById`, each `source: 'explicit'`, each deduped.
+- **`PocketNode`** → resolved **lazily** at realize time (so editing a pocket auto-updates
+  the next Play). `resolvePocketSongs(pocketId, ctx)` flattens the pocket **DAG** into its
+  effective ordered song list: (1) own `songIds`, (2) songs of own `albumIds`
+  (`album.trackIds → songsById`), then (3) each child pocket recursively — **in that
+  order**. The flatten is **cycle-guarded** by a `seen` set of visited pocketIds and
+  **deduped** by `songId` (first-seen order preserved). The resolved songs are then ordered
+  into a coherent chain (§2.3.1) and, under a budget, cut to a fitting prefix (§2.3.2).
+- **Sub-`SequenceNode`** → `realizeSequence` recurses, *inheriting the parent's remaining
+  budget*; its placements already respect `used`, and are concatenated in place.
+
+#### 2.3.1 Pocket ordering — `harmonicChain`
+
+A pocket's effective songs are ordered into a coherent harmonic chain. `harmonicChain`
+picks an **anchor** at `anchorIdx = ⌊rng() · n⌋` (the only randomness in pocket handling —
+seeded, hence reproducible), then greedily appends the **nearest unused** song by
+`harmonicDistance` until all are placed. This is a deterministic nearest-neighbour walk:
+ties resolve to the first candidate encountered (stable input order).
+
+`harmonicDistance(a, b, weights)` (`harmonics.ts`) is a weighted blend in `[0,1]` over five
+axes — **key** (Camelot-wheel steps, normalized by `MAX_CAMELOT_STEPS = 7`), **bpm**
+(half/double-time-aware, clamped at `BPM_SPREAD = 30`), **genre** (0 if same star-map
+category else 1), **artist** (0 if same else 1), **sentiment** (1 − Jaccard of keyword
+sets). `DEFAULT_WEIGHTS = { key: .35, bpm: .3, genre: .2, artist: .05, sentiment: .1 }`.
+It is **null-safe**: any axis whose raw distance is null (missing bpm/key) is *dropped* and
+the remaining weights are renormalized, so the blend never collapses toward 0 just because
+audio metadata is absent; if every axis is missing it returns the neutral `0.5`.
+
+#### 2.3.2 Budget prefix — `fitPrefix`
+
+Under a finite `remainingMs`, the chain is cut to the prefix whose cumulative duration
+fits. `fitPrefix` always returns **≥ 1 song** when the chain is non-empty and the budget is
+positive (so a pocket never contributes *nothing* just because its first track overshoots a
+tiny budget), then stops at the first track that would overflow. A song's duration is
+`lengthMs` when positive, else `DEFAULT_TRACK_MS = 210_000` (3:30).
+
+### 2.4 Harmonic autofill — bridging the worst seams
+
+**Why.** After the explicit picks and sampled pockets are placed, a budgeted chapter
+usually has *time left over* and *rough transitions* between some adjacent tracks. Autofill
+spends the leftover time **buying smoothness**: it inserts catalog tracks that bridge the
+roughest adjacencies first.
+
+```
+ autofill(placed, targetMs):                          (only when hasBudget; placed ≥ 2)
+   repeat up to AUTOFILL_CAP (200) times:
+     remaining = targetMs − placedMs(placed)
+     shortest  = min songMs over UNUSED mixable candidates   (bpm AND camelot present)
+     if shortest == null  OR  remaining < shortest:  STOP     ← nothing more can fit
+
+     seams = indices i where placed[i] AND placed[i+1] are songs (skip cue-adjacent seams)
+     sort seams by harmonicDistance(placed[i], placed[i+1]) DESCENDING   ← worst first
+
+     for i in seams (worst → best):
+        target = interpolatePath(placed[i].song, placed[i+1].song, 1)[0]   ← ONE midpoint
+        bridge = nearestCandidate(target, candidates, used, weights, maxMs = remaining)
+        if bridge exists and not used:  pick this seam;  break
+     if no seam yielded a fitting bridge:  STOP
+
+     splice bridge into placed AT i+1   (source:'autofill');   used.add(bridge.id)
+```
+
+**Reading it, line by line.**
+
+- **`remaining` / `shortest` gate.** Each pass recomputes the leftover budget and the
+  *shortest* still-usable mixable candidate. If even that won't fit, autofill stops — the
+  chapter is as full as it can get.
+- **`seams` + worst-first sort.** Only adjacencies where *both* sides are real songs are
+  bridgeable (a cue has no key/tempo to bridge across). The seams are ranked by
+  `harmonicDistance` **descending** so the engine smooths the *roughest* transition it can
+  before touching the easy ones.
+- **`interpolatePath(from, to, 1)` → one midpoint `TargetPoint`.** `interpolatePath`
+  (`interpolate.ts`) lays out evenly-spaced bridge targets between two anchors; here we ask
+  for a single midpoint (`ratio = 1/2`). A `TargetPoint` carries a **linear-lerped bpm**, a
+  **Camelot code stepped toward the target along the shorter wheel arc** (24-slot wheel via
+  `stepCamelot`, rounding to a discrete slot), and the **genre category** in force at that
+  ratio (`from`'s while `ratio < 0.5`, else `to`'s). Any axis whose anchors lack data is
+  `null`.
+- **`nearestCandidate(target, …, maxMs = remaining)`.** Picks the catalog song closest to
+  that target. Eligibility: not in `used`, has **both** bpm and camelot, and `songMs ≤
+  maxMs`. Score = `wKey·camelotDistance + wBpm·bpmDistance + wGenre·genreDistance`, with
+  null axes dropped (a target with no key ranks purely on bpm+genre). Passing
+  `maxMs = remaining` means a single too-long harmonically-closest candidate never aborts
+  the fill — a shorter fitting candidate, or the next-worst seam, is used instead — so the
+  post-pick fit check is a true invariant, not a loop-killer. Ties resolve to the first
+  candidate (deterministic).
+- **Take the first seam that yields a fitting bridge, splice, re-rank, repeat.** After each
+  insert the seam set changes (the new bridge created two new adjacencies), so the next pass
+  re-ranks from scratch and again targets the current worst seam. The loop ends when the
+  budget can't fit the shortest candidate, no seam yields a fitting bridge, or the
+  `AUTOFILL_CAP = 200` safety valve trips (a guard against pathological candidate pools).
+
+The inserted track is tagged `source: 'autofill'` (rendered **`↔ bridge`** in the UI).
+
+### 2.5 Snapshot → `SetlistTrack` (the freeze)
+
+Each `Placed` is frozen by `snapshot` into a `SetlistTrack`. For a song it copies
+`songId`, `artist`, `name`, `bpm`, `camelot ?? null`, `lengthMs`, plus provenance
+(`source`, `sequenceName`, optional `pocketId`/`note`). For a text cue it emits an empty
+`songId`, `isText: true`, `bpm`/`camelot` null, the cue text as `name`. `mixSuggestions`
+is intentionally left undefined — a reserved seam (§4). Because every field is copied
+inline, the setlist reads standalone even if the catalog or pockets change afterward.
+
+`buildSetlist` wraps `realize` into a persisted `Setlist { id, playlistId, seed,
+generatedAt, totalMs, tracks }`. The track **selection** is fully seeded inside `realize`;
+the only non-deterministic bits — `newSetlistId()` and the `generatedAt` timestamp — live
+in this wrapper, never in `realize`.
+
+### 2.6 Determinism
+
+`realize` is pure: no DB, no React, no network, no input mutation. Every random choice
+(pocket anchors) is drawn from `seededRng(seed ?? playlist.id)` =
+`mulberry32(fnv1a(seed))`, consumed in walk order. The native port reproduces the same
+numbers bit-for-bit: `fnv1a` accumulates in a `UInt32` with wrapping `&*`/`&+`, and
+`mulberry32` mirrors the JS `Math.imul`/`>>> 0` sequence, dividing by `4294967296` to land
+in `[0,1)`. Same template + same seed ⇒ the identical setlist. The `seed` is the
+determinism knob: re-running with the same seed reproduces the exact setlist; pressing Play
+again uses a fresh seed for a different take.
 
 ---
 
@@ -132,6 +309,18 @@ needed to build it. **(c)** `realize()`'s autofill already does harmonic
 interpolation; an AI sequencer would slot in as a smarter sampling/ordering strategy
 behind the same `realize` → `Setlist` boundary, so every downstream consumer
 (export, playback, burn) keeps working unchanged.
+
+**Native parity.** The SwiftUI apps carry a faithful, byte-compatible port of the
+engine (`apple/PocketDJ/Performance/`): `RealizeEngine.realize(_:_:_)` /
+`buildSetlist` mirror `realize.ts` (album expansion, cycle-guarded pocket flatten +
+dedup, per-sequence `fitPrefix` budgets, and the same worst-seam-first **autofill**),
+`Harmonics.swift` / `Interpolate.swift` port the metrics + geometry, and
+`SeededRNG.swift` reproduces `mulberry32(fnv1a(seed))` exactly — so a given template +
+seed yields the same setlist on web and native. The `Setlist` / `SetlistTrack` /
+`MixSuggestion` shapes live in `CollectionsSchema.swift` (versioned, lenient-decode,
+back-compat `setlists: [Setlist]`), and `CollectionsStore.realize(playlistId:)` builds
+the `RealizeCtx` from `AppModel`'s catalog (its `candidates` pool = songs with both
+`bpm` and `camelot`). `mixSuggestions` is the same reserved seam there as on the web.
 
 **Design rule for whoever builds the AI pillar:** keep the `realize` →
 `Setlist{tracks: SetlistTrack[]}` contract intact. Produce richer orderings and

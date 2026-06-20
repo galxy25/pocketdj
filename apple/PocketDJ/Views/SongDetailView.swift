@@ -6,6 +6,7 @@ struct SongDetailView: View {
     @Environment(AppModel.self) private var app
     let song: IndexSong
     @State private var showEdit = false
+    @State private var showAdd = false
 
     /// Always read the latest (possibly edited) version from the catalog.
     private var current: IndexSong { app.songsById[song.id] ?? song }
@@ -30,11 +31,14 @@ struct SongDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { showAdd = true } label: { Image(systemName: "plus.circle") }
+                    .accessibilityIdentifier("add-song-to")
                 Button("Edit") { showEdit = true }.accessibilityIdentifier("edit-song")
             }
         }
         .sheet(isPresented: $showEdit) { EditSongView(song: current) }
+        .sheet(isPresented: $showAdd) { AddToCollectionView(item: .song(current.id)) }
     }
 
     private var header: some View {

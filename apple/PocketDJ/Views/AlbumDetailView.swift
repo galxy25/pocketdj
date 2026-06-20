@@ -6,6 +6,7 @@ struct AlbumDetailView: View {
     @Environment(AppModel.self) private var app
     let album: IndexAlbum
     @State private var showEdit = false
+    @State private var showAdd = false
 
     /// Latest (possibly edited) album from the catalog.
     private var current: IndexAlbum { app.albumsById[album.id] ?? album }
@@ -30,11 +31,14 @@ struct AlbumDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { showAdd = true } label: { Image(systemName: "plus.circle") }
+                    .accessibilityIdentifier("add-album-to")
                 Button("Edit") { showEdit = true }.accessibilityIdentifier("edit-album")
             }
         }
         .sheet(isPresented: $showEdit) { EditAlbumView(album: current) }
+        .sheet(isPresented: $showAdd) { AddToCollectionView(item: .album(current.id)) }
     }
 
     private var header: some View {
