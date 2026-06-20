@@ -687,6 +687,23 @@ the player lazy-loads it (like cover art / lyrics) and renders it as a **clickab
 scrub bar** — click anywhere on the waveform to seek. The same analysis runs on songs
 ripped via the **`rip` skill** (a setlist's `_ripped/` folder) through the batch tool.
 
+### Play while it rips — live streaming
+
+Tapping ▶ on an un-ripped Apple Music song now **plays within a few seconds and
+follows the real-time capture**, instead of waiting the full capture + upload. As
+Audio Hijack records, the server segments the growing audio into a **live HLS** stream
+(`tail | ffmpeg`, 2 s AAC segments + a rolling playlist) and serves it over Tailscale;
+the player shows a red **● LIVE** chip. HLS is used because iOS Safari plays it
+natively (a plain progressive stream is silent on iOS); desktop browsers without
+native HLS use a lazy-loaded `hls.js`. When the rip finishes it uploads the durable
+mp3 to S3 as before, so every later play is the **seekable** cached file (with the
+waveform). Analog stays rip-then-play (already faster than real time).
+
+The app and rip server do a small **version handshake** (`/health`): if the server is
+reachable but **outdated** (e.g. its process predates a code update), the app shows a
+transient banner — *"Rip server is outdated — restart it for live streaming"* — that
+auto-dismisses after 5 s, instead of silently failing to stream.
+
 ### Settings ▸ Rip server
 
 ![Settings: rip server](storybook/33-settings-rip-server-mobile.png)

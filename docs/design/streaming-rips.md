@@ -257,6 +257,152 @@ the agent for Apple Music captures.
 - **Phase 4 — private delivery.** ⏳ FUTURE. Private bucket + app‑credential
   (presigned or CloudFront‑signed) fetch; live‑relay progressive streaming.
 
+---
+
+# Near‑real‑time streaming (play while it rips)
+
+> Goal: hitting **▶** on an un‑ripped song starts playback within **~1–5 s**, then
+> keeps playing as the rip continues — instead of waiting for the entire
+> capture → transcode → upload before any sound. The current model is *rip‑then‑play*;
+> this adds *play‑while‑ripping*.
+
+## Why this is mostly an Apple‑Music problem
+
+- **Apple Music** capture is **inherently real‑time**: a 3‑minute song takes 3
+  minutes to record (Audio Hijack plays it in Music and captures the output). Today
+  the user waits 3 min + transcode + upload (~3.5 min) before the first note. With
+  live streaming they hear it ~2–4 s after capture starts and **listen along, live**.
+  This is the headline win.
+- **Analog** is already *faster than real‑time* (a whole album ffmpeg‑transcodes in
+  seconds). The only wait is the S3 upload of a ~60 MB album mp3. The same live
+  endpoint removes that wait too, but the payoff is smaller.
+
+So the design centers on **serving audio bytes as they are produced**, for both
+sources, behind one client change.
+
+## Core idea — tail‑stream a growing MP3 as a progressive HTTP response
+
+MP3 is a flat stream of self‑contained frames with no trailing index, so a browser
+`<audio>` element plays an MP3 **as it arrives** — this is exactly how internet radio
+(Shoutcast/Icecast) plays in Safari/iOS today. We exploit that:
+
+1. The capture writes a **growing `.mp3`** on the iMac:
+   - **Apple Music:** Audio Hijack's Recorder **already records MP3** (verified:
+     captured files probe as `format_name=mp3`), so its in‑progress recording file
+     grows frame‑by‑frame during capture — directly tail‑streamable, **no reconfig
+     needed**. *(m4a/ALAC would **not** be progressively streamable — the MP4 `moov`
+     index is written at the end — so the recorder must stay on MP3/ADTS‑AAC; the
+     server detects the extension and falls back to rip‑then‑play if it ever changes.)*
+   - **Analog:** `ffmpeg` already writes mp3 256 progressively as it transcodes.
+2. New rip‑server route **`GET /stream/<songId>.mp3`**: finds the in‑progress
+   recording file for that song's active job and **tail‑streams** it —
+   `Transfer‑Encoding: chunked`, no `Content‑Length`, no `Accept‑Ranges` (so the
+   browser treats it as a live stream): read to current EOF, `flush`, wait for the
+   file to grow (`fs.watch`/size‑poll), repeat, until the job's capture phase ends;
+   then stream the final bytes and close the response.
+3. **Initial buffer (the 1–5 s):** withhold the response until ~1.5–2 s of audio
+   exists (≈ 48–64 KB at 256 kbps), giving the browser a jitter cushion before play.
+   Tunable via `RIP_STREAM_PREROLL_BYTES`.
+4. **Client:** on **▶**, `POST /rip` as today. As soon as the job reports a new phase
+   **`streaming`** with a `streamUrl`, set `nowPlaying.url =
+   https://<imac‑tailnet>/stream/<songId>.mp3` and play via the **existing native
+   `<audio>`** element — *no `hls.js`, no new client dependency*. The phase chip shows
+   "streaming" instead of blocking on "ripping…".
+5. **Durable swap:** the rip finishes exactly as before — archive mp3 → S3 →
+   `manifest.json` → background bpm/key/waveform analysis. The live stream is
+   ephemeral. On **replay** (or any later play) the client uses the **seekable S3
+   mp3**, which supports range requests, scrubbing, offline burn, and the waveform.
+   So live‑stream = first listen; S3 = every listen after.
+
+### Why progressive MP3 over the rip server (not HLS, not S3)
+
+- **Latency:** the iMac and the phone are on the same **Tailnet**; serving bytes
+  straight from the rip server is ~segment‑free and sub‑second. Routing live audio
+  through S3 would add an upload round‑trip per chunk — the opposite of "near‑real‑time."
+- **Simplicity:** native `<audio>` already plays progressive MP3 on desktop **and
+  iOS** (radio‑stream precedent). HLS would add segmenting + a live `.m3u8` rewrite +
+  `hls.js` in the client for a robustness we don't yet need.
+- **Durability is already solved:** S3 + manifest + analysis stay the archive of
+  record; the live path only has to get *first audio* out fast.
+
+## Server changes (`rip-server.mjs` / `rip-one.mjs`)
+
+- A job exposes its **in‑progress file path** + a `streamReady` flag once pre‑roll
+  bytes exist. New phase **`streaming`** (between `ripping` and `uploading`) carries
+  `streamUrl`. `jobView()` emits it; `/jobs/:id` already merges the worker's status
+  file, so the worker just records `streamFile` + `streamReady` as it captures.
+- **`GET /stream/<songId>.mp3`** — auth‑gated like the rest; tails the file with
+  chunked encoding + pre‑roll; ends when capture completes or the client disconnects
+  (clean up the read stream / watcher). Bounded so a stuck capture can't leak fds.
+- **Apple Music:** `rip.mjs` / `rip-one.mjs` detect the new AH recording file *right
+  after `AH.start()`* (diff `AH_REC_DIR`), publish its path as `streamFile`, and set
+  `streamReady` once it crosses the pre‑roll size. AH already records MP3 (verified),
+  so no session reconfig is needed — the `rip` SKILL just documents the requirement.
+- **Analog:** stays **rip‑then‑play** in 5a — it's already faster‑than‑real‑time and
+  the whole‑album file + per‑track seek make live streaming awkward (you'd have to
+  start mid‑file at a VBR‑imprecise byte offset). The small upload wait is acceptable;
+  a per‑track‑region live tee is deferred.
+
+## Client changes (`useRipsStore` / `MiniPlayer`)
+
+- `ensureUrl()` gains a fast path: stop blocking until `ready`; resolve as soon as the
+  poll sees **`streaming`** + `streamUrl`, returning the live URL so play starts now.
+  Keep polling in the background to capture the final S3 `url` for the manifest swap.
+- `NowPlaying` gains `live?: boolean`. While `live`, the player hides the seek bar's
+  forward region (can't seek past the buffered live edge) and shows a small **● LIVE**
+  tag; on the durable swap it flips to the normal seekable bar + waveform.
+- `MiniPlayer` needs no new element — progressive MP3 plays through the same
+  `<audio>`. Add a tiny `onError`/stall fallback: if the live stream stalls, fall back
+  to polling for the S3 `url` and reload (the rip is still completing server‑side).
+
+## Edge cases & risks
+
+- **Connection drop mid‑song:** a chunked live response can't resume at an offset
+  until the S3 mp3 exists. Mitigation: on stall, the client polls for the (likely
+  now‑ready) S3 url and seamlessly reloads. Acceptable for "first listen."
+- **iOS Safari:** progressive/endless MP3 is supported (radio streams), but iOS is
+  picky about range requests — the `/stream` endpoint must answer the initial
+  `Range: bytes=0-` with **`200`** (whole live stream), not `206`. Verify on device.
+- **Pre‑roll vs latency:** larger pre‑roll = smoother start but more lead; expose
+  `RIP_STREAM_PREROLL_BYTES` and tune to land in the 1–5 s target.
+- **AH format:** the tail approach **requires** an MP3/ADTS recorder. If the user
+  keeps AH on m4a, fall back to *rip‑then‑play* (today's behaviour) for that song —
+  detected by extension, no hard failure.
+- **DRM unchanged:** still a real‑time line‑capture; nothing here touches FairPlay.
+
+## Live HLS — the shipped path (was "Phase B")
+
+Progressive MP3 (5a) worked on desktop but was **silent on iOS Safari**: iOS won't
+reliably play an endless, length‑less chunked MP3 via `<audio>` (the finished S3 mp3
+played fine, the live stream produced no sound). HLS is Apple's own format and plays
+natively on iOS, so the live path moved to **live HLS**:
+
+- **Worker:** once AH's growing MP3 appears, `tail -c +1 -f <mp3> | ffmpeg -i pipe:0
+  -c:a aac -b:a 128k -hls_time 2 -hls_playlist_type event …` writes 2 s AAC/TS
+  segments + a rolling `index.m3u8` to `<tmp>/live/<songId>/`. `tail -f` follows the
+  file as AH records; on capture end the worker kills `tail`, ffmpeg sees EOF and
+  finalizes the playlist (`#EXT-X-ENDLIST`). `streamReady` flips on the first segment.
+- **Server:** `GET /hls/<songId>/<index.m3u8|seg_N.ts>` (same `?token=` auth as
+  `/stream`). The m3u8's segment URIs are rewritten to carry `?token=` so a native
+  `<audio>`'s segment fetches authenticate (it can't add an auth header). `jobView`'s
+  `streamUrl` → `/hls/<id>/index.m3u8`.
+- **Client:** if `<audio>.canPlayType('application/vnd.apple.mpegurl')` (iOS/Safari) →
+  native `<audio src=m3u8>`; otherwise lazy‑load **hls.js** (a separate chunk Safari/iOS
+  never download) and attach. `canPlayType` can lie (some Chromium claim support but
+  can't play) → on a source error, fall back to hls.js. `● LIVE` player state; the
+  background poll still swaps the manifest to the durable S3 mp3 for the next play.
+
+The 5a progressive `/stream` endpoint is kept (harmless) but the client uses HLS.
+
+## Phase plan
+
+- **Phase 5a — progressive live stream.** ✅ DONE (desktop). `/stream` tail‑endpoint +
+  `streaming` phase + pre‑roll; AH growing‑MP3 watcher; client `allowLive` fast path +
+  `● LIVE`. iOS‑silent → superseded by 5b for the live path.
+- **Phase 5b — live HLS.** ✅ DONE. `tail|ffmpeg` event‑HLS producer; `/hls` serving
+  with token‑rewritten segment URIs; client native‑HLS + lazy `hls.js` fallback.
+  iOS plays natively. (Off‑Tailnet via S3/CloudFront stays a Phase 4 follow‑up.)
+
 ## Open items
 
 - Per‑track analog **timestamps** are deferred → analog plays the whole album and the

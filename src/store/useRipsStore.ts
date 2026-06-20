@@ -9,10 +9,15 @@ import { zip } from 'fflate';
 import { getItem, putItem } from '../storage/repo';
 import { useDataStore } from './useDataStore';
 import { isSong } from '../types/model';
+import { SILENT_MP3 } from '../lib/silentAudio';
 
 const PUBLIC_BASE = 'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com';
 const MANIFEST_URL = `${PUBLIC_BASE}/rips/manifest.json`;
 const LS_KEY = 'pdj.rip.v1';
+// Minimum rip-server protocol the app needs (2 = live HLS streaming). A reachable
+// server reporting less triggers an "outdated — restart it" banner.
+const EXPECTED_RIP_VERSION = 2;
+let noticeSeq = 0;
 
 export interface ManifestEntry {
   key: string; ext: string; bytes: number;
@@ -22,13 +27,14 @@ export interface ManifestEntry {
   bpm?: number | null; musicalKey?: string | null; camelot?: string | null;
   waveform?: string | null; analyzed?: boolean;
 }
-export type RipPhase = 'queued' | 'searching' | 'ripping' | 'uploading' | 'ready' | 'error';
+export type RipPhase = 'queued' | 'searching' | 'ripping' | 'streaming' | 'uploading' | 'ready' | 'error';
 export interface JobView {
   jobId: string | null; songId: string; phase: RipPhase;
   message?: string | null; url?: string | null; error?: string | null;
+  streamUrl?: string | null; // relative path to a live progressive MP3 (server tails the in-progress rip)
   progress?: { elapsedMs?: number; totalMs?: number; pct?: number; indeterminate?: boolean };
 }
-export interface NowPlaying { songId: string; title: string; artist: string; url: string; startMs?: number | null; waveform?: string | null; }
+export interface NowPlaying { songId: string; title: string; artist: string; url: string; startMs?: number | null; waveform?: string | null; live?: boolean; }
 export interface QueueItem { id: string; title: string; artist: string; }
 export interface BulkProgress { done: number; total: number; label: string; }
 
@@ -46,21 +52,34 @@ interface RipState {
   serverUrl: string;
   token: string;
   serverOk: boolean | null;        // null = unknown / not checked
-  serverInfo: { catalog?: { songs: number; albums: number }; cached?: number } | null;
+  serverInfo: { catalog?: { songs: number; albums: number }; cached?: number; version?: number; hls?: boolean } | null;
+  notice: { text: string; kind: 'warn' | 'info' } | null; // transient app banner (auto-clears)
   manifest: Record<string, ManifestEntry>;
   jobs: Record<string, JobView>;   // keyed by songId, active/last rip
   nowPlaying: NowPlaying | null;
   queue: QueueItem[] | null;       // play-through queue (a setlist)
   queueIndex: number;
   bulk: BulkProgress | null;       // Rip-All / Burn progress
+  audioEl: HTMLAudioElement | null; // the shared <audio> (registered by MiniPlayer)
 
   init: () => Promise<void>;
+  /** Show a transient banner that auto-dismisses after 5s. */
+  notify: (text: string, kind?: 'warn' | 'info') => void;
+  /** MiniPlayer registers its <audio> element here so play() can unlock it for iOS. */
+  setAudioEl: (el: HTMLAudioElement | null) => void;
+  /** Unlock the <audio> element within a user gesture (iOS autoplay). Call on tap. */
+  primeAudio: () => void;
   setConfig: (serverUrl: string, token: string) => void;
   checkHealth: () => Promise<boolean>;
   refreshManifest: () => Promise<void>;
   urlFor: (songId: string) => string | null;
-  /** Ensure a song is ripped + return its public URL (polls the server on a miss). */
-  ensureUrl: (songId: string) => Promise<string>;
+  /**
+   * Ensure a song is ripped + return a playable URL (polls the server on a miss).
+   * With `allowLive`, resolves as soon as a live progressive stream is available
+   * (returns the rip server's /stream URL) and keeps polling in the background to
+   * swap the manifest to the durable S3 mp3. Without it, waits for the finished mp3.
+   */
+  ensureUrl: (songId: string, opts?: { allowLive?: boolean }) => Promise<string>;
   play: (song: { id: string; title: string; artist: string }, opts?: { startMs?: number | null }) => Promise<void>;
   download: (song: { id: string; title: string; artist: string }) => Promise<void>;
   setNowPlaying: (n: NowPlaying | null) => void;
@@ -88,10 +107,33 @@ export const useRipsStore = create<RipState>((set, get) => {
     queue: null,
     queueIndex: -1,
     bulk: null,
+    audioEl: null,
+    notice: null,
 
     init: async () => {
       await get().refreshManifest();
       if (get().serverUrl) await get().checkHealth();
+    },
+    notify: (text, kind = 'info') => {
+      const seq = ++noticeSeq;
+      set({ notice: { text, kind } });
+      setTimeout(() => { if (noticeSeq === seq) set({ notice: null }); }, 5000);
+    },
+    setAudioEl: (el) => set({ audioEl: el }),
+    // iOS Safari only lets an <audio> element play programmatically once it has been
+    // play()'d from a user gesture. A live rip's URL resolves seconds after the tap
+    // (after polling), so by then the gesture is gone and play() is blocked silently.
+    // Priming with a tiny silent clip *inside* the tap unlocks the element for later.
+    primeAudio: () => {
+      const a = get().audioEl;
+      if (!a) return;
+      try {
+        a.src = SILENT_MP3;
+        a.muted = true;
+        const p = a.play();
+        if (p && typeof p.then === 'function') p.then(() => { a.pause(); a.muted = false; }).catch(() => { a.muted = false; });
+        else a.muted = false;
+      } catch { /* ignore — best-effort unlock */ }
     },
     setConfig: (serverUrl, token) => {
       const s = serverUrl.trim().replace(/\/$/, '');
@@ -107,6 +149,10 @@ export const useRipsStore = create<RipState>((set, get) => {
         const ok = r.ok;
         const info = ok ? await r.json() : null;
         set({ serverOk: ok, serverInfo: info });
+        // version handshake: a reachable but outdated server can't do live streaming
+        if (ok && (info?.version ?? 1) < EXPECTED_RIP_VERSION) {
+          get().notify('Rip server is outdated — restart it on the iMac for live streaming.', 'warn');
+        }
         return ok;
       } catch { set({ serverOk: false, serverInfo: null }); return false; }
     },
@@ -126,11 +172,28 @@ export const useRipsStore = create<RipState>((set, get) => {
       const j = get().jobs[songId];
       return j?.url || null;
     },
-    ensureUrl: async (songId) => {
+    ensureUrl: async (songId, opts) => {
+      const allowLive = !!opts?.allowLive;
       const cached = get().urlFor(songId);
       if (cached) return cached;
       const { serverUrl, token } = get();
       if (!serverUrl) throw new Error('No rip server configured (Settings ▸ Rip server).');
+      const liveUrl = (streamPath: string) => `${serverUrl}${streamPath}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      // After handing back a live URL, keep polling so the manifest swaps to the durable
+      // S3 mp3 (seekable + analysed) for the next play.
+      const pollToReady = async (jobId: string) => {
+        for (let i = 0; i < 1800; i++) {
+          await sleep(2000);
+          try {
+            const jr = await fetch(`${get().serverUrl}/jobs/${jobId}`, { headers: authHeaders(get().token) });
+            if (!jr.ok) continue;
+            const v: JobView = await jr.json();
+            set((st) => ({ jobs: { ...st.jobs, [songId]: v } }));
+            if (v.phase === 'ready' && v.url) { await get().refreshManifest(); return; }
+            if (v.phase === 'error') return;
+          } catch { /* keep trying */ }
+        }
+      };
       // kick off (or join) a job
       const res = await fetch(`${serverUrl}/rip`, {
         method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders(token) },
@@ -141,6 +204,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       set((st) => ({ jobs: { ...st.jobs, [songId]: view } }));
       if (view.phase === 'ready' && view.url) { await get().refreshManifest(); return view.url; }
       if (!view.jobId) throw new Error(view.error || 'rip did not start');
+      if (allowLive && view.streamUrl) { void pollToReady(view.jobId); return liveUrl(view.streamUrl); }
       // poll
       for (let i = 0; i < 1800; i++) { // generous cap (~30 min of 1s polls)
         await sleep(1000);
@@ -149,16 +213,19 @@ export const useRipsStore = create<RipState>((set, get) => {
         view = await jr.json();
         set((st) => ({ jobs: { ...st.jobs, [songId]: view } }));
         if (view.phase === 'ready' && view.url) { await get().refreshManifest(); return view.url; }
+        if (allowLive && view.streamUrl && view.jobId) { void pollToReady(view.jobId); return liveUrl(view.streamUrl); }
         if (view.phase === 'error') throw new Error(view.error || 'rip failed');
       }
       throw new Error('rip timed out');
     },
     play: async (song, opts) => {
-      const url = await get().ensureUrl(song.id);
+      get().primeAudio(); // unlock <audio> within the tap gesture (iOS) before any await
+      const url = await get().ensureUrl(song.id, { allowLive: true });
+      const live = url.includes('/hls/');
       const e = get().manifest[song.id];
-      const startMs = opts && 'startMs' in opts ? opts.startMs ?? null : e?.startMs ?? null;
+      const startMs = live ? null : opts && 'startMs' in opts ? opts.startMs ?? null : e?.startMs ?? null;
       // single play clears any setlist queue (no next/prev)
-      set({ queue: null, queueIndex: -1, nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs, waveform: e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
+      set({ queue: null, queueIndex: -1, nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs, live, waveform: live ? null : e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
     },
     download: async (song) => {
       const url = await get().ensureUrl(song.id);
@@ -181,9 +248,11 @@ export const useRipsStore = create<RipState>((set, get) => {
       if (!q || i < 0 || i >= q.length) return;
       const t = q[i];
       set({ queueIndex: i });
-      const url = await get().ensureUrl(t.id);
+      get().primeAudio(); // unlock <audio> within the tap gesture (iOS) before any await
+      const url = await get().ensureUrl(t.id, { allowLive: true });
+      const live = url.includes('/hls/');
       const e = get().manifest[t.id];
-      set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: e?.startMs ?? null, waveform: e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
+      set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: live ? null : e?.startMs ?? null, live, waveform: live ? null : e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
     },
     next: () => { const { queue, queueIndex } = get(); if (queue && queueIndex + 1 < queue.length) void get().playAt(queueIndex + 1); },
     prev: () => { const { queue, queueIndex } = get(); if (queue && queueIndex > 0) void get().playAt(queueIndex - 1); },

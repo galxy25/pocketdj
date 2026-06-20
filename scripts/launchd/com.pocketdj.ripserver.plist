@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the PocketDJ rip-on-demand server (the iMac). Auto-starts at login
+  and restarts if it exits, so the app never hits a stale / down rip server.
+
+  Install:
+    cp scripts/launchd/com.pocketdj.ripserver.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.pocketdj.ripserver.plist 2>/dev/null
+    launchctl load   ~/Library/LaunchAgents/com.pocketdj.ripserver.plist
+  Verify:  curl -s localhost:8787/health   (expect "version":2,"hls":true)
+  Logs:    ~/.pocketdj/rip-server.log
+  Stop:    launchctl unload ~/Library/LaunchAgents/com.pocketdj.ripserver.plist
+
+  launchd runs with a minimal PATH, so node/ffmpeg/aws/tail/claude dirs are set below.
+  Runs from the main checkout (stable) — not a throwaway worktree. To require a bearer
+  token, add a RIP_TOKEN entry under EnvironmentVariables and set it in Settings ▸ Rip
+  server. (Tailnet-only by default; the rips S3 bucket is public per the design.)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.ripserver</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/deepspacenine/forges/levi/pocketdj/scripts/rip-server.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <key>HOME</key>
+    <string>/Users/deepspacenine</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/Users/deepspacenine/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/deepspacenine/forges/levi/pocketdj</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/deepspacenine/.pocketdj/rip-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/deepspacenine/.pocketdj/rip-server.log</string>
+</dict>
+</plist>
