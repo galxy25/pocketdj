@@ -29,8 +29,9 @@ export function RipButtons({ song, compact, playOpts }: { song: { id: string; ti
       active.phase === 'queued' ? 'Queued…'
         : active.phase === 'searching' ? 'Searching…'
           : active.phase === 'uploading' ? 'Uploading…'
-            : active.progress?.totalMs ? `Ripping ${clock(active.progress.elapsedMs)} / ${clock(active.progress.totalMs)}`
-              : 'Ripping…';
+            : active.phase === 'streaming' ? '● Streaming live'
+              : active.progress?.totalMs ? `Ripping ${clock(active.progress.elapsedMs)} / ${clock(active.progress.totalMs)}`
+                : 'Ripping…';
     return (
       <span className="pdj-rip pdj-rip--active" data-testid={`rip-status-${song.id}`}>
         <span className="pdj-rip__spin" aria-hidden>⟳</span> {label}

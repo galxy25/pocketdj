@@ -338,9 +338,10 @@ MP3 is a flat stream of self‑contained frames with no trailing index, so a bro
   after `AH.start()`* (diff `AH_REC_DIR`), publish its path as `streamFile`, and set
   `streamReady` once it crosses the pre‑roll size. AH already records MP3 (verified),
   so no session reconfig is needed — the `rip` SKILL just documents the requirement.
-- **Analog:** tee ffmpeg so it writes the growing per‑request mp3 that `/stream`
-  tails, in addition to the album archive (or transcode the requested track region
-  first so its frames appear immediately).
+- **Analog:** stays **rip‑then‑play** in 5a — it's already faster‑than‑real‑time and
+  the whole‑album file + per‑track seek make live streaming awkward (you'd have to
+  start mid‑file at a VBR‑imprecise byte offset). The small upload wait is acceptable;
+  a per‑track‑region live tee is deferred.
 
 ## Client changes (`useRipsStore` / `MiniPlayer`)
 
@@ -380,10 +381,12 @@ Segments can be served from the rip server (Tailnet) or pushed to S3/CloudFront
 
 ## Phase plan
 
-- **Phase 5a — progressive live stream.** Server `/stream/<songId>.mp3` tail‑endpoint
-  + `streaming` phase + pre‑roll; analog ffmpeg tee. (AH already records MP3 — no
-  reconfig.) Client live‑URL fast path + `● LIVE` player state + durable S3 swap.
-  Verify latency on desktop + iPhone.
+- **Phase 5a — progressive live stream (digital).** Server `/stream/<songId>.mp3`
+  tail‑endpoint (chunked, `?token=` auth for native `<audio>`) + `streaming` phase +
+  pre‑roll; worker watches AH's growing MP3 and publishes `streamFile`/`streamReady`.
+  (AH already records MP3 — no reconfig.) Client live‑URL fast path (`allowLive`) +
+  background poll‑to‑ready manifest swap + `● LIVE` player state. Analog stays
+  rip‑then‑play. Verify latency on desktop + iPhone.
 - **Phase 5b — live HLS (optional).** Only if 5a's robustness/seek/off‑Tailnet limits
   bite. Segmented producer + `hls.js`; reuse the S3/CloudFront delivery from Phase 4.
 

@@ -26,6 +26,8 @@ const REGION = a.region || 'us-west-2';
 const PROFILE = a.profile || 'levi';
 const STATUS = a.status;
 const TMP = (a.tmp || join(homedir(), '.pocketdj', 'rips')).replace(/^~/, homedir());
+const AH_REC_DIR = (a['ah-recordings-dir'] || join(homedir(), 'Music', 'Audio Hijack')).replace(/^~/, homedir());
+const PREROLL = parseInt(process.env.RIP_STREAM_PREROLL_BYTES || '65536', 10); // bytes before live play (the rip server tails this file)
 if (!SONG) { console.error('--song-id required'); process.exit(2); }
 mkdirSync(TMP, { recursive: true });
 
@@ -55,17 +57,41 @@ async function main() {
 
   // real-time capture via the rip skill (drives Audio Hijack + Music)
   status('ripping', { realtime: true, ripStartedAt: Date.now(), totalMs: LENGTH_MS, message: 'recording from Apple Music' });
+
+  // Live-stream watcher: Audio Hijack writes a growing MP3 into AH_REC_DIR as it
+  // records. Detect that new file and publish it (streamFile) + flip to `streaming`
+  // once it crosses the pre-roll size, so the rip server can tail it to the client.
+  const before = new Set(existsSync(AH_REC_DIR) ? readdirSync(AH_REC_DIR) : []);
+  let streamFile = null;
+  let streamReady = false;
+  const watch = setInterval(() => {
+    try {
+      if (!streamFile) {
+        const fresh = readdirSync(AH_REC_DIR)
+          .filter((f) => !before.has(f) && !f.startsWith('.') && /\.mp3$/i.test(f))
+          .map((f) => join(AH_REC_DIR, f))
+          .sort((x, y) => statSync(y).mtimeMs - statSync(x).mtimeMs);
+        if (fresh.length) { streamFile = fresh[0]; status('ripping', { streamFile }); }
+      }
+      if (streamFile && !streamReady && statSync(streamFile).size >= PREROLL) {
+        streamReady = true;
+        status('streaming', { streamFile, streamReady: true, message: 'streaming live' });
+      }
+    } catch { /* dir/file not ready yet */ }
+  }, 400);
+
   await new Promise((res, rej) => {
     const p = spawn('node', [
       join(REPO, '.claude/skills/rip/rip.mjs'),
       '--setlist', csvFile, '--index', idxFile, '--library-xml', LIBRARY_XML,
-      '--out-base', outBase, '--limit', '1',
+      '--out-base', outBase, '--limit', '1', '--ah-recordings-dir', AH_REC_DIR,
     ], { cwd: REPO });
     let err = '';
     p.stderr.on('data', (d) => { err += d; });
     p.stdout.on('data', (d) => process.stderr.write(d)); // surface rip log to our stderr
     p.on('close', (code) => (code === 0 ? res() : rej(new Error('rip skill failed: ' + err.slice(-300)))));
-  }).catch((e) => fail(e.message));
+  }).catch((e) => { clearInterval(watch); fail(e.message); });
+  clearInterval(watch);
 
   // find the captured audio file in the newest *_ripped folder
   let ripped = null;

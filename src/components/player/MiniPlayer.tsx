@@ -69,7 +69,10 @@ export function MiniPlayer() {
         <div className="pdj-player__artist">{now.artist}</div>
       </div>
       <span className="pdj-player__time">{clock(t)}</span>
-      {now.waveform ? (
+      {now.live ? (
+        // a live progressive stream can't seek past the buffered edge — show a LIVE tag
+        <span className="pdj-player__live" data-testid="player-live" title="Streaming live as it rips">● LIVE</span>
+      ) : now.waveform ? (
         <div className="pdj-player__wave" data-testid="player-wave" onClick={seekFromClick} title="Scrub">
           <img className="pdj-player__wave-img" src={now.waveform} alt="waveform" loading="lazy" />
           <div className="pdj-player__wave-played" style={{ width: `${pct}%` }} />
@@ -83,7 +86,7 @@ export function MiniPlayer() {
           onChange={(e) => seek(Number(e.target.value))}
         />
       )}
-      <span className="pdj-player__time">{clock(dur)}</span>
+      {!now.live && <span className="pdj-player__time">{clock(dur)}</span>}
       <button type="button" className="pdj-player__btn" data-testid="player-close" onClick={() => { a?.pause(); setNow(null); }} aria-label="Close">✕</button>
     </div>
   );

@@ -339,6 +339,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-player__artist { font-size: 0.7rem; color: var(--pdj-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38vw; }
 .pdj-player__time { font-size: 0.7rem; color: var(--pdj-fg-dim); flex: 0 0 auto; }
 .pdj-player__seek { flex: 1 1 auto; min-width: 60px; accent-color: var(--pdj-accent); }
+.pdj-player__live {
+  flex: 1 1 auto; min-width: 60px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em;
+  color: #ff5d5d; display: inline-flex; align-items: center; gap: 0.3rem;
+  animation: pdj-live-pulse 1.4s ease-in-out infinite;
+}
+@keyframes pdj-live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 /* Waveform scrub bar (lazy-loaded PNG) — click anywhere to seek. */
 .pdj-player__wave { position: relative; flex: 1 1 auto; min-width: 80px; height: 34px; cursor: pointer; overflow: hidden; border-radius: 4px; }
 .pdj-player__wave-img { width: 100%; height: 100%; object-fit: fill; display: block; opacity: 0.4; }
