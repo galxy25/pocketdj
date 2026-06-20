@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import ZIPFoundation
 
 /// On-device store for pockets + playlists, persisted as the versioned
 /// `CollectionsDocument`. Operations mirror the PWA's `useCollectionsStore`.
@@ -401,19 +402,115 @@ final class CollectionsStore {
         insertImported(playlist: bundle.playlist, pockets: bundle.pockets)
     }
 
-    /// Route an imported file by content: a `.playlist.pocketdj.zip` (PWA single-
-    /// playlist transfer) → `importPlaylistZip`; a native collections `.json` →
-    /// `importCollection`. Detection is by extension first, then by sniffing the bytes
-    /// (zip local-file-header magic `PK\u{03}\u{04}`) so it's robust to renames.
+    // MARK: PWA .pocket.pocketdj.zip interop (single-pocket transfer)
+
+    /// Export one pocket as a `.pocket.pocketdj.zip` (slim/non-portable): manifest +
+    /// pocket.json + pockets.json (its child pockets, DAG-expanded). Returns nil if gone.
+    func exportPocketZip(_ id: String) throws -> Data? {
+        guard let p = pocket(id) else { return nil }
+        let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return try PocketZip.export(pocket: p, pocketsById: pocketsById)
+    }
+
+    /// Insert an already-reminted imported pocket bundle. Child pockets are added only
+    /// if their (fresh) id is absent; the root is always appended (never clobbers).
+    func insertImportedPocket(root: Pocket, children: [Pocket]) {
+        for c in children where pocket(c.id) == nil { pockets.append(c) }
+        pockets.append(root)
+        save()
+    }
+
+    /// Import a `.pocket.pocketdj.zip`: mint fresh ids and insert the pocket + children.
+    func importPocketZip(data: Data) throws {
+        let bundle = try PocketZip.import(data: data)
+        insertImportedPocket(root: bundle.pocket, children: bundle.children)
+    }
+
+    // MARK: Full backup `.pocketdj.zip` — collections merge (fresh ids)
+
+    /// Merge the COLLECTIONS of a full backup into the store with FRESH ids (so it
+    /// never clobbers existing items), remapping intra-import pocket refs (childPocketIds,
+    /// playlist pocket nodes) and re-pointing setlists at their reminted playlists.
+    /// Returns the number of pockets/playlists/setlists added.
+    @discardableResult
+    func mergeBackupCollections(pockets incPockets: [Pocket], playlists incPlaylists: [Playlist],
+                                setlists incSetlists: [Setlist]) -> (pockets: Int, playlists: Int, setlists: Int) {
+        var pocketIdMap: [String: String] = [:]
+        for p in incPockets { pocketIdMap[p.id] = CollectionsFactory.newPocketId() }
+        var playlistIdMap: [String: String] = [:]
+        for pl in incPlaylists { playlistIdMap[pl.id] = CollectionsFactory.newPlaylistId() }
+
+        for var p in incPockets {
+            p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
+            p.childPocketIds = p.childPocketIds.compactMap { pocketIdMap[$0] }
+            p.createdAt = now; p.updatedAt = now
+            pockets.append(p)
+        }
+        for var pl in incPlaylists {
+            pl.id = playlistIdMap[pl.id] ?? CollectionsFactory.newPlaylistId()
+            pl.sequences = pl.sequences.map { remintNode($0, pocketIdMap: pocketIdMap) }
+            pl.createdAt = now; pl.updatedAt = now
+            playlists.append(pl)
+        }
+        // Setlists: re-point at the reminted playlist (drop orphans whose playlist
+        // wasn't in the import) and mint fresh setlist ids.
+        var addedSetlists = 0
+        for var sl in incSetlists {
+            guard let newPid = playlistIdMap[sl.playlistId] else { continue }
+            sl = Setlist(id: CollectionsFactory.newSetlistId(), playlistId: newPid, name: sl.name,
+                         seed: sl.seed, generatedAt: sl.generatedAt, totalMs: sl.totalMs, tracks: sl.tracks)
+            setlists.append(sl); addedSetlists += 1
+        }
+        save()
+        return (incPockets.count, incPlaylists.count, addedSetlists)
+    }
+
+    /// The kind of an imported file, sniffed from its bytes (zip manifest `kind`, or a
+    /// native collections `.json`). Used to route `importAny` and to drive a full-backup
+    /// import (which also touches Settings + Edits) from the caller.
+    enum ImportKind: Equatable { case playlist, pocket, backup, collectionsJSON }
+
+    /// Detect what an imported file is. Zip ⇒ read `manifest.json.kind`
+    /// (`playlist`/`pocket`/`backup`; a PWA backup omits `kind` ⇒ treated as backup).
+    /// Non-zip ⇒ a native collections `.json`.
+    nonisolated static func detectKind(data: Data) -> ImportKind {
+        let isZip = data.starts(with: [0x50, 0x4B, 0x03, 0x04])   // "PK\u{03}\u{04}"
+        guard isZip, let archive = try? Archive(data: data, accessMode: .read) else {
+            return .collectionsJSON
+        }
+        if let entry = archive["manifest.json"] {
+            var raw = Data()
+            _ = try? archive.extract(entry, skipCRC32: true) { raw.append($0) }
+            if let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] {
+                switch obj["kind"] as? String {
+                case "pocket": return .pocket
+                case "playlist": return .playlist
+                case "backup": return .backup
+                default: break   // PWA backup omits `kind`
+                }
+            }
+        }
+        // A zip with no playlist/pocket manifest is a full backup (PWA shape).
+        if archive["playlist.json"] != nil { return .playlist }
+        if archive["pocket.json"] != nil { return .pocket }
+        return .backup
+    }
+
+    /// Route an imported file by content. Zips dispatch on the manifest `kind`:
+    /// `.playlist.pocketdj.zip` → `importPlaylistZip`, `.pocket.pocketdj.zip` →
+    /// `importPocketZip`, a full `.pocketdj.zip` backup → merge its COLLECTIONS only
+    /// (sources/edits are merged by the Settings coordinator, which owns those stores).
+    /// A native collections `.json` → `importCollection`.
     func importAny(url: URL) throws {
         guard let data = try? Data(contentsOf: url) else { return }
-        let name = url.lastPathComponent.lowercased()
-        let looksZipByName = name.hasSuffix(".zip") || name.hasSuffix(".playlist.pocketdj")
-        let looksZipByMagic = data.starts(with: [0x50, 0x4B, 0x03, 0x04])   // "PK\u{03}\u{04}"
-        if looksZipByName || looksZipByMagic {
-            try importPlaylistZip(data: data)
-        } else {
-            try importCollection(data: data)
+        switch CollectionsStore.detectKind(data: data) {
+        case .playlist: try importPlaylistZip(data: data)
+        case .pocket:   try importPocketZip(data: data)
+        case .backup:
+            let (payload, _) = try BackupZip.import(data: data)
+            mergeBackupCollections(pockets: payload.pockets, playlists: payload.playlists,
+                                   setlists: payload.setlists)
+        case .collectionsJSON: try importCollection(data: data)
         }
     }
 

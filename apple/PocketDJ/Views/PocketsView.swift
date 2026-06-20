@@ -75,7 +75,7 @@ struct PocketDetailView: View {
     @State private var nameDraft = ""
     @State private var confirmingDelete = false
     @State private var showExporter = false
-    @State private var exportDoc = EditsFile(data: Data())
+    @State private var exportDoc = PlaylistZipFile(data: Data())
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
 
@@ -159,13 +159,22 @@ struct PocketDetailView: View {
         } message: {
             Text("Removes the pocket and unnests it from any parent. Its items aren’t deleted. This can’t be undone.")
         }
-        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .json,
-                      defaultFilename: "pocketdj-pocket") { _ in }
+        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
+                      defaultFilename: exportFilename) { _ in }
+    }
+
+    /// `<sanitized name>.pocket.pocketdj` — `.fileExporter` appends `.zip`, yielding
+    /// `<name>.pocket.pocketdj.zip` (the standalone pocket transfer).
+    private var exportFilename: String {
+        let base = (pocket?.name ?? "pocket")
+            .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
+            .trimmingCharacters(in: .whitespaces)
+        return "\(base.isEmpty ? "pocket" : base).pocket.pocketdj"
     }
 
     private func export() {
-        if let data = try? collections.exportPocket(pocketId) {
-            exportDoc = EditsFile(data: data); showExporter = true
+        if let data = try? collections.exportPocketZip(pocketId) {
+            exportDoc = PlaylistZipFile(data: data); showExporter = true
         }
     }
 }
