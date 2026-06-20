@@ -37,7 +37,6 @@ const CFG = {
   analogBase: (process.env.POCKETDJ_ANALOG_BASE || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
   libraryXml: (process.env.POCKETDJ_LIBRARY_XML || join(homedir(), 'Downloads', 'Library.xml')).replace(/^~/, homedir()),
   ahRecDir: (process.env.POCKETDJ_AH_REC_DIR || join(homedir(), 'Music', 'Audio Hijack')).replace(/^~/, homedir()),
-  streamPreroll: parseInt(process.env.RIP_STREAM_PREROLL_BYTES || '65536', 10), // ~2s @256k before live play starts
   useAgent: process.env.RIP_AGENT === '1', // Phase 2: run the rip skill via a headless Claude agent (adaptive)
   worker: process.env.RIP_WORKER || join(REPO, 'scripts/rip-one.mjs'), // digital capture worker (swappable for tests)
   sources: (process.env.RIP_SOURCES || `${REPO}/public/current-index.json,${REPO}/public/apple-music-index.json`)
@@ -173,23 +172,11 @@ function resumePending() {
 
 const jobFile = (jobId) => join(CFG.tmp, 'jobs', `${jobId}.json`);
 
-// ---------------- live progressive streaming ----------------
-// While a digital rip is capturing, its growing MP3 is tail-streamed to the client
-// so playback can start ~immediately (pre-roll) and follow the real-time capture.
-// streamFile + streamReady are published by the worker (rip-one.mjs) to the job's
-// status file; analog rips don't stream (they're already faster-than-real-time and
-// the user seeks within the whole-album file).
-function activeJobForSong(songId) {
-  return [...jobs.values()].find((j) => j.songId === songId && j.phase !== 'ready' && j.phase !== 'error') || null;
-}
-function streamStatus(songId) {
-  const job = activeJobForSong(songId);
-  if (!job) return { file: null, ready: false, done: true };
-  let st = job;
-  try { st = { ...job, ...JSON.parse(readFileSync(jobFile(job.jobId), 'utf8')) }; } catch { /* in-memory only */ }
-  const done = st.phase === 'uploading' || st.phase === 'ready' || st.phase === 'error';
-  return { file: st.streamFile || null, ready: !!st.streamReady, done };
-}
+// (Removed: legacy live progressive-MP3 streaming — activeJobForSong/streamStatus,
+// the streamLive tailer, and the /stream/<id>.mp3 route. The client only streams via
+// live HLS now: the job view emits streamUrl=/hls/<id>/index.m3u8, and the worker
+// still publishes streamFile/streamReady to drive the HLS pipeline below.)
+
 // ---- live HLS serving ----
 // The worker writes a live HLS playlist + AAC/TS segments to <tmp>/live/<songId>/.
 // iOS Safari plays HLS natively (a chunked progressive MP3 does not), so this is the
@@ -210,48 +197,6 @@ function serveHls(res, songId, file) {
   const buf = readFileSync(fp); // a segment is only listed once ffmpeg has finished writing it
   res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Content-Length': buf.length, ...cors });
   return res.end(buf);
-}
-
-// Tail the growing file with chunked transfer-encoding (no Content-Length / Accept-Ranges
-// → the browser treats it as a live stream). Holds back until pre-roll bytes exist, then
-// follows the file to EOF; ends when the capture finishes (or the client disconnects).
-async function streamLive(req, res, songId) {
-  const deadline = Date.now() + 20000;
-  let info = streamStatus(songId);
-  while ((!info.file || !existsSync(info.file)) && !info.done && Date.now() < deadline) {
-    await sleep(300); info = streamStatus(songId);
-  }
-  if (!info.file || !existsSync(info.file)) return send(res, 404, { error: 'no live stream for this song' });
-  // pre-roll: wait for a couple seconds of audio before opening the response
-  while (!info.done) {
-    let sz = 0; try { sz = statSync(info.file).size; } catch { /* not yet */ }
-    if (sz >= CFG.streamPreroll) break;
-    await sleep(150); info = streamStatus(songId);
-  }
-  res.writeHead(200, {
-    'Content-Type': 'audio/mpeg',
-    'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
-  });
-  let fd; try { fd = openSync(info.file, 'r'); } catch { return res.end(); } // fd survives a later move/unlink
-  let pos = 0; const buf = Buffer.alloc(64 * 1024);
-  let alive = true; req.on('close', () => { alive = false; });
-  let idleUntil = Date.now() + 15000; // safety: bail if the file stops growing and never finishes
-  try {
-    for (;;) {
-      if (!alive) break;
-      let size = 0; try { size = fstatSync(fd).size; } catch { break; }
-      if (size > pos) {
-        const n = readSync(fd, buf, 0, Math.min(buf.length, size - pos), pos);
-        if (n > 0) { pos += n; if (!res.write(buf.subarray(0, n))) await new Promise((r) => res.once('drain', r)); idleUntil = Date.now() + 15000; }
-      } else {
-        const st = streamStatus(songId);
-        if (st.done && size <= pos) break;     // capture finished and fully sent
-        if (Date.now() > idleUntil) break;     // stalled
-        await sleep(150);
-      }
-    }
-  } finally { try { closeSync(fd); } catch { /* ignore */ } res.end(); }
 }
 
 async function runJob(job) {
@@ -419,15 +364,6 @@ const server = http.createServer(async (req, res) => {
   if (path === '/health') {
     return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
       catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token });
-  }
-  // GET /stream/<songId>.mp3 — live progressive MP3 of an in-progress (digital) rip.
-  // Handled before the header-auth gate because a native <audio> element can't send an
-  // Authorization header; it authenticates via ?token= instead (Tailnet-only anyway).
-  let sm = path.match(/^\/stream\/(.+)\.mp3$/);
-  if (sm && req.method === 'GET') {
-    const qok = !CFG.token || url.searchParams.get('token') === CFG.token;
-    if (!authed(req) && !qok) return send(res, 401, { error: 'unauthorized' });
-    return streamLive(req, res, decodeURIComponent(sm[1]));
   }
   // GET /hls/<songId>/<index.m3u8|seg_N.ts> — live HLS (iOS-native). Same ?token= auth.
   const hm = path.match(/^\/hls\/([^/]+)\/([A-Za-z0-9_.-]+)$/);

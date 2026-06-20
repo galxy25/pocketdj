@@ -31,7 +31,7 @@ export type RipPhase = 'queued' | 'searching' | 'ripping' | 'streaming' | 'uploa
 export interface JobView {
   jobId: string | null; songId: string; phase: RipPhase;
   message?: string | null; url?: string | null; error?: string | null;
-  streamUrl?: string | null; // relative path to a live progressive MP3 (server tails the in-progress rip)
+  streamUrl?: string | null; // relative path to the live HLS playlist (/hls/<songId>/index.m3u8)
   progress?: { elapsedMs?: number; totalMs?: number; pct?: number; indeterminate?: boolean };
 }
 export interface NowPlaying { songId: string; title: string; artist: string; url: string; startMs?: number | null; waveform?: string | null; live?: boolean; }
@@ -75,8 +75,8 @@ interface RipState {
   urlFor: (songId: string) => string | null;
   /**
    * Ensure a song is ripped + return a playable URL (polls the server on a miss).
-   * With `allowLive`, resolves as soon as a live progressive stream is available
-   * (returns the rip server's /stream URL) and keeps polling in the background to
+   * With `allowLive`, resolves as soon as the live HLS stream is available (returns
+   * the rip server's /hls/<id>/index.m3u8 URL) and keeps polling in the background to
    * swap the manifest to the durable S3 mp3. Without it, waits for the finished mp3.
    */
   ensureUrl: (songId: string, opts?: { allowLive?: boolean }) => Promise<string>;
