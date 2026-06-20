@@ -22,17 +22,22 @@ export async function putSource(src: DataSource): Promise<void> {
 
 export async function deleteSource(sourceId: string): Promise<void> {
   const db = await getDB();
-  const tx = db.transaction(['sources', 'items'], 'readwrite');
-  await tx.objectStore('sources').delete(sourceId);
-  let cursor = await tx.objectStore('items').index('by_source').openCursor(sourceId);
-  let n = 0;
-  while (cursor) {
-    await cursor.delete();
-    n++;
-    cursor = await cursor.continue();
+  // Collect the item keys FIRST (one read), then delete in chunked transactions whose
+  // ops are all issued synchronously. A `cursor.delete()` loop that awaits each step
+  // makes iOS Safari auto-deactivate the transaction mid-loop, throwing "Attempt to
+  // delete range from database without an in-progress transaction" — and a digital
+  // source (Apple Music) can be ~90k items, so it trips every time. This pattern is
+  // WebKit-safe at any scale.
+  await db.delete('sources', sourceId);
+  const keys = await db.getAllKeysFromIndex('items', 'by_source', sourceId);
+  for (let i = 0; i < keys.length; i += CHUNK) {
+    const slice = keys.slice(i, i + CHUNK);
+    const tx = db.transaction('items', 'readwrite');
+    const store = tx.objectStore('items');
+    await Promise.all(slice.map((k) => store.delete(k)));
+    await tx.done;
   }
-  await tx.done;
-  txn('db.deleteSource', { id: sourceId, items: n });
+  txn('db.deleteSource', { id: sourceId, items: keys.length });
 }
 
 // ---- items ----
@@ -240,17 +245,17 @@ export async function putPlaylist(p: Playlist): Promise<void> {
 /** Delete a playlist AND cascade-delete every setlist generated from it. */
 export async function deletePlaylist(id: string): Promise<void> {
   const db = await getDB();
-  const tx = db.transaction(['playlists', 'setlists'], 'readwrite');
-  await tx.objectStore('playlists').delete(id);
-  let cursor = await tx.objectStore('setlists').index('by_playlist').openCursor(id);
-  let n = 0;
-  while (cursor) {
-    await cursor.delete();
-    n++;
-    cursor = await cursor.continue();
+  // Same WebKit-safe pattern as deleteSource: read the cascade keys, then delete with
+  // synchronously-issued ops (no awaiting cursor loop, which iOS Safari aborts).
+  await db.delete('playlists', id);
+  const setlistKeys = await db.getAllKeysFromIndex('setlists', 'by_playlist', id);
+  if (setlistKeys.length) {
+    const tx = db.transaction('setlists', 'readwrite');
+    const store = tx.objectStore('setlists');
+    await Promise.all(setlistKeys.map((k) => store.delete(k)));
+    await tx.done;
   }
-  await tx.done;
-  txn('playlist.delete', { id, setlists: n });
+  txn('playlist.delete', { id, setlists: setlistKeys.length });
 }
 
 export async function bulkPutPlaylists(playlists: Playlist[]): Promise<void> {
