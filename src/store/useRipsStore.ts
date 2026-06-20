@@ -14,6 +14,10 @@ import { SILENT_MP3 } from '../lib/silentAudio';
 const PUBLIC_BASE = 'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com';
 const MANIFEST_URL = `${PUBLIC_BASE}/rips/manifest.json`;
 const LS_KEY = 'pdj.rip.v1';
+// Minimum rip-server protocol the app needs (2 = live HLS streaming). A reachable
+// server reporting less triggers an "outdated — restart it" banner.
+const EXPECTED_RIP_VERSION = 2;
+let noticeSeq = 0;
 
 export interface ManifestEntry {
   key: string; ext: string; bytes: number;
@@ -48,7 +52,8 @@ interface RipState {
   serverUrl: string;
   token: string;
   serverOk: boolean | null;        // null = unknown / not checked
-  serverInfo: { catalog?: { songs: number; albums: number }; cached?: number } | null;
+  serverInfo: { catalog?: { songs: number; albums: number }; cached?: number; version?: number; hls?: boolean } | null;
+  notice: { text: string; kind: 'warn' | 'info' } | null; // transient app banner (auto-clears)
   manifest: Record<string, ManifestEntry>;
   jobs: Record<string, JobView>;   // keyed by songId, active/last rip
   nowPlaying: NowPlaying | null;
@@ -58,6 +63,8 @@ interface RipState {
   audioEl: HTMLAudioElement | null; // the shared <audio> (registered by MiniPlayer)
 
   init: () => Promise<void>;
+  /** Show a transient banner that auto-dismisses after 5s. */
+  notify: (text: string, kind?: 'warn' | 'info') => void;
   /** MiniPlayer registers its <audio> element here so play() can unlock it for iOS. */
   setAudioEl: (el: HTMLAudioElement | null) => void;
   /** Unlock the <audio> element within a user gesture (iOS autoplay). Call on tap. */
@@ -101,10 +108,16 @@ export const useRipsStore = create<RipState>((set, get) => {
     queueIndex: -1,
     bulk: null,
     audioEl: null,
+    notice: null,
 
     init: async () => {
       await get().refreshManifest();
       if (get().serverUrl) await get().checkHealth();
+    },
+    notify: (text, kind = 'info') => {
+      const seq = ++noticeSeq;
+      set({ notice: { text, kind } });
+      setTimeout(() => { if (noticeSeq === seq) set({ notice: null }); }, 5000);
     },
     setAudioEl: (el) => set({ audioEl: el }),
     // iOS Safari only lets an <audio> element play programmatically once it has been
@@ -136,6 +149,10 @@ export const useRipsStore = create<RipState>((set, get) => {
         const ok = r.ok;
         const info = ok ? await r.json() : null;
         set({ serverOk: ok, serverInfo: info });
+        // version handshake: a reachable but outdated server can't do live streaming
+        if (ok && (info?.version ?? 1) < EXPECTED_RIP_VERSION) {
+          get().notify('Rip server is outdated — restart it on the iMac for live streaming.', 'warn');
+        }
         return ok;
       } catch { set({ serverOk: false, serverInfo: null }); return false; }
     },

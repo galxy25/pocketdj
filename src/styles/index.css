@@ -322,6 +322,19 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--pdj-accent)
 .pdj-rip__spin { display: inline-block; animation: pdj-spin 1s linear infinite; }
 @keyframes pdj-spin { to { transform: rotate(360deg); } }
 
+/* Transient app banner (toast) — auto-dismisses after 5s; tap to dismiss. */
+.pdj-banner {
+  position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 90;
+  max-width: min(92vw, 560px); margin-top: env(safe-area-inset-top, 0);
+  padding: 10px 16px; border-radius: 0 0 10px 10px; cursor: pointer;
+  font-size: 0.82rem; line-height: 1.3; text-align: center;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+  animation: pdj-banner-in 0.22s ease-out;
+}
+.pdj-banner--warn { background: #5a2a12; color: #ffd9b0; border: 1px solid #8a4a1e; }
+.pdj-banner--info { background: var(--pdj-bg-raised); color: var(--pdj-fg); border: 1px solid var(--pdj-border); }
+@keyframes pdj-banner-in { from { transform: translate(-50%, -100%); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+
 /* Bottom mini player. */
 .pdj-player {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;

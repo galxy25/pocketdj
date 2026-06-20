@@ -47,6 +47,11 @@ const CFG = {
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Bump when the server gains capabilities the app must detect. The app warns (banner)
+// when a reachable server reports an older protocol than it needs.
+//   1 = original rip-on-demand   ·   2 = live HLS streaming (/hls)
+const RIP_PROTOCOL = 2;
 mkdirSync(join(CFG.tmp, 'jobs'), { recursive: true });
 const QUEUE_DIR = join(CFG.tmp, 'queue');
 mkdirSync(QUEUE_DIR, { recursive: true });
@@ -412,7 +417,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, '');
 
   if (path === '/health') {
-    return send(res, 200, { ok: true, host: hostname(), version: 1, analogBase: CFG.analogBase, bucket: CFG.bucket,
+    return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
       catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token });
   }
   // GET /stream/<songId>.mp3 — live progressive MP3 of an in-progress (digital) rip.

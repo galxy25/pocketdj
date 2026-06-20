@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import { TopBar } from './TopBar';
+import { Banner } from './Banner';
 import { MiniPlayer } from '../player/MiniPlayer';
 import { useAppStore } from '../../store/useAppStore';
 import { useRipsStore } from '../../store/useRipsStore';
@@ -17,6 +18,7 @@ export function AppShell() {
 
   return (
     <div className="pdj-app">
+      <Banner />
       <TopBar />
       <main className="pdj-main">
         <Outlet />
