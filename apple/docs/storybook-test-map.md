@@ -27,17 +27,19 @@ server-side. Don't treat their absence as a coverage gap.
 | 12 Browser — filter & sort | `BrowseUITests.testFilterSheetOpens`, `testSortSheetOpens` | `FilterEngineTests`, `SortEngineTests` | ✅ |
 | 13 Browser — albums (desktop) | `BrowseUITests.testLayoutToggleKeepsAlbumsVisible` | — | ✅ |
 | 14–16 Edit album / audio / song | `SettingsUITests.testEditsExportImportPresent` | `EditSchemaTests` | ✅ |
-| 18–19 Pockets — list / detail | — *(unit-covered; no XCUITest yet)* | `CollectionsStoreTests` (pocket CRUD + cycle-guard) | ✅ |
+| 18–19 Pockets — list / detail | `PocketsUITests` (create → open → rename → delete) | `CollectionsStoreTests` (pocket CRUD + cycle-guard + export/import) | ✅ |
 | 20 Add to a pocket or playlist | — *(unit-covered)* | `CollectionsStoreTests` (`testRemembersLastAddTargetWithChapter`, …) | ✅ |
-| 21–22 Playlists — list / template | — *(unit-covered)* | `CollectionsStoreTests` (playlist + sequences) | ✅ |
-| 23–24 Setlist — generated / track detail | — *(unit-covered)* | `RealizeEngineTests`, `SeededRNGTests`, `HarmonicsUnitTests` | ✅ |
+| 21–22 Playlists — list / template | `PlaylistsUITests` (create → chapter → rename → delete), `IndexPlaylistsUITests` | `CollectionsStoreTests` (playlist + sequences + moveNode + dup-from-songIds), `CatalogMergeTests` (index playlists) | ✅ |
+| 23–24 Setlist — generated / track detail | `SetlistUITests` (Play → frozen set list) | `RealizeEngineTests`, `SeededRNGTests`, `HarmonicsUnitTests`, `CollectionsStoreTests` (realize-from-songIds) | ✅ |
 | 27 Multi-source, collection filters & online search | `SettingsUITests.testAddSourceAppendsRow`, `testLoadAppleMusicAddsSource…` | `SettingsStoreTests`, `CatalogMergeTests`, `SigV4Tests` | ✅ |
 | 1–4, 6–7 Star map / solar system | — | — | ❌ removed in native |
 | 17 Delete-track confirm · 25 Collection Map/List · 28 Stream & download | — | — | ❌ PWA / server-side |
 
-**Coverage gaps worth closing later:** Pockets/Playlists/Setlists (ch 18–24) have full
-unit coverage but **no XCUITests** yet — add `PocketsUITests`/`SetlistUITests` (Play →
-frozen setlist) when convenient, then list them here.
+**Pockets/Playlists/Setlists (ch 18–24)** now have XCUITests
+(`PocketsUITests`, `PlaylistsUITests`, `SetlistUITests`, `IndexPlaylistsUITests`) on top
+of the unit coverage. The deep create/rename/delete + Play interactions are iOS-only
+(`#if !os(macOS)`, like the other suites); macOS runs only the empty-state assertions.
+The Setlist Play flow seeds a playlist via `PDJ_SEED_COLLECTIONS=1`.
 
 ---
 
@@ -53,7 +55,7 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 | `Views/Edit*View.swift`, `Models/EditSchema.swift`, `State/EditsStore.swift` | `SettingsUITests` | `EditSchemaTests` |
 | `Views/SettingsView.swift`, `State/SettingsStore.swift` | `SettingsUITests` | `SettingsStoreTests`, `CatalogMergeTests` |
 | `Services/Search/**`, `State/OnlineSearchModel.swift` | `SettingsUITests` | `SigV4Tests` |
-| `State/CollectionsStore.swift`, `Models/CollectionsSchema.swift`, `Views/{Pockets,Playlists,AddToCollection,SetlistDetail}*.swift` | *(none yet)* | `CollectionsSchemaTests`, `CollectionsStoreTests`, `RealizeEngineTests` |
+| `State/CollectionsStore.swift`, `Models/CollectionsSchema.swift`, `Views/{Pockets,Playlists,AddToCollection,SetlistDetail}*.swift` | `PocketsUITests`, `PlaylistsUITests`, `SetlistUITests`, `IndexPlaylistsUITests` | `CollectionsSchemaTests`, `CollectionsStoreTests`, `RealizeEngineTests` |
 | `Performance/**` | *(none)* | `RealizeEngineTests`, `SeededRNGTests`, `HarmonicsUnitTests` |
 | `Support/**` (Camelot, Genre, Fmt, Config) | *(none)* | `CamelotTests`, `GenreTests`, `FormatTests` |
 | `Models/IndexModels.swift`, `State/AppModel.swift` | `BrowseUITests` | `DecodingTests`, `CatalogMergeTests` |

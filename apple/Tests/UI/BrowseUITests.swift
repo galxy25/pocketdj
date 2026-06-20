@@ -64,8 +64,12 @@ final class BrowseUITests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))   // album name is a button label on macOS
         app.selectKind(songs: true)
-        XCTAssertTrue(app.staticTexts["Neon"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Slow Burn"].exists)
+        // The song row is a `NavigationLink(...).buttonStyle(.plain)`, which SwiftUI
+        // collapses into a single Button on macOS — so the inner Text("Neon") isn't a
+        // standalone StaticText there. Match the row by its stable identifier via the
+        // label-or-id helper (works on iPhone, iPad, and Mac), like the album asserts.
+        XCTAssertTrue(app.el("song-sng_1").waitForExistence(timeout: 5))     // Neon
+        XCTAssertTrue(app.el("song-sng_7").exists)                          // Slow Burn
     }
 
     func testLayoutToggleKeepsAlbumsVisible() {

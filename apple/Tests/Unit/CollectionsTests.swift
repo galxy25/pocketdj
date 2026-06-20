@@ -99,6 +99,71 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(s2.lastAddTarget?.id, p.id)
     }
 
+    func testMoveNodeReordersWithinChapter() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        s.addSong("sng_1", toPlaylist: pl.id)
+        s.addSong("sng_2", toPlaylist: pl.id)
+        s.addSong("sng_3", toPlaylist: pl.id)
+        let ids = s.playlist(pl.id)!.sequences[0].children!.map(\.nodeId)
+        // Move the last node up one.
+        s.moveNodeUp(ids[2], inPlaylist: pl.id)
+        XCTAssertEqual(s.playlist(pl.id)!.sequences[0].children!.map(\.nodeId), [ids[0], ids[2], ids[1]])
+        // Move the first node down one.
+        s.moveNodeDown(ids[0], inPlaylist: pl.id)
+        XCTAssertEqual(s.playlist(pl.id)!.sequences[0].children!.map(\.nodeId), [ids[2], ids[0], ids[1]])
+        // Up at the top is a no-op.
+        s.moveNodeUp(ids[2], inPlaylist: pl.id)
+        XCTAssertEqual(s.playlist(pl.id)!.sequences[0].children!.first?.nodeId, ids[2])
+    }
+
+    func testCreatePlaylistFromSongIds() {
+        let s = store()
+        let pl = s.createPlaylist("From Apple", songIds: ["sng_1", "sng_2"])
+        XCTAssertEqual(s.playlist(pl.id)?.sequences.first?.children?.compactMap(\.songId), ["sng_1", "sng_2"])
+    }
+
+    func testExportImportPlaylistMintsFreshIds() throws {
+        let s = store()
+        let pl = s.createPlaylist("Set", songIds: ["sng_1", "sng_2"])
+        let data = try XCTUnwrap(s.exportPlaylist(pl.id))
+        try s.importCollection(data: data)   // import back into the SAME store
+        XCTAssertEqual(s.playlists.count, 2)
+        let imported = s.playlists.last!
+        XCTAssertNotEqual(imported.id, pl.id)                    // fresh playlist id
+        let origNodeIds = Set(pl.sequences.flatMap { $0.children ?? [] }.map(\.nodeId))
+        let newNodeIds = Set(imported.sequences.flatMap { $0.children ?? [] }.map(\.nodeId))
+        XCTAssertTrue(origNodeIds.isDisjoint(with: newNodeIds))  // fresh node ids
+        XCTAssertEqual(imported.sequences.first?.children?.compactMap(\.songId), ["sng_1", "sng_2"])
+    }
+
+    func testExportImportPocketRemapsChildRefs() throws {
+        let s = store()
+        let a = s.createPocket("A"); let b = s.createPocket("B")
+        s.addChildPocket(b.id, toPocket: a.id)
+        s.addSong("sng_1", toPocket: a.id)
+        // Export the parent only → its child ref points outside the import, so it's dropped.
+        let parentOnly = try XCTUnwrap(s.exportPocket(a.id))
+        try s.importCollection(data: parentOnly)
+        let importedA = s.pockets.last!
+        XCTAssertNotEqual(importedA.id, a.id)
+        XCTAssertEqual(importedA.songIds, ["sng_1"])
+        XCTAssertTrue(importedA.childPocketIds.isEmpty)          // ref to non-imported B dropped
+    }
+
+    func testRealizeFromSongIdsBuildsSetlist() async {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let s = store()
+        s.app = app
+        let sl = s.realize(songIds: ["sng_1", "sng_2"], name: "Apple Mix")
+        XCTAssertNotNil(sl)
+        XCTAssertEqual(sl?.name, "Apple Mix")
+        XCTAssertTrue((sl?.tracks.count ?? 0) >= 2)                    // both explicit songs present
+        XCTAssertEqual(s.setlists.count, 1)                           // persisted into history
+        XCTAssertTrue(sl!.tracks.contains { $0.songId == "sng_1" })
+    }
+
     func testPersistenceReloads() {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-persist-\(UUID().uuidString).json")
         let s1 = CollectionsStore(fileURL: url)

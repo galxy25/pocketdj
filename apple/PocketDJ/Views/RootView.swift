@@ -44,6 +44,7 @@ struct RootView: View {
                     .navigationDestination(for: IndexSong.self) { SongDetailView(song: $0) }
                     .navigationDestination(for: Pocket.self) { PocketDetailView(pocketId: $0.id) }
                     .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlistId: $0.id, path: $path) }
+                    .navigationDestination(for: SourcePlaylist.self) { IndexPlaylistDetailView(source: $0, path: $path) }
                     .navigationDestination(for: Setlist.self) { SetlistDetailView(setlistId: $0.id) }
             }
         }
@@ -82,7 +83,7 @@ struct RootView: View {
         switch section ?? .browse {
         case .browse:    BrowseView()
         case .pockets:   PocketsView()
-        case .playlists: PlaylistsView()
+        case .playlists: PlaylistsView(path: $path)
         case .settings:  SettingsView(settings: settings)
         }
     }

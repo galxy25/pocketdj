@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Pockets — reusable, nestable groupings of harmonically-similar items.
 struct PocketsView: View {
@@ -55,7 +56,13 @@ struct PocketsView: View {
 struct PocketDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
+    @Environment(\.dismiss) private var dismiss
     let pocketId: String
+    @State private var renaming = false
+    @State private var nameDraft = ""
+    @State private var confirmingDelete = false
+    @State private var showExporter = false
+    @State private var exportDoc = EditsFile(data: Data())
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
 
@@ -99,5 +106,39 @@ struct PocketDetailView: View {
         .navigationTitle(pocket?.name ?? "Pocket")
         .accessibilityIdentifier("pocket-detail")
         .background(Theme.bg)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button { nameDraft = pocket?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
+                        .accessibilityIdentifier("rename-pocket")
+                    Button { export() } label: { Label("Export…", systemImage: "square.and.arrow.up") }
+                        .accessibilityIdentifier("export-pocket")
+                    Divider()
+                    Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete pocket", systemImage: "trash") }
+                        .accessibilityIdentifier("delete-pocket")
+                } label: { Image(systemName: "ellipsis.circle") }
+                    .accessibilityIdentifier("pocket-menu")
+            }
+        }
+        .alert("Rename pocket", isPresented: $renaming) {
+            TextField("Name", text: $nameDraft)
+            Button("Save") { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePocket(pocketId, n) } }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete this pocket?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete pocket", role: .destructive) { collections.deletePocket(pocketId); dismiss() }
+                .accessibilityIdentifier("delete-pocket-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the pocket and unnests it from any parent. Its items aren’t deleted. This can’t be undone.")
+        }
+        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .json,
+                      defaultFilename: "pocketdj-pocket") { _ in }
+    }
+
+    private func export() {
+        if let data = try? collections.exportPocket(pocketId) {
+            exportDoc = EditsFile(data: data); showExporter = true
+        }
     }
 }

@@ -8,12 +8,14 @@ struct SettingsView: View {
     @Bindable var settings: SettingsStore
     @Environment(AppModel.self) private var app
     @Environment(EditsStore.self) private var edits
+    @Environment(CollectionsStore.self) private var collections
 
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
     @State private var confirmingReset = false
     @State private var showExporter = false
     @State private var showImporter = false
+    @State private var showCollectionsImporter = false
     @State private var exportDoc = EditsFile(data: Data())
 
     enum RipStatus { case ok(String), bad(String) }
@@ -24,6 +26,7 @@ struct SettingsView: View {
             searchSection
             ripSection
             editsSection
+            collectionsSection
             resetSection
         }
         .formStyle(.grouped)
@@ -40,6 +43,27 @@ struct SettingsView: View {
                 try? edits.importData(data)
                 app.applyEdits()
             }
+        }
+        .fileImporter(isPresented: $showCollectionsImporter, allowedContentTypes: [.json]) { result in
+            guard case .success(let url) = result else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            if let data = try? Data(contentsOf: url) { try? collections.importCollection(data: data) }
+        }
+    }
+
+    // MARK: Collections (import a pocket / playlist export)
+
+    private var collectionsSection: some View {
+        Section {
+            Button { showCollectionsImporter = true } label: {
+                Label("Import pocket / playlist…", systemImage: "square.and.arrow.down")
+            }
+            .accessibilityIdentifier("collections-import")
+        } header: {
+            Text("Collections")
+        } footer: {
+            Text("\(collections.pockets.count) pocket\(collections.pockets.count == 1 ? "" : "s"), \(collections.playlists.count) playlist\(collections.playlists.count == 1 ? "" : "s"). Import a single pocket or playlist exported from another device — fresh ids are minted so it never overwrites an existing one. Export from an item’s detail-view ▸ menu.")
         }
     }
 

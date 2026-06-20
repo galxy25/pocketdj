@@ -24,6 +24,18 @@ final class CollectionsStore {
             setlists = doc.setlists
             lastAddTarget = doc.lastAddTarget
         }
+        seedForUITestsIfRequested()
+    }
+
+    /// Testing seam: `PDJ_SEED_COLLECTIONS=1` (alongside PDJ_USE_FIXTURE) seeds a
+    /// deterministic playlist with one fixture song so a setlist Play flow can be
+    /// driven headlessly without the multi-step Browser ▸ Add-to dance. No-op in
+    /// normal use.
+    private func seedForUITestsIfRequested() {
+        guard ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"] != nil,
+              playlists.isEmpty else { return }
+        let pl = createPlaylist("Seeded Set")
+        addSong("sng_1", toPlaylist: pl.id)
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -150,6 +162,37 @@ final class CollectionsStore {
         mutatePlaylist(id) { pl in for i in pl.sequences.indices { pl.sequences[i].children?.removeAll { $0.nodeId == nodeId } } }
     }
 
+    /// Reorder a node within its chapter's `children` by `delta` (-1 up, +1 down).
+    /// No-op if the move would fall outside the chapter (so it's safe to call at the ends).
+    func moveNode(_ nodeId: String, inPlaylist id: String, by delta: Int) {
+        guard delta != 0 else { return }
+        mutatePlaylist(id) { pl in
+            for s in pl.sequences.indices {
+                guard var children = pl.sequences[s].children,
+                      let from = children.firstIndex(where: { $0.nodeId == nodeId }) else { continue }
+                let to = from + delta
+                guard children.indices.contains(to) else { return }   // at an end → no-op
+                let node = children.remove(at: from)
+                children.insert(node, at: to)
+                pl.sequences[s].children = children
+                return
+            }
+        }
+    }
+    func moveNodeUp(_ nodeId: String, inPlaylist id: String)   { moveNode(nodeId, inPlaylist: id, by: -1) }
+    func moveNodeDown(_ nodeId: String, inPlaylist id: String) { moveNode(nodeId, inPlaylist: id, by:  1) }
+
+    /// Create a fresh, editable local Playlist seeded with `songIds` in its default
+    /// chapter (the "Duplicate as editable playlist" action on an index playlist).
+    @discardableResult
+    func createPlaylist(_ name: String, songIds: [String]) -> Playlist {
+        var pl = CollectionsFactory.makePlaylist(name, now: now)
+        pl.sequences[0].children = songIds.map {
+            PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: $0)
+        }
+        playlists.append(pl); save(); return pl
+    }
+
     // MARK: Add-to memory ("remembers last" target + chapter, for fast repeat adds)
 
     func setLastAddTarget(_ target: AddTarget?) { lastAddTarget = target; save() }
@@ -216,6 +259,25 @@ final class CollectionsStore {
         return setlist
     }
 
+    /// Realize an explicit, ordered list of song ids into a fresh Setlist (used by
+    /// the read-only "From your sources" index playlists' ▶ Play). Builds a transient
+    /// one-chapter Playlist (NOT persisted) and reuses the standard realize path, so
+    /// the produced Setlist still belongs to a parent playlist id for history. Returns
+    /// nil if the catalog context is unavailable.
+    @discardableResult
+    func realize(songIds: [String], name: String) -> Setlist? {
+        guard let ctx = makeCtx() else { return nil }
+        var seq = CollectionsFactory.makeSequence("Set")
+        seq.children = songIds.map { PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: $0) }
+        let transient = Playlist(id: CollectionsFactory.newPlaylistId(), name: name,
+                                 sequences: [seq], createdAt: now, updatedAt: now)
+        let setlist = RealizeEngine.buildSetlist(transient, ctx, seed: CollectionsFactory.uid(),
+                                                 name: name, now: now)
+        setlists.append(setlist)
+        save()
+        return setlist
+    }
+
     func deleteSetlist(_ id: String) { setlists.removeAll { $0.id == id }; save() }
 
     @discardableResult
@@ -234,6 +296,63 @@ final class CollectionsStore {
         setlists[i].tracks[trackIndex].note = note
         save()
         return setlists[i]
+    }
+
+    // MARK: Import / export (single-item, versioned envelope)
+
+    /// Export one pocket as a `CollectionsDocument` (the same versioned envelope used
+    /// for persistence, carrying just that pocket). Returns nil if it's gone.
+    func exportPocket(_ id: String) throws -> Data? {
+        guard let p = pocket(id) else { return nil }
+        return try CollectionsCodec.encode(CollectionsDocument(pockets: [p]))
+    }
+    /// Export one playlist as a `CollectionsDocument` carrying just that playlist.
+    func exportPlaylist(_ id: String) throws -> Data? {
+        guard let pl = playlist(id) else { return nil }
+        return try CollectionsCodec.encode(CollectionsDocument(playlists: [pl]))
+    }
+
+    /// Import a `CollectionsDocument` export, MINTING FRESH ids for every imported
+    /// pocket/playlist (and all playlist node ids) so it never collides with — or
+    /// silently overwrites — existing collections. Imported pockets' cross-refs
+    /// (childPocketIds, and any pocket node refs) are rewritten to the new ids when
+    /// the referenced item is part of the same import. Setlists are not imported.
+    func importCollection(data: Data) throws {
+        let doc = try CollectionsCodec.decode(data)
+
+        // 1) Allocate fresh ids for every imported pocket + playlist up-front so
+        //    intra-import references can be remapped.
+        var pocketIdMap: [String: String] = [:]
+        for p in doc.pockets { pocketIdMap[p.id] = CollectionsFactory.newPocketId() }
+        var playlistIdMap: [String: String] = [:]
+        for pl in doc.playlists { playlistIdMap[pl.id] = CollectionsFactory.newPlaylistId() }
+
+        // 2) Pockets: remap id + child refs (drop refs to pockets not in the import).
+        for var p in doc.pockets {
+            p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
+            p.childPocketIds = p.childPocketIds.compactMap { pocketIdMap[$0] }
+            p.createdAt = now; p.updatedAt = now
+            pockets.append(p)
+        }
+
+        // 3) Playlists: remap id + freshen every node id (recursively for sub-sequences).
+        for var pl in doc.playlists {
+            pl.id = playlistIdMap[pl.id] ?? CollectionsFactory.newPlaylistId()
+            pl.sequences = pl.sequences.map { remintNode($0, pocketIdMap: pocketIdMap) }
+            pl.createdAt = now; pl.updatedAt = now
+            playlists.append(pl)
+        }
+        save()
+    }
+
+    /// Deep-copy a node with a fresh nodeId, recursing into children; remap any
+    /// pocket ref to its imported counterpart when present.
+    private func remintNode(_ node: PlaylistNode, pocketIdMap: [String: String]) -> PlaylistNode {
+        var n = node
+        n.nodeId = CollectionsFactory.newNodeId()
+        if let pid = n.pocketId, let mapped = pocketIdMap[pid] { n.pocketId = mapped }
+        if let kids = n.children { n.children = kids.map { remintNode($0, pocketIdMap: pocketIdMap) } }
+        return n
     }
 
     // MARK: Persistence

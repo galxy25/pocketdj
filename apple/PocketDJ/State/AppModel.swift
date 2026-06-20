@@ -17,6 +17,9 @@ final class AppModel {
     var songs: [IndexSong] = []
     var songsById: [String: IndexSong] = [:]
     var albumsById: [String: IndexAlbum] = [:]
+    /// Read-only playlists carried in the enabled sources (e.g. Apple Music user
+    /// playlists), merged + deduped by id, each tagged with its source's name.
+    var indexPlaylists: [SourcePlaylist] = []
     var manifest: Manifest?
 
     /// The un-edited catalog (so edit forms can show originals / compute deltas).
@@ -53,8 +56,9 @@ final class AppModel {
         }
         state = .loading
         do {
-            let index = try await fetchIndex()
+            let (index, sourcePlaylists) = try await fetchIndex()
             manifest = index.manifest
+            indexPlaylists = sourcePlaylists
             rawAlbums = index.albums
             rawSongs = index.songs
             rawAlbumsById = Dictionary(rawAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -90,14 +94,17 @@ final class AppModel {
         await loadIfNeeded()
     }
 
-    private func fetchIndex() async throws -> IndexJSON {
-        if let loader { return try await loader.loadIndex() }
+    private func fetchIndex() async throws -> (IndexJSON, [SourcePlaylist]) {
+        if let loader {
+            let index = try await loader.loadIndex()
+            return (index, AppModel.sourcePlaylists([index]))
+        }
         let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
         var indexes: [IndexJSON] = []
         for url in urls {
             indexes.append(try await CatalogService(url: url).loadIndex())
         }
-        return AppModel.merge(indexes)
+        return (AppModel.merge(indexes), AppModel.sourcePlaylists(indexes))
     }
 
     /// Merge multiple source indexes into one (first occurrence of each id wins).
@@ -105,14 +112,31 @@ final class AppModel {
     nonisolated static func merge(_ indexes: [IndexJSON]) -> IndexJSON {
         var albums: [IndexAlbum] = []
         var songs: [IndexSong] = []
-        var seenAlbums = Set<String>(), seenSongs = Set<String>()
+        var playlists: [IndexPlaylist] = []
+        var seenAlbums = Set<String>(), seenSongs = Set<String>(), seenPlaylists = Set<String>()
         for index in indexes {
             for a in index.albums where seenAlbums.insert(a.id).inserted { albums.append(a) }
             for s in index.songs where seenSongs.insert(s.id).inserted { songs.append(s) }
+            for p in index.playlists ?? [] where seenPlaylists.insert(p.id).inserted { playlists.append(p) }
         }
         let manifest = indexes.first?.manifest
             ?? Manifest(source: nil, generatedAt: nil, sourceName: "Collection", counts: nil)
-        return IndexJSON(manifest: manifest, albums: albums, songs: songs)
+        return IndexJSON(manifest: manifest, albums: albums, songs: songs,
+                         playlists: playlists.isEmpty ? nil : playlists)
+    }
+
+    /// Flatten each source's playlists into source-tagged rows (for the badge),
+    /// deduped by playlist id across sources (first occurrence wins).
+    nonisolated static func sourcePlaylists(_ indexes: [IndexJSON]) -> [SourcePlaylist] {
+        var out: [SourcePlaylist] = []
+        var seen = Set<String>()
+        for index in indexes {
+            let name = index.manifest.sourceName ?? "Collection"
+            for p in index.playlists ?? [] where seen.insert(p.id).inserted {
+                out.append(SourcePlaylist(playlist: p, sourceName: name))
+            }
+        }
+        return out
     }
 
     /// Resolve an album's ordered tracklist to song records.
