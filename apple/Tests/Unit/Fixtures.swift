@@ -23,8 +23,41 @@ enum TestData {
     }
     """
 
+    /// A SECOND source whose sourceName differs from `json` and which RE-USES one
+    /// album/song id (alb_1 / sng_1) plus adds its own (alb_9 / sng_9). Used to
+    /// prove first-seen-wins source tagging across two merged indexes.
+    static let json2 = """
+    {
+      "manifest": { "sourceName": "Apple Music (Local)", "counts": { "albums": 2, "songs": 2 } },
+      "albums": [
+        { "id": "alb_1", "artist": "Aria", "name": "Night Drive", "genre": "Electronic", "year": 2020, "country": "US", "trackList": ["sng_1"], "fileType": "m4a" },
+        { "id": "alb_9", "artist": "Zephyr", "name": "Cloud Nine", "genre": "Pop", "year": 2024, "country": "US", "trackList": ["sng_9"], "fileType": "m4a" }
+      ],
+      "songs": [
+        { "id": "sng_1", "albumId": "alb_1", "artist": "Aria", "name": "Neon", "trackNumber": 1, "year": 2020, "bpm": 128, "key": "A minor", "camelot": "8A", "length": 222000, "explicit": false },
+        { "id": "sng_9", "albumId": "alb_9", "artist": "Zephyr", "name": "Skyline", "trackNumber": 1, "year": 2024, "bpm": 100, "key": "C major", "camelot": "8B", "length": 180000, "explicit": false }
+      ]
+    }
+    """
+
     static func index() throws -> IndexJSON {
         try JSONDecoder().decode(IndexJSON.self, from: Data(json.utf8))
+    }
+
+    static func index2() throws -> IndexJSON {
+        try JSONDecoder().decode(IndexJSON.self, from: Data(json2.utf8))
+    }
+
+    /// Albums tagged with their origin source (single-source: "Test Crate").
+    static func albumItemsTagged(source: String = "Test Crate") throws -> [BrowseItem] {
+        try index().albums.map { .album($0, source: source) }
+    }
+
+    /// Songs tagged with their origin source (single-source: "Test Crate").
+    static func songItemsTagged(source: String = "Test Crate") throws -> [BrowseItem] {
+        let idx = try index()
+        let byId = Dictionary(uniqueKeysWithValues: idx.albums.map { ($0.id, $0.name) })
+        return idx.songs.map { .song($0, albumName: $0.albumId.flatMap { byId[$0] } ?? "", source: source) }
     }
 
     static func albumItems() throws -> [BrowseItem] {

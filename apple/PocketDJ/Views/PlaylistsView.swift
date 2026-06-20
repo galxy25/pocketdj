@@ -10,6 +10,7 @@ struct PlaylistsView: View {
     @Binding var path: NavigationPath
     @State private var newName = ""
     @State private var showNew = false
+    @State private var showImporter = false
 
     private var indexPlaylists: [SourcePlaylist] { app.indexPlaylists }
 
@@ -82,6 +83,11 @@ struct PlaylistsView: View {
         .background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
+                    .help("Import a playlist export")
+                    .accessibilityIdentifier("import-playlist")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { showNew = true } label: { Image(systemName: "plus") }
                     .accessibilityIdentifier("new-playlist")
             }
@@ -90,6 +96,12 @@ struct PlaylistsView: View {
             TextField("Name", text: $newName)
             Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPlaylist(n) }; newName = "" }
             Button("Cancel", role: .cancel) { newName = "" }
+        }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+            guard case .success(let url) = result else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            if let data = try? Data(contentsOf: url) { try? collections.importCollection(data: data) }
         }
     }
 }

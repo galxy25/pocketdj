@@ -57,6 +57,10 @@ struct AlbumDetailView: View {
                     if let y = current.year { Tag(text: String(y), color: Theme.accent2) }
                     if let c = current.country { Tag(text: c, color: Theme.fgDim) }
                 }
+                if let src = app.source(ofAlbum: current.id) {
+                    Tag(text: src, color: Theme.fgDim)
+                        .accessibilityIdentifier("source-tag")
+                }
                 Text("\(tracks.count) tracks")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.fgDim)

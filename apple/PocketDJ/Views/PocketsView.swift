@@ -6,6 +6,7 @@ struct PocketsView: View {
     @Environment(CollectionsStore.self) private var collections
     @State private var newName = ""
     @State private var showNew = false
+    @State private var showImporter = false
 
     var body: some View {
         Group {
@@ -41,6 +42,11 @@ struct PocketsView: View {
         .background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
+                    .help("Import a pocket export")
+                    .accessibilityIdentifier("import-pocket")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button { showNew = true } label: { Image(systemName: "plus") }
                     .accessibilityIdentifier("new-pocket")
             }
@@ -49,6 +55,12 @@ struct PocketsView: View {
             TextField("Name", text: $newName)
             Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPocket(n) }; newName = "" }
             Button("Cancel", role: .cancel) { newName = "" }
+        }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+            guard case .success(let url) = result else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            if let data = try? Data(contentsOf: url) { try? collections.importCollection(data: data) }
         }
     }
 }

@@ -44,13 +44,28 @@ final class BrowseState {
 
     var activeFilterCount: Int { clauses.filter { !$0.isIncomplete }.count }
 
+    /// Active `source` filter values (any-of), for pushing into the online query as
+    /// a keyword term/terms filter. Empty when no complete source clause is set.
+    /// `is`/`is not` carry a single value; `any of` carries a set (we ignore `neq`
+    /// online since OpenSearch can't express it via a single positive term filter).
+    var activeSourceValues: [String] {
+        clauses.filter { $0.field == "source" && !$0.isIncomplete }.flatMap { c -> [String] in
+            switch c.op {
+            case .eq: return [c.value]
+            case .inList: return Array(c.values)
+            default: return []   // neq has no positive online term equivalent
+            }
+        }.filter { !$0.isEmpty }
+    }
+
     /// All rows for the current kind (unfiltered), with album names attached to songs.
     func baseItems(_ app: AppModel) -> [BrowseItem] {
         switch kind {
         case .album:
-            return app.albums.map { .album($0) }
+            return app.albums.map { .album($0, source: app.source(ofAlbum: $0.id)) }
         case .song:
-            return app.songs.map { .song($0, albumName: app.albumName(forSong: $0)) }
+            return app.songs.map { .song($0, albumName: app.albumName(forSong: $0),
+                                         source: app.source(ofSong: $0.id)) }
         }
     }
 
@@ -63,11 +78,11 @@ final class BrowseState {
 
     private func textMatch(_ item: BrowseItem, _ q: String) -> Bool {
         switch item {
-        case .album(let a):
+        case .album(let a, _):
             return a.name.localizedCaseInsensitiveContains(q)
                 || a.artist.localizedCaseInsensitiveContains(q)
                 || (a.genre ?? "").localizedCaseInsensitiveContains(q)
-        case .song(let s, let albumName):
+        case .song(let s, let albumName, _):
             return s.name.localizedCaseInsensitiveContains(q)
                 || s.artist.localizedCaseInsensitiveContains(q)
                 || albumName.localizedCaseInsensitiveContains(q)
@@ -76,6 +91,9 @@ final class BrowseState {
 
     /// Distinct values present for an options-backed field (drives `any of` pickers).
     func options(for fieldID: String, in app: AppModel) -> [String] {
+        // Source options come straight from the loaded catalog's distinct sources
+        // (first-seen order), independent of the current kind.
+        if fieldID == "source" { return app.availableSources }
         var set = Set<String>()
         for item in baseItems(app) {
             switch Fields.value(item, fieldID) {

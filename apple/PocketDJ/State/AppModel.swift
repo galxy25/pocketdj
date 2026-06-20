@@ -22,6 +22,15 @@ final class AppModel {
     var indexPlaylists: [SourcePlaylist] = []
     var manifest: Manifest?
 
+    /// Origin source name per album/song id (FIRST-seen wins, same dedup order as
+    /// `merge`) — the merged catalog otherwise loses which source each item came
+    /// from. Mirrors how `sourcePlaylists` tags playlists by source.
+    private(set) var albumSourceById: [String: String] = [:]
+    private(set) var songSourceById: [String: String] = [:]
+    /// Distinct source names present in the loaded catalog, in first-seen order
+    /// (e.g. "My Vinyl", "Apple Music (Local)"). Drives the source filter options.
+    private(set) var availableSources: [String] = []
+
     /// The un-edited catalog (so edit forms can show originals / compute deltas).
     private var rawAlbums: [IndexAlbum] = []
     private var rawSongs: [IndexSong] = []
@@ -56,9 +65,12 @@ final class AppModel {
         }
         state = .loading
         do {
-            let (index, sourcePlaylists) = try await fetchIndex()
+            let (index, sourcePlaylists, sources) = try await fetchIndex()
             manifest = index.manifest
             indexPlaylists = sourcePlaylists
+            albumSourceById = sources.albums
+            songSourceById = sources.songs
+            availableSources = sources.names
             rawAlbums = index.albums
             rawSongs = index.songs
             rawAlbumsById = Dictionary(rawAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -94,17 +106,38 @@ final class AppModel {
         await loadIfNeeded()
     }
 
-    private func fetchIndex() async throws -> (IndexJSON, [SourcePlaylist]) {
+    /// Per-source tagging derived alongside the merge: id→source maps + the
+    /// distinct source names (first-seen order).
+    typealias SourceTags = (albums: [String: String], songs: [String: String], names: [String])
+
+    private func fetchIndex() async throws -> (IndexJSON, [SourcePlaylist], SourceTags) {
         if let loader {
             let index = try await loader.loadIndex()
-            return (index, AppModel.sourcePlaylists([index]))
+            return (index, AppModel.sourcePlaylists([index]), AppModel.sourceTags([index]))
         }
         let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
         var indexes: [IndexJSON] = []
         for url in urls {
             indexes.append(try await CatalogService(url: url).loadIndex())
         }
-        return (AppModel.merge(indexes), AppModel.sourcePlaylists(indexes))
+        return (AppModel.merge(indexes), AppModel.sourcePlaylists(indexes), AppModel.sourceTags(indexes))
+    }
+
+    /// Tag each album/song id with the name of the FIRST source that carries it —
+    /// same dedup order as `merge` — so the merged catalog keeps its provenance.
+    /// Pure + nonisolated so it's unit-testable without the network.
+    nonisolated static func sourceTags(_ indexes: [IndexJSON]) -> SourceTags {
+        var albums: [String: String] = [:]
+        var songs: [String: String] = [:]
+        var names: [String] = []
+        var seenNames = Set<String>()
+        for index in indexes {
+            let name = index.manifest.sourceName ?? "Collection"
+            if seenNames.insert(name).inserted { names.append(name) }
+            for a in index.albums where albums[a.id] == nil { albums[a.id] = name }
+            for s in index.songs where songs[s.id] == nil { songs[s.id] = name }
+        }
+        return (albums, songs, names)
     }
 
     /// Merge multiple source indexes into one (first occurrence of each id wins).
@@ -147,4 +180,8 @@ final class AppModel {
     func albumName(forSong song: IndexSong) -> String {
         song.albumId.flatMap { albumsById[$0]?.name } ?? ""
     }
+
+    /// Origin source name for an album/song id (nil if untagged/unknown).
+    func source(ofAlbum id: String) -> String? { albumSourceById[id] }
+    func source(ofSong id: String) -> String? { songSourceById[id] }
 }

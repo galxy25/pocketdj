@@ -15,6 +15,7 @@ struct SearchHit: Sendable {
     let camelot: String?
     let explicit: Bool?
     let trackNumber: Int?
+    let source: String?
 }
 
 /// Online search against the `pocketdj` OpenSearch Serverless collection — same
@@ -26,8 +27,8 @@ enum SearchService {
     static let service = "aoss"
     static let index = "pocketdj"
 
-    static func search(_ query: String, kind: ItemKind?, creds: SigV4Creds,
-                       size: Int = 60) async throws -> [SearchHit] {
+    static func search(_ query: String, kind: ItemKind?, sources: [String] = [],
+                       creds: SigV4Creds, size: Int = 60) async throws -> [SearchHit] {
         let path = "/\(index)/_search"
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let must: [[String: Any]] = trimmed.isEmpty
@@ -41,6 +42,13 @@ enum SearchService {
               ]]]
         var filter: [[String: Any]] = []
         if let kind { filter.append(["term": ["type": kind.rawValue]]) }
+        // Source filter — `source` is a keyword field. One value → `term`; several
+        // (any-of) → `terms`. Empty means no source constraint.
+        if sources.count == 1 {
+            filter.append(["term": ["source": sources[0]]])
+        } else if sources.count > 1 {
+            filter.append(["terms": ["source": sources]])
+        }
         let bodyObj: [String: Any] = ["size": size, "query": ["bool": ["must": must, "filter": filter]]]
         let body = try JSONSerialization.data(withJSONObject: bodyObj)
 
@@ -79,6 +87,7 @@ enum SearchService {
         let year: Int?, trackNumber: Int?
         let bpm: Double?
         let explicit: Bool?
+        let source: String?
     }
 
     private static func parse(_ data: Data) throws -> [SearchHit] {
@@ -88,7 +97,7 @@ enum SearchService {
             return SearchHit(id: hit.id, type: s.type ?? "song", title: s.title, artist: s.artist,
                              album: s.album, albumId: s.albumId, genre: s.genre, year: s.year,
                              bpm: s.bpm, key: s.key, camelot: s.camelot, explicit: s.explicit,
-                             trackNumber: s.trackNumber)
+                             trackNumber: s.trackNumber, source: s.source)
         }
     }
 }

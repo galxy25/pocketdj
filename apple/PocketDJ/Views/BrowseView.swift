@@ -39,7 +39,7 @@ struct BrowseView: View {
         .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
         .onChange(of: browse.kind) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.layout) { browse.persist() }
-        .onChange(of: browse.clauses) { browse.persist() }
+        .onChange(of: browse.clauses) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.sortKeys) { browse.persist() }
         .onChange(of: browse.searchOnline) {
             browse.persist()
@@ -56,7 +56,8 @@ struct BrowseView: View {
     }
 
     private func triggerOnline() {
-        online.searchDebounced(query: browse.query, kind: browse.kind, creds: searchCreds, app: app)
+        online.searchDebounced(query: browse.query, kind: browse.kind,
+                               sources: browse.activeSourceValues, creds: searchCreds, app: app)
     }
 
     /// SF Symbol for the current device — shown when searching on-device.
@@ -176,7 +177,7 @@ struct BrowseView: View {
             if browse.layout == .grid {
                 LazyVGrid(columns: gridColumns, spacing: 18) {
                     ForEach(items) { item in
-                        if case .album(let album) = item {
+                        if case .album(let album, _) = item {
                             NavigationLink(value: album) { AlbumCard(album: album) }
                                 .buttonStyle(.plain)
                                 .accessibilityIdentifier("album-\(album.id)")
@@ -187,7 +188,7 @@ struct BrowseView: View {
             } else {
                 LazyVStack(spacing: 0) {
                     ForEach(items) { item in
-                        if case .album(let album) = item {
+                        if case .album(let album, _) = item {
                             NavigationLink(value: album) { AlbumRow(album: album) }
                                 .buttonStyle(.plain)
                                 .accessibilityIdentifier("album-\(album.id)")
@@ -205,7 +206,7 @@ struct BrowseView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(items) { item in
-                    if case .song(let song, let albumName) = item {
+                    if case .song(let song, let albumName, _) = item {
                         NavigationLink(value: song) {
                             SongRow(song: song, albumName: albumName).contentShape(Rectangle())
                         }

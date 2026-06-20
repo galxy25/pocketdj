@@ -46,6 +46,10 @@ struct SongDetailView: View {
             Text(current.name).font(.title2.bold()).foregroundStyle(Theme.fg)
             Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
             KeyChip(key: current.key, camelot: current.camelot)
+            if let src = app.source(ofSong: current.id) {
+                Tag(text: src, color: Theme.fgDim)
+                    .accessibilityIdentifier("source-tag")
+            }
             if let album {
                 NavigationLink(value: album) {
                     Label(album.name, systemImage: "rectangle.stack")
@@ -70,6 +74,7 @@ struct SongDetailView: View {
         r.append(("Length", Fmt.duration(current.length)))
         r.append(("Explicit", current.explicit == true ? "Yes" : "No"))
         if let f = current.fileType { r.append(("File type", f.uppercased())) }
+        if let src = app.source(ofSong: current.id) { r.append(("Source", src)) }
         if let l = current.lyricsStatus { r.append(("Lyrics", l)) }
         return r
     }

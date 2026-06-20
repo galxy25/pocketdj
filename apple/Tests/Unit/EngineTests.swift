@@ -117,6 +117,38 @@ final class FilterEngineTests: XCTestCase {
         let expl = Clause(field: "explicit", op: .eq, value: "true")
         XCTAssertEqual(FilterEngine.apply(items, [bpm, expl]).map(\.idString), ["sng_2", "sng_6"])
     }
+
+    // MARK: Source clause (matches the origin source threaded onto each item)
+
+    func testSourceEqualsOnSongs() throws {
+        // Tag sng_1..3 with "My Vinyl" and the rest with "Apple Music (Local)".
+        let items = try TestData.songItems().map { item -> BrowseItem in
+            guard case .song(let s, let an, _) = item else { return item }
+            let src = ["sng_1", "sng_2", "sng_3"].contains(s.id) ? "My Vinyl" : "Apple Music (Local)"
+            return .song(s, albumName: an, source: src)
+        }
+        let c = Clause(field: "source", op: .eq, value: "My Vinyl")
+        XCTAssertEqual(Set(FilterEngine.apply(items, [c]).map(\.idString)), ["sng_1", "sng_2", "sng_3"])
+    }
+
+    func testSourceInListOnAlbums() throws {
+        let items = [
+            BrowseItem.album(try TestData.index().albums[0], source: "My Vinyl"),       // alb_1
+            BrowseItem.album(try TestData.index().albums[1], source: "Apple Music (Local)"), // alb_2
+            BrowseItem.album(try TestData.index().albums[2], source: "Web"),            // alb_3
+        ]
+        var c = Clause(field: "source", op: .inList); c.values = ["My Vinyl", "Web"]
+        XCTAssertEqual(Set(FilterEngine.apply(items, [c]).map(\.idString)), ["alb_1", "alb_3"])
+    }
+
+    func testSourceNotEquals() throws {
+        let items = try TestData.albumItemsTagged(source: "My Vinyl")
+        // None match "is not My Vinyl"; all match "is not Web".
+        let none = Clause(field: "source", op: .neq, value: "My Vinyl")
+        XCTAssertTrue(FilterEngine.apply(items, [none]).isEmpty)
+        let all = Clause(field: "source", op: .neq, value: "Web")
+        XCTAssertEqual(FilterEngine.apply(items, [all]).count, items.count)
+    }
 }
 
 final class SortEngineTests: XCTestCase {
