@@ -7,6 +7,7 @@ struct AlbumDetailView: View {
     let album: IndexAlbum
     @State private var showEdit = false
     @State private var showAdd = false
+    @State private var showAudioEdit = false
 
     /// Latest (possibly edited) album from the catalog.
     private var current: IndexAlbum { app.albumsById[album.id] ?? album }
@@ -39,6 +40,7 @@ struct AlbumDetailView: View {
         }
         .sheet(isPresented: $showEdit) { EditAlbumView(album: current) }
         .sheet(isPresented: $showAdd) { AddToCollectionView(item: .album(current.id)) }
+        .sheet(isPresented: $showAudioEdit) { EditAudioAnalysisView(album: current) }
     }
 
     private var header: some View {
@@ -100,6 +102,9 @@ struct AlbumDetailView: View {
                     Text("\(Int(d) / 60):\(String(format: "%02d", Int(d) % 60)) total")
                         .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 }
+                Button("Edit") { showAudioEdit = true }
+                    .font(.caption)
+                    .accessibilityIdentifier("edit-audio")
             }
             VStack(spacing: 0) {
                 ForEach(Array((current.audioTracks ?? []).enumerated()), id: \.offset) { i, seg in

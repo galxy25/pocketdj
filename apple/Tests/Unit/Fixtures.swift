@@ -7,7 +7,12 @@ enum TestData {
     {
       "manifest": { "sourceName": "Test Crate", "counts": { "albums": 3, "songs": 7 } },
       "albums": [
-        { "id": "alb_1", "artist": "Aria", "name": "Night Drive", "genre": "Electronic", "year": 2020, "country": "US", "trackList": ["sng_1","sng_2","sng_3"], "fileType": "mp3" },
+        { "id": "alb_1", "artist": "Aria", "name": "Night Drive", "genre": "Electronic", "year": 2020, "country": "US", "trackList": ["sng_1","sng_2","sng_3"], "fileType": "mp3", "audioDurationSec": 728,
+          "audioTracks": [
+            { "trackNumber": 1, "startMs": 0, "endMs": 222000, "durationMs": 222000, "bpm": 128, "key": "A minor", "camelot": "8A", "keyStrength": 0.91 },
+            { "trackNumber": 2, "startMs": 222000, "endMs": 423000, "durationMs": 201000, "bpm": 124, "key": "C major", "camelot": "8B", "keyStrength": 0.83 },
+            { "trackNumber": 3, "startMs": 423000, "endMs": 728000, "durationMs": 305000, "bpm": 90, "key": "E minor", "camelot": "9A", "keyStrength": 0.77 }
+          ] },
         { "id": "alb_2", "artist": "Bento", "name": "Brass Era", "genre": "Jazz", "year": 1998, "country": "JP", "trackList": ["sng_4","sng_5"], "fileType": "aiff" },
         { "id": "alb_3", "artist": "Cobalt", "name": "Red Clay", "genre": "Funk / Soul", "year": 1975, "country": "GB", "trackList": ["sng_6","sng_7"], "fileType": "mp3" }
       ],
