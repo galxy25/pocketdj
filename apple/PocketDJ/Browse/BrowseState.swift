@@ -44,20 +44,6 @@ final class BrowseState {
 
     var activeFilterCount: Int { clauses.filter { !$0.isIncomplete }.count }
 
-    /// Active `source` filter values (any-of), for pushing into the online query as
-    /// a keyword term/terms filter. Empty when no complete source clause is set.
-    /// `is`/`is not` carry a single value; `any of` carries a set (we ignore `neq`
-    /// online since OpenSearch can't express it via a single positive term filter).
-    var activeSourceValues: [String] {
-        clauses.filter { $0.field == "source" && !$0.isIncomplete }.flatMap { c -> [String] in
-            switch c.op {
-            case .eq: return [c.value]
-            case .inList: return Array(c.values)
-            default: return []   // neq has no positive online term equivalent
-            }
-        }.filter { !$0.isEmpty }
-    }
-
     /// All rows for the current kind (unfiltered), with album names attached to songs.
     func baseItems(_ app: AppModel) -> [BrowseItem] {
         switch kind {

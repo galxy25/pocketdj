@@ -57,7 +57,7 @@ struct BrowseView: View {
 
     private func triggerOnline() {
         online.searchDebounced(query: browse.query, kind: browse.kind,
-                               sources: browse.activeSourceValues, creds: searchCreds, app: app)
+                               clauses: browse.clauses, creds: searchCreds, app: app)
     }
 
     /// SF Symbol for the current device — shown when searching on-device.

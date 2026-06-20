@@ -112,28 +112,90 @@ async function esRequest({ method, endpoint, path, body, creds, region, service,
   return { status: res.status, ok: res.ok, text };
 }
 
+// ---------------- genre → tier-1 category (mirror of apple Genre.swift /
+// src/starmap/constellationMap.ts) — a PURE ORDERED substring matcher so the
+// online `genreCategory` filter matches the app's collapsed category options. ----
+const GENRE_OTHER = 'Other';
+const GENRE_CATEGORIES = [
+  ['hip-hop', ['hip hop', 'hip-hop', 'hiphop', 'rap', 'boom bap', 'gangsta', 'g-funk', 'crunk',
+    'trap', 'conscious', 'jazzy hip', 'jazz rap', 'plunderphonics', 'dj battle', 'cut-up/dj',
+    'ragga hiphop', 'thug rap', 'dance rap', 'political rap', 'old-school hip', 'new-school hip',
+    'golden age', 'underground hip', 'alternative hip', 'instrumental hip', 'east coast',
+    'west coast', 'southern hip']],
+  ['classical', ['classical', 'baroque', 'romantic', 'symphonic', 'orchestral', 'chamber',
+    'opera', 'film music', 'wagnerian']],
+  ['blues', ['blues']],
+  ['country', ['country', 'americana', 'bluegrass', 'outlaw', 'nashville', 'bakersfield',
+    'countrypolitan', 'western', 'ranchera', 'mariachi', 'norteño', 'norteno', 'honky']],
+  ['world', ['latin', 'salsa', 'merengue', 'cumbia', 'charanga', 'bolero', 'samba', 'guajira',
+    'marimba', 'andean', 'bossa', 'reggae', 'dancehall', 'ragga', 'ska', 'afro', 'polka',
+    'hawaiian', 'indian classical', 'hindustani', 'world']],
+  ['jazz', ['jazz', 'bossa nova', 'big band', 'bebop', 'cool jazz', 'smooth jazz', 'post-bop',
+    'vocal jazz', 'fusion', 'crossover jazz', 'acid jazz', 'soul-jazz']],
+  ['disco', ['disco', 'boogie', 'hi nrg', 'hi-nrg', 'hinrg', 'post-disco', 'nu-disco',
+    'eurodance', 'freestyle', 'go-go']],
+  ['funk', ['funk', 'minneapolis', 'p-funk', 'avant-funk', 'jazz-funk', 'jazz funk', 'acid jazz',
+    'synth-funk', 'quiet storm', 'go-go']],
+  ['soul', ['soul', 'motown', 'philly soul', 'philadelphia soul', 'gospel', 'doo wop', 'doo-wop',
+    'quiet storm']],
+  ['r&b', ['r&b', 'rnb', 'rhythm & blues', 'rhythm and blues', 'new jack', 'contemporary r&b',
+    'hip-hop soul', 'hip hop soul', 'urban', 'minneapolis sound']],
+  ['electronic', ['electronic', 'electronica', 'house', 'techno', 'trance', 'edm', 'synth-pop',
+    'synthpop', 'synth pop', 'electropop', 'electro', 'downtempo', 'trip hop', 'leftfield',
+    'new wave', 'breaks', 'tribal house', 'deep house', 'progressive house', 'witch house',
+    'darkwave', 'indietronica', 'bass music', 'dub', 'hi nrg']],
+  ['rock', ['rock', 'metal', 'punk', 'grunge', 'psychedelic', 'garage', 'shoegaze', 'indie rock',
+    'glam', 'arena', 'heartland', 'thrash']],
+  ['folk', ['folk', 'singer-songwriter', 'indie folk', 'folk rock', 'folk-pop', 'folk jazz',
+    'sunshine pop', 'spoken word', 'poetry']],
+  ['pop', ['pop', 'dance-pop', 'dance pop', 'dance-rock', 'art pop', 'baroque pop', 'chamber pop',
+    'sophisti-pop', 'europop', 'new pop', 'traditional pop', 'novelty', 'comedy',
+    'adult contemporary', 'dance']],
+];
+const CSS_BLOB = /\.mw-parser-output[^}]*\}/g;
+function genreCategory(genre) {
+  if (!genre) return GENRE_OTHER;
+  let s = String(genre).toLowerCase().trim().replace(CSS_BLOB, ' ').trim();
+  if (!s) return GENRE_OTHER;
+  for (const [name, kws] of GENRE_CATEGORIES) {
+    if (kws.some((k) => s.includes(k))) return name;
+  }
+  return GENRE_OTHER;
+}
+
 // ---------------- mapping ----------------
 const MAPPING = {
-  settings: { 'index.knn': false },
+  settings: {
+    'index.knn': false,
+    // Case-insensitive keyword matching so online `term`/`terms` filters behave
+    // like the app's on-device filter (which lowercases both sides). The client
+    // lowercases clause values; the index lowercases the stored keyword.
+    analysis: { normalizer: { lc: { type: 'custom', filter: ['lowercase'] } } },
+  },
   mappings: {
     properties: {
       id: { type: 'keyword' },
       type: { type: 'keyword' }, // album | song
-      title: { type: 'text', fields: { kw: { type: 'keyword', ignore_above: 256 } } },
-      artist: { type: 'text', fields: { kw: { type: 'keyword', ignore_above: 256 } } },
-      album: { type: 'text', fields: { kw: { type: 'keyword', ignore_above: 256 } } },
+      title: { type: 'text', fields: { kw: { type: 'keyword', normalizer: 'lc', ignore_above: 256 } } },
+      artist: { type: 'text', fields: { kw: { type: 'keyword', normalizer: 'lc', ignore_above: 256 } } },
+      album: { type: 'text', fields: { kw: { type: 'keyword', normalizer: 'lc', ignore_above: 256 } } },
       albumId: { type: 'keyword' },
       lyrics: { type: 'text' },
-      sentiment: { type: 'text', fields: { kw: { type: 'keyword' } } },
-      genre: { type: 'keyword' },
+      sentiment: { type: 'text', fields: { kw: { type: 'keyword', normalizer: 'lc' } } },
+      genre: { type: 'keyword' },                          // raw genre (display / full-text)
+      genreCategory: { type: 'keyword', normalizer: 'lc' }, // collapsed tier-1 category (filter parity w/ app)
       year: { type: 'integer' },
       bpm: { type: 'integer' },
-      key: { type: 'keyword' },
-      camelot: { type: 'keyword' },
+      key: { type: 'keyword', normalizer: 'lc' },
+      camelot: { type: 'keyword', normalizer: 'lc' },
       explicit: { type: 'boolean' },
       sourceType: { type: 'keyword' }, // analog | digital
-      source: { type: 'keyword' }, // sourceName
+      source: { type: 'keyword', normalizer: 'lc' }, // sourceName
       trackNumber: { type: 'integer' },
+      length: { type: 'integer' },                  // song duration (ms)
+      fileType: { type: 'keyword', normalizer: 'lc' }, // mp3 | aiff | m4a | …
+      country: { type: 'keyword', normalizer: 'lc' },  // album country
+      trackCount: { type: 'integer' }, // album track count
     },
   },
 };
@@ -146,7 +208,10 @@ function* docsFrom(index) {
   for (const a of index.albums || []) {
     yield {
       id: a.id, type: 'album', title: a.name, artist: a.artist, album: a.name, albumId: a.id,
-      genre: a.genre, year: a.year, sourceType, source: sourceName,
+      genre: a.genre, genreCategory: genreCategory(a.genre), year: a.year,
+      country: a.country ?? undefined, fileType: a.fileType ?? undefined,
+      trackCount: Array.isArray(a.trackList) ? a.trackList.length : undefined,
+      sourceType, source: sourceName,
     };
   }
   for (const s of index.songs || []) {
@@ -154,8 +219,10 @@ function* docsFrom(index) {
       id: s.id, type: 'song', title: s.name, artist: s.artist,
       album: s.albumId ? albumName.get(s.albumId) : undefined, albumId: s.albumId,
       sentiment: (s.sentimentKeywords || []).join(' ') || undefined,
-      genre: s.genre, year: s.year, bpm: s.bpm ?? undefined, key: s.key ?? undefined,
+      genre: s.genre, genreCategory: genreCategory(s.genre), year: s.year,
+      bpm: s.bpm ?? undefined, key: s.key ?? undefined,
       camelot: s.camelot ?? undefined, explicit: !!s.explicit, trackNumber: s.trackNumber,
+      length: s.length ?? undefined, fileType: s.fileType ?? undefined,
       sourceType, source: sourceName,
       _lyricsId: s.lyrics ? null : s.id, // marker for optional CDN lyric fetch
       lyrics: s.lyrics || undefined,

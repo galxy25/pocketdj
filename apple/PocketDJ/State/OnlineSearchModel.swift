@@ -15,11 +15,10 @@ final class OnlineSearchModel {
 
     private var task: Task<Void, Never>?
 
-    /// `sources` carries the active source filter's values (any-of). Empty = no
-    /// source constraint. Structured filters beyond `source` are still applied
-    /// on-device only; `source` is pushed into the OpenSearch query as a keyword
-    /// `term`/`terms` filter so it composes with the multi_match.
-    func searchDebounced(query: String, kind: ItemKind, sources: [String] = [],
+    /// `clauses` is the SAME structured filter set the on-device pipeline uses;
+    /// they're translated into OpenSearch query clauses (term/terms/range/must_not)
+    /// so online results honor every filter, composed with the multi_match.
+    func searchDebounced(query: String, kind: ItemKind, clauses: [Clause] = [],
                          creds: SigV4Creds?, app: AppModel) {
         task?.cancel()
         guard let creds else {
@@ -30,17 +29,17 @@ final class OnlineSearchModel {
         task = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            await self?.run(query: query, kind: kind, sources: sources, creds: creds, app: app)
+            await self?.run(query: query, kind: kind, clauses: clauses, creds: creds, app: app)
         }
     }
 
     func cancel() { task?.cancel(); task = nil; state = .idle }
 
-    private func run(query: String, kind: ItemKind, sources: [String],
+    private func run(query: String, kind: ItemKind, clauses: [Clause],
                      creds: SigV4Creds, app: AppModel) async {
         state = .loading
         do {
-            let hits = try await SearchService.search(query, kind: kind, sources: sources, creds: creds)
+            let hits = try await SearchService.search(query, kind: kind, clauses: clauses, creds: creds)
             guard !Task.isCancelled else { return }
             items = hits.compactMap { map($0, app: app) }
             state = .loaded
