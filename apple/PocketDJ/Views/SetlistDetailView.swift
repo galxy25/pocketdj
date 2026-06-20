@@ -7,6 +7,7 @@ import SwiftUI
 /// per-track performer notes.
 struct SetlistDetailView: View {
     @Environment(CollectionsStore.self) private var collections
+    @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     let setlistId: String
 
@@ -97,6 +98,13 @@ struct SetlistDetailView: View {
         }
     }
 
+    /// The album behind a frozen track, for its cover-art thumbnail — resolved from
+    /// the live catalog by the snapshot's songId (nil if the song is gone, so the row
+    /// still reads from the snapshot with a graceful placeholder).
+    private func album(for track: SetlistTrack) -> IndexAlbum? {
+        app.songsById[track.songId]?.albumId.flatMap { app.albumsById[$0] }
+    }
+
     private func stat(_ value: String, _ label: String) -> some View {
         HStack(spacing: 4) {
             Text(value).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
@@ -121,6 +129,7 @@ struct SetlistDetailView: View {
         } else {
             HStack(alignment: .top, spacing: 8) {
                 Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim).frame(width: 22, alignment: .trailing)
+                SongThumbnail(album: album(for: track)).frame(width: 42, height: 42)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(track.artist) — \(track.name)").foregroundStyle(Theme.fg).lineLimit(2)
                     HStack(spacing: 6) {
@@ -132,7 +141,10 @@ struct SetlistDetailView: View {
                     noteButton(track, index: index)
                 }
                 Spacer(minLength: 4)
-                Text(Fmt.duration(track.shownMs)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(Fmt.duration(track.shownMs)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    TransportPlaceholders(songId: track.songId.isEmpty ? track.id : track.songId)
+                }
             }
             .accessibilityIdentifier("setlist-track-\(index)")
         }

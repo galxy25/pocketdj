@@ -25,7 +25,8 @@ struct PocketsView: View {
                                 Image(systemName: "rectangle.stack").foregroundStyle(Theme.accent)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(pocket.name).foregroundStyle(Theme.fg)
-                                    Text("\(pocket.memberCount) item\(pocket.memberCount == 1 ? "" : "s")")
+                                    let stats = collections.catalog().stats(forPocket: pocket.id)
+                                    Text("\(pocket.memberCount) item\(pocket.memberCount == 1 ? "" : "s") · \(stats.summary)")
                                         .font(.caption).foregroundStyle(Theme.fgDim)
                                 }
                             }
@@ -69,6 +70,17 @@ struct PocketDetailView: View {
     var body: some View {
         List {
             if let pocket {
+                Section {
+                    let stats = collections.catalog().stats(forPocket: pocketId)
+                    HStack(spacing: 6) {
+                        Image(systemName: "rectangle.stack").foregroundStyle(Theme.accent)
+                        Text(stats.summary).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                        Spacer()
+                    }
+                    .accessibilityIdentifier("pocket-stats")
+                } footer: {
+                    Text("Total resolved songs (own + album tracks + nested pockets, deduped). Runtime sums known track lengths.")
+                }
                 if !pocket.childPocketIds.isEmpty {
                     Section("Nested pockets") {
                         ForEach(pocket.childPocketIds, id: \.self) { cid in
@@ -79,6 +91,7 @@ struct PocketDetailView: View {
                                 .swipeActions { Button("Remove", role: .destructive) { collections.removeChildPocket(cid, fromPocket: pocketId) } }
                             }
                         }
+                        .onMove { from, to in collections.movePocketChildren(inPocket: pocketId, from: from, to: to) }
                     }
                 }
                 Section("Albums (\(pocket.albumIds.count))") {
@@ -88,14 +101,16 @@ struct PocketDetailView: View {
                                 .swipeActions { Button("Remove", role: .destructive) { collections.removeAlbum(aid, fromPocket: pocketId) } }
                         }
                     }
+                    .onMove { from, to in collections.movePocketAlbums(inPocket: pocketId, from: from, to: to) }
                 }
                 Section("Songs (\(pocket.songIds.count))") {
                     ForEach(pocket.songIds, id: \.self) { sid in
                         if let song = app.songsById[sid] {
-                            NavigationLink(value: song) { SongRow(song: song, albumName: app.albumName(forSong: song)) }
+                            NavigationLink(value: song) { CollectionSongRow(song: song) }
                                 .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
                         }
                     }
+                    .onMove { from, to in collections.movePocketSongs(inPocket: pocketId, from: from, to: to) }
                 }
                 if pocket.isEmpty {
                     Text("Empty. Add songs or albums from their detail view ▸ Add to…")

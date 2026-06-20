@@ -65,7 +65,8 @@ struct PlaylistsView: View {
                                     Image(systemName: "music.note.list").foregroundStyle(Theme.accent)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(pl.name).foregroundStyle(Theme.fg)
-                                        Text("\(pl.sequences.count) chapter\(pl.sequences.count == 1 ? "" : "s") · \(pl.sequences.reduce(0) { $0 + ($1.children?.count ?? 0) }) item(s)")
+                                        let stats = collections.catalog().stats(forPlaylist: pl)
+                                        Text("\(pl.sequences.count) chapter\(pl.sequences.count == 1 ? "" : "s") · \(stats.summary)")
                                             .font(.caption).foregroundStyle(Theme.fgDim)
                                     }
                                 }
@@ -117,7 +118,7 @@ struct IndexPlaylistDetailView: View {
 
             Section("Songs") {
                 ForEach(songs) { song in
-                    NavigationLink(value: song) { SongRow(song: song, albumName: app.albumName(forSong: song)) }
+                    NavigationLink(value: song) { CollectionSongRow(song: song) }
                 }
             }
         }
@@ -159,6 +160,15 @@ struct PlaylistDetailView: View {
     var body: some View {
         List {
             if let playlist {
+                Section {
+                    let stats = collections.catalog().stats(forPlaylist: playlist)
+                    HStack(spacing: 6) {
+                        Image(systemName: "music.note.list").foregroundStyle(Theme.accent)
+                        Text(stats.summary).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                        Spacer()
+                    }
+                    .accessibilityIdentifier("playlist-stats")
+                }
                 ForEach(playlist.sequences) { seq in
                     Section {
                         let children = seq.children ?? []
@@ -189,6 +199,12 @@ struct PlaylistDetailView: View {
                                     Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
                                 }
                         }
+                        .onMove { from, to in
+                            collections.moveNodes(inPlaylist: playlistId, sequenceId: seq.nodeId, from: from, to: to)
+                        }
+                        .onDelete { offsets in
+                            offsets.map { children[$0].nodeId }.forEach { collections.removeNode($0, fromPlaylist: playlistId) }
+                        }
                         Button { renamingChapter = seq.nodeId; chapterDraft = seq.name ?? "" } label: {
                             Label("Rename chapter", systemImage: "pencil").font(.caption)
                         }
@@ -198,9 +214,16 @@ struct PlaylistDetailView: View {
                                 .font(.caption)
                         }
                     } header: {
-                        Text(seq.name ?? "Chapter")
+                        HStack {
+                            Text(seq.name ?? "Chapter")
+                            Spacer()
+                            Text(collections.catalog().stats(forChapter: seq).summary)
+                                .foregroundStyle(Theme.fgDim)
+                        }
+                        .accessibilityIdentifier("chapter-stats-\(seq.nodeId)")
                     }
                 }
+                .onMove { from, to in collections.moveSequences(inPlaylist: playlistId, from: from, to: to) }
 
                 if !setlists.isEmpty {
                     Section("Set lists") {
@@ -237,6 +260,11 @@ struct PlaylistDetailView: View {
                     .help("Add chapter")
                     .accessibilityIdentifier("add-chapter")
             }
+            #if os(iOS)
+            ToolbarItem(placement: .primaryAction) {
+                EditButton().accessibilityIdentifier("edit-order")   // toggles drag-reorder of chapters + items
+            }
+            #endif
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button { nameDraft = playlist?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
@@ -300,7 +328,7 @@ struct PlaylistDetailView: View {
         switch node.kind {
         case .song:
             if let id = node.songId, let song = app.songsById[id] {
-                NavigationLink(value: song) { Label(song.name, systemImage: "music.note").foregroundStyle(Theme.fg) }
+                NavigationLink(value: song) { CollectionSongRow(song: song) }
             } else { missing("song") }
         case .album:
             if let id = node.albumId, let album = app.albumsById[id] {

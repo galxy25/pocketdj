@@ -182,6 +182,23 @@ final class CollectionsStore {
     func moveNodeUp(_ nodeId: String, inPlaylist id: String)   { moveNode(nodeId, inPlaylist: id, by: -1) }
     func moveNodeDown(_ nodeId: String, inPlaylist id: String) { moveNode(nodeId, inPlaylist: id, by:  1) }
 
+    // Drag-and-drop reorder (SwiftUI `.onMove`): touch drag on iOS, pointer drag on
+    // macOS. IndexSet/destination offsets are into the displayed collection.
+    func moveNodes(inPlaylist id: String, sequenceId: String, from: IndexSet, to: Int) {
+        mutatePlaylist(id) { pl in
+            guard let s = pl.sequences.firstIndex(where: { $0.nodeId == sequenceId }) else { return }
+            var children = pl.sequences[s].children ?? []
+            children.move(fromOffsets: from, toOffset: to)
+            pl.sequences[s].children = children
+        }
+    }
+    func moveSequences(inPlaylist id: String, from: IndexSet, to: Int) {
+        mutatePlaylist(id) { $0.sequences.move(fromOffsets: from, toOffset: to) }
+    }
+    func movePocketSongs(inPocket id: String, from: IndexSet, to: Int)    { mutatePocket(id) { $0.songIds.move(fromOffsets: from, toOffset: to) } }
+    func movePocketAlbums(inPocket id: String, from: IndexSet, to: Int)   { mutatePocket(id) { $0.albumIds.move(fromOffsets: from, toOffset: to) } }
+    func movePocketChildren(inPocket id: String, from: IndexSet, to: Int) { mutatePocket(id) { $0.childPocketIds.move(fromOffsets: from, toOffset: to) } }
+
     /// Create a fresh, editable local Playlist seeded with `songIds` in its default
     /// chapter (the "Duplicate as editable playlist" action on an index playlist).
     @discardableResult
@@ -224,6 +241,18 @@ final class CollectionsStore {
             }
             return pl.name
         }
+    }
+
+    // MARK: Container metadata (count + runtime)
+
+    /// A pure `CollectionCatalog` wired to the live catalog (AppModel) + these pockets,
+    /// for counting songs / summing runtime of a playlist, chapter, or pocket. Returns
+    /// an empty catalog if the app graph isn't wired yet (so callers never crash).
+    func catalog() -> CollectionCatalog {
+        let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return CollectionCatalog(songsById: app?.songsById ?? [:],
+                                 albumsById: app?.albumsById ?? [:],
+                                 pocketsById: pocketsById)
     }
 
     // MARK: Setlists (Play → realize → freeze)
