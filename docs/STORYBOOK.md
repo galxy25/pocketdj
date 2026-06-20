@@ -255,6 +255,18 @@ for portability.
 **User story:** the power-user query surface — express the exact crate slice you
 want and carry your library between devices.
 
+> **Interchange formats — `.pocketdj.zip` & friends.** *Import…* accepts any of the
+> PocketDJ zip kinds and routes on the manifest: a **full backup** (`.pocketdj.zip` —
+> catalog + collections + your metadata edits), a single **playlist**
+> (`.playlist.pocketdj.zip`), or a single **pocket** (`.pocket.pocketdj.zip`). These
+> are the *same* files the native iPhone/iPad/Mac apps read and write, so a backup made
+> on your phone imports straight into the browser (and vice-versa). A native backup
+> omits the catalog (both apps re-seed the same index) but carries an `edits.json` of
+> your corrections; importing it **merges those edits** into the PWA — so a BPM/key/name
+> fix made on the phone shows up in the browser. User-authored data (pockets, playlists,
+> set lists, edits) round-trips losslessly both ways; the bundled catalog stays a
+> browser↔browser concern. *Export* writes a portable backup that any client can read.
+
 ---
 
 ## 13. Browser — albums (desktop)
@@ -379,7 +391,10 @@ can drop a whole vibe into any set."
 
 ![Pocket detail](storybook/19-pocket-detail-mobile.png)
 
-Inside a pocket: an editable **name**, a **Delete**, and the **Members** list. Each
+Inside a pocket: an editable **name**, an **⤓ Export**, a **Delete**, and the
+**Members** list. **Export** writes a portable `.pocket.pocketdj.zip` (the pocket plus
+any nested child pockets, DAG-expanded) that any client — browser or the native apps —
+can import; ids are reminted on import so it never clobbers an existing pocket. Each
 song is a **two-line row** — title + artist on top, then its **BPM** and
 **Camelot key** badges (e.g. `57 BPM · 9A`) so the harmonic coherence of the pocket
 is visible at a glance. A **Child pockets** section nests other pockets (cycle-
@@ -387,6 +402,7 @@ guarded). Tapping a song opens the same **song detail** popover used everywhere
 else (§24).
 
 **Affordances**
+- **⤓ Export** — download the pocket (with its nested pockets) as a `.pocket.pocketdj.zip`.
 - **Tap a song** — open its detail popover.
 - **Remove** — drop a member.
 - **Add child pocket** — nest another pocket (rejected if it would create a cycle).

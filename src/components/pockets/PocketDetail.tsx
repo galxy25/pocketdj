@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useCollectionsStore } from '../../store/useCollectionsStore';
 import { getItem } from '../../storage/repo';
+import { downloadPocketZip } from '../../storage/pocketTransfer';
 import type { MusicItem, SongItem } from '../../types/model';
 import { isSong } from '../../types/model';
 import { SongDetailModal } from '../starmap/SongDetailModal';
@@ -146,6 +147,15 @@ export function PocketDetail(): JSX.Element {
           }}
         />
         <span className="pdj-pockets__kind">{pocket.kind}</span>
+        <button
+          type="button"
+          className="pdj-btn pdj-btn--sm"
+          data-testid="pocket-export"
+          title="Export this pocket (with its nested pockets) as a portable .pocket.pocketdj.zip"
+          onClick={() => void downloadPocketZip(pocket.id)}
+        >
+          ⤓ Export
+        </button>
         <button
           type="button"
           className="pdj-btn pdj-btn--sm pdj-btn--danger"
