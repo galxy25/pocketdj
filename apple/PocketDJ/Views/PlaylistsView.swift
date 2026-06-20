@@ -97,11 +97,11 @@ struct PlaylistsView: View {
             Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPlaylist(n) }; newName = "" }
             Button("Cancel", role: .cancel) { newName = "" }
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .zip]) { result in
             guard case .success(let url) = result else { return }
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            if let data = try? Data(contentsOf: url) { try? collections.importCollection(data: data) }
+            try? collections.importAny(url: url)
         }
     }
 }
@@ -163,7 +163,7 @@ struct PlaylistDetailView: View {
     @State private var chapterDraft = ""
     @State private var confirmingDelete = false
     @State private var showExporter = false
-    @State private var exportDoc = EditsFile(data: Data())
+    @State private var exportDoc = PlaylistZipFile(data: Data())
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
@@ -321,8 +321,17 @@ struct PlaylistDetailView: View {
         } message: {
             Text("This also deletes its set lists. This can’t be undone.")
         }
-        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .json,
-                      defaultFilename: "pocketdj-playlist") { _ in }
+        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
+                      defaultFilename: exportFilename) { _ in }
+    }
+
+    /// `<sanitized name>.playlist.pocketdj` — the `.fileExporter` appends the `.zip`
+    /// content-type extension, yielding `<name>.playlist.pocketdj.zip` (PWA-readable).
+    private var exportFilename: String {
+        let base = (playlist?.name ?? "playlist")
+            .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
+            .trimmingCharacters(in: .whitespaces)
+        return "\(base.isEmpty ? "playlist" : base).playlist.pocketdj"
     }
 
     /// ▶ Play: realize the template into a frozen Setlist, persist it, and push its view.
@@ -331,8 +340,8 @@ struct PlaylistDetailView: View {
     }
 
     private func export() {
-        if let data = try? collections.exportPlaylist(playlistId) {
-            exportDoc = EditsFile(data: data); showExporter = true
+        if let data = try? collections.exportPlaylistZip(playlistId) {
+            exportDoc = PlaylistZipFile(data: data); showExporter = true
         }
     }
 

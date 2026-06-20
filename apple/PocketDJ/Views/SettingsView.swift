@@ -44,11 +44,11 @@ struct SettingsView: View {
                 app.applyEdits()
             }
         }
-        .fileImporter(isPresented: $showCollectionsImporter, allowedContentTypes: [.json]) { result in
+        .fileImporter(isPresented: $showCollectionsImporter, allowedContentTypes: [.json, .zip]) { result in
             guard case .success(let url) = result else { return }
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            if let data = try? Data(contentsOf: url) { try? collections.importCollection(data: data) }
+            try? collections.importAny(url: url)
         }
     }
 

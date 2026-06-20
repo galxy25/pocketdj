@@ -374,6 +374,49 @@ final class CollectionsStore {
         save()
     }
 
+    // MARK: PWA .playlist.pocketdj.zip interop (single-playlist transfer)
+
+    /// Export one playlist as the PWA's `.playlist.pocketdj.zip` (slim/non-portable):
+    /// manifest + playlist.json + pockets.json (its referenced pockets, DAG-expanded).
+    /// The bytes are readable by the PWA's `importPlaylistZip`. Returns nil if gone.
+    func exportPlaylistZip(_ id: String) throws -> Data? {
+        guard let pl = playlist(id) else { return nil }
+        let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return try PlaylistZip.export(playlist: pl, pocketsById: pocketsById)
+    }
+
+    /// Insert an already-reminted imported playlist + its pockets (from a
+    /// `.playlist.pocketdj.zip`). Pockets are added only if their (fresh) id is absent;
+    /// the playlist is always appended under its fresh id (never clobbers an existing one).
+    func insertImported(playlist: Playlist, pockets: [Pocket]) {
+        for p in pockets where pocket(p.id) == nil { self.pockets.append(p) }
+        playlists.append(playlist)
+        save()
+    }
+
+    /// Import a `.playlist.pocketdj.zip` (PWA or native-exported): mints fresh ids and
+    /// inserts the playlist + its referenced pockets.
+    func importPlaylistZip(data: Data) throws {
+        let bundle = try PlaylistZip.import(data: data)
+        insertImported(playlist: bundle.playlist, pockets: bundle.pockets)
+    }
+
+    /// Route an imported file by content: a `.playlist.pocketdj.zip` (PWA single-
+    /// playlist transfer) → `importPlaylistZip`; a native collections `.json` →
+    /// `importCollection`. Detection is by extension first, then by sniffing the bytes
+    /// (zip local-file-header magic `PK\u{03}\u{04}`) so it's robust to renames.
+    func importAny(url: URL) throws {
+        guard let data = try? Data(contentsOf: url) else { return }
+        let name = url.lastPathComponent.lowercased()
+        let looksZipByName = name.hasSuffix(".zip") || name.hasSuffix(".playlist.pocketdj")
+        let looksZipByMagic = data.starts(with: [0x50, 0x4B, 0x03, 0x04])   // "PK\u{03}\u{04}"
+        if looksZipByName || looksZipByMagic {
+            try importPlaylistZip(data: data)
+        } else {
+            try importCollection(data: data)
+        }
+    }
+
     /// Deep-copy a node with a fresh nodeId, recursing into children; remap any
     /// pocket ref to its imported counterpart when present.
     private func remintNode(_ node: PlaylistNode, pocketIdMap: [String: String]) -> PlaylistNode {

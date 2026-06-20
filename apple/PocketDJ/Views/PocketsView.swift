@@ -56,11 +56,11 @@ struct PocketsView: View {
             Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPocket(n) }; newName = "" }
             Button("Cancel", role: .cancel) { newName = "" }
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .zip]) { result in
             guard case .success(let url) = result else { return }
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            if let data = try? Data(contentsOf: url) { try? collections.importCollection(data: data) }
+            try? collections.importAny(url: url)
         }
     }
 }
