@@ -370,25 +370,38 @@ MP3 is a flat stream of self‑contained frames with no trailing index, so a bro
   detected by extension, no hard failure.
 - **DRM unchanged:** still a real‑time line‑capture; nothing here touches FairPlay.
 
-## Alternative considered — Live HLS (future upgrade, "Phase B")
+## Live HLS — the shipped path (was "Phase B")
 
-If progressive‑MP3 robustness proves insufficient (frequent drops, need to seek
-during the live window, or off‑Tailnet streaming via CloudFront), upgrade the
-`/stream` producer to **live HLS**: ffmpeg emits 2 s segments + a rolling
-`index.m3u8`; the client plays via native HLS (Safari/iOS) or `hls.js` (desktop).
-Segments can be served from the rip server (Tailnet) or pushed to S3/CloudFront
-(off‑Tailnet, Phase 4 privatization). More moving parts; deferred until needed.
+Progressive MP3 (5a) worked on desktop but was **silent on iOS Safari**: iOS won't
+reliably play an endless, length‑less chunked MP3 via `<audio>` (the finished S3 mp3
+played fine, the live stream produced no sound). HLS is Apple's own format and plays
+natively on iOS, so the live path moved to **live HLS**:
+
+- **Worker:** once AH's growing MP3 appears, `tail -c +1 -f <mp3> | ffmpeg -i pipe:0
+  -c:a aac -b:a 128k -hls_time 2 -hls_playlist_type event …` writes 2 s AAC/TS
+  segments + a rolling `index.m3u8` to `<tmp>/live/<songId>/`. `tail -f` follows the
+  file as AH records; on capture end the worker kills `tail`, ffmpeg sees EOF and
+  finalizes the playlist (`#EXT-X-ENDLIST`). `streamReady` flips on the first segment.
+- **Server:** `GET /hls/<songId>/<index.m3u8|seg_N.ts>` (same `?token=` auth as
+  `/stream`). The m3u8's segment URIs are rewritten to carry `?token=` so a native
+  `<audio>`'s segment fetches authenticate (it can't add an auth header). `jobView`'s
+  `streamUrl` → `/hls/<id>/index.m3u8`.
+- **Client:** if `<audio>.canPlayType('application/vnd.apple.mpegurl')` (iOS/Safari) →
+  native `<audio src=m3u8>`; otherwise lazy‑load **hls.js** (a separate chunk Safari/iOS
+  never download) and attach. `canPlayType` can lie (some Chromium claim support but
+  can't play) → on a source error, fall back to hls.js. `● LIVE` player state; the
+  background poll still swaps the manifest to the durable S3 mp3 for the next play.
+
+The 5a progressive `/stream` endpoint is kept (harmless) but the client uses HLS.
 
 ## Phase plan
 
-- **Phase 5a — progressive live stream (digital).** Server `/stream/<songId>.mp3`
-  tail‑endpoint (chunked, `?token=` auth for native `<audio>`) + `streaming` phase +
-  pre‑roll; worker watches AH's growing MP3 and publishes `streamFile`/`streamReady`.
-  (AH already records MP3 — no reconfig.) Client live‑URL fast path (`allowLive`) +
-  background poll‑to‑ready manifest swap + `● LIVE` player state. Analog stays
-  rip‑then‑play. Verify latency on desktop + iPhone.
-- **Phase 5b — live HLS (optional).** Only if 5a's robustness/seek/off‑Tailnet limits
-  bite. Segmented producer + `hls.js`; reuse the S3/CloudFront delivery from Phase 4.
+- **Phase 5a — progressive live stream.** ✅ DONE (desktop). `/stream` tail‑endpoint +
+  `streaming` phase + pre‑roll; AH growing‑MP3 watcher; client `allowLive` fast path +
+  `● LIVE`. iOS‑silent → superseded by 5b for the live path.
+- **Phase 5b — live HLS.** ✅ DONE. `tail|ffmpeg` event‑HLS producer; `/hls` serving
+  with token‑rewritten segment URIs; client native‑HLS + lazy `hls.js` fallback.
+  iOS plays natively. (Off‑Tailnet via S3/CloudFront stays a Phase 4 follow‑up.)
 
 ## Open items
 

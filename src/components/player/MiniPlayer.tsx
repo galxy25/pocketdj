@@ -6,6 +6,7 @@
 // before the live URL resolves.
 import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
+import type HlsJs from 'hls.js';
 import { useRipsStore } from '../../store/useRipsStore';
 
 const clock = (s: number) => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
@@ -20,6 +21,7 @@ export function MiniPlayer() {
   const prev = useRipsStore((s) => s.prev);
   const hasQueue = !!queue && queue.length > 1;
   const audioRef = useRef<HTMLAudioElement>(null);
+  const hlsRef = useRef<HlsJs | null>(null);
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
   const [dur, setDur] = useState(0);
@@ -35,11 +37,40 @@ export function MiniPlayer() {
     const a = audioRef.current;
     if (!a || !now) return;
     a.muted = false; // prime() may have left it muted mid-unlock
+    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } // tear down prior hls.js
+
+    let cancelled = false;
+    // hls.js path: lazy-loaded so Safari/iOS (native HLS) never download it.
+    const loadViaHlsJs = () => {
+      void import('hls.js').then(({ default: Hls }) => {
+        if (cancelled || !audioRef.current || !Hls.isSupported()) return;
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        hlsRef.current = hls;
+        hls.loadSource(now.url);
+        hls.attachMedia(audioRef.current);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { void audioRef.current?.play().catch(() => {}); });
+      }).catch(() => {});
+    };
+
+    if (now.url.includes('.m3u8')) {
+      // Native HLS (iOS/Safari) is preferred when REAL. canPlayType can lie (some
+      // Chromium claim HLS support but can't actually play it), so try native and fall
+      // back to hls.js on a source error. Browsers with no native HLS go straight to it.
+      if (a.canPlayType('application/vnd.apple.mpegurl')) {
+        const onErr = () => { if (!a.error || a.error.code === a.error.MEDIA_ERR_SRC_NOT_SUPPORTED) loadViaHlsJs(); };
+        a.addEventListener('error', onErr, { once: true });
+        a.src = now.url; a.load(); void a.play().catch(() => {});
+        return () => { cancelled = true; a.removeEventListener('error', onErr); if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
+      }
+      loadViaHlsJs();
+      return () => { cancelled = true; if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
+    }
+
+    // plain mp3 (a ready S3 rip, or analog)
     a.src = now.url;
     a.load();
     if (now.live) {
-      // a live progressive stream has no duration/metadata to wait on — start now
-      void a.play().catch(() => {});
+      void a.play().catch(() => {}); // live: no metadata/seek to wait on — start now
       return;
     }
     const onMeta = () => {

@@ -116,8 +116,8 @@ function jobView(job) {
   } else if (live) {
     v.progress = { indeterminate: true };
   }
-  // a progressive live MP3 is available once the capture has crossed the pre-roll
-  if (job.streamReady && job.songId) v.streamUrl = `/stream/${encodeURIComponent(job.songId)}.mp3`;
+  // a live HLS playlist is available once the capture has produced its first segment
+  if (job.streamReady && job.songId) v.streamUrl = `/hls/${encodeURIComponent(job.songId)}/index.m3u8`;
   return v;
 }
 function fail(job, error) { job.error = error; setPhase(job, 'error'); if (job.resourceKey) inflight.delete(job.resourceKey); }
@@ -185,6 +185,28 @@ function streamStatus(songId) {
   const done = st.phase === 'uploading' || st.phase === 'ready' || st.phase === 'error';
   return { file: st.streamFile || null, ready: !!st.streamReady, done };
 }
+// ---- live HLS serving ----
+// The worker writes a live HLS playlist + AAC/TS segments to <tmp>/live/<songId>/.
+// iOS Safari plays HLS natively (a chunked progressive MP3 does not), so this is the
+// live delivery path. The m3u8's segment URIs are rewritten to carry ?token= so the
+// player's segment fetches authenticate (a native <audio> can't add an auth header).
+const HLS_DIR = join(CFG.tmp, 'live');
+function serveHls(res, songId, file) {
+  if (!/^index\.m3u8$/.test(file) && !/^seg_\d+\.ts$/.test(file)) return send(res, 404, { error: 'not found' });
+  const fp = join(HLS_DIR, songId, file);
+  if (!existsSync(fp)) return send(res, 404, { error: 'not found' });
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
+  if (file.endsWith('.m3u8')) {
+    let body = readFileSync(fp, 'utf8');
+    if (CFG.token) body = body.replace(/^(seg_\d+\.ts)\s*$/gm, `$1?token=${encodeURIComponent(CFG.token)}`);
+    res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl', ...cors });
+    return res.end(body);
+  }
+  const buf = readFileSync(fp); // a segment is only listed once ffmpeg has finished writing it
+  res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Content-Length': buf.length, ...cors });
+  return res.end(buf);
+}
+
 // Tail the growing file with chunked transfer-encoding (no Content-Length / Accept-Ranges
 // → the browser treats it as a live stream). Holds back until pre-roll bytes exist, then
 // follows the file to EOF; ends when the capture finishes (or the client disconnects).
@@ -401,6 +423,13 @@ const server = http.createServer(async (req, res) => {
     const qok = !CFG.token || url.searchParams.get('token') === CFG.token;
     if (!authed(req) && !qok) return send(res, 401, { error: 'unauthorized' });
     return streamLive(req, res, decodeURIComponent(sm[1]));
+  }
+  // GET /hls/<songId>/<index.m3u8|seg_N.ts> — live HLS (iOS-native). Same ?token= auth.
+  const hm = path.match(/^\/hls\/([^/]+)\/([A-Za-z0-9_.-]+)$/);
+  if (hm && req.method === 'GET') {
+    const qok = !CFG.token || url.searchParams.get('token') === CFG.token;
+    if (!authed(req) && !qok) return send(res, 401, { error: 'unauthorized' });
+    return serveHls(res, decodeURIComponent(hm[1]), hm[2]);
   }
 
   if (!authed(req)) return send(res, 401, { error: 'unauthorized' });

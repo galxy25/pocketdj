@@ -10,7 +10,7 @@
 //
 // Prints a final line: RESULT {"ok":true,"key":"rips/sng_….mp3","bytes":…}
 import { spawn, execFileSync } from 'node:child_process';
-import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -58,12 +58,39 @@ async function main() {
   // real-time capture via the rip skill (drives Audio Hijack + Music)
   status('ripping', { realtime: true, ripStartedAt: Date.now(), totalMs: LENGTH_MS, message: 'recording from Apple Music' });
 
-  // Live-stream watcher: Audio Hijack writes a growing MP3 into AH_REC_DIR as it
-  // records. Detect that new file and publish it (streamFile) + flip to `streaming`
-  // once it crosses the pre-roll size, so the rip server can tail it to the client.
+  // Live HLS watcher: Audio Hijack writes a growing MP3 into AH_REC_DIR as it records.
+  // Detect that new file, then `tail -f` it into ffmpeg to produce a live HLS playlist
+  // (2s AAC segments, EVENT type) under <tmp>/live/<songId>/. iOS Safari plays HLS
+  // natively (a plain progressive MP3 stream does not), so the rip server serves these
+  // segments. We flip to `streaming` once the first segment lands.
   const before = new Set(existsSync(AH_REC_DIR) ? readdirSync(AH_REC_DIR) : []);
+  const hlsDir = join(TMP, 'live', SONG);
+  try { rmSync(hlsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  mkdirSync(hlsDir, { recursive: true });
   let streamFile = null;
   let streamReady = false;
+  let tailP = null;
+  let ff = null;
+  const startHls = (file) => {
+    tailP = spawn('tail', ['-c', '+1', '-f', file]);
+    ff = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-i', 'pipe:0',
+      '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
+      '-hls_time', '2', '-hls_playlist_type', 'event', '-hls_flags', 'independent_segments',
+      '-hls_segment_filename', join(hlsDir, 'seg_%05d.ts'), join(hlsDir, 'index.m3u8'),
+    ]);
+    tailP.stdout.pipe(ff.stdin);
+    tailP.on('error', () => {}); ff.on('error', () => {});
+    ff.stdin.on('error', () => {}); // EPIPE when ffmpeg exits first
+    ff.stderr.on('data', (d) => process.stderr.write(d));
+  };
+  const stopHls = async () => {
+    try { if (tailP && !tailP.killed) tailP.kill('SIGTERM'); } catch { /* ignore */ }
+    if (ff) await new Promise((res) => {
+      const to = setTimeout(() => { try { ff.kill('SIGKILL'); } catch { /* ignore */ } res(); }, 5000);
+      ff.on('close', () => { clearTimeout(to); res(); }); // ffmpeg finalizes index.m3u8 (+ENDLIST) on stdin EOF
+    });
+  };
   const watch = setInterval(() => {
     try {
       if (!streamFile) {
@@ -71,14 +98,14 @@ async function main() {
           .filter((f) => !before.has(f) && !f.startsWith('.') && /\.mp3$/i.test(f))
           .map((f) => join(AH_REC_DIR, f))
           .sort((x, y) => statSync(y).mtimeMs - statSync(x).mtimeMs);
-        if (fresh.length) { streamFile = fresh[0]; status('ripping', { streamFile }); }
+        if (fresh.length) { streamFile = fresh[0]; status('ripping', { streamFile, message: 'capturing + segmenting' }); startHls(streamFile); }
       }
-      if (streamFile && !streamReady && statSync(streamFile).size >= PREROLL) {
+      if (streamFile && !streamReady && existsSync(join(hlsDir, 'seg_00000.ts'))) {
         streamReady = true;
-        status('streaming', { streamFile, streamReady: true, message: 'streaming live' });
+        status('streaming', { streamFile, streamReady: true, hls: true, message: 'streaming live (hls)' });
       }
     } catch { /* dir/file not ready yet */ }
-  }, 400);
+  }, 300);
 
   await new Promise((res, rej) => {
     const p = spawn('node', [
@@ -90,8 +117,9 @@ async function main() {
     p.stderr.on('data', (d) => { err += d; });
     p.stdout.on('data', (d) => process.stderr.write(d)); // surface rip log to our stderr
     p.on('close', (code) => (code === 0 ? res() : rej(new Error('rip skill failed: ' + err.slice(-300)))));
-  }).catch((e) => { clearInterval(watch); fail(e.message); });
+  }).catch(async (e) => { clearInterval(watch); await stopHls(); fail(e.message); });
   clearInterval(watch);
+  await stopHls(); // capture done → stop tail so ffmpeg finalizes the HLS playlist
 
   // find the captured audio file in the newest *_ripped folder
   let ripped = null;

@@ -161,7 +161,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       if (cached) return cached;
       const { serverUrl, token } = get();
       if (!serverUrl) throw new Error('No rip server configured (Settings ▸ Rip server).');
-      const liveUrl = () => `${serverUrl}/stream/${encodeURIComponent(songId)}.mp3${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const liveUrl = (streamPath: string) => `${serverUrl}${streamPath}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
       // After handing back a live URL, keep polling so the manifest swaps to the durable
       // S3 mp3 (seekable + analysed) for the next play.
       const pollToReady = async (jobId: string) => {
@@ -187,7 +187,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       set((st) => ({ jobs: { ...st.jobs, [songId]: view } }));
       if (view.phase === 'ready' && view.url) { await get().refreshManifest(); return view.url; }
       if (!view.jobId) throw new Error(view.error || 'rip did not start');
-      if (allowLive && view.streamUrl) { void pollToReady(view.jobId); return liveUrl(); }
+      if (allowLive && view.streamUrl) { void pollToReady(view.jobId); return liveUrl(view.streamUrl); }
       // poll
       for (let i = 0; i < 1800; i++) { // generous cap (~30 min of 1s polls)
         await sleep(1000);
@@ -196,7 +196,7 @@ export const useRipsStore = create<RipState>((set, get) => {
         view = await jr.json();
         set((st) => ({ jobs: { ...st.jobs, [songId]: view } }));
         if (view.phase === 'ready' && view.url) { await get().refreshManifest(); return view.url; }
-        if (allowLive && view.streamUrl && view.jobId) { void pollToReady(view.jobId); return liveUrl(); }
+        if (allowLive && view.streamUrl && view.jobId) { void pollToReady(view.jobId); return liveUrl(view.streamUrl); }
         if (view.phase === 'error') throw new Error(view.error || 'rip failed');
       }
       throw new Error('rip timed out');
@@ -204,7 +204,7 @@ export const useRipsStore = create<RipState>((set, get) => {
     play: async (song, opts) => {
       get().primeAudio(); // unlock <audio> within the tap gesture (iOS) before any await
       const url = await get().ensureUrl(song.id, { allowLive: true });
-      const live = url.startsWith(`${get().serverUrl}/stream/`);
+      const live = url.includes('/hls/');
       const e = get().manifest[song.id];
       const startMs = live ? null : opts && 'startMs' in opts ? opts.startMs ?? null : e?.startMs ?? null;
       // single play clears any setlist queue (no next/prev)
@@ -233,7 +233,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       set({ queueIndex: i });
       get().primeAudio(); // unlock <audio> within the tap gesture (iOS) before any await
       const url = await get().ensureUrl(t.id, { allowLive: true });
-      const live = url.startsWith(`${get().serverUrl}/stream/`);
+      const live = url.includes('/hls/');
       const e = get().manifest[t.id];
       set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: live ? null : e?.startMs ?? null, live, waveform: live ? null : e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
     },
