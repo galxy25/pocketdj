@@ -1,0 +1,11 @@
+# Xcode build output / derived data (the project is regenerated from project.yml)
+build/
+build-*/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+.DS_Store
+
+# Keep: project.yml, Sources, Tests, Assets, and the generated PocketDJ.xcodeproj
+# (committed for convenience so the project opens without running xcodegen first).
