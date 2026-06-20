@@ -1,0 +1,89 @@
+name: PocketDJ
+options:
+  bundleIdPrefix: net.pocketdj
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    # Automatic signing with Levi Schoen's developer team (also enables on-device
+    # testing). Build/test with `-allowProvisioningUpdates` so Xcode can mint the
+    # development cert + provisioning profiles on first run.
+    DEVELOPMENT_TEAM: EC27UF79GL
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  PocketDJ:
+    type: application
+    # Single multiplatform target — one app that runs on iPhone, iPad, and Mac.
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: PocketDJ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.pocketdj.app
+        PRODUCT_NAME: PocketDJ
+        TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad
+        GENERATE_INFOPLIST_FILE: "YES"
+        ENABLE_PREVIEWS: "YES"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleDisplayName: PocketDJ
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        "INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad": "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_NSHumanReadableCopyright: "PocketDJ"
+
+  PocketDJTests:
+    type: bundle.unit-test
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: Tests/Unit
+    dependencies:
+      - target: PocketDJ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.pocketdj.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        # macOS keeps the executable under Contents/MacOS; XcodeGen's default
+        # TEST_HOST is the iOS-shaped path, so override it per-SDK.
+        "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/PocketDJ.app/Contents/MacOS/PocketDJ"
+
+  PocketDJUITests:
+    type: bundle.ui-testing
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: Tests/UI
+    dependencies:
+      - target: PocketDJ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.pocketdj.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  PocketDJ:
+    build:
+      targets:
+        PocketDJ: all
+        PocketDJTests: [test]
+        PocketDJUITests: [test]
+    test:
+      gatherCoverageData: true
+      # Host app + unit tests run against the bundled fixture (offline, deterministic).
+      environmentVariables:
+        - variable: PDJ_USE_FIXTURE
+          value: "1"
+          isEnabled: true
+      targets:
+        - PocketDJTests
+        - PocketDJUITests

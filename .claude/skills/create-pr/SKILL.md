@@ -3,14 +3,25 @@ name: create-pr
 description: "PocketDJ's local 'PR' flow — NOT a GitHub PR. Push the current branch, ask the user if it's OK to merge, then merge into main locally and push. Use when the user says 'create a pr', 'open a pr', 'pr this branch', 'push and merge', or runs /create-pr."
 ---
 
-# create-pr (local push → ask → merge)
+# create-pr (local push → update docs → ask → merge)
 
 For this repo, "PR" means a **local** review-and-merge flow, **not** a GitHub pull
 request (the GitHub API isn't reliably reachable here; SSH push works). The flow:
 
 1. **Push** the current branch.
-2. **Ask** the user if it's OK to merge.
-3. On yes, **merge into `main`** and push `main`. On no, stop (branch stays pushed).
+2. **Update the books** — bring both the product book (`docs/STORYBOOK.md`) and the
+   architecture book (`docs/ARCHITECTURE.md` + `docs/architecture/*.md`) in sync with
+   the branch's changes. **This is a required gate: do not skip it.**
+3. **Ask** the user if it's OK to merge.
+4. On yes, **merge into `main`** and push `main`. On no, stop (branch stays pushed).
+
+PocketDJ keeps two living docs that MUST stay current on `main`:
+- **`docs/STORYBOOK.md`** — the outside-in product/customer view (screens, user
+  stories, what's new). Update it when a change alters **what the user sees or does**.
+- **`docs/ARCHITECTURE.md`** + **`docs/architecture/01-…07-*.md`** — the inside-out
+  systems view (entities, data flows, schemas). Update it when a change alters **how
+  the system works**: a new/changed entity, endpoint, message schema, data flow,
+  pipeline stage, env/config, or a current-vs-deferred status.
 
 ## Steps
 
@@ -23,11 +34,48 @@ git push -u origin "$BRANCH"
 ```
 If there are uncommitted changes, commit them first (or tell the user) before pushing.
 
-### 2. Ask for merge approval
-Use the **AskUserQuestion** tool: "Merge `$BRANCH` into `main`?" with options
-**Merge** / **Not yet**. Do not merge without an explicit yes.
+### 2. Update the books (required gate)
+Before asking to merge, make sure **both** books reflect this branch's changes. Do
+this every time — even a small feature usually touches at least one book.
 
-### 3. Merge into main (worktree-aware)
+```bash
+# What did this branch change vs main? Use it to decide which book(s) need edits.
+git diff --stat origin/main...HEAD
+git log --oneline origin/main..HEAD
+```
+
+Decide and act:
+1. **Read the diff** (the commands above + `git diff origin/main...HEAD` on the
+   relevant files) to understand what actually changed.
+2. **Product book — `docs/STORYBOOK.md`:** if the change adds/alters a screen, an
+   affordance, a user-visible flow, or counts/copy the user sees, update the matching
+   section (or add one), matching its outside-in tone. New screenshots go under
+   `docs/storybook/` if applicable.
+3. **Architecture book — `docs/ARCHITECTURE.md` + `docs/architecture/*.md`:** if the
+   change touches an entity, an endpoint, a message/document schema, a data flow, a
+   pipeline stage, an env var/config, an AWS resource, or a current-vs-deferred
+   status, update the right **chapter** (1 Foundations · 2 Ingest · 3 Catalog &
+   Data Model · 4 Performance Engine · 5 Playback & Rip · 6 Search · 7 Distribution
+   & Clients) and, if the pillar map / ToC / "current vs coming" / inconsistencies
+   list in `ARCHITECTURE.md` is affected, update that too. Keep the **Why → What →
+   How** structure and the rule that every ASCII diagram is explained in the prose
+   beneath it. Cite real file paths, endpoints, and field names.
+4. **If genuinely no doc change is warranted** (e.g. a pure refactor, test-only, or
+   tooling change with zero user-facing or architectural effect), say so explicitly
+   to the user in one line — don't silently skip the gate.
+5. **Commit** any doc edits on this branch and push, so the books land with the code:
+   ```bash
+   git add docs/
+   git commit -m "Docs: sync STORYBOOK + ARCHITECTURE with $BRANCH"
+   git push
+   ```
+
+### 3. Ask for merge approval
+Use the **AskUserQuestion** tool: "Merge `$BRANCH` into `main`?" with options
+**Merge** / **Not yet**. Do not merge without an explicit yes. (Confirm the books are
+updated — or that no update was needed — as part of this ask.)
+
+### 4. Merge into main (worktree-aware)
 This project uses git worktrees (`.claude/worktrees/…`), so `main` is checked out
 in a **different** worktree and can't be checked out here. Merge in the worktree
 that owns `main`:
@@ -47,6 +95,8 @@ echo "✓ merged $BRANCH into main and pushed"
 - If the main worktree has uncommitted changes, stop and ask the user to resolve first.
 
 ### Notes
+- The **docs gate (Step 2) runs before every merge** — both books are kept current on
+  `main` so they never drift behind the code that ships.
 - No `gh pr create` / no GitHub PR is opened — intentional.
 - The feature branch is left intact after merging (delete it manually if desired).
 - Pushing uses the SSH remote (`levi.github.com:galxy25/pocketdj`), which is the

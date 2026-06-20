@@ -1,0 +1,790 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01D138E63D361FB1C261A2C9 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D49AA4F89F97CE3BC8357D3 /* AppModel.swift */; };
+		12277B4C3961B3CBF02CE83E /* SortSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EB36E8F7261CBA172BB639D /* SortSheet.swift */; };
+		167CA1A9D7FC945EBC0F90F1 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 635C99784DD82527D709A026 /* Theme.swift */; };
+		18F55CE4D91B966214C24208 /* SongDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A7A20693A735D78FD673A44 /* SongDetailView.swift */; };
+		2021EFF72FA5CACA899DF115 /* CatalogLoading.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4962F6E77AB7F6E723619F68 /* CatalogLoading.swift */; };
+		2A3989C1B45DDDD4830CB66F /* SearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E38F84D73A32B07882EAD08 /* SearchService.swift */; };
+		39173F1C99F093BEB0FA4396 /* EngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6598C8C55660B7CBF3D9642A /* EngineTests.swift */; };
+		3E032BF5675E4DAC8F2DE300 /* CatalogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A787F4A7AB15B9FB5C47A65A /* CatalogService.swift */; };
+		3F6A3B30EB309F4D0B9E4453 /* EditAlbumView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DA8497796A5259F2A4F3EFF /* EditAlbumView.swift */; };
+		43BB757610F0F5EBEACEECDA /* PocketDJApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE90C1896C86E7B65A2D0B03 /* PocketDJApp.swift */; };
+		46B64A093FC2089D3A38B7E7 /* BrowseUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15DA7ABA2463D35BB35322E5 /* BrowseUITests.swift */; };
+		4A3AA6F211B418638811B976 /* SigV4.swift in Sources */ = {isa = PBXBuildFile; fileRef = 534721080A769A3FC887E608 /* SigV4.swift */; };
+		50D5B90D705DE20789DFEA36 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C814FEF25275F5A6AE683C1 /* Config.swift */; };
+		5E7B2D5DCDF33E16AC01FAF5 /* BrowseModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7257571E557F27140C1C7A1 /* BrowseModel.swift */; };
+		6A79B3600895EFD172DDDFB1 /* EditSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0029684BDA7DC34827547955 /* EditSchema.swift */; };
+		6C6A81900B64AAE83504575A /* CoverImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DF90EDBE036D5F9F11C894E /* CoverImage.swift */; };
+		6ECEFEC6B3A0D9B7FE9A2F6C /* XCUIHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B288ECD80CA84D3032A8774 /* XCUIHelpers.swift */; };
+		6F1E4441DD6BE4CCCBDCC797 /* SettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6AB12EC89EE0804EF592646 /* SettingsTests.swift */; };
+		7A7E1614DA6C284823F06878 /* SigV4Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 488C6807153DACF43E5E4586 /* SigV4Tests.swift */; };
+		7F5271DCDD578ABE6D32D111 /* SettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED5833D51006DC88F43C6FDA /* SettingsUITests.swift */; };
+		80CEB6C45E701C07AC2633B2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 247D8BE584DBA6EE7009B4FD /* SettingsView.swift */; };
+		8F8EB9C040A5746D3BF49919 /* Format.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03308285792BC711ACEE2733 /* Format.swift */; };
+		8FC5A86C80D291913B77709A /* FilterSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40BAE935519168E903EE8ACD /* FilterSheet.swift */; };
+		9FE2F1059B6BD092F239CD88 /* EditSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34AC0175EB6BDE4AF72724A8 /* EditSchemaTests.swift */; };
+		A1621909DCB539EF6E26CD22 /* OnlineSearchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B7E46850E10B47EF361FA4C /* OnlineSearchModel.swift */; };
+		ABF4B5A7921C446E58F389C3 /* IndexModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF481BEFB010A4B04D48FEF4 /* IndexModels.swift */; };
+		AEA468C5210C42CA64DF0345 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EF4F97865D8CB8E96122151D /* Assets.xcassets */; };
+		AEE49F566ED2221338C32640 /* Fixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 027D9207F27E99DB6D901080 /* Fixtures.swift */; };
+		B515E59C01A08813F89D549A /* RipServerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53BDC217143D9D7C42ABB34C /* RipServerService.swift */; };
+		B5ED0F5C9AC3B15F06E14F35 /* BrowseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B5EC722B1324CED81EF2E8E /* BrowseView.swift */; };
+		C7139728F4D720D9DC956BE7 /* Genre.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D835E1B471258348AC54331 /* Genre.swift */; };
+		CFB684003F5EC5A7B9AD889A /* EditsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F45F411D6AD06EDCFA2A4400 /* EditsStore.swift */; };
+		DCA26E59196FA608F846B04A /* EditSongView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB73F62005924C8274EE434 /* EditSongView.swift */; };
+		E9367B971DC10BBD9FB8404C /* fixture-index.json in Resources */ = {isa = PBXBuildFile; fileRef = A693332318F7E6B5BB345407 /* fixture-index.json */; };
+		EB46236D2B3861EDC32DBC83 /* AlbumDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2100545B470C52A2DC5DCA2F /* AlbumDetailView.swift */; };
+		EC83EC67494EB31DCF1BA281 /* BrowseStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A7F3EA6577FAC86338DB9B4 /* BrowseStateTests.swift */; };
+		F0A4645CC908A38C3403B8CF /* EditsFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00E1FCB41FE33110D9894711 /* EditsFile.swift */; };
+		F0CF8712E55C51464EEBE844 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98CF8223A514585B307DBC44 /* RootView.swift */; };
+		F41FA8D7BD914690A5157901 /* BrowseState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B035DC97A86BFB0627971DD2 /* BrowseState.swift */; };
+		F7F0807994DDB805525579AB /* KeyChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25741D198A372D9021096109 /* KeyChip.swift */; };
+		FF0E95603D55FFC1D5A46C75 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E18B7F28E2B0EB4FF9B8F3B /* SettingsStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4736658F44000F0B8B63D713 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC1B60F1BF5524CF9023DF9B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EA2F218813CDB5AB83D41E5E;
+			remoteInfo = PocketDJ;
+		};
+		BA9A47EE42806E136F99A079 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC1B60F1BF5524CF9023DF9B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EA2F218813CDB5AB83D41E5E;
+			remoteInfo = PocketDJ;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0029684BDA7DC34827547955 /* EditSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditSchema.swift; sourceTree = "<group>"; };
+		00E1FCB41FE33110D9894711 /* EditsFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditsFile.swift; sourceTree = "<group>"; };
+		027D9207F27E99DB6D901080 /* Fixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fixtures.swift; sourceTree = "<group>"; };
+		03308285792BC711ACEE2733 /* Format.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Format.swift; sourceTree = "<group>"; };
+		0B288ECD80CA84D3032A8774 /* XCUIHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XCUIHelpers.swift; sourceTree = "<group>"; };
+		0D49AA4F89F97CE3BC8357D3 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		0DF90EDBE036D5F9F11C894E /* CoverImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverImage.swift; sourceTree = "<group>"; };
+		15DA7ABA2463D35BB35322E5 /* BrowseUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseUITests.swift; sourceTree = "<group>"; };
+		1A7A20693A735D78FD673A44 /* SongDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongDetailView.swift; sourceTree = "<group>"; };
+		2100545B470C52A2DC5DCA2F /* AlbumDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumDetailView.swift; sourceTree = "<group>"; };
+		247D8BE584DBA6EE7009B4FD /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		25741D198A372D9021096109 /* KeyChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyChip.swift; sourceTree = "<group>"; };
+		2CB73F62005924C8274EE434 /* EditSongView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditSongView.swift; sourceTree = "<group>"; };
+		2D835E1B471258348AC54331 /* Genre.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Genre.swift; sourceTree = "<group>"; };
+		34AC0175EB6BDE4AF72724A8 /* EditSchemaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditSchemaTests.swift; sourceTree = "<group>"; };
+		3B5EC722B1324CED81EF2E8E /* BrowseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseView.swift; sourceTree = "<group>"; };
+		3E18B7F28E2B0EB4FF9B8F3B /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		3EB36E8F7261CBA172BB639D /* SortSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SortSheet.swift; sourceTree = "<group>"; };
+		3EC7C384233CC7390A38437D /* PocketDJTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PocketDJTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		40BAE935519168E903EE8ACD /* FilterSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterSheet.swift; sourceTree = "<group>"; };
+		488C6807153DACF43E5E4586 /* SigV4Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigV4Tests.swift; sourceTree = "<group>"; };
+		4962F6E77AB7F6E723619F68 /* CatalogLoading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogLoading.swift; sourceTree = "<group>"; };
+		534721080A769A3FC887E608 /* SigV4.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigV4.swift; sourceTree = "<group>"; };
+		53BDC217143D9D7C42ABB34C /* RipServerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RipServerService.swift; sourceTree = "<group>"; };
+		599B63FFD551DD0F51FBF4D4 /* PocketDJUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PocketDJUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		635C99784DD82527D709A026 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		6598C8C55660B7CBF3D9642A /* EngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineTests.swift; sourceTree = "<group>"; };
+		6B7E46850E10B47EF361FA4C /* OnlineSearchModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnlineSearchModel.swift; sourceTree = "<group>"; };
+		6E38F84D73A32B07882EAD08 /* SearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchService.swift; sourceTree = "<group>"; };
+		7C814FEF25275F5A6AE683C1 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+		7DA8497796A5259F2A4F3EFF /* EditAlbumView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditAlbumView.swift; sourceTree = "<group>"; };
+		89B92A03E8532F729E9503C9 /* PocketDJ.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PocketDJ.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		98CF8223A514585B307DBC44 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		9A7F3EA6577FAC86338DB9B4 /* BrowseStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseStateTests.swift; sourceTree = "<group>"; };
+		A693332318F7E6B5BB345407 /* fixture-index.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "fixture-index.json"; sourceTree = "<group>"; };
+		A787F4A7AB15B9FB5C47A65A /* CatalogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogService.swift; sourceTree = "<group>"; };
+		B035DC97A86BFB0627971DD2 /* BrowseState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseState.swift; sourceTree = "<group>"; };
+		BE90C1896C86E7B65A2D0B03 /* PocketDJApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketDJApp.swift; sourceTree = "<group>"; };
+		ED5833D51006DC88F43C6FDA /* SettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsUITests.swift; sourceTree = "<group>"; };
+		EF4F97865D8CB8E96122151D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F45F411D6AD06EDCFA2A4400 /* EditsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditsStore.swift; sourceTree = "<group>"; };
+		F6AB12EC89EE0804EF592646 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
+		F7257571E557F27140C1C7A1 /* BrowseModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseModel.swift; sourceTree = "<group>"; };
+		FF481BEFB010A4B04D48FEF4 /* IndexModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexModels.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0D730384EEBF76A20265401D = {
+			isa = PBXGroup;
+			children = (
+				E31AF58DB5BA5B839D4451F9 /* PocketDJ */,
+				B6E807D32914ED618645B9B8 /* Tests */,
+				11C8A61118F280CAF69670B6 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		11C8A61118F280CAF69670B6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				89B92A03E8532F729E9503C9 /* PocketDJ.app */,
+				3EC7C384233CC7390A38437D /* PocketDJTests.xctest */,
+				599B63FFD551DD0F51FBF4D4 /* PocketDJUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		14D0FD3CB97EC4AC24C1D84A /* Unit */ = {
+			isa = PBXGroup;
+			children = (
+				9A7F3EA6577FAC86338DB9B4 /* BrowseStateTests.swift */,
+				34AC0175EB6BDE4AF72724A8 /* EditSchemaTests.swift */,
+				6598C8C55660B7CBF3D9642A /* EngineTests.swift */,
+				027D9207F27E99DB6D901080 /* Fixtures.swift */,
+				F6AB12EC89EE0804EF592646 /* SettingsTests.swift */,
+				488C6807153DACF43E5E4586 /* SigV4Tests.swift */,
+			);
+			path = Unit;
+			sourceTree = "<group>";
+		};
+		1903E263C8976719C73D6EFF /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				0029684BDA7DC34827547955 /* EditSchema.swift */,
+				FF481BEFB010A4B04D48FEF4 /* IndexModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		865E8F93097FC6217AC8A95C /* Search */ = {
+			isa = PBXGroup;
+			children = (
+				6E38F84D73A32B07882EAD08 /* SearchService.swift */,
+				534721080A769A3FC887E608 /* SigV4.swift */,
+			);
+			path = Search;
+			sourceTree = "<group>";
+		};
+		8F34356FC979C4210E90737C /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				2100545B470C52A2DC5DCA2F /* AlbumDetailView.swift */,
+				3B5EC722B1324CED81EF2E8E /* BrowseView.swift */,
+				0DF90EDBE036D5F9F11C894E /* CoverImage.swift */,
+				7DA8497796A5259F2A4F3EFF /* EditAlbumView.swift */,
+				00E1FCB41FE33110D9894711 /* EditsFile.swift */,
+				2CB73F62005924C8274EE434 /* EditSongView.swift */,
+				40BAE935519168E903EE8ACD /* FilterSheet.swift */,
+				25741D198A372D9021096109 /* KeyChip.swift */,
+				98CF8223A514585B307DBC44 /* RootView.swift */,
+				247D8BE584DBA6EE7009B4FD /* SettingsView.swift */,
+				1A7A20693A735D78FD673A44 /* SongDetailView.swift */,
+				3EB36E8F7261CBA172BB639D /* SortSheet.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A2BE7424352AD02AA3F889F3 /* State */ = {
+			isa = PBXGroup;
+			children = (
+				0D49AA4F89F97CE3BC8357D3 /* AppModel.swift */,
+				F45F411D6AD06EDCFA2A4400 /* EditsStore.swift */,
+				6B7E46850E10B47EF361FA4C /* OnlineSearchModel.swift */,
+			);
+			path = State;
+			sourceTree = "<group>";
+		};
+		B6E807D32914ED618645B9B8 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				EABBB32E4EE1FF972E9F2365 /* UI */,
+				14D0FD3CB97EC4AC24C1D84A /* Unit */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		BA91C787BB87D51E9DC7F4BE /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				3E18B7F28E2B0EB4FF9B8F3B /* SettingsStore.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		C5837E0CA5991CDE02578C8C /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				865E8F93097FC6217AC8A95C /* Search */,
+				4962F6E77AB7F6E723619F68 /* CatalogLoading.swift */,
+				A787F4A7AB15B9FB5C47A65A /* CatalogService.swift */,
+				53BDC217143D9D7C42ABB34C /* RipServerService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		D809E3EED7E746AB7448CA7D /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A693332318F7E6B5BB345407 /* fixture-index.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		DAAF67BA3D792EA9AB82C573 /* Browse */ = {
+			isa = PBXGroup;
+			children = (
+				F7257571E557F27140C1C7A1 /* BrowseModel.swift */,
+				B035DC97A86BFB0627971DD2 /* BrowseState.swift */,
+			);
+			path = Browse;
+			sourceTree = "<group>";
+		};
+		E31AF58DB5BA5B839D4451F9 /* PocketDJ */ = {
+			isa = PBXGroup;
+			children = (
+				DAAF67BA3D792EA9AB82C573 /* Browse */,
+				1903E263C8976719C73D6EFF /* Models */,
+				D809E3EED7E746AB7448CA7D /* Resources */,
+				C5837E0CA5991CDE02578C8C /* Services */,
+				BA91C787BB87D51E9DC7F4BE /* Settings */,
+				A2BE7424352AD02AA3F889F3 /* State */,
+				F5F80541895BD0AE739F0078 /* Support */,
+				8F34356FC979C4210E90737C /* Views */,
+				EF4F97865D8CB8E96122151D /* Assets.xcassets */,
+				BE90C1896C86E7B65A2D0B03 /* PocketDJApp.swift */,
+			);
+			path = PocketDJ;
+			sourceTree = "<group>";
+		};
+		EABBB32E4EE1FF972E9F2365 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				15DA7ABA2463D35BB35322E5 /* BrowseUITests.swift */,
+				ED5833D51006DC88F43C6FDA /* SettingsUITests.swift */,
+				0B288ECD80CA84D3032A8774 /* XCUIHelpers.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		F5F80541895BD0AE739F0078 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				7C814FEF25275F5A6AE683C1 /* Config.swift */,
+				03308285792BC711ACEE2733 /* Format.swift */,
+				2D835E1B471258348AC54331 /* Genre.swift */,
+				635C99784DD82527D709A026 /* Theme.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3D38C32109E6357A155ACB78 /* PocketDJTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E860B0E6869CD0BE7275C025 /* Build configuration list for PBXNativeTarget "PocketDJTests" */;
+			buildPhases = (
+				49FD7F40D479709FCC29C046 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7EB2133D159A38678C47326B /* PBXTargetDependency */,
+			);
+			name = PocketDJTests;
+			packageProductDependencies = (
+			);
+			productName = PocketDJTests;
+			productReference = 3EC7C384233CC7390A38437D /* PocketDJTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		4969BB0B3842A5B208A2DE83 /* PocketDJUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A89A9C1995C6B10710CEC6C9 /* Build configuration list for PBXNativeTarget "PocketDJUITests" */;
+			buildPhases = (
+				148C20120F500880F13BF614 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				36054616C4F3FF87B5F90942 /* PBXTargetDependency */,
+			);
+			name = PocketDJUITests;
+			packageProductDependencies = (
+			);
+			productName = PocketDJUITests;
+			productReference = 599B63FFD551DD0F51FBF4D4 /* PocketDJUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		EA2F218813CDB5AB83D41E5E /* PocketDJ */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4868201CEFFE18D3F51B142B /* Build configuration list for PBXNativeTarget "PocketDJ" */;
+			buildPhases = (
+				D536A8BD5DCA1465C4018102 /* Sources */,
+				0F835AA1AEF61024D3790D8F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PocketDJ;
+			packageProductDependencies = (
+			);
+			productName = PocketDJ;
+			productReference = 89B92A03E8532F729E9503C9 /* PocketDJ.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		EC1B60F1BF5524CF9023DF9B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					3D38C32109E6357A155ACB78 = {
+						DevelopmentTeam = EC27UF79GL;
+						ProvisioningStyle = Automatic;
+					};
+					4969BB0B3842A5B208A2DE83 = {
+						DevelopmentTeam = EC27UF79GL;
+						ProvisioningStyle = Automatic;
+						TestTargetID = EA2F218813CDB5AB83D41E5E;
+					};
+					EA2F218813CDB5AB83D41E5E = {
+						DevelopmentTeam = EC27UF79GL;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 21D23624446993EB69FEA9A9 /* Build configuration list for PBXProject "PocketDJ" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 0D730384EEBF76A20265401D;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 11C8A61118F280CAF69670B6 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				EA2F218813CDB5AB83D41E5E /* PocketDJ */,
+				3D38C32109E6357A155ACB78 /* PocketDJTests */,
+				4969BB0B3842A5B208A2DE83 /* PocketDJUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0F835AA1AEF61024D3790D8F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AEA468C5210C42CA64DF0345 /* Assets.xcassets in Resources */,
+				E9367B971DC10BBD9FB8404C /* fixture-index.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		148C20120F500880F13BF614 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				46B64A093FC2089D3A38B7E7 /* BrowseUITests.swift in Sources */,
+				7F5271DCDD578ABE6D32D111 /* SettingsUITests.swift in Sources */,
+				6ECEFEC6B3A0D9B7FE9A2F6C /* XCUIHelpers.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49FD7F40D479709FCC29C046 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EC83EC67494EB31DCF1BA281 /* BrowseStateTests.swift in Sources */,
+				9FE2F1059B6BD092F239CD88 /* EditSchemaTests.swift in Sources */,
+				39173F1C99F093BEB0FA4396 /* EngineTests.swift in Sources */,
+				AEE49F566ED2221338C32640 /* Fixtures.swift in Sources */,
+				6F1E4441DD6BE4CCCBDCC797 /* SettingsTests.swift in Sources */,
+				7A7E1614DA6C284823F06878 /* SigV4Tests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D536A8BD5DCA1465C4018102 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EB46236D2B3861EDC32DBC83 /* AlbumDetailView.swift in Sources */,
+				01D138E63D361FB1C261A2C9 /* AppModel.swift in Sources */,
+				5E7B2D5DCDF33E16AC01FAF5 /* BrowseModel.swift in Sources */,
+				F41FA8D7BD914690A5157901 /* BrowseState.swift in Sources */,
+				B5ED0F5C9AC3B15F06E14F35 /* BrowseView.swift in Sources */,
+				2021EFF72FA5CACA899DF115 /* CatalogLoading.swift in Sources */,
+				3E032BF5675E4DAC8F2DE300 /* CatalogService.swift in Sources */,
+				50D5B90D705DE20789DFEA36 /* Config.swift in Sources */,
+				6C6A81900B64AAE83504575A /* CoverImage.swift in Sources */,
+				3F6A3B30EB309F4D0B9E4453 /* EditAlbumView.swift in Sources */,
+				6A79B3600895EFD172DDDFB1 /* EditSchema.swift in Sources */,
+				DCA26E59196FA608F846B04A /* EditSongView.swift in Sources */,
+				F0A4645CC908A38C3403B8CF /* EditsFile.swift in Sources */,
+				CFB684003F5EC5A7B9AD889A /* EditsStore.swift in Sources */,
+				8FC5A86C80D291913B77709A /* FilterSheet.swift in Sources */,
+				8F8EB9C040A5746D3BF49919 /* Format.swift in Sources */,
+				C7139728F4D720D9DC956BE7 /* Genre.swift in Sources */,
+				ABF4B5A7921C446E58F389C3 /* IndexModels.swift in Sources */,
+				F7F0807994DDB805525579AB /* KeyChip.swift in Sources */,
+				A1621909DCB539EF6E26CD22 /* OnlineSearchModel.swift in Sources */,
+				43BB757610F0F5EBEACEECDA /* PocketDJApp.swift in Sources */,
+				B515E59C01A08813F89D549A /* RipServerService.swift in Sources */,
+				F0CF8712E55C51464EEBE844 /* RootView.swift in Sources */,
+				2A3989C1B45DDDD4830CB66F /* SearchService.swift in Sources */,
+				FF0E95603D55FFC1D5A46C75 /* SettingsStore.swift in Sources */,
+				80CEB6C45E701C07AC2633B2 /* SettingsView.swift in Sources */,
+				4A3AA6F211B418638811B976 /* SigV4.swift in Sources */,
+				18F55CE4D91B966214C24208 /* SongDetailView.swift in Sources */,
+				12277B4C3961B3CBF02CE83E /* SortSheet.swift in Sources */,
+				167CA1A9D7FC945EBC0F90F1 /* Theme.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		36054616C4F3FF87B5F90942 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EA2F218813CDB5AB83D41E5E /* PocketDJ */;
+			targetProxy = BA9A47EE42806E136F99A079 /* PBXContainerItemProxy */;
+		};
+		7EB2133D159A38678C47326B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EA2F218813CDB5AB83D41E5E /* PocketDJ */;
+			targetProxy = 4736658F44000F0B8B63D713 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		2F4C8B1D43D9F714F7E4C6FC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.pocketdj.uitests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PocketDJ;
+			};
+			name = Release;
+		};
+		3B36E73DA7EE607C2897B0BB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.pocketdj.tests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PocketDJ.app/PocketDJ";
+				"TEST_HOST[sdk=macosx*]" = "$(BUILT_PRODUCTS_DIR)/PocketDJ.app/Contents/MacOS/PocketDJ";
+			};
+			name = Release;
+		};
+		413663C11995A31FFED28FCA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = PocketDJ;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
+				INFOPLIST_KEY_NSHumanReadableCopyright = PocketDJ;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.pocketdj.app;
+				PRODUCT_NAME = PocketDJ;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		54731CDBB4572AFBBEADDC4E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.pocketdj.tests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PocketDJ.app/PocketDJ";
+				"TEST_HOST[sdk=macosx*]" = "$(BUILT_PRODUCTS_DIR)/PocketDJ.app/Contents/MacOS/PocketDJ";
+			};
+			name = Debug;
+		};
+		6DAD91E7CB94213EF1D70AFE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = PocketDJ;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
+				INFOPLIST_KEY_NSHumanReadableCopyright = PocketDJ;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.pocketdj.app;
+				PRODUCT_NAME = PocketDJ;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		981C1B6E968A4BAC582881D6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = EC27UF79GL;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BD1A7D8E2BFD1865E9385E13 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = EC27UF79GL;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C99E2BB030BA917E61C5A1D9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.pocketdj.uitests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PocketDJ;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		21D23624446993EB69FEA9A9 /* Build configuration list for PBXProject "PocketDJ" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				981C1B6E968A4BAC582881D6 /* Debug */,
+				BD1A7D8E2BFD1865E9385E13 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4868201CEFFE18D3F51B142B /* Build configuration list for PBXNativeTarget "PocketDJ" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6DAD91E7CB94213EF1D70AFE /* Debug */,
+				413663C11995A31FFED28FCA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A89A9C1995C6B10710CEC6C9 /* Build configuration list for PBXNativeTarget "PocketDJUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C99E2BB030BA917E61C5A1D9 /* Debug */,
+				2F4C8B1D43D9F714F7E4C6FC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E860B0E6869CD0BE7275C025 /* Build configuration list for PBXNativeTarget "PocketDJTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				54731CDBB4572AFBBEADDC4E /* Debug */,
+				3B36E73DA7EE607C2897B0BB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = EC1B60F1BF5524CF9023DF9B /* Project object */;
+}

@@ -1,0 +1,123 @@
+import SwiftUI
+import Observation
+
+/// A configurable catalog source (name + index URL + whether it's shown).
+struct SourceConfig: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var name: String
+    var urlString: String
+    var enabled: Bool = true
+
+    var url: URL? { URL(string: urlString.trimmingCharacters(in: .whitespaces)) }
+}
+
+/// Persisted app settings (UserDefaults). Mirrors the PWA's Settings: data
+/// sources, online-search credentials, and the rip-server config. Refresh /
+/// data migrations are intentionally omitted — the App Store handles app updates
+/// and any data migration ships inside a new version.
+@MainActor
+@Observable
+final class SettingsStore {
+    var sources: [SourceConfig]
+    var ripServerURL: String
+    var ripToken: String
+    var searchAccessKeyID: String
+    var searchSecretKey: String
+    var searchEndpoint: String
+
+    private let defaults: UserDefaults
+    private static let key = "pdj.settings.v1"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let data = SettingsStore.load(from: defaults)
+        self.sources = data.sources
+        self.ripServerURL = data.ripServerURL
+        self.ripToken = data.ripToken
+        self.searchAccessKeyID = data.searchAccessKeyID
+        self.searchSecretKey = data.searchSecretKey
+        self.searchEndpoint = data.searchEndpoint
+    }
+
+    /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
+    /// runs are deterministic and never touch the user's real settings.
+    static func launchDefaults() -> UserDefaults {
+        if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
+            let name = "pdj.uitest.ephemeral"
+            let d = UserDefaults(suiteName: name) ?? .standard
+            d.removePersistentDomain(forName: name)
+            return d
+        }
+        return .standard
+    }
+
+    var enabledSourceURLs: [URL] { sources.filter { $0.enabled }.compactMap { $0.url } }
+    var searchConfigured: Bool { !searchAccessKeyID.isEmpty && !searchSecretKey.isEmpty }
+
+    func addSource() {
+        sources.append(SourceConfig(name: "New source", urlString: ""))
+        persist()
+    }
+
+    var hasAppleMusic: Bool { sources.contains { $0.name == Config.appleMusicSourceName } }
+
+    /// Opt-in: add the Apple Music (Local) source (same behavior as the PWA — not
+    /// loaded by default; one tap adds it).
+    func loadAppleMusic() {
+        guard !hasAppleMusic else { return }
+        sources.append(SourceConfig(name: Config.appleMusicSourceName,
+                                    urlString: Config.appleMusicIndexURL.absoluteString,
+                                    enabled: true))
+        persist()
+    }
+    func removeSource(_ id: UUID) {
+        sources.removeAll { $0.id == id }
+        persist()
+    }
+
+    func persist() {
+        let snapshot = SettingsData(
+            sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
+            searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
+            searchEndpoint: searchEndpoint)
+        if let encoded = try? JSONEncoder().encode(snapshot) {
+            defaults.set(encoded, forKey: SettingsStore.key)
+        }
+    }
+
+    /// Wipe ALL on-device state: settings, the URL cache (covers + index), back to defaults.
+    func resetEverything() {
+        defaults.removeObject(forKey: SettingsStore.key)
+        URLCache.shared.removeAllCachedResponses()
+        let d = SettingsData.default
+        sources = d.sources
+        ripServerURL = d.ripServerURL; ripToken = d.ripToken
+        searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
+        searchEndpoint = d.searchEndpoint
+    }
+
+    private static func load(from defaults: UserDefaults) -> SettingsData {
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(SettingsData.self, from: data)
+        else { return .default }
+        return decoded
+    }
+}
+
+/// Codable snapshot persisted to UserDefaults.
+struct SettingsData: Codable {
+    var sources: [SourceConfig]
+    var ripServerURL: String
+    var ripToken: String
+    var searchAccessKeyID: String
+    var searchSecretKey: String
+    var searchEndpoint: String
+
+    static let `default` = SettingsData(
+        sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
+        ripServerURL: Config.ripServerBase.absoluteString,
+        ripToken: "",
+        searchAccessKeyID: "",
+        searchSecretKey: "",
+        searchEndpoint: "")
+}
