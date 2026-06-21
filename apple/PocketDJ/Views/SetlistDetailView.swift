@@ -176,7 +176,10 @@ struct SetlistDetailView: View {
     private func provenanceBadges(_ track: SetlistTrack) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
             sourceBadge(track.source)
-            if let seq = track.sequenceName, !seq.isEmpty { Badge(seq, color: Theme.fgDim) }
+            // Show the chapter only when it's a real, named one (not the default).
+            if let seq = track.sequenceName, !seq.isEmpty, seq != "Default" {
+                Badge(seq, color: Theme.fgDim)
+            }
         }
     }
 
