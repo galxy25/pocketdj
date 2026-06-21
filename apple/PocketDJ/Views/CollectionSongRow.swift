@@ -171,8 +171,10 @@ struct BPMTier: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
-            if let t = BPMTier.tier(bpm) {
+        if let t = BPMTier.tier(bpm) {
+            // BPM number above the tempo-tier play icons.
+            VStack(spacing: 1) {
+                Text(Fmt.bpm(bpm)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 HStack(spacing: 1) {
                     ForEach(0..<t, id: \.self) { _ in
                         Image(systemName: "play.fill").font(.system(size: 7))
@@ -180,11 +182,10 @@ struct BPMTier: View {
                 }
                 .foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("bpm-tier-\(t)")
-                Text(Fmt.bpm(bpm)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
-            } else {
-                Text("–").font(.caption2).foregroundStyle(Theme.fgDim)
-                    .accessibilityIdentifier("bpm-tier-none")
             }
+        } else {
+            Text("–").font(.caption2).foregroundStyle(Theme.fgDim)
+                .accessibilityIdentifier("bpm-tier-none")
         }
     }
 }
