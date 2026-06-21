@@ -1,6 +1,6 @@
 name: PocketDJ
 options:
-  bundleIdPrefix: net.pocketdj
+  bundleIdPrefix: com.levi
   deploymentTarget:
     iOS: "18.0"
     macOS: "15.0"
@@ -99,7 +99,7 @@ targets:
     #     YouTubeOAuthClientID: ""                             # iOS OAuth client (account-link)
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.pocketdj.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.levi.pocketdj
         PRODUCT_NAME: PocketDJ
         TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad
         GENERATE_INFOPLIST_FILE: "YES"
@@ -134,7 +134,7 @@ targets:
         # The AppleMusicProvider stays dormant (.unavailable) until this is "YES",
         # so MusicAuthorization.request() is never called in the default build.
         # Flip to YES only AFTER enabling MusicKit on the App ID. Default: off.
-        # INFOPLIST_KEY_PocketDJAppleMusicEnabled: "YES"
+        INFOPLIST_KEY_PocketDJAppleMusicEnabled: "YES"
         # --- Spotify / YouTube OAuth redirect (CFBundleURLTypes) placeholder ----
         # CFBundleURLTypes / LSApplicationQueriesSchemes are ARRAYS, not scalar
         # INFOPLIST_KEY_* values, so they can't be injected here. To register the
@@ -160,7 +160,7 @@ targets:
       - package: ZIPFoundation
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.pocketdj.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.levi.pocketdj.tests
         GENERATE_INFOPLIST_FILE: "YES"
         # macOS keeps the executable under Contents/MacOS; XcodeGen's default
         # TEST_HOST is the iOS-shaped path, so override it per-SDK.
@@ -175,7 +175,7 @@ targets:
       - target: PocketDJ
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.pocketdj.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: com.levi.pocketdj.uitests
         GENERATE_INFOPLIST_FILE: "YES"
 
 schemes:
