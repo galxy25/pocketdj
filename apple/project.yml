@@ -64,6 +64,11 @@ targets:
       path: PocketDJ/Generated/Info.plist
       properties:
         UIBackgroundModes: [audio]
+        # Apple Music opt-in flag (read by AppleMusicCredentials.isEnabled). MUST live
+        # in this base plist: INFOPLIST_KEY_* only injects Apple's KNOWN keys, not custom
+        # ones, so the build-setting form silently no-ops (the "Apple Music not available"
+        # bug). A boolean here lands in the built Info.plist.
+        PocketDJAppleMusicEnabled: true
     dependencies:
       - package: ZIPFoundation
       # Uncomment to link the Spotify SDK (see packages.SpotifyiOS above):
@@ -131,10 +136,8 @@ targets:
         # ALLOWED=NO) ignore them, so the default build stays green.
         CODE_SIGN_ENTITLEMENTS: PocketDJ/PocketDJ.entitlements
         # --- Apple Music build-time opt-in -------------------------------------
-        # The AppleMusicProvider stays dormant (.unavailable) until this is "YES",
-        # so MusicAuthorization.request() is never called in the default build.
-        # Flip to YES only AFTER enabling MusicKit on the App ID. Default: off.
-        INFOPLIST_KEY_PocketDJAppleMusicEnabled: "YES"
+        # The flag lives in the base Info.plist (info: properties above) as
+        # PocketDJAppleMusicEnabled — INFOPLIST_KEY_* can't inject custom keys.
         # --- Spotify / YouTube OAuth redirect (CFBundleURLTypes) placeholder ----
         # CFBundleURLTypes / LSApplicationQueriesSchemes are ARRAYS, not scalar
         # INFOPLIST_KEY_* values, so they can't be injected here. To register the

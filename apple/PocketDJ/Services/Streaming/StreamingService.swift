@@ -17,7 +17,9 @@ struct StreamingTrack: Identifiable, Hashable {
 /// Catalog search seam, decoupled from `StreamingProvider` (which is about
 /// account-link + playback). YouTube searches via the Data API; Spotify would
 /// search via the Web API. A provider may offer search without playback (and
-/// vice-versa), so this is its own protocol.
+/// vice-versa), so this is its own protocol. `@MainActor` because its conformers are
+/// UI-driven, MainActor-isolated providers (AppleMusicProvider, YouTubeService).
+@MainActor
 protocol StreamingSearch {
     var kind: StreamingProviderKind { get }
     /// Whether search is usable right now (e.g. an API key is present).

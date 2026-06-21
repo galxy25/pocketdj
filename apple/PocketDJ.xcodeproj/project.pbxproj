@@ -854,7 +854,6 @@
 				INFOPLIST_KEY_NSAppleMusicUsageDescription = "PocketDJ uses Apple Music to play and search tracks from your subscription.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = PocketDJ;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PocketDJ listens to identify the song that's playing.";
-				INFOPLIST_KEY_PocketDJAppleMusicEnabled = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -911,7 +910,6 @@
 				INFOPLIST_KEY_NSAppleMusicUsageDescription = "PocketDJ uses Apple Music to play and search tracks from your subscription.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = PocketDJ;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PocketDJ listens to identify the song that's playing.";
-				INFOPLIST_KEY_PocketDJAppleMusicEnabled = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

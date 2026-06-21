@@ -151,22 +151,15 @@ final class ShazamRecognizer {
 
     private static func ensureMicPermission() async -> Bool {
         #if canImport(AVFAudio)
-        if #available(iOS 17.0, macOS 14.0, *) {
-            switch AVAudioApplication.shared.recordPermission {
-            case .granted: return true
-            case .denied:  return false
-            case .undetermined:
-                return await AVAudioApplication.requestRecordPermission()
-            @unknown default: return false
-            }
-        } else {
-            #if os(iOS)
-            return await withCheckedContinuation { cont in
-                AVAudioSession.sharedInstance().requestRecordPermission { cont.resume(returning: $0) }
-            }
-            #else
-            return false   // macOS deploys at 14+, so this pre-14 branch is never reached
-            #endif
+        // Deployment targets (iOS 18 / macOS 15) already clear AVAudioApplication's
+        // iOS 17 / macOS 14 availability, so no #available check or pre-17
+        // AVAudioSession fallback is needed.
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: return true
+        case .denied:  return false
+        case .undetermined:
+            return await AVAudioApplication.requestRecordPermission()
+        @unknown default: return false
         }
         #else
         return true

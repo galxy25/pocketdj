@@ -14,6 +14,7 @@ import Foundation
 /// youtube-ios-player-helper pod. Search and playback are decoupled: this gets
 /// the videoId; `YouTubePlayerView` plays it. So the app compiles and the
 /// search source works even before the player pod is added.
+@MainActor
 struct YouTubeService: StreamingSearch {
     let kind: StreamingProviderKind = .youTube
 
