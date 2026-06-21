@@ -6,18 +6,26 @@ import Foundation
 enum ItemKind: String, CaseIterable, Identifiable, Codable { case album, song; var id: String { rawValue } }
 
 /// A browsable row: an album, or a song (with its album name for display).
+/// `source` carries the origin source name (e.g. "My Vinyl") so the filter engine
+/// can match on it; nil when unknown (e.g. online hits built before tagging).
 enum BrowseItem: Identifiable, Hashable {
-    case album(IndexAlbum)
-    case song(IndexSong, albumName: String)
+    case album(IndexAlbum, source: String? = nil)
+    case song(IndexSong, albumName: String, source: String? = nil)
 
     var id: String {
         switch self {
-        case .album(let a): return a.id
-        case .song(let s, _): return s.id
+        case .album(let a, _): return a.id
+        case .song(let s, _, _): return s.id
         }
     }
     var kind: ItemKind {
         switch self { case .album: return .album; case .song: return .song }
+    }
+    var source: String? {
+        switch self {
+        case .album(_, let s): return s
+        case .song(_, _, let s): return s
+        }
     }
 }
 
@@ -63,6 +71,10 @@ enum Fields {
               appliesTo: [.album], ops: [.eq, .neq, .inList], hasOptions: true),
         Field(id: "fileType", label: "File type", kind: .string, numeric: false, sortable: true,
               appliesTo: [.album, .song], ops: [.eq, .neq, .inList], hasOptions: true),
+        // Origin source (e.g. "My Vinyl", "Apple Music (Local)") — threaded onto
+        // each BrowseItem when built from the merged catalog.
+        Field(id: "source", label: "Source", kind: .string, numeric: false, sortable: true,
+              appliesTo: [.album, .song], ops: [.eq, .neq, .inList], hasOptions: true),
         // album-only
         Field(id: "country", label: "Country", kind: .string, numeric: false, sortable: true,
               appliesTo: [.album], ops: [.eq, .neq, .inList], hasOptions: true),
@@ -90,8 +102,10 @@ enum Fields {
 
     /// Value extractor — album fields return `.none` for songs and vice-versa.
     static func value(_ item: BrowseItem, _ fieldID: String) -> FieldValue {
+        // Origin source is carried on the BrowseItem itself (both kinds).
+        if fieldID == "source" { return item.source.map { .string($0) } ?? .none }
         switch item {
-        case .album(let a):
+        case .album(let a, _):
             switch fieldID {
             case "artist": return .string(a.artist)
             case "name": return .string(a.name)
@@ -104,7 +118,7 @@ enum Fields {
             case "trackCount": return .number(Double(a.trackList.count))
             default: return .none
             }
-        case .song(let s, _):
+        case .song(let s, _, _):
             switch fieldID {
             case "artist": return .string(s.artist)
             case "name": return .string(s.name)

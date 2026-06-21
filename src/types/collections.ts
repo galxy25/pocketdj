@@ -30,6 +30,20 @@
 /** 'performance' is reserved/deferred — only 'harmonic' is built this iteration. */
 export type PocketKind = 'harmonic' | 'performance';
 
+/**
+ * A free-text item inside a pocket — a mic cue, a line of poetry, an out-of-index
+ * moment (enables a "poetry pocket"). `position` is the note's index in the pocket's
+ * UNIFIED member ordering, where members are laid out in a single combined list as
+ * [child pockets…, albums…, songs…, notes…] — so a note can sit *between* members.
+ * Mirrors the native `PocketNote` byte-for-byte (collections schema v2).
+ */
+export interface PocketNote {
+  /** 'pnt_' + uuid (matches native CollectionsFactory.newPocketNoteId). */
+  id: string;
+  text: string;
+  position: number;
+}
+
 export interface Pocket {
   /** 'pkt_' + uuid. */
   id: string;
@@ -42,6 +56,12 @@ export interface Pocket {
   albumIds: string[];
   /** Nested pockets (Pocket.id). Forms a DAG; adds are cycle-guarded. */
   childPocketIds: string[];
+  /**
+   * v2: ordered free-text items (poetry/cues), orderable AMONG the members by
+   * `position` (the combined [pockets, albums, songs, notes] layout). Optional so
+   * older docs/pockets without it still load (legacy pockets => treat as []).
+   */
+  notes?: PocketNote[];
   createdAt: number;
   updatedAt: number;
 }
@@ -202,6 +222,8 @@ function uid(): string {
 }
 
 export const newPocketId = (): string => 'pkt_' + uid();
+/** 'pnt_' + uuid — matches native CollectionsFactory.newPocketNoteId. */
+export const newPocketNoteId = (): string => 'pnt_' + uid();
 export const newPlaylistId = (): string => 'pls_' + uid();
 export const newSetlistId = (): string => 'set_' + uid();
 export const newNodeId = (): string => 'nd_' + uid();
@@ -221,6 +243,7 @@ export function makePocket(name: string, kind: PocketKind = 'harmonic'): Pocket 
     songIds: [],
     albumIds: [],
     childPocketIds: [],
+    notes: [],
     createdAt: now,
     updatedAt: now,
   };

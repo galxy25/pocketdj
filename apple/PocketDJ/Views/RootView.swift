@@ -6,6 +6,7 @@ struct RootView: View {
     @Environment(AppModel.self) private var app
     @Environment(SettingsStore.self) private var settings
     @Environment(EditsStore.self) private var edits
+    @Environment(CollectionsStore.self) private var collections
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     @State private var section: Section? = .browse
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
@@ -41,12 +42,17 @@ struct RootView: View {
                 detail
                     .navigationDestination(for: IndexAlbum.self) { AlbumDetailView(album: $0) }
                     .navigationDestination(for: IndexSong.self) { SongDetailView(song: $0) }
+                    .navigationDestination(for: Pocket.self) { PocketDetailView(pocketId: $0.id) }
+                    .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlistId: $0.id, path: $path) }
+                    .navigationDestination(for: SourcePlaylist.self) { IndexPlaylistDetailView(source: $0, path: $path) }
+                    .navigationDestination(for: Setlist.self) { SetlistDetailView(setlistId: $0.id) }
             }
         }
         .background { navigationShortcuts }
         .task {
             app.settings = settings   // wire the live multi-source config before loading
             app.edits = edits         // overlay local metadata edits
+            collections.app = app     // give realize() the catalog to resolve ids against
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
                let s = Section(rawValue: raw) {
@@ -75,12 +81,10 @@ struct RootView: View {
 
     @ViewBuilder private var detail: some View {
         switch section ?? .browse {
-        case .browse:
-            BrowseView()
-        case .settings:
-            SettingsView(settings: settings)
-        case let other:
-            ComingSoon(title: other.rawValue, icon: other.icon)
+        case .browse:    BrowseView()
+        case .pockets:   PocketsView()
+        case .playlists: PlaylistsView(path: $path)
+        case .settings:  SettingsView(settings: settings)
         }
     }
 }

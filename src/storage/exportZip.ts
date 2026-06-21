@@ -3,14 +3,19 @@
 // and the star map works fully offline (art travels with the data).
 import { zip, strToU8, type AsyncZippable } from 'fflate';
 import { getSources, getItems, getAllArt, getPockets, getPlaylists, getAllSetlists } from './repo';
+import { buildEditsJson, getEditsDocument } from './edits';
 import { txn } from '../lib/log';
 
 export interface ExportManifest {
   app: 'pocketdj';
+  /** Disambiguates the zip family for the native router (backup | playlist | pocket). */
+  kind: 'backup';
   // v2 added pockets/playlists/setlists (additive — v1 zips still import).
   schemaVersion: 1 | 2;
+  /** True: the catalog (items.json + art/) travels too, so it imports on an empty device. */
+  portable: boolean;
   exportedAt: string;
-  counts: { sources: number; items: number; art: number; pockets: number; playlists: number; setlists: number };
+  counts: { sources: number; items: number; art: number; pockets: number; playlists: number; setlists: number; edits: number };
 }
 
 /** Build the export zip as a Blob (no DOM side effects — testable). */
@@ -24,12 +29,18 @@ export async function buildExportZip(): Promise<{ blob: Blob; manifest: ExportMa
     getAllSetlists(),
   ]);
 
+  // User metadata edits — the same `edits.json` the native apps write, so a PWA
+  // backup carries its overrides forward (and the merge tool / native can read them).
+  const editsDoc = await getEditsDocument();
+  const editsCount = Object.keys(editsDoc.albums).length + Object.keys(editsDoc.songs).length;
+
   const files: AsyncZippable = {};
   files['sources.json'] = [strToU8(JSON.stringify(sources)), { level: 6 }];
   files['items.json'] = [strToU8(JSON.stringify(items)), { level: 6 }];
   files['pockets.json'] = [strToU8(JSON.stringify(pockets)), { level: 6 }];
   files['playlists.json'] = [strToU8(JSON.stringify(playlists)), { level: 6 }];
   files['setlists.json'] = [strToU8(JSON.stringify(setlists)), { level: 6 }];
+  files['edits.json'] = [strToU8(await buildEditsJson()), { level: 6 }];
 
   let artCount = 0;
   for (const a of art) {
@@ -42,7 +53,11 @@ export async function buildExportZip(): Promise<{ blob: Blob; manifest: ExportMa
 
   const manifest: ExportManifest = {
     app: 'pocketdj',
+    kind: 'backup',
     schemaVersion: 2,
+    // The PWA export bundles the catalog → portable (imports on an empty device).
+    // The native backup omits it → non-portable (see importZip.ts).
+    portable: true,
     exportedAt: new Date().toISOString(),
     counts: {
       sources: sources.length,
@@ -51,6 +66,7 @@ export async function buildExportZip(): Promise<{ blob: Blob; manifest: ExportMa
       pockets: pockets.length,
       playlists: playlists.length,
       setlists: setlists.length,
+      edits: editsCount,
     },
   };
   files['manifest.json'] = strToU8(JSON.stringify(manifest));
@@ -68,6 +84,7 @@ export async function buildExportZip(): Promise<{ blob: Blob; manifest: ExportMa
     pockets: pockets.length,
     playlists: playlists.length,
     setlists: setlists.length,
+    edits: editsCount,
   });
   return { blob, manifest };
 }

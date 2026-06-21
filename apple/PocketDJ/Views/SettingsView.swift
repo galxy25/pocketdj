@@ -8,13 +8,21 @@ struct SettingsView: View {
     @Bindable var settings: SettingsStore
     @Environment(AppModel.self) private var app
     @Environment(EditsStore.self) private var edits
+    @Environment(CollectionsStore.self) private var collections
 
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
     @State private var confirmingReset = false
     @State private var showExporter = false
     @State private var showImporter = false
+    @State private var showCollectionsImporter = false
     @State private var exportDoc = EditsFile(data: Data())
+
+    // Full backup (.pocketdj.zip)
+    @State private var showBackupExporter = false
+    @State private var showBackupImporter = false
+    @State private var backupDoc = PlaylistZipFile(data: Data())
+    @State private var backupSummary: String?
 
     enum RipStatus { case ok(String), bad(String) }
 
@@ -24,11 +32,13 @@ struct SettingsView: View {
             searchSection
             ripSection
             editsSection
+            collectionsSection
+            backupSection
             resetSection
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
         .onDisappear { settings.persist() }
         .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .json,
                       defaultFilename: "pocketdj-edits") { _ in }
@@ -40,6 +50,87 @@ struct SettingsView: View {
                 try? edits.importData(data)
                 app.applyEdits()
             }
+        }
+        .fileImporter(isPresented: $showCollectionsImporter, allowedContentTypes: [.json, .zip]) { result in
+            guard case .success(let url) = result else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            try? collections.importAny(url: url)
+        }
+        .fileExporter(isPresented: $showBackupExporter, document: backupDoc, contentType: .zip,
+                      defaultFilename: "PocketDJ Backup.pocketdj") { _ in }
+        .fileImporter(isPresented: $showBackupImporter, allowedContentTypes: [.zip]) { result in
+            guard case .success(let url) = result else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            if let data = try? Data(contentsOf: url) { importBackup(data) }
+        }
+        .alert("Backup imported", isPresented: Binding(get: { backupSummary != nil }, set: { if !$0 { backupSummary = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(backupSummary ?? "") }
+    }
+
+    // MARK: Backup (full .pocketdj.zip — collections + sources + edits)
+
+    private var backupSection: some View {
+        Section {
+            Button {
+                if let data = try? makeBackup() { backupDoc = PlaylistZipFile(data: data); showBackupExporter = true }
+            } label: { Label("Export backup…", systemImage: "square.and.arrow.up.on.square") }
+                .accessibilityIdentifier("backup-export")
+            Button { showBackupImporter = true } label: {
+                Label("Import backup…", systemImage: "square.and.arrow.down.on.square")
+            }
+                .accessibilityIdentifier("backup-import")
+        } header: {
+            Text("Backup")
+        } footer: {
+            Text("A full `.pocketdj.zip` — your pockets, playlists, set lists, sources, and metadata edits. The remote catalog (songs/albums + cover art) is NOT bundled (it re-seeds from the same index), so this is portable across your devices and interchangeable with the web app’s export. Import merges everything in under fresh ids (never overwrites).")
+        }
+    }
+
+    /// Build the full-backup bytes from all three stores.
+    private func makeBackup() throws -> Data {
+        try BackupZip.export(sources: settings.sources,
+                             pockets: collections.pockets,
+                             playlists: collections.playlists,
+                             setlists: collections.setlists,
+                             editsData: try edits.exportData())
+    }
+
+    /// Import a full backup: merge collections (fresh ids) + edits, and adopt any new
+    /// sources. Catalog (items/art) in the zip is ignored. Surfaces a summary alert.
+    private func importBackup(_ data: Data) {
+        guard let (payload, skipped) = try? BackupZip.import(data: data) else { return }
+        let c = collections.mergeBackupCollections(pockets: payload.pockets,
+                                                   playlists: payload.playlists,
+                                                   setlists: payload.setlists)
+        let addedSources = settings.addSources(payload.sources)
+        if let ed = payload.editsData { try? edits.importData(ed); app.applyEdits() }
+        if addedSources > 0 { Task { await app.reload() } }
+
+        var parts = ["\(c.pockets) pocket\(c.pockets == 1 ? "" : "s")",
+                     "\(c.playlists) playlist\(c.playlists == 1 ? "" : "s")",
+                     "\(c.setlists) set list\(c.setlists == 1 ? "" : "s")",
+                     "\(addedSources) source\(addedSources == 1 ? "" : "s")"]
+        if skipped.items > 0 || skipped.art > 0 {
+            parts.append("skipped \(skipped.items) catalog item\(skipped.items == 1 ? "" : "s") + \(skipped.art) cover\(skipped.art == 1 ? "" : "s") (resolved remotely)")
+        }
+        backupSummary = parts.joined(separator: ", ") + "."
+    }
+
+    // MARK: Collections (import a pocket / playlist export)
+
+    private var collectionsSection: some View {
+        Section {
+            Button { showCollectionsImporter = true } label: {
+                Label("Import pocket / playlist…", systemImage: "square.and.arrow.down")
+            }
+            .accessibilityIdentifier("collections-import")
+        } header: {
+            Text("Collections")
+        } footer: {
+            Text("\(collections.pockets.count) pocket\(collections.pockets.count == 1 ? "" : "s"), \(collections.playlists.count) playlist\(collections.playlists.count == 1 ? "" : "s"). Import a single pocket or playlist exported from another device — fresh ids are minted so it never overwrites an existing one. Export from an item’s detail-view ▸ menu.")
         }
     }
 
@@ -69,7 +160,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         TextField("Name", text: $source.name)
-                            .textFieldStyle(.roundedBorder)
+                            .pocketField()
                         Toggle("", isOn: $source.enabled).labelsHidden()
                         Button(role: .destructive) {
                             settings.removeSource(source.id)
@@ -78,7 +169,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings-source-remove")
                     }
                     TextField("Index URL", text: $source.urlString)
-                        .textFieldStyle(.roundedBorder)
+                        .pocketField()
                         .font(.caption.monospaced())
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
@@ -113,16 +204,16 @@ struct SettingsView: View {
     private var searchSection: some View {
         Section {
             TextField("Access key ID", text: $settings.searchAccessKeyID)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 #endif
                 .accessibilityIdentifier("settings-search-akid")
             SecureField("Secret access key", text: $settings.searchSecretKey)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .accessibilityIdentifier("settings-search-secret")
             TextField("Endpoint (optional)", text: $settings.searchEndpoint)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .font(.caption.monospaced())
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -151,14 +242,14 @@ struct SettingsView: View {
     private var ripSection: some View {
         Section {
             TextField("Rip server URL", text: $settings.ripServerURL)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .font(.caption.monospaced())
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 #endif
                 .accessibilityIdentifier("settings-rip-url")
             TextField("Token (optional)", text: $settings.ripToken)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .accessibilityIdentifier("settings-rip-token")
             HStack {
                 Button {

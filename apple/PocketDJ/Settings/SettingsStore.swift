@@ -75,6 +75,21 @@ final class SettingsStore {
         persist()
     }
 
+    /// Merge backup sources in: add any whose (name, urlString) pair isn't already
+    /// present (a fresh UUID is minted so it can't collide). Returns the count added.
+    @discardableResult
+    func addSources(_ incoming: [SourceConfig]) -> Int {
+        var added = 0
+        for s in incoming {
+            let dup = sources.contains { $0.name == s.name && $0.urlString == s.urlString }
+            guard !dup else { continue }
+            sources.append(SourceConfig(name: s.name, urlString: s.urlString, enabled: s.enabled))
+            added += 1
+        }
+        if added > 0 { persist() }
+        return added
+    }
+
     func persist() {
         let snapshot = SettingsData(
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,

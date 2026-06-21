@@ -6,6 +6,8 @@ struct AlbumDetailView: View {
     @Environment(AppModel.self) private var app
     let album: IndexAlbum
     @State private var showEdit = false
+    @State private var showAdd = false
+    @State private var showAudioEdit = false
 
     /// Latest (possibly edited) album from the catalog.
     private var current: IndexAlbum { app.albumsById[album.id] ?? album }
@@ -30,11 +32,15 @@ struct AlbumDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { showAdd = true } label: { Image(systemName: "plus.circle") }
+                    .accessibilityIdentifier("add-album-to")
                 Button("Edit") { showEdit = true }.accessibilityIdentifier("edit-album")
             }
         }
         .sheet(isPresented: $showEdit) { EditAlbumView(album: current) }
+        .sheet(isPresented: $showAdd) { AddToCollectionView(item: .album(current.id)) }
+        .sheet(isPresented: $showAudioEdit) { EditAudioAnalysisView(album: current) }
     }
 
     private var header: some View {
@@ -52,6 +58,10 @@ struct AlbumDetailView: View {
                     if let g = current.genre { Tag(text: g, color: Theme.accent) }
                     if let y = current.year { Tag(text: String(y), color: Theme.accent2) }
                     if let c = current.country { Tag(text: c, color: Theme.fgDim) }
+                }
+                if let src = app.source(ofAlbum: current.id) {
+                    Tag(text: src, color: Theme.fgDim)
+                        .accessibilityIdentifier("source-tag")
                 }
                 Text("\(tracks.count) tracks")
                     .font(.caption.monospacedDigit())
@@ -92,6 +102,9 @@ struct AlbumDetailView: View {
                     Text("\(Int(d) / 60):\(String(format: "%02d", Int(d) % 60)) total")
                         .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 }
+                Button("Edit") { showAudioEdit = true }
+                    .font(.caption)
+                    .accessibilityIdentifier("edit-audio")
             }
             VStack(spacing: 0) {
                 ForEach(Array((current.audioTracks ?? []).enumerated()), id: \.offset) { i, seg in

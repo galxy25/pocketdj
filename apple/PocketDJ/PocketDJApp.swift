@@ -14,6 +14,7 @@ struct PocketDJApp: App {
     @State private var app = AppModel()
     @State private var settings = SettingsStore(defaults: SettingsStore.launchDefaults())
     @State private var edits = EditsStore(fileURL: EditsStore.launchURL())
+    @State private var collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
 
     var body: some Scene {
         WindowGroup {
@@ -21,6 +22,7 @@ struct PocketDJApp: App {
                 .environment(app)
                 .environment(settings)
                 .environment(edits)
+                .environment(collections)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
         }

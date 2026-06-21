@@ -4,8 +4,8 @@
 // persist then update memory, and bumps `rev` so views re-derive. Setlists are
 // NOT cached here (they're per-playlist history fetched on demand).
 import { create } from 'zustand';
-import type { Pocket, Playlist, Setlist, PocketKind } from '../types/collections';
-import { makePocket, makePlaylist } from '../types/collections';
+import type { Pocket, Playlist, Setlist, PocketKind, PocketNote } from '../types/collections';
+import { makePocket, makePlaylist, newPocketNoteId } from '../types/collections';
 import type { SongItem, AlbumItem } from '../types/model';
 import {
   getPockets,
@@ -62,6 +62,12 @@ interface CollectionsState {
     pocketId: string,
     ref: { kind: 'song' | 'album' | 'pocket'; id: string },
   ) => Promise<void>;
+  /** Append a free-text note to a pocket (positioned after all current items + notes). */
+  addNoteToPocket: (pocketId: string, text: string) => Promise<void>;
+  /** Edit a pocket note's text (no-op if it removes nothing/blank → use removeNoteFromPocket). */
+  updatePocketNote: (pocketId: string, noteId: string, text: string) => Promise<void>;
+  /** Remove a free-text note from a pocket. */
+  removeNoteFromPocket: (pocketId: string, noteId: string) => Promise<void>;
 
   // ---- playlists ----
   createPlaylist: (name: string) => Promise<Playlist>;
@@ -215,6 +221,30 @@ export const useCollectionsStore = create<CollectionsState>((set, get) => {
             ? { ...p, albumIds: p.albumIds.filter((x) => x !== ref.id) }
             : { ...p, childPocketIds: p.childPocketIds.filter((x) => x !== ref.id) };
       await savePocket(next);
+    },
+    addNoteToPocket: async (pocketId, text) => {
+      const p = pocketById(pocketId);
+      if (!p || !text.trim()) return;
+      const notes = p.notes ?? [];
+      // Append at the end of the combined member ordering ([pockets, albums, songs, notes]).
+      const position = p.childPocketIds.length + p.albumIds.length + p.songIds.length + notes.length;
+      const note: PocketNote = { id: newPocketNoteId(), text: text.trim(), position };
+      await savePocket({ ...p, notes: [...notes, note] });
+      txn('pocket.addNote', { pocketId, noteId: note.id, position });
+    },
+    updatePocketNote: async (pocketId, noteId, text) => {
+      const p = pocketById(pocketId);
+      if (!p || !p.notes) return;
+      const clean = text.trim();
+      if (!clean) return; // blank edit is a no-op; removal goes through removeNoteFromPocket
+      const notes = p.notes.map((n) => (n.id === noteId ? { ...n, text: clean } : n));
+      await savePocket({ ...p, notes });
+    },
+    removeNoteFromPocket: async (pocketId, noteId) => {
+      const p = pocketById(pocketId);
+      if (!p || !p.notes) return;
+      await savePocket({ ...p, notes: p.notes.filter((n) => n.id !== noteId) });
+      txn('pocket.removeNote', { pocketId, noteId });
     },
 
     // ---- playlists ----

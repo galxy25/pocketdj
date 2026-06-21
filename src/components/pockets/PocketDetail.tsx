@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useCollectionsStore } from '../../store/useCollectionsStore';
 import { getItem } from '../../storage/repo';
+import { downloadPocketZip } from '../../storage/pocketTransfer';
 import type { MusicItem, SongItem } from '../../types/model';
 import { isSong } from '../../types/model';
 import { SongDetailModal } from '../starmap/SongDetailModal';
@@ -22,6 +23,8 @@ export function PocketDetail(): JSX.Element {
   const deletePocket = useCollectionsStore((s) => s.deletePocket);
   const removeFromPocket = useCollectionsStore((s) => s.removeFromPocket);
   const addChildPocket = useCollectionsStore((s) => s.addChildPocket);
+  const addNoteToPocket = useCollectionsStore((s) => s.addNoteToPocket);
+  const removeNoteFromPocket = useCollectionsStore((s) => s.removeNoteFromPocket);
 
   const pocket = pockets.find((p) => p.id === id);
 
@@ -34,6 +37,7 @@ export function PocketDetail(): JSX.Element {
   const [nameDraft, setNameDraft] = useState('');
   const [childPick, setChildPick] = useState('');
   const [cycleWarn, setCycleWarn] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
 
   useEffect(() => {
     void load();
@@ -126,6 +130,17 @@ export function PocketDetail(): JSX.Element {
 
   const hasMembers = pocket.songIds.length > 0 || pocket.albumIds.length > 0;
 
+  // Free-text notes (v2), shown in their own list ordered by `position` (the slot in
+  // the combined [pockets, albums, songs, notes] member ordering shared with native).
+  const notes = [...(pocket.notes ?? [])].sort((a, b) => a.position - b.position);
+
+  const onAddNote = async () => {
+    const text = noteDraft.trim();
+    if (!text) return;
+    await addNoteToPocket(pocket.id, text);
+    setNoteDraft('');
+  };
+
   return (
     <div className="pdj-pocket" data-testid="pocket-detail">
       <Link to="/pockets" className="pdj-pocket__back">
@@ -146,6 +161,15 @@ export function PocketDetail(): JSX.Element {
           }}
         />
         <span className="pdj-pockets__kind">{pocket.kind}</span>
+        <button
+          type="button"
+          className="pdj-btn pdj-btn--sm"
+          data-testid="pocket-export"
+          title="Export this pocket (with its nested pockets) as a portable .pocket.pocketdj.zip"
+          onClick={() => void downloadPocketZip(pocket.id)}
+        >
+          ⤓ Export
+        </button>
         <button
           type="button"
           className="pdj-btn pdj-btn--sm pdj-btn--danger"
@@ -313,6 +337,60 @@ export function PocketDetail(): JSX.Element {
             Can’t nest that — it would create a cycle.
           </p>
         )}
+      </section>
+
+      <section className="pdj-pocket__section">
+        <h2 className="pdj-pocket__heading">Notes ({notes.length})</h2>
+        {notes.length === 0 ? (
+          <p className="pdj-pocket__empty">
+            No notes yet. Add a line of poetry, a mic cue, or any out-of-index moment.
+          </p>
+        ) : (
+          <div className="pdj-pocket__members">
+            {notes.map((n) => (
+              <div className="pdj-pocket__member" key={n.id} data-testid={`pocket-note-${n.id}`}>
+                <span className="pdj-pocket__member-main">
+                  <span className="pdj-pocket__member-type">Note</span>
+                  <span className="pdj-pocket__member-name" data-testid={`pocket-note-text-${n.id}`}>
+                    {n.text}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  className="pdj-btn pdj-btn--sm pdj-btn--ghost"
+                  data-testid={`pocket-note-remove-${n.id}`}
+                  aria-label={`Remove note ${n.text}`}
+                  onClick={() => void removeNoteFromPocket(pocket.id, n.id)}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="pdj-pocket__add-child">
+          <input
+            className="pdj-pocket__note-input"
+            data-testid="pocket-add-note"
+            aria-label="Add a note"
+            placeholder="Add a note…"
+            value={noteDraft}
+            onChange={(e) => setNoteDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void onAddNote();
+            }}
+          />
+          <button
+            type="button"
+            className="pdj-btn pdj-btn--sm"
+            data-testid="pocket-add-note-confirm"
+            disabled={!noteDraft.trim()}
+            onClick={() => void onAddNote()}
+          >
+            Add
+          </button>
+        </div>
       </section>
 
       <SongDetailModal

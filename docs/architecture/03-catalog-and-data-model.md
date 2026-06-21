@@ -112,7 +112,9 @@ view/realize time. (The full performance semantics are
 
 ```
  Pocket   pkt_   { name, kind:'harmonic'|'performance', songIds[], albumIds[],
-                   childPocketIds[] }      DAG, cycle-guarded; albums expand at realize
+                   childPocketIds[], notes?:PocketNote[] }   DAG, cycle-guarded; albums expand at realize
+   PocketNote   pnt_  { id, text, position }   v2: free-text item ("poetry pocket"), orderable
+                                                AMONG members by position in [pockets,albums,songs,notes]
  Playlist pls_   { name, sequences:SequenceNode[], targetMs?, importedFrom? }
    SequenceNode  { name, targetMs?, children: PlaylistNode[] }   sequences[0]=Default
      PlaylistNode = SongNode | AlbumNode | PocketNode | SequenceNode | TextNode(cue)

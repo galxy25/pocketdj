@@ -7,6 +7,36 @@ struct IndexJSON: Decodable {
     let manifest: Manifest
     let albums: [IndexAlbum]
     let songs: [IndexSong]
+    /// Apple Music user playlists carried in the catalog (optional / back-compat:
+    /// the fixture & vinyl sources have none). Read-only "From your sources" lists.
+    let playlists: [IndexPlaylist]?
+
+    init(manifest: Manifest, albums: [IndexAlbum], songs: [IndexSong],
+         playlists: [IndexPlaylist]? = nil) {
+        self.manifest = manifest
+        self.albums = albums
+        self.songs = songs
+        self.playlists = playlists
+    }
+}
+
+/// A read-only playlist that ships inside a catalog source (e.g. an Apple Music
+/// user playlist). Not a `Playlist` template — just an ordered list of song ids.
+struct IndexPlaylist: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let songIds: [String]
+}
+
+/// An `IndexPlaylist` tagged with the name of the source it came from (for the
+/// "From your sources" section's per-row source badge). Hashable so it's a
+/// `navigationDestination` value.
+struct SourcePlaylist: Identifiable, Hashable {
+    let playlist: IndexPlaylist
+    let sourceName: String
+    var id: String { playlist.id }
+    var name: String { playlist.name }
+    var songIds: [String] { playlist.songIds }
 }
 
 struct Manifest: Decodable {

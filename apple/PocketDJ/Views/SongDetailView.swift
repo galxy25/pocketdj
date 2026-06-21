@@ -6,6 +6,7 @@ struct SongDetailView: View {
     @Environment(AppModel.self) private var app
     let song: IndexSong
     @State private var showEdit = false
+    @State private var showAdd = false
 
     /// Always read the latest (possibly edited) version from the catalog.
     private var current: IndexSong { app.songsById[song.id] ?? song }
@@ -30,11 +31,14 @@ struct SongDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { showAdd = true } label: { Image(systemName: "plus.circle") }
+                    .accessibilityIdentifier("add-song-to")
                 Button("Edit") { showEdit = true }.accessibilityIdentifier("edit-song")
             }
         }
         .sheet(isPresented: $showEdit) { EditSongView(song: current) }
+        .sheet(isPresented: $showAdd) { AddToCollectionView(item: .song(current.id)) }
     }
 
     private var header: some View {
@@ -42,6 +46,10 @@ struct SongDetailView: View {
             Text(current.name).font(.title2.bold()).foregroundStyle(Theme.fg)
             Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
             KeyChip(key: current.key, camelot: current.camelot)
+            if let src = app.source(ofSong: current.id) {
+                Tag(text: src, color: Theme.fgDim)
+                    .accessibilityIdentifier("source-tag")
+            }
             if let album {
                 NavigationLink(value: album) {
                     Label(album.name, systemImage: "rectangle.stack")
@@ -66,6 +74,7 @@ struct SongDetailView: View {
         r.append(("Length", Fmt.duration(current.length)))
         r.append(("Explicit", current.explicit == true ? "Yes" : "No"))
         if let f = current.fileType { r.append(("File type", f.uppercased())) }
+        if let src = app.source(ofSong: current.id) { r.append(("Source", src)) }
         if let l = current.lyricsStatus { r.append(("Lyrics", l)) }
         return r
     }

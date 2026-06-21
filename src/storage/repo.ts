@@ -4,6 +4,7 @@ import { getDB, type ArtRecord, type MetaRecord } from './db';
 import type { DataSource, MusicItem, AlbumItem, SongItem, ItemType } from '../types/model';
 import type { Pocket, Playlist, Setlist } from '../types/collections';
 import { ALL_SOURCE_ID } from '../types/model';
+import { applyEditsToItems } from './edits';
 import { txn } from '../lib/log';
 
 const CHUNK = 500;
@@ -110,7 +111,7 @@ export async function getItems(
     );
     const result = batches.flat();
     txn('db.getItemsBySource', { sourceId: ids.join(','), type: type ?? 'all', count: result.length });
-    return result;
+    return applyEditsToItems(result);
   }
 
   const all = scope == null || scope === ALL_SOURCE_ID;
@@ -127,7 +128,10 @@ export async function getItems(
     result = await db.getAllFromIndex('items', 'by_source', scope);
     txn('db.getItemsBySource', { sourceId: scope, type: 'all', count: result.length });
   }
-  return result;
+  // Overlay user metadata edits (non-destructive) so renames/fixes/BPM overrides —
+  // including any merged from a native backup's edits.json — appear everywhere
+  // items are read. A no-op (referentially identical) when there are no edits.
+  return applyEditsToItems(result);
 }
 
 export async function getAlbums(scope?: string | string[]): Promise<AlbumItem[]> {

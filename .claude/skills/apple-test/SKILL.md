@@ -55,6 +55,34 @@ Run a single test: append `-only-testing:PocketDJTests` (unit) or
 **Never run two `xcodebuild` invocations against the same `-derivedDataPath`
 concurrently** — the second clobbers `TEST_HOST` and fails. Give each its own dir.
 
+## Targeted runs vs the full matrix
+
+Running every UI class × iPhone + iPad + macOS on each change is wasteful (each UI
+class is 20–100s/device; the whole unit bundle is ~0.3s). So, when verifying a change:
+
+- **Always run the full unit bundle** — `-only-testing:PocketDJTests`. It's cheap; never narrow it.
+- **Select UI classes from the change.** Map the changed paths
+  (`git diff --name-only origin/main...HEAD`) to UI test classes via
+  **`apple/docs/storybook-test-map.md` §B**, then pass one
+  `-only-testing:PocketDJUITests/<Class>` per selected class.
+- **Pick devices by what changed:** logic-only / most changes → **iPhone only**; a
+  macOS-specific path (keyboard commands) → add **macOS**; an iPad layout → add **iPad**.
+- **Escalate to run-all** (every class × all three devices) when the change hits a
+  **shell/infra** row (`RootView`, `PocketDJApp`, `Theme`, `project.yml`,
+  `XCUIHelpers`) or ≥3 feature rows. Run-all is otherwise reserved for **CI** and the
+  **`/create-pr` judgment gate** — not every local iteration.
+
+```bash
+# e.g. a change under Performance/ + CollectionsStore → engine + collections, iPhone only
+xcodebuild test -project PocketDJ.xcodeproj -scheme PocketDJ \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath build \
+  CODE_SIGNING_ALLOWED=NO -only-testing:PocketDJTests \
+  -only-testing:PocketDJUITests/SetlistUITests    # + each UI class the matrix selected
+```
+
+See `apple/docs/storybook-test-map.md` for the chapter↔test index, the change→tests
+matrix, and the macOS targeting note.
+
 ## macOS
 
 Gatekeeper kills the unsigned XCUITest runner ("damaged"), and CLI codesign can't

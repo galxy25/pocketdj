@@ -82,8 +82,8 @@ so they can't diverge on data.
    ┌─────────────────────┐                     ┌─────────────────────┐
    │ Web PWA (React/Vite)│                     │ SwiftUI (apple/)    │
    │ • IndexedDB catalog │                     │ • IndexJSON decode  │
-   │ • edits → IndexedDB │                     │ • EditsStore (file) │
-   │   (direct mutate)   │                     │   overlay applying()│
+   │ • edits → meta store│                     │ • EditsStore (file) │
+   │   overlay applyEdits│                     │   overlay applying()│
    │ • zustand stores    │                     │ • @Observable models│
    └─────────┬───────────┘                     └─────────┬───────────┘
              │  GET current-index.json / art / rips      │
@@ -95,7 +95,8 @@ so they can't diverge on data.
 **Reading the diagram.** The top bracket states the invariant: both clients hit the
 *same* documents and APIs. The **web PWA** decodes the index into an internal model in
 **IndexedDB**, mutates that catalog **directly** on edit (storybook §14–17), and keeps
-UI state in **zustand** stores. The **SwiftUI** app decodes the same `IndexJSON`, keeps
+UI state in **zustand** stores, and applies a portable **edits overlay** at read time
+(`edits.ts`, byte-compatible with the native document — §3 / §3.5). The **SwiftUI** app decodes the same `IndexJSON`, keeps
 a separate versioned **`EditsStore`** overlaid via `applying()` (never mutating the
 index), and exposes data via **`@Observable`** models. The bottom arrow shows them
 converging on the shared backends.
@@ -114,8 +115,15 @@ The index is read-only and machine-produced, so users must **override** locally,
 ideally fold trusted corrections back into the canonical index for everyone.
 
 **Two mechanisms, by client:**
-- **Web PWA** — edits **mutate the IndexedDB catalog directly** (no portable edits
-  document; **no round-trip back to the iMac today** — web edits are local).
+- **Web PWA** — edits live in a **versioned overlay too**, mirroring the native shape:
+  [`src/storage/edits.ts`](../../src/storage/edits.ts) persists an `EditsDocument` in
+  the IndexedDB `meta` store (key `edits`) and overlays it onto catalog items at the
+  single read chokepoint (`repo.getItems` → `applyEditsToItems`, non-destructive — the
+  stored index item is never mutated). Because the shape is byte-compatible with the
+  native document, a native backup's `edits.json` **merges into the PWA store** on
+  import (see §3.5), and a PWA backup carries `edits.json` back out — closing the
+  former native→web data-loss gap. (Some in-place edit UIs may still mutate the catalog
+  directly; the overlay is the portable, round-trippable mechanism.)
 - **Native app** — a separate, **versioned overlay**:
   [`apple/PocketDJ/State/EditsStore.swift`](../../apple/PocketDJ/State/EditsStore.swift)
   persists an `EditsDocument`
@@ -147,11 +155,12 @@ but **does not yet exist** in `scripts/`.
 **Edits schema rules (why it can round-trip safely):**
 
 ```
- EditsDocument { schemaVersion(=1; missing⇒v0 migrated), albums:{id:AlbumEdit},
+ EditsDocument { schemaVersion(=2; missing⇒v0 migrated), albums:{id:AlbumEdit},
                  songs:{id:SongEdit}, meta?:{exportedAt,appVersion,platform} }
- AlbumEdit { name?,artist?,genre?,year?,country? }                  ALL OPTIONAL
+ AlbumEdit { name?,artist?,genre?,year?,country?, audioTracks?:[AudioTrackEdit] }  ALL OPTIONAL
  SongEdit  { name?,artist?,year?,trackNumber?,bpm?,key?,camelot?,explicit?,
              sentimentKeywords? }                                   ALL OPTIONAL
+ AudioTrackEdit { trackNumber?,startMs?,endMs?,bpm?,key?,camelot?,keyStrength? }   ALL OPTIONAL
 ```
 
 - **Every field optional** — `nil` = "no override" → original shows → graceful degrade.
@@ -166,6 +175,104 @@ but **does not yet exist** in `scripts/`.
 "key":"A minor" } } }`. Every view renders `indexSong.applying(songEdit)`. Export →
 AirDrop to iMac → (once the merge tool ships) folded by the stable id into
 `current-index.json` → deploy → canonical everywhere.
+
+---
+
+## 3.5 The interchange format family — three zips, one envelope
+
+**Why.** Edits aren't the only thing that must move between a phone and a Mac and a
+browser. Whole **backups**, single **playlists**, and single **pockets** all need to
+travel — by AirDrop, Files, or a browser download — and import on *any* client. So
+PocketDJ defines **one zip envelope** with three `kind`s. Every zip carries a
+`manifest.json` that self-identifies (`app:"pocketdj"`, a `kind`, a `schemaVersion`),
+and the importer routes on that `kind` (falling back to entry presence). Files are
+plain JSON (+ optional `art/*.webp` blobs), so the format is language-neutral: the PWA
+(`fflate`) and native (`ZIPFoundation`) read each other's output unchanged.
+
+**The pivotal split is `portable`.** A *portable* zip bundles the catalog it
+references (`items.json` + `art/`), so it imports on an **empty** device. A
+*non-portable* zip omits the catalog because **both clients auto-seed the same
+read-only index** — collections reference songs/albums by stable id (`alb_…`/`sng_…`)
+and resolve at display. The PWA's full export is portable (it has the catalog in
+IndexedDB and bundles it); the **native** clients are catalog-by-reference, so every
+native export is non-portable and, for backups, adds `edits.json` (the one thing the
+catalog *can't* carry back).
+
+| Zip kind | Filename suffix | Manifest (key fields) | Entries |
+|---|---|---|---|
+| **backup** | `.pocketdj.zip` | `{app, kind:"backup", schemaVersion:1\|2, portable, exportedAt, counts}` | `manifest.json`, `sources.json`, `pockets.json`, `playlists.json`, `setlists.json`, **+portable:** `items.json` + `art/*.webp`, **+native:** `edits.json` |
+| **playlist** | `.playlist.pocketdj.zip` | `{app, kind:"playlist", schemaVersion:1, portable, exportedAt, playlistName, counts}` | `manifest.json`, `playlist.json`, `pockets.json` (DAG-expanded), **+portable:** `items.json` + `art/` + `setlists.json` |
+| **pocket** | `.pocket.pocketdj.zip` | `{app, kind:"pocket", schemaVersion:1, portable:false, exportedAt, pocketName, counts:{pockets,art}}` | `manifest.json`, `pocket.json` (root), `pockets.json` (DAG-expanded children) |
+
+```
+                       manifest.json { app:"pocketdj", kind, schemaVersion, portable }
+                                            │  importFile() routes on kind
+              ┌─────────────────────────────┼─────────────────────────────┐
+              ▼                              ▼                             ▼
+       kind:"backup"                  kind:"playlist"                kind:"pocket"
+   sources/pockets/playlists/      playlist.json + pockets       pocket.json + child
+   setlists  (+items+art if         (+items+art+setlists          pockets (DAG-expanded)
+    portable)  (+edits.json          if portable)                  — always slim
+    if native)                                                     (by-reference)
+              │                              │                             │
+   PWA: importExportZip          PWA: importPlaylistZip        PWA: importPocketZip
+   (edits.ts merge)              (fresh playlist id)           (remint pocket ids)
+```
+
+**Reading the diagram.** A single router (`src/storage/importZip.ts → importFile`)
+reads the manifest `kind` and dispatches: `backup → importExportZip`,
+`playlist → importPlaylistZip`, `pocket → importPocketZip`. Each importer **remints
+ids** for the user-owned objects it creates (fresh playlist/pocket ids, child refs
+remapped) so an import can never clobber an existing collection. The **backup**
+importer additionally merges `edits.json` into the PWA edits store (imported value
+wins per id) and tolerates a **native `sources.json`** (`{name,urlString,enabled}[]`,
+not a PWA `DataSource[]`) by *ignoring* it rather than crashing — there's no clean
+mapping from a native source-config to a PWA `DataSource` (whose items come from an
+indexed catalog), so it's dropped, not adopted.
+
+**Native vs PWA, at a glance:**
+- **Native omits** `items.json` + `art/` (catalog-by-reference) and **adds** `kind` +
+  (for backups) `edits.json`. `schemaVersion:2` backups, `portable:false`.
+- **PWA bundles** the catalog (`portable:true` backups) and now **also** writes `kind`
+  + `edits.json`, so its export is a strict superset that native reads (extra entries
+  are ignored on the native side).
+
+**The round-trip matrix** (what survives each direction). "Lossless" = every field the
+*source* client holds is preserved on import; "lossy" entries note exactly what drops.
+
+| Artifact | native → PWA | PWA → native |
+|---|---|---|
+| **Playlist** | **Lossless** — template + referenced pockets (DAG) import; catalog resolves by id. | **Lossless** (slim) — same. A *portable* PWA playlist's bundled `items.json`/`art` are simply ignored by native (catalog-by-reference). |
+| **Pocket** | **Lossless** — root + child pockets, ids reminted, child refs remapped; members by id; **v2 free-text `notes` (each note's id + text + `position`) preserved verbatim** (intra-pocket, not catalog refs). | **Lossless** — symmetric `remintBundle` on both ends; `notes` ride along unchanged. |
+| **Backup** | **Lossless for the shared subset** — pockets + playlists + setlists + **edits** all land. **Lossy only at the source:** native never *had* a bundled catalog, so there's nothing to lose there; the native `sources.json` is dropped (no PWA mapping). | **Collections + edits lossless.** **Lossy:** the PWA's bundled **catalog** (`items.json` + `art/`) and its **`DataSource[]` sources** don't transfer — native is catalog-by-reference and reads neither (by design; both re-seed the same index). |
+
+**Still not interoperable (by design):** the **catalog itself** never crosses
+client *kinds* — a PWA→native backup can't seed a native device with a PWA-only
+catalog, because native has no catalog store to seed. Cross-device portability of the
+*catalog* stays a PWA↔PWA concern (portable backups). Sources also don't cross: a PWA
+`DataSource` and a native `SourceConfig` are different things, so each side drops the
+other's `sources.json`. Everything *user-authored* — pockets, playlists, setlists, and
+metadata **edits** — round-trips losslessly in both directions.
+
+**Versioning.** Each `kind` versions independently via `manifest.schemaVersion`
+(backup at 2 after pockets/playlists/setlists were added; playlist + pocket at 1).
+Both readers decode **leniently** — a missing version, missing maps, or unknown future
+fields degrade to "no-op" rather than throwing — so a newer client's export still
+imports on an older one (it just ignores what it doesn't understand). `edits.json`
+carries its *own* `schemaVersion` (the `EditsDocument`, currently 2) independent of the
+zip's. The **collections** payload likewise versions independently (`collectionsSchemaVersion`,
+now **2** — pockets gained the optional free-text `notes` list); additive + lenient, so a
+v2 pocket's `notes` simply degrade to "ignored" on a v1 reader and members stay intact.
+
+**How (worked example): a metadata fix made on iPhone shows up in the browser.** On
+iPhone you correct a song's BPM → it lands in `pocketdj-edits.json`
+(`songs:{ "sng_…":{ "bpm":128 } }`). Settings ▸ Export backup writes a `.pocketdj.zip`
+(`kind:"backup"`, `portable:false`) containing your pockets/playlists/setlists +
+`edits.json`. AirDrop it to the Mac, open the PWA, Settings ▸ Import data → the router
+sees `kind:"backup"`, `importExportZip` imports the collections, **merges `edits.json`
+into the PWA edits store**, and skips the (absent) catalog. Next time any view reads
+items, `applyEditsToItems` overlays `bpm:128` onto `sng_…` — the correction is now live
+in the browser, no catalog mutation, no merge tool required.
 
 ---
 

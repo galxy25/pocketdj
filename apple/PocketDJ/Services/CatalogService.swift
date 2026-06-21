@@ -2,7 +2,7 @@ import Foundation
 
 /// Fetches and decodes the catalog index from CloudFront (same document the PWA
 /// auto-seeds from). URLSession's shared URLCache makes repeat launches fast.
-struct CatalogService {
+struct CatalogService: Sendable {
     var url: URL = Config.indexURL
 
     func loadIndex() async throws -> IndexJSON {

@@ -17,3 +17,21 @@ struct EditsFile: FileDocument {
         FileWrapper(regularFileWithContents: data)
     }
 }
+
+/// A zip-document wrapper for `.fileExporter`, used to write a
+/// `.playlist.pocketdj.zip` (the PWA single-playlist transfer format) so the PWA can
+/// read a native-exported playlist.
+struct PlaylistZipFile: FileDocument {
+    static var readableContentTypes: [UTType] { [.zip] }
+
+    var data: Data
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}

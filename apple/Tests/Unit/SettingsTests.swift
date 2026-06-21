@@ -86,4 +86,41 @@ final class CatalogMergeTests: XCTestCase {
         XCTAssertTrue(merged.albums.isEmpty)
         XCTAssertEqual(merged.manifest.sourceName, "Collection")
     }
+
+    // MARK: Index playlists (the "From your sources" wiring)
+
+    private func indexWith(source: String, playlists: String) throws -> IndexJSON {
+        let json = """
+        { "manifest": { "sourceName": "\(source)" }, "albums": [], "songs": [], "playlists": \(playlists) }
+        """
+        return try JSONDecoder().decode(IndexJSON.self, from: Data(json.utf8))
+    }
+
+    func testDecodesIndexPlaylists() throws {
+        let idx = try indexWith(source: "Apple", playlists: #"[{"id":"pl_1","name":"001","songIds":["sng_1","sng_2"]}]"#)
+        XCTAssertEqual(idx.playlists?.count, 1)
+        XCTAssertEqual(idx.playlists?.first?.name, "001")
+        XCTAssertEqual(idx.playlists?.first?.songIds, ["sng_1", "sng_2"])
+    }
+
+    func testMissingPlaylistsDecodesNil() throws {
+        let idx = try TestData.index()       // fixture has no `playlists`
+        XCTAssertNil(idx.playlists)
+    }
+
+    func testMergeCarriesAndDedupesPlaylists() throws {
+        let a = try indexWith(source: "Apple", playlists: #"[{"id":"pl_1","name":"A","songIds":[]}]"#)
+        let b = try indexWith(source: "Apple", playlists: #"[{"id":"pl_1","name":"A","songIds":[]},{"id":"pl_2","name":"B","songIds":[]}]"#)
+        let merged = AppModel.merge([a, b])
+        XCTAssertEqual(merged.playlists?.map(\.id), ["pl_1", "pl_2"])   // deduped by id
+    }
+
+    func testSourcePlaylistsTagSourceName() throws {
+        let vinyl = try indexWith(source: "My Vinyl", playlists: "[]")
+        let apple = try indexWith(source: "Apple Music (Local)", playlists: #"[{"id":"pl_1","name":"001","songIds":["sng_1"]}]"#)
+        let tagged = AppModel.sourcePlaylists([vinyl, apple])
+        XCTAssertEqual(tagged.count, 1)
+        XCTAssertEqual(tagged.first?.sourceName, "Apple Music (Local)")
+        XCTAssertEqual(tagged.first?.name, "001")
+    }
 }

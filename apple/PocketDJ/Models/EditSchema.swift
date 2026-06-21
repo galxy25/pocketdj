@@ -21,9 +21,35 @@ import Foundation
 //
 // Bump this on ANY change to AlbumEdit / SongEdit / EditsDocument, and add the
 // corresponding step in `EditsMigration.migrate`.
-let editsSchemaVersion = 1
+//
+// v1 → v2 (additive): `AlbumEdit.audioTracks` — per-segment audio-analysis
+// overrides (bpm/key/camelot/…). No data transform; a v1 doc just gains the
+// (absent ⇒ nil) field, and a v2 doc decodes degraded on a v1 app (the extra
+// `audioTracks` key is simply ignored).
+let editsSchemaVersion = 2
 
 // MARK: - Editable objects (tightly typed, all-optional override fields)
+
+/// Overridable fields for one detected audio-analysis segment of an album. Each
+/// maps 1:1 to an `AudioTrack` field; an unset (`nil`) field keeps the detected
+/// value. Segments are matched onto `IndexAlbum.audioTracks` by `trackNumber`
+/// (falling back to array position) at overlay time.
+struct AudioTrackEdit: Codable, Hashable, Sendable {
+    var trackNumber: Int?   // 1-based segment number (the match key)
+    var startMs: Int?       // segment start (ms from album start)
+    var endMs: Int?         // segment end   (ms from album start)
+    var bpm: Double?        // beats per minute
+    var key: String?        // musical key, e.g. "F# major"
+    var camelot: String?    // Camelot wheel code, e.g. "8B"
+    var keyStrength: Double? // detector confidence 0…1
+
+    /// `trackNumber` is only a match key, not an override — a delta that carries
+    /// nothing but a trackNumber overrides no detected value, so it's "empty".
+    var isEmpty: Bool {
+        startMs == nil && endMs == nil && bpm == nil
+            && key == nil && camelot == nil && keyStrength == nil
+    }
+}
 
 /// Overridable fields for an album. Each maps 1:1 to an `IndexAlbum` field; an
 /// unset (`nil`) field leaves the original index value intact.
@@ -33,8 +59,12 @@ struct AlbumEdit: Codable, Hashable, Sendable {
     var genre: String?      // raw genre string (collapsed to a category at display time)
     var year: Int?          // release year (Gregorian)
     var country: String?    // ISO-ish country code or name, e.g. "US"
+    var audioTracks: [AudioTrackEdit]? // per-segment audio-analysis overrides (v2)
 
-    var isEmpty: Bool { name == nil && artist == nil && genre == nil && year == nil && country == nil }
+    var isEmpty: Bool {
+        name == nil && artist == nil && genre == nil && year == nil && country == nil
+            && (audioTracks?.allSatisfy { $0.isEmpty } ?? true)
+    }
 }
 
 /// Overridable fields for a song. Each maps 1:1 to an `IndexSong` field.
@@ -119,8 +149,10 @@ enum EditsCodec {
 enum EditsMigration {
     static func migrate(_ document: EditsDocument) -> EditsDocument {
         var doc = document
-        // v0 → v1: the initial schema; nothing structural to transform yet.
-        // Future: `while doc.schemaVersion < editsSchemaVersion { switch doc.schemaVersion { case 1: …; default: break }; doc.schemaVersion += 1 }`
+        // Apply each step in order, idempotently. Steps are additive only:
+        //   v0 → v1: the initial schema; nothing structural to transform.
+        //   v1 → v2: `AlbumEdit.audioTracks` added; absent ⇒ nil, no transform.
+        // (Both transitions are no-ops on the data, so we just stamp the version.)
         doc.schemaVersion = editsSchemaVersion
         return doc
     }
@@ -137,7 +169,35 @@ extension IndexAlbum {
                           coverArt: coverArt, coverArtSources: coverArtSources,
                           genre: e.genre ?? genre, year: e.year ?? year, country: e.country ?? country,
                           trackList: trackList, fileType: fileType,
-                          audioTracks: audioTracks, audioDurationSec: audioDurationSec)
+                          audioTracks: Self.overlayAudio(audioTracks, e.audioTracks),
+                          audioDurationSec: audioDurationSec)
+    }
+
+    /// Overlay per-segment audio edits onto detected segments, overriding only the
+    /// present fields. Match an edit to a segment by `trackNumber`; if no edit
+    /// declares a matching `trackNumber`, fall back to array position. Segments
+    /// with no matching edit pass through untouched.
+    private static func overlayAudio(_ segs: [AudioTrack]?, _ edits: [AudioTrackEdit]?) -> [AudioTrack]? {
+        guard let segs, let edits, !edits.isEmpty else { return segs }
+        // trackNumber-keyed edits match a segment by its number; edits WITHOUT a
+        // trackNumber match by array position. A trackNumber-keyed edit never
+        // leaks into a positional match (so it can't override the wrong segment).
+        let byTrack = Dictionary(edits.compactMap { e -> (Int, AudioTrackEdit)? in
+            e.trackNumber.map { ($0, e) }
+        }, uniquingKeysWith: { first, _ in first })
+        return segs.enumerated().map { i, seg in
+            let positional = (i < edits.count && edits[i].trackNumber == nil) ? edits[i] : nil
+            let match = seg.trackNumber.flatMap { byTrack[$0] } ?? positional
+            guard let m = match, !m.isEmpty else { return seg }
+            return AudioTrack(trackNumber: m.trackNumber ?? seg.trackNumber,
+                              startMs: m.startMs ?? seg.startMs,
+                              endMs: m.endMs ?? seg.endMs,
+                              durationMs: seg.durationMs,
+                              bpm: m.bpm ?? seg.bpm,
+                              key: m.key ?? seg.key,
+                              camelot: m.camelot ?? seg.camelot,
+                              keyStrength: m.keyStrength ?? seg.keyStrength)
+        }
     }
 }
 
