@@ -31,6 +31,7 @@ struct BrowseView: View {
             // list, wired to the ShazamKit recognizer. Additive: a no-op-with-message
             // when the ShazamKit entitlement / framework is absent.
             HStack {
+                Spacer()
                 ShazamButton()
                     .accessibilityIdentifier("shazam-button")
                 Spacer()

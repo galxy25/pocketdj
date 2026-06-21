@@ -87,9 +87,11 @@ final class PlayerEngine {
         updateNowPlayingInfo()
     }
 
-    func play() { player.play() }
-    func pause() { player.pause() }
-    func toggle() { isPlaying ? pause() : play() }
+    func play() { player.play(); isPlaying = true; updateNowPlayingInfo() }
+    func pause() { player.pause(); isPlaying = false; updateNowPlayingInfo() }
+    /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
+    /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
+    func toggle() { player.timeControlStatus == .paused ? play() : pause() }
 
     /// Seek to an absolute time (seconds). No-op for a live stream beyond its buffer.
     func seek(to seconds: Double) {

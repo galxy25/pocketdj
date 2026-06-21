@@ -160,9 +160,13 @@ final class ShazamRecognizer {
             @unknown default: return false
             }
         } else {
+            #if os(iOS)
             return await withCheckedContinuation { cont in
                 AVAudioSession.sharedInstance().requestRecordPermission { cont.resume(returning: $0) }
             }
+            #else
+            return false   // macOS deploys at 14+, so this pre-14 branch is never reached
+            #endif
         }
         #else
         return true
