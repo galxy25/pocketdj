@@ -190,6 +190,8 @@ struct PlaylistDetailView: View {
     @State private var renamingSetlistId: String?
     @State private var setlistNameDraft = ""
     @State private var deletingSetlistId: String?
+    @State private var addingNoteChapter: String?     // sequence nodeId to add a text note to
+    @State private var noteDraft = ""
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
@@ -253,27 +255,7 @@ struct PlaylistDetailView: View {
                     .accessibilityIdentifier("playlist-menu")
             }
         }
-        .alert("New Chapter", isPresented: $showNewSeq) {
-            TextField("Name", text: $newSeq)
-            Button("Add") { let n = newSeq.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.addSequence(n, toPlaylist: playlistId) }; newSeq = "" }
-            Button("Cancel", role: .cancel) { newSeq = "" }
-        }
-        .alert("Rename playlist", isPresented: $renaming) {
-            TextField("Name", text: $nameDraft)
-            Button("Save") { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePlaylist(playlistId, n) } }
-            Button("Cancel", role: .cancel) {}
-        }
-        .alert("Rename chapter", isPresented: Binding(get: { renamingChapter != nil }, set: { if !$0 { renamingChapter = nil } })) {
-            TextField("Name", text: $chapterDraft)
-            Button("Save") {
-                if let sid = renamingChapter {
-                    let n = chapterDraft.trimmingCharacters(in: .whitespaces)
-                    if !n.isEmpty { collections.renameSequence(sid, n, inPlaylist: playlistId) }
-                }
-                renamingChapter = nil
-            }
-            Button("Cancel", role: .cancel) { renamingChapter = nil }
-        }
+        .modifier(playlistAlerts)
         .confirmationDialog("Delete this playlist?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete playlist", role: .destructive) {
                 collections.deletePlaylist(playlistId)
@@ -298,6 +280,17 @@ struct PlaylistDetailView: View {
         }
         .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
                       defaultFilename: exportFilename) { _ in }
+    }
+
+    /// New-chapter / rename-playlist / rename-chapter / add-note alerts, grouped into
+    /// one modifier so the main `body` stays within the Swift type-checker's reach.
+    private var playlistAlerts: PlaylistAlerts {
+        PlaylistAlerts(
+            collections: collections, playlistId: playlistId,
+            showNewSeq: $showNewSeq, newSeq: $newSeq,
+            renaming: $renaming, nameDraft: $nameDraft,
+            renamingChapter: $renamingChapter, chapterDraft: $chapterDraft,
+            addingNoteChapter: $addingNoteChapter, noteDraft: $noteDraft)
     }
 
     /// `<sanitized name>.playlist.pocketdj` — the `.fileExporter` appends the `.zip`
@@ -356,14 +349,7 @@ struct PlaylistDetailView: View {
             .onDelete { offsets in
                 offsets.map { children[$0].nodeId }.forEach { collections.removeNode($0, fromPlaylist: playlistId) }
             }
-            Button { renamingChapter = seq.nodeId; chapterDraft = seq.name ?? "" } label: {
-                Label("Rename chapter", systemImage: "pencil").font(.caption)
-            }
-            .accessibilityIdentifier("rename-chapter")
-            if chapterCount > 1 {
-                Button("Delete chapter", role: .destructive) { collections.removeSequence(seq.nodeId, fromPlaylist: playlistId) }
-                    .font(.caption)
-            }
+            chapterActions(seq, chapterCount: chapterCount)
         } header: {
             HStack {
                 Text(seq.name ?? "Chapter")
@@ -372,6 +358,23 @@ struct PlaylistDetailView: View {
                     .foregroundStyle(Theme.fgDim)
             }
             .accessibilityIdentifier("chapter-stats-\(seq.nodeId)")
+        }
+    }
+
+    /// The per-chapter action rows (add note / rename / delete), extracted so the
+    /// chapter section body stays within the type-checker's reach.
+    @ViewBuilder private func chapterActions(_ seq: PlaylistNode, chapterCount: Int) -> some View {
+        Button { addingNoteChapter = seq.nodeId; noteDraft = "" } label: {
+            Label("Add note", systemImage: "text.badge.plus").font(.caption)
+        }
+        .accessibilityIdentifier("add-note-\(seq.nodeId)")
+        Button { renamingChapter = seq.nodeId; chapterDraft = seq.name ?? "" } label: {
+            Label("Rename chapter", systemImage: "pencil").font(.caption)
+        }
+        .accessibilityIdentifier("rename-chapter")
+        if chapterCount > 1 {
+            Button("Delete chapter", role: .destructive) { collections.removeSequence(seq.nodeId, fromPlaylist: playlistId) }
+                .font(.caption)
         }
     }
 
@@ -418,5 +421,56 @@ struct PlaylistDetailView: View {
 
     private func missing(_ what: String) -> some View {
         Label("(missing \(what))", systemImage: "questionmark.circle").foregroundStyle(Theme.fgDim)
+    }
+}
+
+/// The PlaylistDetailView text-entry alerts, lifted out of `body` so the view's main
+/// expression stays type-checkable. Holds only bindings + the store.
+private struct PlaylistAlerts: ViewModifier {
+    let collections: CollectionsStore
+    let playlistId: String
+    @Binding var showNewSeq: Bool
+    @Binding var newSeq: String
+    @Binding var renaming: Bool
+    @Binding var nameDraft: String
+    @Binding var renamingChapter: String?
+    @Binding var chapterDraft: String
+    @Binding var addingNoteChapter: String?
+    @Binding var noteDraft: String
+
+    func body(content: Content) -> some View {
+        content
+            .alert("New Chapter", isPresented: $showNewSeq) {
+                TextField("Name", text: $newSeq)
+                Button("Add") { let n = newSeq.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.addSequence(n, toPlaylist: playlistId) }; newSeq = "" }
+                Button("Cancel", role: .cancel) { newSeq = "" }
+            }
+            .alert("Rename playlist", isPresented: $renaming) {
+                TextField("Name", text: $nameDraft)
+                Button("Save") { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePlaylist(playlistId, n) } }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Rename chapter", isPresented: Binding(get: { renamingChapter != nil }, set: { if !$0 { renamingChapter = nil } })) {
+                TextField("Name", text: $chapterDraft)
+                Button("Save") {
+                    if let sid = renamingChapter {
+                        let n = chapterDraft.trimmingCharacters(in: .whitespaces)
+                        if !n.isEmpty { collections.renameSequence(sid, n, inPlaylist: playlistId) }
+                    }
+                    renamingChapter = nil
+                }
+                Button("Cancel", role: .cancel) { renamingChapter = nil }
+            }
+            .alert("Add note", isPresented: Binding(get: { addingNoteChapter != nil }, set: { if !$0 { addingNoteChapter = nil } })) {
+                TextField("Note (mic break, sample, cue…)", text: $noteDraft)
+                Button("Add") {
+                    if let sid = addingNoteChapter {
+                        let n = noteDraft.trimmingCharacters(in: .whitespaces)
+                        if !n.isEmpty { collections.addText(n, toPlaylist: playlistId, sequenceId: sid) }
+                    }
+                    addingNoteChapter = nil
+                }
+                Button("Cancel", role: .cancel) { addingNoteChapter = nil }
+            }
     }
 }

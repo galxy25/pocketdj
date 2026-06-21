@@ -90,6 +90,24 @@ final class CollectionsStore {
         mutatePocket(parentId) { if !$0.childPocketIds.contains(childId) { $0.childPocketIds.append(childId) } }
         return true
     }
+    /// Append a free-text NOTE to a pocket (the "poetry pocket"). Notes are an ordered
+    /// list, separate from members, so they never count toward song count / runtime.
+    @discardableResult
+    func addNote(_ text: String, toPocket id: String) -> PocketNote? {
+        let note = PocketNote(id: CollectionsFactory.newPocketNoteId(), text: text,
+                              position: pocket(id)?.notes.count ?? 0)
+        mutatePocket(id) { $0.notes.append(note) }
+        return pocket(id)?.notes.last
+    }
+    func setNoteText(_ noteId: String, text: String, inPocket id: String) {
+        mutatePocket(id) { if let j = $0.notes.firstIndex(where: { $0.id == noteId }) { $0.notes[j].text = text } }
+    }
+    func removeNote(_ noteId: String, fromPocket id: String) {
+        mutatePocket(id) { $0.notes.removeAll { $0.id == noteId } }
+    }
+    func movePocketNotes(inPocket id: String, from: IndexSet, to: Int) {
+        mutatePocket(id) { $0.notes.move(fromOffsets: from, toOffset: to) }
+    }
     func removeSong(_ songId: String, fromPocket id: String) { mutatePocket(id) { $0.songIds.removeAll { $0 == songId } } }
     func removeAlbum(_ albumId: String, fromPocket id: String) { mutatePocket(id) { $0.albumIds.removeAll { $0 == albumId } } }
     func removeChildPocket(_ childId: String, fromPocket id: String) { mutatePocket(id) { $0.childPocketIds.removeAll { $0 == childId } } }
@@ -324,6 +342,50 @@ final class CollectionsStore {
         guard let i = setlists.firstIndex(where: { $0.id == id }),
               setlists[i].tracks.indices.contains(trackIndex) else { return nil }
         setlists[i].tracks[trackIndex].note = note
+        save()
+        return setlists[i]
+    }
+
+    /// Recompute `totalMs` from the current tracks (text cues contribute 0), mirroring
+    /// RealizeEngine's defaultTrackMs fallback so display + total never disagree.
+    private func recomputeSetlistTotal(_ i: Int) {
+        setlists[i].totalMs = setlists[i].tracks.reduce(0) { $0 + $1.shownMs }
+    }
+
+    /// Remove one track from a frozen setlist (keeps seed/provenance/generatedAt; just
+    /// mutates the tracks + recomputes totalMs). The Setlist stays editable post-Play.
+    @discardableResult
+    func removeSetlistTrack(setlistId id: String, at index: Int) -> Setlist? {
+        guard let i = setlists.firstIndex(where: { $0.id == id }),
+              setlists[i].tracks.indices.contains(index) else { return nil }
+        setlists[i].tracks.remove(at: index)
+        recomputeSetlistTotal(i)
+        save()
+        return setlists[i]
+    }
+
+    /// Reorder tracks within a frozen setlist (SwiftUI `.onMove`). totalMs is unchanged
+    /// by a reorder but recomputed for safety; persists.
+    @discardableResult
+    func moveSetlistTracks(setlistId id: String, from: IndexSet, to: Int) -> Setlist? {
+        guard let i = setlists.firstIndex(where: { $0.id == id }) else { return nil }
+        setlists[i].tracks.move(fromOffsets: from, toOffset: to)
+        recomputeSetlistTotal(i)
+        save()
+        return setlists[i]
+    }
+
+    /// Append a free-text NOTE row (a top-level orderable item) to a frozen setlist.
+    /// Inserted as an isText SetlistTrack with no backing song; carries the trailing
+    /// `sequenceName` so it groups with the last chapter. totalMs unchanged (0 ms).
+    @discardableResult
+    func addSetlistNote(_ text: String, toSetlist id: String) -> Setlist? {
+        guard let i = setlists.firstIndex(where: { $0.id == id }) else { return nil }
+        let seqName = setlists[i].tracks.last?.sequenceName
+        setlists[i].tracks.append(
+            SetlistTrack(songId: "", artist: "", name: text, bpm: nil, camelot: nil,
+                         source: .explicit, sequenceName: seqName, isText: true))
+        recomputeSetlistTotal(i)
         save()
         return setlists[i]
     }

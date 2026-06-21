@@ -99,6 +99,9 @@ struct PocketDetailView: View {
     @State private var confirmingDelete = false
     @State private var showExporter = false
     @State private var exportDoc = PlaylistZipFile(data: Data())
+    @State private var addingNote = false
+    @State private var noteDraft = ""
+    @State private var editingNoteId: String?
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
 
@@ -147,8 +150,24 @@ struct PocketDetailView: View {
                     }
                     .onMove { from, to in collections.movePocketSongs(inPocket: pocketId, from: from, to: to) }
                 }
+                if !pocket.notes.isEmpty {
+                    Section("Notes (\(pocket.notes.count))") {
+                        ForEach(pocket.notes) { note in
+                            Button {
+                                editingNoteId = note.id; noteDraft = note.text
+                            } label: {
+                                Label(note.text, systemImage: "text.quote")
+                                    .foregroundStyle(Theme.fgDim).italic()
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("pocket-note-\(note.id)")
+                            .swipeActions { Button("Remove", role: .destructive) { collections.removeNote(note.id, fromPocket: pocketId) } }
+                        }
+                        .onMove { from, to in collections.movePocketNotes(inPocket: pocketId, from: from, to: to) }
+                    }
+                }
                 if pocket.isEmpty {
-                    Text("Empty. Add songs or albums from their detail view ▸ Add to…")
+                    Text("Empty. Add songs or albums from their detail view ▸ Add to…, or add a note below.")
                         .foregroundStyle(Theme.fgDim)
                 }
             }
@@ -159,6 +178,8 @@ struct PocketDetailView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
+                        .accessibilityIdentifier("add-pocket-note")
                     Button { nameDraft = pocket?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
                         .accessibilityIdentifier("rename-pocket")
                     Button { export() } label: { Label("Export…", systemImage: "square.and.arrow.up") }
@@ -169,6 +190,36 @@ struct PocketDetailView: View {
                 } label: { Image(systemName: "ellipsis.circle") }
                     .accessibilityIdentifier("pocket-menu")
             }
+            #if os(iOS)
+            ToolbarItem(placement: .primaryAction) {
+                EditButton().accessibilityIdentifier("pocket-edit-order")
+            }
+            #endif
+        }
+        .alert("Add note", isPresented: $addingNote) {
+            TextField("Note (a line of poetry, a cue…)", text: $noteDraft)
+            Button("Add") {
+                let n = noteDraft.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty { collections.addNote(n, toPocket: pocketId) }
+                noteDraft = ""
+            }
+            Button("Cancel", role: .cancel) { noteDraft = "" }
+        }
+        .alert("Edit note", isPresented: Binding(get: { editingNoteId != nil }, set: { if !$0 { editingNoteId = nil } })) {
+            TextField("Note", text: $noteDraft)
+            Button("Save") {
+                if let nid = editingNoteId {
+                    let n = noteDraft.trimmingCharacters(in: .whitespaces)
+                    if n.isEmpty { collections.removeNote(nid, fromPocket: pocketId) }
+                    else { collections.setNoteText(nid, text: n, inPocket: pocketId) }
+                }
+                editingNoteId = nil
+            }
+            Button("Remove", role: .destructive) {
+                if let nid = editingNoteId { collections.removeNote(nid, fromPocket: pocketId) }
+                editingNoteId = nil
+            }
+            Button("Cancel", role: .cancel) { editingNoteId = nil }
         }
         .alert("Rename pocket", isPresented: $renaming) {
             TextField("Name", text: $nameDraft)

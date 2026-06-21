@@ -20,12 +20,37 @@ import Foundation
 //              tracks, samples over-budget pockets, and autofills temporal gaps with
 //              harmonic bridges, then FREEZES the concrete ordered tracks (each
 //              snapshotted so it reads standalone). One playlist → many setlists.
-let collectionsSchemaVersion = 1
+// v1 → v2: pockets gained an ordered `notes: [PocketNote]` list (free-text items,
+// orderable AMONG the members — the "poetry pocket"). Additive + lenient: a v1 doc
+// migrates forward (each pocket gets `notes: []`); a v2 doc loads degraded on a v1
+// app (the unknown `notes` key is simply ignored, members intact).
+let collectionsSchemaVersion = 2
 
 enum PocketKind: String, Codable, Hashable, Sendable { case harmonic, performance }
 
+/// A free-text item inside a pocket — a mic cue, a line of poetry, an out-of-index
+/// moment. `position` is its slot in the pocket's UNIFIED member ordering (child
+/// pockets, then albums, then songs, then notes are laid out in a single list and a
+/// note's `position` is its index in that combined list — so a note can sit *between*
+/// songs). Lenient/all-optional-where-possible for graceful round-tripping.
+struct PocketNote: Codable, Identifiable, Hashable, Sendable {
+    var id: String
+    var text: String
+    var position: Int = 0
+
+    init(id: String, text: String, position: Int = 0) {
+        self.id = id; self.text = text; self.position = position
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? CollectionsFactory.newPocketNoteId()
+        text = (try? c.decode(String.self, forKey: .text)) ?? ""
+        position = (try? c.decode(Int.self, forKey: .position)) ?? 0
+    }
+}
+
 /// A reusable, nestable grouping. Membership is type-agnostic (songs + albums +
-/// child pockets), forming a cycle-guarded DAG.
+/// child pockets + free-text notes), forming a cycle-guarded DAG.
 struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var id: String
     var name: String
@@ -34,11 +59,37 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var songIds: [String] = []
     var albumIds: [String] = []
     var childPocketIds: [String] = []
+    var notes: [PocketNote] = []         // v2: ordered free-text items (poetry/cues)
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
-    var isEmpty: Bool { songIds.isEmpty && albumIds.isEmpty && childPocketIds.isEmpty }
+    // Notes never count toward "members" (songs/albums/pockets) for count/runtime.
+    var isEmpty: Bool { songIds.isEmpty && albumIds.isEmpty && childPocketIds.isEmpty && notes.isEmpty }
     var memberCount: Int { songIds.count + albumIds.count + childPocketIds.count }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, description, songIds, albumIds, childPocketIds, notes, createdAt, updatedAt
+    }
+    init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
+         songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
+         notes: [PocketNote] = [], createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.kind = kind; self.description = description
+        self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
+        self.notes = notes; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? CollectionsFactory.newPocketId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        kind = (try? c.decode(PocketKind.self, forKey: .kind)) ?? .harmonic
+        description = try? c.decode(String.self, forKey: .description)
+        songIds = (try? c.decode([String].self, forKey: .songIds)) ?? []
+        albumIds = (try? c.decode([String].self, forKey: .albumIds)) ?? []
+        childPocketIds = (try? c.decode([String].self, forKey: .childPocketIds)) ?? []
+        notes = (try? c.decode([PocketNote].self, forKey: .notes)) ?? []
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
 }
 
 /// A node in a playlist template. A flat, `kind`-discriminated, recursive shape
@@ -235,6 +286,13 @@ enum CollectionsMigration {
     static func migrate(_ document: CollectionsDocument) -> CollectionsDocument {
         var doc = document
         // v0 → v1: initial schema; no structural transform yet.
+        // v1 → v2: pockets gained `notes: [PocketNote]`. Older pockets simply have
+        //   none — lenient decode already defaults the field to [], so the mapping
+        //   forward is the no-op identity. Kept explicit so the version bump is
+        //   visible + the seam exists for any future note-shape transform.
+        for i in doc.pockets.indices where doc.pockets[i].notes.isEmpty {
+            doc.pockets[i].notes = []
+        }
         doc.schemaVersion = collectionsSchemaVersion
         return doc
     }
@@ -248,6 +306,7 @@ enum CollectionsFactory {
     static func newPlaylistId() -> String { "pls_" + uid() }
     static func newSetlistId() -> String { "set_" + uid() }
     static func newNodeId() -> String { "nd_" + uid() }
+    static func newPocketNoteId() -> String { "pnt_" + uid() }
 
     static func makeSequence(_ name: String, targetMs: Int? = nil) -> PlaylistNode {
         PlaylistNode(nodeId: newNodeId(), kind: .sequence, name: name, targetMs: targetMs, children: [])

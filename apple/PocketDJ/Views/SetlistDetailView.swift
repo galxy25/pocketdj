@@ -15,6 +15,8 @@ struct SetlistDetailView: View {
     @State private var renaming = false
     @State private var noteEditing: Int?      // track index being edited
     @State private var noteDraft = ""
+    @State private var addingNote = false      // top-level "Add note" composer
+    @State private var addNoteDraft = ""
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
 
@@ -39,22 +41,23 @@ struct SetlistDetailView: View {
                         }
                     }
 
-                    ForEach(sections(setlist.tracks), id: \.name) { section in
-                        Section {
-                            ForEach(section.rows, id: \.index) { row in
-                                trackRow(row.track, index: row.index)
-                            }
-                        } header: {
-                            HStack {
-                                Text(section.name)
-                                Spacer()
-                                Text("\(section.rows.count) · \(Fmt.duration(section.ms))")
-                                    .foregroundStyle(Theme.fgDim)
-                            }
+                    Section {
+                        ForEach(Array(setlist.tracks.enumerated()), id: \.offset) { idx, track in
+                            trackRow(track, index: idx)
                         }
+                        .onMove { from, to in collections.moveSetlistTracks(setlistId: setlistId, from: from, to: to) }
+                        .onDelete { offsets in
+                            // Remove highest-index first so earlier offsets stay valid.
+                            offsets.sorted(by: >).forEach { collections.removeSetlistTrack(setlistId: setlistId, at: $0) }
+                        }
+                    } header: {
+                        chapterLegend(setlist.tracks)
                     }
                 }
                 .navigationTitle(setlist.name ?? "Set list")
+                #if os(iOS)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton().accessibilityIdentifier("setlist-edit-order") } }
+                #endif
             } else {
                 ContentUnavailableView("Set list gone", systemImage: "waveform.slash",
                                        description: Text("This set list no longer exists."))
@@ -64,6 +67,11 @@ struct SetlistDetailView: View {
         .background(Theme.bg)
         .toolbar {
             if let setlist {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { addNoteDraft = ""; addingNote = true } label: { Image(systemName: "text.badge.plus") }
+                        .help("Add a note between tracks")
+                        .accessibilityIdentifier("setlist-add-note")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { nameDraft = setlist.name ?? ""; renaming = true } label: { Image(systemName: "pencil") }
                         .accessibilityIdentifier("setlist-rename")
@@ -75,6 +83,17 @@ struct SetlistDetailView: View {
                         .accessibilityIdentifier("setlist-delete")
                 }
             }
+        }
+        .alert("Add note", isPresented: $addingNote) {
+            TextField("Note (mic break, sample, cue…)", text: $addNoteDraft)
+            Button("Add") {
+                let n = addNoteDraft.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty { collections.addSetlistNote(n, toSetlist: setlistId) }
+                addNoteDraft = ""
+            }
+            Button("Cancel", role: .cancel) { addNoteDraft = "" }
+        } message: {
+            Text("Added to the end — drag it into place with Edit.")
         }
         .alert("Rename set list", isPresented: $renaming) {
             TextField("Name", text: $nameDraft)
@@ -171,18 +190,28 @@ struct SetlistDetailView: View {
         }
     }
 
-    // MARK: Group by sequence (chapter), mirroring the PWA's groupBySequence
+    // MARK: Chapter legend
 
-    private struct Row { let track: SetlistTrack; let index: Int }
-    private struct SectionGroup { let name: String; var ms: Int; var rows: [Row] }
+    /// A single flat, reorderable track list (so `.onMove`/`.onDelete` indices map
+    /// straight to `setlist.tracks`). The per-row `sequenceName` badge still names each
+    /// track's chapter; this header summarizes which chapters are present + the total.
+    @ViewBuilder
+    private func chapterLegend(_ tracks: [SetlistTrack]) -> some View {
+        let names = orderedChapterNames(tracks)
+        HStack {
+            Text(names.count <= 1 ? (names.first ?? "Set") : names.joined(separator: " · "))
+            Spacer()
+            Text("\(tracks.count) · \(Fmt.duration(tracks.reduce(0) { $0 + $1.shownMs }))")
+                .foregroundStyle(Theme.fgDim)
+        }
+        .accessibilityIdentifier("setlist-chapter-legend")
+    }
 
-    private func sections(_ tracks: [SetlistTrack]) -> [SectionGroup] {
-        var out: [SectionGroup] = []
-        for (i, t) in tracks.enumerated() {
+    private func orderedChapterNames(_ tracks: [SetlistTrack]) -> [String] {
+        var out: [String] = []
+        for t in tracks {
             let name = t.sequenceName?.isEmpty == false ? t.sequenceName! : "Set"
-            if out.last?.name != name { out.append(SectionGroup(name: name, ms: 0, rows: [])) }
-            out[out.count - 1].rows.append(Row(track: t, index: i))
-            if t.isText != true { out[out.count - 1].ms += t.shownMs }
+            if out.last != name && !out.contains(name) { out.append(name) }
         }
         return out
     }

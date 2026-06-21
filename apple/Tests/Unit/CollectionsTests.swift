@@ -20,6 +20,68 @@ final class CollectionsSchemaTests: XCTestCase {
         XCTAssertTrue(doc.pockets.isEmpty)
         XCTAssertTrue(doc.playlists.isEmpty)
     }
+
+    // v1 → v2: pockets gained `notes`. An old (v1) pocket with NO notes key must
+    // migrate forward to v2 with notes == [] (never nil/crash).
+    func testV1PocketMigratesToV2WithEmptyNotes() throws {
+        let v1 = """
+        { "schemaVersion": 1, "pockets": [
+            { "id": "pkt_old", "name": "Soul", "kind": "harmonic",
+              "songIds": ["sng_1"], "albumIds": [], "childPocketIds": [],
+              "createdAt": 0, "updatedAt": 0 }
+        ], "playlists": [] }
+        """
+        let doc = try CollectionsCodec.decode(Data(v1.utf8))
+        XCTAssertEqual(doc.schemaVersion, collectionsSchemaVersion)   // bumped to 2
+        XCTAssertEqual(doc.pockets.first?.songIds, ["sng_1"])
+        XCTAssertEqual(doc.pockets.first?.notes, [])                  // additive default
+    }
+
+    // A v2 pocket carrying notes survives a full round-trip with text + order intact.
+    func testV2PocketNotesRoundTrip() throws {
+        var doc = CollectionsDocument()
+        doc.pockets = [Pocket(id: "pkt_1", name: "Poetry",
+                              notes: [PocketNote(id: "pnt_1", text: "First", position: 0),
+                                      PocketNote(id: "pnt_2", text: "Second", position: 1)])]
+        let back = try CollectionsCodec.decode(CollectionsCodec.encode(doc))
+        XCTAssertEqual(back.pockets.first?.notes.map(\.text), ["First", "Second"])
+        XCTAssertEqual(back.pockets.first?.notes.map(\.id), ["pnt_1", "pnt_2"])
+    }
+
+    // Lenient decode: a note with a missing id/position still decodes (id minted,
+    // position defaults to 0); an entirely unknown extra key is ignored.
+    func testPocketNoteLenientDecode() throws {
+        let json = """
+        { "schemaVersion": 2, "pockets": [
+            { "id": "pkt_1", "name": "P",
+              "notes": [ { "text": "bare" }, { "id": "pnt_x", "text": "ok", "position": 5, "future": true } ] }
+        ] }
+        """
+        let doc = try CollectionsCodec.decode(Data(json.utf8))
+        let notes = try XCTUnwrap(doc.pockets.first?.notes)
+        XCTAssertEqual(notes.count, 2)
+        XCTAssertEqual(notes[0].text, "bare")
+        XCTAssertFalse(notes[0].id.isEmpty)              // minted when missing
+        XCTAssertEqual(notes[0].position, 0)             // defaulted
+        XCTAssertEqual(notes[1].id, "pnt_x")
+        XCTAssertEqual(notes[1].position, 5)
+    }
+
+    // A newer (v2) doc degrades gracefully when decoded — members survive even if a
+    // hypothetical older app ignores `notes` (here we just confirm members intact when
+    // notes is present, mirroring the lenient-decode contract).
+    func testV2DocMembersSurviveAlongsideNotes() throws {
+        let json = """
+        { "schemaVersion": 2, "pockets": [
+            { "id": "pkt_1", "name": "P", "songIds": ["sng_1","sng_2"], "albumIds": ["alb_1"],
+              "notes": [ { "id": "pnt_1", "text": "line" } ] }
+        ] }
+        """
+        let doc = try CollectionsCodec.decode(Data(json.utf8))
+        XCTAssertEqual(doc.pockets.first?.songIds, ["sng_1","sng_2"])
+        XCTAssertEqual(doc.pockets.first?.albumIds, ["alb_1"])
+        XCTAssertEqual(doc.pockets.first?.notes.first?.text, "line")
+    }
 }
 
 @MainActor
@@ -162,6 +224,97 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertTrue((sl?.tracks.count ?? 0) >= 2)                    // both explicit songs present
         XCTAssertEqual(s.setlists.count, 1)                           // persisted into history
         XCTAssertTrue(sl!.tracks.contains { $0.songId == "sng_1" })
+    }
+
+    // MARK: Pocket notes (the "poetry pocket")
+
+    func testPocketNoteAddEditReorderRemove() {
+        let s = store()
+        let p = s.createPocket("Poetry")
+        let n1 = s.addNote("First line", toPocket: p.id)
+        let n2 = s.addNote("Second line", toPocket: p.id)
+        XCTAssertNotNil(n1); XCTAssertNotNil(n2)
+        XCTAssertEqual(s.pocket(p.id)?.notes.map(\.text), ["First line", "Second line"])
+        XCTAssertEqual(s.pocket(p.id)?.notes.map(\.position), [0, 1])   // position assigned on add
+        // Notes never count as members (so the poetry pocket has 0 songs).
+        XCTAssertEqual(s.pocket(p.id)?.memberCount, 0)
+        XCTAssertFalse(s.pocket(p.id)?.isEmpty ?? true)                 // but it isn't empty
+        // Edit
+        s.setNoteText(n1!.id, text: "Edited", inPocket: p.id)
+        XCTAssertEqual(s.pocket(p.id)?.notes.first?.text, "Edited")
+        // Reorder (swap the two)
+        s.movePocketNotes(inPocket: p.id, from: IndexSet(integer: 0), to: 2)
+        XCTAssertEqual(s.pocket(p.id)?.notes.map(\.text), ["Second line", "Edited"])
+        // Remove
+        s.removeNote(n2!.id, fromPocket: p.id)
+        XCTAssertEqual(s.pocket(p.id)?.notes.map(\.text), ["Edited"])
+    }
+
+    func testPocketNotesPersistAndExportImport() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-pnote-\(UUID().uuidString).json")
+        let s1 = CollectionsStore(fileURL: url)
+        let p = s1.createPocket("Poetry")
+        s1.addNote("A poem", toPocket: p.id)
+        // Reloads from disk with notes intact.
+        let s2 = CollectionsStore(fileURL: url)
+        XCTAssertEqual(s2.pocket(p.id)?.notes.first?.text, "A poem")
+        // Export → import (same store) keeps the notes on the reminted copy.
+        let data = try XCTUnwrap(s2.exportPocket(p.id))
+        try s2.importCollection(data: data)
+        XCTAssertEqual(s2.pockets.last?.notes.first?.text, "A poem")
+        XCTAssertNotEqual(s2.pockets.last?.id, p.id)                    // fresh pocket id
+    }
+
+    // MARK: Setlist track editing (remove / reorder / recompute totalMs) + add note
+
+    func testSetlistRemoveReorderRecomputesTotal() async {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let s = store(); s.app = app
+        let sl = s.realize(songIds: ["sng_1", "sng_2"], name: "Edit Me")!   // 222000 + 201000
+        XCTAssertEqual(s.setlist(sl.id)?.tracks.count, 2)
+        XCTAssertEqual(s.setlist(sl.id)?.totalMs, 222000 + 201000)
+        let order0 = s.setlist(sl.id)!.tracks.map(\.songId)
+        // Reorder: move track 0 to the end.
+        s.moveSetlistTracks(setlistId: sl.id, from: IndexSet(integer: 0), to: 2)
+        XCTAssertEqual(s.setlist(sl.id)!.tracks.map(\.songId), [order0[1], order0[0]])
+        XCTAssertEqual(s.setlist(sl.id)?.totalMs, 222000 + 201000)       // reorder leaves total
+        // Remove one → total recomputed from the remaining track.
+        let remaining = s.setlist(sl.id)!.tracks[1].songId
+        s.removeSetlistTrack(setlistId: sl.id, at: 0)
+        XCTAssertEqual(s.setlist(sl.id)?.tracks.count, 1)
+        XCTAssertEqual(s.setlist(sl.id)?.tracks.first?.songId, remaining)
+        let expected = remaining == "sng_1" ? 222000 : 201000
+        XCTAssertEqual(s.setlist(sl.id)?.totalMs, expected)
+        // Provenance preserved across edits.
+        XCTAssertEqual(s.setlist(sl.id)?.name, "Edit Me")
+        XCTAssertFalse(s.setlist(sl.id)!.seed.isEmpty)
+    }
+
+    func testSetlistAddNoteIsTextZeroDuration() async {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let s = store(); s.app = app
+        let sl = s.realize(songIds: ["sng_1"], name: "With Note")!
+        let before = s.setlist(sl.id)!.totalMs
+        s.addSetlistNote("mic break", toSetlist: sl.id)
+        let after = s.setlist(sl.id)!
+        XCTAssertEqual(after.tracks.count, 2)
+        XCTAssertEqual(after.tracks.last?.isText, true)
+        XCTAssertEqual(after.tracks.last?.name, "mic break")
+        XCTAssertTrue(after.tracks.last?.songId.isEmpty ?? false)
+        XCTAssertEqual(after.totalMs, before)                            // note adds 0 ms
+    }
+
+    func testPlaylistAddTextNote() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        let seqId = pl.sequences.first!.nodeId
+        s.addText("intro spiel", toPlaylist: pl.id, sequenceId: seqId)
+        let kids = s.playlist(pl.id)!.sequences.first!.children!
+        XCTAssertEqual(kids.count, 1)
+        XCTAssertEqual(kids.first?.kind, .text)
+        XCTAssertEqual(kids.first?.text, "intro spiel")
     }
 
     func testPersistenceReloads() {

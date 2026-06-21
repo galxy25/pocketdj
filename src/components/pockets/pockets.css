@@ -258,7 +258,8 @@
   align-items: center;
   flex-wrap: wrap;
 }
-.pdj-pocket__add-child select {
+.pdj-pocket__add-child select,
+.pdj-pocket__note-input {
   flex: 1 1 12rem;
   min-width: 0;
 }

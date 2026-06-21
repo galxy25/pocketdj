@@ -243,7 +243,7 @@ indexed catalog), so it's dropped, not adopted.
 | Artifact | native → PWA | PWA → native |
 |---|---|---|
 | **Playlist** | **Lossless** — template + referenced pockets (DAG) import; catalog resolves by id. | **Lossless** (slim) — same. A *portable* PWA playlist's bundled `items.json`/`art` are simply ignored by native (catalog-by-reference). |
-| **Pocket** | **Lossless** — root + child pockets, ids reminted, child refs remapped; members by id. | **Lossless** — symmetric `remintBundle` on both ends. |
+| **Pocket** | **Lossless** — root + child pockets, ids reminted, child refs remapped; members by id; **v2 free-text `notes` (each note's id + text + `position`) preserved verbatim** (intra-pocket, not catalog refs). | **Lossless** — symmetric `remintBundle` on both ends; `notes` ride along unchanged. |
 | **Backup** | **Lossless for the shared subset** — pockets + playlists + setlists + **edits** all land. **Lossy only at the source:** native never *had* a bundled catalog, so there's nothing to lose there; the native `sources.json` is dropped (no PWA mapping). | **Collections + edits lossless.** **Lossy:** the PWA's bundled **catalog** (`items.json` + `art/`) and its **`DataSource[]` sources** don't transfer — native is catalog-by-reference and reads neither (by design; both re-seed the same index). |
 
 **Still not interoperable (by design):** the **catalog itself** never crosses
@@ -260,7 +260,9 @@ Both readers decode **leniently** — a missing version, missing maps, or unknow
 fields degrade to "no-op" rather than throwing — so a newer client's export still
 imports on an older one (it just ignores what it doesn't understand). `edits.json`
 carries its *own* `schemaVersion` (the `EditsDocument`, currently 2) independent of the
-zip's.
+zip's. The **collections** payload likewise versions independently (`collectionsSchemaVersion`,
+now **2** — pockets gained the optional free-text `notes` list); additive + lenient, so a
+v2 pocket's `notes` simply degrade to "ignored" on a v1 reader and members stay intact.
 
 **How (worked example): a metadata fix made on iPhone shows up in the browser.** On
 iPhone you correct a song's BPM → it lands in `pocketdj-edits.json`

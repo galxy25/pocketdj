@@ -57,6 +57,7 @@ vi.mock('./repo', () => ({
 // Imported AFTER the mock is registered.
 const { importExportZip, importFile } = await import('./importZip');
 const { buildExportZip } = await import('./exportZip');
+const { buildPocketZip, importPocketZip } = await import('./pocketTransfer');
 const { getEditsDocument } = await import('./edits');
 
 // ---------------------------------------------------------------------------
@@ -238,6 +239,102 @@ describe('PWA portable export round-trip', () => {
     expect(stores.items).toHaveLength(1);
     const doc = await getEditsDocument();
     expect(doc.songs['sng_a']).toEqual({ year: 2020 });
+  });
+});
+
+// ===========================================================================
+// 3b. Pocket NOTES round-trip losslessly across every transfer path (v2)
+// ===========================================================================
+describe('pocket notes round-trip (collections v2)', () => {
+  const noted = (over: Partial<Pocket> = {}): Pocket =>
+    pocket({
+      id: 'pkt_poetry',
+      name: 'Poetry',
+      songIds: ['sng_a'],
+      albumIds: ['alb_a'],
+      childPocketIds: [],
+      notes: [
+        { id: 'pnt_1', text: 'mic break — read the room', position: 0 },
+        { id: 'pnt_2', text: 'the long defeat / and the longer hope', position: 3 },
+      ],
+      ...over,
+    });
+
+  it('pocketTransfer: a noted pocket exported + re-imported keeps notes (text + position)', async () => {
+    stores.pockets = [noted()];
+    const built = await buildPocketZip('pkt_poetry');
+    expect(built).not.toBeNull();
+
+    // Wipe & re-import the .pocket.pocketdj.zip.
+    resetStores();
+    const buf = await built!.blob.arrayBuffer();
+    const r = await importPocketZip(buf);
+    expect(r.pockets).toBe(1);
+
+    const imported = stores.pockets.find((p) => p.name === 'Poetry')!;
+    // Root id is reminted, but notes (id + text + position) are preserved as-is.
+    expect(imported.id).not.toBe('pkt_poetry');
+    expect(imported.notes).toEqual([
+      { id: 'pnt_1', text: 'mic break — read the room', position: 0 },
+      { id: 'pnt_2', text: 'the long defeat / and the longer hope', position: 3 },
+    ]);
+  });
+
+  it('pocketTransfer: notes on DAG-expanded CHILD pockets survive too', async () => {
+    const root = pocket({ id: 'pkt_root', name: 'Root', childPocketIds: ['pkt_kid'], notes: [] });
+    const kid = noted({ id: 'pkt_kid', name: 'Kid', childPocketIds: [] });
+    stores.pockets = [root, kid];
+
+    const built = await buildPocketZip('pkt_root');
+    resetStores();
+    await importPocketZip(await built!.blob.arrayBuffer());
+
+    const importedKid = stores.pockets.find((p) => p.name === 'Kid')!;
+    expect(importedKid.notes).toHaveLength(2);
+    expect(importedKid.notes!.map((n) => n.position)).toEqual([0, 3]);
+  });
+
+  it('full backup: a noted pocket round-trips notes through buildExportZip → importExportZip', async () => {
+    stores.items = [];
+    stores.pockets = [noted()];
+    stores.sources = [];
+
+    const { blob } = await buildExportZip();
+    resetStores();
+    await importExportZip(await blob.arrayBuffer());
+
+    const imported = stores.pockets.find((p) => p.name === 'Poetry')!;
+    // Full backup carries whole pockets verbatim (ids NOT reminted) — notes intact.
+    expect(imported.id).toBe('pkt_poetry');
+    expect(imported.notes).toEqual([
+      { id: 'pnt_1', text: 'mic break — read the room', position: 0 },
+      { id: 'pnt_2', text: 'the long defeat / and the longer hope', position: 3 },
+    ]);
+  });
+
+  it('native-shaped .pocket.pocketdj.zip (manifest kind:"pocket" + pocket.json with notes) imports with notes intact', async () => {
+    const root = noted();
+    const buf = await makeZip({
+      'manifest.json': JSON.stringify({
+        app: 'pocketdj',
+        kind: 'pocket',
+        schemaVersion: 1,
+        portable: false,
+        exportedAt: 'x',
+        pocketName: 'Poetry',
+        counts: { pockets: 1, art: 0 },
+      }),
+      'pocket.json': JSON.stringify(root),
+      'pockets.json': JSON.stringify([]),
+    });
+
+    const r = await importFile(fileFrom(buf, 'Poetry.pocket.pocketdj.zip'));
+    expect(r.kind).toBe('pocket');
+    const imported = stores.pockets.find((p) => p.name === 'Poetry')!;
+    expect(imported.notes).toEqual([
+      { id: 'pnt_1', text: 'mic break — read the room', position: 0 },
+      { id: 'pnt_2', text: 'the long defeat / and the longer hope', position: 3 },
+    ]);
   });
 });
 
