@@ -27,8 +27,12 @@ server is only needed to *create* a rip.
 
 **Source of truth:** [`scripts/rip-server.mjs`](../../scripts/rip-server.mjs) (server),
 [`src/store/useRipsStore.ts`](../../src/store/useRipsStore.ts) (web client),
-[`apple/PocketDJ/Services/RipServerService.swift`](../../apple/PocketDJ/Services/RipServerService.swift)
-(native client). A dependency-free `node:http` server on port 8787 that shells to
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift) +
+[`apple/PocketDJ/Playback/PlayerEngine.swift`](../../apple/PocketDJ/Playback/PlayerEngine.swift)
+(native iOS/Mac app client — same manifest + `/rip`/`/jobs`/HLS contract as the web
+client; `AVPlayer` plays the live HLS *and* the durable mp3 natively, behind an inline
+slide-out player with a `MPNowPlayingInfoCenter` lock-screen transport).
+A dependency-free `node:http` server on port 8787 that shells to
 `ffmpeg`, `aws` (profile `levi`), the digital worker `scripts/rip-one.mjs`, and the
 Docker librosa analyzer (`scripts/lib/audio-analyze.mjs`). Catalog from `RIP_SOURCES`
 (`public/current-index.json,public/apple-music-index.json`); mirrors the rips bucket
