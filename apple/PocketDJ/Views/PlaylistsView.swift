@@ -89,7 +89,7 @@ struct PlaylistsView: View {
             }
         }
         .navigationTitle("Playlists")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
@@ -159,7 +159,7 @@ struct IndexPlaylistDetailView: View {
         }
         .navigationTitle(source.name)
         .accessibilityIdentifier("indexplaylist-detail")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
     }
 
     private func play() {
@@ -224,7 +224,7 @@ struct PlaylistDetailView: View {
         }
         .navigationTitle(playlist?.name ?? "Playlist")
         .accessibilityIdentifier("playlist-detail")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { play() } label: { Label("Play", systemImage: "play.fill") }

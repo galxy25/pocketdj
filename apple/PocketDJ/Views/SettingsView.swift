@@ -38,7 +38,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
         .onDisappear { settings.persist() }
         .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .json,
                       defaultFilename: "pocketdj-edits") { _ in }

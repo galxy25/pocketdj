@@ -48,7 +48,7 @@ struct PocketsView: View {
             }
         }
         .navigationTitle("Pockets")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
@@ -174,7 +174,7 @@ struct PocketDetailView: View {
         }
         .navigationTitle(pocket?.name ?? "Pocket")
         .accessibilityIdentifier("pocket-detail")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {

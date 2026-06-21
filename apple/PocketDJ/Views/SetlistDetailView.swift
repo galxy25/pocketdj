@@ -70,7 +70,7 @@ struct SetlistDetailView: View {
             }
         }
         .accessibilityIdentifier("setlist-detail")
-        .background(Theme.bg)
+        .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar {
             if let setlist {
                 ToolbarItem(placement: .primaryAction) {
