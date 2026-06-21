@@ -26,7 +26,9 @@ Unpack that and you get the design pressures the architecture answers:
 - **Personal** → *your* crate — digitized vinyl, your Apple Music library — enriched
   and owned on-device, editable in place. → **Ch. 2, 3, 7**
 - **Diverse musical sources** → multiple ingest pipelines normalize into **one
-  catalog shape** with stable, collision-free ids. → **Ch. 2, 3**
+  catalog shape** with stable, collision-free ids — and, on the native app,
+  **streaming-account sources** (Apple Music · Spotify · YouTube) and a **ShazamKit**
+  recognizer beside the file catalogs. → **Ch. 2, 3, 7**
 - **Performance Playlists Producer** → compose the shape of a night (pockets →
   playlists → setlists) and **realize** it into a concrete, ordered set. → **Ch. 4**
 - **Play & mix** → make the metadata catalog actually audible from a phone
@@ -87,9 +89,9 @@ server-less coordination work.
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
 | 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema, internal model, collections — the one shape everything speaks. Reference chapter. |
 | 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **and the deferred AI auto-mixing seam**. |
-| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API, job state machine, live HLS, the public rips cache, mini-player + setlist playback. |
+| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API, job state machine, live HLS, the public rips cache, mini-player + setlist playback, **and the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, the star map. |
-| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, and the edits round-trip. |
+| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, **and the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`).** |
 
 ---
 
@@ -100,8 +102,20 @@ contract**. Honest status:
 
 - **Built today:** all of ingest/enrichment, the catalog, the manual performance
   engine (`realize()` with seeded sampling + harmonic autofill), rip-on-demand with
-  live HLS, online search, multi-client distribution, and the native edits overlay
-  (export/import).
+  live HLS (now including the **native inline player** — `PlayerEngine`/`PlayerClock`/
+  TimelineView — on browser *and* album rows, Ch. 5 §7), online search, multi-client
+  distribution, and the native edits overlay (export/import).
+- **New current-state — native streaming sources + ShazamKit recognition.** The
+  native app adds **streaming-account sources** (Apple Music · Spotify · YouTube) beside
+  the URL catalogs, plus the **"?♪?" ShazamKit recognizer** that maps the song in the
+  room back to the crate (Ch. 7 §5). All of it is **additive and ships inert** behind
+  `#if canImport` + feature flags. **Live vs scaffolded:** **Apple Music** is wired on
+  (`PocketDJAppleMusicEnabled = YES`; system MusicKit consent, in-process playback —
+  needs the App-ID MusicKit service to run on device) and **ShazamKit** uses the public
+  catalog (entitlement-only); **Spotify** and **YouTube** are **scaffolded — pending an
+  SDK + credentials** a developer drops in per
+  [`docs/streaming-integration.md`](./streaming-integration.md). Bundle id is now
+  **`com.levi.pocketdj`**.
 - **Coming — AI-assisted auto-mixing & auto-building playlists.** The seams already
   exist (no migration needed to light them up): `SetlistTrack.mixSuggestions` +
   the `MixSuggestion` shape, the reserved `PocketKind:'performance'`, and the
@@ -139,4 +153,18 @@ Things found while writing that don't fully line up, gathered here so they're no
 7. **`POST /analysis` overloads "key".** The body uses `musicalKey` for the musical key
    but `key` for the S3 object key when creating a fresh entry — same word, two
    meanings in one payload. Not a bug, but a footgun. (Ch. 5)
+8. **Streaming providers are scaffolded to different depths.** All three compile and
+   show in Settings, but only **Apple Music** (flag on) + **ShazamKit** (public catalog)
+   are wired live; **Spotify** + **YouTube** are stubs until a developer adds the SDK +
+   credentials. The Settings row reads "Not available" for an unconfigured one, so the
+   UI is honest — but "shipped" ≠ "usable" per provider. (Ch. 7 §5)
+9. **`PlayerClock` is intentionally NOT `@Observable`.** The inline player's ~4×/s
+   position lives on a plain `PlayerClock` sampled by a `TimelineView`, *by design* —
+   making it `@Observable` would re-invalidate the panel and drop clicks on its control
+   buttons (the documented "dead slide-out buttons" bug). A maintainer "fixing" the
+   missing `@Observable` would regress it. (Ch. 5 §7)
+10. **Bundle id moved to `com.levi.pocketdj`** (was `net.pocketdj.app`). A few external
+    references (Developer-portal App ID, Spotify/YouTube OAuth redirect schemes
+    `com.levi.pocketdj.spotify` / `.youtube`) must match this exactly; the `net.pocketdj.*`
+    name is fully retired in `project.yml`. (Ch. 7 §5)
 ```

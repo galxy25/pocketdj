@@ -739,3 +739,130 @@ instant), **▶ Play all** (play the set start→finish, **ripping ahead** so th
 track is ready before the current ends, auto-advancing the mini player), and **🔥 Burn**
 (rip any that aren't yet, then download the whole set as one **zip**). Progress shows
 as *Ripping / Burning N/M*.
+
+---
+
+# Part III — The native app: play, identify & stream (2026 update)
+
+Everything above is the cross-client product. This part is what the **native
+iPhone / iPad / Mac app** (under `apple/`) adds on top of the same crate: an
+**inline player** that plays and downloads right inside the list, a **"?♪?"** button
+that *listens* and identifies the song in the room, a Settings section to **link a
+streaming subscription** (Apple Music · Spotify · YouTube) beside your own catalog,
+and full **keyboard navigation** for the desktop. The shots/copy below describe the
+native surfaces; they read the *same* catalog, rips cache, and collections as the PWA.
+
+> Some streaming sources are **scaffolded, not yet live**: the app ships and runs
+> with none configured. Apple Music is wired on and ready to enable; Spotify and
+> YouTube need a developer to drop in an SDK + credentials first (see the setup
+> guide [`streaming-integration.md`](./streaming-integration.md)). Each unconfigured
+> account simply reads **"Not available."**
+
+---
+
+## 29. The inline player — play, stream, download, scrub
+
+Every song row in the native app — in the Browser **and** in an album's track table —
+has a **▶ play** and **⤓ download** button on the right (the `RowTransport`). They're
+the same rip-on-demand transport the PWA mini-player uses, but the player itself docks
+**inline, directly below the row you played**.
+
+**Play.** Tap **▶**. If the song is already ripped it plays instantly; otherwise the
+button shows the live rip phase — **Queued… → Searching… → Ripping mm:ss → ● Streaming
+live → Uploading…** (polled from the rip server) — and, for an un-ripped Apple Music
+track, begins playing the **live HLS** stream within seconds while the capture
+continues (a red **● live** chip). When the row is the one playing, **▶ flips to a
+pause/resume toggle** for that same player instead of re-ripping.
+
+**The slide-out panel.** Below the playing row a panel appears with:
+- a **play/pause** button, the **title · artist**, a **chevron** to collapse/expand,
+  and an **✕** to close (stop + dismiss),
+- a full-width **waveform** image (lazy-loaded, like cover art) sitting **edge-to-edge**
+  above a full-width **scrubber** — drag the slider to seek; elapsed / duration labels
+  flank its two ends,
+- for a live stream, instead of a scrubber: a *"Streaming live as it rips"* state (a
+  live HLS stream has no fixed length to scrub).
+
+The position updates ~4×/s smoothly without the buttons ever going "dead" — a subtle
+but real win the desktop build needed (the scrubber redraws on its own clock so it
+never disturbs the control buttons' taps).
+
+**Download.** Tap **⤓** to resolve the durable mp3 and save it via the system share
+sheet (**Save to Files** / AirDrop on iOS, the share menu on macOS) — keep a track
+wherever you want.
+
+**Lock screen & Control Center.** Native playback registers with the OS, so the
+current track shows on the **lock screen / Control Center** with working play / pause /
+scrub (AirPods and CarPlay drive it too); audio keeps playing in the background.
+
+**User story:** "I found the record — now let me actually hear it, right here, without
+leaving the list — and scrub to the drop."
+
+---
+
+## 30. "?♪?" — identify the song that's playing
+
+At the **top of the Browser**, centered, is a **"?♪?"** button — two question marks
+flanking a music note. Tap it and the app **listens through the mic** (ShazamKit),
+**identifies** the playing song, and maps it back to your crate:
+
+- while listening it pulses with a sonar ring (note bounces; *Identifying* as it
+  queries),
+- a hit **in your crate** opens a *"Heard it"* sheet — **"In your crate"** with an
+  **Open song** deep-link straight into that song's detail,
+- a hit **not in your crate** shows the recognized title/artist/artwork as **"Not in
+  your crate"**, and — when Shazam returns an Apple Music id — notes *"A linked Apple
+  Music account can play this."*,
+- if mic permission is **denied**, the button shakes, shows a `mic.slash`, and tapping
+  it jumps to Settings.
+
+Matching is title+artist **normalized** (so *"Café (Remastered 2011)"* still matches
+*"Cafe"*). On a build without ShazamKit it simply reads *"Recognition isn't available
+in this build."* — never a crash.
+
+**User story:** "Something great is playing — what is it, and have I already got it?"
+One tap answers both.
+
+---
+
+## 31. Settings ▸ Streaming accounts — link Apple Music, Spotify, YouTube
+
+A new **"Streaming accounts"** section in native Settings sits beside your URL
+**Data sources**. It lists one row per provider — **Apple Music**, **Spotify**,
+**YouTube** — each with a status line and a **Log in / Log out** button:
+
+- a configured provider shows **Log in**; linking hands off to that service's sign-in
+  (Apple Music shows the system consent sheet; Spotify/YouTube run an OAuth redirect
+  back into the app), after which the row reads **Linked / Connected**, and **Log out**
+  severs it,
+- an **unconfigured** provider (no SDK/credentials in this build) reads **"Not
+  available"** with a developer note,
+- the section footer explains: *link a streaming service to play directly from your
+  subscription, beside your own catalog sources;* Spotify needs the Spotify app
+  installed and a **Premium** account for on-demand playback.
+
+A linked subscription is an **additional, account-based source** — orthogonal to the
+vinyl / Apple Music (Local) URL catalogs and to rip-on-demand. It also gives the "?♪?"
+recognizer a way to **play** a recognized track that isn't in your crate.
+
+**User story:** "Beyond my own crate, let me reach into my streaming subscription —
+log in once, and play from it inside the same app."
+
+---
+
+## 32. Keyboard navigation (desktop)
+
+On the Mac (and an iPad keyboard), the Browser is fully **keyboard-drivable**:
+
+- **↑ / ↓** move a **focus cursor** that highlights a row — across the **song list**
+  *and* the **album grid/list** (the album grid walks album order linearly). It works
+  **live during search**: type a query, then arrow into the results.
+- **⌘P** plays (or pauses/resumes) the **focused song**.
+- **Return** or **⌘O** **opens** the focused item — an album → its detail, a song →
+  its song detail — the same destination a click reaches.
+
+Other shortcuts round it out: **⌘1 / ⌘2** Albums / Songs, **⌘L** focus search,
+**⌘V** grid/list, **⌥⌘F** Filter, **⌥⌘S** Sort.
+
+**User story:** "On a laptop I want to fly — Spotlight-style: type, arrow down,
+hit Return to open or ⌘P to play, hands never leaving the keyboard."

@@ -73,8 +73,10 @@ so they can't diverge on data.
 | Apple Music | `loadAppleMusicLibrary()` (opt-in) | `Config.appleMusicIndexURL` | `…/apple-music-index.json` |
 | Persistence | IndexedDB (`src/storage`) | URLCache + edits file | — |
 | Art | `/art/*` via CloudFront | `IndexAlbum.artCandidates` → `Config.artURL` | `…/art/*` |
-| Audio | `useRipsStore.ts` (Ch. 5) | `RipServerService` | rips bucket + rip server |
+| Audio | `useRipsStore.ts` (Ch. 5) | `RipServerService` + `PlayerEngine`/`PlayerClock` inline player (Ch. 5 §7) | rips bucket + rip server |
 | Online search | `esClient.ts` + `sigv4.ts` (Ch. 6) | `SearchService` + `SigV4` | aoss `pocketdj` index |
+| Streaming accounts | — | `StreamingStore` + `StreamingProvider` (Apple Music / Spotify / YouTube) — §5.1 | provider OAuth / SDKs |
+| Song recognition | — | `ShazamRecognizer` "?♪?" + `ShazamCatalogMatch` — §5.2 | ShazamKit (public catalog) |
 
 ```
               ┌──────── same documents, same APIs ────────┐
@@ -293,6 +295,161 @@ tiers (immutable hashed assets, no-cache shell + seed), and invalidates the env'
 CloudFront distribution so the new `index.html` + hashed assets propagate together.
 Clients pick it up on next boot or via Settings ▸ Force refresh, which re-pulls only
 the catalog and **preserves** client-side collections.
+
+---
+
+## 5. The native app's extra sources — streaming accounts + ShazamKit
+
+**Why.** Everything above keeps the catalog *files*-shaped: a URL you fetch
+(`SourceConfig`). But the native app adds two source *kinds* that aren't files at all —
+a **streaming subscription** the user logs into (Apple Music · Spotify · YouTube) and a
+**ShazamKit recognizer** that turns the song playing *in the room* back into a catalog
+hit. Both are **additive and shippable-while-inert**: the app compiles and runs with
+none configured, every provider falling back to a no-op stub. The full operator
+checklist (portal toggles, SDKs, credentials, plist keys) lives in the cross-referenced
+[`docs/streaming-integration.md`](../streaming-integration.md); this section is the
+*architecture* — the seams, the registry, the gating, and how a recognized song reaches
+a player.
+
+### 5.1 Streaming providers — `StreamingProvider` / `StreamingStore`
+
+**Source of truth:** [`apple/PocketDJ/Services/Streaming/`](../../apple/PocketDJ/Services/Streaming/)
+(`StreamingProvider.swift`, `AppleMusicProvider.swift`, `SpotifyProvider.swift`,
+`YouTubeProvider.swift`, plus the `SongRecognizer` / `StreamingSearch` seams),
+[`apple/PocketDJ/State/StreamingStore.swift`](../../apple/PocketDJ/State/StreamingStore.swift),
+[`apple/PocketDJ/Views/SettingsView+Streaming.swift`](../../apple/PocketDJ/Views/SettingsView+Streaming.swift),
+and the OAuth/scene wiring in
+[`apple/PocketDJ/PocketDJApp.swift`](../../apple/PocketDJ/PocketDJApp.swift).
+
+A **`StreamingProvider`** (the protocol) is an *account link*, not a URL: `login()` /
+`logout()` / `handleCallback(url:)` / `reconnectIfNeeded()` / `disconnect()` /
+`play/pause/resume`, with an observable `state: StreamingConnectionState`
+(`unavailable → loggedOut → authorizing → linked → connected`, or `failed`). Three
+concrete kinds exist (`StreamingProviderKind`: `appleMusic`, `spotify`, `youTube`).
+**`StreamingStore`** is the registry: it builds the default set
+`[AppleMusicProvider(), SpotifyProvider(), YouTubeProvider()]`, exposes
+`provider(_:)` / `hasAnyAvailable`, and routes incoming OAuth redirects + scene-phase
+lifecycle to whichever provider claims them. It's injected into the SwiftUI environment
+in `PocketDJApp` alongside the other stores.
+
+```
+ PocketDJApp
+   ├─ @State streaming = StreamingStore()  → .environment(streaming)
+   ├─ .onOpenURL { streaming.handleCallback($0) }      ← pocketdj://spotify-login-callback
+   └─ .onChange(scenePhase): active → onScenePhaseActive()    (reconnectIfNeeded — Spotify App Remote)
+                             background → onScenePhaseBackground()  (disconnect)
+
+ StreamingStore.providers : [any StreamingProvider]
+   ┌───────────────┬──────────────────┬───────────────────┐
+   │ AppleMusic    │ Spotify          │ YouTube           │
+   │ #if MusicKit  │ #if SpotifyiOS   │ search: Data API  │
+   │  AND flag YES │  + creds present │ play: #if YouTube-│
+   │               │  + Premium       │   iOSPlayerHelper │
+   └──────┬────────┴────────┬─────────┴─────────┬─────────┘
+          │   each real impl behind #if canImport(...), no-op #else stub
+          ▼
+ Settings ▸ "Streaming accounts"  (SettingsView+Streaming.swift)
+   one StreamingAccountRow per provider:
+     state.isLinked? → "Log out"   ·  available? → "Log in"   ·  else → "Not available"
+```
+
+**Reading the diagram.** `PocketDJApp` owns the single `StreamingStore`, feeds it the
+**OAuth redirect** (`.onOpenURL` — e.g. `pocketdj://spotify-login-callback` comes back
+here and `handleCallback` hands it to the owning provider), and ties **scene phase** to
+App-Remote lifecycle (Spotify must drop its connection when backgrounded, reconnect on
+active). Each provider's *real* implementation is compiled only behind `#if
+canImport(…)` of its SDK, with a no-op `#else` stub — so the default build links **no**
+third-party SDK and every provider reports `.unavailable`. Gating per provider:
+
+- **Apple Music** — `#if canImport(MusicKit)` **and** the build flag
+  `PocketDJAppleMusicEnabled == "YES"`. *This branch flips that flag ON*, so Apple Music
+  is the one provider wired live; `login()` shows the system `MusicAuthorization`
+  consent sheet (no web redirect) and playback is in-process via
+  `ApplicationMusicPlayer`. It still needs the **MusicKit App Service** enabled on the
+  App ID to run on a device.
+- **Spotify** — `#if canImport(SpotifyiOS)` + non-empty `SpotifyClientID` /
+  `SpotifyRedirectURL`; needs the SDK linked, a dashboard client, and a **Premium**
+  account. **Scaffolded — pending the SDK + credentials.**
+- **YouTube** — search gated on a Data-API key, playback on
+  `#if canImport(YouTubeiOSPlayerHelper)` (embedded `YTPlayerView`, never an extracted
+  stream). **Scaffolded — pending the key/helper.**
+
+The **Settings UI** (`SettingsView+Streaming.streamingSection`, header literal
+**"Streaming accounts"**) renders one `StreamingAccountRow` per provider — **Log in** /
+**Log out** by `state`, or **"Not available"** with a developer note — sitting *beside*
+the URL-catalog "Data sources." A linked streaming account is thus a fourth source kind,
+orthogonal to the vinyl / Apple-Music-(Local) URL catalogs (§2, Ch. 3) and to
+rip-on-demand (Ch. 5).
+
+Two further **seams** keep playback and search decoupled from the account link (each its
+own protocol so a provider can offer one without the others):
+`StreamingSearch` (free-text catalog search → `StreamingTrack`; YouTube via the Data
+API) and **`SongRecognizer`** (`resolve(_ song: IndexSong) async -> StreamingTrack?`) —
+the single, optional coupling point between recognition and streaming (next).
+
+### 5.2 ShazamKit — the "?♪?" recognizer
+
+**Source of truth:** [`apple/PocketDJ/Services/Shazam/`](../../apple/PocketDJ/Services/Shazam/)
+(`ShazamRecognizer.swift` state machine, `ShazamCatalogMatch.swift` pure matcher),
+[`apple/PocketDJ/Views/Shazam/`](../../apple/PocketDJ/Views/Shazam/) (`ShazamButton`,
+`ShazamResultSheet`); the button sits at the **top of the Browser list**
+([`BrowseView.swift`](../../apple/PocketDJ/Views/BrowseView.swift)).
+
+```
+ "?♪?" ShazamButton (top of Browser)
+   tap → ShazamRecognizer.start()      (#if canImport(ShazamKit); else stub → .failed)
+     │ ensureMicPermission() → .denied (mic.slash + shake → Settings) on refusal
+     ▼
+   SHManagedSession.results :  .listening → .recognizing → .match(SHMediaItem) | .noMatch
+     │ SHMediaItem → ShazamHitInfo {title,artist,artworkURL,appleMusicID}   (ShazamKit-free)
+     ▼
+   ShazamCatalogMatch.resolve(info, in: app.songs)    (PURE, unit-tested)
+     normalized title == AND artist-compatible
+       ┌──────────────────────────────┬───────────────────────────────┐
+       ▼ inCatalog(song,info)          ▼ notInCatalog(info)
+   ShazamResultSheet:                 "Not in your crate" + (appleMusicID?)
+   "In your crate" + Open song →       "A linked Apple Music account can play this."
+   NavigationLink(value: IndexSong)    → SongRecognizer bridge (5.1)
+```
+
+**Reading the diagram.** Tapping **"?♪?"** opens an `SHManagedSession` (which owns the
+mic tap + signature pipeline). The recognizer requests **mic permission itself** so a
+refusal is a clean `.denied` state (the button shakes, shows `mic.slash`, and deep-links
+to Settings) rather than a thrown error. A match's `SHMediaItem` is reduced to a
+**ShazamKit-free** `ShazamHitInfo` so the matching logic in
+**`ShazamCatalogMatch.resolve`** is **pure and unit-tested** — it normalizes title +
+artist (folding diacritics, dropping "(Remastered)"-style edition tails) and resolves
+against the in-memory catalog (`app.songs`). An **in-catalog** hit deep-links straight
+into the existing `SongDetailView` (the destination already registered in `RootView`);
+a **not-in-catalog** hit shows the recognized metadata and, when Shazam returned an
+`appleMusicID`, notes that a linked Apple Music account can play it — the **one bridge**
+from recognition into the streaming `SongRecognizer` seam (§5.1). With ShazamKit absent
+the whole path compiles to a stub that reports *"Recognition isn't available in this
+build."* — no crash.
+
+### 5.3 Bundle id, entitlements & Info.plist
+
+The native target's identity and capabilities changed to carry the above (all in
+[`apple/project.yml`](../../apple/project.yml) +
+[`apple/PocketDJ/PocketDJ.entitlements`](../../apple/PocketDJ/PocketDJ.entitlements);
+re-run `xcodegen generate` after edits):
+
+| Key | Value / file | Why |
+|---|---|---|
+| `PRODUCT_BUNDLE_IDENTIFIER` | **`com.levi.pocketdj`** (was `net.pocketdj.app`; tests `.tests`, UI `.uitests`) | the App ID the MusicKit/ShazamKit App Services + signing are provisioned against (team `EC27UF79GL`) |
+| `CODE_SIGN_ENTITLEMENTS` | `PocketDJ/PocketDJ.entitlements` | one file carrying `com.apple.developer.musickit` + `com.apple.developer.shazamkit`; enforced only when signing for a device/distribution |
+| `INFOPLIST_KEY_NSMicrophoneUsageDescription` | "PocketDJ listens to identify the song that's playing." | mic prompt for the "?♪?" ShazamKit listen |
+| `INFOPLIST_KEY_NSAppleMusicUsageDescription` | "PocketDJ uses Apple Music to play and search tracks from your subscription." | the MusicKit consent prompt |
+| `INFOPLIST_KEY_PocketDJAppleMusicEnabled` | **`"YES"`** (flipped on this branch) | build-time gate that wakes `AppleMusicProvider` (still needs the portal App Service to run on device) |
+| `UIBackgroundModes` | `[audio]` | background playback + lock-screen Now Playing for the inline player (Ch. 5 §7) |
+
+The **Spotify / YouTube OAuth redirect schemes** are *arrays* (`CFBundleURLTypes`,
+`LSApplicationQueriesSchemes`) and so can't be injected as scalar `INFOPLIST_KEY_*`
+values — `project.yml` keeps a **commented `info:` block** showing exactly what to paste
+(plus commented `SpotifyiOS` / `YouTubeiOSPlayerHelper` SPM packages) when a developer
+provisions those providers. Until then the default build links neither SDK and ships
+inert. See [`docs/streaming-integration.md`](../streaming-integration.md) for the
+end-to-end provisioning checklist.
 
 ---
 

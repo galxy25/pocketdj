@@ -175,6 +175,98 @@ where the audio lives (`key`), how it was made (`source`), the auto-seek
   vinyl rip by `pointer.startMs/endMs` (Ch. 2) into mix-ready files + metadata
   sidecars.
 
+---
+
+## 7. The native inline player — `PlayerEngine` · `PlayerClock` · TimelineView
+
+**Why.** The web client docks a single *mini-player* at the bottom. The native
+iOS/Mac app wanted the player **inline, right under the row you played** — on the
+Browser song list **and** an album's track table — so the playing track keeps its
+place in context. That means many potential player slots in a long, recycling list,
+and a position readout that ticks ~4×/s while sibling control buttons must stay
+tappable. The design that makes that work is small but load-bearing.
+
+**Source of truth:**
+[`apple/PocketDJ/Playback/PlayerEngine.swift`](../../apple/PocketDJ/Playback/PlayerEngine.swift),
+[`apple/PocketDJ/Views/CollectionSongRow.swift`](../../apple/PocketDJ/Views/CollectionSongRow.swift)
+(`RowTransport` · `InlinePlayerSlot` · `InlinePlayerPanel` · `InlinePlayerExpanded` ·
+`WaveformView`),
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
+(`nowPlaying` + `play()`),
+[`apple/PocketDJ/Views/AlbumDetailView.swift`](../../apple/PocketDJ/Views/AlbumDetailView.swift)
+(album-row transport + slot).
+
+```
+ row ▶ tap (RowTransport.doPlay)
+   │  isNowPlaying? ── yes ──▶ player.toggle()          (no re-rip)
+   ▼  no
+ let now = await rips.play(song, startMs:)   ── sets RipsStore.nowPlaying = NowPlaying{songId,url,live,startMs,title,artist,waveform}
+   │                                            (@discardableResult → returns the NowPlaying)
+   ▼
+ player.load(url:live:startMs:title:artist:)  ── the ONE-AND-ONLY engine load (the panel never loads it)
+   │
+   ▼
+ InlinePlayerSlot(songId)  ── shown only where rips.nowPlaying?.songId == songId
+   └─ InlinePlayerPanel
+        ├─ header: player-toggle · title/artist · player-chevron · player-close · ● live
+        └─ InlinePlayerExpanded            (own subview → isolates the 4×/s churn)
+             ├─ WaveformView (edge-to-edge, loaded once via URLSession)
+             └─ scrubber: TimelineView(.periodic 0.25s) SAMPLES player.clock.currentTime
+                          Slider(0...player.duration) → player.seek(to:) on edit-end
+```
+
+**Reading the diagram.** A row's **`RowTransport`** ▶ either toggles the engine (if
+this row is already now-playing) or starts a fresh play: it awaits
+**`RipsStore.play(song,startMs:)`**, which resolves the playable URL (cache hit, live
+HLS, or rip-then-play per §3), sets `RipsStore.nowPlaying`, and — now
+**`@discardableResult`** — *returns* that `NowPlaying`. The caller then calls
+**`player.load(...)` exactly once**, from this explicit tap. This single-owner rule is
+deliberate: the **panel never loads the engine**, because `InlinePlayerSlot` recycles
+inside the `LazyVStack` and a load in its lifecycle would auto-play on a re-render or
+stomp a user's pause. **`InlinePlayerSlot(songId:)`** renders the panel only where
+`rips.nowPlaying?.songId == songId`, so exactly one row in the whole list shows it.
+
+**`PlayerEngine`** ([`PlayerEngine.swift`](../../apple/PocketDJ/Playback/PlayerEngine.swift))
+is a thin `@MainActor @Observable` wrapper over one **`AVPlayer`** — which plays HLS
+(`.m3u8`) **and** mp3 natively, so no third-party HLS library is needed on Apple
+platforms. `load(url:live:startMs:…)` swaps the item; a non-live (analog) item seeks to
+`startMs` once it reports a usable duration; a live HLS item starts immediately and
+never seeks (no static duration). It also wires **`MPNowPlayingInfoCenter` +
+`MPRemoteCommandCenter`** so the lock screen / Control Center / AirPods / CarPlay drive
+play / pause / scrub, and configures the `.playback` audio session so audio continues
+in the background (the `UIBackgroundModes: [audio]` capability, Ch. 7).
+
+**The `PlayerClock` / TimelineView trick (the load-bearing part).** The playback
+position ticks ~4×/s (a `addPeriodicTimeObserver` at 0.25 s). If that tick lived on the
+`@Observable` engine, every update would invalidate the inline panel — re-laying-out
+its control buttons and **dropping in-flight clicks** on play/pause · chevron · ✕ (the
+"dead slide-out buttons" bug, proven by a UI-test toggle-count probe). So the fast
+position lives on a separate, **deliberately non-`@Observable`** `PlayerClock`
+(`engine.clock.currentTime`): reading it registers no Observation dependency, so a tick
+invalidates nothing. The scrubber instead **samples** the clock on a
+`TimelineView(.periodic(by: 0.25))` schedule — which redraws *its own* content without
+touching Observation — so the sibling buttons keep their identity. **Duration** *is*
+observable on the engine (it changes once per track and the slider's range must react).
+The same churn-isolation discipline drives three more choices in
+[`CollectionSongRow.swift`](../../apple/PocketDJ/Views/CollectionSongRow.swift):
+`InlinePlayerExpanded` is its own subview (so the tick re-renders only it, not the
+header buttons); `WaveformView` loads its PNG **once** via `URLSession` into one
+`@State` rather than using `AsyncImage` (whose phase churn dropped sibling clicks); and
+the panel border is drawn with **`.allowsHitTesting(false)`** so the shape overlay
+doesn't swallow taps to the controls beneath it. The waveform is a fixed-height,
+edge-to-edge `.background` so it lines up with the full-width scrubber and never
+resizes the panel. (For a **live** stream there's no scrubber — `InlinePlayerExpanded`
+shows a *"Streaming live as it rips"* state and a `● live` badge instead, since a live
+HLS playlist has no fixed length.)
+
+**Album rows reuse all of this.**
+[`AlbumDetailView.swift`](../../apple/PocketDJ/Views/AlbumDetailView.swift)'s `TrackRow`
+ends with the same `RowTransport`, and each track's `NavigationLink` is followed by an
+`InlinePlayerSlot(songId:)` — so the identical inline player appears below an album
+track, not just a browser row. **Download** (`RowTransport` ⤓) resolves the durable mp3
+(`rips.download`) and hands it to a cross-platform `ShareSheet`
+(`UIActivityViewController` on iOS, `NSSharingServicePicker` on macOS).
+
 ## Next
 
 → [Chapter 6 — Search & Discovery](./06-search-and-discovery.md)
