@@ -25,7 +25,7 @@ struct EditsFile: FileDocument {
 struct RippedAudioFile: FileDocument {
     /// `.mp3` when the system can resolve it, else `.mpeg4Audio`, else generic `.audio`.
     static let mp3Type: UTType =
-        UTType(filenameExtension: "mp3") ?? UTType.mpeg4Audio ?? .audio
+        UTType(filenameExtension: "mp3") ?? .mpeg4Audio
     static var readableContentTypes: [UTType] { [mp3Type] }
 
     var data: Data

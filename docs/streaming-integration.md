@@ -13,7 +13,7 @@ song playing in the room with **ShazamKit**:
 Everything below is **additive and behind feature flags**. The app **compiles and
 ships today without any of these configured** — every provider falls back to a
 no-op stub that reports "Not available" in Settings, and the "?♪?" button shows a
-"not available in this build" message if ShazamKit isn't entitled. This document
+"not available in this build" message if the ShazamKit framework isn't present. This document
 is the checklist of what **you, the developer/operator**, must configure to turn
 each one on.
 
@@ -40,8 +40,11 @@ These modules were added on the `native-streaming` branch:
 - `apple/PocketDJ/Views/SettingsView+Streaming.swift` — the **"Streaming accounts"**
   Settings section: one row per provider with a **Log in / Log out** button, or a
   "Not available" note when its SDK/creds are absent.
-- `apple/PocketDJ/PocketDJ.entitlements` — carries the MusicKit + ShazamKit
-  entitlements (wired via `CODE_SIGN_ENTITLEMENTS` in `project.yml`).
+- `apple/PocketDJ/PocketDJ.entitlements` — **intentionally empty** (`<dict></dict>`).
+  Neither MusicKit nor ShazamKit uses a `.entitlements` key; declaring
+  `com.apple.developer.musickit`/`shazamkit` is invalid and breaks device/distribution
+  signing. MusicKit is turned on by the **MusicKit App Service** on the App ID plus the
+  `NSAppleMusicUsageDescription` string; ShazamKit needs only `NSMicrophoneUsageDescription`.
 
 Feature gating, so the default build is inert:
 
@@ -51,27 +54,30 @@ Feature gating, so the default build is inert:
   `YouTubeAPIKey`); account-link on `canLink` (also `YouTubeOAuthClientID`).
   Embedded playback gated on `#if canImport(YouTubeiOSPlayerHelper)`.
 - **Apple Music** — `#if canImport(MusicKit)` **and** the build-time flag
-  `PocketDJAppleMusicEnabled == YES` (Info.plist). Off by default so
+  `PocketDJAppleMusicEnabled == YES` (set in the **base Info.plist**). Off by default so
   `MusicAuthorization.request()` is never called until you provision MusicKit.
-- **ShazamKit** — `#if canImport(ShazamKit)`; entitlement only enforced when
-  signing for a device.
+- **ShazamKit** — `#if canImport(ShazamKit)` only; no entitlement.
 
 ---
 
-## 1. Info.plist permissions + entitlements added in `apple/project.yml`
+## 1. Info.plist permissions in `apple/project.yml`
 
 The following were added to the `PocketDJ` target. **Active in every build:**
 
 | Key | Where | Why |
 | --- | --- | --- |
-| `INFOPLIST_KEY_NSMicrophoneUsageDescription` | `settings.base` | Mic prompt for the "?♪?" ShazamKit listen. Prompt only fires when you tap the button with ShazamKit entitled. |
+| `INFOPLIST_KEY_NSMicrophoneUsageDescription` | `settings.base` | Mic prompt for the "?♪?" ShazamKit listen. Prompt only fires when you tap the button (ShazamKit needs no entitlement). |
 | `INFOPLIST_KEY_NSAppleMusicUsageDescription` | `settings.base` | Apple Music prompt for MusicKit. Prompt only fires when Apple Music is enabled **and** the user taps Connect. |
-| `CODE_SIGN_ENTITLEMENTS: PocketDJ/PocketDJ.entitlements` | `settings.base` | Points the target at the entitlements file carrying `com.apple.developer.musickit` + `com.apple.developer.shazamkit`. Enforced only when signing for device/distribution. |
+| `PocketDJAppleMusicEnabled` | **base Info.plist** (`info:` `properties:` block, beside `UIBackgroundModes`) | Opt-in flag that wakes `AppleMusicProvider`. **Must** be a real Info.plist key — `INFOPLIST_KEY_PocketDJAppleMusicEnabled` silently no-ops because `INFOPLIST_KEY_*` only injects Apple's *known* keys, not custom ones. |
+
+> `apple/PocketDJ/PocketDJ.entitlements` is **empty** (`<dict></dict>`). MusicKit and
+> ShazamKit do **not** use a `.entitlements` key; MusicKit is enabled by the **App Service**
+> on the App ID (§2) + `NSAppleMusicUsageDescription`, ShazamKit by the framework +
+> `NSMicrophoneUsageDescription` alone. Declaring `com.apple.developer.musickit`/`shazamkit`
+> there is invalid and breaks device/distribution signing.
 
 **Commented placeholders** (activate per the steps below):
 
-- `INFOPLIST_KEY_PocketDJAppleMusicEnabled: "YES"` — flip on **after** enabling
-  MusicKit on the App ID to wake `AppleMusicProvider`.
 - A `CFBundleURLTypes` / `LSApplicationQueriesSchemes` block — the Spotify +
   YouTube **OAuth redirect schemes**. These are *arrays*, so they cannot be
   injected as scalar `INFOPLIST_KEY_*` values; the placeholder block in
@@ -86,33 +92,33 @@ cd apple && xcodegen generate
 
 ---
 
-## 2. Apple Developer portal — App ID capabilities (MusicKit + ShazamKit)
+## 2. Apple Developer portal — App ID capabilities (MusicKit only)
 
-Both are manual portal toggles; `-allowProvisioningUpdates` cannot self-provision
-App Services.
+The **MusicKit App Service** is a manual portal toggle; `-allowProvisioningUpdates`
+cannot self-provision App Services. **ShazamKit needs no App Service and no
+entitlement** for the public Shazam catalog — skip it.
 
 1. **developer.apple.com → Certificates, IDs & Profiles → Identifiers →
    `com.levi.pocketdj`.**
-2. Under **App Services / Capabilities**, enable:
-   - **MusicKit** — register the app's bundle id as a MusicKit app service.
-     (No key file is downloaded for the on-device MusicKit flow — the developer
-     token is minted automatically by the OS for an entitled app. A MusicKit
-     *private key* `.p8` is only needed if you build a **server**-side Apple Music
-     API; the in-app provider here does not.)
-   - **ShazamKit** — enable the ShazamKit app service. The **public** Shazam
-     catalog (what the "?♪?" button uses) needs no developer token; only a
+2. Under **App Services**, enable:
+   - **MusicKit** — turn on the MusicKit App Service for the bundle id. This is what
+     enables MusicKit; there is **no `.entitlements` key** for it. (No key file is
+     downloaded for the on-device flow — the developer token is minted automatically
+     by the OS. A MusicKit *private key* `.p8` is only needed for a **server**-side
+     Apple Music API; the in-app provider here does not.)
+   - **ShazamKit** — *not required.* The **public** Shazam catalog (what the "?♪?"
+     button uses) needs no App Service, no entitlement, and no developer token; only a
      *custom* catalog would.
-3. Regenerate / let Xcode refresh the **provisioning profile** so it carries both
-   entitlements. (`PocketDJ.entitlements` already declares the keys; the profile
-   must match for a device build.)
+3. Regenerate / let Xcode refresh the **provisioning profile** so it carries the
+   MusicKit service. (The entitlements file stays empty — the App Service, not an
+   entitlement key, is what the profile must match.)
 
 **Checklist**
 
-- [ ] MusicKit enabled on `com.levi.pocketdj`.
-- [ ] ShazamKit enabled on `com.levi.pocketdj`.
-- [ ] Provisioning profile regenerated with both.
-- [ ] In `project.yml`, uncomment `INFOPLIST_KEY_PocketDJAppleMusicEnabled: "YES"`,
-      then `xcodegen generate`.
+- [ ] MusicKit App Service enabled on `com.levi.pocketdj`.
+- [ ] Provisioning profile regenerated.
+- [ ] `PocketDJAppleMusicEnabled: YES` present in the **base Info.plist** (`info:`
+      `properties:` block in `project.yml`), then `xcodegen generate`.
 
 > **Simulator note:** entitlements are NOT enforced on the Simulator. The default
 > CI build (`CODE_SIGNING_ALLOWED=NO`) builds + runs without any of this. You only
@@ -222,8 +228,9 @@ pod but no credentials.
 
 ## 5. ShazamKit — the "?♪?" button
 
-- **Entitlement:** `com.apple.developer.shazamkit` (already in
-  `PocketDJ.entitlements`; enable ShazamKit on the App ID per step 2).
+- **No entitlement, no App Service:** the public Shazam catalog needs neither — the
+  framework ships with the OS and the recognizer is gated only on
+  `#if canImport(ShazamKit)`.
 - **Mic permission:** `NSMicrophoneUsageDescription` (already injected). The
   recognizer requests mic access itself and renders a clean **denied** state
   (shake + `mic.slash`) that links to Settings.
@@ -233,13 +240,14 @@ pod but no credentials.
   title+artist) → result sheet deep-links into the song if it's in your crate, or
   shows the recognized metadata (and notes a linked Apple Music account could play
   it) if not.
-- **Without the entitlement / framework:** the button compiles and shows
+- **Without the framework:** the button compiles and shows
   "Recognition isn't available in this build." — no crash.
 
 **Checklist**
 
-- [ ] ShazamKit enabled on `com.levi.pocketdj` (step 2).
-- [ ] (Automatic) mic usage string present — already in `project.yml`.
+- [ ] (Automatic) mic usage string present — already in `project.yml`. Nothing to
+      enable in the portal: no ShazamKit entitlement or App Service is needed for the
+      public catalog.
 
 ---
 
@@ -257,21 +265,22 @@ xcodebuild test -scheme PocketDJ \
   -only-testing:PocketDJTests
 ```
 
-Both succeed with **no** SDKs/credentials/entitlements provisioned — the streaming
-+ recognition modules are entirely behind `#if canImport`, `@available`, and the
-Info.plist feature flags.
+Both succeed with **no** SDKs/credentials/App Services provisioned (the entitlements
+file is empty) — the streaming + recognition modules are entirely behind
+`#if canImport`, `@available`, and the Info.plist feature flags.
 
 ---
 
 ## TL;DR — what YOU must configure, per source
 
-- **Apple Music:** portal → enable MusicKit on `com.levi.pocketdj`; set
-  `PocketDJAppleMusicEnabled = YES`. Needs an Apple Music subscription to play.
+- **Apple Music:** portal → enable the **MusicKit App Service** on `com.levi.pocketdj`
+  (no entitlement); set `PocketDJAppleMusicEnabled = YES` in the **base Info.plist**.
+  Needs an Apple Music subscription to play.
 - **Spotify:** dashboard → Client ID + redirect `pocketdj://spotify-login-callback`
   + Premium; link `SpotifyiOS`; fill `SpotifyClientID`/`SpotifyRedirectURL` +
   `CFBundleURLTypes`/`LSApplicationQueriesSchemes`.
 - **YouTube:** Google Cloud → enable Data API v3 + API key (`YouTubeAPIKey`);
   *(optional)* iOS OAuth client + reversed-id scheme; *(optional)*
   `youtube-ios-player-helper` for playback.
-- **ShazamKit:** portal → enable ShazamKit on `com.levi.pocketdj`. Mic string is
-  already wired.
+- **ShazamKit:** nothing to provision — no entitlement, no App Service for the public
+  catalog. Mic string is already wired.

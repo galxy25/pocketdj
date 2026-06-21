@@ -3,7 +3,8 @@
 These two providers use **system frameworks** (MusicKit, ShazamKit) — there is no
 third-party SDK to add and **no client secret / API key on device**. The default
 build compiles and runs with both features *dormant*; they light up only after the
-portal toggles + entitlement + Info.plist usage strings below exist.
+portal toggle (MusicKit only) + Info.plist usage strings below exist. **Neither uses a
+`.entitlements` key** — the entitlements file stays empty.
 
 ## What's in this module
 
@@ -23,22 +24,22 @@ portal toggles + entitlement + Info.plist usage strings below exist.
   `MusicAuthorization.request()` is **never** called (so a missing
   `NSAppleMusicUsageDescription` cannot crash the default build).
 - **Shazam**: the button renders always; `start()` only touches the mic at runtime,
-  where it needs the entitlement + `NSMicrophoneUsageDescription`.
+  where it needs `NSMicrophoneUsageDescription` (no entitlement).
 
 ## To actually enable (per developer / when provisioning)
 
 ### Apple Developer portal (team EC27UF79GL, App ID `com.levi.pocketdj`)
-1. Enable **MusicKit** App Service on the App ID.
-2. Enable **ShazamKit** App Service on the App ID.
-   (Both are manual toggles; `-allowProvisioningUpdates` mints the profile after.)
+1. Enable the **MusicKit** App Service on the App ID. This — **not** an entitlement key —
+   is what enables MusicKit. (Manual toggle; `-allowProvisioningUpdates` mints the
+   profile after.)
+2. **ShazamKit needs nothing here** — the public Shazam catalog requires no App Service
+   and no entitlement; the framework ships with the OS.
 
 ### Entitlements
-`PocketDJ/PocketDJ.entitlements` already carries both keys; wire once in
-`project.yml`:
-
-```yaml
-CODE_SIGN_ENTITLEMENTS: PocketDJ/PocketDJ.entitlements
-```
+`PocketDJ/PocketDJ.entitlements` is **intentionally empty** (`<dict></dict>`). Neither
+MusicKit nor ShazamKit uses a `.entitlements` key — declaring
+`com.apple.developer.musickit`/`shazamkit` is invalid and breaks device/distribution
+signing ("not found and could not be included in profile").
 
 ### Info.plist (project.yml)
 Scalar usage strings go in as `INFOPLIST_KEY_*` under `targets.PocketDJ.settings.base`:
@@ -46,11 +47,20 @@ Scalar usage strings go in as `INFOPLIST_KEY_*` under `targets.PocketDJ.settings
 ```yaml
 INFOPLIST_KEY_NSAppleMusicUsageDescription: "PocketDJ uses Apple Music to search and play tracks you own."
 INFOPLIST_KEY_NSMicrophoneUsageDescription: "PocketDJ listens briefly to identify the song that's playing."
-PocketDJAppleMusicEnabled: YES      # opt-in flag; remove/NO keeps Apple Music dormant
 ```
 
-`PocketDJAppleMusicEnabled` is a custom Info.plist key (not an `NS…` system key),
-so it can be added as a plain `INFOPLIST_KEY_PocketDJAppleMusicEnabled: YES` too.
+`PocketDJAppleMusicEnabled` (the opt-in flag) is a **custom** key, so it must go in the
+**base Info.plist** — the `info:` `properties:` block in `project.yml`, beside
+`UIBackgroundModes`:
+
+```yaml
+properties:
+  PocketDJAppleMusicEnabled: YES    # remove/NO keeps Apple Music dormant
+```
+
+⚠️ Do **not** use `INFOPLIST_KEY_PocketDJAppleMusicEnabled` — `INFOPLIST_KEY_*` only
+injects Apple's *known* keys, so a custom one silently no-ops (the "Apple Music not
+available" bug).
 
 ### Subscription
 On-demand catalog playback requires the device Apple ID to have an active

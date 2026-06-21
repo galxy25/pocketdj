@@ -76,14 +76,22 @@ final class StreamingProviderTests: XCTestCase {
 
     // MARK: Default registry
 
-    func testDefaultProvidersUnavailableWithoutSDK() {
-        // With no SDK/creds, the shipped providers are all unavailable.
+    func testProviderAvailabilityInDefaultBuild() {
         let store = StreamingStore()
-        XCTAssertFalse(store.hasAnyAvailable)
-        for p in store.providers {
+        // Spotify + YouTube need third-party SDKs/creds that aren't bundled → .unavailable.
+        for p in store.providers where p.kind != .appleMusic {
             if case .unavailable = p.state { continue }
-            XCTFail("\(p.kind) should be .unavailable in a credential-free build, got \(p.state)")
+            XCTFail("\(p.kind) should be .unavailable without its SDK, got \(p.state)")
         }
+        // Apple Music ships with MusicKit and is build-flag-enabled
+        // (PocketDJAppleMusicEnabled), so it is AVAILABLE — state .loggedOut until the
+        // user authorizes — NOT .unavailable.
+        guard let am = store.provider(.appleMusic) else { return XCTFail("no Apple Music provider") }
+        XCTAssertTrue(am.isAvailable, "Apple Music should be available with the build flag enabled")
+        if case .unavailable = am.state {
+            XCTFail("Apple Music must not be .unavailable when the build flag is enabled")
+        }
+        XCTAssertTrue(store.hasAnyAvailable, "Apple Music availability ⇒ hasAnyAvailable")
     }
 
     func testDefaultProvidersIncludeAppleMusic() {

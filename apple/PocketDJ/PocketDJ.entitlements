@@ -3,16 +3,14 @@
 <!--
   PocketDJ entitlements — intentionally EMPTY.
 
-  MusicKit and ShazamKit do NOT use a `.entitlements` file key. They are enabled by
-  turning on the matching App Service for the App ID (`com.levi.pocketdj`, team
-  EC27UF79GL) in the Apple Developer portal, together with the Info.plist usage
-  strings (NSAppleMusicUsageDescription for MusicKit, NSMicrophoneUsageDescription
-  for ShazamKit). Declaring `com.apple.developer.musickit` /
-  `com.apple.developer.shazamkit` here is NOT a valid provisionable entitlement and
-  breaks device/distribution signing ("not found and could not be included in
-  profile"). The MusicKit App Service + usage string are sufficient for
-  MusicAuthorization + ApplicationMusicPlayer; re-add real entitlements here only if
-  a future capability (push, app groups, …) genuinely needs one.
+  Neither MusicKit nor ShazamKit uses a `.entitlements` key:
+  • MusicKit — enabled by the MusicKit App Service on the App ID (`com.levi.pocketdj`,
+    team EC27UF79GL) + NSAppleMusicUsageDescription.
+  • ShazamKit — needs only NSMicrophoneUsageDescription + the framework (it ships with
+    the OS); the public Shazam catalog requires no entitlement.
+  Declaring `com.apple.developer.musickit` / `com.apple.developer.shazamkit` here is
+  invalid and breaks signing ("not found and could not be included in profile") — that
+  was the original build error. Add a key only if a future capability genuinely needs one.
 -->
 <plist version="1.0">
 <dict>
