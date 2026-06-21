@@ -85,21 +85,33 @@ matrix, and the macOS targeting note.
 
 ## macOS
 
-Gatekeeper kills the unsigned XCUITest runner ("damaged"), and CLI codesign can't
-reach the team key headlessly, so use the ad-hoc helper (build unsigned →
-`codesign --sign -` → `test-without-building`):
+Gatekeeper kills the unsigned XCUITest runner ("damaged"), so the runner **must be
+signed** — but a plain `xcodebuild test` also hangs (`The test runner hung before
+establishing connection`). Use the ad-hoc helper, which **ad-hoc signs** the app +
+runner (build unsigned → `codesign --sign -` → `test-without-building`):
 
 ```bash
 bash apple/scripts/test-macos.sh                 # full unit + UI suite on My Mac
+# scope it (forwarded to test-without-building):
+bash apple/scripts/test-macos.sh build-mactest \
+  -only-testing:PocketDJUITests/BrowseUITests -only-testing:PocketDJTests
 ```
 
-Once the Apple Development key is CLI-accessible (Keychain ▸ Allow all
-applications — see **apple-build**), you can instead run directly:
+Ad-hoc (`codesign --sign -`) is the right signing here, not a fallback: it needs **no
+provisioning profile and no device registration**. The "real cert" route
+(`-allowProvisioningUpdates`) does **not** work headlessly on this Mac — even with the
+Apple Development key CLI-accessible it fails with *"Device 'Levi's iMac' isn't
+registered in your developer account"* / *"No profiles for 'com.levi.pocketdj' were
+found"*. Fixing that means registering the iMac's UDID in the Developer portal and
+minting a Mac App Development profile — a portal action that buys nothing over ad-hoc
+for local testing. So: **sign ad-hoc; don't chase a provisioning profile.**
 
-```bash
-xcodebuild test -project PocketDJ.xcodeproj -scheme PocketDJ \
-  -destination 'platform=macOS' -derivedDataPath build-mac -allowProvisioningUpdates
-```
+**First-run permission (one-time, not a signing issue):** the very first ad-hoc UI run
+can fail with `Timed out while enabling automation mode` / `The test runner failed to
+initialize for UI testing`. That's the macOS **Automation/Accessibility (TCC)**
+permission for the test runner, *not* a signing problem — granting Automation to the
+runner once (and quitting any stale `PocketDJ` instance the script's `killall` missed)
+clears it permanently. Re-run; no signing change helps.
 
 ## Proof / debugging
 

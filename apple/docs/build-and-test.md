@@ -99,10 +99,19 @@ CLI gotchas and the workarounds in use:
 | `requires a development team / profile` | automatic signing + no team/cert | first build once in **Xcode.app** (My Mac) to mint the cert |
 | `errSecInternalComponent` on CodeSign | CLI codesign can't reach the key headlessly | sim: `CODE_SIGNING_ALLOWED=NO`; macOS: ad-hoc `codesign --sign -` / `scripts/test-macos.sh` |
 | `"PocketDJUITests-Runner is damaged"` | unsigned runner blocked by Gatekeeper | ad-hoc sign it (the script does) |
+| `The test runner hung before establishing connection` | plain `xcodebuild test` on macOS with an unsigned runner | go through `scripts/test-macos.sh` (ad-hoc signs, then `test-without-building`) — never a plain `xcodebuild test` for the macOS **UI** run |
+| `Timed out while enabling automation mode` / `runner failed to initialize for UI testing` | macOS Automation/Accessibility (TCC) permission not yet granted to the runner — **not** signing | grant Automation/Accessibility to the runner once (one-time per machine), quit any stale `PocketDJ`, re-run |
 
-To use the real cert from the CLI (`-allowProvisioningUpdates` instead of
-ad-hoc): Keychain Access ▸ **Apple Development** private key ▸ Get Info ▸ Access
-Control ▸ **Allow all applications**.
+**Sign the runner ad-hoc — don't chase a provisioning profile.** Ad-hoc
+(`codesign --force --deep --sign -`, which `scripts/test-macos.sh` does) needs no
+profile and no device registration, so it's the *correct* path here, not a fallback.
+The "real cert" route `-allowProvisioningUpdates` does **not** work headlessly on this
+Mac even with the **Apple Development** key CLI-accessible (Keychain ▸ that key ▸ Get
+Info ▸ Access Control ▸ **Allow all applications**): it fails with *"Device 'Levi's
+iMac' isn't registered in your developer account"* and *"No profiles for
+'com.levi.pocketdj' were found"*. Enabling it would mean registering the iMac's UDID in
+the Developer portal and minting a Mac App Development provisioning profile — a portal
+action that buys nothing over ad-hoc for local testing.
 
 ## Visual proof
 
