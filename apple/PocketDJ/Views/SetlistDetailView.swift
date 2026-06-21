@@ -193,11 +193,14 @@ struct SetlistDetailView: View {
         .accessibilityIdentifier("setlist-note-\(index)")
     }
 
+    // Provenance badge — shown only for non-default placements. An explicitly-placed
+    // track gets none (its explicit-LYRICS "E" already shows on the left of the row).
+    @ViewBuilder
     private func sourceBadge(_ source: TrackSource) -> some View {
         switch source {
-        case .explicit: return Badge("explicit", color: Theme.fgDim)
-        case .pocket:   return Badge("pocket", color: Theme.accent2)
-        case .autofill: return Badge("↔ bridge", color: Theme.accent)
+        case .explicit: EmptyView()
+        case .pocket:   Badge("pocket", color: Theme.accent2)
+        case .autofill: Badge("↔ bridge", color: Theme.accent)
         }
     }
 
