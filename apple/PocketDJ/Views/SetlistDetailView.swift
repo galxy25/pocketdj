@@ -44,6 +44,12 @@ struct SetlistDetailView: View {
                     Section {
                         ForEach(Array(setlist.tracks.enumerated()), id: \.offset) { idx, track in
                             trackRow(track, index: idx)
+                                .contextMenu {   // right-click on macOS, tap-and-hold on iOS
+                                    Button(role: .destructive) {
+                                        collections.removeSetlistTrack(setlistId: setlistId, at: idx)
+                                    } label: { Label("Delete from set list", systemImage: "trash") }
+                                    .accessibilityIdentifier("setlist-delete-\(idx)")
+                                }
                         }
                         .onMove { from, to in collections.moveSetlistTracks(setlistId: setlistId, from: from, to: to) }
                         .onDelete { offsets in
@@ -146,26 +152,31 @@ struct SetlistDetailView: View {
             }
             .accessibilityIdentifier("setlist-track-\(index)")
         } else {
-            HStack(alignment: .top, spacing: 8) {
-                Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim).frame(width: 22, alignment: .trailing)
-                SongThumbnail(album: album(for: track)).frame(width: 42, height: 42)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(track.artist) — \(track.name)").foregroundStyle(Theme.fg).lineLimit(2)
-                    HStack(spacing: 6) {
-                        if let bpm = track.bpm, bpm > 0 { Badge("\(Int(bpm.rounded())) BPM", color: Theme.accent) }
-                        if let cam = track.camelot, !cam.isEmpty { KeyChip(key: nil, camelot: cam) }
-                        sourceBadge(track.source)
-                        if let seq = track.sequenceName, !seq.isEmpty { Badge(seq, color: Theme.fgDim) }
-                    }
-                    noteButton(track, index: index)
+            // The SHARED song row, fed by the frozen snapshot, with the setlist-only
+            // bits — sequence # · source/sequence badges · per-track note — composed in.
+            let song = app.songsById[track.songId]
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                        .frame(width: 22, alignment: .trailing)
+                    SongRowView(
+                        data: SongRowData(track: track, song: song, album: album(for: track)),
+                        trailing: AnyView(provenanceBadges(track))
+                    )
                 }
-                Spacer(minLength: 4)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(Fmt.duration(track.shownMs)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
-                    TransportPlaceholders(songId: track.songId.isEmpty ? track.id : track.songId)
-                }
+                noteButton(track, index: index).padding(.leading, 30)
             }
             .accessibilityIdentifier("setlist-track-\(index)")
+        }
+    }
+
+    /// The setlist-only provenance column (source + chapter), shown inside the shared
+    /// row to the left of the transport placeholders.
+    @ViewBuilder
+    private func provenanceBadges(_ track: SetlistTrack) -> some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            sourceBadge(track.source)
+            if let seq = track.sequenceName, !seq.isEmpty { Badge(seq, color: Theme.fgDim) }
         }
     }
 

@@ -283,33 +283,21 @@ struct AlbumRow: View {
     }
 }
 
+/// Browser song row — the SHARED `SongRowView`, so it reads identically to the
+/// collection + setlist rows (now gaining a thumbnail, explicit badge, year, genre,
+/// BPM tiers, and the transport slot it previously lacked). No delete/reorder/notes here.
 struct SongRow: View {
+    @Environment(AppModel.self) private var app
     let song: IndexSong
-    let albumName: String
-    var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(song.name).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
-                    if song.explicit == true {
-                        Text("E").font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 3).padding(.vertical, 1)
-                            .background(Theme.fgDim.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
-                            .foregroundStyle(Theme.fg)
-                    }
-                }
-                Text("\(song.artist)\(albumName.isEmpty ? "" : " · \(albumName)")")
-                    .font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+    /// Accepted for source compatibility with the browser pipeline; the shared row
+    /// resolves the album (and thus year/genre/art) from the catalog itself.
+    var albumName: String = ""
 
-            Text(Fmt.bpm(song.bpm)).font(.callout.monospacedDigit()).foregroundStyle(Theme.fg)
-                .frame(width: 44, alignment: .trailing)
-            KeyChip(key: song.key, camelot: song.camelot).frame(width: 84, alignment: .leading)
-            Text(Fmt.duration(song.length)).font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
-                .frame(width: 46, alignment: .trailing)
-        }
-        .padding(.horizontal, 10).padding(.vertical, 9)
+    private var album: IndexAlbum? { song.albumId.flatMap { app.albumsById[$0] } }
+
+    var body: some View {
+        SongRowView(data: SongRowData(song: song, album: album))
+            .padding(.horizontal, 2)
     }
 }
 

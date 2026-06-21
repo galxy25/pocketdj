@@ -1,54 +1,61 @@
 import SwiftUI
 
-/// A rich, PWA-style song row for collection detail views (playlists, pockets,
-/// setlists, index playlists). The MUSIC INFO is the prominent middle cluster:
-///   • LEFT: album-art thumbnail (resolved via app.albumsById[song.albumId];
-///     graceful placeholder when the album is missing/unknown),
-///   • PRIMARY line: song title (+ explicit "E" badge),
-///   • SECONDARY line: "year · genre" (genre resolved from the song's album),
-///   • MIDDLE music cluster: BPM as tiered play-icons (+ numeric), a Camelot
-///     KeyChip (always populated — "U" box when unknown), and the song length,
-///   • RIGHT: ▶ play / ⤓ download VISUAL PLACEHOLDERS (the native app has no
-///     rip-on-demand client — see reserved seam below).
+/// The ONE shared, PWA-style song row used EVERYWHERE a song reads as a list row:
+/// the Browser song list, collection details (playlists / pockets / index playlists),
+/// and the frozen Setlist. Every surface gets the identical look + the identical info.
 ///
-/// This is presentation only — wrap it in a NavigationLink for tap-through to the
-/// song detail, and attach swipe/move/delete on the enclosing row.
-struct CollectionSongRow: View {
-    @Environment(AppModel.self) private var app
-    let song: IndexSong
-    /// Optional pre-resolved album name (avoids a second lookup when the caller has it).
-    var albumName: String?
-    /// Optional trailing accessory (e.g. a setlist source badge column) shown left of
-    /// the play/download buttons.
-    var trailingNote: String?
+/// Content, left → right:
+///   • LEFT: album-art thumbnail (resolved via `app.albumsById`; graceful music-note
+///     placeholder when the album is missing/unknown — e.g. a setlist snapshot whose
+///     catalog song is gone),
+///   • PRIMARY line: song title (+ explicit "E" badge),
+///   • SECONDARY line: "artist · year · genre" (size-gated — see below),
+///   • MIDDLE music cluster: BPM as tiered play-icons (+ numeric), a Camelot KeyChip
+///     (always populated — black-box "U" when unknown), and the length (`Fmt.duration`),
+///   • RIGHT: ▶ play / ⤓ download VISUAL PLACEHOLDERS (`TransportPlaceholders`) — the
+///     native app has no rip-on-demand client yet (reserved seam).
+///
+/// Responsive: on COMPACT width (iPhone) the year + genre are dropped from the
+/// secondary line to keep it uncluttered; on regular width (iPad) and macOS (where
+/// `horizontalSizeClass` is nil) they SHOW. Title, the music cluster, and transport
+/// are visible at every size.
+///
+/// Presentation only — wrap in a `NavigationLink` for tap-through and attach
+/// swipe / move / delete / notes / context-menus on the enclosing row.
+struct SongRowView: View {
+    @Environment(\.horizontalSizeClass) private var hSize
+    let data: SongRowData
+    /// Optional trailing accessory (e.g. a setlist source/sequence badge column) shown
+    /// to the left of the play/download buttons.
+    var trailing: AnyView?
 
-    private var album: IndexAlbum? { song.albumId.flatMap { app.albumsById[$0] } }
-    /// Genre resolves from the song's album (songs carry no genre of their own).
-    private var genre: String? {
-        let g = album?.genre?.trimmingCharacters(in: .whitespaces)
-        return (g?.isEmpty == false) ? g : nil
-    }
-    /// Year prefers the song's own year, falling back to the album's.
-    private var year: Int? { song.year ?? album?.year }
+    /// Show year/genre only when there's room: regular width (iPad) or macOS (nil).
+    private var showsExtra: Bool { hSize != .compact }
 
-    /// "year · genre" — the secondary descriptor line (em-dash when neither known).
+    /// Secondary descriptor — "artist · year · genre"; year/genre size-gated.
     private var descriptor: String {
-        [year.map(String.init), genre].compactMap { $0 }.joined(separator: " · ")
+        var parts: [String] = []
+        if !data.artist.isEmpty { parts.append(data.artist) }
+        if showsExtra {
+            if let y = data.year { parts.append(String(y)) }
+            if let g = data.genre, !g.isEmpty { parts.append(g) }
+        }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
         HStack(spacing: 10) {
-            thumbnail
-                .frame(width: 42, height: 42)
+            SongThumbnail(album: data.album).frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(song.name).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
-                    if song.explicit == true {
+                    Text(data.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                    if data.explicit {
                         Text("E").font(.system(size: 9, weight: .bold))
                             .padding(.horizontal, 3).padding(.vertical, 1)
                             .background(Theme.fgDim.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
                             .foregroundStyle(Theme.fg)
+                            .accessibilityIdentifier("explicit-badge")
                     }
                 }
                 Text(descriptor.isEmpty ? "—" : descriptor)
@@ -59,24 +66,89 @@ struct CollectionSongRow: View {
             // Middle music cluster: BPM tiers · KeyChip · length. The prominent
             // "what does this sound like" block, right-aligned ahead of transport.
             HStack(spacing: 8) {
-                BPMTier(bpm: song.bpm)
-                KeyChip(key: song.key, camelot: song.camelot)
-                Text(Fmt.duration(song.length))
+                BPMTier(bpm: data.bpm)
+                KeyChip(key: data.key, camelot: data.camelot)
+                Text(Fmt.duration(data.lengthMs))
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
 
-            if let trailingNote, !trailingNote.isEmpty {
-                Text(trailingNote).font(.caption2).foregroundStyle(Theme.fgDim)
-            }
+            if let trailing { trailing }
 
-            transportButtons
+            TransportPlaceholders(songId: data.songId)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
     }
+}
 
-    private var thumbnail: some View { SongThumbnail(album: album) }
-    private var transportButtons: some View { TransportPlaceholders(songId: song.id) }
+/// The primitives that feed `SongRowView`. Both `IndexSong` (browser / collections)
+/// and `SetlistTrack` (frozen setlist snapshot) project into this, so every surface
+/// renders identically. Genre / year / thumbnail resolve from the song's album.
+struct SongRowData {
+    var songId: String
+    var title: String
+    var artist: String
+    var year: Int?
+    var genre: String?
+    var bpm: Double?
+    var key: String?
+    var camelot: String?
+    var lengthMs: Int?
+    var explicit: Bool
+    /// The album behind the song (for cover art + genre/year fallback); nil → placeholder.
+    var album: IndexAlbum?
+
+    /// Project a catalog song. Pass the song's resolved album for art + genre/year.
+    /// Year prefers the song's own value, falling back to the album's.
+    init(song: IndexSong, album: IndexAlbum?) {
+        self.songId = song.id
+        self.title = song.name
+        self.artist = song.artist
+        self.year = song.year ?? album?.year
+        self.genre = Self.cleanGenre(album?.genre)
+        self.bpm = song.bpm
+        self.key = song.key
+        self.camelot = song.camelot
+        self.lengthMs = song.length
+        self.explicit = song.explicit == true
+        self.album = album
+    }
+
+    /// Project a frozen setlist track (its snapshot) — resolve year/genre/art from the
+    /// live catalog album when the backing song still exists, else fall back to the snapshot.
+    init(track: SetlistTrack, song: IndexSong?, album: IndexAlbum?) {
+        self.songId = track.songId.isEmpty ? track.id : track.songId
+        self.title = track.name
+        self.artist = track.artist
+        self.year = song?.year ?? album?.year
+        self.genre = Self.cleanGenre(album?.genre)
+        self.bpm = track.bpm
+        self.key = nil                 // snapshot carries camelot only
+        self.camelot = track.camelot
+        self.lengthMs = track.shownMs
+        self.explicit = song?.explicit == true
+        self.album = album
+    }
+
+    private static func cleanGenre(_ g: String?) -> String? {
+        let t = g?.trimmingCharacters(in: .whitespaces)
+        return (t?.isEmpty == false) ? t : nil
+    }
+}
+
+/// Convenience: the shared row driven straight from an `IndexSong`, resolving the
+/// album from the environment's catalog. Used by the Browser + collection details.
+struct CollectionSongRow: View {
+    @Environment(AppModel.self) private var app
+    let song: IndexSong
+    /// Optional trailing accessory shown left of the transport buttons.
+    var trailing: AnyView?
+
+    private var album: IndexAlbum? { song.albumId.flatMap { app.albumsById[$0] } }
+
+    var body: some View {
+        SongRowView(data: SongRowData(song: song, album: album), trailing: trailing)
+    }
 }
 
 /// BPM rendered as 1–4 `play.fill` icons (tempo tiers) plus the small numeric BPM.
