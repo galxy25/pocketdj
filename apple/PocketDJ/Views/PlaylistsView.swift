@@ -11,6 +11,9 @@ struct PlaylistsView: View {
     @State private var newName = ""
     @State private var showNew = false
     @State private var showImporter = false
+    @State private var renamingId: String?
+    @State private var nameDraft = ""
+    @State private var deletingId: String?
 
     private var indexPlaylists: [SourcePlaylist] { app.indexPlaylists }
 
@@ -73,6 +76,12 @@ struct PlaylistsView: View {
                                 }
                             }
                             .accessibilityIdentifier("playlist-\(pl.id)")
+                            .contextMenu {
+                                Button { nameDraft = pl.name; renamingId = pl.id } label: { Label("Rename", systemImage: "pencil") }
+                                    .accessibilityIdentifier("list-rename-\(pl.id)")
+                                Button(role: .destructive) { deletingId = pl.id } label: { Label("Delete", systemImage: "trash") }
+                                    .accessibilityIdentifier("list-delete-\(pl.id)")
+                            }
                         }
                         .onDelete { idx in idx.map { collections.playlists[$0].id }.forEach(collections.deletePlaylist) }
                     }
@@ -96,6 +105,20 @@ struct PlaylistsView: View {
             TextField("Name", text: $newName)
             Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPlaylist(n) }; newName = "" }
             Button("Cancel", role: .cancel) { newName = "" }
+        }
+        .alert("Rename playlist", isPresented: Binding(get: { renamingId != nil }, set: { if !$0 { renamingId = nil } })) {
+            TextField("Name", text: $nameDraft)
+            Button("Save") {
+                if let id = renamingId { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePlaylist(id, n) } }
+                renamingId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingId = nil }
+        }
+        .confirmationDialog("Delete this playlist?", isPresented: Binding(get: { deletingId != nil }, set: { if !$0 { deletingId = nil } }), titleVisibility: .visible) {
+            Button("Delete playlist", role: .destructive) { if let id = deletingId { collections.deletePlaylist(id) }; deletingId = nil }
+            Button("Cancel", role: .cancel) { deletingId = nil }
+        } message: {
+            Text("This also deletes its set lists. This can’t be undone.")
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .zip]) { result in
             guard case .success(let url) = result else { return }
@@ -164,6 +187,9 @@ struct PlaylistDetailView: View {
     @State private var confirmingDelete = false
     @State private var showExporter = false
     @State private var exportDoc = PlaylistZipFile(data: Data())
+    @State private var renamingSetlistId: String?
+    @State private var setlistNameDraft = ""
+    @State private var deletingSetlistId: String?
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
@@ -182,76 +208,13 @@ struct PlaylistDetailView: View {
                     .accessibilityIdentifier("playlist-stats")
                 }
                 ForEach(playlist.sequences) { seq in
-                    Section {
-                        let children = seq.children ?? []
-                        if children.isEmpty {
-                            Text("Empty chapter — add items from a song/album ▸ Add to…")
-                                .font(.caption).foregroundStyle(Theme.fgDim)
-                        }
-                        ForEach(Array(children.enumerated()), id: \.element.nodeId) { idx, node in
-                            nodeRow(node)
-                                .swipeActions(edge: .trailing) {
-                                    Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
-                                }
-                                .swipeActions(edge: .leading) {
-                                    Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Up", systemImage: "arrow.up") }
-                                        .tint(Theme.accent)
-                                        .disabled(idx == 0)
-                                    Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Down", systemImage: "arrow.down") }
-                                        .tint(Theme.accent2)
-                                        .disabled(idx == children.count - 1)
-                                }
-                                .contextMenu {
-                                    Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Move up", systemImage: "arrow.up") }
-                                        .accessibilityIdentifier("move-up-\(node.nodeId)")
-                                        .disabled(idx == 0)
-                                    Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Move down", systemImage: "arrow.down") }
-                                        .accessibilityIdentifier("move-down-\(node.nodeId)")
-                                        .disabled(idx == children.count - 1)
-                                    Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
-                                }
-                        }
-                        .onMove { from, to in
-                            collections.moveNodes(inPlaylist: playlistId, sequenceId: seq.nodeId, from: from, to: to)
-                        }
-                        .onDelete { offsets in
-                            offsets.map { children[$0].nodeId }.forEach { collections.removeNode($0, fromPlaylist: playlistId) }
-                        }
-                        Button { renamingChapter = seq.nodeId; chapterDraft = seq.name ?? "" } label: {
-                            Label("Rename chapter", systemImage: "pencil").font(.caption)
-                        }
-                        .accessibilityIdentifier("rename-chapter")
-                        if playlist.sequences.count > 1 {
-                            Button("Delete chapter", role: .destructive) { collections.removeSequence(seq.nodeId, fromPlaylist: playlistId) }
-                                .font(.caption)
-                        }
-                    } header: {
-                        HStack {
-                            Text(seq.name ?? "Chapter")
-                            Spacer()
-                            Text(collections.catalog().stats(forChapter: seq).summary)
-                                .foregroundStyle(Theme.fgDim)
-                        }
-                        .accessibilityIdentifier("chapter-stats-\(seq.nodeId)")
-                    }
+                    chapterSection(seq, chapterCount: playlist.sequences.count)
                 }
                 .onMove { from, to in collections.moveSequences(inPlaylist: playlistId, from: from, to: to) }
 
                 if !setlists.isEmpty {
                     Section("Set lists") {
-                        ForEach(setlists) { sl in
-                            NavigationLink(value: sl) {
-                                HStack {
-                                    Image(systemName: "waveform").foregroundStyle(Theme.accent2)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(sl.name ?? "Set list").foregroundStyle(Theme.fg)
-                                        Text("\(sl.tracks.count) track\(sl.tracks.count == 1 ? "" : "s") · \(Fmt.duration(sl.totalMs))")
-                                            .font(.caption).foregroundStyle(Theme.fgDim)
-                                    }
-                                }
-                            }
-                            .accessibilityIdentifier("setlist-\(sl.id)")
-                        }
+                        ForEach(setlists) { sl in setlistRow(sl) }
                         .onDelete { idx in idx.map { setlists[$0].id }.forEach(collections.deleteSetlist) }
                     }
                 }
@@ -321,6 +284,18 @@ struct PlaylistDetailView: View {
         } message: {
             Text("This also deletes its set lists. This can’t be undone.")
         }
+        .alert("Rename set list", isPresented: Binding(get: { renamingSetlistId != nil }, set: { if !$0 { renamingSetlistId = nil } })) {
+            TextField("Name", text: $setlistNameDraft)
+            Button("Save") {
+                if let id = renamingSetlistId { let n = setlistNameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renameSetlist(id, n) } }
+                renamingSetlistId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingSetlistId = nil }
+        }
+        .confirmationDialog("Delete this set list?", isPresented: Binding(get: { deletingSetlistId != nil }, set: { if !$0 { deletingSetlistId = nil } }), titleVisibility: .visible) {
+            Button("Delete set list", role: .destructive) { if let id = deletingSetlistId { collections.deleteSetlist(id) }; deletingSetlistId = nil }
+            Button("Cancel", role: .cancel) { deletingSetlistId = nil }
+        }
         .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
                       defaultFilename: exportFilename) { _ in }
     }
@@ -342,6 +317,81 @@ struct PlaylistDetailView: View {
     private func export() {
         if let data = try? collections.exportPlaylistZip(playlistId) {
             exportDoc = PlaylistZipFile(data: data); showExporter = true
+        }
+    }
+
+    @ViewBuilder private func chapterSection(_ seq: PlaylistNode, chapterCount: Int) -> some View {
+        let children = seq.children ?? []
+        Section {
+            if children.isEmpty {
+                Text("Empty chapter — add items from a song/album ▸ Add to…")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            ForEach(Array(children.enumerated()), id: \.element.nodeId) { idx, node in
+                nodeRow(node)
+                    .swipeActions(edge: .trailing) {
+                        Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
+                    }
+                    .swipeActions(edge: .leading) {
+                        Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Up", systemImage: "arrow.up") }
+                            .tint(Theme.accent)
+                            .disabled(idx == 0)
+                        Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Down", systemImage: "arrow.down") }
+                            .tint(Theme.accent2)
+                            .disabled(idx == children.count - 1)
+                    }
+                    .contextMenu {
+                        Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Move up", systemImage: "arrow.up") }
+                            .accessibilityIdentifier("move-up-\(node.nodeId)")
+                            .disabled(idx == 0)
+                        Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Move down", systemImage: "arrow.down") }
+                            .accessibilityIdentifier("move-down-\(node.nodeId)")
+                            .disabled(idx == children.count - 1)
+                        Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
+                    }
+            }
+            .onMove { from, to in
+                collections.moveNodes(inPlaylist: playlistId, sequenceId: seq.nodeId, from: from, to: to)
+            }
+            .onDelete { offsets in
+                offsets.map { children[$0].nodeId }.forEach { collections.removeNode($0, fromPlaylist: playlistId) }
+            }
+            Button { renamingChapter = seq.nodeId; chapterDraft = seq.name ?? "" } label: {
+                Label("Rename chapter", systemImage: "pencil").font(.caption)
+            }
+            .accessibilityIdentifier("rename-chapter")
+            if chapterCount > 1 {
+                Button("Delete chapter", role: .destructive) { collections.removeSequence(seq.nodeId, fromPlaylist: playlistId) }
+                    .font(.caption)
+            }
+        } header: {
+            HStack {
+                Text(seq.name ?? "Chapter")
+                Spacer()
+                Text(collections.catalog().stats(forChapter: seq).summary)
+                    .foregroundStyle(Theme.fgDim)
+            }
+            .accessibilityIdentifier("chapter-stats-\(seq.nodeId)")
+        }
+    }
+
+    @ViewBuilder private func setlistRow(_ sl: Setlist) -> some View {
+        NavigationLink(value: sl) {
+            HStack {
+                Image(systemName: "waveform").foregroundStyle(Theme.accent2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(sl.name ?? "Set list").foregroundStyle(Theme.fg)
+                    Text("\(sl.tracks.count) track\(sl.tracks.count == 1 ? "" : "s") · \(Fmt.duration(sl.totalMs))")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+            }
+        }
+        .accessibilityIdentifier("setlist-\(sl.id)")
+        .contextMenu {
+            Button { setlistNameDraft = sl.name ?? ""; renamingSetlistId = sl.id } label: { Label("Rename", systemImage: "pencil") }
+                .accessibilityIdentifier("list-rename-\(sl.id)")
+            Button(role: .destructive) { deletingSetlistId = sl.id } label: { Label("Delete", systemImage: "trash") }
+                .accessibilityIdentifier("list-delete-\(sl.id)")
         }
     }
 

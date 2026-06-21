@@ -65,6 +65,36 @@ final class PocketsUITests: XCTestCase {
         confirm.tap()
         XCTAssertTrue(app.buttons["new-pocket"].waitForExistence(timeout: 5))
     }
+
+    /// List-level context menu (tap-and-hold a row) → Rename, without opening the pocket.
+    func testListContextMenuRenamePocket() {
+        let app = launch()
+        XCTAssertTrue(app.buttons["new-pocket"].waitForExistence(timeout: 15))
+        app.buttons["new-pocket"].tap()
+
+        let nameField = app.textFields.firstMatch
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5))
+        nameField.tap(); nameField.typeText("Groove")
+        app.alerts.buttons["Create"].tap()
+
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'pocket-pkt_'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+
+        // Tap-and-hold to open the row context menu, then tap Rename (id list-rename-<id>).
+        row.press(forDuration: 1.2)
+        let rename = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'list-rename-pkt_'")).firstMatch
+        XCTAssertTrue(rename.waitForExistence(timeout: 5))
+        rename.tap()
+
+        let renameField = app.textFields.firstMatch
+        XCTAssertTrue(renameField.waitForExistence(timeout: 5))
+        renameField.tap(); renameField.typeText(" Box")
+        app.alerts.buttons["Save"].tap()
+
+        // The renamed pocket row is still in the list (we never navigated in).
+        XCTAssertTrue(app.staticTexts["Groove Box"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["new-pocket"].exists)
+    }
     #endif
 }
 

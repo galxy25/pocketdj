@@ -18,7 +18,15 @@ struct KeyChip: View {
             }
             .accessibilityIdentifier("keychip-\(camelot)")
         } else {
-            Text("–").foregroundStyle(Theme.fgDim)
+            // Unknown key → a black box with a white "U", so the key cell ALWAYS
+            // populates (instead of rendering blank/empty for missing camelot data).
+            Text("U")
+                .font(.caption.weight(.bold).monospacedDigit())
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Color.black, in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+                .foregroundStyle(.white)
+                .accessibilityIdentifier("keychip-unknown")
         }
     }
 

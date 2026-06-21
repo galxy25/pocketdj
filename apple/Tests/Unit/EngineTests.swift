@@ -65,6 +65,30 @@ final class FormatTests: XCTestCase {
     }
 }
 
+final class BPMTierTests: XCTestCase {
+    func testTierBuckets() {
+        XCTAssertEqual(BPMTier.tier(60), 1)    // slow
+        XCTAssertEqual(BPMTier.tier(89), 1)
+        XCTAssertEqual(BPMTier.tier(95), 2)    // medium
+        XCTAssertEqual(BPMTier.tier(119), 2)
+        XCTAssertEqual(BPMTier.tier(128), 3)   // fast
+        XCTAssertEqual(BPMTier.tier(159), 3)
+        XCTAssertEqual(BPMTier.tier(174), 4)   // hyper
+        XCTAssertEqual(BPMTier.tier(399), 4)
+    }
+    func testTierBoundariesAreLowerInclusive() {
+        // Each boundary belongs to the HIGHER tier (upper bound exclusive).
+        XCTAssertEqual(BPMTier.tier(90), 2)
+        XCTAssertEqual(BPMTier.tier(120), 3)
+        XCTAssertEqual(BPMTier.tier(160), 4)
+    }
+    func testTierNilAndZero() {
+        XCTAssertNil(BPMTier.tier(nil))
+        XCTAssertNil(BPMTier.tier(0))
+        XCTAssertNil(BPMTier.tier(-5))
+    }
+}
+
 final class FilterEngineTests: XCTestCase {
     func testGenreEqualsOnAlbums() throws {
         let items = try TestData.albumItems()

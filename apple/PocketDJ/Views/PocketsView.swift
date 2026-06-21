@@ -1,12 +1,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Pockets — reusable, nestable groupings of harmonically-similar items.
+/// Pockets — reusable, nestable groupings of items that sound good together.
 struct PocketsView: View {
     @Environment(CollectionsStore.self) private var collections
     @State private var newName = ""
     @State private var showNew = false
     @State private var showImporter = false
+    @State private var renamingId: String?
+    @State private var nameDraft = ""
+    @State private var deletingId: String?
 
     var body: some View {
         Group {
@@ -14,7 +17,7 @@ struct PocketsView: View {
                 ContentUnavailableView {
                     Label("No pockets yet", systemImage: "rectangle.stack")
                 } description: {
-                    Text("Pockets group harmonically-similar songs & albums you can drop into playlists. Add items from a song or album.")
+                    Text("A pocket is a collection of items that sound good together — songs, albums, even poetry or cues — that you can drop into playlists. Add items from a song or album.")
                 } actions: {
                     Button("New Pocket") { showNew = true }.buttonStyle(.borderedProminent)
                 }
@@ -33,6 +36,12 @@ struct PocketsView: View {
                             }
                         }
                         .accessibilityIdentifier("pocket-\(pocket.id)")
+                        .contextMenu {
+                            Button { nameDraft = pocket.name; renamingId = pocket.id } label: { Label("Rename", systemImage: "pencil") }
+                                .accessibilityIdentifier("list-rename-\(pocket.id)")
+                            Button(role: .destructive) { deletingId = pocket.id } label: { Label("Delete", systemImage: "trash") }
+                                .accessibilityIdentifier("list-delete-\(pocket.id)")
+                        }
                     }
                     .onDelete { idx in idx.map { collections.pockets[$0].id }.forEach(collections.deletePocket) }
                 }
@@ -55,6 +64,20 @@ struct PocketsView: View {
             TextField("Name", text: $newName)
             Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPocket(n) }; newName = "" }
             Button("Cancel", role: .cancel) { newName = "" }
+        }
+        .alert("Rename pocket", isPresented: Binding(get: { renamingId != nil }, set: { if !$0 { renamingId = nil } })) {
+            TextField("Name", text: $nameDraft)
+            Button("Save") {
+                if let id = renamingId { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePocket(id, n) } }
+                renamingId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingId = nil }
+        }
+        .confirmationDialog("Delete this pocket?", isPresented: Binding(get: { deletingId != nil }, set: { if !$0 { deletingId = nil } }), titleVisibility: .visible) {
+            Button("Delete pocket", role: .destructive) { if let id = deletingId { collections.deletePocket(id) }; deletingId = nil }
+            Button("Cancel", role: .cancel) { deletingId = nil }
+        } message: {
+            Text("Removes the pocket and unnests it from any parent. Its items aren’t deleted. This can’t be undone.")
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .zip]) { result in
             guard case .success(let url) = result else { return }
