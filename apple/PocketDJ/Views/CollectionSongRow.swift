@@ -99,6 +99,11 @@ struct InlinePlayerSlot: View {
         Group {
             if isNowPlaying {
                 InlinePlayerPanel()
+                    // Stable identity so the LazyVStack doesn't tear down + rebuild the
+                    // panel as the list re-renders (search churn / row recycling). A
+                    // recreated panel loses in-flight button hit-testing on macOS, which
+                    // is what made play/pause · ✕ · chevron feel dead.
+                    .id(songId)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -350,7 +355,15 @@ struct RowTransport: View {
         if isNowPlaying { player.toggle(); return }
         busy = .play
         Task {
-            do { try await rips.play(song, startMs: startMs) }
+            do {
+                // Resolve the playable URL + arm the inline panel, then load the engine
+                // EXACTLY ONCE — here, from this explicit tap. The panel itself never
+                // loads the engine (it recycles in the LazyVStack), so this can't
+                // auto-play on a re-render or override the user's pause.
+                let now = try await rips.play(song, startMs: startMs)
+                player.load(url: now.url, live: now.live, startMs: now.startMs,
+                            title: now.title, artist: now.artist)
+            }
             catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
             busy = nil
         }
@@ -436,8 +449,6 @@ struct InlinePlayerPanel: View {
             .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
             .padding(.vertical, 4)
             .accessibilityIdentifier("inline-player")
-            .onAppear { syncEngine(now) }
-            .onChange(of: now.url) { syncEngine(now) }
         }
     }
 
@@ -446,8 +457,9 @@ struct InlinePlayerPanel: View {
         HStack(spacing: 10) {
             Button { player.toggle() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.body)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless).foregroundStyle(Theme.accent)
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
             .accessibilityIdentifier("player-toggle")
 
             VStack(alignment: .leading, spacing: 1) {
@@ -461,14 +473,16 @@ struct InlinePlayerPanel: View {
             }
             Button { withAnimation(.easeInOut(duration: 0.2)) { collapsed.toggle() } } label: {
                 Image(systemName: collapsed ? "chevron.up" : "chevron.down").font(.caption)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless).foregroundStyle(Theme.fgDim)
+            .buttonStyle(.plain).foregroundStyle(Theme.fgDim)
             .accessibilityIdentifier("player-chevron")
 
             Button { player.stop(); rips.setNowPlaying(nil) } label: {
                 Image(systemName: "xmark").font(.caption)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless).foregroundStyle(Theme.fgDim)
+            .buttonStyle(.plain).foregroundStyle(Theme.fgDim)
             .accessibilityIdentifier("player-close")
         }
     }
@@ -516,12 +530,6 @@ struct InlinePlayerPanel: View {
             Text(Self.clock(player.duration))
                 .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
         }
-    }
-
-    /// Point the engine at the now-playing URL (idempotent per URL via onChange).
-    private func syncEngine(_ now: RipsStore.NowPlaying) {
-        player.load(url: now.url, live: now.live, startMs: now.startMs,
-                    title: now.title, artist: now.artist)
     }
 
     static func clock(_ s: Double) -> String {

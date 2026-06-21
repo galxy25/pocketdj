@@ -236,15 +236,22 @@ final class RipsStore {
     // MARK: Play / Download
 
     /// Resolve a song and arm the inline player (cached → S3 mp3; else live HLS).
-    func play(_ song: (id: String, title: String, artist: String), startMs: Int? = nil) async throws {
+    /// Returns the resolved `NowPlaying` handoff so the caller can load the shared
+    /// `PlayerEngine` directly off this single explicit play — the inline panel must
+    /// NOT load the engine in its lifecycle (it recycles in the LazyVStack and would
+    /// auto-play / fight a user pause). The caller owns the one-and-only `player.load`.
+    @discardableResult
+    func play(_ song: (id: String, title: String, artist: String), startMs: Int? = nil) async throws -> NowPlaying {
         let url = try await ensureURL(song.id, allowLive: true)
         let live = url.absoluteString.contains("/hls/")
         let entry = manifest[song.id]
         let resolvedStart = live ? nil : (startMs ?? entry?.startMs)
-        nowPlaying = NowPlaying(
+        let np = NowPlaying(
             songId: song.id, title: song.title, artist: song.artist, url: url, live: live,
             startMs: resolvedStart,
             waveform: live ? nil : Self.waveformURL(for: entry, ripsBase: ripsBase))
+        nowPlaying = np
+        return np
     }
 
     /// Resolve a song to its durable mp3 and write it to a file the user can keep
