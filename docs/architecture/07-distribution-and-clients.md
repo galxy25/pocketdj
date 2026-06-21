@@ -437,10 +437,10 @@ re-run `xcodegen generate` after edits):
 | Key | Value / file | Why |
 |---|---|---|
 | `PRODUCT_BUNDLE_IDENTIFIER` | **`com.levi.pocketdj`** (was `net.pocketdj.app`; tests `.tests`, UI `.uitests`) | the App ID the MusicKit/ShazamKit App Services + signing are provisioned against (team `EC27UF79GL`) |
-| `CODE_SIGN_ENTITLEMENTS` | `PocketDJ/PocketDJ.entitlements` | one file carrying `com.apple.developer.musickit` + `com.apple.developer.shazamkit`; enforced only when signing for a device/distribution |
+| `CODE_SIGN_ENTITLEMENTS` | `PocketDJ/PocketDJ.entitlements` (**empty** — `<dict></dict>`) | MusicKit and ShazamKit use **no** `.entitlements` key; declaring `com.apple.developer.musickit`/`shazamkit` is invalid and breaks signing. MusicKit is enabled by the **MusicKit App Service** on the App ID; ShazamKit by the framework + mic string alone |
 | `INFOPLIST_KEY_NSMicrophoneUsageDescription` | "PocketDJ listens to identify the song that's playing." | mic prompt for the "?♪?" ShazamKit listen |
 | `INFOPLIST_KEY_NSAppleMusicUsageDescription` | "PocketDJ uses Apple Music to play and search tracks from your subscription." | the MusicKit consent prompt |
-| `INFOPLIST_KEY_PocketDJAppleMusicEnabled` | **`"YES"`** (flipped on this branch) | build-time gate that wakes `AppleMusicProvider` (still needs the portal App Service to run on device) |
+| `PocketDJAppleMusicEnabled` (in the **base Info.plist**, not `INFOPLIST_KEY_*`) | **`YES`** | build-time gate that wakes `AppleMusicProvider` (still needs the portal MusicKit App Service to run on device). Must be a real Info.plist key — `INFOPLIST_KEY_PocketDJAppleMusicEnabled` no-ops because `INFOPLIST_KEY_*` only injects Apple's *known* keys |
 | `UIBackgroundModes` | `[audio]` | background playback + lock-screen Now Playing for the inline player (Ch. 5 §7) |
 
 The **Spotify / YouTube OAuth redirect schemes** are *arrays* (`CFBundleURLTypes`,

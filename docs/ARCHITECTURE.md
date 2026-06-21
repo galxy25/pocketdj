@@ -111,8 +111,9 @@ contract**. Honest status:
   room back to the crate (Ch. 7 §5). All of it is **additive and ships inert** behind
   `#if canImport` + feature flags. **Live vs scaffolded:** **Apple Music** is wired on
   (`PocketDJAppleMusicEnabled = YES`; system MusicKit consent, in-process playback —
-  needs the App-ID MusicKit service to run on device) and **ShazamKit** uses the public
-  catalog (entitlement-only); **Spotify** and **YouTube** are **scaffolded — pending an
+  needs the App-ID MusicKit App Service — no entitlement — to run on device) and
+  **ShazamKit** uses the public catalog (no entitlement, no App Service; just the
+  framework + mic string); **Spotify** and **YouTube** are **scaffolded — pending an
   SDK + credentials** a developer drops in per
   [`docs/streaming-integration.md`](./streaming-integration.md). Bundle id is now
   **`com.levi.pocketdj`**.
