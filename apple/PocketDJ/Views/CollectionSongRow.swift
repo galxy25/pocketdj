@@ -434,7 +434,6 @@ struct InlinePlayerPanel: View {
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
     @State private var collapsed = false
-    @State private var scrubbing: Double?
 
     private var now: RipsStore.NowPlaying? { rips.nowPlaying }
 
@@ -442,7 +441,7 @@ struct InlinePlayerPanel: View {
         if let now {
             VStack(spacing: 8) {
                 header(now)
-                if !collapsed { expanded(now) }
+                if !collapsed { InlinePlayerExpanded(now: now) }
             }
             .padding(10)
             .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
@@ -487,8 +486,19 @@ struct InlinePlayerPanel: View {
         }
     }
 
-    /// Expanded body: waveform (or live state) + scrubber + time labels.
-    @ViewBuilder private func expanded(_ now: RipsStore.NowPlaying) -> some View {
+}
+
+/// The time-updating part of the panel — waveform + scrubber + time labels. Extracted
+/// into its OWN view so reading `player.currentTime` (updates ~4×/s) re-renders only this
+/// subview, NOT `InlinePlayerPanel`'s control buttons. On macOS those buttons would
+/// otherwise be rebuilt 4×/s and intermittently drop clicks (the "freeze until you click
+/// the slide-out" bug); isolating the churn here keeps play/pause · ✕ · chevron responsive.
+private struct InlinePlayerExpanded: View {
+    @Environment(PlayerEngine.self) private var player
+    @State private var scrubbing: Double?
+    let now: RipsStore.NowPlaying
+
+    var body: some View {
         if now.live {
             // A live HLS stream has no static duration to scrub against — show a live state.
             HStack(spacing: 6) {
@@ -499,19 +509,21 @@ struct InlinePlayerPanel: View {
             .frame(height: 36)
             .accessibilityIdentifier("player-wave-live")
         } else {
-            if let wave = now.waveform {
-                AsyncImage(url: wave) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Rectangle().fill(Theme.bgOverlay)
+            VStack(spacing: 8) {
+                if let wave = now.waveform {
+                    AsyncImage(url: wave) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFill()
+                        } else {
+                            Rectangle().fill(Theme.bgOverlay)
+                        }
                     }
+                    .frame(height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .accessibilityIdentifier("player-wave")
                 }
-                .frame(height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .accessibilityIdentifier("player-wave")
+                scrubber
             }
-            scrubber
         }
     }
 

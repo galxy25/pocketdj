@@ -76,13 +76,17 @@ struct AlbumDetailView: View {
         VStack(spacing: 0) {
             TrackRowHeader()
             ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, song in
-                NavigationLink(value: song) {
-                    TrackRow(index: song.trackNumber ?? (idx + 1), song: song)
-                        .background(idx.isMultiple(of: 2) ? Color.clear : Theme.bgRaised.opacity(0.4))
-                        .contentShape(Rectangle())
+                VStack(spacing: 0) {
+                    NavigationLink(value: song) {
+                        TrackRow(index: song.trackNumber ?? (idx + 1), song: song)
+                            .background(idx.isMultiple(of: 2) ? Color.clear : Theme.bgRaised.opacity(0.4))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("track-\(song.id)")
+                    // Inline slide-out player below this track when it's the one playing.
+                    InlinePlayerSlot(songId: song.id)
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("track-\(song.id)")
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
@@ -204,6 +208,9 @@ private struct TrackRow: View {
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(Theme.fgDim)
                 .frame(width: 48, alignment: .trailing)
+
+            // Same play / download transport as the browser + collection rows.
+            RowTransport(song: (id: song.id, title: song.name, artist: song.artist), startMs: nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)

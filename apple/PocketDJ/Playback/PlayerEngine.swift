@@ -38,9 +38,15 @@ final class PlayerEngine {
         // Drive the scrubber ~4×/s.
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let self else { return }
-            self.currentTime = time.seconds.isFinite ? time.seconds : 0
-            if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0 { self.duration = d }
+            // `queue: .main` delivers on the main thread == the main actor's executor, so
+            // assert that isolation to mutate the @MainActor currentTime/duration WITHOUT an
+            // async Task hop (which would defer the scrubber and re-order updates). Fixes the
+            // "can not be mutated from a Sendable closure" warnings.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.currentTime = time.seconds.isFinite ? time.seconds : 0
+                if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0 { self.duration = d }
+            }
         }
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
