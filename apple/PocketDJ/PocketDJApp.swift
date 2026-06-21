@@ -15,6 +15,8 @@ struct PocketDJApp: App {
     @State private var settings = SettingsStore(defaults: SettingsStore.launchDefaults())
     @State private var edits = EditsStore(fileURL: EditsStore.launchURL())
     @State private var collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
+    @State private var rips = RipsStore()
+    @State private var player = PlayerEngine()
 
     var body: some Scene {
         WindowGroup {
@@ -23,6 +25,8 @@ struct PocketDJApp: App {
                 .environment(settings)
                 .environment(edits)
                 .environment(collections)
+                .environment(rips)
+                .environment(player)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
         }

@@ -12,8 +12,8 @@ import SwiftUI
 ///   • SECONDARY line: "artist · year · genre" (size-gated — see below),
 ///   • MIDDLE music cluster: BPM as tiered play-icons (+ numeric), a Camelot KeyChip
 ///     (always populated — black-box "U" when unknown), and the length (`Fmt.duration`),
-///   • RIGHT: ▶ play / ⤓ download VISUAL PLACEHOLDERS (`TransportPlaceholders`) — the
-///     native app has no rip-on-demand client yet (reserved seam).
+///   • RIGHT: ▶ play / ⤓ download transport (`RowTransport`) — rip-on-demand wired to
+///     `RipsStore` + `PlayerEngine`; ▶ reveals the inline slide-out player below the row.
 ///
 /// Responsive: on COMPACT width (iPhone) the year + genre are dropped from the
 /// secondary line to keep it uncluttered; on regular width (iPad) and macOS (where
@@ -74,10 +74,35 @@ struct SongRowView: View {
 
             if let trailing { trailing }
 
-            TransportPlaceholders(songId: data.songId)
+            RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
+                         startMs: data.startMs)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+}
+
+/// The inline slide-out player rendered at LIST level, immediately AFTER a song row's
+/// `NavigationLink`, when that row's song is the now-playing one. It MUST live outside the
+/// nav-link label so its buttons (play/pause, close, chevron) receive taps instead of the
+/// link swallowing them. Drop this directly after each song-row `NavigationLink`, passing
+/// the row's song id; it shows the panel only for the matching now-playing row and keeps
+/// the slide-in/out animation.
+struct InlinePlayerSlot: View {
+    @Environment(RipsStore.self) private var rips
+    /// The id of the song whose row this slot trails.
+    let songId: String
+
+    private var isNowPlaying: Bool { rips.nowPlaying?.songId == songId }
+
+    var body: some View {
+        Group {
+            if isNowPlaying {
+                InlinePlayerPanel()
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: isNowPlaying)
     }
 }
 
@@ -95,6 +120,9 @@ struct SongRowData {
     var camelot: String?
     var lengthMs: Int?
     var explicit: Bool
+    /// Optional analog start offset (ms) within the album rip — when nil the rips
+    /// store falls back to the manifest entry's own `startMs`.
+    var startMs: Int?
     /// The album behind the song (for cover art + genre/year fallback); nil → placeholder.
     var album: IndexAlbum?
 
@@ -111,6 +139,7 @@ struct SongRowData {
         self.camelot = song.camelot
         self.lengthMs = song.length
         self.explicit = song.explicit == true
+        self.startMs = nil   // analog offset resolves from the rips manifest entry
         self.album = album
     }
 
@@ -127,6 +156,7 @@ struct SongRowData {
         self.camelot = track.camelot
         self.lengthMs = track.shownMs
         self.explicit = song?.explicit == true
+        self.startMs = nil
         self.album = album
     }
 
@@ -210,30 +240,293 @@ struct SongThumbnail: View {
     }
 }
 
-/// ▶ / ⤓ — VISUAL PLACEHOLDERS ONLY, intentionally non-functional.
-/// reserved seam: wire to a future rip-on-demand client (RipServerService today
-/// only exposes health(); there is no native stream/download path yet).
-struct TransportPlaceholders: View {
-    let songId: String
-    var body: some View {
-        HStack(spacing: 2) {
-            Button {
-                // reserved seam: wire to a future rip-on-demand client
-            } label: {
-                Image(systemName: "play.fill").font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(Theme.fgDim)
-            .accessibilityIdentifier("row-play-\(songId)")
+/// ▶ / ⤓ — the real rip-on-demand transport (replaces the old placeholders). ▶ rips
+/// (or plays the cached mp3), loads the `PlayerEngine`, and reveals the inline player
+/// for this row; ⤓ resolves the durable mp3 and saves it to the user's Documents. The
+/// button area shows the live rip phase (Searching… / Ripping mm:ss / ● Streaming live /
+/// Uploading…, ⚠ on error), matching the PWA's `RipButtons`.
+struct RowTransport: View {
+    @Environment(RipsStore.self) private var rips
+    @Environment(PlayerEngine.self) private var player
+    let song: (id: String, title: String, artist: String)
+    var startMs: Int?
 
-            Button {
-                // reserved seam: wire to a future rip-on-demand client
-            } label: {
-                Image(systemName: "arrow.down.circle").font(.caption)
+    @State private var busy: Busy?
+    @State private var alertMessage: String?
+    /// The just-saved file, surfaced via a share sheet so the user can keep it in Files
+    /// / AirDrop it / open it elsewhere.
+    @State private var shareItem: ShareItem?
+
+    enum Busy { case play, download }
+
+    /// Wraps the saved file URL so it's `Identifiable` for `.sheet(item:)`.
+    struct ShareItem: Identifiable { let id = UUID(); let url: URL }
+
+    /// The current rip job, only while it's actively in flight (not ready/error).
+    private var activeJob: RipsStore.Job? {
+        guard let j = rips.jobs[song.id], j.phase != .ready, j.phase != .error else { return nil }
+        return j
+    }
+    private var errored: Bool { rips.jobs[song.id]?.phase == .error }
+    private var cached: Bool { rips.cachedURL(song.id) != nil }
+    /// Actionable when already ripped, or there's a (configured) server to rip it.
+    private var canAct: Bool { cached || rips.hasServer }
+
+    /// True when THIS row's song is the one bound to the shared player — the ▶ becomes a
+    /// pause/resume toggle for the live engine instead of kicking off a fresh rip/play.
+    private var isNowPlaying: Bool { rips.nowPlaying?.songId == song.id }
+
+    var body: some View {
+        Group {
+            if let job = activeJob {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.mini)
+                    Text(RowTransport.phaseLabel(job))
+                        .font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                }
+                .accessibilityIdentifier("rip-status-\(song.id)")
+            } else {
+                HStack(spacing: 2) {
+                    Button { doPlay() } label: {
+                        Image(systemName: rowPlayIcon).font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle((canAct || isNowPlaying) ? Theme.accent : Theme.fgDim)
+                    .disabled((!canAct && !isNowPlaying) || busy != nil)
+                    .accessibilityIdentifier("row-play-\(song.id)")
+
+                    Button { doDownload() } label: {
+                        Image(systemName: busy == .download ? "ellipsis" : "arrow.down.circle").font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(canAct ? Theme.fgDim : Theme.fgDim.opacity(0.4))
+                    .disabled(!canAct || busy != nil)
+                    .accessibilityIdentifier("row-download-\(song.id)")
+                }
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(Theme.fgDim)
-            .accessibilityIdentifier("row-download-\(songId)")
         }
+        .alert("Couldn’t play", isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })) {
+            Button("OK", role: .cancel) { alertMessage = nil }
+        } message: { Text(alertMessage ?? "") }
+        .sheet(item: $shareItem) { item in
+            ShareSheet(url: item.url)
+        }
+    }
+
+    /// Pure phase → label mapping (mirrors the PWA's `RipButtons` switch).
+    static func phaseLabel(_ job: RipsStore.Job) -> String {
+        switch job.phase {
+        case .queued:    return "Queued…"
+        case .searching: return "Searching…"
+        case .uploading: return "Uploading…"
+        case .streaming: return "● Streaming live"
+        case .ripping:
+            if let total = job.progress?.totalMs {
+                return "Ripping \(clock(job.progress?.elapsedMs)) / \(clock(total))"
+            }
+            return "Ripping…"
+        case .ready, .error: return ""
+        }
+    }
+
+    /// mm:ss for a millisecond value (matches the PWA's `clock`).
+    static func clock(_ ms: Int?) -> String {
+        guard let ms else { return "" }
+        let s = Int((Double(ms) / 1000).rounded())
+        return "\(s / 60):\(String(format: "%02d", s % 60))"
+    }
+
+    /// ▶ icon: while busy → ellipsis; on error → warning; when THIS song is the live
+    /// now-playing one → pause/play mirroring the engine; otherwise the plain ▶.
+    private var rowPlayIcon: String {
+        if busy == .play { return "ellipsis" }
+        if isNowPlaying { return player.isPlaying ? "pause.fill" : "play.fill" }
+        if errored { return "exclamationmark.triangle" }
+        return "play.fill"
+    }
+
+    private func doPlay() {
+        // Now-playing row: toggle the SAME engine (pause / resume) — don't re-rip.
+        if isNowPlaying { player.toggle(); return }
+        busy = .play
+        Task {
+            do { try await rips.play(song, startMs: startMs) }
+            catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
+            busy = nil
+        }
+    }
+
+    private func doDownload() {
+        busy = .download
+        Task {
+            do { shareItem = ShareItem(url: try await rips.download(song)) }
+            catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
+            busy = nil
+        }
+    }
+}
+
+/// A cross-platform share/export sheet for a saved rip file. On iOS/iPadOS it presents
+/// `UIActivityViewController` ("Save to Files", AirDrop, Messages, …); on macOS it wraps
+/// `NSSharingServicePicker`. Either way the user keeps the downloaded mp3 wherever they want.
+struct ShareSheet: View {
+    let url: URL
+    var body: some View {
+        #if os(macOS)
+        MacSharePicker(url: url)
+            .frame(width: 320, height: 220)
+        #else
+        ActivityView(items: [url])
+            .ignoresSafeArea()
+        #endif
+    }
+}
+
+#if os(iOS)
+import UIKit
+
+/// `UIActivityViewController` bridge — the iOS share sheet (Save to Files / AirDrop / …).
+private struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+#endif
+
+#if os(macOS)
+import AppKit
+
+/// `NSSharingServicePicker` bridge — the macOS share menu (AirDrop / Mail / Save …).
+private struct MacSharePicker: NSViewRepresentable {
+    let url: URL
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            let picker = NSSharingServicePicker(items: [url])
+            picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+#endif
+
+/// The inline slide-out player rendered directly below the now-playing row: play/pause,
+/// a scrubber bound to `PlayerEngine` time (drag to seek), elapsed / duration labels, the
+/// waveform image (or a "● live" badge for a live stream), and a chevron to collapse /
+/// expand the panel. Lives inside `SongRowView`, so it works wherever a song row appears.
+struct InlinePlayerPanel: View {
+    @Environment(RipsStore.self) private var rips
+    @Environment(PlayerEngine.self) private var player
+    @State private var collapsed = false
+    @State private var scrubbing: Double?
+
+    private var now: RipsStore.NowPlaying? { rips.nowPlaying }
+
+    var body: some View {
+        if let now {
+            VStack(spacing: 8) {
+                header(now)
+                if !collapsed { expanded(now) }
+            }
+            .padding(10)
+            .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+            .padding(.vertical, 4)
+            .accessibilityIdentifier("inline-player")
+            .onAppear { syncEngine(now) }
+            .onChange(of: now.url) { syncEngine(now) }
+        }
+    }
+
+    /// Always-visible header: play/pause · title · collapse chevron · close.
+    private func header(_ now: RipsStore.NowPlaying) -> some View {
+        HStack(spacing: 10) {
+            Button { player.toggle() } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.body)
+            }
+            .buttonStyle(.borderless).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("player-toggle")
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(now.title).font(.caption.weight(.semibold)).foregroundStyle(Theme.fg).lineLimit(1)
+                Text(now.artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+            }
+            Spacer()
+            if now.live {
+                Text("● live").font(.caption2.weight(.bold)).foregroundStyle(Theme.accent2)
+                    .accessibilityIdentifier("player-live")
+            }
+            Button { withAnimation(.easeInOut(duration: 0.2)) { collapsed.toggle() } } label: {
+                Image(systemName: collapsed ? "chevron.up" : "chevron.down").font(.caption)
+            }
+            .buttonStyle(.borderless).foregroundStyle(Theme.fgDim)
+            .accessibilityIdentifier("player-chevron")
+
+            Button { player.stop(); rips.setNowPlaying(nil) } label: {
+                Image(systemName: "xmark").font(.caption)
+            }
+            .buttonStyle(.borderless).foregroundStyle(Theme.fgDim)
+            .accessibilityIdentifier("player-close")
+        }
+    }
+
+    /// Expanded body: waveform (or live state) + scrubber + time labels.
+    @ViewBuilder private func expanded(_ now: RipsStore.NowPlaying) -> some View {
+        if now.live {
+            // A live HLS stream has no static duration to scrub against — show a live state.
+            HStack(spacing: 6) {
+                Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(Theme.accent2)
+                Text("Streaming live as it rips").font(.caption2).foregroundStyle(Theme.fgDim)
+                Spacer()
+            }
+            .frame(height: 36)
+            .accessibilityIdentifier("player-wave-live")
+        } else {
+            if let wave = now.waveform {
+                AsyncImage(url: wave) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Rectangle().fill(Theme.bgOverlay)
+                    }
+                }
+                .frame(height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .accessibilityIdentifier("player-wave")
+            }
+            scrubber
+        }
+    }
+
+    private var scrubber: some View {
+        let duration = max(player.duration, 0.01)
+        let value = Binding<Double>(
+            get: { scrubbing ?? player.currentTime },
+            set: { scrubbing = $0 })
+        return HStack(spacing: 8) {
+            Text(Self.clock(scrubbing ?? player.currentTime))
+                .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            Slider(value: value, in: 0...duration) { editing in
+                if !editing, let target = scrubbing { player.seek(to: target); scrubbing = nil }
+            }
+            .accessibilityIdentifier("player-seek")
+            Text(Self.clock(player.duration))
+                .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    /// Point the engine at the now-playing URL (idempotent per URL via onChange).
+    private func syncEngine(_ now: RipsStore.NowPlaying) {
+        player.load(url: now.url, live: now.live, startMs: now.startMs,
+                    title: now.title, artist: now.artist)
+    }
+
+    static func clock(_ s: Double) -> String {
+        guard s.isFinite else { return "0:00" }
+        let total = Int(s)
+        return "\(total / 60):\(String(format: "%02d", total % 60))"
     }
 }

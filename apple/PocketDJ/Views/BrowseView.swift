@@ -212,6 +212,7 @@ struct BrowseView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("song-\(song.id)")
+                        InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)
                         Divider().overlay(Theme.border)
                     }
                 }

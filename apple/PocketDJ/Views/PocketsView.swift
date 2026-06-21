@@ -145,8 +145,14 @@ struct PocketDetailView: View {
                 Section("Songs (\(pocket.songIds.count))") {
                     ForEach(pocket.songIds, id: \.self) { sid in
                         if let song = app.songsById[sid] {
-                            NavigationLink(value: song) { CollectionSongRow(song: song) }
-                                .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
+                            // One List row = nav link + inline panel below, kept together in
+                            // a VStack so the panel's taps reach it (not the link) and the
+                            // 1:1 element↔row mapping `onMove` relies on is preserved.
+                            VStack(spacing: 0) {
+                                NavigationLink(value: song) { CollectionSongRow(song: song) }
+                                InlinePlayerSlot(songId: song.id)
+                            }
+                            .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
                         }
                     }
                     .onMove { from, to in collections.movePocketSongs(inPocket: pocketId, from: from, to: to) }
