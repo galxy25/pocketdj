@@ -787,9 +787,12 @@ The position updates ~4×/s smoothly without the buttons ever going "dead" — a
 but real win the desktop build needed (the scrubber redraws on its own clock so it
 never disturbs the control buttons' taps).
 
-**Download.** Tap **⤓** to resolve the durable mp3 and save it via the system share
-sheet (**Save to Files** / AirDrop on iOS, the share menu on macOS) — keep a track
-wherever you want.
+**Download.** Tap **⤓** to resolve the durable mp3 — ripping it on demand first if it
+isn't ripped yet (the button shows the same live rip phase: *Searching… / Ripping
+mm:ss / Uploading…*) — then a native **save-location picker** opens so you choose
+*where* the file lands (the **NSSavePanel** on macOS, the document picker in export
+mode on iOS/iPadOS), pre-filled with an `Artist - Title.mp3` name. The OS writes the
+mp3 to the spot you pick; cancel or an error just resets the button.
 
 **Lock screen & Control Center.** Native playback registers with the OS, so the
 current track shows on the **lock screen / Control Center** with working play / pause /

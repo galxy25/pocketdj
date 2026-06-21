@@ -254,10 +254,11 @@ final class RipsStore {
         return np
     }
 
-    /// Resolve a song to its durable mp3 and write it to a file the user can keep
-    /// (the app's Documents directory). Returns the saved file URL (for share/export).
-    @discardableResult
-    func download(_ song: (id: String, title: String, artist: String)) async throws -> URL {
+    /// Resolve a song to its durable mp3 and return the raw bytes. The caller decides
+    /// where they go — the row hands these to a `.fileExporter` so the user picks the
+    /// save location. If the song isn't ripped yet this kicks off the rip and waits for
+    /// the finished mp3 (driving the row's live rip-phase label off `jobs[...]`).
+    func downloadData(_ song: (id: String, title: String, artist: String)) async throws -> Data {
         let url = try await ensureURL(song.id, allowLive: false)
         var request = URLRequest(url: url)
         applyAuth(&request, token: token)
@@ -265,6 +266,14 @@ final class RipsStore {
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw RipError.serverError(nil)
         }
+        return data
+    }
+
+    /// Resolve a song to its durable mp3 and write it to a file the user can keep
+    /// (the app's Documents directory). Returns the saved file URL (for share/export).
+    @discardableResult
+    func download(_ song: (id: String, title: String, artist: String)) async throws -> URL {
+        let data = try await downloadData(song)
         let name = Self.downloadFileName(artist: song.artist, title: song.title)
         let dest = try Self.documentsDirectory().appendingPathComponent(name)
         try data.write(to: dest, options: .atomic)
@@ -275,7 +284,13 @@ final class RipsStore {
 
     /// Sanitized "Artist - Title.mp3" filename (mirrors the PWA's slug).
     nonisolated static func downloadFileName(artist: String, title: String) -> String {
-        let raw = "\(artist) - \(title).mp3"
+        downloadBaseName(artist: artist, title: title) + ".mp3"
+    }
+
+    /// Sanitized "Artist - Title" base name (no extension) — the `.fileExporter`'s
+    /// `defaultFilename`, which appends the `.mp3` from the document's content type.
+    nonisolated static func downloadBaseName(artist: String, title: String) -> String {
+        let raw = "\(artist) - \(title)"
         let bad = CharacterSet(charactersIn: "/\\?%*:|\"<>")
         return String(raw.unicodeScalars.map { bad.contains($0) ? "_" : Character($0) })
     }

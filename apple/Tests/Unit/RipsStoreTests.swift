@@ -100,4 +100,33 @@ final class RipsStoreTests: XCTestCase {
         XCTAssertEqual(RipsStore.downloadFileName(artist: "Daft Punk", title: "Aerodynamic"),
                        "Daft Punk - Aerodynamic.mp3")
     }
+
+    // MARK: Save-picker base name (no extension — the .fileExporter appends ".mp3")
+
+    func testDownloadBaseNameOmitsExtension() {
+        XCTAssertEqual(RipsStore.downloadBaseName(artist: "Daft Punk", title: "Aerodynamic"),
+                       "Daft Punk - Aerodynamic")
+    }
+
+    func testDownloadBaseNameSanitizes() {
+        XCTAssertEqual(RipsStore.downloadBaseName(artist: "AC/DC", title: "Who Made Who?"),
+                       "AC_DC - Who Made Who_")
+    }
+
+    func testDownloadFileNameIsBaseNamePlusMp3() {
+        let base = RipsStore.downloadBaseName(artist: "AC/DC", title: "Who Made Who?")
+        XCTAssertEqual(RipsStore.downloadFileName(artist: "AC/DC", title: "Who Made Who?"),
+                       base + ".mp3")
+    }
+
+    // MARK: Export document carries the mp3 bytes for the save picker
+
+    func testRippedAudioFileCarriesBytes() throws {
+        let payload = Data("ID3-fake-mp3-bytes".utf8)
+        let doc = RippedAudioFile(data: payload)
+        XCTAssertEqual(doc.data, payload)
+        // The exporter's content type resolves to an mp3-flavoured UTType.
+        XCTAssertTrue(RippedAudioFile.readableContentTypes.contains(RippedAudioFile.mp3Type))
+        XCTAssertTrue(RippedAudioFile.mp3Type.conforms(to: .audio))
+    }
 }

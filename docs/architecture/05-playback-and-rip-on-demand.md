@@ -264,8 +264,16 @@ HLS playlist has no fixed length.)
 ends with the same `RowTransport`, and each track's `NavigationLink` is followed by an
 `InlinePlayerSlot(songId:)` — so the identical inline player appears below an album
 track, not just a browser row. **Download** (`RowTransport` ⤓) resolves the durable mp3
-(`rips.download`) and hands it to a cross-platform `ShareSheet`
-(`UIActivityViewController` on iOS, `NSSharingServicePicker` on macOS).
+bytes via `rips.downloadData(_:)` — which runs the same `ensureURL(allowLive: false)`
+resolution (cached S3 mp3, else rip-on-demand wait, driving the row's live rip-phase
+label) and returns the raw `Data` — then wraps them in a `RippedAudioFile: FileDocument`
+(an mp3 `UTType`) and presents a SwiftUI **`.fileExporter`** so the user picks the save
+location: an **`NSSavePanel`** on macOS, the document picker in export mode on iOS/iPadOS,
+defaulted to an `Artist - Title` filename (`RipsStore.downloadBaseName`; the exporter
+appends `.mp3`). The OS writes the file to the chosen destination; cancel + export errors
+reset the button (errors surface in the row's alert). `rips.download(_:)` — the older
+"write to Documents" path — remains, layered on `downloadData`, but the row no longer
+uses it (no more Documents-then-share).
 
 ## Next
 
