@@ -553,16 +553,21 @@ private struct InlinePlayerExpanded: View {
         let duration = max(player.duration, 0.01)
         return TimelineView(.periodic(from: .now, by: 0.25)) { _ in
             let now = scrubbing ?? player.clock.currentTime
-            HStack(spacing: 8) {
-                Text(Self.clock(now))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            // Full-width slider so it lines up edge-to-edge with the waveform above it;
+            // the elapsed / duration labels sit BELOW, flanking the two ends.
+            VStack(spacing: 2) {
                 Slider(value: Binding<Double>(get: { now }, set: { scrubbing = $0 }),
                        in: 0...duration) { editing in
                     if !editing, let target = scrubbing { player.seek(to: target); scrubbing = nil }
                 }
                 .accessibilityIdentifier("player-seek")
-                Text(Self.clock(duration))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                HStack {
+                    Text(Self.clock(now))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    Spacer()
+                    Text(Self.clock(duration))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                }
             }
         }
     }
@@ -589,15 +594,16 @@ private struct WaveformView: View {
         // this view, so the enclosing panel never re-lays-out — and the sibling control
         // buttons keep their identity (their clicks aren't dropped) when the waveform
         // resolves. This is why we avoid `AsyncImage`, whose phase swaps DID restructure.
-        // The image is the BACKGROUND of a fixed 36-pt container, scaled to FIT (never
-        // overflowing its bounds), and the whole thing is non-interactive. This guarantees
-        // the waveform can neither resize the panel nor cover/!-hittable the control
-        // buttons above it when it loads — both of which broke the slide-out buttons.
+        // The image is the BACKGROUND of a fixed 36-pt container, scaled to FILL so it spans
+        // the panel EDGE-TO-EDGE (lining up with the full-width scrubber below it), with any
+        // vertical overflow CLIPPED to the fixed container by the `.clipShape`. The container
+        // is non-interactive and can't resize the panel or reach the control buttons above —
+        // so edge-to-edge fill does NOT reintroduce the slide-out-button breakage.
         Color.clear
             .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36)
             .background {
                 if let image {
-                    image.resizable().scaledToFit()
+                    image.resizable().scaledToFill()
                 } else {
                     Rectangle().fill(Theme.bgOverlay)
                 }

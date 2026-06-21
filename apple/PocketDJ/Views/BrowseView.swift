@@ -341,19 +341,16 @@ struct BrowseView: View {
                         // real SongRow — buttons and all — sits on top, fully live.
                         SongRow(song: song, albumName: albumName)
                             .contentShape(Rectangle())
-                            // The tap-through navigation rides BEHIND the row content as a
-                            // full-bleed, hittable-but-clear NavigationLink. Because it's in
-                            // the background (lower z-order), the row's own transport ▶/⤓
-                            // buttons on top still receive their taps — wrapping the whole
-                            // row in the link instead would collapse it into one Button on
-                            // macOS and swallow those nested buttons (the inline-player bug).
-                            .background(
-                                NavigationLink(value: song) {
-                                    Color.clear.contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("song-\(song.id)")
-                            )
+                            // Tap a non-button part of the row to open its detail. A row-level
+                            // .onTapGesture — NOT a wrapping NavigationLink/Button, which on
+                            // macOS collapses the row into one Button and swallows the nested
+                            // transport ▶/⤓. Those buttons sit on top and intercept their own
+                            // taps first, so only taps OUTSIDE them fall through here and
+                            // navigate. (The old background NavigationLink never fired:
+                            // SongRowView's own .contentShape absorbs the tap before it could
+                            // reach the link behind — the "row tap doesn't open metadata" bug.)
+                            .onTapGesture { path.append(song) }
+                            .accessibilityIdentifier("song-\(song.id)")
                             // Keyboard-focus highlight (↑/↓ cursor; ⌘P plays it).
                             .background(focusedRowId == song.id
                                         ? Theme.accent.opacity(0.16) : .clear,
