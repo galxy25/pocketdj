@@ -13,13 +13,38 @@ import UIKit
 /// `isPlaying` are observed (a periodic time observer drives the scrubber). For an
 /// analog (non-live) track it seeks to `startMs` once the item is ready. A live HLS
 /// stream is started immediately and never seeks (no static duration to scrub).
+/// The fast-moving playback position. It is deliberately NOT `@Observable`: the ~4×/s
+/// position ticks must NOT invalidate any SwiftUI view, because doing so re-lays-out the
+/// inline player and drops in-flight clicks on its sibling control buttons (the "dead
+/// slide-out play/pause · chevron · ✕" bug — proven by a UI test reading a toggle-count
+/// probe). The scrubber instead SAMPLES this clock on a `TimelineView` schedule, which
+/// redraws itself without triggering Observation, so the buttons' subtree stays stable.
+@MainActor
+final class PlayerClock {
+    /// Plain stored values, mutated 4×/s by the engine's periodic observer. Reading them
+    /// does not register an Observation dependency, so no view is invalidated by a tick.
+    var currentTime: Double = 0
+    /// Duration is also published as an @Observable on the engine (it changes rarely —
+    /// once per track — and the scrubber's range needs to react to it).
+    var duration: Double = 0
+}
+
 @MainActor
 @Observable
 final class PlayerEngine {
-    private(set) var currentTime: Double = 0
+    /// The fast (non-observable) time source. Sampled by the scrubber via TimelineView.
+    @ObservationIgnored let clock = PlayerClock()
+    /// Track duration — observable (changes once per track), drives the scrubber range.
     private(set) var duration: Double = 0
     private(set) var isPlaying: Bool = false
     private(set) var isLive: Bool = false
+    /// Test probe: increments on every `toggle()` so a UI test can confirm the button
+    /// action actually fired (independent of whether the resulting state flipped).
+    private(set) var toggleCount: Int = 0
+
+    /// Non-observable position snapshot (for the scrubber's TimelineView sampling and any
+    /// non-reactive reader). Views that want to react to playback should read `isPlaying`.
+    var currentTime: Double { clock.currentTime }
 
     private let player = AVPlayer()
     private var timeObserver: Any?
@@ -44,8 +69,13 @@ final class PlayerEngine {
             // "can not be mutated from a Sendable closure" warnings.
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.currentTime = time.seconds.isFinite ? time.seconds : 0
-                if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0 { self.duration = d }
+                // Position: plain clock only (NO Observation → no view invalidated).
+                self.clock.currentTime = time.seconds.isFinite ? time.seconds : 0
+                // Duration: publish to the observable when it first becomes known.
+                if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0, self.duration != d {
+                    self.clock.duration = d
+                    self.duration = d
+                }
             }
         }
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
@@ -65,7 +95,8 @@ final class PlayerEngine {
     /// `title`/`artist` populate the lock-screen / Control Center Now Playing card.
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "") {
         isLive = live
-        currentTime = 0
+        clock.currentTime = 0
+        clock.duration = 0
         duration = 0
         pendingSeekMs = live ? nil : startMs
         nowPlayingTitle = title
@@ -84,7 +115,7 @@ final class PlayerEngine {
     private func itemBecameReady(_ item: AVPlayerItem) {
         guard item.status == .readyToPlay else { return }
         let d = item.duration.seconds
-        if d.isFinite, d > 0 { duration = d }
+        if d.isFinite, d > 0 { clock.duration = d; duration = d }
         if let ms = pendingSeekMs, d.isFinite, d > 0 {
             pendingSeekMs = nil
             let target = min(Double(ms) / 1000.0, d - 0.1)
@@ -97,13 +128,16 @@ final class PlayerEngine {
     func pause() { player.pause(); isPlaying = false; updateNowPlayingInfo() }
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
     /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
-    func toggle() { player.timeControlStatus == .paused ? play() : pause() }
+    func toggle() {
+        toggleCount += 1
+        player.timeControlStatus == .paused ? play() : pause()
+    }
 
     /// Seek to an absolute time (seconds). No-op for a live stream beyond its buffer.
     func seek(to seconds: Double) {
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
-        currentTime = max(0, seconds)
+        clock.currentTime = max(0, seconds)
         updateNowPlayingInfo()
     }
 
@@ -112,7 +146,7 @@ final class PlayerEngine {
         player.pause()
         player.replaceCurrentItem(with: nil)
         statusObservation?.invalidate(); statusObservation = nil
-        currentTime = 0; duration = 0; isPlaying = false; isLive = false
+        clock.currentTime = 0; clock.duration = 0; duration = 0; isPlaying = false; isLive = false
         pendingSeekMs = nil
         clearNowPlayingInfo()
     }

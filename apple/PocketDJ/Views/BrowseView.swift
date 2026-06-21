@@ -8,11 +8,16 @@ import UIKit
 struct BrowseView: View {
     @Environment(AppModel.self) private var app
     @Environment(SettingsStore.self) private var settings
+    @Environment(RipsStore.self) private var rips
+    @Environment(PlayerEngine.self) private var player
     @State private var browse = BrowseState(defaults: SettingsStore.launchDefaults())
     @State private var online = OnlineSearchModel()
     @State private var showFilter = false
     @State private var showSort = false
     @FocusState private var searchFocused: Bool
+    /// Keyboard-navigation cursor over the SONG results: the focused row's song id.
+    /// ↑/↓ move it; ⌘P plays/pauses it. Nil until the first arrow press.
+    @State private var focusedSongId: String?
 
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)] }
 
@@ -59,6 +64,42 @@ struct BrowseView: View {
         }
         .onChange(of: browse.query) { if browse.searchOnline { triggerOnline() } }
         .task { if browse.searchOnline { triggerOnline() } }
+    }
+
+    /// The song ids currently shown in the songs list (on-device or online), in order —
+    /// the domain over which ↑/↓ arrow-key focus moves.
+    private var visibleSongIds: [String] {
+        guard browse.kind == .song else { return [] }
+        let items = browse.searchOnline ? online.items : browse.results(app)
+        return items.compactMap { if case .song(let s, _, _) = $0 { return s.id } else { return nil } }
+    }
+
+    /// Move the keyboard-focus cursor by `delta` rows (±1) over the visible songs,
+    /// clamping at the ends; seeds at the first row when nothing is focused yet.
+    private func moveFocus(_ delta: Int) {
+        let ids = visibleSongIds
+        guard !ids.isEmpty else { return }
+        guard let current = focusedSongId, let idx = ids.firstIndex(of: current) else {
+            focusedSongId = delta > 0 ? ids.first : ids.last
+            return
+        }
+        let next = min(max(idx + delta, 0), ids.count - 1)
+        focusedSongId = ids[next]
+    }
+
+    /// ⌘P: play (or pause/resume) the keyboard-focused song row. If the focused song is
+    /// already the now-playing one, toggle the engine; otherwise start it like the row ▶.
+    private func toggleFocusedSong() {
+        guard let id = focusedSongId ?? visibleSongIds.first,
+              let song = app.songsById[id] else { return }
+        focusedSongId = id
+        if rips.nowPlaying?.songId == id { player.toggle(); return }
+        Task {
+            if let now = try? await rips.play((id: song.id, title: song.name, artist: song.artist)) {
+                player.load(url: now.url, live: now.live, startMs: now.startMs,
+                            title: now.title, artist: now.artist)
+            }
+        }
     }
 
     private var searchCreds: SigV4Creds? {
@@ -126,6 +167,12 @@ struct BrowseView: View {
                 if browse.kind == .album { browse.layout = browse.layout == .grid ? .list : .grid }
             }.keyboardShortcut("v", modifiers: .command)
             Button("Search-shadow") { searchFocused = true }.keyboardShortcut("l", modifiers: .command)
+            // Song-list keyboard navigation: ↑/↓ move the focus cursor, ⌘P plays/pauses
+            // the focused row. Hidden buttons so they work app-wide without stealing the
+            // search field's own arrow handling when it's focused on macOS.
+            Button("FocusUp-shadow") { moveFocus(-1) }.keyboardShortcut(.upArrow, modifiers: [])
+            Button("FocusDown-shadow") { moveFocus(1) }.keyboardShortcut(.downArrow, modifiers: [])
+            Button("PlayFocused-shadow") { toggleFocusedSong() }.keyboardShortcut("p", modifiers: .command)
         }
         .frame(width: 1, height: 1)
         .opacity(0.01)
@@ -219,11 +266,32 @@ struct BrowseView: View {
             LazyVStack(spacing: 0) {
                 ForEach(items) { item in
                     if case .song(let song, let albumName, _) = item {
-                        NavigationLink(value: song) {
-                            SongRow(song: song, albumName: albumName).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("song-\(song.id)")
+                        // The row's transport ▶/⤓ buttons must stay independently
+                        // hit-testable. Wrapping the whole row in a NavigationLink
+                        // (a Button on macOS) swallows those nested buttons — XCUITest
+                        // can't reach them and a click navigates instead of playing
+                        // (the "row ▶ freezes" bug). So the tap-through link rides
+                        // BEHIND the row content (zero-size, in the background) and the
+                        // real SongRow — buttons and all — sits on top, fully live.
+                        SongRow(song: song, albumName: albumName)
+                            .contentShape(Rectangle())
+                            // The tap-through navigation rides BEHIND the row content as a
+                            // full-bleed, hittable-but-clear NavigationLink. Because it's in
+                            // the background (lower z-order), the row's own transport ▶/⤓
+                            // buttons on top still receive their taps — wrapping the whole
+                            // row in the link instead would collapse it into one Button on
+                            // macOS and swallow those nested buttons (the inline-player bug).
+                            .background(
+                                NavigationLink(value: song) {
+                                    Color.clear.contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("song-\(song.id)")
+                            )
+                            // Keyboard-focus highlight (↑/↓ cursor; ⌘P plays it).
+                            .background(focusedSongId == song.id
+                                        ? Theme.accent.opacity(0.16) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 6))
                         InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)
                         Divider().overlay(Theme.border)
                     }

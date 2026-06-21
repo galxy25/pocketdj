@@ -64,12 +64,13 @@ final class BrowseUITests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))   // album name is a button label on macOS
         app.selectKind(songs: true)
-        // The song row is a `NavigationLink(...).buttonStyle(.plain)`, which SwiftUI
-        // collapses into a single Button on macOS — so the inner Text("Neon") isn't a
-        // standalone StaticText there. Match the row by its stable identifier via the
-        // label-or-id helper (works on iPhone, iPad, and Mac), like the album asserts.
-        XCTAssertTrue(app.el("song-sng_1").waitForExistence(timeout: 5))     // Neon
-        XCTAssertTrue(app.el("song-sng_7").exists)                          // Slow Burn
+        // The browser song row no longer wraps the whole row in a single NavigationLink
+        // Button (that collapsed the inner transport ▶/⤓ buttons so their taps died — the
+        // inline-player bug). The nav link now rides in the row's background and the row's
+        // own transport ▶ carries the stable per-song id; assert on that (present for every
+        // rendered song row on iPhone, iPad, and Mac).
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))   // Neon
+        XCTAssertTrue(app.el("row-play-sng_7").exists)                         // Slow Burn
     }
 
     func testLayoutToggleKeepsAlbumsVisible() {

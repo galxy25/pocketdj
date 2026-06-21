@@ -8,6 +8,7 @@ struct RootView: View {
     @Environment(EditsStore.self) private var edits
     @Environment(CollectionsStore.self) private var collections
     @Environment(RipsStore.self) private var rips
+    @Environment(PlayerEngine.self) private var player
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     @State private var section: Section? = .browse
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
@@ -50,11 +51,13 @@ struct RootView: View {
             }
         }
         .background { navigationShortcuts }
+        .overlay(alignment: .bottomTrailing) { testProbe }
         .task {
             app.settings = settings   // wire the live multi-source config before loading
             app.edits = edits         // overlay local metadata edits
             collections.app = app     // give realize() the catalog to resolve ids against
             rips.settings = settings  // rip server URL + token come from settings
+            applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
@@ -68,6 +71,49 @@ struct RootView: View {
                let first = app.albums.first {
                 path.append(first)
             }
+        }
+    }
+
+    /// A tiny, always-in-the-a11y-tree readout of the shared `PlayerEngine` so a UI
+    /// test can poll real playback state regardless of which surface drove play/pause.
+    /// `player-state` value is "playing"/"paused"; `player-elapsed` is the seconds.
+    /// Gated behind `PDJ_TEST_PROBE` so it never ships in normal use. Rendered as a
+    /// 1×1 nearly-invisible element that is NOT marked hidden, so XCUITest can read it.
+    @ViewBuilder private var testProbe: some View {
+        if ProcessInfo.processInfo.environment["PDJ_TEST_PROBE"] != nil {
+            VStack(spacing: 0) {
+                // Each is its OWN leaf static-text element so XCUITest resolves
+                // `staticTexts["player-state"]` and reads `.value`/`.label` directly.
+                Text(player.isPlaying ? "playing" : "paused")
+                    .accessibilityIdentifier("player-state")
+                    .accessibilityValue(player.isPlaying ? "playing" : "paused")
+                Text(String(format: "%.1f", player.currentTime))
+                    .accessibilityIdentifier("player-elapsed")
+                    .accessibilityValue(String(format: "%.1f", player.currentTime))
+                Text("\(player.toggleCount)")
+                    .accessibilityIdentifier("player-toggles")
+                    .accessibilityValue("\(player.toggleCount)")
+            }
+            .font(.system(size: 2))
+            .foregroundStyle(Theme.bg)        // blend into the background — present but unobtrusive
+            .frame(width: 2, height: 4)
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Test seam (no-op in normal use): wire real resources from `launchEnvironment` so
+    /// an integration UI test can drive the live app. `PDJ_LOAD_APPLE_MUSIC=1` adds the
+    /// Apple Music (Local) source (so its catalog — incl. the cached, publicly-playable
+    /// rips — is searchable). Online-search creds, when supplied, enable cloud search.
+    private func applyTestLaunchConfig() {
+        let env = ProcessInfo.processInfo.environment
+        if env["PDJ_LOAD_APPLE_MUSIC"] == "1" { settings.loadAppleMusic() }
+        if let key = env["PDJ_AOSS_ACCESS_KEY_ID"], let secret = env["PDJ_AOSS_SECRET_ACCESS_KEY"],
+           !key.isEmpty, !secret.isEmpty {
+            settings.searchAccessKeyID = key
+            settings.searchSecretKey = secret
+            if let ep = env["PDJ_AOSS_ENDPOINT"] { settings.searchEndpoint = ep }
+            settings.persist()
         }
     }
 

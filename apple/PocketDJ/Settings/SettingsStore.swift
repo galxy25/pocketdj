@@ -42,7 +42,8 @@ final class SettingsStore {
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
     /// runs are deterministic and never touch the user's real settings.
     static func launchDefaults() -> UserDefaults {
-        if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
+        let env = ProcessInfo.processInfo.environment
+        if env["PDJ_USE_FIXTURE"] != nil || env["PDJ_INTEGRATION_PLAYBACK"] == "1" {
             let name = "pdj.uitest.ephemeral"
             let d = UserDefaults(suiteName: name) ?? .standard
             d.removePersistentDomain(forName: name)

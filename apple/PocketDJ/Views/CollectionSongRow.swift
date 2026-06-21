@@ -96,18 +96,14 @@ struct InlinePlayerSlot: View {
     private var isNowPlaying: Bool { rips.nowPlaying?.songId == songId }
 
     var body: some View {
-        Group {
-            if isNowPlaying {
-                InlinePlayerPanel()
-                    // Stable identity so the LazyVStack doesn't tear down + rebuild the
-                    // panel as the list re-renders (search churn / row recycling). A
-                    // recreated panel loses in-flight button hit-testing on macOS, which
-                    // is what made play/pause · ✕ · chevron feel dead.
-                    .id(songId)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
+        if isNowPlaying {
+            // NO `.animation`/`.transition` here: an animating/transitioning container in
+            // a macOS `ScrollView`+`LazyVStack` drops hit-testing on its child buttons —
+            // the press lands on the frame but the action never fires (the "slide-out
+            // play/pause · ✕ · chevron are dead" bug). Render the panel plainly so its
+            // controls are live. The slide-in is sacrificed for a working player.
+            InlinePlayerPanel()
         }
-        .animation(.easeInOut(duration: 0.25), value: isNowPlaying)
     }
 }
 
@@ -445,20 +441,42 @@ struct InlinePlayerPanel: View {
             }
             .padding(10)
             .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+            // The border is a `RoundedRectangle` shape drawn in an `.overlay` — i.e. ON TOP
+            // of the panel's controls. A Shape is hit-testable by default, so on macOS this
+            // border was swallowing every click to the play/pause · chevron · ✕ buttons
+            // beneath it (their actions never fired — the "dead slide-out buttons" bug).
+            // `.allowsHitTesting(false)` lets clicks pass through to the controls.
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                    .strokeBorder(Theme.border, lineWidth: 1)
+                    .allowsHitTesting(false)
+            )
             .padding(.vertical, 4)
-            .accessibilityIdentifier("inline-player")
+            // IMPORTANT: do NOT put an `.accessibilityIdentifier` on this container — on
+            // macOS SwiftUI PROPAGATES a container id down to every descendant, clobbering
+            // the children's own ids (`player-toggle` / `player-chevron` / `player-close` /
+            // `player-seek`) so they all read back as "inline-player" and become
+            // unaddressable. The panel's presence is instead detected via those child
+            // controls. (This was why the slide-out buttons looked "dead" to any driver.)
         }
     }
 
     /// Always-visible header: play/pause · title · collapse chevron · close.
+    ///
+    /// The controls use `.buttonStyle(.borderless)` — NOT `.plain`. On macOS a `.plain`
+    /// button hosted inside a panel that lives in a `ScrollView` + `LazyVStack` (this
+    /// inline player) silently drops its tap: the press hit-tests onto the button frame
+    /// but the action never fires (the user's "slide-out play/pause · ✕ · chevron are
+    /// dead" bug, confirmed by a UI test reading a toggle-count probe). `.borderless`
+    /// — the same style the row's working ▶/⤓ transport uses — fires reliably there.
     private func header(_ now: RipsStore.NowPlaying) -> some View {
         HStack(spacing: 10) {
             Button { player.toggle() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.body)
+                    .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .buttonStyle(.borderless).foregroundStyle(Theme.accent)
             .accessibilityIdentifier("player-toggle")
 
             VStack(alignment: .leading, spacing: 1) {
@@ -472,16 +490,18 @@ struct InlinePlayerPanel: View {
             }
             Button { withAnimation(.easeInOut(duration: 0.2)) { collapsed.toggle() } } label: {
                 Image(systemName: collapsed ? "chevron.up" : "chevron.down").font(.caption)
+                    .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).foregroundStyle(Theme.fgDim)
+            .buttonStyle(.borderless).foregroundStyle(Theme.fgDim)
             .accessibilityIdentifier("player-chevron")
 
             Button { player.stop(); rips.setNowPlaying(nil) } label: {
                 Image(systemName: "xmark").font(.caption)
+                    .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).foregroundStyle(Theme.fgDim)
+            .buttonStyle(.borderless).foregroundStyle(Theme.fgDim)
             .accessibilityIdentifier("player-close")
         }
     }
@@ -511,16 +531,13 @@ private struct InlinePlayerExpanded: View {
         } else {
             VStack(spacing: 8) {
                 if let wave = now.waveform {
-                    AsyncImage(url: wave) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFill()
-                        } else {
-                            Rectangle().fill(Theme.bgOverlay)
-                        }
-                    }
-                    .frame(height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .accessibilityIdentifier("player-wave")
+                    // The waveform thumbnail. We do NOT use `AsyncImage`: on macOS its
+                    // internal phase-transition churn, sitting next to the inline player's
+                    // control buttons, makes those buttons drop clicks (the "dead slide-out
+                    // play/pause · chevron · ✕" bug — proven by a UI test toggle-count
+                    // probe). `WaveformView` loads the bytes once via URLSession and shows
+                    // the result with a single state update, so the controls stay live.
+                    WaveformView(url: wave)
                 }
                 scrubber
             }
@@ -528,19 +545,25 @@ private struct InlinePlayerExpanded: View {
     }
 
     private var scrubber: some View {
+        // The live position is SAMPLED on a `TimelineView` schedule rather than observed:
+        // `player.clock.currentTime` is a plain, non-`@Observable` value, so a tick redraws
+        // ONLY this TimelineView's content and never invalidates Observation state in the
+        // panel — keeping the sibling control buttons' identity stable so their clicks
+        // aren't dropped. Duration is observable (changes once per track) → slider range.
         let duration = max(player.duration, 0.01)
-        let value = Binding<Double>(
-            get: { scrubbing ?? player.currentTime },
-            set: { scrubbing = $0 })
-        return HStack(spacing: 8) {
-            Text(Self.clock(scrubbing ?? player.currentTime))
-                .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
-            Slider(value: value, in: 0...duration) { editing in
-                if !editing, let target = scrubbing { player.seek(to: target); scrubbing = nil }
+        return TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+            let now = scrubbing ?? player.clock.currentTime
+            HStack(spacing: 8) {
+                Text(Self.clock(now))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                Slider(value: Binding<Double>(get: { now }, set: { scrubbing = $0 }),
+                       in: 0...duration) { editing in
+                    if !editing, let target = scrubbing { player.seek(to: target); scrubbing = nil }
+                }
+                .accessibilityIdentifier("player-seek")
+                Text(Self.clock(duration))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
-            .accessibilityIdentifier("player-seek")
-            Text(Self.clock(player.duration))
-                .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
         }
     }
 
@@ -548,5 +571,49 @@ private struct InlinePlayerExpanded: View {
         guard s.isFinite else { return "0:00" }
         let total = Int(s)
         return "\(total / 60):\(String(format: "%02d", total % 60))"
+    }
+}
+
+/// The waveform thumbnail. Loads the image bytes ONCE with `URLSession` into a single
+/// `@State`, rather than using `AsyncImage` — whose phase-transition churn, hosted next
+/// to the inline player's control buttons, dropped their clicks on macOS (the dead
+/// slide-out-buttons bug). A placeholder shows until the one-shot load resolves; the
+/// resulting single state update doesn't disturb the sibling buttons' hit-testing.
+private struct WaveformView: View {
+    let url: URL
+    @State private var image: Image?
+
+    var body: some View {
+        // A FIXED-SIZE container whose content swaps via `.overlay` (not an `if/else`
+        // structural branch). Loading the image therefore neither resizes nor restructures
+        // this view, so the enclosing panel never re-lays-out — and the sibling control
+        // buttons keep their identity (their clicks aren't dropped) when the waveform
+        // resolves. This is why we avoid `AsyncImage`, whose phase swaps DID restructure.
+        // The image is the BACKGROUND of a fixed 36-pt container, scaled to FIT (never
+        // overflowing its bounds), and the whole thing is non-interactive. This guarantees
+        // the waveform can neither resize the panel nor cover/!-hittable the control
+        // buttons above it when it loads — both of which broke the slide-out buttons.
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36)
+            .background {
+                if let image {
+                    image.resizable().scaledToFit()
+                } else {
+                    Rectangle().fill(Theme.bgOverlay)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("player-wave")
+            .task(id: url) {
+                guard image == nil else { return }
+                if let (data, _) = try? await URLSession.shared.data(from: url) {
+                    #if canImport(UIKit)
+                    if let ui = UIImage(data: data) { image = Image(uiImage: ui) }
+                    #elseif canImport(AppKit)
+                    if let ns = NSImage(data: data) { image = Image(nsImage: ns) }
+                    #endif
+                }
+            }
     }
 }
