@@ -17,6 +17,8 @@ struct PocketDJApp: App {
     @State private var collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
     @State private var rips = RipsStore()
     @State private var player = PlayerEngine()
+    @State private var streaming = StreamingStore()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -27,8 +29,19 @@ struct PocketDJApp: App {
                 .environment(collections)
                 .environment(rips)
                 .environment(player)
+                .environment(streaming)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
+                // Streaming OAuth redirect (e.g. pocketdj://spotify-login-callback)
+                // comes back through here; route it to the owning provider.
+                .onOpenURL { streaming.handleCallback(url: $0) }
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .active: streaming.onScenePhaseActive()
+                    case .background: streaming.onScenePhaseBackground()
+                    default: break
+                    }
+                }
         }
         #if os(macOS)
         .defaultSize(width: 1180, height: 800)

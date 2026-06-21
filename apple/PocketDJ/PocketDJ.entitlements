@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  PocketDJ entitlements.
+
+  Carries BOTH the MusicKit and ShazamKit app-service entitlements in one file,
+  wired into the target once via project.yml:
+
+      CODE_SIGN_ENTITLEMENTS: PocketDJ/PocketDJ.entitlements
+
+  Each entitlement requires the matching App Service to be enabled on the App ID
+  (`net.pocketdj.app`, team EC27UF79GL) in the Apple Developer portal — these are
+  manual portal toggles that `-allowProvisioningUpdates` cannot self-provision.
+  Until then, leaving these keys in place is harmless for Simulator builds
+  (entitlements are only enforced when signing for a device / distribution).
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.developer.musickit</key>
+    <true/>
+    <key>com.apple.developer.shazamkit</key>
+    <true/>
+</dict>
+</plist>

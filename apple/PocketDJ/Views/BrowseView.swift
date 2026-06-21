@@ -27,6 +27,17 @@ struct BrowseView: View {
             .padding(.horizontal, 16).padding(.vertical, 8)
             .accessibilityIdentifier("kind-picker")
 
+            // "?♪?" listen-and-identify button — sits at the TOP of the browser
+            // list, wired to the ShazamKit recognizer. Additive: a no-op-with-message
+            // when the ShazamKit entitlement / framework is absent.
+            HStack {
+                ShazamButton()
+                    .accessibilityIdentifier("shazam-button")
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 4)
+
             content
         }
         .background { kindShortcuts }

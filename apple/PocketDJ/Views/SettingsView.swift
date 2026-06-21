@@ -9,6 +9,8 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(EditsStore.self) private var edits
     @Environment(CollectionsStore.self) private var collections
+    // Not private: read by the streamingSection in SettingsView+Streaming.swift.
+    @Environment(StreamingStore.self) var streaming
 
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
@@ -29,6 +31,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             sourcesSection
+            streamingSection
             searchSection
             ripSection
             editsSection
@@ -198,6 +201,8 @@ struct SettingsView: View {
             Text("Choose which sources to show across the app. Each is a PocketDJ index URL served from CloudFront/S3.")
         }
     }
+
+    // MARK: Streaming accounts (Spotify, …) — defined in SettingsView+Streaming.swift
 
     // MARK: Online search
 

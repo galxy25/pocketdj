@@ -11,6 +11,31 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: "0.9.20"
+  # Spotify iOS SDK — OPT-IN. The provider compiles fine WITHOUT it (the `#else`
+  # stub in SpotifyProvider.swift). To enable Spotify streaming: uncomment the
+  # package below AND the matching dependency under targets.PocketDJ, then run
+  # `xcodegen generate`. The repo vends an SPM package whose product/module is
+  # `SpotifyiOS` — the exact name SpotifyProvider.swift gates on with
+  # `#if canImport(SpotifyiOS)`. (Alternatively, drag the prebuilt
+  # SpotifyiOS.xcframework from github.com/spotify/ios-sdk/releases into the
+  # target's "Frameworks" instead of using SPM.)
+  #
+  # SpotifyiOS:
+  #   url: https://github.com/spotify/ios-sdk.git
+  #   from: "3.0.0"
+  #
+  # youtube-ios-player-helper — OPT-IN (embedded YouTube playback). The YouTube
+  # provider's SEARCH (Data API v3, API key) works WITHOUT this; only embedded
+  # playback needs it. The view compiles without it via the `#else` placeholder
+  # in YouTubePlayerView.swift. To enable playback: uncomment the package below
+  # AND the matching dependency under targets.PocketDJ, then `xcodegen generate`.
+  # The SPM product/module is `YouTubeiOSPlayerHelper` — the exact name
+  # YouTubePlayerView.swift gates on with `#if canImport(YouTubeiOSPlayerHelper)`.
+  # (iOS only — the package is a UIKit `YTPlayerView`/WKWebView wrapper.)
+  #
+  # YouTubeiOSPlayerHelper:
+  #   url: https://github.com/youtube/youtube-ios-player-helper.git
+  #   from: "1.0.4"
 
 settings:
   base:
@@ -41,6 +66,37 @@ targets:
         UIBackgroundModes: [audio]
     dependencies:
       - package: ZIPFoundation
+      # Uncomment to link the Spotify SDK (see packages.SpotifyiOS above):
+      # - package: SpotifyiOS
+      # Uncomment to link the YouTube player helper (see the package above):
+      # - package: YouTubeiOSPlayerHelper
+    # --- Spotify streaming Info.plist (OPT-IN) -------------------------------
+    # The default build keeps GENERATE_INFOPLIST_FILE (no explicit plist). To
+    # enable Spotify, supply the URL scheme + query scheme + credentials. Because
+    # CFBundleURLTypes / LSApplicationQueriesSchemes are arrays (not expressible
+    # as scalar INFOPLIST_KEY_* settings), uncomment the `info:` block below AND
+    # comment out `GENERATE_INFOPLIST_FILE` in settings.base, then migrate the
+    # INFOPLIST_KEY_* values into the properties (XcodeGen fills the rest). See
+    # PocketDJ/Services/Streaming/SPOTIFY_SETUP.md for the full, ready-to-paste
+    # plist and the exact dashboard steps.
+    #
+    # info:
+    #   path: PocketDJ/Info.plist
+    #   properties:
+    #     CFBundleURLTypes:
+    #       - CFBundleURLName: net.pocketdj.app.spotify
+    #         CFBundleURLSchemes: [pocketdj]
+    #       # YouTube OAuth redirect — the REVERSED client id is the scheme. Replace
+    #       # 1234-abcd with your iOS OAuth client id's prefix (everything before
+    #       # ".apps.googleusercontent.com"). Must match YouTubeOAuthClientID below.
+    #       - CFBundleURLName: net.pocketdj.app.youtube
+    #         CFBundleURLSchemes: [com.googleusercontent.apps.1234-abcd]
+    #     LSApplicationQueriesSchemes: [spotify]
+    #     SpotifyClientID: ""                                  # your dashboard client id
+    #     SpotifyRedirectURL: pocketdj://spotify-login-callback
+    #     # --- YouTube (Google Cloud) ---
+    #     YouTubeAPIKey: ""                                    # Data API v3 key (search)
+    #     YouTubeOAuthClientID: ""                             # iOS OAuth client (account-link)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.pocketdj.app
@@ -57,6 +113,40 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         "INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad": "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSHumanReadableCopyright: "PocketDJ"
+        # --- Streaming + recognition permissions (Info.plist usage strings) ----
+        # Scalar usage descriptions are injectable as INFOPLIST_KEY_* without
+        # switching off GENERATE_INFOPLIST_FILE. These are PROMPT strings only;
+        # the prompts never fire unless the matching feature is enabled at
+        # runtime (ShazamKit mic capture / MusicKit authorization), so shipping
+        # them in the default build is harmless.
+        #   • Microphone — the "?♪?" ShazamKit recognizer's audio capture.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "PocketDJ listens to identify the song that's playing."
+        #   • Apple Music — MusicKit catalog search + playback when linked.
+        INFOPLIST_KEY_NSAppleMusicUsageDescription: "PocketDJ uses Apple Music to play and search tracks from your subscription."
+        # --- MusicKit + ShazamKit entitlements ---------------------------------
+        # Both app-service entitlements live in one .entitlements file. They are
+        # only ENFORCED when signing for a device/distribution (the App ID must
+        # have the matching App Services enabled in the Developer portal first —
+        # see docs/streaming-integration.md). Simulator builds (CODE_SIGNING_
+        # ALLOWED=NO) ignore them, so the default build stays green.
+        CODE_SIGN_ENTITLEMENTS: PocketDJ/PocketDJ.entitlements
+        # --- Apple Music build-time opt-in -------------------------------------
+        # The AppleMusicProvider stays dormant (.unavailable) until this is "YES",
+        # so MusicAuthorization.request() is never called in the default build.
+        # Flip to YES only AFTER enabling MusicKit on the App ID. Default: off.
+        # INFOPLIST_KEY_PocketDJAppleMusicEnabled: "YES"
+        # --- Spotify / YouTube OAuth redirect (CFBundleURLTypes) placeholder ----
+        # CFBundleURLTypes / LSApplicationQueriesSchemes are ARRAYS, not scalar
+        # INFOPLIST_KEY_* values, so they can't be injected here. To register the
+        # redirect schemes, supply an explicit Info.plist: comment out
+        # GENERATE_INFOPLIST_FILE above, uncomment the `info:` block below, and
+        # follow docs/streaming-integration.md. Ready-to-paste placeholder:
+        #   CFBundleURLTypes:
+        #     - CFBundleURLName: net.pocketdj.app.spotify
+        #       CFBundleURLSchemes: [pocketdj]          # pocketdj://spotify-login-callback
+        #     - CFBundleURLName: net.pocketdj.app.youtube
+        #       CFBundleURLSchemes: [com.googleusercontent.apps.REVERSED-CLIENT-ID]
+        #   LSApplicationQueriesSchemes: [spotify]
 
   PocketDJTests:
     type: bundle.unit-test
