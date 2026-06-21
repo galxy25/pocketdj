@@ -9,6 +9,7 @@ struct RootView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     @State private var section: Section? = .browse
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
@@ -57,6 +58,10 @@ struct RootView: View {
             app.edits = edits         // overlay local metadata edits
             collections.app = app     // give realize() the catalog to resolve ids against
             rips.settings = settings  // rip server URL + token come from settings
+            // The matching engine orders providers by a song's ORIGIN SOURCE — give it the
+            // catalog's per-id source map so an Apple Music (Local) track tries Apple Music
+            // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
+            coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.

@@ -66,3 +66,6 @@ dev-dist/
 /current-starmap.png
 /covers-test.png
 /current-clean.png
+
+# Xcode code-coverage scratch (written when running tests from the repo root)
+*.profraw

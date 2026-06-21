@@ -90,13 +90,20 @@ struct SongRowView: View {
 /// the slide-in/out animation.
 struct InlinePlayerSlot: View {
     @Environment(RipsStore.self) private var rips
+    @Environment(PlaybackCoordinator.self) private var coordinator
     /// The id of the song whose row this slot trails.
     let songId: String
 
-    private var isNowPlaying: Bool { rips.nowPlaying?.songId == songId }
+    private var isRipNowPlaying: Bool { rips.nowPlaying?.songId == songId }
+    private var isAppleMusicNowPlaying: Bool { coordinator.isAppleMusicNowPlaying(songId) }
 
     var body: some View {
-        if isNowPlaying {
+        // Apple Music streaming is the active backend for this row → show the
+        // Apple-Music-flavoured panel (position-only scrubber + "via Apple Music", no
+        // waveform). Otherwise the rip path keeps its EXACT verified panel.
+        if isAppleMusicNowPlaying {
+            AppleMusicInlinePanel()
+        } else if isRipNowPlaying {
             // NO `.animation`/`.transition` here: an animating/transitioning container in
             // a macOS `ScrollView`+`LazyVStack` drops hit-testing on its child buttons —
             // the press lands on the frame but the action never fires (the "slide-out
@@ -249,6 +256,7 @@ struct SongThumbnail: View {
 struct RowTransport: View {
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
     let song: (id: String, title: String, artist: String)
     var startMs: Int?
 
@@ -273,9 +281,15 @@ struct RowTransport: View {
     /// Actionable when already ripped, or there's a (configured) server to rip it.
     private var canAct: Bool { cached || rips.hasServer }
 
-    /// True when THIS row's song is the one bound to the shared player — the ▶ becomes a
-    /// pause/resume toggle for the live engine instead of kicking off a fresh rip/play.
-    private var isNowPlaying: Bool { rips.nowPlaying?.songId == song.id }
+    /// True when THIS row's song is the live now-playing one — on EITHER backend: the rip
+    /// path (keyed off `RipsStore.nowPlaying`, unchanged) OR Apple Music streaming (keyed
+    /// off the coordinator). The ▶ then becomes a pause/resume toggle instead of replaying.
+    private var isNowPlaying: Bool {
+        rips.nowPlaying?.songId == song.id || coordinator.isAppleMusicNowPlaying(song.id)
+    }
+    /// Is the Apple Music streaming backend the active one for this row? (Selects the
+    /// glyph/toggle source — `coordinator` vs. the rip `PlayerEngine`.)
+    private var isAppleMusic: Bool { coordinator.isAppleMusicNowPlaying(song.id) }
 
     var body: some View {
         Group {
@@ -338,29 +352,33 @@ struct RowTransport: View {
     }
 
     /// ▶ icon: while busy → ellipsis; on error → warning; when THIS song is the live
-    /// now-playing one → pause/play mirroring the engine; otherwise the plain ▶.
+    /// now-playing one → pause/play mirroring the ACTIVE backend (Apple Music streaming via
+    /// the coordinator, else the rip `PlayerEngine`); otherwise the plain ▶.
     private var rowPlayIcon: String {
         if busy == .play { return "ellipsis" }
-        if isNowPlaying { return player.isPlaying ? "pause.fill" : "play.fill" }
+        if isNowPlaying {
+            let playing = isAppleMusic ? coordinator.isPlaying : player.isPlaying
+            return playing ? "pause.fill" : "play.fill"
+        }
         if errored { return "exclamationmark.triangle" }
         return "play.fill"
     }
 
     private func doPlay() {
-        // Now-playing row: toggle the SAME engine (pause / resume) — don't re-rip.
-        if isNowPlaying { player.toggle(); return }
+        // Now-playing row: toggle the ACTIVE backend (pause / resume) — don't replay.
+        // For the rip backend this delegates to `PlayerEngine.toggle()` exactly as before
+        // (so the verified rip play/pause + its toggleCount probe are unchanged); for Apple
+        // Music it pauses/resumes `ApplicationMusicPlayer`.
+        if isNowPlaying { coordinator.togglePlayPause(); return }
         busy = .play
         Task {
-            do {
-                // Resolve the playable URL + arm the inline panel, then load the engine
-                // EXACTLY ONCE — here, from this explicit tap. The panel itself never
-                // loads the engine (it recycles in the LazyVStack), so this can't
-                // auto-play on a re-render or override the user's pause.
-                let now = try await rips.play(song, startMs: startMs)
-                player.load(url: now.url, live: now.live, startMs: now.startMs,
-                            title: now.title, artist: now.artist)
-            }
-            catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
+            // Hand the song to the matching engine: it tries Apple Music streaming FIRST for
+            // an Apple Music (Local) song (when ready), else falls back to the rip server —
+            // which rips/streams on demand and loads the SAME `PlayerEngine` the inline
+            // waveform/scrubber binds to, EXACTLY as before. A surfaced failure (no rip
+            // server / rip error) comes back on `coordinator.lastErrorMessage`.
+            await coordinator.play(id: song.id, title: song.title, artist: song.artist)
+            if let msg = coordinator.lastErrorMessage { alertMessage = msg }
             busy = nil
         }
     }

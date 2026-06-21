@@ -15,10 +15,27 @@ struct PocketDJApp: App {
     @State private var settings = SettingsStore(defaults: SettingsStore.launchDefaults())
     @State private var edits = EditsStore(fileURL: EditsStore.launchURL())
     @State private var collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
-    @State private var rips = RipsStore()
-    @State private var player = PlayerEngine()
-    @State private var streaming = StreamingStore()
+    @State private var rips: RipsStore
+    @State private var player: PlayerEngine
+    @State private var streaming: StreamingStore
+    /// The provider-cycling matching engine behind ▶: tries Apple Music streaming first for
+    /// Apple Music (Local) songs (when ready), always falls back to the rip server. Built
+    /// from the SAME rips/player/streaming instances so the rip path is unchanged.
+    @State private var coordinator: PlaybackCoordinator
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        let rips = RipsStore()
+        let player = PlayerEngine()
+        let streaming = StreamingStore()
+        let amProvider = streaming.appleMusicProvider ?? AppleMusicProvider()
+        _rips = State(initialValue: rips)
+        _player = State(initialValue: player)
+        _streaming = State(initialValue: streaming)
+        _coordinator = State(initialValue: PlaybackCoordinator(
+            ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+            appleMusic: AppleMusicPlaybackProvider(provider: amProvider)))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -30,6 +47,7 @@ struct PocketDJApp: App {
                 .environment(rips)
                 .environment(player)
                 .environment(streaming)
+                .environment(coordinator)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // Streaming OAuth redirect (e.g. pocketdj://spotify-login-callback)

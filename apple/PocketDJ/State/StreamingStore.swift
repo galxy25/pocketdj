@@ -25,6 +25,13 @@ final class StreamingStore {
         providers.first { $0.kind == kind }
     }
 
+    /// The concrete Apple Music provider (its `resolve(_:)` recognizer is what the
+    /// `PlaybackCoordinator`'s Apple Music streaming backend drives). Returns the same
+    /// instance held in `providers`, so account-link state stays shared.
+    var appleMusicProvider: AppleMusicProvider? {
+        providers.compactMap { $0 as? AppleMusicProvider }.first
+    }
+
     /// At least one provider is compiled-in and configured.
     var hasAnyAvailable: Bool { providers.contains { $0.isAvailable } }
 
