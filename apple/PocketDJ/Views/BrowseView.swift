@@ -10,14 +10,18 @@ struct BrowseView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    /// Shared navigation path (owned by RootView) — lets keyboard "open" push an
+    /// album/song detail programmatically, alongside the row-tap NavigationLinks.
+    @Binding var path: NavigationPath
     @State private var browse = BrowseState(defaults: SettingsStore.launchDefaults())
     @State private var online = OnlineSearchModel()
     @State private var showFilter = false
     @State private var showSort = false
     @FocusState private var searchFocused: Bool
-    /// Keyboard-navigation cursor over the SONG results: the focused row's song id.
-    /// ↑/↓ move it; ⌘P plays/pauses it. Nil until the first arrow press.
-    @State private var focusedSongId: String?
+    /// Keyboard-navigation cursor over the visible results: the focused row's id —
+    /// a SONG id in song mode, an ALBUM id in album mode. ↑/↓ move it; ⌘P plays the
+    /// focused song; Return/⌘O opens the focused item. Nil until the first arrow press.
+    @State private var focusedRowId: String?
 
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)] }
 
@@ -66,33 +70,51 @@ struct BrowseView: View {
         .task { if browse.searchOnline { triggerOnline() } }
     }
 
-    /// The song ids currently shown in the songs list (on-device or online), in order —
-    /// the domain over which ↑/↓ arrow-key focus moves.
-    private var visibleSongIds: [String] {
-        guard browse.kind == .song else { return [] }
-        let items = browse.searchOnline ? online.items : browse.results(app)
-        return items.compactMap { if case .song(let s, _, _) = $0 { return s.id } else { return nil } }
+    /// The visible items (on-device or online) for the current kind, in display order.
+    private var visibleItems: [BrowseItem] {
+        browse.searchOnline ? online.items : browse.results(app)
     }
 
-    /// Move the keyboard-focus cursor by `delta` rows (±1) over the visible songs,
-    /// clamping at the ends; seeds at the first row when nothing is focused yet.
+    /// The row ids currently shown in WHICHEVER list is up (on-device or online), in
+    /// order — SONG ids in song mode, ALBUM ids in album mode. The domain over which
+    /// ↑/↓ arrow-key focus moves. Linear order, so grid focus walks album order 1D.
+    private var visibleRowIds: [String] {
+        visibleItems.compactMap { item in
+            switch (browse.kind, item) {
+            case (.song, .song(let s, _, _)):  return s.id
+            case (.album, .album(let a, _)):   return a.id
+            default:                           return nil
+            }
+        }
+    }
+
+    /// The visible SONG ids — used by ⌘P's "play focused song" fallback in song mode.
+    private var visibleSongIds: [String] {
+        guard browse.kind == .song else { return [] }
+        return visibleRowIds
+    }
+
+    /// Move the keyboard-focus cursor by `delta` rows (±1) over the visible rows (songs
+    /// or albums), clamping at the ends; seeds at the first row when nothing is focused.
     private func moveFocus(_ delta: Int) {
-        let ids = visibleSongIds
+        let ids = visibleRowIds
         guard !ids.isEmpty else { return }
-        guard let current = focusedSongId, let idx = ids.firstIndex(of: current) else {
-            focusedSongId = delta > 0 ? ids.first : ids.last
+        guard let current = focusedRowId, let idx = ids.firstIndex(of: current) else {
+            focusedRowId = delta > 0 ? ids.first : ids.last
             return
         }
         let next = min(max(idx + delta, 0), ids.count - 1)
-        focusedSongId = ids[next]
+        focusedRowId = ids[next]
     }
 
-    /// ⌘P: play (or pause/resume) the keyboard-focused song row. If the focused song is
-    /// already the now-playing one, toggle the engine; otherwise start it like the row ▶.
+    /// ⌘P: play (or pause/resume) the keyboard-focused song row. Song mode only; in
+    /// album mode there's no single song to play, so it's a no-op. If the focused song
+    /// is already now-playing, toggle the engine; otherwise start it like the row ▶.
     private func toggleFocusedSong() {
-        guard let id = focusedSongId ?? visibleSongIds.first,
+        guard browse.kind == .song else { return }
+        guard let id = focusedRowId ?? visibleSongIds.first,
               let song = app.songsById[id] else { return }
-        focusedSongId = id
+        focusedRowId = id
         if rips.nowPlaying?.songId == id { player.toggle(); return }
         Task {
             if let now = try? await rips.play((id: song.id, title: song.name, artist: song.artist)) {
@@ -100,6 +122,35 @@ struct BrowseView: View {
                             title: now.title, artist: now.artist)
             }
         }
+    }
+
+    /// Return / ⌘O: OPEN the keyboard-focused item — push its detail view onto the
+    /// shared navigation path (the same destination a row tap reaches). A focused album
+    /// → AlbumDetailView; a focused song → SongDetailView. Seeds focus to the first row
+    /// if nothing is focused yet, so a bare Return opens the top result.
+    private func openFocusedRow() {
+        let id = focusedRowId ?? visibleRowIds.first
+        guard let id else { return }
+        focusedRowId = id
+        switch browse.kind {
+        case .album:
+            if let album = focusedItemAlbum(id) { path.append(album) }
+        case .song:
+            if let song = focusedItemSong(id) { path.append(song) }
+        }
+    }
+
+    /// Resolve the focused album id to its IndexAlbum — prefers the visible item (so
+    /// online-only results that aren't in the on-device catalog still open), then the
+    /// merged catalog as a fallback.
+    private func focusedItemAlbum(_ id: String) -> IndexAlbum? {
+        for case .album(let a, _) in visibleItems where a.id == id { return a }
+        return app.albumsById[id]
+    }
+
+    private func focusedItemSong(_ id: String) -> IndexSong? {
+        for case .song(let s, _, _) in visibleItems where s.id == id { return s }
+        return app.songsById[id]
     }
 
     private var searchCreds: SigV4Creds? {
@@ -167,12 +218,17 @@ struct BrowseView: View {
                 if browse.kind == .album { browse.layout = browse.layout == .grid ? .list : .grid }
             }.keyboardShortcut("v", modifiers: .command)
             Button("Search-shadow") { searchFocused = true }.keyboardShortcut("l", modifiers: .command)
-            // Song-list keyboard navigation: ↑/↓ move the focus cursor, ⌘P plays/pauses
-            // the focused row. Hidden buttons so they work app-wide without stealing the
-            // search field's own arrow handling when it's focused on macOS.
+            // List keyboard navigation: ↑/↓ move the focus cursor over the visible song
+            // OR album list, ⌘P plays/pauses the focused song, Return / ⌘O opens the
+            // focused item (album → AlbumDetailView, song → SongDetailView). Left LIVE
+            // even while the search field is focused: ↑/↓ aren't a single-line field's
+            // cursor keys (←/→ are), so they don't fight typing — Spotlight-style, you
+            // can type a query then arrow into the results and Return to open one.
             Button("FocusUp-shadow") { moveFocus(-1) }.keyboardShortcut(.upArrow, modifiers: [])
             Button("FocusDown-shadow") { moveFocus(1) }.keyboardShortcut(.downArrow, modifiers: [])
             Button("PlayFocused-shadow") { toggleFocusedSong() }.keyboardShortcut("p", modifiers: .command)
+            Button("OpenFocused-shadow") { openFocusedRow() }.keyboardShortcut(.return, modifiers: [])
+            Button("OpenFocusedAlt-shadow") { openFocusedRow() }.keyboardShortcut("o", modifiers: .command)
         }
         .frame(width: 1, height: 1)
         .opacity(0.01)
@@ -239,6 +295,12 @@ struct BrowseView: View {
                         if case .album(let album, _) = item {
                             NavigationLink(value: album) { AlbumCard(album: album) }
                                 .buttonStyle(.plain)
+                                // Keyboard-focus highlight — ↑/↓ cursor walks album order
+                                // linearly through the grid; Return/⌘O opens the album.
+                                .padding(6)
+                                .background(focusedRowId == album.id
+                                            ? Theme.accent.opacity(0.16) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("album-\(album.id)")
                         }
                     }
@@ -250,6 +312,10 @@ struct BrowseView: View {
                         if case .album(let album, _) = item {
                             NavigationLink(value: album) { AlbumRow(album: album) }
                                 .buttonStyle(.plain)
+                                // Keyboard-focus highlight (↑/↓ cursor; Return/⌘O opens).
+                                .background(focusedRowId == album.id
+                                            ? Theme.accent.opacity(0.16) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 6))
                                 .accessibilityIdentifier("album-\(album.id)")
                             Divider().overlay(Theme.border)
                         }
@@ -289,7 +355,7 @@ struct BrowseView: View {
                                 .accessibilityIdentifier("song-\(song.id)")
                             )
                             // Keyboard-focus highlight (↑/↓ cursor; ⌘P plays it).
-                            .background(focusedSongId == song.id
+                            .background(focusedRowId == song.id
                                         ? Theme.accent.opacity(0.16) : .clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                         InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)

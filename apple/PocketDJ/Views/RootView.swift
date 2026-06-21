@@ -130,7 +130,7 @@ struct RootView: View {
 
     @ViewBuilder private var detail: some View {
         switch section ?? .browse {
-        case .browse:    BrowseView()
+        case .browse:    BrowseView(path: $path)
         case .pockets:   PocketsView()
         case .playlists: PlaylistsView(path: $path)
         case .settings:  SettingsView(settings: settings)
