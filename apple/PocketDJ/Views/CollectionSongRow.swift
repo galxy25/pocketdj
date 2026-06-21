@@ -250,7 +250,9 @@ struct SongThumbnail: View {
 
 /// ▶ / ⤓ — the real rip-on-demand transport (replaces the old placeholders). ▶ rips
 /// (or plays the cached mp3), loads the `PlayerEngine`, and reveals the inline player
-/// for this row; ⤓ resolves the durable mp3 and saves it to the user's Documents. The
+/// for this row; ⤓ resolves the durable mp3 (ripping on demand if needed) and then opens
+/// a native SAVE-LOCATION picker (`.fileExporter` → NSSavePanel on macOS, the document
+/// picker in export mode on iOS/iPadOS) so the user CHOOSES where the file goes. The
 /// button area shows the live rip phase (Searching… / Ripping mm:ss / ● Streaming live /
 /// Uploading…, ⚠ on error), matching the PWA's `RipButtons`.
 struct RowTransport: View {
@@ -262,14 +264,11 @@ struct RowTransport: View {
 
     @State private var busy: Busy?
     @State private var alertMessage: String?
-    /// The just-saved file, surfaced via a share sheet so the user can keep it in Files
-    /// / AirDrop it / open it elsewhere.
-    @State private var shareItem: ShareItem?
+    /// The resolved mp3 bytes, wrapped for `.fileExporter`. Set (non-nil) once the
+    /// download/rip completes → presents the save-location picker.
+    @State private var exportDoc: RippedAudioFile?
 
     enum Busy { case play, download }
-
-    /// Wraps the saved file URL so it's `Identifiable` for `.sheet(item:)`.
-    struct ShareItem: Identifiable { let id = UUID(); let url: URL }
 
     /// The current rip job, only while it's actively in flight (not ready/error).
     private var activeJob: RipsStore.Job? {
@@ -323,8 +322,19 @@ struct RowTransport: View {
         .alert("Couldn’t play", isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })) {
             Button("OK", role: .cancel) { alertMessage = nil }
         } message: { Text(alertMessage ?? "") }
-        .sheet(item: $shareItem) { item in
-            ShareSheet(url: item.url)
+        // The native save-location picker. Presents once `exportDoc` is non-nil (the rip
+        // resolved its bytes); on success the OS has written the mp3 to the chosen spot.
+        // Cancel + error both just clear state. The picker's content type appends `.mp3`,
+        // so `defaultFilename` is the bare "Artist - Title" base name.
+        .fileExporter(isPresented: Binding(get: { exportDoc != nil },
+                                           set: { if !$0 { exportDoc = nil } }),
+                      document: exportDoc,
+                      contentType: RippedAudioFile.mp3Type,
+                      defaultFilename: RipsStore.downloadBaseName(artist: song.artist, title: song.title)) { result in
+            exportDoc = nil
+            if case .failure(let error) = result {
+                alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
     }
 
@@ -383,62 +393,18 @@ struct RowTransport: View {
         }
     }
 
+    /// Resolve the durable mp3 (ripping on demand if needed — the row shows the live
+    /// rip phase off `activeJob` meanwhile), then arm the save-location picker by setting
+    /// `exportDoc`; the `.fileExporter` presents and the user chooses where it lands.
     private func doDownload() {
         busy = .download
         Task {
-            do { shareItem = ShareItem(url: try await rips.download(song)) }
+            do { exportDoc = RippedAudioFile(data: try await rips.downloadData(song)) }
             catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
             busy = nil
         }
     }
 }
-
-/// A cross-platform share/export sheet for a saved rip file. On iOS/iPadOS it presents
-/// `UIActivityViewController` ("Save to Files", AirDrop, Messages, …); on macOS it wraps
-/// `NSSharingServicePicker`. Either way the user keeps the downloaded mp3 wherever they want.
-struct ShareSheet: View {
-    let url: URL
-    var body: some View {
-        #if os(macOS)
-        MacSharePicker(url: url)
-            .frame(width: 320, height: 220)
-        #else
-        ActivityView(items: [url])
-            .ignoresSafeArea()
-        #endif
-    }
-}
-
-#if os(iOS)
-import UIKit
-
-/// `UIActivityViewController` bridge — the iOS share sheet (Save to Files / AirDrop / …).
-private struct ActivityView: UIViewControllerRepresentable {
-    let items: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
-}
-#endif
-
-#if os(macOS)
-import AppKit
-
-/// `NSSharingServicePicker` bridge — the macOS share menu (AirDrop / Mail / Save …).
-private struct MacSharePicker: NSViewRepresentable {
-    let url: URL
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            let picker = NSSharingServicePicker(items: [url])
-            picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
-        }
-        return view
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-}
-#endif
 
 /// The inline slide-out player rendered directly below the now-playing row: play/pause,
 /// a scrubber bound to `PlayerEngine` time (drag to seek), elapsed / duration labels, the
