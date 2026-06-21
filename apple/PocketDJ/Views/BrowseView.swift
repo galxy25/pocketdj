@@ -336,20 +336,20 @@ struct BrowseView: View {
                         // hit-testable. Wrapping the whole row in a NavigationLink
                         // (a Button on macOS) swallows those nested buttons — XCUITest
                         // can't reach them and a click navigates instead of playing
-                        // (the "row ▶ freezes" bug). So the tap-through link rides
-                        // BEHIND the row content (zero-size, in the background) and the
-                        // real SongRow — buttons and all — sits on top, fully live.
+                        // (the "row ▶ freezes" bug). So the tap-to-open is a row-level
+                        // .onTapGesture (NOT a wrapping link), and the transport buttons
+                        // sit on top and intercept their own taps first — only taps
+                        // OUTSIDE them fall through here and navigate.
                         SongRow(song: song, albumName: albumName)
                             .contentShape(Rectangle())
-                            // Tap a non-button part of the row to open its detail. A row-level
-                            // .onTapGesture — NOT a wrapping NavigationLink/Button, which on
-                            // macOS collapses the row into one Button and swallows the nested
-                            // transport ▶/⤓. Those buttons sit on top and intercept their own
-                            // taps first, so only taps OUTSIDE them fall through here and
-                            // navigate. (The old background NavigationLink never fired:
-                            // SongRowView's own .contentShape absorbs the tap before it could
-                            // reach the link behind — the "row tap doesn't open metadata" bug.)
                             .onTapGesture { path.append(song) }
+                            // `.contain` keeps the row a CONTAINER (not a merged leaf), so its
+                            // own `song-<id>` id stays queryable for the tap-to-navigate test
+                            // WHILE the nested transport buttons keep their own `row-play-<id>`
+                            // / `row-download-<id>` ids on iOS. (A bare identifier on a row with
+                            // an onTapGesture merges the row into one element and clobbers those
+                            // child ids — the "row-play-<id> missing on iOS" bug.)
+                            .accessibilityElement(children: .contain)
                             .accessibilityIdentifier("song-\(song.id)")
                             // Keyboard-focus highlight (↑/↓ cursor; ⌘P plays it).
                             .background(focusedRowId == song.id

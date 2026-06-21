@@ -7,6 +7,13 @@ extension XCUIApplication {
     /// (so `waitForExistence` works for controls that appear later).
     func el(_ key: String) -> XCUIElement { buttons[key] }
 
+    /// Look up ANY element (button, static text, scroll view, …) by accessibility
+    /// identifier. Used for non-button surfaces like the song-detail ScrollView or a
+    /// song row (which is a plain view + `.onTapGesture`, not a Button).
+    func any(_ key: String) -> XCUIElement {
+        descendants(matching: .any).matching(identifier: key).firstMatch
+    }
+
     // Browser actions. On macOS the segmented Picker + window-toolbar buttons
     // aren't drivable via XCUITest, so we use the app's keyboard commands there;
     // on iOS we tap. Keeps one test body working on every platform.

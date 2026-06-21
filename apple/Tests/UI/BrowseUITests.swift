@@ -73,6 +73,57 @@ final class BrowseUITests: XCTestCase {
         XCTAssertTrue(app.el("row-play-sng_7").exists)                         // Slow Burn
     }
 
+    func testTappingSongRowOpensDetail() {
+        // Real tap-to-navigate: tapping a song ROW's content (the title, NOT a
+        // transport button) must open the SongDetailView. Guards the regression where
+        // the row's nav rode in a background NavigationLink that never received taps —
+        // SongRowView's own .contentShape swallowed them — so the row tap was dead.
+        // The fix is a row-level .onTapGesture { path.append(song) } in songResults.
+        let app = launch()
+        XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))
+        app.selectKind(songs: true)
+
+        // Tap the song TITLE static text — a non-button part of the row, the way a user
+        // taps a row to open it. (Tapping a transport button would PLAY, not navigate.)
+        // The title also confirms the songs list has rendered. On macOS the segmented
+        // Picker switch goes via ⌘2; the title is the first row's name.
+        let title = app.staticTexts["Neon"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 8), "songs list / first song title never rendered")
+        title.tap()
+
+        // The SongDetailView appears — its ScrollView carries the stable `song-detail` id.
+        XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 5),
+                      "tapping the song row did not open the song detail")
+        // And it shows the song's own metadata (the album hotlink back to its album).
+        XCTAssertTrue(app.el("album-hotlink").waitForExistence(timeout: 5))
+    }
+
+    func testSongRowPlayButtonDoesNotNavigate() {
+        // The row's transport ▶ must stay independently hit-testable AFTER the
+        // .onTapGesture change: tapping it PLAYS (stays on the list) and must NOT
+        // navigate into the detail. Guards re-breaking the inline player.
+        let app = launch()
+        XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))
+        app.selectKind(songs: true)
+        XCTAssertTrue(app.staticTexts["Neon"].firstMatch.waitForExistence(timeout: 8),
+                      "songs list never rendered")
+
+        // The row ▶ keeps its own `row-play-<id>` id on iPhone, iPad, and Mac — the row
+        // uses .accessibilityElement(children: .contain) so the child transport buttons'
+        // ids survive instead of being clobbered by the row's own `song-<id>` id.
+        let rowPlay = app.el("row-play-sng_1")
+        XCTAssertTrue(rowPlay.waitForExistence(timeout: 5), "row ▶ not found")
+        rowPlay.tap()
+
+        // We stayed on the browser list — the detail did NOT open. (Give any errant
+        // navigation a moment to materialize before asserting its absence.)
+        _ = app.any("song-detail").waitForExistence(timeout: 2)
+        XCTAssertFalse(app.any("song-detail").exists,
+                       "tapping the row ▶ navigated into the detail instead of playing")
+        XCTAssertTrue(app.staticTexts["Neon"].firstMatch.exists,
+                      "left the browser list — the row ▶ should stay on the list")
+    }
+
     func testLayoutToggleKeepsAlbumsVisible() {
         let app = launch()
         XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))   // album name is a button label on macOS
