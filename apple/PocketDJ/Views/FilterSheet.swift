@@ -105,6 +105,7 @@ private struct ClauseEditor: View {
                         get: { clause.values.sorted().joined(separator: ", ") },
                         set: { clause.values = Set($0.split(separator: ",").map {
                             $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }) }))
+                        .pocketField()
                 }
             default: // eq / neq
                 if field.hasOptions {
@@ -117,8 +118,10 @@ private struct ClauseEditor: View {
                         #if os(iOS)
                         .keyboardType(.numbersAndPunctuation)
                         #endif
+                        .pocketField()
                 } else {
                     TextField("Value", text: $clause.value)
+                        .pocketField()
                 }
             }
         }
@@ -131,6 +134,7 @@ private struct ClauseEditor: View {
         #if os(iOS)
         .keyboardType(.numbersAndPunctuation)
         #endif
+        .pocketField()
     }
 }
 

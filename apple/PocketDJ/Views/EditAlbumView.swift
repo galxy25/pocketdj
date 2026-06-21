@@ -91,6 +91,7 @@ struct EditField: View {
                 .textInputAutocapitalization(numeric ? .never : .sentences)
                 .autocorrectionDisabled(numeric)
                 #endif
+                .pocketField()
         }
     }
 }

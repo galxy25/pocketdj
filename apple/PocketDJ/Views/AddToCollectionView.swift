@@ -106,6 +106,7 @@ struct AddToCollectionView: View {
                         action: @escaping (String) -> Void) -> some View {
         HStack {
             TextField(placeholder, text: text)
+                .pocketField()
             Button("Add") {
                 let n = text.wrappedValue.trimmingCharacters(in: .whitespaces)
                 if !n.isEmpty { action(n); text.wrappedValue = "" }

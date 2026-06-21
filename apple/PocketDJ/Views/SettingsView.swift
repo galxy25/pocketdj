@@ -160,7 +160,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         TextField("Name", text: $source.name)
-                            .textFieldStyle(.roundedBorder)
+                            .pocketField()
                         Toggle("", isOn: $source.enabled).labelsHidden()
                         Button(role: .destructive) {
                             settings.removeSource(source.id)
@@ -169,7 +169,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings-source-remove")
                     }
                     TextField("Index URL", text: $source.urlString)
-                        .textFieldStyle(.roundedBorder)
+                        .pocketField()
                         .font(.caption.monospaced())
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
@@ -204,16 +204,16 @@ struct SettingsView: View {
     private var searchSection: some View {
         Section {
             TextField("Access key ID", text: $settings.searchAccessKeyID)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 #endif
                 .accessibilityIdentifier("settings-search-akid")
             SecureField("Secret access key", text: $settings.searchSecretKey)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .accessibilityIdentifier("settings-search-secret")
             TextField("Endpoint (optional)", text: $settings.searchEndpoint)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .font(.caption.monospaced())
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -242,14 +242,14 @@ struct SettingsView: View {
     private var ripSection: some View {
         Section {
             TextField("Rip server URL", text: $settings.ripServerURL)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .font(.caption.monospaced())
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 #endif
                 .accessibilityIdentifier("settings-rip-url")
             TextField("Token (optional)", text: $settings.ripToken)
-                .textFieldStyle(.roundedBorder)
+                .pocketField()
                 .accessibilityIdentifier("settings-rip-token")
             HStack {
                 Button {

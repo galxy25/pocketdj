@@ -14,6 +14,37 @@ enum Theme {
     static let radius: CGFloat = 10
 }
 
+// MARK: - Dark text-field style
+
+/// A dark, on-theme text-entry look so `TextField`/`SecureField` stop rendering as
+/// the muddy light-gray macOS default. Renders a plain field (no system border),
+/// `Theme.fg` text, an `accent` caret/tint, a `bgOverlay` fill, modest padding,
+/// a small rounded rect, and a subtle `Theme.border` stroke. Reads correctly on
+/// both macOS and iOS. Apply via `.pocketField()`.
+struct PocketFieldModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .foregroundStyle(Theme.fg)
+            .tint(Theme.accent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Theme.bgOverlay)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Theme.border, lineWidth: 1)
+            )
+    }
+}
+
+extension View {
+    /// Dark, on-theme styling for a native `TextField`/`SecureField`. See `PocketFieldModifier`.
+    func pocketField() -> some View { modifier(PocketFieldModifier()) }
+}
+
 extension Color {
     init(hex: UInt, alpha: Double = 1) {
         self.init(
