@@ -537,9 +537,9 @@ final class CollectionsStore {
     /// Non-zip ⇒ a native collections `.json`.
     nonisolated static func detectKind(data: Data) -> ImportKind {
         let isZip = data.starts(with: [0x50, 0x4B, 0x03, 0x04])   // "PK\u{03}\u{04}"
-        guard isZip, let archive = try? Archive(data: data, accessMode: .read) else {
-            return .collectionsJSON
-        }
+        guard isZip else { return .collectionsJSON }
+        let archive: Archive
+        do { archive = try Archive(data: data, accessMode: .read) } catch { return .collectionsJSON }
         if let entry = archive["manifest.json"] {
             var raw = Data()
             _ = try? archive.extract(entry, skipCRC32: true) { raw.append($0) }

@@ -117,7 +117,8 @@ enum PlaylistZip {
             "pockets.json": try encoder.encode(pockets),
         ]
 
-        guard let archive = try? Archive(accessMode: .create) else { throw PlaylistZipError.archiveUnreadable }
+        let archive: Archive
+        do { archive = try Archive(accessMode: .create) } catch { throw PlaylistZipError.archiveUnreadable }
         for (name, data) in files.sorted(by: { $0.key < $1.key }) {
             try archive.addEntry(with: name, type: .file, uncompressedSize: Int64(data.count),
                                  compressionMethod: .deflate) { position, size in
@@ -167,9 +168,8 @@ enum PlaylistZip {
     /// missing manifest is allowed (presence of playlist.json is enough), and extra
     /// manifest fields are ignored.
     static func `import`(data: Data) throws -> (playlist: Playlist, pockets: [Pocket]) {
-        guard let archive = try? Archive(data: data, accessMode: .read) else {
-            throw PlaylistZipError.archiveUnreadable
-        }
+        let archive: Archive
+        do { archive = try Archive(data: data, accessMode: .read) } catch { throw PlaylistZipError.archiveUnreadable }
 
         func extract(_ name: String) -> Data? {
             guard let entry = archive[name] else { return nil }

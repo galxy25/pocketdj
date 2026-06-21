@@ -135,7 +135,8 @@ enum BackupZip {
             "edits.json": editsData,
         ]
 
-        guard let archive = try? Archive(accessMode: .create) else { throw BackupZipError.archiveUnreadable }
+        let archive: Archive
+        do { archive = try Archive(accessMode: .create) } catch { throw BackupZipError.archiveUnreadable }
         for (name, data) in files.sorted(by: { $0.key < $1.key }) {
             try archive.addEntry(with: name, type: .file, uncompressedSize: Int64(data.count),
                                  compressionMethod: .deflate) { position, size in
@@ -160,9 +161,8 @@ enum BackupZip {
     /// `DataSource[]`) are dropped (not fatal). Returns the payload + a count of the
     /// skipped catalog entries (items + art) for logging.
     static func `import`(data: Data) throws -> (payload: Payload, skipped: SkippedCatalog) {
-        guard let archive = try? Archive(data: data, accessMode: .read) else {
-            throw BackupZipError.archiveUnreadable
-        }
+        let archive: Archive
+        do { archive = try Archive(data: data, accessMode: .read) } catch { throw BackupZipError.archiveUnreadable }
 
         func extract(_ name: String) -> Data? {
             guard let entry = archive[name] else { return nil }

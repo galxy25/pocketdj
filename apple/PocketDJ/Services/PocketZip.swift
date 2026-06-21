@@ -100,7 +100,8 @@ enum PocketZip {
             "pockets.json": try encoder.encode(children),
         ]
 
-        guard let archive = try? Archive(accessMode: .create) else { throw PocketZipError.archiveUnreadable }
+        let archive: Archive
+        do { archive = try Archive(accessMode: .create) } catch { throw PocketZipError.archiveUnreadable }
         for (name, data) in files.sorted(by: { $0.key < $1.key }) {
             try archive.addEntry(with: name, type: .file, uncompressedSize: Int64(data.count),
                                  compressionMethod: .deflate) { position, size in
@@ -135,9 +136,8 @@ enum PocketZip {
     /// Songs/albums stay referenced by catalog id. Version-tolerant: a missing manifest
     /// is allowed (presence of pocket.json is enough), extra manifest fields ignored.
     static func `import`(data: Data) throws -> (pocket: Pocket, children: [Pocket]) {
-        guard let archive = try? Archive(data: data, accessMode: .read) else {
-            throw PocketZipError.archiveUnreadable
-        }
+        let archive: Archive
+        do { archive = try Archive(data: data, accessMode: .read) } catch { throw PocketZipError.archiveUnreadable }
 
         func extract(_ name: String) -> Data? {
             guard let entry = archive[name] else { return nil }
