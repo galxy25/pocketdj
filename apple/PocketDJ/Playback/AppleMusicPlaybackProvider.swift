@@ -31,6 +31,11 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     }
     private(set) var nowPlaying: NowPlaying?
 
+    /// Observable playback state for the inline panel's play/pause icon. Set synchronously
+    /// in togglePlayPause / tryPlay / stop because `ApplicationMusicPlayer.state.playbackStatus`
+    /// is NOT Observation-tracked — a computed property off it never re-renders the icon.
+    private(set) var isPlaying: Bool = false
+
     /// The wrapped account-link + recognizer. Held as the concrete type (not `any
     /// StreamingProvider`) so we can call `resolve(_:)`.
     private let provider: AppleMusicProvider
@@ -55,10 +60,6 @@ extension AppleMusicPlaybackProvider {
         AppleMusicCredentials.isEnabled && MusicAuthorization.currentStatus == .authorized
     }
 
-    var isPlaying: Bool {
-        ApplicationMusicPlayer.shared.state.playbackStatus == .playing
-    }
-
     /// Current playback position (seconds) — drives the inline scrubber for this backend.
     var positionSeconds: Double { ApplicationMusicPlayer.shared.playbackTime }
 
@@ -77,6 +78,7 @@ extension AppleMusicPlaybackProvider {
             guard let catalogSong = resp.items.first else { return false }
             player.queue = [catalogSong]
             try await player.play()
+            isPlaying = true
             nowPlaying = NowPlaying(songId: song.id, title: song.name, artist: song.artist)
             return true
         } catch {
@@ -91,7 +93,9 @@ extension AppleMusicPlaybackProvider {
         let player = ApplicationMusicPlayer.shared
         if player.state.playbackStatus == .playing {
             player.pause()
+            isPlaying = false
         } else {
+            isPlaying = true
             Task { try? await player.play() }
         }
     }
@@ -103,6 +107,7 @@ extension AppleMusicPlaybackProvider {
 
     func stop() {
         ApplicationMusicPlayer.shared.stop()
+        isPlaying = false
         nowPlaying = nil
     }
 }
@@ -113,7 +118,6 @@ extension AppleMusicPlaybackProvider {
 // ============================================================================
 extension AppleMusicPlaybackProvider {
     var isReady: Bool { false }
-    var isPlaying: Bool { false }
     var positionSeconds: Double { 0 }
     func tryPlay(_ song: IndexSong) async -> Bool { false }
     func togglePlayPause() {}
