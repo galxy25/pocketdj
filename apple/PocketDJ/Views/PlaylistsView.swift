@@ -89,6 +89,7 @@ struct PlaylistsView: View {
             }
         }
         .navigationTitle("Playlists")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

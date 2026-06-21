@@ -48,6 +48,7 @@ struct PocketsView: View {
             }
         }
         .navigationTitle("Pockets")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
