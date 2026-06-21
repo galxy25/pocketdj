@@ -1,24 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  PocketDJ entitlements.
+  PocketDJ entitlements — intentionally EMPTY.
 
-  Carries BOTH the MusicKit and ShazamKit app-service entitlements in one file,
-  wired into the target once via project.yml:
-
-      CODE_SIGN_ENTITLEMENTS: PocketDJ/PocketDJ.entitlements
-
-  Each entitlement requires the matching App Service to be enabled on the App ID
-  (`com.levi.pocketdj`, team EC27UF79GL) in the Apple Developer portal — these are
-  manual portal toggles that `-allowProvisioningUpdates` cannot self-provision.
-  Until then, leaving these keys in place is harmless for Simulator builds
-  (entitlements are only enforced when signing for a device / distribution).
+  MusicKit and ShazamKit do NOT use a `.entitlements` file key. They are enabled by
+  turning on the matching App Service for the App ID (`com.levi.pocketdj`, team
+  EC27UF79GL) in the Apple Developer portal, together with the Info.plist usage
+  strings (NSAppleMusicUsageDescription for MusicKit, NSMicrophoneUsageDescription
+  for ShazamKit). Declaring `com.apple.developer.musickit` /
+  `com.apple.developer.shazamkit` here is NOT a valid provisionable entitlement and
+  breaks device/distribution signing ("not found and could not be included in
+  profile"). The MusicKit App Service + usage string are sufficient for
+  MusicAuthorization + ApplicationMusicPlayer; re-add real entitlements here only if
+  a future capability (push, app groups, …) genuinely needs one.
 -->
 <plist version="1.0">
 <dict>
-    <key>com.apple.developer.musickit</key>
-    <true/>
-    <key>com.apple.developer.shazamkit</key>
-    <true/>
 </dict>
 </plist>
