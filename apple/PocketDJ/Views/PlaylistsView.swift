@@ -154,7 +154,10 @@ struct IndexPlaylistDetailView: View {
 
             Section("Songs") {
                 ForEach(songs) { song in
-                    NavigationLink(value: song) { CollectionSongRow(song: song) }
+                    VStack(spacing: 0) {
+                        NavigationLink(value: song) { CollectionSongRow(song: song) }
+                        InlinePlayerSlot(songId: song.id)
+                    }
                 }
             }
         }
@@ -403,7 +406,13 @@ struct PlaylistDetailView: View {
         switch node.kind {
         case .song:
             if let id = node.songId, let song = app.songsById[id] {
-                NavigationLink(value: song) { CollectionSongRow(song: song) }
+                // One List row = nav link + (when this song is playing) the inline panel
+                // BELOW it, both in a VStack so the panel's taps don't hit the link and the
+                // 1:1 element↔row mapping `onMove`/`onDelete` rely on is preserved.
+                VStack(spacing: 0) {
+                    NavigationLink(value: song) { CollectionSongRow(song: song) }
+                    InlinePlayerSlot(songId: song.id)
+                }
             } else { missing("song") }
         case .album:
             if let id = node.albumId, let album = app.albumsById[id] {

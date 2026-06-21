@@ -24,15 +24,10 @@ import SwiftUI
 /// swipe / move / delete / notes / context-menus on the enclosing row.
 struct SongRowView: View {
     @Environment(\.horizontalSizeClass) private var hSize
-    @Environment(RipsStore.self) private var rips
     let data: SongRowData
     /// Optional trailing accessory (e.g. a setlist source/sequence badge column) shown
     /// to the left of the play/download buttons.
     var trailing: AnyView?
-
-    /// True when this row's song is the one the inline player is bound to — drives the
-    /// slide-out panel that renders directly below the row.
-    private var isNowPlaying: Bool { rips.nowPlaying?.songId == data.songId }
 
     /// Show year/genre only when there's room: regular width (iPad) or macOS (nil).
     private var showsExtra: Bool { hSize != .compact }
@@ -49,45 +44,59 @@ struct SongRowView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                SongThumbnail(album: data.album).frame(width: 42, height: 42)
+        HStack(spacing: 10) {
+            SongThumbnail(album: data.album).frame(width: 42, height: 42)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(data.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
-                        if data.explicit {
-                            Text("E").font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 3).padding(.vertical, 1)
-                                .background(Theme.fgDim.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
-                                .foregroundStyle(Theme.fg)
-                                .accessibilityIdentifier("explicit-badge")
-                        }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(data.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                    if data.explicit {
+                        Text("E").font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 3).padding(.vertical, 1)
+                            .background(Theme.fgDim.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
+                            .foregroundStyle(Theme.fg)
+                            .accessibilityIdentifier("explicit-badge")
                     }
-                    Text(descriptor.isEmpty ? "—" : descriptor)
-                        .font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Middle music cluster: BPM tiers · KeyChip · length. The prominent
-                // "what does this sound like" block, right-aligned ahead of transport.
-                HStack(spacing: 8) {
-                    BPMTier(bpm: data.bpm)
-                    KeyChip(key: data.key, camelot: data.camelot)
-                    Text(Fmt.duration(data.lengthMs))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
-                }
-
-                if let trailing { trailing }
-
-                RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
-                             startMs: data.startMs)
+                Text(descriptor.isEmpty ? "—" : descriptor)
+                    .font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Inline slide-out player: renders directly BELOW this row when its song is
-            // the one playing. Moves with the player when ▶ is tapped on another row.
+            // Middle music cluster: BPM tiers · KeyChip · length. The prominent
+            // "what does this sound like" block, right-aligned ahead of transport.
+            HStack(spacing: 8) {
+                BPMTier(bpm: data.bpm)
+                KeyChip(key: data.key, camelot: data.camelot)
+                Text(Fmt.duration(data.lengthMs))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            }
+
+            if let trailing { trailing }
+
+            RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
+                         startMs: data.startMs)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+/// The inline slide-out player rendered at LIST level, immediately AFTER a song row's
+/// `NavigationLink`, when that row's song is the now-playing one. It MUST live outside the
+/// nav-link label so its buttons (play/pause, close, chevron) receive taps instead of the
+/// link swallowing them. Drop this directly after each song-row `NavigationLink`, passing
+/// the row's song id; it shows the panel only for the matching now-playing row and keeps
+/// the slide-in/out animation.
+struct InlinePlayerSlot: View {
+    @Environment(RipsStore.self) private var rips
+    /// The id of the song whose row this slot trails.
+    let songId: String
+
+    private var isNowPlaying: Bool { rips.nowPlaying?.songId == songId }
+
+    var body: some View {
+        Group {
             if isNowPlaying {
                 InlinePlayerPanel()
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -263,6 +272,10 @@ struct RowTransport: View {
     /// Actionable when already ripped, or there's a (configured) server to rip it.
     private var canAct: Bool { cached || rips.hasServer }
 
+    /// True when THIS row's song is the one bound to the shared player — the ▶ becomes a
+    /// pause/resume toggle for the live engine instead of kicking off a fresh rip/play.
+    private var isNowPlaying: Bool { rips.nowPlaying?.songId == song.id }
+
     var body: some View {
         Group {
             if let job = activeJob {
@@ -275,12 +288,11 @@ struct RowTransport: View {
             } else {
                 HStack(spacing: 2) {
                     Button { doPlay() } label: {
-                        Image(systemName: busy == .play ? "ellipsis" : errored ? "exclamationmark.triangle" : "play.fill")
-                            .font(.caption)
+                        Image(systemName: rowPlayIcon).font(.caption)
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle(canAct ? Theme.accent : Theme.fgDim)
-                    .disabled(!canAct || busy != nil)
+                    .foregroundStyle((canAct || isNowPlaying) ? Theme.accent : Theme.fgDim)
+                    .disabled((!canAct && !isNowPlaying) || busy != nil)
                     .accessibilityIdentifier("row-play-\(song.id)")
 
                     Button { doDownload() } label: {
@@ -324,7 +336,18 @@ struct RowTransport: View {
         return "\(s / 60):\(String(format: "%02d", s % 60))"
     }
 
+    /// ▶ icon: while busy → ellipsis; on error → warning; when THIS song is the live
+    /// now-playing one → pause/play mirroring the engine; otherwise the plain ▶.
+    private var rowPlayIcon: String {
+        if busy == .play { return "ellipsis" }
+        if isNowPlaying { return player.isPlaying ? "pause.fill" : "play.fill" }
+        if errored { return "exclamationmark.triangle" }
+        return "play.fill"
+    }
+
     private func doPlay() {
+        // Now-playing row: toggle the SAME engine (pause / resume) — don't re-rip.
+        if isNowPlaying { player.toggle(); return }
         busy = .play
         Task {
             do { try await rips.play(song, startMs: startMs) }

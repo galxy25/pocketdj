@@ -155,15 +155,18 @@ struct SetlistDetailView: View {
             // The SHARED song row, fed by the frozen snapshot, with the setlist-only
             // bits — sequence # · source/sequence badges · per-track note — composed in.
             let song = app.songsById[track.songId]
+            let rowData = SongRowData(track: track, song: song, album: album(for: track))
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .center, spacing: 8) {
                     Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
                         .frame(width: 22, alignment: .trailing)
                     SongRowView(
-                        data: SongRowData(track: track, song: song, album: album(for: track)),
+                        data: rowData,
                         trailing: AnyView(provenanceBadges(track))
                     )
                 }
+                // Inline player below the row when this track's song is the one playing.
+                InlinePlayerSlot(songId: rowData.songId).padding(.leading, 30)
                 noteButton(track, index: index).padding(.leading, 30)
             }
             .accessibilityIdentifier("setlist-track-\(index)")
