@@ -7,6 +7,7 @@ struct RootView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(EditsStore.self) private var edits
     @Environment(CollectionsStore.self) private var collections
+    @Environment(RipsStore.self) private var rips
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     @State private var section: Section? = .browse
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
@@ -53,6 +54,8 @@ struct RootView: View {
             app.settings = settings   // wire the live multi-source config before loading
             app.edits = edits         // overlay local metadata edits
             collections.app = app     // give realize() the catalog to resolve ids against
+            rips.settings = settings  // rip server URL + token come from settings
+            Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
                let s = Section(rawValue: raw) {
