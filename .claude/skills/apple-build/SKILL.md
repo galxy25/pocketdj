@@ -46,7 +46,7 @@ Install + launch on a booted sim with `simctl` (see the **apple-test** /
 ```bash
 UDID=$(xcrun simctl list devices booted | grep -m1 'iPhone 17 Pro' | grep -oE '[0-9A-F-]{36}')
 xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/PocketDJ.app
-xcrun simctl launch "$UDID" net.pocketdj.app
+xcrun simctl launch "$UDID" com.levi.pocketdj
 xcrun simctl io "$UDID" screenshot /tmp/pdj.png     # screenshots need no extra perms
 ```
 

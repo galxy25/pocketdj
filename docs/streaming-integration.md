@@ -17,7 +17,7 @@ no-op stub that reports "Not available" in Settings, and the "?♪?" button show
 is the checklist of what **you, the developer/operator**, must configure to turn
 each one on.
 
-> Team / bundle id used throughout: **`net.pocketdj.app`**, team **`EC27UF79GL`**.
+> Team / bundle id used throughout: **`com.levi.pocketdj`**, team **`EC27UF79GL`**.
 
 ---
 
@@ -92,7 +92,7 @@ Both are manual portal toggles; `-allowProvisioningUpdates` cannot self-provisio
 App Services.
 
 1. **developer.apple.com → Certificates, IDs & Profiles → Identifiers →
-   `net.pocketdj.app`.**
+   `com.levi.pocketdj`.**
 2. Under **App Services / Capabilities**, enable:
    - **MusicKit** — register the app's bundle id as a MusicKit app service.
      (No key file is downloaded for the on-device MusicKit flow — the developer
@@ -108,8 +108,8 @@ App Services.
 
 **Checklist**
 
-- [ ] MusicKit enabled on `net.pocketdj.app`.
-- [ ] ShazamKit enabled on `net.pocketdj.app`.
+- [ ] MusicKit enabled on `com.levi.pocketdj`.
+- [ ] ShazamKit enabled on `com.levi.pocketdj`.
 - [ ] Provisioning profile regenerated with both.
 - [ ] In `project.yml`, uncomment `INFOPLIST_KEY_PocketDJAppleMusicEnabled: "YES"`,
       then `xcodegen generate`.
@@ -134,7 +134,7 @@ App Services.
 
 1. **developer.spotify.com/dashboard → Create app.** Note the **Client ID**.
    (The iOS App Remote flow uses **no client secret on device** — do not ship one.)
-2. **App settings → iOS → Bundle ID:** add `net.pocketdj.app`.
+2. **App settings → iOS → Bundle ID:** add `com.levi.pocketdj`.
 3. **Redirect URIs:** add **exactly** `pocketdj://spotify-login-callback`.
    The scheme (`pocketdj`) must also be a `CFBundleURLTypes` entry (step 1) and is
    what `SpotifyProvider.handleCallback` matches.
@@ -157,7 +157,7 @@ App Services.
 **Checklist**
 
 - [ ] Spotify app created; Client ID copied.
-- [ ] Bundle id `net.pocketdj.app` added.
+- [ ] Bundle id `com.levi.pocketdj` added.
 - [ ] Redirect URI `pocketdj://spotify-login-callback` added (verbatim).
 - [ ] Test account is **Premium**.
 - [ ] `SpotifyiOS` linked (SPM or xcframework).
@@ -188,7 +188,7 @@ pod but no credentials.
    - Quota note: `search.list` costs **100 units** of the default 10,000/day
      (~100 searches/day) — debounce + cache before wiring search-as-you-type.
 3. *(Optional, only for account-link / the user's own playlists)* **Credentials →
-   Create credentials → OAuth client ID → iOS.** Bundle id `net.pocketdj.app`.
+   Create credentials → OAuth client ID → iOS.** Bundle id `com.levi.pocketdj`.
    Copy the **client id** (`1234-abcd.apps.googleusercontent.com`) into
    `YouTubeOAuthClientID`. Its **reversed** form
    (`com.googleusercontent.apps.1234-abcd`) is the redirect URL scheme — add it to
@@ -238,7 +238,7 @@ pod but no credentials.
 
 **Checklist**
 
-- [ ] ShazamKit enabled on `net.pocketdj.app` (step 2).
+- [ ] ShazamKit enabled on `com.levi.pocketdj` (step 2).
 - [ ] (Automatic) mic usage string present — already in `project.yml`.
 
 ---
@@ -265,7 +265,7 @@ Info.plist feature flags.
 
 ## TL;DR — what YOU must configure, per source
 
-- **Apple Music:** portal → enable MusicKit on `net.pocketdj.app`; set
+- **Apple Music:** portal → enable MusicKit on `com.levi.pocketdj`; set
   `PocketDJAppleMusicEnabled = YES`. Needs an Apple Music subscription to play.
 - **Spotify:** dashboard → Client ID + redirect `pocketdj://spotify-login-callback`
   + Premium; link `SpotifyiOS`; fill `SpotifyClientID`/`SpotifyRedirectURL` +
@@ -273,5 +273,5 @@ Info.plist feature flags.
 - **YouTube:** Google Cloud → enable Data API v3 + API key (`YouTubeAPIKey`);
   *(optional)* iOS OAuth client + reversed-id scheme; *(optional)*
   `youtube-ios-player-helper` for playback.
-- **ShazamKit:** portal → enable ShazamKit on `net.pocketdj.app`. Mic string is
+- **ShazamKit:** portal → enable ShazamKit on `com.levi.pocketdj`. Mic string is
   already wired.

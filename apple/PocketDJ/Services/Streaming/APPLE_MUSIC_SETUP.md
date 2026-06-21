@@ -27,7 +27,7 @@ portal toggles + entitlement + Info.plist usage strings below exist.
 
 ## To actually enable (per developer / when provisioning)
 
-### Apple Developer portal (team EC27UF79GL, App ID `net.pocketdj.app`)
+### Apple Developer portal (team EC27UF79GL, App ID `com.levi.pocketdj`)
 1. Enable **MusicKit** App Service on the App ID.
 2. Enable **ShazamKit** App Service on the App ID.
    (Both are manual toggles; `-allowProvisioningUpdates` mints the profile after.)

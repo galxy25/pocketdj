@@ -15,7 +15,7 @@ for on-demand App-Remote playback; Free accounts only get shuffle).
 
 1. Go to <https://developer.spotify.com/dashboard> and **Create app**.
 2. Select the **iOS** SDK.
-3. Set the **Bundle ID** to `net.pocketdj.app` (must match `PRODUCT_BUNDLE_IDENTIFIER`).
+3. Set the **Bundle ID** to `com.levi.pocketdj` (must match `PRODUCT_BUNDLE_IDENTIFIER`).
 4. Add a **Redirect URI** — *exactly* `pocketdj://spotify-login-callback`.
    The scheme (`pocketdj`) is what ties the dashboard, the Info.plist
    `CFBundleURLTypes`, and `SpotifyRedirectURL` together — all three must match.
@@ -49,7 +49,7 @@ migrating the existing `INFOPLIST_KEY_*` values in. The effective plist must con
 <array>
   <dict>
     <key>CFBundleURLName</key>
-    <string>net.pocketdj.app.spotify</string>
+    <string>com.levi.pocketdj.spotify</string>
     <key>CFBundleURLSchemes</key>
     <array><string>pocketdj</string></array>
   </dict>

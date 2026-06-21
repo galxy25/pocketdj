@@ -62,7 +62,7 @@ public final class YouTubeProvider: StreamingProvider {
     /// Data API key, used for search. Empty → provider is `.unavailable`.
     private let apiKeyProvider: () -> String
 
-    private let tokens = StreamingTokenStore(service: "net.pocketdj.youtube")
+    private let tokens = StreamingTokenStore(service: "com.levi.pocketdj.youtube")
 
     /// OAuth scope: read-only access to the user's YouTube account (playlists,
     /// subscriptions). Search/playback do not need it.

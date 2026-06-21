@@ -84,12 +84,12 @@ targets:
     #   path: PocketDJ/Info.plist
     #   properties:
     #     CFBundleURLTypes:
-    #       - CFBundleURLName: net.pocketdj.app.spotify
+    #       - CFBundleURLName: com.levi.pocketdj.spotify
     #         CFBundleURLSchemes: [pocketdj]
     #       # YouTube OAuth redirect — the REVERSED client id is the scheme. Replace
     #       # 1234-abcd with your iOS OAuth client id's prefix (everything before
     #       # ".apps.googleusercontent.com"). Must match YouTubeOAuthClientID below.
-    #       - CFBundleURLName: net.pocketdj.app.youtube
+    #       - CFBundleURLName: com.levi.pocketdj.youtube
     #         CFBundleURLSchemes: [com.googleusercontent.apps.1234-abcd]
     #     LSApplicationQueriesSchemes: [spotify]
     #     SpotifyClientID: ""                                  # your dashboard client id
@@ -142,9 +142,9 @@ targets:
         # GENERATE_INFOPLIST_FILE above, uncomment the `info:` block below, and
         # follow docs/streaming-integration.md. Ready-to-paste placeholder:
         #   CFBundleURLTypes:
-        #     - CFBundleURLName: net.pocketdj.app.spotify
+        #     - CFBundleURLName: com.levi.pocketdj.spotify
         #       CFBundleURLSchemes: [pocketdj]          # pocketdj://spotify-login-callback
-        #     - CFBundleURLName: net.pocketdj.app.youtube
+        #     - CFBundleURLName: com.levi.pocketdj.youtube
         #       CFBundleURLSchemes: [com.googleusercontent.apps.REVERSED-CLIENT-ID]
         #   LSApplicationQueriesSchemes: [spotify]
 

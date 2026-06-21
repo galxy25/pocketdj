@@ -30,10 +30,10 @@ is how we "connect our app to their account".
 1. Go to <https://console.cloud.google.com> → create / pick a project.
 2. **APIs & Services ▸ Library ▸ enable "YouTube Data API v3".**
 3. **APIs & Services ▸ Credentials ▸ Create credentials ▸ API key.** Restrict it:
-   *Application restrictions* → **iOS** (your bundle id `net.pocketdj.app`);
+   *Application restrictions* → **iOS** (your bundle id `com.levi.pocketdj`);
    *API restrictions* → **YouTube Data API v3**. This key powers **search**.
 4. **Create credentials ▸ OAuth client ID ▸ iOS** (only if you want account-link).
-   - Bundle ID: `net.pocketdj.app`.
+   - Bundle ID: `com.levi.pocketdj`.
    - Google generates a client id like `1234-abcd.apps.googleusercontent.com` and
      its **reversed** form `com.googleusercontent.apps.1234-abcd` — that reversed
      string is the **redirect URL scheme** the app registers (step 3 below).
@@ -83,7 +83,7 @@ contain:
 <array>
   <dict>
     <key>CFBundleURLName</key>
-    <string>net.pocketdj.app.youtube</string>
+    <string>com.levi.pocketdj.youtube</string>
     <key>CFBundleURLSchemes</key>
     <array><string>com.googleusercontent.apps.1234-abcd</string></array>
   </dict>
