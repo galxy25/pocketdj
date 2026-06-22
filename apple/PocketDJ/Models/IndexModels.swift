@@ -112,6 +112,13 @@ struct IndexSong: Decodable, Identifiable, Hashable {
     let length: Int?        // milliseconds
     let fileType: String?
     let lyricsStatus: String?   // "found" | "notfound" | "error"
+    /// Apple Music catalog store id ("adam id") the indexer resolved via the public
+    /// iTunes Search API (`trackId`), written onto "Apple Music (Local)" songs by
+    /// `scripts/resolve-apple-music-catalog.mjs`. A bare numeric string (e.g.
+    /// "944459436"); absent when unresolved. Treated as a *candidate* catalog id the
+    /// streaming provider must verify with a real MusicKit fetch before use — see
+    /// `AppleMusicProvider.resolve(_:)`.
+    let appleMusicId: String?
 
     /// A minimal `IndexSong` carrying only the fields the playback engine needs (id +
     /// title + artist). `IndexSong` is Decodable-only (no memberwise init), so — like

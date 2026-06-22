@@ -106,7 +106,8 @@ final class CollectionCatalogTests: XCTestCase {
         // Build a catalog with one length-less song.
         let song = IndexSong(id: "sng_x", albumId: nil, artist: "X", name: "No Length",
                              trackNumber: nil, year: nil, sentimentKeywords: nil, explicit: nil,
-                             bpm: 120, key: nil, camelot: "8A", length: nil, fileType: nil, lyricsStatus: nil)
+                             bpm: 120, key: nil, camelot: "8A", length: nil, fileType: nil,
+                             lyricsStatus: nil, appleMusicId: nil)
         let cat = CollectionCatalog(songsById: ["sng_x": song], albumsById: [:], pocketsById: [:])
         let chap = seq("A", [songNode("sng_x")])
         let s = cat.stats(forChapter: chap)

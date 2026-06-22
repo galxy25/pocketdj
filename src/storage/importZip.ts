@@ -43,13 +43,6 @@ export interface ImportZipResult {
   portable: boolean;
 }
 
-/** A native sources.json entry — { name, urlString, enabled } — NOT a PWA DataSource. */
-interface NativeSource {
-  name?: string;
-  urlString?: string;
-  enabled?: boolean;
-}
-
 /** Heuristic: a PWA DataSource always has `id` + `type`; a native SourceConfig does not. */
 function isPwaDataSource(s: unknown): s is DataSource {
   return !!s && typeof s === 'object' && typeof (s as DataSource).id === 'string' && typeof (s as DataSource).type === 'string';

@@ -52,6 +52,7 @@ function parseArgs(argv) {
     else if (k === '--since') a.since = next();
     else if (k === '--state') a.state = next();
     else if (k === '--limit') a.limit = parseInt(next(), 10);
+    else if (k === '--catalog-cache') a.catalogCache = next();
     else if (k === '--stats') a.stats = true;
   }
   return a;
@@ -134,6 +135,20 @@ async function main() {
   const songIdFor = (persistentId, fallback) =>
     'sng_' + sha1(`${ns}|${persistentId || fallback}`).slice(0, 12);
 
+  // Optional Apple Music catalog ids resolved out-of-band by
+  // scripts/resolve-apple-music-catalog.mjs (a multi-day iTunes-Search crawl). The
+  // cache is ndjson keyed by song id; we bake the `appleMusicId` back onto each
+  // song here so a re-index never drops the resolved ids. Misses (storeId:null)
+  // are simply ignored.
+  const catalogIds = new Map(); // songId -> storeId
+  if (args.catalogCache && existsSync(expand(args.catalogCache))) {
+    for (const ln of readFileSync(expand(args.catalogCache), 'utf8').split('\n')) {
+      if (!ln.trim()) continue;
+      try { const o = JSON.parse(ln); if (o.id && o.storeId) catalogIds.set(o.id, o.storeId); } catch { /* skip */ }
+    }
+    console.error(`  catalog cache: ${catalogIds.size} resolved appleMusicId(s)`);
+  }
+
   // ---- output: stream songs to disk; keep albums + a trackID->songId map in memory ----
   const albums = new Map(); // albumId -> { id, artist, name, genre, year, fileType, trackList: [] }
   const trackToSong = new Map(); // numeric Track ID -> songId (for playlist resolution)
@@ -215,6 +230,7 @@ async function main() {
       year: t['Year'] || undefined,
       explicit: !!t['Explicit'],
       bpm: null, key: null, camelot: null,
+      appleMusicId: catalogIds.get(sid) || undefined,
       length: t['Total Time'] || undefined,
       fileType,
       pointer: {

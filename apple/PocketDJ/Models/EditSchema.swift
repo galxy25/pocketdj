@@ -209,6 +209,7 @@ extension IndexSong {
                          sentimentKeywords: e.sentimentKeywords ?? sentimentKeywords,
                          explicit: e.explicit ?? explicit, bpm: e.bpm ?? bpm,
                          key: e.key ?? key, camelot: e.camelot ?? camelot,
-                         length: length, fileType: fileType, lyricsStatus: lyricsStatus)
+                         length: length, fileType: fileType, lyricsStatus: lyricsStatus,
+                         appleMusicId: appleMusicId)
     }
 }
