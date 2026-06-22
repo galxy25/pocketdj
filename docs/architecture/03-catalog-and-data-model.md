@@ -34,6 +34,7 @@ and the JSON Schema `.claude/skills/analog-indexer/schema/index.schema.json`.
   │   ├─ albumId? · artist · name · trackNumber? · year? · length(ms)?
   │   ├─ lyrics? · lyricsStatus? · sentimentKeywords? · sentimentSource? · explicit?
   │   ├─ bpm? · key? · camelot?   (AUDIO stage; null until analyzed)
+  │   ├─ appleMusicId?   (Apple catalog "adam id", e.g. "944459436"; CATALOG stage — §1.1)
   │   └─ pointer? {fileLocation?,filename?,originalFilename?,disc?,track?,startMs?,endMs?}
   └─ playlists?[] IndexPlaylist { id, name, songIds[] }   (iTunes mirrors)
 ```
@@ -46,8 +47,9 @@ are idempotent. An album's `trackList` holds ordered `IndexSong.id` refs;
 `coverArtSources` is the progressive art list (cdn-first); `audioTracks` is the
 independent audio segmentation (count may differ from `trackList`). On the song,
 `bpm/key/camelot` come from the AUDIO stage and are **`null` until analyzed** (never
-`undefined`, so "pending" stays explicit); `pointer` links back to the raw file
-(`originalFilename`) and per-segment offsets.
+`undefined`, so "pending" stays explicit); `appleMusicId` is the Apple catalog "adam
+id" minted by a separate **CATALOG stage** (§1.1) and is **`undefined` until resolved**;
+`pointer` links back to the raw file (`originalFilename`) and per-segment offsets.
 
 **Import-time derivation.** When a client imports the index, it maps each
 `IndexAlbum`/`IndexSong` to the internal `AlbumItem`/`SongItem` and computes an
@@ -62,6 +64,46 @@ tracks:
 
 `null` when the album has no `audioTracks`, never `undefined` once imported — so "no
 audio" stays explicit (mirrors `SongItem.bpm/key`).
+
+### 1.1 The `appleMusicId` CATALOG stage — making Apple Music (Local) songs streamable
+
+**Why a field, and why a separate stage.** Apple Music (Local) songs are minted with
+content-derived `sng_…` ids (Ch. 1) that carry **no** Apple catalog reference, so a
+client had no way to ask MusicKit to play them — they always fell back to ripping
+(Ch. 5 §8). `appleMusicId` carries the Apple catalog **"adam id"** (a bare numeric
+string, e.g. `"944459436"`) — empirically the same value MusicKit plays by — so the
+native streaming provider can fetch the catalog track directly. It's *deliberately not*
+folded into the Apple Music indexer: that indexer
+([`scripts/index-apple-music.mjs`](../../scripts/index-apple-music.mjs)) is a fast
+(~1.6s), network-free streaming parse of a ~160MB `Library.xml`, whereas resolving
+~93k songs against the **public iTunes Search API** is a multi-**day**, network-bound,
+rate-limited crawl (~20–60/min). Coupling the two would chain a 1.6s job to a 3-day one.
+
+```
+ resolve-apple-music-catalog.mjs            index-apple-music.mjs --catalog-cache
+   per-song iTunes Search (trackId)           streaming Library.xml (re)parse
+   → score best match (coreTitle, version     → bakes appleMusicId back onto each
+     tags) → catalog-cache.ndjson  ───────▶     song from the cache (so a re-index
+   {id, storeId|null}  (resumable, paced,       never drops resolved ids; misses
+    adaptive 403/429 backoff)                    ignored)
+```
+
+**Source of truth:** [`scripts/resolve-apple-music-catalog.mjs`](../../scripts/resolve-apple-music-catalog.mjs).
+It is a standalone, fully **resumable** crawl: a per-song NDJSON cache
+(`catalog-cache.ndjson`, keyed by song id, recording hits *and* misses) is appended per
+song and the index flushed every `--save-every`; re-running skips anything already in
+the cache (`--retry-misses` re-attempts prior misses). Matching is conservative —
+diacritic-folded `coreTitle` (parentheticals dropped) plus **version-tag set equality**
+(only match a "Remix"/"Live"/"Sped Up" row if both sides carry that marker) — so it
+never grabs the wrong take. Pacing uses adaptive 403/429 backoff and retries network
+errors forever, built for an unattended multi-day run.
+
+**Why it's still a *candidate*, not gospel.** `appleMusicId` is a `trackId` from a
+*search* API; versions/regions can drift, and a track can be removed. So the client
+treats it as a **candidate**: the native `AppleMusicProvider.resolve(_:)` verifies it
+with a real MusicKit catalog fetch and **degrades to ripping** on a miss (Ch. 5 §8).
+The `--catalog-cache` flag on the indexer re-bakes resolved ids onto songs on every
+re-index, so the slow crawl's output survives a fast re-parse.
 
 ---
 
