@@ -71,6 +71,14 @@ final class PlaybackCoordinator {
             }
             if await provider.tryPlay(song) {
                 activeBackend = provider.backend
+                // Feature 1 — stream-through-ripping. The Apple Music stream has already
+                // STARTED (tryPlay returned true), so kicking off the async rip here adds
+                // ZERO playback latency. Fire-and-forget (unawaited, never blocks/delays
+                // playback; failures are silent). A plain `Task` inherits this @MainActor —
+                // `requestRipIfNeeded` is idempotent and suspends (not blocks) on the POST.
+                if provider.backend == .appleMusic {
+                    Task { await self.ripProvider.requestAsyncRip(song.id) }
+                }
                 return
             }
         }

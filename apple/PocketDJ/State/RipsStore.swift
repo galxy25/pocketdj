@@ -32,15 +32,15 @@ final class RipsStore {
 
     /// The `/rip` + `/jobs/<id>` response shape (mirrors the PWA's `JobView`).
     struct Job: Decodable, Equatable {
-        var jobId: String?
-        var songId: String?
+        var jobId: String? = nil
+        var songId: String? = nil
         var phase: Phase
-        var message: String?
-        var url: String?
-        var error: String?
+        var message: String? = nil
+        var url: String? = nil
+        var error: String? = nil
         /// Relative path to the live HLS playlist (`/hls/<songId>/index.m3u8`).
-        var streamUrl: String?
-        var progress: Progress?
+        var streamUrl: String? = nil
+        var progress: Progress? = nil
     }
 
     /// One public-S3 manifest entry (mirrors the PWA's `ManifestEntry`). Only the
@@ -56,6 +56,9 @@ final class RipsStore {
         var camelot: String? = nil
         var waveform: String? = nil
         var analyzed: Bool? = nil
+        /// Epoch-ms when this rip completed + uploaded (the server emits `Date.now()`).
+        /// Optional for backward-compat with older manifest entries that predate it.
+        var rippedAt: Double? = nil
     }
 
     /// The "now playing" handoff to the inline player (mirrors the PWA's `NowPlaying`).
@@ -78,6 +81,13 @@ final class RipsStore {
     private(set) var jobs: [String: Job] = [:]
     /// The track the inline player is currently bound to.
     private(set) var nowPlaying: NowPlaying?
+
+    /// Synchronous in-flight guard for the fire-and-forget async rip (Feature 1).
+    /// Held from BEFORE the `await` until the POST resolves so back-to-back calls for
+    /// the same song (popular-song spam, rapid double-taps) fire at most one POST per
+    /// process. The server (manifest skip + inflight join) is the cross-process backstop;
+    /// this is best-effort spam reduction at the cheapest point.
+    private var requesting: Set<String> = []
 
     // MARK: Config
 
@@ -281,6 +291,198 @@ final class RipsStore {
     }
 
     func setNowPlaying(_ n: NowPlaying?) { nowPlaying = n }
+
+    // MARK: Feature 1 — stream-through-ripping (fire-and-forget async rip)
+
+    /// Phases that mean a rip is already in progress for a song (a non-terminal job).
+    /// `nonisolated` so the nonisolated `batchStatus(for:)` can read this immutable
+    /// constant without a MainActor hop (and to stay clean under the Swift 6 language mode).
+    nonisolated private static let inFlightPhases: Set<Phase> = [.queued, .searching, .ripping, .streaming, .uploading]
+
+    /// FIRE-AND-FORGET async rip request (Feature 1). Called the moment a streamable
+    /// Apple Music song STARTS playing so the durable rip is likely ready shortly after
+    /// the user finishes streaming. NEVER throws (errors are swallowed) and NEVER blocks
+    /// playback — the caller fires it in an unawaited `Task`.
+    ///
+    /// IDEMPOTENT at three layers:
+    ///   1. cheap MainActor guard — already cached, an in-flight job, or already requesting
+    ///      this process → return immediately (no network),
+    ///   2. the synchronous `requesting` Set is inserted BEFORE the `await` so two near-
+    ///      simultaneous calls collapse to one POST,
+    ///   3. the server's manifest skip + single-flight inflight join is the exact-once
+    ///      cross-process / restart backstop.
+    func requestRipIfNeeded(_ songId: String) async {
+        // (1) cheap guard — cut popular-song spam at the cheapest point, before any network.
+        if cachedURL(songId) != nil { return }
+        if let phase = jobs[songId]?.phase, Self.inFlightPhases.contains(phase) { return }
+        if requesting.contains(songId) { return }
+        guard hasServer else { return }
+
+        // (2) reserve synchronously BEFORE the first suspension so the guard is single-flight.
+        requesting.insert(songId)
+        defer { requesting.remove(songId) }
+
+        let base = serverUrl, tok = token
+        do {
+            var post = URLRequest(url: URL(string: "\(base)/rip")!)
+            post.httpMethod = "POST"
+            post.setValue("application/json", forHTTPHeaderField: "content-type")
+            applyAuth(&post, token: tok)
+            post.httpBody = try JSONSerialization.data(withJSONObject: ["songId": songId])
+            let (data, response) = try await session.data(for: post)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            let view = try JSONDecoder().decode(Job.self, from: data)
+            jobs[songId] = view
+        } catch {
+            // Fire-and-forget: a failed request must be silent to playback.
+        }
+    }
+
+    // MARK: Feature 2 RIP — batch enqueue a collection to be ripped + uploaded to S3
+
+    /// One song's outcome from a batch rip (mirrors the server's per-song result).
+    struct BatchRipItem: Decodable, Equatable {
+        var songId: String
+        /// "ready" | "queued" | "inflight" | "unknown".
+        var status: String
+        var jobId: String?
+        var url: String?
+    }
+
+    /// The aggregate result of a `ripCollection` call — per-song outcomes + counts for the
+    /// partial-success UI (next stage).
+    struct BatchRipResult: Equatable {
+        var results: [BatchRipItem] = []
+        var ready = 0, queued = 0, inflight = 0, unknown = 0, total = 0
+    }
+
+    /// The `/rip-collection` response envelope.
+    private struct BatchRipResponse: Decodable {
+        struct Counts: Decodable { var ready = 0; var queued = 0; var inflight = 0; var unknown = 0; var total = 0 }
+        var results: [BatchRipItem]
+        var counts: Counts
+    }
+
+    /// Batch-enqueue every song in a collection to be ripped + uploaded to S3 (Feature 2
+    /// RIP), reusing the server's durable queue. Deduplicates `songIds`. Returns per-song
+    /// outcomes + counts. If the server is older and 404s `/rip-collection`, falls back to
+    /// a per-song loop and synthesizes the counts. Empty input is a no-op (zero counts).
+    func ripCollection(_ songIds: [String]) async -> BatchRipResult {
+        let ids = orderedUnique(songIds)
+        guard !ids.isEmpty else { return BatchRipResult() }
+        guard hasServer else { return await ripCollectionFallback(ids) }
+
+        let base = serverUrl, tok = token
+        do {
+            var post = URLRequest(url: URL(string: "\(base)/rip-collection")!)
+            post.httpMethod = "POST"
+            post.setValue("application/json", forHTTPHeaderField: "content-type")
+            applyAuth(&post, token: tok)
+            post.httpBody = try JSONSerialization.data(withJSONObject: ["songIds": ids])
+            let (data, response) = try await session.data(for: post)
+            guard let http = response as? HTTPURLResponse else { return await ripCollectionFallback(ids) }
+            // Older server without the batch endpoint → fall back to a per-song loop.
+            if http.statusCode == 404 { return await ripCollectionFallback(ids) }
+            guard (200..<300).contains(http.statusCode) else { return BatchRipResult() }
+
+            let decoded = try JSONDecoder().decode(BatchRipResponse.self, from: data)
+            // Record the queued/inflight jobs so the row's phase label updates.
+            for item in decoded.results where item.status == "queued" || item.status == "inflight" {
+                if let jobId = item.jobId {
+                    jobs[item.songId] = Job(jobId: jobId, songId: item.songId, phase: .queued)
+                }
+            }
+            return BatchRipResult(
+                results: decoded.results,
+                ready: decoded.counts.ready, queued: decoded.counts.queued,
+                inflight: decoded.counts.inflight, unknown: decoded.counts.unknown,
+                total: decoded.counts.total)
+        } catch {
+            return await ripCollectionFallback(ids)
+        }
+    }
+
+    /// Per-song fallback when `/rip-collection` is unavailable: loop `requestRipIfNeeded`
+    /// and synthesize counts from what we can observe. Classifies each song by the ACTUAL
+    /// job phase the per-song `/rip` returned (queued vs an already-in-flight phase) rather
+    /// than labeling everything "queued" off jobId presence — so the counts match the batch
+    /// path's ready/queued/inflight/unknown buckets. Best-effort; never throws.
+    private func ripCollectionFallback(_ ids: [String]) async -> BatchRipResult {
+        var result = BatchRipResult()
+        for id in ids {
+            if cachedURL(id) != nil {
+                result.results.append(BatchRipItem(songId: id, status: "ready", jobId: nil,
+                                                   url: cachedURL(id)?.absoluteString))
+                result.ready += 1
+            } else if hasServer {
+                await requestRipIfNeeded(id)
+                let job = jobs[id]
+                let status = Self.batchStatus(for: job?.phase)
+                result.results.append(BatchRipItem(songId: id, status: status, jobId: job?.jobId, url: nil))
+                switch status {
+                case "ready":    result.ready += 1
+                case "queued":   result.queued += 1
+                case "inflight": result.inflight += 1
+                default:         result.unknown += 1
+                }
+            } else {
+                result.results.append(BatchRipItem(songId: id, status: "unknown", jobId: nil, url: nil))
+                result.unknown += 1
+            }
+            result.total += 1
+        }
+        return result
+    }
+
+    /// Map an observed per-song job phase to the batch endpoint's status vocabulary
+    /// ("ready" | "queued" | "inflight" | "unknown") so the fallback's counts line up with
+    /// the `/rip-collection` path. A nil phase (no/failed response) is "unknown".
+    nonisolated static func batchStatus(for phase: Phase?) -> String {
+        switch phase {
+        case .ready:  return "ready"
+        case .queued: return "queued"
+        // `.queued` is already handled above, so any remaining in-flight phase is "inflight".
+        case .some(let p) where inFlightPhases.contains(p): return "inflight"
+        default:      return "unknown"
+        }
+    }
+
+    // MARK: Feature 2 BURN — non-blocking download primitive + managed storage
+
+    /// NON-BLOCKING download for Burn: returns the durable mp3 bytes + the manifest entry
+    /// ONLY when the song is already ripped (in the manifest). Returns nil otherwise —
+    /// Burn must NEVER block on the 30-min rip-on-demand `ensureURL` path, so a not-yet-
+    /// ripped song is simply skipped (and optionally enqueued via `ripCollection`).
+    func downloadDataIfCached(_ song: (id: String, title: String, artist: String)) async throws -> (data: Data, entry: ManifestEntry)? {
+        guard let url = cachedURL(song.id), let entry = manifest[song.id] else { return nil }
+        var request = URLRequest(url: url)
+        applyAuth(&request, token: token)
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw RipError.serverError(nil)
+        }
+        return (data, entry)
+    }
+
+    /// App-managed storage for burned audio + sidecars (NOT user-visible Documents —
+    /// these are app-managed offline files the future offline player / live-mixer reads).
+    /// Mirrors `documentsDirectory()` but in Application Support, under `burns/`.
+    static func burnsDirectory() throws -> URL {
+        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                               appropriateFor: nil, create: true)
+        let dir = base.appendingPathComponent("burns", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Pure: stable de-dupe preserving first-seen order (the batch must not reorder a
+    /// collection, and must not double-enqueue a song that appears twice).
+    nonisolated static func orderedUnique(_ ids: [String]) -> [String] {
+        var seen = Set<String>(); var out: [String] = []
+        for id in ids where !id.isEmpty && seen.insert(id).inserted { out.append(id) }
+        return out
+    }
+    private func orderedUnique(_ ids: [String]) -> [String] { Self.orderedUnique(ids) }
 
     /// Sanitized "Artist - Title.mp3" filename (mirrors the PWA's slug).
     nonisolated static func downloadFileName(artist: String, title: String) -> String {

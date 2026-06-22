@@ -103,6 +103,7 @@ struct PocketDetailView: View {
     @State private var addingNote = false
     @State private var noteDraft = ""
     @State private var editingNoteId: String?
+    @State private var ripBurn = CollectionRipBurnController()
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
 
@@ -182,6 +183,7 @@ struct PocketDetailView: View {
         .navigationTitle(pocket?.name ?? "Pocket")
         .accessibilityIdentifier("pocket-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
+        .collectionRipBurn(ripBurn)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -191,6 +193,8 @@ struct PocketDetailView: View {
                         .accessibilityIdentifier("rename-pocket")
                     Button { export() } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                         .accessibilityIdentifier("export-pocket")
+                    Divider()
+                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPocket: pocketId) }, noun: "pocket")
                     Divider()
                     Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete pocket", systemImage: "trash") }
                         .accessibilityIdentifier("delete-pocket")

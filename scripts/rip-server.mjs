@@ -126,6 +126,33 @@ function jobView(job) {
 }
 function fail(job, error) { job.error = error; setPhase(job, 'error'); if (job.resourceKey) inflight.delete(job.resourceKey); }
 
+// ---- shared rip-accept logic (single-flight, idempotent, durable) ----
+// Factored out of POST /rip so the batch endpoint (POST /rip-collection) reuses the
+// EXACT accept path: manifest-cached skip, single-flight inflight join by resourceKey
+// (albumId for analog, songId for digital), else create job + persistQueue + enqueue.
+// Returns { job, status, url } — POST /rip translates this back to its existing
+// jobView/ready response so its contract stays byte-identical.
+//   status: 'unknown' (not in catalog) | 'ready' (already ripped) | 'inflight'
+//           (joined an in-progress job, no new enqueue) | 'queued' (newly enqueued)
+function acceptRip(songId) {
+  const song = songId && songById.get(songId);
+  if (!song) return { job: null, status: 'unknown', url: null };
+  if (manifest[songId]) return { job: null, status: 'ready', url: publicUrl(manifest[songId].key) };
+  const resourceKey = song.sourceType === 'analog' ? song.albumId : songId;
+  const existingId = inflight.get(resourceKey);
+  if (existingId && jobs.has(existingId)) {
+    const job = jobs.get(existingId);
+    return { job, status: 'inflight', url: job.url || null };
+  }
+  const job = { jobId: randomUUID(), songId, resourceKey, phase: 'queued', createdAt: Date.now() };
+  jobs.set(job.jobId, job);
+  inflight.set(resourceKey, job.jobId);
+  persistQueue(job); // durable: survives a restart
+  setPhase(job, 'queued');
+  enqueue(job);
+  return { job, status: 'queued', url: null };
+}
+
 // ---- durable queue: a pending rip request survives a restart ----
 // One file per songId; written on accept, deleted when the job finishes (ready/error).
 // On startup any leftover files are re-enqueued (idempotent — skipped if already ripped).
@@ -394,22 +421,33 @@ const server = http.createServer(async (req, res) => {
     try { st = { ...job, ...JSON.parse(readFileSync(jobFile(id), 'utf8')) }; } catch { /* in-memory only */ }
     return send(res, 200, jobView(st));
   }
-  // POST /rip {songId}
+  // POST /rip {songId} — single-song rip-on-demand (also the F1 stream-through
+  // fire-and-forget target: idempotent + durable + non-blocking). Response shape is
+  // unchanged: it goes through acceptRip() but translates the result back to the
+  // exact jobView/ready/404 contract the app's RipsStore.Job decoder expects.
   if (path === '/rip' && req.method === 'POST') {
     const { songId } = await readJson(req);
-    const song = songId && songById.get(songId);
-    if (!song) return send(res, 404, { error: 'unknown songId' });
-    if (manifest[songId]) return send(res, 200, { jobId: null, songId, phase: 'ready', url: publicUrl(manifest[songId].key) });
-    const resourceKey = song.sourceType === 'analog' ? song.albumId : songId;
-    const existingId = inflight.get(resourceKey);
-    if (existingId && jobs.has(existingId)) return send(res, 200, jobView(jobs.get(existingId)));
-    const job = { jobId: randomUUID(), songId, resourceKey, phase: 'queued', createdAt: Date.now() };
-    jobs.set(job.jobId, job);
-    inflight.set(resourceKey, job.jobId);
-    persistQueue(job); // durable: survives a restart
-    setPhase(job, 'queued');
-    enqueue(job);
-    return send(res, 200, jobView(job));
+    const r = acceptRip(songId);
+    if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
+    if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', url: r.url });
+    return send(res, 200, jobView(r.job));
+  }
+  // POST /rip-collection {songIds:[...]} — Feature 2 RIP. Batch-enqueue every song in
+  // a collection to be ripped + uploaded to S3, reusing the EXACT same durable queue,
+  // single-flight dedup and concurrency-1 worker as /rip (via acceptRip). Returns a
+  // per-song outcome array for partial-success UI. Same auth as /rip (the authed() gate
+  // above — public when no token is configured). No length limit: it is async and the
+  // durable queue scales out as needed.
+  if (path === '/rip-collection' && req.method === 'POST') {
+    const { songIds } = await readJson(req);
+    const ids = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    const results = ids.map((id) => {
+      const r = acceptRip(id);
+      return { songId: id, status: r.status, jobId: r.job ? r.job.jobId : null, url: r.url || (r.job && r.job.url) || null };
+    });
+    const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
+      { ready: 0, queued: 0, inflight: 0, unknown: 0, total: 0 });
+    return send(res, 200, { results, counts });
   }
   // POST /analysis {songId, key?, bpm, musicalKey, camelot, waveform, durationMs?}
   // External analysis submission (the batch tool, for skill-ripped songs). Merges into

@@ -17,6 +17,7 @@ struct SetlistDetailView: View {
     @State private var noteDraft = ""
     @State private var addingNote = false      // top-level "Add note" composer
     @State private var addNoteDraft = ""
+    @State private var ripBurn = CollectionRipBurnController()
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
 
@@ -71,12 +72,20 @@ struct SetlistDetailView: View {
         }
         .accessibilityIdentifier("setlist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
+        .collectionRipBurn(ripBurn)
         .toolbar {
             if let setlist {
                 ToolbarItem(placement: .primaryAction) {
                     Button { addNoteDraft = ""; addingNote = true } label: { Image(systemName: "text.badge.plus") }
                         .help("Add a note between tracks")
                         .accessibilityIdentifier("setlist-add-note")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
+                    } label: { Image(systemName: "arrow.down.circle") }
+                        .help("Rip or burn this set list")
+                        .accessibilityIdentifier("setlist-ripburn-menu")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button { nameDraft = setlist.name ?? ""; renaming = true } label: { Image(systemName: "pencil") }

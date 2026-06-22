@@ -43,16 +43,37 @@ manifest in memory.
 | `GET /health` | version handshake + stats | `{ ok, host, version, hls, bucket, catalog:{songs,albums}, cached, auth }` |
 | `GET /status/:songId` | is it ripped? | `{ ready:true, url, entry }` or `{ ready:false, job }` |
 | `POST /rip` `{songId}` | start/join a rip | `JobView` |
+| `POST /rip-collection` `{songIds[]}` | batch-enqueue a whole collection (reuses the durable queue) | `{ results:[{songId,status,jobId,url}], counts }` |
 | `GET /jobs/:id` | poll a job | `JobView` |
 | `GET /hls/<songId>/index.m3u8` · `…/seg_N.ts` | live HLS (iOS-native) | playlist / TS segment |
 | `GET /stream/<songId>.mp3` | live progressive mp3 (tail) | chunked `audio/mpeg` |
 | `POST /analysis` `{songId,bpm,…}` | external analysis submit | `{ ok, songId }` |
 
-Auth is a bearer token (`RIP_TOKEN`); media paths (`/hls`, `/stream`) also accept
-`?token=` because a native `<audio>` can't set an Authorization header. `version` is
-`RIP_PROTOCOL = 2`; the client (`EXPECTED_RIP_VERSION = 2`,
-`RipServerService.expectedVersion = 2`) shows an "outdated — restart it" banner if a
-reachable server reports `< 2`.
+Auth is an **optional** bearer token (`RIP_TOKEN`): all gated routes go through one
+shared `authed()` check that is **permissive (public) when no token is configured** — so
+during development the server runs **tokenless / public** for frictionless integration
+testing. `/rip` and `/rip-collection` sit below the *same* gate, so they are public (or
+gated) **identically**; there is no `/rip-collection`-specific fail-closed branch. Media
+paths (`/hls`, `/stream`) also accept `?token=` because a native `<audio>` can't set an
+Authorization header. `version` is `RIP_PROTOCOL = 2`; the client
+(`EXPECTED_RIP_VERSION = 2`, `RipServerService.expectedVersion = 2`) shows an
+"outdated — restart it" banner if a reachable server reports `< 2`.
+
+**`POST /rip-collection` — batch rip a whole collection.** A thin batch wrapper over the
+same `acceptRip(songId)` helper `/rip` uses, so it reuses the durable per-`songId` queue,
+single-flight dedup, concurrency-1 worker, and S3 upload **verbatim** — no second queue.
+The body is `{ songIds: [...] }` (deduped server-side, empty allowed, **no length cap** —
+it is async and the queue scales out). The response is `{ results, counts }`: one
+`{ songId, status, jobId, url }` per id where `status ∈ ready|queued|inflight|unknown`
+(already-cached → `ready`+`url`; new job → `queued`; joined an in-flight `resourceKey`
+→ `inflight`; not in catalog → `unknown`), plus a `counts` rollup. For an analog album
+with several selected songs the *leader* creates one durable queue file (`resourceKey =
+albumId`) and siblings report `inflight`, resolving via the manifest when the album rip
+completes. Re-POSTing a collection is a no-op for already-ripped / in-flight songs. The
+native app ([`RipsStore.ripCollection`](../../apple/PocketDJ/State/RipsStore.swift)) calls
+it and **falls back to a per-song `/rip` loop** if the server `404`s the path (older
+build); it classifies each fallback result by the song's actual job phase so the counts
+line up with the batch path's vocabulary.
 
 ---
 
@@ -155,10 +176,20 @@ off.
 
 **Reading the diagram.** `manifest.json` is keyed by `songId` → a `ManifestEntry`:
 where the audio lives (`key`), how it was made (`source`), the auto-seek
-`startMs`/`durationMs`, and background analysis (`bpm`/`musicalKey`/`camelot`/
-`waveform`/`analyzed`). `JobView` is the client-facing job projection: `phase` (the
-`RipPhase` enum), an optional `streamUrl` once live HLS is ready, and `progress`
-(definite for a real-time digital capture, `indeterminate` otherwise).
+`startMs`/`durationMs`, a **`rippedAt`** epoch-ms completion stamp, and background
+analysis (`bpm`/`musicalKey`/`camelot`/`waveform`/`analyzed`). `JobView` is the
+client-facing job projection: `phase` (the `RipPhase` enum), an optional `streamUrl`
+once live HLS is ready, and `progress` (definite for a real-time digital capture,
+`indeterminate` otherwise).
+
+**`rippedAt` — the freshness stamp for offline burns.** The server writes `rippedAt =
+Date.now()` into the manifest entry whenever a rip completes and uploads (analog album
+completion shares one stamp across all the album's songs; digital/skill completion stamps
+after the S3 upload; `POST /analysis` stamps a freshly-minted entry). It is a **plain
+optional field** — older entries that predate it still load. The native offline-burn
+store (§9) uses it as a staleness signal: a downloaded burn is treated as stale and
+re-downloaded when its source entry's `rippedAt` is newer than when the burn was last
+downloaded, catching re-rips and analysis-overlay bpm/key updates beyond the size check.
 
 **Folding analysis back into the UI.** The per-rip analysis lives in the **manifest**,
 not the catalog index. The native app's shared `SongRowView` therefore OVERLAYS a
@@ -343,6 +374,92 @@ provider** (unchanged). Before this branch, Apple Music (Local) songs — whose 
 shaped `sng_…` (which step 2 can't decode) — *always* missed resolution and *always*
 fell through to a rip; with the `appleMusicId` candidate they now stream via Apple Music
 in the common case. (This is the same degradation the storybook §29 "Play" describes.)
+
+**Stream-through-rip — capture for offline while the stream plays.** Streaming an Apple
+Music track plays it *now* but leaves nothing on the public S3 cache for later (offline,
+or another device). So when the Apple Music provider **wins** a play, the coordinator
+fires **one fire-and-forget rip** — `Task { await ripProvider.requestAsyncRip(song.id) }`
+right after `activeBackend = .appleMusic`, **before `return`** — so the track is silently
+captured to S3 in the background. It is a plain `Task` (not `Task.detached`): the await
+chain that started playback has already completed, so this adds **zero playback latency**,
+and playback is **never** blocked or failed by the rip. `requestAsyncRip` delegates to
+[`RipsStore.requestRipIfNeeded`](../../apple/PocketDJ/State/RipsStore.swift), whose
+idempotency is three-layered: (1) a cheap `@MainActor` guard returns early if the song is
+already cached or has a live job; (2) a **synchronous `requesting` Set** insert *before*
+the first `await` closes the guard race so it is single-flight per process; (3) the
+server's manifest-skip + `inflight` join make it exact-once across restarts / devices.
+The method **never throws** to the caller. Vinyl never streams, so this only fires on the
+Apple-Music-won path; the resulting rip is the same durable mp3 every later play (and
+every Burn, §9) reads.
+
+---
+
+## 9. Collection Rip + Burn — the offline local store (`BurnStore`)
+
+**Why.** §1–§8 make a song audible *while connected to the rip server / S3*. To carry a
+whole **set** (a playlist, pocket, setlist, or source) into a room with no signal, two
+collection-level verbs are needed: **Rip** the whole collection (server-side capture to
+S3) and **Burn** it (download the ripped audio + a mixer-readable sidecar to the device).
+These are deliberately split: **Rip** is server-only and never blocks; **Burn** only
+downloads songs that are *already ripped* and never blocks on a live capture.
+
+**Source of truth:**
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
+(`ripCollection`, `downloadDataIfCached`, `burnsDirectory`),
+[`apple/PocketDJ/State/BurnStore.swift`](../../apple/PocketDJ/State/BurnStore.swift)
+(the download queue + local index),
+[`apple/PocketDJ/State/CollectionsStore.swift`](../../apple/PocketDJ/State/CollectionsStore.swift)
+(`songIds(forPlaylist/forPocket/forSetlist/forSource)` + `burnTuples` resolvers),
+[`apple/PocketDJ/Views/CollectionRipBurn.swift`](../../apple/PocketDJ/Views/CollectionRipBurn.swift)
+(the shared Rip/Burn buttons + controller, storybook §33).
+
+**Rip (collection).** `RipsStore.ripCollection(songIds)` dedupes and `POST`s
+`/rip-collection` (§2), updating `jobs[…]` for `queued`/`inflight` results and returning
+the per-song counts for a partial-success summary. If the server `404`s the path it falls
+back to looping `requestRipIfNeeded` per song and **classifies each by the song's actual
+job phase** (ready/queued/inflight/unknown) so the synthesized counts match the batch
+vocabulary. No local download happens — Rip is purely "send the set to be recorded."
+
+**Burn (collection) — `BurnStore`.** An `@Observable @MainActor` store mirroring the
+durable-JSON pattern (`pocketdj-burns.json` in Application Support, atomic write,
+decode-on-init, `PDJ_USE_FIXTURE` test seam). It runs a **serial, one-by-one download
+queue keyed by `songId`**, downloading **only already-ripped songs** via the new
+`RipsStore.downloadDataIfCached` — which returns `nil` (rather than rip-on-demand-blocking
+like `downloadData`) when the song isn't cached. Per song:
+
+```
+ burn(songs, lookup):  for each song, sequentially —
+   isFresh? (state==.ready ∧ file exists ∧ size==bytes ∧ manifest.rippedAt ≤ downloadedAt) → skip
+   cachedURL == nil → record "not ripped — Rip first" → continue   (NEVER ensureURL)
+   downloadDataIfCached → (data, ManifestEntry)
+   analog → <albumId>.mp3 (one shared file/album, reuse if a sibling wrote it; seek by startMs)
+   digital → <songId>.mp3
+   write <songId>.txt sidecar (BPM · Key+Camelot · Sentiment · Album + metadata + raw JSON)
+   record BurnItem{ audio/sidecar names, bpm/key/camelot/durationMs/startMs, bytes,
+                    rippedAt(from entry), downloadedAt(now), state:.ready }  → save()
+```
+
+**Freshness — `isFresh(_:dir:rippedAt:)`.** A burn is reused only when its file still
+exists **and** its size matches the recorded `bytes` **and** the manifest entry's
+`rippedAt` is **not newer** than the burn's `downloadedAt`. A newer `rippedAt`
+(re-rip, or an analysis overlay updating bpm/key) ⇒ stale ⇒ re-download; a legacy entry
+with no `rippedAt` degrades to the size-only check. Edge handling: per-item `do/catch`
+isolates partial success (one bad song doesn't abort the set); an
+`NSFileWriteOutOfSpaceError` early-aborts the rest with a single "out of space" summary;
+an empty collection is a no-op; with no rip server it still burns the cached songs and
+reports the rest as "not ripped".
+
+**The offline-ready local store.** `pocketdj-burns.json` is the **machine-readable
+catalog of offline-available tracks** a future offline player / live-mixer enumerates —
+each `BurnItem` carries the analyzed `bpm`/`musicalKey`/`camelot`/`durationMs` and, for
+analog, the `startMs` seek offset into the shared per-album mp3. `localURL(forSong:)`
+existence-checks before returning a URL (so a purged file degrades gracefully),
+`reconcileOnLaunch()` prunes items whose audio vanished, and `remove(_:)` + `totalBytes`
+make the layout eviction-ready. Offline playback and live mixing themselves are
+**deferred** — this is the storage layout + seams those will consume, feeding
+`PlayerEngine.load(url:live:startMs:title:artist:)` (§7), which already accepts any local
+URL + `startMs`. The human-readable `<songId>.txt` sidecar mirrors the `burn-setlist`
+skill's format (§6) as a companion; the JSON index, not the prose, is the source of truth.
 
 ## Next
 

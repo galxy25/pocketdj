@@ -18,6 +18,9 @@ struct PocketDJApp: App {
     @State private var rips: RipsStore
     @State private var player: PlayerEngine
     @State private var streaming: StreamingStore
+    /// App-side BURN queue (Feature 2): downloads ripped songs + sidecars into managed
+    /// storage. Shares the SAME rips instance whose manifest/cachedURL drive its skip logic.
+    @State private var burns: BurnStore
     /// The provider-cycling matching engine behind ▶: tries Apple Music streaming first for
     /// Apple Music (Local) songs (when ready), always falls back to the rip server. Built
     /// from the SAME rips/player/streaming instances so the rip path is unchanged.
@@ -32,6 +35,7 @@ struct PocketDJApp: App {
         _rips = State(initialValue: rips)
         _player = State(initialValue: player)
         _streaming = State(initialValue: streaming)
+        _burns = State(initialValue: BurnStore(rips: rips, fileURL: BurnStore.launchURL()))
         _coordinator = State(initialValue: PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: amProvider)))
@@ -47,6 +51,7 @@ struct PocketDJApp: App {
                 .environment(rips)
                 .environment(player)
                 .environment(streaming)
+                .environment(burns)
                 .environment(coordinator)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)

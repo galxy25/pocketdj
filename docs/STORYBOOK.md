@@ -876,3 +876,46 @@ Other shortcuts round it out: **⌘1 / ⌘2** Albums / Songs, **⌘L** focus sea
 
 **User story:** "On a laptop I want to fly — Spotlight-style: type, arrow down,
 hit Return to open or ⌘P to play, hands never leaving the keyboard."
+
+---
+
+## 33. Rip & Burn a whole set — take it offline
+
+Playing one song at a time is great in the room with signal. But a gig is a *set*, and
+the venue might have no signal at all. So every collection you can perform from — a
+**playlist**, a **pocket**, a **setlist**, or a whole **source** ("From your sources")
+— gets two collection-level buttons in its detail screen: **Rip** and **Burn**.
+
+**Rip = "send the whole set to be recorded."** Tap **Rip** and the app hands the entire
+set to your iMac to capture — analog tracks from your vinyl recordings, Apple Music
+tracks in real time — and upload each as an mp3 to the shared cache. Nothing downloads to
+your phone; this is just *"make sure every track in this set exists as a rip."* Because
+ripping Apple Music happens in real time and one track at a time, it **completes over
+time** in the background — so the result reads like *"Ripped 8 of 10 — 2 unrippable,
+enqueued, completes over time,"* with a **Refresh** to reconcile the final counts later.
+Re-tapping Rip on a set that's mostly done is cheap: already-ripped and in-progress tracks
+are skipped. (Rip is only offered when you've pointed the app at a rip server.)
+
+> **You usually don't even have to ask.** Whenever you simply *play* an Apple Music track
+> in the app, it quietly gets ripped in the background too (no waiting, no prompt) — so a
+> set you've been playing through is often already half-ripped before you ever tap **Rip**.
+
+**Burn = "download this set for offline."** Tap **Burn** and the app downloads every
+*already-ripped* track in the set onto the device, so the whole set plays with **no
+signal and no rip server**. Burn never waits on a live recording — it only pulls tracks
+that are already ripped, and reports the rest as *"not yet ripped — Rip first"* (so the
+natural flow is **Rip**, let it finish, then **Burn**). Alongside each downloaded track it
+writes a plain-text companion with the track's **BPM, key (musical + Camelot), sentiment,
+album, and full metadata** — the same kind of mixer-ready sidecar the desktop burn
+produces. Burning the same set again is smart: it re-downloads only what's **missing or
+stale** (e.g. a track you re-ripped, or whose BPM/key was re-analyzed since), and skips
+everything still current. Progress shows as *"Burning 6 of 10,"* ending in a summary like
+*"Burned 6 of 10 — 4 not yet ripped."*
+
+**Where you'll see them.** The pair appears on the playlist detail, the pocket detail, the
+setlist detail, and the read-only "From your sources" list — anywhere you've gathered a set
+worth carrying. Both buttons disable when the collection has nothing rippable in it.
+
+**User story:** "I've built the set — now make it bulletproof: rip everything so it's
+captured, then burn it onto my phone so it plays in a basement with no bars, every track
+carrying the BPM and key I mix on."

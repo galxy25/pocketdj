@@ -89,7 +89,7 @@ server-less coordination work.
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
 | 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage**), internal model, collections — the one shape everything speaks. Reference chapter. |
 | 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **and the deferred AI auto-mixing seam**. |
-| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API, job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), **and the stream-first → rip-last provider chain (`PlaybackCoordinator`).** |
+| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection` + the `rippedAt` manifest stamp), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, **and the offline Collection Rip/Burn store (`BurnStore`).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, the star map. |
 | 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, **and the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`).** |
 
@@ -120,6 +120,16 @@ contract**. Honest status:
   than always ripping: an out-of-band catalog-id resolver mints an `appleMusicId` onto
   each song (Ch. 3 §1.1), and the native `PlaybackCoordinator` tries that verified
   Apple Music stream **first**, degrading to rip-on-demand only on a miss (Ch. 5 §8).
+- **New current-state — stream-through-rip + offline Collection Rip/Burn.** When an
+  Apple Music stream wins a play, the native app fires **one fire-and-forget rip** so the
+  track is silently captured to the public S3 cache for later (zero playback latency,
+  idempotent, never blocks; Ch. 5 §8). Playlist / pocket / setlist / source detail views
+  gain **Rip collection** (batch `POST /rip-collection` → the durable queue → S3) and
+  **Burn collection** (a new `@Observable` `BurnStore` serial download queue that pulls
+  *already-ripped* songs to an on-device offline store + a mixer-readable `.txt` sidecar;
+  Ch. 5 §9). Each manifest entry now stamps **`rippedAt`** so a burn re-downloads when the
+  source rip is newer. The offline player + live-mixer that consume the burn store are
+  still **deferred** — only the storage layout + seams ship.
 - **Coming — AI-assisted auto-mixing & auto-building playlists.** The seams already
   exist (no migration needed to light them up): `SetlistTrack.mixSuggestions` +
   the `MixSuggestion` shape, the reserved `PocketKind:'performance'`, and the

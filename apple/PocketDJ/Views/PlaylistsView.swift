@@ -137,6 +137,7 @@ struct IndexPlaylistDetailView: View {
     @Environment(CollectionsStore.self) private var collections
     let source: SourcePlaylist
     @Binding var path: NavigationPath
+    @State private var ripBurn = CollectionRipBurnController()
 
     private var songs: [IndexSong] { source.songIds.compactMap { app.songsById[$0] } }
 
@@ -148,6 +149,7 @@ struct IndexPlaylistDetailView: View {
                     .accessibilityIdentifier("indexplaylist-play")
                 Button { duplicate() } label: { Label("Duplicate as editable playlist", systemImage: "plus.square.on.square") }
                     .accessibilityIdentifier("indexplaylist-duplicate")
+                CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSource: source) }, noun: "playlist")
             } footer: {
                 Text("\(songs.count) of \(source.songIds.count) song\(source.songIds.count == 1 ? "" : "s") resolved from \(source.sourceName).")
             }
@@ -164,6 +166,7 @@ struct IndexPlaylistDetailView: View {
         .navigationTitle(source.name)
         .accessibilityIdentifier("indexplaylist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
+        .collectionRipBurn(ripBurn)
     }
 
     private func play() {
@@ -196,6 +199,7 @@ struct PlaylistDetailView: View {
     @State private var deletingSetlistId: String?
     @State private var addingNoteChapter: String?     // sequence nodeId to add a text note to
     @State private var noteDraft = ""
+    @State private var ripBurn = CollectionRipBurnController()
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
@@ -253,6 +257,8 @@ struct PlaylistDetailView: View {
                     Button { export() } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                         .accessibilityIdentifier("export-playlist")
                     Divider()
+                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPlaylist: playlistId) }, noun: "playlist")
+                    Divider()
                     Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete playlist", systemImage: "trash") }
                         .accessibilityIdentifier("delete-playlist")
                 } label: { Image(systemName: "ellipsis.circle") }
@@ -260,6 +266,7 @@ struct PlaylistDetailView: View {
             }
         }
         .modifier(playlistAlerts)
+        .collectionRipBurn(ripBurn)
         .confirmationDialog("Delete this playlist?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete playlist", role: .destructive) {
                 collections.deletePlaylist(playlistId)

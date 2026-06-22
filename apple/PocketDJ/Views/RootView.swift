@@ -9,6 +9,7 @@ struct RootView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    @Environment(BurnStore.self) private var burns
     @Environment(PlaybackCoordinator.self) private var coordinator
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     @State private var section: Section? = .browse
@@ -58,6 +59,10 @@ struct RootView: View {
             app.edits = edits         // overlay local metadata edits
             collections.app = app     // give realize() the catalog to resolve ids against
             rips.settings = settings  // rip server URL + token come from settings
+            // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum,
+            // and prune any burned files iOS purged while the app was gone.
+            burns.lookup = { [weak app] id in (app?.songsById[id], app?.songsById[id]?.albumId.flatMap { app?.albumsById[$0] }) }
+            burns.reconcileOnLaunch()
             // The matching engine orders providers by a song's ORIGIN SOURCE — give it the
             // catalog's per-id source map so an Apple Music (Local) track tries Apple Music
             // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
