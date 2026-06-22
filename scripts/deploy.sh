@@ -40,7 +40,11 @@ fi
 # index.html + SW must be no-cache so the auto-updating SW always sees a fresh deploy.
 # current-index.json (the auto-seed catalog) is also no-cache so catalog updates and the
 # Settings "re-pull seed" actually fetch fresh data instead of a stale immutable copy.
-NOCACHE=(index.html sw.js registerSW.js manifest.webmanifest current-index.json)
+# apple-music-index.json is likewise no-cache: it's refreshed incrementally by the
+# catalog-id resolver crawl (scripts/resolve-apple-music-catalog.mjs), and the native
+# app fetches it at runtime from CloudFront — immutable caching would pin clients to a
+# stale, under-resolved copy for a year.
+NOCACHE=(index.html sw.js registerSW.js manifest.webmanifest current-index.json apple-music-index.json)
 EXCL=()
 for f in "${NOCACHE[@]}"; do EXCL+=(--exclude "$f"); done
 

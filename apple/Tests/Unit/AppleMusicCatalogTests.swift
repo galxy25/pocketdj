@@ -82,4 +82,45 @@ final class AppleMusicCatalogTests: XCTestCase {
         // Namespaced id guarantees it can't collide with a vinyl/Local id.
         XCTAssertTrue(song.id.hasPrefix("am:"))
     }
+
+    // MARK: appleMusicId (index-resolved catalog candidate id)
+
+    /// The indexer writes the iTunes-Search `trackId` onto each Apple-Music-(Local)
+    /// song as `appleMusicId`. It must decode onto `IndexSong` so the streaming
+    /// provider can try it as a catalog-fetch candidate before the fuzzy search.
+    func testIndexSongDecodesAppleMusicId() throws {
+        // A "sng_…" id — the shape Apple-Music-(Local) songs carry, which the
+        // `am:` storeID decoder deliberately rejects (so step-2 always misses).
+        let json = """
+        {
+          "id": "sng_3f2a1c",
+          "artist": "Omarion",
+          "name": "Post To Be (feat. Chris Brown & Jhené Aiko)",
+          "fileType": "applemusic",
+          "appleMusicId": "944459436"
+        }
+        """.data(using: .utf8)!
+        let song = try JSONDecoder().decode(IndexSong.self, from: json)
+        XCTAssertEqual(song.appleMusicId, "944459436")
+        // Sanity: this id is NOT recoverable from the song id (proves why
+        // `appleMusicId` is needed — step-2 `storeID(fromSongID:)` returns nil).
+        XCTAssertNil(AppleMusicCatalog.storeID(fromSongID: song.id))
+    }
+
+    /// `appleMusicId` is optional / back-compat: a song JSON without it (vinyl,
+    /// fixture, unresolved Apple-Music-Local rows) still decodes, with nil.
+    func testIndexSongDecodesWithoutAppleMusicId() throws {
+        let json = """
+        { "id": "sng_99", "artist": "Aria", "name": "Neon" }
+        """.data(using: .utf8)!
+        let song = try JSONDecoder().decode(IndexSong.self, from: json)
+        XCTAssertNil(song.appleMusicId)
+    }
+
+    /// `IndexSong.minimal` (the row-▶ shim) carries no catalog id → nil, so resolve()
+    /// skips its fast path for those and uses the id/search fallbacks.
+    func testMinimalIndexSongHasNoAppleMusicId() {
+        let song = IndexSong.minimal(id: "sng_1", name: "Neon", artist: "Aria")
+        XCTAssertNil(song.appleMusicId)
+    }
 }

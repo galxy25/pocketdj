@@ -189,15 +189,32 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
 
     func resolve(_ song: IndexSong) async -> StreamingTrack? {
         guard canResolve else { return nil }
-        // 1) Our own namespaced id → direct catalog fetch by store id.
+        // 1) Index-resolved catalog id, when present. The indexer mints `appleMusicId`
+        //    from the *public iTunes Search API* (`trackId`); we treat it only as a
+        //    CANDIDATE catalog id. The iTunes `trackId` is empirically the same value
+        //    MusicKit uses for `MusicItemID`, but we never trust it blindly: the
+        //    `fetchRow` below issues a real `MusicCatalogResourceRequest` keyed on that
+        //    id, so a hit is the verification. On a miss (nil/throw — wrong id, region
+        //    gating, removed track) we fall through to (2)/(3) and ultimately let
+        //    PlaybackCoordinator degrade to ripping. This is the fast path that lets
+        //    "Apple Music (Local)" songs (ids shaped `sng_…`, which 2 can't decode)
+        //    stream instead of always falling through to a rip.
+        if let candidate = song.appleMusicId, !candidate.isEmpty {
+            if let row = try? await Self.fetchRow(storeID: candidate) {
+                return AppleMusicCatalog.track(from: row)
+            }
+        }
+        // 2) Our own namespaced id (`am:<storeID>`) → direct catalog fetch by store id.
         if let store = AppleMusicCatalog.storeID(fromSongID: song.id) {
             if let row = try? await Self.fetchRow(storeID: store) {
                 return AppleMusicCatalog.track(from: row)
             }
         }
-        // 2) Fall back to a top-result title/artist search.
+        // 3) Fall back to a top-result title/artist search.
         let term = "\(song.name) \(song.artist)"
         if let hit = try? await search(term, limit: 1).first { return hit }
+        // All paths failed → nil. PlaybackCoordinator reads this as "no stream" and
+        // falls through to the rip provider (graceful degradation, unchanged).
         return nil
     }
 

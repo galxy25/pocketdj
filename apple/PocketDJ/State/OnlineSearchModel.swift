@@ -67,7 +67,7 @@ final class OnlineSearchModel {
             let song = IndexSong(id: h.id, albumId: h.albumId, artist: h.artist ?? "", name: h.title ?? "",
                                  trackNumber: h.trackNumber, year: h.year, sentimentKeywords: nil,
                                  explicit: h.explicit, bpm: h.bpm, key: h.key, camelot: h.camelot,
-                                 length: nil, fileType: nil, lyricsStatus: nil)
+                                 length: nil, fileType: nil, lyricsStatus: nil, appleMusicId: nil)
             return .song(song, albumName: h.album ?? "", source: src)
         }
     }

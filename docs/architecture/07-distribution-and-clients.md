@@ -45,7 +45,12 @@ raw S3 https URL (no CloudFront).
 **Cache tiers & SPA fallback (`deploy.sh`):**
 - Hashed `assets/*` → `public,max-age=31536000,immutable`.
 - `index.html`, `sw.js`, `registerSW.js`, `manifest.webmanifest`,
-  `current-index.json` → `no-cache` (auto-updating SW + seed always revalidate).
+  `current-index.json`, **`apple-music-index.json`** → `no-cache` (the
+  `NOCACHE` list — auto-updating SW + both seed catalogs always revalidate).
+  `apple-music-index.json` is no-cache because it's refreshed **incrementally** by the
+  multi-day catalog-id resolver crawl (Ch. 3 §1.1) and fetched at runtime from
+  CloudFront by the native app — immutable caching would pin clients to a stale,
+  under-resolved copy for a year.
 - `--delete` on sync **excludes `art/*` and `lyrics/*`** so a deploy never wipes those
   separately-uploaded caches.
 - CloudFront custom error responses map 403/404 → `/index.html` (200) so client
@@ -296,6 +301,21 @@ CloudFront distribution so the new `index.html` + hashed assets propagate togeth
 Clients pick it up on next boot or via Settings ▸ Force refresh, which re-pulls only
 the catalog and **preserves** client-side collections.
 
+**Checkpoint-deploy watcher (the slow-crawl case).** The Apple Music **catalog-id
+resolver** (Ch. 3 §1.1) runs for ~2 days, growing `appleMusicId` coverage in
+`index-out/apple-music/index.json` over time — and because `apple-music-index.json` is
+now **no-cache** (§1), each redeploy actually reaches clients.
+[`scripts/checkpoint-deploy-watch.sh`](../../scripts/checkpoint-deploy-watch.sh)
+automates publishing that growing index *during* the crawl: a **detached** (`nohup`)
+loop that, every `INTERVAL` (default 90 min), counts songs carrying an `appleMusicId`
+and — once coverage has grown past `THRESHOLD` (default 10k) since the last publish —
+**snapshots** the index into `public/apple-music-index.json` and runs
+`deploy.sh dev` + `SKIP_BUILD=1 deploy.sh prod`, recording the deployed count in a
+`.last-deploy-count` marker (idempotent across ticks; failed deploys retry next tick).
+When the resolver process is gone (`pgrep`), it does a **final** snapshot+deploy of any
+remaining progress and exits. It's independent of any Claude session — local AWS creds,
+local index files — so the days-long crawl ships incrementally on its own.
+
 ---
 
 ## 5. The native app's extra sources — streaming accounts + ShazamKit
@@ -366,7 +386,10 @@ third-party SDK and every provider reports `.unavailable`. Gating per provider:
   is the one provider wired live; `login()` shows the system `MusicAuthorization`
   consent sheet (no web redirect) and playback is in-process via
   `ApplicationMusicPlayer`. It still needs the **MusicKit App Service** enabled on the
-  App ID to run on a device.
+  App ID to run on a device. Its `resolve(_:)` matcher is what actually lets an Apple
+  Music (**Local**) song *stream* instead of rip — see the **stream-first, rip-last**
+  provider chain in [Ch. 5 §8](./05-playback-and-rip-on-demand.md#8-stream-first-rip-last--the-native-provider-chain-playbackcoordinator)
+  (it verifies the index's `appleMusicId`, Ch. 3 §1.1, then degrades to the rip server).
 - **Spotify** — `#if canImport(SpotifyiOS)` + non-empty `SpotifyClientID` /
   `SpotifyRedirectURL`; needs the SDK linked, a dashboard client, and a **Premium**
   account. **Scaffolded — pending the SDK + credentials.**

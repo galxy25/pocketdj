@@ -767,12 +767,19 @@ has a **▶ play** and **⤓ download** button on the right (the `RowTransport`)
 the same rip-on-demand transport the PWA mini-player uses, but the player itself docks
 **inline, directly below the row you played**.
 
-**Play.** Tap **▶**. If the song is already ripped it plays instantly; otherwise the
-button shows the live rip phase — **Queued… → Searching… → Ripping mm:ss → ● Streaming
-live → Uploading…** (polled from the rip server) — and, for an un-ripped Apple Music
-track, begins playing the **live HLS** stream within seconds while the capture
-continues (a red **● live** chip). When the row is the one playing, **▶ flips to a
-pause/resume toggle** for that same player instead of re-ripping.
+**Play.** Tap **▶**. **Apple Music (Local) songs now stream straight from Apple
+Music** — when the app can find the track in the Apple Music catalog (and you've
+linked Apple Music in Settings, §31), tapping ▶ plays it instantly from your
+subscription via MusicKit, no ripping involved (the player shows a *"via Apple
+Music"* backend). Only when there's no catalog match (an obscure pressing, a
+region-gated or removed track) does it **degrade to ripping** — so a song *always*
+plays, but the common case is now an immediate Apple Music stream instead of a
+multi-minute capture. If the song is already ripped it plays instantly from the cache;
+otherwise the button shows the live rip phase — **Queued… → Searching… → Ripping mm:ss →
+● Streaming live → Uploading…** (polled from the rip server) — and, for an un-ripped
+track that fell back to ripping, begins playing the **live HLS** stream within seconds
+while the capture continues (a red **● live** chip). When the row is the one playing,
+**▶ flips to a pause/resume toggle** for that same player instead of re-resolving.
 
 **The slide-out panel.** Below the playing row a panel appears with:
 - a **play/pause** button, the **title · artist**, a **chevron** to collapse/expand,

@@ -87,9 +87,9 @@ server-less coordination work.
 |---|---|---|---|
 | 1 | [**Foundations**](./architecture/01-foundations.md) | the whole | System entities, ownership table, the files-as-API spine, content-derived ids. **Start here.** |
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
-| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema, internal model, collections — the one shape everything speaks. Reference chapter. |
+| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage**), internal model, collections — the one shape everything speaks. Reference chapter. |
 | 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **and the deferred AI auto-mixing seam**. |
-| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API, job state machine, live HLS, the public rips cache, mini-player + setlist playback, **and the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView).** |
+| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API, job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), **and the stream-first → rip-last provider chain (`PlaybackCoordinator`).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, the star map. |
 | 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, **and the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`).** |
 
@@ -116,7 +116,10 @@ contract**. Honest status:
   framework + mic string); **Spotify** and **YouTube** are **scaffolded — pending an
   SDK + credentials** a developer drops in per
   [`docs/streaming-integration.md`](./streaming-integration.md). Bundle id is now
-  **`com.levi.pocketdj`**.
+  **`com.levi.pocketdj`**. **Apple Music (Local) songs now actually *stream*** rather
+  than always ripping: an out-of-band catalog-id resolver mints an `appleMusicId` onto
+  each song (Ch. 3 §1.1), and the native `PlaybackCoordinator` tries that verified
+  Apple Music stream **first**, degrading to rip-on-demand only on a miss (Ch. 5 §8).
 - **Coming — AI-assisted auto-mixing & auto-building playlists.** The seams already
   exist (no migration needed to light them up): `SetlistTrack.mixSuggestions` +
   the `MixSuggestion` shape, the reserved `PocketKind:'performance'`, and the
@@ -168,4 +171,11 @@ Things found while writing that don't fully line up, gathered here so they're no
     references (Developer-portal App ID, Spotify/YouTube OAuth redirect schemes
     `com.levi.pocketdj.spotify` / `.youtube`) must match this exactly; the `net.pocketdj.*`
     name is fully retired in `project.yml`. (Ch. 7 §5)
+11. **`appleMusicId` is a *candidate*, not a verified catalog id.** It's an iTunes
+    Search `trackId` — *empirically* the same value MusicKit plays by, but the equality
+    is an undocumented assumption (regions/versions can drift, tracks get removed). The
+    client must verify it with a real `MusicCatalogResourceRequest` and degrade to
+    ripping on a miss; a maintainer who "optimizes" by playing `appleMusicId` *without*
+    the `fetchRow` verification would silently regress to wrong/failed tracks.
+    (Ch. 3 §1.1, Ch. 5 §8)
 ```

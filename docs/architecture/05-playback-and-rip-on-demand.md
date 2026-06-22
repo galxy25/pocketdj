@@ -283,6 +283,67 @@ reset the button (errors surface in the row's alert). `rips.download(_:)` — th
 "write to Documents" path — remains, layered on `downloadData`, but the row no longer
 uses it (no more Documents-then-share).
 
+---
+
+## 8. Stream-first, rip-last — the native provider chain (`PlaybackCoordinator`)
+
+**Why.** Ripping is the *universal* fallback — it makes any song audible — but it's
+expensive (a real-time Apple Music capture + upload) and a poor first choice when the
+user already has an **Apple Music subscription** that can stream the catalog track
+instantly. So the native ▶ tries a real Apple Music **stream first** and only rips when
+that can't resolve. (Vinyl never streams — it has no catalog id — so it goes straight to
+the rip path.)
+
+**Source of truth:**
+[`apple/PocketDJ/Playback/PlaybackCoordinator.swift`](../../apple/PocketDJ/Playback/PlaybackCoordinator.swift)
+(the ordering engine),
+[`apple/PocketDJ/Playback/AppleMusicPlaybackProvider.swift`](../../apple/PocketDJ/Playback/AppleMusicPlaybackProvider.swift)
+(the streaming `TrackPlaybackProvider`),
+[`apple/PocketDJ/Services/Streaming/AppleMusicProvider.swift`](../../apple/PocketDJ/Services/Streaming/AppleMusicProvider.swift)
+(`resolve(_:)`, the catalog matcher),
+[`apple/PocketDJ/Playback/RipServerPlaybackProvider.swift`](../../apple/PocketDJ/Playback/RipServerPlaybackProvider.swift)
+(the terminal rip fallback, §1–§7).
+
+```
+ row ▶ tap → PlaybackCoordinator.play(song)
+   │  providers(for: song):    // SOURCE-AWARE order
+   │    sourceOfSong(id) == "Apple Music (Local)" && appleMusic.isReady ?
+   │        → [AppleMusic, ripServer]   else → [ripServer]
+   ▼  try each until one returns true (becomes activeBackend)
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │ AppleMusicPlaybackProvider.tryPlay → AppleMusicProvider.resolve(song): │
+ │   1) song.appleMusicId  → fetchRow(storeID:)  ── VERIFY via real       │
+ │        (the index CATALOG stage, Ch.3 §1.1)      MusicCatalogResource- │
+ │   2) am:<storeID> id    → fetchRow(storeID:)     Request; a hit IS the │
+ │   3) "title artist"     → catalog search(top 1)  verification          │
+ │   hit → MusicItemID → ApplicationMusicPlayer.play()  ⇒ true (WIN)      │
+ │   all miss / playback throws (no subscription) → false                 │
+ └────────────────────────────────┬─────────────────────────────────────┘
+                                   ▼  false → fall through (graceful degrade)
+                       RipServerPlaybackProvider.tryPlay  (rip-on-demand, §3 — ALWAYS last)
+```
+
+**Reading the diagram.** `PlaybackCoordinator.providers(for:)` builds a **source-aware**
+ordered list: for a song whose origin source is `Config.appleMusicSourceName`
+("Apple Music (Local)") and when `appleMusic.isReady` (enabled + MusicKit-authorized),
+it puts the Apple Music streaming provider **first**; the rip server is **always
+appended last** as the terminal fallback, so any song still plays. `play()` cycles the
+list, calling `tryPlay` on each until one returns `true` (recorded as `activeBackend`,
+which drives the inline player's branch + the "via …" badge); switching backends stops
+the previously-active one so two engines never play at once.
+
+**The fix this chapter's branch lands.** `AppleMusicProvider.resolve(_:)` now tries the
+index's **`appleMusicId`** (Ch. 3 §1.1) **first** — `fetchRow(storeID:candidate)`. The
+key point: that resolved id is a *candidate* from the iTunes Search API, never trusted
+blindly — the `fetchRow` issues a real `MusicCatalogResourceRequest`, so **a hit is the
+verification**. On a miss (wrong id, region gating, removed track) it falls to (2) the
+own-namespaced `am:<storeID>` id, then (3) a top-result title/artist search, and finally
+returns `nil` → `tryPlay` returns `false` → the coordinator **degrades to the rip
+provider** (unchanged). Before this branch, Apple Music (Local) songs — whose ids are
+shaped `sng_…` (which step 2 can't decode) — *always* missed resolution and *always*
+fell through to a rip; with the `appleMusicId` candidate they now stream via Apple Music
+in the common case. (This is the same degradation the storybook §29 "Play" describes.)
+
 ## Next
 
 → [Chapter 6 — Search & Discovery](./06-search-and-discovery.md)
