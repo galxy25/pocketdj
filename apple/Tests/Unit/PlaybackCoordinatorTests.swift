@@ -43,10 +43,16 @@ final class PlaybackCoordinatorTests: XCTestCase {
         let c = makeCoordinator()
         c.sourceOfSong = { _ in Config.appleMusicSourceName }
         let song = IndexSong.minimal(id: "am:123", name: "Outta My System", artist: "Test")
-        // The source matches, but in an unsigned/unauthorized test build the Apple Music
-        // provider is NOT ready, so it is skipped and only the rip server remains.
-        XCTAssertFalse(c.appleMusic.isReady, "Apple Music can't be ready in a unit-test build")
-        XCTAssertEqual(c.providers(for: song).map(\.backend), [.ripServer])
+        // The source matches; whether Apple Music is placed FIRST hinges on `isReady`, which
+        // depends on the live MusicAuthorization state a unit test can't control (the
+        // simulator may already be authorized from manual testing). Assert the ordering
+        // MATCHES readiness either way — and that the rip server is always the terminal
+        // fallback. (The "ready ⇒ Apple Music first" path is also covered on a real device.)
+        if c.appleMusic.isReady {
+            XCTAssertEqual(c.providers(for: song).map(\.backend), [.appleMusic, .ripServer])
+        } else {
+            XCTAssertEqual(c.providers(for: song).map(\.backend), [.ripServer])
+        }
     }
 
     func testMinimalSongCarriesIdTitleArtist() {

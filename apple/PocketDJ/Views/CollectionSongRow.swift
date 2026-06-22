@@ -24,6 +24,7 @@ import SwiftUI
 /// swipe / move / delete / notes / context-menus on the enclosing row.
 struct SongRowView: View {
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(RipsStore.self) private var rips
     let data: SongRowData
     /// Optional trailing accessory (e.g. a setlist source/sequence badge column) shown
     /// to the left of the play/download buttons.
@@ -31,6 +32,15 @@ struct SongRowView: View {
 
     /// Show year/genre only when there's room: regular width (iPad) or macOS (nil).
     private var showsExtra: Bool { hSize != .compact }
+
+    // Rip-analyzed bpm/key/camelot (computed from the actual ripped audio, kept in the rips
+    // manifest) overlays the catalog index values — so once a song is ripped the row shows
+    // the latest analysis. The manifest carries these only for analyzed (digital) rips;
+    // analog rips leave them nil and the row keeps the catalog values.
+    private var ripped: RipsStore.ManifestEntry? { rips.manifest[data.songId] }
+    private var effBpm: Double? { ripped?.bpm ?? data.bpm }
+    private var effKey: String? { ripped?.musicalKey ?? data.key }
+    private var effCamelot: String? { ripped?.camelot ?? data.camelot }
 
     /// Secondary descriptor — "artist · year · genre"; year/genre size-gated.
     private var descriptor: String {
@@ -66,8 +76,8 @@ struct SongRowView: View {
             // Middle music cluster: BPM tiers · KeyChip · length. The prominent
             // "what does this sound like" block, right-aligned ahead of transport.
             HStack(spacing: 8) {
-                BPMTier(bpm: data.bpm)
-                KeyChip(key: data.key, camelot: data.camelot)
+                BPMTier(bpm: effBpm)
+                KeyChip(key: effKey, camelot: effCamelot)
                 Text(Fmt.duration(data.lengthMs))
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
