@@ -160,6 +160,14 @@ where the audio lives (`key`), how it was made (`source`), the auto-seek
 `RipPhase` enum), an optional `streamUrl` once live HLS is ready, and `progress`
 (definite for a real-time digital capture, `indeterminate` otherwise).
 
+**Folding analysis back into the UI.** The per-rip analysis lives in the **manifest**,
+not the catalog index. The native app's shared `SongRowView` therefore OVERLAYS a
+manifest entry's analyzed `bpm`/`musicalKey`/`camelot` onto the catalog index values
+([`apple/PocketDJ/Views/CollectionSongRow.swift`](../../apple/PocketDJ/Views/CollectionSongRow.swift)),
+so a freshly-ripped song's row shows its computed tempo/key even when the index had
+none. Analog rips leave those fields nil (the whole album plays from one file) and the
+row keeps the catalog values.
+
 ---
 
 ## 6. Client playback features built on this
