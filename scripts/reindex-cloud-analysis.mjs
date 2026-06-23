@@ -225,20 +225,24 @@ function main() {
       prov.fields.push('length');
     }
 
-    // BPM/KEY/CAMELOT — opportunistic, only from a digital+analyzed cloud rip of the
-    // matched Apple Music song. manifest.musicalKey -> catalog key.
-    if (r.hit.persistentID) {
-      const e = manifest[amSongId(r.hit.persistentID)];
-      if (isCloudEntry(e)) {
-        let touched = false;
-        if (e.bpm != null) { song.bpm = e.bpm; prov.fields.push('bpm'); touched = true; }
-        if (e.musicalKey != null) { song.key = e.musicalKey; prov.fields.push('key'); touched = true; }
-        if (e.camelot != null) { song.camelot = e.camelot; prov.fields.push('camelot'); touched = true; }
-        if (touched) {
-          report.bpmKeyUpdatedFromCloud++;
-          report.cloudEntriesUsed++;
-          prov.cloudSongId = amSongId(r.hit.persistentID);
-        }
+    // BPM/KEY/CAMELOT — opportunistic, from a digital+analyzed cloud rip. Two sources,
+    // in precedence order: (a) a cloud rip of THIS song itself — e.g. "Rip from cloud
+    // source" of this analog/vinyl track, whose manifest entry is keyed by the song's
+    // OWN id; (b) a separately-ripped DIGITAL copy of the matched Apple Music track,
+    // keyed by the derived am songId. manifest.musicalKey -> catalog key.
+    const derivedId = r.hit.persistentID ? amSongId(r.hit.persistentID) : null;
+    const cloudSongId = isCloudEntry(manifest[song.id]) ? song.id
+      : (derivedId && isCloudEntry(manifest[derivedId]) ? derivedId : null);
+    if (cloudSongId) {
+      const e = manifest[cloudSongId];
+      let touched = false;
+      if (e.bpm != null) { song.bpm = e.bpm; prov.fields.push('bpm'); touched = true; }
+      if (e.musicalKey != null) { song.key = e.musicalKey; prov.fields.push('key'); touched = true; }
+      if (e.camelot != null) { song.camelot = e.camelot; prov.fields.push('camelot'); touched = true; }
+      if (touched) {
+        report.bpmKeyUpdatedFromCloud++;
+        report.cloudEntriesUsed++;
+        prov.cloudSongId = cloudSongId;
       }
     }
 

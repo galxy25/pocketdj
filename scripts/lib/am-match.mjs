@@ -9,10 +9,11 @@
 //
 // MATCHING PHILOSOPHY — PREFER TIGHT MATCHING (deliberate product choice):
 // 'exact' requires the RECORDING to be the same, not just the song. A version/recording
-// parenthetical — mix, remix, edit, radio/LP/album/single version, 7"/12", instrumental,
+// parenthetical — mix, remix, edit, radio/single version, 7"/12", instrumental,
 // live, acoustic, dub, extended, club, a cappella, reprise, demo, sped up/slowed, rework,
 // vip, bootleg — MUST AGREE (see comparableTitle). Cosmetic markers (remaster, deluxe,
-// anniversary, bonus, mono/stereo, explicit/clean, feat./credits) are ignored.
+// anniversary, bonus, mono/stereo, explicit/clean, feat./credits, AND a bare/LP/Album
+// "Version" label which just denotes the standard album recording) are ignored.
 // WHY: PocketDJ is the user's OWN collection — the specific club mix / 7" edit / single
 // they own is an intentional, personal choice; that exact cut is the music to bring into
 // the pocket to build lists from. Collapsing it onto the catalog's standard recording
@@ -46,8 +47,8 @@ export function normTitle(s) {
 // Words that, if they appear in a paren/bracket group, mark it as a DIFFERENT recording.
 // A group containing ANY of these (or any non-cosmetic content) is KEPT as comparable.
 const RECORDING_ALTERING = [
-  'mix', 'remix', 'edit', 'radio', 'instrumental', 'live', 'acoustic', 'unplugged',
-  'version', 'inch', 'dub', 'extended', 'club', 'acappella', 'acapella', 'reprise',
+  'mix', 'remix', 'edit', 'radio', 'single', 'instrumental', 'live', 'acoustic', 'unplugged',
+  'inch', 'dub', 'extended', 'club', 'acappella', 'acapella', 'reprise',
   'interlude', 'skit', 'demo', 'sped', 'slowed', 'reverb', 'karaoke', 'cover',
   'rework', 'vip', 'bootleg', 'session', 'take',
 ];
@@ -63,6 +64,11 @@ const CREDIT_RE = /\b(feat|featuring|ft|with)\b/;
 const COSMETIC_WORDS = new Set([
   'remaster', 'remastered', 'remasters', 'deluxe', 'expanded', 'anniversary',
   'edition', 'bonus', 'track', 'mono', 'stereo', 'explicit', 'clean', 'original',
+  // 'lp'/'album'/'version': an "LP Version" / "Album Version" / bare "Version" label
+  // denotes the SAME standard album recording (e.g. "Memphis Underground (LP Version)"
+  // == the vinyl), not a different cut — so it's cosmetic. A recording qualifier
+  // (Radio/Single/Instrumental/Live/Extended Version) is still KEPT via its own keyword.
+  'lp', 'album', 'version',
   'and', 'the', 'a', 'an', 'of', 'feat', 'featuring', 'ft', 'with',
 ]);
 
