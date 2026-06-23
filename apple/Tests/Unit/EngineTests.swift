@@ -147,7 +147,7 @@ final class FilterEngineTests: XCTestCase {
     func testSourceEqualsOnSongs() throws {
         // Tag sng_1..3 with "My Vinyl" and the rest with "Apple Music (Local)".
         let items = try TestData.songItems().map { item -> BrowseItem in
-            guard case .song(let s, let an, _) = item else { return item }
+            guard case .song(let s, let an, _, _) = item else { return item }
             let src = ["sng_1", "sng_2", "sng_3"].contains(s.id) ? "My Vinyl" : "Apple Music (Local)"
             return .song(s, albumName: an, source: src)
         }

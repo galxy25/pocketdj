@@ -10,6 +10,7 @@ struct BrowseView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    @Environment(CollectionsStore.self) private var collections
     /// Shared navigation path (owned by RootView) — lets keyboard "open" push an
     /// album/song detail programmatically, alongside the row-tap NavigationLinks.
     @Binding var path: NavigationPath
@@ -56,7 +57,7 @@ struct BrowseView: View {
         .searchable(text: $browse.query, prompt: "Search artist, album, genre")
         .searchFocused($searchFocused)
         .toolbar { toolbarItems }
-        .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app) }
+        .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
         .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
         .onChange(of: browse.kind) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.layout) { browse.persist() }
@@ -72,7 +73,7 @@ struct BrowseView: View {
 
     /// The visible items (on-device or online) for the current kind, in display order.
     private var visibleItems: [BrowseItem] {
-        browse.searchOnline ? online.items : browse.results(app)
+        browse.searchOnline ? online.items : browse.results(app, collections: collections)
     }
 
     /// The row ids currently shown in WHICHEVER list is up (on-device or online), in
@@ -81,7 +82,7 @@ struct BrowseView: View {
     private var visibleRowIds: [String] {
         visibleItems.compactMap { item in
             switch (browse.kind, item) {
-            case (.song, .song(let s, _, _)):  return s.id
+            case (.song, .song(let s, _, _, _)):  return s.id
             case (.album, .album(let a, _)):   return a.id
             default:                           return nil
             }
@@ -149,7 +150,7 @@ struct BrowseView: View {
     }
 
     private func focusedItemSong(_ id: String) -> IndexSong? {
-        for case .song(let s, _, _) in visibleItems where s.id == id { return s }
+        for case .song(let s, _, _, _) in visibleItems where s.id == id { return s }
         return app.songsById[id]
     }
 
@@ -193,7 +194,8 @@ struct BrowseView: View {
             Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
                 .accessibilityIdentifier("sort-button")
             Button { showFilter = true } label: {
-                Image(systemName: browse.activeFilterCount > 0
+                Image(systemName: (browse.activeFilterCount > 0
+                                   || (browse.kind == .song && browse.membershipActive))
                       ? "line.3.horizontal.decrease.circle.fill"
                       : "line.3.horizontal.decrease.circle")
             }
@@ -244,7 +246,7 @@ struct BrowseView: View {
             if browse.searchOnline {
                 onlineContent
             } else {
-                let items = browse.results(app)
+                let items = browse.results(app, collections: collections)
                 resultsHeader(items.count)
                 if browse.kind == .album { albumResults(items) } else { songResults(items) }
             }
@@ -331,7 +333,7 @@ struct BrowseView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(items) { item in
-                    if case .song(let song, let albumName, _) = item {
+                    if case .song(let song, let albumName, _, _) = item {
                         // The row's transport ▶/⤓ buttons must stay independently
                         // hit-testable. Wrapping the whole row in a NavigationLink
                         // (a Button on macOS) swallows those nested buttons — XCUITest

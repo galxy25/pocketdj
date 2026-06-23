@@ -149,6 +149,9 @@ enum FilterQuery {
             case .inList:
                 let nums = c.values.compactMap(Double.init).map(numJSON)
                 if !nums.isEmpty { filter.append(["terms": [field: nums]]) }
+            case .notInList:
+                let nums = c.values.compactMap(Double.init).map(numJSON)
+                if !nums.isEmpty { mustNot.append(["terms": [field: nums]]) }
             case .between:
                 var r: [String: Any] = [:]
                 if let lo = c.min { r["gte"] = numJSON(lo) }
@@ -166,6 +169,11 @@ enum FilterQuery {
             case .inList:
                 let vals = c.values.map(lc).filter { !$0.isEmpty }
                 if !vals.isEmpty { filter.append(["terms": [field: vals]]) }
+            case .notInList:
+                // none-of: exclude any of the selected values (online analog of the
+                // on-device .notInList none-of predicate).
+                let vals = c.values.map(lc).filter { !$0.isEmpty }
+                if !vals.isEmpty { mustNot.append(["terms": [field: vals]]) }
             case .between: break
             }
         }
