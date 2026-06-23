@@ -13,12 +13,17 @@ final class OnlineSearchPagingTests: XCTestCase {
     final class StubSearch: Searching {
         let total: Int
         private(set) var calls: [(from: Int, size: Int)] = []
+        /// `sortKeys` recorded per call so sort-reset/loadMore tests can assert the
+        /// server received the Browser's sort on each page.
+        private(set) var sortCalls: [[SortKey]] = []
 
         init(total: Int) { self.total = total }
 
         func search(_ query: String, kind: ItemKind?, clauses: [Clause],
-                    creds: SigV4Creds, from: Int, size: Int) async throws -> SearchResults {
+                    sortKeys: [SortKey], creds: SigV4Creds,
+                    from: Int, size: Int) async throws -> SearchResults {
             calls.append((from, size))
+            sortCalls.append(sortKeys)
             let upper = min(from + size, total)
             let hits = (from..<max(from, upper)).map { i in
                 SearchHit(id: "alb_\(i)", type: "album", title: "Album \(i)", artist: "Artist",
@@ -32,7 +37,8 @@ final class OnlineSearchPagingTests: XCTestCase {
     /// A search seam that always throws — used to prove a first-page failure resets.
     struct FailingSearch: Searching {
         func search(_ query: String, kind: ItemKind?, clauses: [Clause],
-                    creds: SigV4Creds, from: Int, size: Int) async throws -> SearchResults {
+                    sortKeys: [SortKey], creds: SigV4Creds,
+                    from: Int, size: Int) async throws -> SearchResults {
             throw NSError(domain: "test", code: 1)
         }
     }
@@ -126,7 +132,8 @@ final class OnlineSearchPagingTests: XCTestCase {
         // yet loadedCount still advances by the raw page count so paging terminates.
         final class DupStub: Searching {
             func search(_ query: String, kind: ItemKind?, clauses: [Clause],
-                        creds: SigV4Creds, from: Int, size: Int) async throws -> SearchResults {
+                        sortKeys: [SortKey], creds: SigV4Creds,
+                        from: Int, size: Int) async throws -> SearchResults {
                 let hits = (0..<size).map { i in
                     SearchHit(id: "dup_\(i)", type: "album", title: "A", artist: "B", album: nil,
                               albumId: nil, genre: nil, year: nil, bpm: nil, key: nil, camelot: nil,
@@ -167,5 +174,49 @@ final class OnlineSearchPagingTests: XCTestCase {
         XCTAssertEqual(model.loadedCount, 0)
         XCTAssertEqual(model.total, 0)
         if case .failed = model.state {} else { XCTFail("expected .failed state") }
+    }
+
+    // MARK: - Server-side sort threading
+
+    /// Changing the sort RESETS the accumulator and reloads page 1 — the same
+    /// reset-on-change contract as a new query/filter — and the server receives the
+    /// NEW sort keys on the fresh first page (it must sort the full result set).
+    func testSortChangeResetsAndReloadsPageOne() async {
+        let stub = StubSearch(total: 130)
+        let model = OnlineSearchModel(service: stub, pageSize: 50)
+        let app = await app()
+
+        let byYear = [SortKey(field: "year", dir: .desc)]
+        await model.startSearch(query: "x", kind: .album, sortKeys: byYear, creds: creds, app: app)
+        await model.loadMore()
+        XCTAssertEqual(model.items.count, 100)
+        XCTAssertEqual(stub.sortCalls.first, byYear)
+
+        // A different sort RESETS: offset back to 0, accumulator cleared, page 1 only,
+        // and the server is handed the NEW keys.
+        let byArtist = [SortKey(field: "artist", dir: .asc)]
+        await model.startSearch(query: "x", kind: .album, sortKeys: byArtist, creds: creds, app: app)
+        XCTAssertEqual(model.items.count, 50)
+        XCTAssertEqual(model.loadedCount, 50)
+        XCTAssertEqual(stub.calls.last?.from, 0)
+        XCTAssertEqual(stub.sortCalls.last, byArtist)
+    }
+
+    /// `loadMore()` re-issues the SAME sort keys at the next offset, so every page is
+    /// ordered consistently by the server (stable from/size pagination).
+    func testLoadMoreCarriesSameSortKeys() async {
+        let stub = StubSearch(total: 130)
+        let model = OnlineSearchModel(service: stub, pageSize: 50)
+        let app = await app()
+
+        let keys = [SortKey(field: "name", dir: .asc), SortKey(field: "year", dir: .desc)]
+        await model.startSearch(query: "x", kind: .album, sortKeys: keys, creds: creds, app: app)
+        await model.loadMore()
+
+        XCTAssertEqual(stub.calls.count, 2)
+        XCTAssertEqual(stub.sortCalls.count, 2)
+        XCTAssertEqual(stub.sortCalls[0], keys)
+        XCTAssertEqual(stub.sortCalls[1], keys)   // same sort on the next page
+        XCTAssertEqual(stub.calls[1].from, 50)
     }
 }

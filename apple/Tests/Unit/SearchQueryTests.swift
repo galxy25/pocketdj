@@ -101,3 +101,77 @@ final class SearchQueryTests: XCTestCase {
         XCTAssertEqual(mustNot.count, 1)  // must_not term source
     }
 }
+
+/// SearchService.sortBody maps the Browser's multi-key sort into an OpenSearch
+/// `sort` array so the SERVER orders the full result set (paging is server-side, so
+/// the client can't sort across pages). Text fields sort on their `.kw` keyword
+/// subfield, genre on `genreCategory`, numerics on the field itself, and EVERY array
+/// ends with a deterministic `{"id": "asc"}` tiebreaker for stable from/size paging.
+final class SearchSortTests: XCTestCase {
+
+    /// Flatten one {field: {order: dir}} sort entry to (field, dir).
+    private func entry(_ d: [String: Any]) -> (field: String, dir: String)? {
+        guard let field = d.keys.first, let inner = d[field] as? [String: Any],
+              let dir = inner["order"] as? String else { return nil }
+        return (field, dir)
+    }
+
+    func testTextFieldsSortOnKeywordSubfieldAndGenreOnCategory() {
+        let keys = [SortKey(field: "name", dir: .asc),
+                    SortKey(field: "genre", dir: .desc),
+                    SortKey(field: "year", dir: .asc)]
+        let sort = SearchService.sortBody(keys, hasQuery: false)
+
+        // name → title.kw, genre → genreCategory, year → year, + trailing id asc.
+        XCTAssertEqual(sort.count, 4)
+        XCTAssertEqual(entry(sort[0])?.field, "title.kw")
+        XCTAssertEqual(entry(sort[0])?.dir, "asc")
+        XCTAssertEqual(entry(sort[1])?.field, "genreCategory")
+        XCTAssertEqual(entry(sort[1])?.dir, "desc")
+        XCTAssertEqual(entry(sort[2])?.field, "year")
+        XCTAssertEqual(entry(sort[2])?.dir, "asc")
+        // ALWAYS a deterministic id tiebreaker last (stable pagination).
+        XCTAssertEqual(entry(sort.last!)?.field, "id")
+        XCTAssertEqual(entry(sort.last!)?.dir, "asc")
+    }
+
+    func testDirectionHonoredAndArtistUsesKeyword() {
+        let sort = SearchService.sortBody([SortKey(field: "artist", dir: .desc)], hasQuery: false)
+        XCTAssertEqual(entry(sort[0])?.field, "artist.kw")
+        XCTAssertEqual(entry(sort[0])?.dir, "desc")
+        XCTAssertEqual(entry(sort.last!)?.field, "id")
+    }
+
+    func testEmptyKeysFilterOnlySortsByIdOnly() {
+        // No query, no sort keys: deterministic id-only order.
+        let sort = SearchService.sortBody([], hasQuery: false)
+        XCTAssertEqual(sort.count, 1)
+        XCTAssertEqual(entry(sort[0])?.field, "id")
+        XCTAssertEqual(entry(sort[0])?.dir, "asc")
+    }
+
+    func testEmptyKeysWithQueryStillAppendsIdTiebreaker() {
+        // With a query and no explicit sort, _score leads implicitly; the id
+        // tiebreaker still makes equally-scored hits page in a stable order.
+        let sort = SearchService.sortBody([], hasQuery: true)
+        XCTAssertEqual(sort.count, 1)
+        XCTAssertEqual(entry(sort[0])?.field, "id")
+    }
+
+    func testUnknownSortFieldDropped() {
+        // An unmapped field id is skipped, but the id tiebreaker still anchors paging.
+        let sort = SearchService.sortBody([SortKey(field: "nope", dir: .asc)], hasQuery: false)
+        XCTAssertEqual(sort.count, 1)
+        XCTAssertEqual(entry(sort[0])?.field, "id")
+    }
+
+    func testNumericAndKeywordFieldsMapDirectly() {
+        let keys = [SortKey(field: "bpm", dir: .asc), SortKey(field: "camelot", dir: .desc),
+                    SortKey(field: "source", dir: .asc)]
+        let sort = SearchService.sortBody(keys, hasQuery: false)
+        XCTAssertEqual(entry(sort[0])?.field, "bpm")        // numeric → field directly
+        XCTAssertEqual(entry(sort[1])?.field, "camelot")    // keyword → field directly
+        XCTAssertEqual(entry(sort[2])?.field, "source")
+        XCTAssertEqual(entry(sort.last!)?.field, "id")
+    }
+}

@@ -62,7 +62,9 @@ struct BrowseView: View {
         .onChange(of: browse.kind) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.layout) { browse.persist() }
         .onChange(of: browse.clauses) { browse.persist(); if browse.searchOnline { triggerOnline() } }
-        .onChange(of: browse.sortKeys) { browse.persist() }
+        // Sort changes RESET + re-fetch online (the server sorts the full result
+        // set; the client only holds loaded pages so it can't re-order them).
+        .onChange(of: browse.sortKeys) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.searchOnline) {
             browse.persist()
             if browse.searchOnline { triggerOnline() } else { online.cancel() }
@@ -162,7 +164,8 @@ struct BrowseView: View {
 
     private func triggerOnline() {
         online.searchDebounced(query: browse.query, kind: browse.kind,
-                               clauses: browse.clauses, creds: searchCreds, app: app)
+                               clauses: browse.clauses, sortKeys: browse.sortKeys,
+                               creds: searchCreds, app: app)
     }
 
     /// SF Symbol for the current device — shown when searching on-device.

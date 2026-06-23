@@ -38,7 +38,7 @@ final class OnlineSearchModel {
     /// Context for the CURRENT query, captured so `loadMore()` can re-issue the
     /// same query at a higher offset without the view re-passing everything.
     private var current: (query: String, kind: ItemKind, clauses: [Clause],
-                          creds: SigV4Creds, app: AppModel)?
+                          sortKeys: [SortKey], creds: SigV4Creds, app: AppModel)?
 
     init(service: Searching = LiveSearchService(), pageSize: Int = 50) {
         self.service = service
@@ -56,16 +56,18 @@ final class OnlineSearchModel {
     /// so online results honor every filter, composed with the multi_match.
     ///
     /// Always RESETS (clears accumulated results + offset) — call this whenever the
-    /// query text, kind, or filters change so a fresh first page is loaded.
+    /// query text, kind, filters, OR SORT change so a fresh first page is loaded.
+    /// `sortKeys` is carried into `current` so the server applies the SAME sort on
+    /// every page (the client can't sort the partial result set — see Searching).
     func searchDebounced(query: String, kind: ItemKind, clauses: [Clause] = [],
-                         creds: SigV4Creds?, app: AppModel) {
+                         sortKeys: [SortKey] = [], creds: SigV4Creds?, app: AppModel) {
         task?.cancel()
         reset()
         guard let creds else {
             state = .failed("Add OpenSearch credentials in Settings to search online.")
             return
         }
-        current = (query, kind, clauses, creds, app)
+        current = (query, kind, clauses, sortKeys, creds, app)
         task = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
@@ -77,10 +79,10 @@ final class OnlineSearchModel {
     /// minus the 300 ms delay + cancellable Task — used by tests to drive paging
     /// deterministically against a stubbed `Searching`.
     func startSearch(query: String, kind: ItemKind, clauses: [Clause] = [],
-                     creds: SigV4Creds, app: AppModel) async {
+                     sortKeys: [SortKey] = [], creds: SigV4Creds, app: AppModel) async {
         task?.cancel()
         reset()
-        current = (query, kind, clauses, creds, app)
+        current = (query, kind, clauses, sortKeys, creds, app)
         await loadFirstPage()
     }
 
@@ -100,7 +102,8 @@ final class OnlineSearchModel {
         state = .loading
         do {
             let page = try await service.search(ctx.query, kind: ctx.kind, clauses: ctx.clauses,
-                                                creds: ctx.creds, from: 0, size: pageSize)
+                                                sortKeys: ctx.sortKeys, creds: ctx.creds,
+                                                from: 0, size: pageSize)
             guard !Task.isCancelled else { return }
             total = page.total
             append(page.hits, app: ctx.app)
@@ -122,7 +125,8 @@ final class OnlineSearchModel {
         let from = loadedCount
         do {
             let page = try await service.search(ctx.query, kind: ctx.kind, clauses: ctx.clauses,
-                                                creds: ctx.creds, from: from, size: pageSize)
+                                                sortKeys: ctx.sortKeys, creds: ctx.creds,
+                                                from: from, size: pageSize)
             // The query/filters may have changed while paging (reset bumps offset to
             // 0) — drop a stale page rather than appending it to a fresh result set.
             guard from == loadedCount else { return }
