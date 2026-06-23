@@ -264,7 +264,9 @@ struct BrowseView: View {
             } description: { Text(message) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
         case .idle, .loaded:
-            resultsHeader(online.items.count)
+            // Header shows the FULL match count (online.total), not just the rows
+            // loaded so far — the pager appends more as you scroll.
+            resultsHeader(online.total)
             if browse.kind == .album { albumResults(online.items) } else { songResults(online.items) }
         }
     }
@@ -304,10 +306,12 @@ struct BrowseView: View {
                                             ? Theme.accent.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("album-\(album.id)")
+                                .onAppear { pageInIfLast(item, in: items) }
                         }
                     }
                 }
                 .padding(16)
+                pagingFooter
             } else {
                 LazyVStack(spacing: 0) {
                     ForEach(items) { item in
@@ -319,14 +323,37 @@ struct BrowseView: View {
                                             ? Theme.accent.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 6))
                                 .accessibilityIdentifier("album-\(album.id)")
+                                .onAppear { pageInIfLast(item, in: items) }
                             Divider().overlay(Theme.border)
                         }
                     }
                 }
                 .padding(.horizontal, 8)
+                pagingFooter
             }
         }
         .background(Theme.bg)
+    }
+
+    /// When the LAST loaded row scrolls into view during ONLINE search, pull the
+    /// next page. `loadMore()` self-guards on `hasMore && !isLoadingPage`, so this
+    /// is a no-op on-device or once everything's loaded.
+    private func pageInIfLast(_ item: BrowseItem, in items: [BrowseItem]) {
+        guard browse.searchOnline, item.id == items.last?.id else { return }
+        Task { await online.loadMore() }
+    }
+
+    /// Bottom-of-list spinner shown while a NEXT page is paging in (online only).
+    @ViewBuilder private var pagingFooter: some View {
+        if browse.searchOnline && online.isLoadingPage {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Loading more…").font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .accessibilityIdentifier("paging-indicator")
+        }
     }
 
     private func songResults(_ items: [BrowseItem]) -> some View {
@@ -358,11 +385,13 @@ struct BrowseView: View {
                                         ? Theme.accent.opacity(0.16) : .clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                         InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)
+                            .onAppear { pageInIfLast(item, in: items) }
                         Divider().overlay(Theme.border)
                     }
                 }
             }
             .padding(.horizontal, 8)
+            pagingFooter
         }
         .background(Theme.bg)
         .accessibilityIdentifier("song-list")

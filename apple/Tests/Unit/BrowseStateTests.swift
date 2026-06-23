@@ -92,6 +92,19 @@ final class BrowseStateTests: XCTestCase {
         XCTAssertEqual(restored.sortKeys.first?.dir, .desc)
     }
 
+    func testRemoveClauseLeavesTheOthers() {
+        let b = BrowseState()
+        let bpm = Clause(field: "bpm", op: .between, min: 100, max: 130)
+        let genre = Clause(field: "genre", op: .inList, values: ["funk"])
+        let explicit = Clause(field: "explicit", op: .eq, value: "true")
+        b.clauses = [bpm, genre, explicit]
+
+        b.removeClause(id: genre.id)
+
+        XCTAssertEqual(b.clauses.map(\.id), [bpm.id, explicit.id])
+        XCTAssertFalse(b.clauses.contains { $0.id == genre.id })
+    }
+
     func testActiveFilterCountIgnoresIncomplete() async {
         let b = BrowseState()
         b.clauses = [Clause(field: "bpm", op: .eq, value: ""),          // incomplete

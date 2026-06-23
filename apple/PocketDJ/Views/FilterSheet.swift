@@ -27,6 +27,17 @@ struct FilterSheet: View {
                 ForEach($browse.clauses) { $clause in
                     Section {
                         ClauseEditor(clause: $clause, fields: fields, app: app, browse: browse)
+                        Button(role: .destructive) {
+                            browse.removeClause(id: clause.id)
+                        } label: {
+                            Label("Remove filter", systemImage: "trash")
+                        }
+                        .accessibilityIdentifier("remove-clause-\(clause.field)")
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                browse.removeClause(id: clause.id)
+                            } label: { Label("Remove", systemImage: "trash") }
+                        }
                     }
                 }
                 Section {

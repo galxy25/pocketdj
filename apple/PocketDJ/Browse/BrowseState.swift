@@ -123,6 +123,12 @@ final class BrowseState {
         }
     }
 
+    /// Remove a single filter clause by id (the per-row remove action), leaving the
+    /// other AND-composed clauses intact.
+    func removeClause(id: Clause.ID) {
+        clauses.removeAll { $0.id == id }
+    }
+
     /// Clear all membership selections (the membership "Clear" action).
     func clearMembership() {
         includeAny = false; includeIds = []; excludeAny = false; excludeIds = []

@@ -18,6 +18,20 @@ struct SearchHit: Sendable {
     let source: String?
 }
 
+/// One page of OpenSearch results: the page's hits plus the TOTAL match count
+/// (`hits.total.value`), so the UI knows whether more pages remain (paging).
+struct SearchResults: Sendable {
+    let hits: [SearchHit]
+    let total: Int
+}
+
+/// Seam so the paging model can be unit-tested against a stubbed fetcher without
+/// the network. `SearchService` is the production conformer; tests inject a stub.
+protocol Searching: Sendable {
+    func search(_ query: String, kind: ItemKind?, clauses: [Clause],
+                creds: SigV4Creds, from: Int, size: Int) async throws -> SearchResults
+}
+
 /// Online search against the `pocketdj` OpenSearch Serverless collection — same
 /// query the PWA issues (multi_match across title/artist/album/lyrics/sentiment),
 /// signed with the user's read-only key/secret. No CORS proxy needed natively.
@@ -27,8 +41,12 @@ enum SearchService {
     static let service = "aoss"
     static let index = "pocketdj"
 
+    /// OpenSearch's default `index.max_result_window`: `from + size` may not exceed
+    /// this, so callers cap paging here (offset pagination stops at 10k results).
+    static let maxResultWindow = 10_000
+
     static func search(_ query: String, kind: ItemKind?, clauses: [Clause] = [],
-                       creds: SigV4Creds, size: Int = 60) async throws -> [SearchHit] {
+                       creds: SigV4Creds, from: Int = 0, size: Int = 50) async throws -> SearchResults {
         let path = "/\(index)/_search"
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let must: [[String: Any]] = trimmed.isEmpty
@@ -52,7 +70,12 @@ enum SearchService {
         }
         var bool: [String: Any] = ["must": must, "filter": filter]
         if !mustNot.isEmpty { bool["must_not"] = mustNot }
-        let bodyObj: [String: Any] = ["size": size, "query": ["bool": bool]]
+        // `track_total_hits: true` makes OpenSearch return the EXACT total (not the
+        // 10k-capped default), so the pager knows when it has loaded everything.
+        let bodyObj: [String: Any] = [
+            "from": from, "size": size, "track_total_hits": true,
+            "query": ["bool": bool],
+        ]
         let body = try JSONSerialization.data(withJSONObject: bodyObj)
 
         var request = URLRequest(url: URL(string: "https://\(host)\(path)")!)
@@ -77,7 +100,9 @@ enum SearchService {
     // MARK: - Response parsing
 
     private struct Response: Decodable { let hits: Hits }
-    private struct Hits: Decodable { let hits: [Hit] }
+    private struct Hits: Decodable { let total: Total; let hits: [Hit] }
+    /// `hits.total` is `{ value, relation }`; with `track_total_hits` the value is exact.
+    private struct Total: Decodable { let value: Int }
     private struct Hit: Decodable {
         let id: String
         let source: Source
@@ -93,15 +118,26 @@ enum SearchService {
         let source: String?
     }
 
-    private static func parse(_ data: Data) throws -> [SearchHit] {
+    private static func parse(_ data: Data) throws -> SearchResults {
         let decoded = try JSONDecoder().decode(Response.self, from: data)
-        return decoded.hits.hits.map { hit in
+        let hits = decoded.hits.hits.map { hit -> SearchHit in
             let s = hit.source
             return SearchHit(id: hit.id, type: s.type ?? "song", title: s.title, artist: s.artist,
                              album: s.album, albumId: s.albumId, genre: s.genre, year: s.year,
                              bpm: s.bpm, key: s.key, camelot: s.camelot, explicit: s.explicit,
                              trackNumber: s.trackNumber, source: s.source)
         }
+        return SearchResults(hits: hits, total: decoded.hits.total.value)
+    }
+}
+
+/// Production conformer: forwards to the static `SearchService.search`. A value
+/// type so it stays `Sendable` and trivially injectable (default in the model).
+struct LiveSearchService: Searching {
+    func search(_ query: String, kind: ItemKind?, clauses: [Clause],
+                creds: SigV4Creds, from: Int, size: Int) async throws -> SearchResults {
+        try await SearchService.search(query, kind: kind, clauses: clauses,
+                                       creds: creds, from: from, size: size)
     }
 }
 

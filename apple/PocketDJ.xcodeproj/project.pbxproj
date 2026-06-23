@@ -57,6 +57,7 @@
 		6F6AD2DAD4148D3D128BFF24 /* Harmonics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AB79A4DB9740AAA2864661F /* Harmonics.swift */; };
 		740A91784FC16249388983AE /* BackupZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A963FCF5CBA64C18F7B02061 /* BackupZip.swift */; };
 		79C3B32F7D074CD5D11AEB6B /* PlaylistsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE97BCE395E79206B4AF1156 /* PlaylistsView.swift */; };
+		79FF6F486727A52BA47C6E59 /* OnlineSearchPagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44184ACAC7222E4C700046EE /* OnlineSearchPagingTests.swift */; };
 		7A7E1614DA6C284823F06878 /* SigV4Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 488C6807153DACF43E5E4586 /* SigV4Tests.swift */; };
 		7C56E9A378922FD2C3026AAC /* RipServerPlaybackProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DC921C54A7ABB9CCF30BEB /* RipServerPlaybackProvider.swift */; };
 		7E35B738A41A9B816A97D4D6 /* RealizeEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10370D2AB1FC2031ABD998A8 /* RealizeEngine.swift */; };
@@ -177,6 +178,7 @@
 		3EB36E8F7261CBA172BB639D /* SortSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SortSheet.swift; sourceTree = "<group>"; };
 		3EC7C384233CC7390A38437D /* PocketDJTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PocketDJTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		40BAE935519168E903EE8ACD /* FilterSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterSheet.swift; sourceTree = "<group>"; };
+		44184ACAC7222E4C700046EE /* OnlineSearchPagingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnlineSearchPagingTests.swift; sourceTree = "<group>"; };
 		488C6807153DACF43E5E4586 /* SigV4Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigV4Tests.swift; sourceTree = "<group>"; };
 		4962F6E77AB7F6E723619F68 /* CatalogLoading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogLoading.swift; sourceTree = "<group>"; };
 		49D1D072AB86EE3C8B0EADFC /* CollectionsSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionsSchema.swift; sourceTree = "<group>"; };
@@ -320,6 +322,7 @@
 				34AC0175EB6BDE4AF72724A8 /* EditSchemaTests.swift */,
 				6598C8C55660B7CBF3D9642A /* EngineTests.swift */,
 				027D9207F27E99DB6D901080 /* Fixtures.swift */,
+				44184ACAC7222E4C700046EE /* OnlineSearchPagingTests.swift */,
 				25807BB1133FC7FA2B220B5D /* PlaybackCoordinatorTests.swift */,
 				338DDCC0F5CB04A1293AE22D /* PlaylistZipTests.swift */,
 				142DCFC413FBB0A93CC595D1 /* PocketZipTests.swift */,
@@ -712,6 +715,7 @@
 				9FE2F1059B6BD092F239CD88 /* EditSchemaTests.swift in Sources */,
 				39173F1C99F093BEB0FA4396 /* EngineTests.swift in Sources */,
 				AEE49F566ED2221338C32640 /* Fixtures.swift in Sources */,
+				79FF6F486727A52BA47C6E59 /* OnlineSearchPagingTests.swift in Sources */,
 				8AE4718D5AB59B8D40902A94 /* PlaybackCoordinatorTests.swift in Sources */,
 				B892BF15B830C217D4BB40CF /* PlaylistZipTests.swift in Sources */,
 				0CBFF3993EB761E6945C6217 /* PocketZipTests.swift in Sources */,
