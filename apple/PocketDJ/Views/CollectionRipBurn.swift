@@ -66,6 +66,7 @@ final class CollectionRipBurnController {
             if r.ready > 0 { parts.append("\(r.ready) already ripped") }
             if pending > 0 { parts.append("\(pending) enqueued — completes over time") }
             if r.unknown > 0 { parts.append("\(r.unknown) unrippable") }
+            if rips.ripFromCloud && pending > 0 { parts.append("cloud rips capture in real time, one at a time") }
             summary = parts.isEmpty ? "Nothing to rip." : parts.joined(separator: " · ")
             canRefresh = pending > 0 || r.ready > 0
             working = false
@@ -88,6 +89,7 @@ final class CollectionRipBurnController {
             if r.notRipped > 0 { parts.append("\(r.notRipped) not yet ripped") }
             if r.failed > 0 { parts.append("\(r.failed) failed") }
             if r.outOfSpace { parts.append("out of space — stopped early") }
+            if rips.ripFromCloud && r.notRipped > 0 && rips.hasServer { parts.append("cloud rips capture in real time, one at a time") }
             summary = parts.joined(separator: " · ")
             canRefresh = r.notRipped > 0
             working = false

@@ -24,6 +24,7 @@ import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeAudio } from './lib/audio-analyze.mjs';
+import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
@@ -76,6 +77,36 @@ function loadCatalog() {
     }
     console.error(`  loaded ${f} (${(idx.albums || []).length} albums, ${(idx.songs || []).length} songs)`);
   }
+}
+
+// ---------------- Apple Music library index (cloud-rip accept-time probe) ----------------
+// When ripFromCloud is on, an ANALOG song that EXACT-matches a library entry is captured
+// from Apple Music instead of the vinyl file. The 161MB library plist is parsed once and
+// cached OFF the request path (warmLibIndex runs on a setImmediate at startup); if a cloud
+// rip arrives before the index is warm, hasExactAMMatch returns false → analog (benign,
+// the next request after warm goes cloud). EXACT-only by design: a loose subset match can
+// capture the WRONG track, and a cloud rip is indistinguishable from a real rip, so vinyl
+// (always the correct cut) wins for loose matches.
+let libIndex = null, libIndexLoading = false;
+function warmLibIndex() {
+  if (libIndex || libIndexLoading) return;
+  libIndexLoading = true;
+  setImmediate(() => {
+    try {
+      const xml = CFG.libraryXml;
+      let entries = [];
+      if (existsSync(xml)) entries = loadLibraryXML(xml);
+      else { const tsv = xml.replace(/\.xml$/, '.tsv'); if (existsSync(tsv)) entries = loadLibraryTSV(tsv); }
+      libIndex = indexLibrary(entries);
+      console.error(`  library index: ${libIndex.count} tracks`);
+    } catch (e) { console.error('  library index failed', e.message); libIndex = indexLibrary([]); }
+    finally { libIndexLoading = false; }
+  });
+}
+function hasExactAMMatch(song) {
+  if (!libIndex) return false;
+  try { return findInLibrary(libIndex, song.artist || '', song.name || '').match === 'exact'; }
+  catch { return false; }
 }
 
 // ---------------- manifest (in-memory mirror of s3://.../rips/manifest.json) ----------------
@@ -134,17 +165,24 @@ function fail(job, error) { job.error = error; setPhase(job, 'error'); if (job.r
 // jobView/ready response so its contract stays byte-identical.
 //   status: 'unknown' (not in catalog) | 'ready' (already ripped) | 'inflight'
 //           (joined an in-progress job, no new enqueue) | 'queued' (newly enqueued)
-function acceptRip(songId) {
+function acceptRip(songId, ripFromCloud = false) {
   const song = songId && songById.get(songId);
   if (!song) return { job: null, status: 'unknown', url: null };
   if (manifest[songId]) return { job: null, status: 'ready', url: publicUrl(manifest[songId].key) };
-  const resourceKey = song.sourceType === 'analog' ? song.albumId : songId;
+  // Probe the library ONCE, here. wantCloud is the RESOLVED preference (post-probe), not
+  // the raw request flag — it is what we persist + route on so persist/resume can never
+  // disagree (a track later deleted from the library doesn't flip the resourceKey; it just
+  // resumes as a cloud job that Tier-2-falls-back at capture). Per-SONG single-flight for a
+  // cloud rip (rips/<songId>.mp3), per-ALBUM for the analog vinyl path (rips/<albumId>.mp3).
+  const wantCloud = !!ripFromCloud && song.sourceType === 'analog' && hasExactAMMatch(song);
+  const perSong = wantCloud || song.sourceType !== 'analog';
+  const resourceKey = perSong ? songId : song.albumId;
   const existingId = inflight.get(resourceKey);
   if (existingId && jobs.has(existingId)) {
     const job = jobs.get(existingId);
     return { job, status: 'inflight', url: job.url || null };
   }
-  const job = { jobId: randomUUID(), songId, resourceKey, phase: 'queued', createdAt: Date.now() };
+  const job = { jobId: randomUUID(), songId, resourceKey, preferCloud: wantCloud, phase: 'queued', createdAt: Date.now() };
   jobs.set(job.jobId, job);
   inflight.set(resourceKey, job.jobId);
   persistQueue(job); // durable: survives a restart
@@ -158,7 +196,7 @@ function acceptRip(songId) {
 // On startup any leftover files are re-enqueued (idempotent — skipped if already ripped).
 const queueFile = (songId) => join(QUEUE_DIR, `${songId}.json`);
 function persistQueue(job) {
-  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, createdAt: job.createdAt })); } catch { /* ignore */ }
+  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, preferCloud: !!job.preferCloud, createdAt: job.createdAt })); } catch { /* ignore */ }
 }
 function clearQueue(songId) { try { rmSync(queueFile(songId)); } catch { /* not present */ } }
 
@@ -185,9 +223,14 @@ function resumePending() {
     const song = songId && songById.get(songId);
     if (!song) { clearQueue(songId || f.replace('.json', '')); continue; }
     if (manifest[songId]) { clearQueue(songId); continue; } // already ripped while we were down
-    const resourceKey = song.sourceType === 'analog' ? song.albumId : songId;
+    // Reconstruct from the persisted RESOLVED preferCloud — do NOT re-probe the library
+    // (re-probing could flip resourceKey between persist and resume if the library was
+    // re-exported / the track deleted, mis-keying single-flight).
+    const preferCloud = !!rec.preferCloud;
+    const perSong = preferCloud || song.sourceType !== 'analog';
+    const resourceKey = perSong ? songId : song.albumId;
     if (inflight.has(resourceKey)) continue;
-    const job = { jobId: randomUUID(), songId, resourceKey, phase: 'queued', createdAt: rec.createdAt || Date.now() };
+    const job = { jobId: randomUUID(), songId, resourceKey, preferCloud, phase: 'queued', createdAt: rec.createdAt || Date.now() };
     jobs.set(job.jobId, job);
     inflight.set(resourceKey, job.jobId);
     setPhase(job, 'queued');
@@ -230,7 +273,16 @@ async function runJob(job) {
   setPhase(job, 'searching');
   const song = songById.get(job.songId);
   if (!song) return fail(job, 'unknown songId');
-  if (song.sourceType !== 'analog') return runDigitalJob(job, song);
+  // Digital songs always capture from Apple Music; an analog song does too when its job
+  // resolved to a cloud rip (preferCloud, set at accept time on an exact library match).
+  if (song.sourceType !== 'analog' || job.preferCloud) return runDigitalJob(job, song);
+  return runAnalogJob(job, song);
+}
+
+// ANALOG vinyl path (also the Tier-2 fallback target when a cloud capture fails). Owns its
+// own terminal inflight.delete so it can be invoked both from runJob and from
+// runDigitalJob's fallback branch.
+async function runAnalogJob(job, song) {
   const album = albumById.get(song.albumId);
   if (!album?.pointer?.originalFilename) return fail(job, 'no analog file reference for this album');
   const src = join(CFG.analogBase, album.pointer.originalFilename);
@@ -251,9 +303,13 @@ async function runJob(job) {
   await aws(['s3', 'cp', out, `s3://${CFG.bucket}/${key}`, '--content-type', 'audio/mpeg']);
   const bytes = statSync(out).size;
 
-  // register EVERY song of the album (one upload makes the whole album playable)
+  // register EVERY song of the album (one upload makes the whole album playable) — but
+  // SKIP any song that already has a per-song cloud rip (source!=='analog', key
+  // rips/<songId>.mp3) so a sibling-triggered album re-rip preserves prior cloud entries.
   const rippedAt = Date.now();
   for (const s of songsByAlbum.get(album.id) || []) {
+    const ex = manifest[s.id];
+    if (ex && ex.source !== 'analog' && ex.key === `rips/${s.id}.mp3`) continue;
     manifest[s.id] = {
       key, ext: 'mp3', bytes, source: 'analog', albumId: album.id,
       startMs: s.pointer?.startMs ?? null, durationMs: s.length ?? null, rippedAt,
@@ -302,7 +358,11 @@ async function runDigitalJob(job, song) {
   // the worker wrote phases to the status file; read its final state
   let st = {};
   try { st = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* ignore */ }
-  if (st.phase === 'uploaded' && st.key) {
+  // Terminal section with explicit PER-BRANCH inflight cleanup (NOT a trailing
+  // unconditional delete) so Tier-2 fallback works: runAnalogJob owns the inflight.delete
+  // when we fall back, and fail() already deletes inflight for a genuine failure.
+  const ok = st.phase === 'uploaded' && st.key;
+  if (ok) {
     manifest[song.id] = {
       key: st.key, ext: 'mp3', bytes: st.bytes || 0, source: 'digital',
       albumId: song.albumId, startMs: null, durationMs: song.length ?? null, rippedAt: Date.now(),
@@ -311,10 +371,16 @@ async function runDigitalJob(job, song) {
     job.url = publicUrl(st.key);
     setPhase(job, 'ready', { message: `${song.name} ready` });
     enqueueAnalysis(song.id); // background: bpm/key/camelot + waveform for this song
+    inflight.delete(job.resourceKey);
+  } else if (job.preferCloud && song.sourceType === 'analog') {
+    // Tier-2 fallback: an exact-match analog cloud rip that didn't capture → vinyl. Fall
+    // back for BOTH a no-match (stale library) and a system failure (broken rig) so the
+    // user always gets a playable song, but WARN on system so the operator sees it.
+    if (st.reason === 'system') console.error(`  WARN cloud capture system failure for ${song.id} (${st.error}); falling back to analog`);
+    return runAnalogJob(job, song); // runAnalogJob owns inflight.delete — do NOT touch it here
   } else {
-    fail(job, st.error || 'rip failed');
+    fail(job, st.error || 'rip failed'); // fail() deletes inflight
   }
-  inflight.delete(job.resourceKey);
 }
 
 // ---------------- background audio analysis (bpm/key + waveform) ----------------
@@ -426,8 +492,8 @@ const server = http.createServer(async (req, res) => {
   // unchanged: it goes through acceptRip() but translates the result back to the
   // exact jobView/ready/404 contract the app's RipsStore.Job decoder expects.
   if (path === '/rip' && req.method === 'POST') {
-    const { songId } = await readJson(req);
-    const r = acceptRip(songId);
+    const { songId, ripFromCloud } = await readJson(req);
+    const r = acceptRip(songId, ripFromCloud);
     if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', url: r.url });
     return send(res, 200, jobView(r.job));
@@ -439,10 +505,10 @@ const server = http.createServer(async (req, res) => {
   // above — public when no token is configured). No length limit: it is async and the
   // durable queue scales out as needed.
   if (path === '/rip-collection' && req.method === 'POST') {
-    const { songIds } = await readJson(req);
+    const { songIds, ripFromCloud } = await readJson(req);
     const ids = Array.isArray(songIds) ? [...new Set(songIds)] : [];
     const results = ids.map((id) => {
-      const r = acceptRip(id);
+      const r = acceptRip(id, ripFromCloud);
       return { songId: id, status: r.status, jobId: r.job ? r.job.jobId : null, url: r.url || (r.job && r.job.url) || null };
     });
     const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
@@ -472,6 +538,7 @@ const server = http.createServer(async (req, res) => {
 
 console.error('PocketDJ rip-server starting…');
 loadCatalog();
+warmLibIndex(); // parse the Apple Music library off the request path (cloud-rip probe)
 await loadManifest();
 resumePending(); // re-enqueue any rip requests left pending by a previous run
 resumeAnalysis(); // analyze any ripped songs that don't have bpm/key/waveform yet

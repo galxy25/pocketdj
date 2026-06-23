@@ -38,7 +38,10 @@ function status(phase, extra = {}) {
     writeFileSync(STATUS, JSON.stringify({ ...prev, songId: SONG, phase, ...extra, updatedAt: Date.now() }));
   } catch { /* ignore */ }
 }
-const fail = (msg) => { status('error', { error: msg }); console.log('RESULT ' + JSON.stringify({ ok: false, error: msg })); process.exit(1); };
+// reason: 'no-match' (track absent from the library → no audio captured) vs 'system'
+// (rip skill / ffmpeg / aws failed). The rip server falls back to analog for BOTH on a
+// preferCloud analog job, but logs a WARN for 'system' so a broken capture rig is visible.
+const fail = (msg, reason) => { status('error', { error: msg, ...(reason ? { reason } : {}) }); console.log('RESULT ' + JSON.stringify({ ok: false, error: msg, ...(reason ? { reason } : {}) })); process.exit(1); };
 
 async function main() {
   status('searching', { message: 'locating track in Apple Music' });
@@ -117,7 +120,7 @@ async function main() {
     p.stderr.on('data', (d) => { err += d; });
     p.stdout.on('data', (d) => process.stderr.write(d)); // surface rip log to our stderr
     p.on('close', (code) => (code === 0 ? res() : rej(new Error('rip skill failed: ' + err.slice(-300)))));
-  }).catch(async (e) => { clearInterval(watch); await stopHls(); fail(e.message); });
+  }).catch(async (e) => { clearInterval(watch); await stopHls(); fail(e.message, 'system'); });
   clearInterval(watch);
   await stopHls(); // capture done → stop tail so ffmpeg finalizes the HLS playlist
 
@@ -129,21 +132,21 @@ async function main() {
     const files = dirs.length ? readdirSync(dirs[0]).filter((f) => /\.(m4a|aac|aiff|wav|mp3|caf|alac)$/i.test(f)) : [];
     if (files.length) ripped = join(dirs[0], files.sort()[0]);
   } catch { /* ignore */ }
-  if (!ripped) fail('no audio captured — is the track in the library and audio routed to system output?');
+  if (!ripped) fail('no audio captured — is the track in the library and audio routed to system output?', 'no-match');
 
   // transcode to mp3 256 and upload
   status('uploading', { message: 'transcoding + uploading' });
   const mp3 = join(TMP, `${SONG}.mp3`);
   try {
     execFileSync('ffmpeg', ['-y', '-i', ripped, '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k', mp3], { stdio: 'ignore' });
-  } catch (e) { fail('ffmpeg transcode failed: ' + e.message); }
+  } catch (e) { fail('ffmpeg transcode failed: ' + e.message, 'system'); }
   const key = `rips/${SONG}.mp3`;
   try {
     execFileSync('aws', ['s3', 'cp', mp3, `s3://${BUCKET}/${key}`, '--content-type', 'audio/mpeg', '--profile', PROFILE, '--region', REGION], { stdio: 'ignore' });
-  } catch (e) { fail('s3 upload failed: ' + e.message); }
+  } catch (e) { fail('s3 upload failed: ' + e.message, 'system'); }
   const bytes = statSync(mp3).size;
 
   status('uploaded', { message: 'done', key, bytes });
   console.log('RESULT ' + JSON.stringify({ ok: true, key, bytes, durationMs: LENGTH_MS }));
 }
-main().catch((e) => fail(e.message));
+main().catch((e) => fail(e.message, 'system'));

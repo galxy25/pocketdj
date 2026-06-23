@@ -65,6 +65,16 @@ final class SettingsUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: "settings-source-remove").count, before + 1)
     }
 
+    func testRipFromCloudTogglePresent() {
+        let app = launch()
+        XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))
+        let toggle = app.switches["settings-rip-from-cloud"]
+        XCTAssertTrue(reveal(app, toggle), "rip-from-cloud toggle should be in the Rip server section")
+        XCTAssertTrue(toggle.isHittable, "the toggle should be tappable")
+        // Defaults off (a fresh PDJ_USE_FIXTURE store).
+        XCTAssertEqual(toggle.value as? String, "0")
+    }
+
     func testEditsExportImportPresent() {
         let app = launch()
         XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))

@@ -100,6 +100,9 @@ final class RipsStore {
     var serverUrl: String { (settings?.ripServerURL ?? "").trimmingCharacters(in: .whitespaces).trimmedTrailingSlash }
     var token: String { (settings?.ripToken ?? "").trimmingCharacters(in: .whitespaces) }
     var hasServer: Bool { !serverUrl.isEmpty }
+    /// When on, rip requests ask the server to try an Apple Music (cloud) capture with
+    /// analog fallback. Sent in the POST body only when true (older servers ignore it).
+    var ripFromCloud: Bool { settings?.ripFromCloud ?? false }
 
     init(ripsBase: URL = Config.ripsBase, session: URLSession = .shared) {
         self.ripsBase = ripsBase
@@ -185,7 +188,8 @@ final class RipsStore {
         post.httpMethod = "POST"
         post.setValue("application/json", forHTTPHeaderField: "content-type")
         applyAuth(&post, token: tok)
-        post.httpBody = try JSONSerialization.data(withJSONObject: ["songId": songId])
+        let body: [String: Any] = ripFromCloud ? ["songId": songId, "ripFromCloud": true] : ["songId": songId]
+        post.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await session.data(for: post)
         guard let http = response as? HTTPURLResponse else { throw RipError.ripFailed(0) }
         guard (200..<300).contains(http.statusCode) else { throw RipError.ripFailed(http.statusCode) }
@@ -328,7 +332,8 @@ final class RipsStore {
             post.httpMethod = "POST"
             post.setValue("application/json", forHTTPHeaderField: "content-type")
             applyAuth(&post, token: tok)
-            post.httpBody = try JSONSerialization.data(withJSONObject: ["songId": songId])
+            let body: [String: Any] = ripFromCloud ? ["songId": songId, "ripFromCloud": true] : ["songId": songId]
+            post.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, response) = try await session.data(for: post)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
             let view = try JSONDecoder().decode(Job.self, from: data)
@@ -378,7 +383,8 @@ final class RipsStore {
             post.httpMethod = "POST"
             post.setValue("application/json", forHTTPHeaderField: "content-type")
             applyAuth(&post, token: tok)
-            post.httpBody = try JSONSerialization.data(withJSONObject: ["songIds": ids])
+            let body: [String: Any] = ripFromCloud ? ["songIds": ids, "ripFromCloud": true] : ["songIds": ids]
+            post.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, response) = try await session.data(for: post)
             guard let http = response as? HTTPURLResponse else { return await ripCollectionFallback(ids) }
             // Older server without the batch endpoint → fall back to a per-song loop.

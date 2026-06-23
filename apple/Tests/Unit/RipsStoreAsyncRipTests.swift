@@ -23,13 +23,14 @@ final class RipsStoreAsyncRipTests: XCTestCase {
 
     // MARK: Helpers — a RipsStore wired to the stub session + a configured server URL.
 
-    private func makeStore(serverURL: String = "https://imac.test") -> RipsStore {
+    private func makeStore(serverURL: String = "https://imac.test", ripFromCloud: Bool = false) -> RipsStore {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RecordingURLProtocol.self]
         let rips = RipsStore(ripsBase: ripsBase, session: URLSession(configuration: config))
         let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
         settings.ripServerURL = serverURL
         settings.ripToken = ""
+        settings.ripFromCloud = ripFromCloud
         rips.settings = settings
         return rips
     }
@@ -105,6 +106,47 @@ final class RipsStoreAsyncRipTests: XCTestCase {
         RecordingURLProtocol.body = Data(#"{"jobId":"job_2","phase":"queued"}"#.utf8)
         await rips.requestRipIfNeeded("sng_1")
         XCTAssertEqual(rips.jobs["sng_1"]?.jobId, "job_2")
+    }
+
+    // MARK: ripFromCloud flag in the POST body (omitted off, present on)
+
+    func testRequestRipIfNeededOmitsCloudFlagWhenOff() async {
+        let rips = makeStore(ripFromCloud: false)
+        RecordingURLProtocol.body = Data(#"{"jobId":"job_1","phase":"queued"}"#.utf8)
+        await rips.requestRipIfNeeded("sng_1")
+        let sent = RecordingURLProtocol.lastBodyJSON(path: "/rip")
+        XCTAssertEqual(sent?["songId"] as? String, "sng_1")
+        XCTAssertNil(sent?["ripFromCloud"], "flag omitted when off (older-server compat)")
+    }
+
+    func testRequestRipIfNeededSendsCloudFlagWhenOn() async {
+        let rips = makeStore(ripFromCloud: true)
+        RecordingURLProtocol.body = Data(#"{"jobId":"job_1","phase":"queued"}"#.utf8)
+        await rips.requestRipIfNeeded("sng_1")
+        let sent = RecordingURLProtocol.lastBodyJSON(path: "/rip")
+        XCTAssertEqual(sent?["songId"] as? String, "sng_1")
+        XCTAssertEqual(sent?["ripFromCloud"] as? Bool, true)
+    }
+
+    func testRipCollectionSendsCloudFlagWhenOn() async {
+        let rips = makeStore(ripFromCloud: true)
+        RecordingURLProtocol.bodyByPath["/rip-collection"] = Data("""
+        { "results": [], "counts": { "ready": 0, "queued": 0, "inflight": 0, "unknown": 0, "total": 0 } }
+        """.utf8)
+        _ = await rips.ripCollection(["sng_1", "sng_2"])
+        let sent = RecordingURLProtocol.lastBodyJSON(path: "/rip-collection")
+        XCTAssertEqual(sent?["songIds"] as? [String], ["sng_1", "sng_2"])
+        XCTAssertEqual(sent?["ripFromCloud"] as? Bool, true)
+    }
+
+    func testRipCollectionOmitsCloudFlagWhenOff() async {
+        let rips = makeStore(ripFromCloud: false)
+        RecordingURLProtocol.bodyByPath["/rip-collection"] = Data("""
+        { "results": [], "counts": { "ready": 0, "queued": 0, "inflight": 0, "unknown": 0, "total": 0 } }
+        """.utf8)
+        _ = await rips.ripCollection(["sng_1"])
+        let sent = RecordingURLProtocol.lastBodyJSON(path: "/rip-collection")
+        XCTAssertNil(sent?["ripFromCloud"], "flag omitted when off")
     }
 
     // MARK: Feature 2 RIP — ripCollection batch path

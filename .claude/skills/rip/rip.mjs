@@ -32,6 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { loadLibraryXML, loadLibraryTSV, indexLibrary, findInLibrary } from '../../../scripts/lib/am-match.mjs';
 
 // ---------------- args ----------------
 function parseArgs(argv) {
@@ -107,70 +108,10 @@ function parseCSV(text) {
   return rows.filter(r => r.length > 1 || (r.length === 1 && r[0] !== ''));
 }
 
-// ---------------- normalization / matching ----------------
-const stripD = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
-function normTitle(s) {
-  let t = stripD(String(s || '').toLowerCase());
-  t = t.replace(/[\(\[].*?[\)\]]/g, ' ').replace(/\b(feat|featuring|ft)\b.*$/g, ' ').replace(/&/g, ' and ');
-  return t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
-}
-function normArtist(s) {
-  let t = stripD(String(s || '').toLowerCase());
-  t = t.replace(/[\(\[].*?[\)\]]/g, ' ').replace(/\b(feat|featuring|ft)\b.*$/g, ' ').replace(/&/g, ' and ');
-  t = t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
-  return t.replace(/^the\s+/, '');
-}
-const toks = (s) => new Set(s.split(' ').filter(Boolean));
-function subsetEither(a, b) {
-  const A = toks(a), B = toks(b); if (!A.size || !B.size) return false;
-  const small = A.size <= B.size ? A : B, big = A.size <= B.size ? B : A;
-  for (const x of small) if (!big.has(x)) return false; return true;
-}
-
-// ---------------- library load (XML preferred, TSV fallback) ----------------
-const unesc = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-function loadLibraryXML(file) {
-  const text = fs.readFileSync(file, 'utf8');
-  const entries = [];
-  let cur = null;
-  for (const line of text.split('\n')) {
-    if (line.includes('<dict>')) { cur = {}; continue; }
-    if (line.includes('</dict>') && cur) { if (cur.persistentID || cur.title) entries.push(cur); cur = null; continue; }
-    if (!cur) continue;
-    const m = line.match(/<key>([^<]+)<\/key><(?:string|integer)>([^<]*)<\/(?:string|integer)>/);
-    if (!m) continue;
-    const k = m[1], v = unesc(m[2]);
-    if (k === 'Name') cur.title = v;
-    else if (k === 'Artist') cur.artist = v;
-    else if (k === 'Album') cur.album = v;
-    else if (k === 'Persistent ID') cur.persistentID = v;
-  }
-  return entries;
-}
-function loadLibraryTSV(file) {
-  return fs.readFileSync(file, 'utf8').trim().split('\n').slice(1).map(ln => {
-    const [persistentID, artist, title, album] = ln.split('\t');
-    return { persistentID, artist, title, album };
-  }).filter(e => e.title);
-}
-function indexLibrary(entries) {
-  const exact = new Map(), byTitle = new Map();
-  for (const e of entries) {
-    e.na = normArtist(e.artist); e.nt = normTitle(e.title);
-    const k = e.na + '\x00' + e.nt;
-    if (!exact.has(k)) exact.set(k, e);
-    if (!byTitle.has(e.nt)) byTitle.set(e.nt, []);
-    byTitle.get(e.nt).push(e);
-  }
-  return { exact, byTitle, count: entries.length };
-}
-function findInLibrary(lib, artist, title) {
-  const na = normArtist(artist), nt = normTitle(title);
-  const ex = lib.exact.get(na + '\x00' + nt);
-  if (ex) return { hit: ex, match: 'exact' };
-  const loose = (lib.byTitle.get(nt) || []).find(e => subsetEither(e.na, na));
-  return loose ? { hit: loose, match: 'loose' } : { hit: null, match: 'none' };
-}
+// ---------------- normalization / matching · library load / indexing ----------------
+// (stripD/normTitle/normArtist/subsetEither/unesc/loadLibraryXML/loadLibraryTSV/
+//  indexLibrary/findInLibrary now live in scripts/lib/am-match.mjs — the single matcher
+//  shared with the rip server's cloud-rip accept-time probe.)
 
 // ---------------- fs-safe ----------------
 const safeName = (s) => String(s).replace(/[\/\\:*?"<>|]/g, '-').replace(/[\x00-\x1f]/g, '').replace(/\s+/g, ' ').replace(/\.+$/, '').trim().slice(0, 120);

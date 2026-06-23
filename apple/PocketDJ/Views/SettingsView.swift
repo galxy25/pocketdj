@@ -256,6 +256,9 @@ struct SettingsView: View {
             TextField("Token (optional)", text: $settings.ripToken)
                 .pocketField()
                 .accessibilityIdentifier("settings-rip-token")
+            Toggle("Rip from cloud source", isOn: $settings.ripFromCloud)
+                .accessibilityIdentifier("settings-rip-from-cloud")
+                .onChange(of: settings.ripFromCloud) { settings.persist() }
             HStack {
                 Button {
                     settings.persist()
@@ -271,7 +274,7 @@ struct SettingsView: View {
         } header: {
             Text("Rip server")
         } footer: {
-            Text("The iMac rip-on-demand server (over Tailscale). Streams/downloads any song; only needed to create a rip — once ripped it plays from S3 anywhere.")
+            Text("The iMac rip-on-demand server (over Tailscale). Streams/downloads any song; only needed to create a rip — once ripped it plays from S3 anywhere. When “Rip from cloud source” is on, songs that match your Apple Music library are captured from Apple Music (real-time, one at a time) and fall back to vinyl otherwise — a large Rip/Burn can take a while.")
         }
     }
 

@@ -21,6 +21,11 @@ final class SettingsStore {
     var sources: [SourceConfig]
     var ripServerURL: String
     var ripToken: String
+    /// When on, every rip the app requests asks the server to try capturing the song from
+    /// the Apple Music library on the iMac (cloud), falling back to the analog (vinyl)
+    /// source when there's no Apple Music match or the capture fails. No-op for songs that
+    /// already rip from Apple Music (digital sources).
+    var ripFromCloud: Bool
     var searchAccessKeyID: String
     var searchSecretKey: String
     var searchEndpoint: String
@@ -34,6 +39,7 @@ final class SettingsStore {
         self.sources = data.sources
         self.ripServerURL = data.ripServerURL
         self.ripToken = data.ripToken
+        self.ripFromCloud = data.ripFromCloud ?? false
         self.searchAccessKeyID = data.searchAccessKeyID
         self.searchSecretKey = data.searchSecretKey
         self.searchEndpoint = data.searchEndpoint
@@ -94,6 +100,7 @@ final class SettingsStore {
     func persist() {
         let snapshot = SettingsData(
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
+            ripFromCloud: ripFromCloud,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint)
         if let encoded = try? JSONEncoder().encode(snapshot) {
@@ -108,6 +115,7 @@ final class SettingsStore {
         let d = SettingsData.default
         sources = d.sources
         ripServerURL = d.ripServerURL; ripToken = d.ripToken
+        ripFromCloud = d.ripFromCloud ?? false
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
         searchEndpoint = d.searchEndpoint
     }
@@ -125,6 +133,10 @@ struct SettingsData: Codable {
     var sources: [SourceConfig]
     var ripServerURL: String
     var ripToken: String
+    /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — a
+    /// non-optional Bool would fail decode and silently reset ALL settings to defaults
+    /// (load() falls back to .default via `try?`). Coalesced to false at the read sites.
+    var ripFromCloud: Bool?
     var searchAccessKeyID: String
     var searchSecretKey: String
     var searchEndpoint: String
@@ -133,6 +145,7 @@ struct SettingsData: Codable {
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
         ripServerURL: Config.ripServerBase.absoluteString,
         ripToken: "",
+        ripFromCloud: false,
         searchAccessKeyID: "",
         searchSecretKey: "",
         searchEndpoint: "")

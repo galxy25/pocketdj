@@ -20,6 +20,7 @@ final class SettingsStoreTests: XCTestCase {
         let s = SettingsStore(defaults: defaults)
         s.ripServerURL = "https://example.test"
         s.ripToken = "abc"
+        s.ripFromCloud = true
         s.addSource()
         s.sources[1].name = "Apple Music"
         s.sources[1].urlString = "https://cdn.test/am.json"
@@ -28,8 +29,41 @@ final class SettingsStoreTests: XCTestCase {
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.ripServerURL, "https://example.test")
         XCTAssertEqual(reloaded.ripToken, "abc")
+        XCTAssertTrue(reloaded.ripFromCloud)
         XCTAssertEqual(reloaded.sources.count, 2)
         XCTAssertEqual(reloaded.sources[1].name, "Apple Music")
+    }
+
+    func testRipFromCloudDefaultsOff() {
+        let s = SettingsStore(defaults: freshDefaults())
+        XCTAssertFalse(s.ripFromCloud)
+    }
+
+    /// REGRESSION (Codable back-compat): an older `pdj.settings.v1` blob written before
+    /// `ripFromCloud` existed has no such key. Because `ripFromCloud` is `Bool?` in
+    /// SettingsData, the blob must still decode — preserving sources/ripServerURL — and
+    /// ripFromCloud must come back false. A non-optional Bool would fail decode and
+    /// silently reset ALL settings to defaults.
+    func testLegacyBlobWithoutRipFromCloudDecodesAndPreservesSettings() {
+        let defaults = freshDefaults()
+        let legacy = """
+        {
+          "sources": [{"id":"\(UUID().uuidString)","name":"Old Crate","urlString":"https://old.test/i.json","enabled":true}],
+          "ripServerURL": "https://legacy.test",
+          "ripToken": "legacy-token",
+          "searchAccessKeyID": "",
+          "searchSecretKey": "",
+          "searchEndpoint": ""
+        }
+        """
+        defaults.set(Data(legacy.utf8), forKey: "pdj.settings.v1")
+
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.ripServerURL, "https://legacy.test", "legacy settings must survive (not reset to default)")
+        XCTAssertEqual(s.ripToken, "legacy-token")
+        XCTAssertEqual(s.sources.count, 1)
+        XCTAssertEqual(s.sources.first?.name, "Old Crate")
+        XCTAssertFalse(s.ripFromCloud, "missing key coalesces to false")
     }
 
     func testEnabledSourceURLsSkipsDisabledAndInvalid() {
@@ -56,10 +90,11 @@ final class SettingsStoreTests: XCTestCase {
     func testResetRestoresDefaults() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)
-        s.ripToken = "secret"; s.addSource(); s.persist()
+        s.ripToken = "secret"; s.ripFromCloud = true; s.addSource(); s.persist()
         s.resetEverything()
         XCTAssertEqual(s.sources.count, 1)
         XCTAssertEqual(s.ripToken, "")
+        XCTAssertFalse(s.ripFromCloud)
         // and it's gone from disk
         XCTAssertNil(defaults.data(forKey: "pdj.settings.v1"))
     }
