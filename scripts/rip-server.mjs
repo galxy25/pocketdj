@@ -48,6 +48,51 @@ const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------- self-healing: per-job watchdog + transient retry/backoff ----------------
+// A capture that hangs (Music.app / Audio Hijack stuck) would otherwise leave `working`
+// true forever and freeze the WHOLE queue. pump() races runJob against a DURATION-AWARE
+// deadline; on the deadline we group-kill the active worker (the SAME kill /rip-cancel
+// uses) and reject so the job fail()s and the queue advances. A transient failure (drive
+// unmounted, network blip, watchdog timeout, spawn error) is REQUEUED with capped
+// exponential backoff so a remount / blip self-heals; a permanent failure (unknown song,
+// no analog reference, explicit cancel) is NOT retried.
+// The test-override env vars (RIP_TEST_*) let the e2e shrink the timeouts/backoff so a
+// hang/retry cycle runs in seconds; production uses the safe defaults.
+const numEnv = (k, d) => (process.env[k] ? parseInt(process.env[k], 10) : d);
+const SELFHEAL = {
+  // digital/cloud real-time capture: (song length || default) * mult + buffer, floored/ceiled.
+  digitalMult: 1.5,
+  digitalBufferMs: numEnv('RIP_TEST_DIGITAL_BUFFER_MS', 90_000), // +90s for spawn/seek/upload slack
+  digitalDefaultLenMs: 6 * 60_000, // unknown length → assume a 6-min song
+  digitalFloorMs: numEnv('RIP_TEST_DIGITAL_FLOOR_MS', 90_000), // never kill a legit capture before this
+  digitalCeilMs: 30 * 60_000,     // hard ceiling (a single track can't legitimately run 30 min)
+  // analog ffmpeg transcode of a whole album: a generous fixed cap (transcode is fast).
+  analogCapMs: numEnv('RIP_TEST_ANALOG_CAP_MS', 12 * 60_000),
+  // capped exponential backoff requeue for TRANSIENT failures.
+  maxAttempts: numEnv('RIP_TEST_MAX_ATTEMPTS', 5), // total tries (attempt 1 = the original run)
+  backoffMs: process.env.RIP_TEST_BACKOFF_MS
+    ? process.env.RIP_TEST_BACKOFF_MS.split(',').map((s) => parseInt(s, 10))
+    : [30_000, 120_000, 480_000, 480_000], // ~30s, 2m, 8m, 8m between retries (index by attempt-1)
+};
+function jobDeadlineMs(job, song) {
+  const analog = song && song.sourceType === 'analog' && !job.preferCloud;
+  if (analog) return SELFHEAL.analogCapMs;
+  const lenMs = (song && song.length) || SELFHEAL.digitalDefaultLenMs;
+  const d = lenMs * SELFHEAL.digitalMult + SELFHEAL.digitalBufferMs;
+  return Math.min(SELFHEAL.digitalCeilMs, Math.max(SELFHEAL.digitalFloorMs, d));
+}
+// Permanent (never retry): not in catalog, no analog file reference, explicit cancel.
+// Everything else (transient): drive/source missing, aws/s3/network, watchdog timeout,
+// generic capture/ffmpeg spawn/exit errors → retry with backoff.
+const TIMEOUT_MARK = 'watchdog timeout';
+function isTransient(job, msg) {
+  if (job.canceled || msg === 'canceled') return false;
+  const m = String(msg || '');
+  if (/unknown songId/.test(m)) return false;
+  if (/no analog file reference/.test(m)) return false;
+  return true; // analog source missing, s3/network, timeout, spawn/exit, generic capture failure
+}
+
 // Bump when the server gains capabilities the app must detect. The app warns (banner)
 // when a reachable server reports an older protocol than it needs.
 //   1 = original rip-on-demand   ·   2 = live HLS streaming (/hls)
@@ -189,10 +234,10 @@ function acceptRip(songId, ripFromCloud = false) {
     const job = jobs.get(existingId);
     return { job, status: 'inflight', url: job.url || null };
   }
-  const job = { jobId: randomUUID(), songId, resourceKey, preferCloud: wantCloud, phase: 'queued', createdAt: Date.now() };
+  const job = { jobId: randomUUID(), songId, resourceKey, preferCloud: wantCloud, phase: 'queued', createdAt: Date.now(), attempt: 1 };
   jobs.set(job.jobId, job);
   inflight.set(resourceKey, job.jobId);
-  persistQueue(job); // durable: survives a restart
+  persistQueue(job); // durable: survives a restart (retry budget included)
   setPhase(job, 'queued');
   enqueue(job);
   return { job, status: 'queued', url: null };
@@ -227,27 +272,29 @@ function cancelOne(songId, canceledAlbums) {
       // must finish; the terminal canceled-guard then cleans up (fail → inflight.delete).
     } else if (activeChild.p) {
       // Group-kill (detached) to reap the worker's grandchildren (rip skill, tail, HLS
-      // ffmpeg). Best-effort: fall back to a direct kill if the group kill throws.
-      try { process.kill(-activeChild.p.pid, 'SIGKILL'); }
-      catch { try { activeChild.p.kill('SIGKILL'); } catch { /* already gone */ } }
+      // ffmpeg). Same kill the watchdog uses. Best-effort.
+      killActiveChild();
     }
     // working stays true until runJob returns; pump() then drains the queue and the
     // terminal canceled-guard calls fail() → inflight.delete + clearQueue.
     return 'canceled';
   }
 
-  // (B) a QUEUED job (not yet running).
+  // (B) a QUEUED job (not yet running) OR a job WAITING in a transient-retry backoff window
+  // (inflight points at it, phase 'queued', but not yet in the run queue). Both cases: mark
+  // canceled, drop any queue entry, release inflight + durable file. The backoff timer's
+  // re-enqueue guards on job.canceled / the inflight pointer, so it becomes a no-op.
   const qi = queue.findIndex((q) => q.jobId === jobId);
-  if (qi >= 0) {
+  if (qi >= 0 || job.phase === 'queued') {
     job.canceled = true;
-    queue.splice(qi, 1);
+    if (qi >= 0) queue.splice(qi, 1);
     if (job.resourceKey) inflight.delete(job.resourceKey);
     clearQueue(job.songId);
     setPhase(job, 'error', { error: 'canceled' });
     return 'canceled';
   }
-  // inflight points at a job that is neither active nor queued (e.g. a finished/errored job
-  // whose inflight entry lingers) → nothing to cancel.
+  // inflight points at a job that is neither active nor queued/pending (e.g. a finished/
+  // errored job whose inflight entry lingers) → nothing to cancel.
   return 'notFound';
 }
 
@@ -256,23 +303,94 @@ function cancelOne(songId, canceledAlbums) {
 // On startup any leftover files are re-enqueued (idempotent — skipped if already ripped).
 const queueFile = (songId) => join(QUEUE_DIR, `${songId}.json`);
 function persistQueue(job) {
-  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, preferCloud: !!job.preferCloud, createdAt: job.createdAt })); } catch { /* ignore */ }
+  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, preferCloud: !!job.preferCloud, createdAt: job.createdAt, attempt: job.attempt || 1 })); } catch { /* ignore */ }
 }
 function clearQueue(songId) { try { rmSync(queueFile(songId)); } catch { /* not present */ } }
 
 function enqueue(job) { queue.push(job); pump(); }
+
+// Group-kill the in-flight capture child — the SAME kill /rip-cancel uses (reaps the
+// worker's grandchildren: rip skill, tail, HLS ffmpeg). Best-effort.
+function killActiveChild() {
+  const p = activeChild.p;
+  if (!p) return;
+  try { process.kill(-p.pid, 'SIGKILL'); }
+  catch { try { p.kill('SIGKILL'); } catch { /* already gone */ } }
+}
+
+// Schedule a TRANSIENT-failure retry of the same job WITHOUT holding the worker: the job
+// is re-enqueued by a timer after the backoff so the next queued song runs meanwhile. The
+// durable queue record carries the bumped attempt so a restart preserves the retry budget.
+// A canceled job is never rescheduled (the caller already excludes it).
+function scheduleRetry(job, prevMsg) {
+  const next = (job.attempt || 1) + 1;
+  const delay = SELFHEAL.backoffMs[Math.min(job.attempt - 1, SELFHEAL.backoffMs.length - 1)];
+  console.error(`  retry-scheduled ${job.songId} attempt ${next}/${SELFHEAL.maxAttempts} in ${Math.round(delay / 1000)}s (was: ${prevMsg})`);
+  const retry = {
+    jobId: randomUUID(), songId: job.songId, resourceKey: job.resourceKey,
+    preferCloud: !!job.preferCloud, phase: 'queued', createdAt: job.createdAt || Date.now(), attempt: next,
+  };
+  jobs.set(retry.jobId, retry);
+  // keep single-flight: this resource stays inflight (pointing at the retry job) across the gap.
+  inflight.set(retry.resourceKey, retry.jobId);
+  persistQueue(retry); // durable: survives a restart with the bumped attempt
+  setPhase(retry, 'queued', { message: `retry ${next}/${SELFHEAL.maxAttempts} after ${prevMsg}` });
+  setTimeout(() => {
+    if (retry.canceled) return; // canceled during the backoff window
+    if (!inflight.has(retry.resourceKey) || inflight.get(retry.resourceKey) !== retry.jobId) return; // superseded/canceled
+    enqueue(retry);
+  }, delay).unref?.();
+}
+
 async function pump() {
   if (working) return;
   const job = queue.shift();
   if (!job) return;
   working = true;
   activeJobId = job.jobId; // mark running the instant it leaves the queue (closes the cancel race)
-  try { await runJob(job); } catch (e) { fail(job, e.message); }
-  clearQueue(job.songId); // terminal (ready or error) → drop the durable request
-  working = false;
-  activeJobId = null;
-  activeChild.p = null;
-  pump();
+  let timedOut = false;
+  try {
+    const song = songById.get(job.songId);
+    const deadline = jobDeadlineMs(job, song);
+    let timer;
+    const watchdog = new Promise((_, rej) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        console.error(`  timeout-killed ${job.songId} after ${Math.round(deadline / 1000)}s (job ${job.jobId})`);
+        killActiveChild(); // reuse the /rip-cancel group-kill so runJob's worker promise resolves
+        rej(new Error(TIMEOUT_MARK));
+      }, deadline);
+      timer.unref?.();
+    });
+    try { await Promise.race([runJob(job), watchdog]); }
+    finally { clearTimeout(timer); }
+    // runJob set the terminal phase itself (ready/error). A watchdog win rejects → caught below.
+    if (timedOut && job.phase !== 'error') fail(job, TIMEOUT_MARK);
+  } catch (e) {
+    // any throw (incl. the watchdog) → ensure the job is failed once and inflight is consistent.
+    if (job.phase !== 'error') fail(job, e.message || String(e));
+  } finally {
+    // Decide retry vs terminal from the job's terminal error. A TRANSIENT failure (and not a
+    // cancel) within the attempt cap → schedule a backoff retry (which re-holds inflight);
+    // otherwise this is terminal and we drop the durable request + release inflight.
+    const errMsg = job.error || (timedOut ? TIMEOUT_MARK : '');
+    const retryable = job.phase === 'error' && !job.canceled
+      && isTransient(job, errMsg) && (job.attempt || 1) < SELFHEAL.maxAttempts;
+    if (retryable) {
+      scheduleRetry(job, errMsg); // re-holds inflight for this resource (single-flight preserved)
+      clearQueue(job.songId);     // the retry job re-persisted its own durable record
+    } else {
+      if (job.phase === 'error' && !job.canceled && isTransient(job, errMsg)) {
+        console.error(`  gave-up ${job.songId} after ${job.attempt || 1}/${SELFHEAL.maxAttempts} attempts (${errMsg})`);
+      }
+      clearQueue(job.songId); // terminal (ready or give-up) → drop the durable request
+    }
+    // ALWAYS release the worker so the queue advances, even on an unexpected throw above.
+    working = false;
+    activeJobId = null;
+    activeChild.p = null;
+    pump();
+  }
 }
 
 // Re-enqueue requests left in the queue dir by a previous run (crash/restart safe).
@@ -293,7 +411,7 @@ function resumePending() {
     const perSong = preferCloud || song.sourceType !== 'analog';
     const resourceKey = perSong ? songId : song.albumId;
     if (inflight.has(resourceKey)) continue;
-    const job = { jobId: randomUUID(), songId, resourceKey, preferCloud, phase: 'queued', createdAt: rec.createdAt || Date.now() };
+    const job = { jobId: randomUUID(), songId, resourceKey, preferCloud, phase: 'queued', createdAt: rec.createdAt || Date.now(), attempt: rec.attempt || 1 };
     jobs.set(job.jobId, job);
     inflight.set(resourceKey, job.jobId);
     setPhase(job, 'queued');
@@ -364,9 +482,22 @@ async function runAnalogJob(job, song) {
     activeChild.p = ff;
     let err = '';
     ff.stderr.on('data', (d) => { err += d; });
-    ff.on('close', (code) => { activeChild.p = null; (code === 0 ? res() : rej(new Error('ffmpeg failed: ' + err.slice(-300)))); });
+    ff.on('close', (code) => {
+      activeChild.p = null;
+      if (code === 0) return res();
+      // The non-zero close of a KILLED ffmpeg (watchdog timeout or /rip-cancel) would reject
+      // an ALREADY-SETTLED runAnalogJob promise (the watchdog won the race in pump()), surfacing
+      // as an unhandled rejection. The job already terminated (phase 'error' on timeout) or is
+      // canceled, so swallow it (resolve); the canceled-guard below / pump() handle the outcome.
+      if (job.phase === 'error' || job.canceled) return res();
+      rej(new Error('ffmpeg failed: ' + err.slice(-300)));
+    });
   });
 
+  // Orphaned-continuation guard (mirrors runDigitalJob): on a WATCHDOG TIMEOUT pump() already
+  // failed the job + scheduled the retry (re-holding inflight); the killed ffmpeg's swallowed
+  // close LATER resumes here. Bail without uploading the partial transcode or touching inflight.
+  if (job.phase === 'error') return;
   if (job.canceled) return fail(job, 'canceled'); // killed mid-transcode → don't upload
   setPhase(job, 'uploading', { message: 'uploading to S3' });
   const key = `rips/${album.id}.mp3`;
@@ -430,6 +561,13 @@ async function runDigitalJob(job, song) {
     p.stderr.on('data', (d) => process.stderr.write(d));
     p.on('close', () => { activeChild.p = null; res(); });
   });
+  // Orphaned-continuation guard (mirrors the job.canceled guard below): on a WATCHDOG
+  // TIMEOUT the race already rejected, pump() called fail(job, TIMEOUT) and scheduleRetry()
+  // re-held inflight for the retry job. The killed worker's close event LATER resolves this
+  // promise; that orphaned continuation must NOT run the terminal fail()/inflight.delete a
+  // second time (it would wipe the retry's inflight.set and silently drop the retry). The
+  // job has already terminated (phase 'error'), so bail without touching inflight.
+  if (job.phase === 'error') return;
   // the worker wrote phases to the status file; read its final state
   let st = {};
   try { st = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* ignore */ }
