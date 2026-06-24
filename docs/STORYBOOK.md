@@ -917,11 +917,23 @@ setlist detail, and the read-only "From your sources" list — anywhere you've g
 worth carrying. Both buttons disable when the collection has nothing rippable in it.
 
 **⏹ Stop — cancel a rip or burn in flight.** While a Rip or Burn is running, a red **Stop**
-item joins the same menu. Tap it and the in-flight job halts: a **Stop rip** tells the iMac
+control stays reachable. Tap it and the in-flight job halts: a **Stop rip** tells the iMac
 to drop this set's still-queued and currently-recording tracks; a **Stop burn** ends the
 download loop after the current file (so whatever already finished stays on the device). Either
 way you get the partial summary so far — handy when you change your mind about a long set
 mid-capture, or only meant to grab the first few tracks.
+
+**Live "X of N ripped" — and a Stop that stays put.** A collection **Rip** captures every
+track in real time, one at a time, so it finishes *over minutes or hours* on the iMac long
+after the app has handed off the set. The app now follows that progress: a small **"ripping —
+3 of 12 done"** chip ticks up as each track lands in the cache, sitting beside a persistent red
+**Stop** the whole time the rip is running — not just for the split-second it takes to send the
+set off. (Earlier, Stop flashed by in about a second and was effectively unusable for a long
+rip.) When the last track completes, the chip resolves to **"Ripped 12 of 12"**; tap **Stop**
+at any point to drop whatever's still queued or recording and keep what already finished.
+Rips also **self-heal** server-side — a stuck capture or a briefly-unplugged vinyl drive no
+longer freezes the queue, so a long Rip reliably grinds to completion (it just keeps going,
+retrying transient hiccups) instead of stalling forever.
 
 **User story:** "I've built the set — now make it bulletproof: rip everything so it's
 captured, then burn it onto my phone so it plays in a basement with no bars, every track
@@ -1019,3 +1031,33 @@ searching offline or online, across the entire catalog rather than just the load
 
 **User story:** "Search the whole library online, scroll to pull in as many matches as I want,
 see the true total, and sort it the way I always do."
+
+---
+
+## 38. Keep going in the background — rips, burns, downloads & playback don't stop when you leave
+
+Capturing a whole set or burning it for offline takes real time — minutes for a long Rip,
+a steady download-by-download grind for a Burn. Before, leaving the app (switching to
+Messages, locking the phone, letting the screen sleep) could pause or drop that work
+half-finished. Now the native app keeps the long jobs **alive in the background** so you can
+start something big, pocket the phone, and come back to it done.
+
+**Rips, burns & downloads continue while the app is backgrounded or locked.** Kick off a
+collection **Rip** or **Burn**, or a single-track **⤓ Download**, then switch away or lock the
+device — the work keeps running. Downloads and burns hand off to the system so each file
+finishes (and the next one starts) even while the app is suspended; a **Burn** that was halfway
+through when you locked the phone keeps landing tracks, and you'll find the set fully burned when
+you return — its **"Burning 6 of 10"** progress having carried on the whole time. Even a **cold**
+relaunch (the system having fully unloaded the app mid-transfer) picks the finished files back up
+rather than losing them.
+
+**Setlist playback plays on past the lock screen.** Hit **▶ Play** on a setlist (§35), lock the
+phone or switch apps, and the set keeps playing — **auto-advancing from track to track** on its
+own. The currently-playing song shows on the **lock screen / Control Center** (and on AirPods,
+CarPlay, or a watch) with working **play / pause / next / previous** — so you can run the set, or
+skip ahead, without ever unlocking. This is the whole set sequencing in the background, not just
+a single track: each track ends, the next begins, hands-free.
+
+**User story:** "Start a big rip or burn, lock my phone, and trust it'll be finished when I pull
+it back out — and once a set is playing, run the whole thing from the lock screen, skipping tracks
+from my headphones, without the music ever cutting out because I left the app."
