@@ -109,13 +109,43 @@ final class BurnStore {
 
     private let rips: RipsStore
 
-    init(rips: RipsStore, fileURL: URL = BurnStore.defaultURL()) {
+    /// Feature (backgrounded burning): when set, `burn(...)` hands each song to a BACKGROUND
+    /// download task (via the coordinator) that survives suspend, persisting the `.downloading`
+    /// item IMMEDIATELY and finalizing each `.ready` item from the delegate callback. When nil
+    /// (all existing tests), `burn(...)` uses today's in-process serial loop unchanged.
+    let transfers: TransferCoordinator?
+
+    init(rips: RipsStore, transfers: TransferCoordinator? = nil, fileURL: URL = BurnStore.defaultURL()) {
         self.rips = rips
+        self.transfers = transfers
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL),
            let doc = try? JSONDecoder().decode(Document.self, from: data) {
             items = Dictionary(doc.items.map { ($0.songId, $0) }, uniquingKeysWith: { first, _ in first })
         }
+        // Wire the coordinator's finalize hooks back to this store (the delegate calls these on
+        // the main actor when a background download finishes / fails). `wireTransfers()` also
+        // supplies the burn-folder bookmark the nonisolated delegate re-resolves.
+        wireTransfers()
+    }
+
+    /// Connect the (optional) coordinator's main-actor finalize callbacks to this store, and
+    /// give it the burn-folder bookmark accessor. Safe when `transfers == nil`.
+    private func wireTransfers() {
+        guard let transfers else { return }
+        transfers.onBurnFinalized = { [weak self] record, bytes in
+            self?.finalizeBurn(record: record, bytes: bytes)
+        }
+        transfers.onBurnFailed = { [weak self] record, message in
+            self?.items[record.songId] = self?.errorItem(
+                (id: record.songId, title: record.title, artist: record.artist), message: message)
+            self?.save()
+        }
+        // NOTE: the burn-folder bookmark is NOT exposed to the coordinator via a closure anymore.
+        // The delegate runs off the main actor (and may run cold-relaunched before this store
+        // exists), so a `@MainActor` closure read would TRAP. Instead `burn(...)` captures the
+        // bookmark Data onto each TransferRecord at enqueue time (below), and the delegate
+        // resolves the destination purely from `record.burnFolderBookmark` with no main-actor hop.
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -143,7 +173,36 @@ final class BurnStore {
     /// checks this (and `Task.isCancelled`) ONLY at the top of each iteration, so the item
     /// being written when STOP is pressed completes (fully written + recorded) and no orphan
     /// half-written sidecar is left behind. Idempotent.
-    func requestStop() { stopRequested = true }
+    func requestStop() {
+        stopRequested = true
+        // Background path: cancel any in-flight background download tasks for items still
+        // downloading (so a Stop during a backgrounded burn actually halts the transfers) +
+        // drop those items so they don't linger as `.downloading`.
+        if let transfers {
+            let pending = items.values.filter { $0.state == .downloading }.map { $0.songId }
+            if !pending.isEmpty {
+                transfers.cancelAll(songIds: pending)
+                for id in pending { items[id] = nil }
+                save()
+            }
+        }
+    }
+
+    /// Called by the `TransferCoordinator` (on the main actor) when a background burn download
+    /// finishes: the delegate already moved the file + wrote the sidecar, so upsert the `.ready`
+    /// BurnItem from the record + persist. Idempotent (a duplicate callback re-writes the same
+    /// ready item).
+    func finalizeBurn(record: TransferCoordinator.TransferRecord, bytes: Int) {
+        items[record.songId] = BurnItem(
+            songId: record.songId, title: record.title, artist: record.artist,
+            audioFileName: record.audioFileName, sidecarFileName: record.sidecarFileName,
+            source: record.source,
+            bpm: record.bpm, musicalKey: record.musicalKey, camelot: record.camelot,
+            durationMs: record.durationMs, startMs: record.startMs,
+            bytes: bytes, rippedAt: record.rippedAt, downloadedAt: now,
+            state: .ready, error: nil, wasAppStorage: record.wasAppStorage)
+        save()
+    }
 
     // MARK: Feature 2 — burnt-music folder resolution (security-scoped)
 
@@ -261,6 +320,9 @@ final class BurnStore {
     @discardableResult
     func burn(_ songs: [(id: String, title: String, artist: String)]) async -> BurnResult {
         stopRequested = false   // Feature 1: fresh STOP signal for this run.
+        // Reset the coordinator's run-scoped progress counters so a 2nd burn doesn't show
+        // "Burning 4 of 5" (the totals are NOT monotonic across runs).
+        transfers?.beginRun()
         let unique = orderedUnique(songs)
         var result = BurnResult(total: unique.count)
         guard !unique.isEmpty else { return result }
@@ -274,6 +336,14 @@ final class BurnStore {
         let dir = folder.url
         let isUserFolder = folder.isUserFolder
         defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
+
+        // Background path: capture the user folder's security-scoped bookmark ONCE for this run,
+        // to STORE on each TransferRecord. The off-main delegate resolves the destination from
+        // this Data (not a @MainActor closure), so a cold-relaunched delegate writes to the right
+        // folder without ever touching the main actor. nil for app-storage (the delegate then
+        // resolves Application Support directly). We're holding scoped access to `dir` here, so
+        // this is the moment the bookmark can be minted.
+        let runBookmark: Data? = (isUserFolder && transfers != nil) ? Self.makeBookmark(for: dir) : nil
 
         // Feature 2: PROBE the folder ONCE with a sentinel write+delete. If it fails, abort
         // with a single clear message (mirroring the out-of-space abort) instead of N
@@ -307,10 +377,44 @@ final class BurnStore {
             }
 
             // (2) Not-ripped short-circuit — Burn never blocks on the 30-min ensureURL.
-            guard rips.cachedURL(song.id) != nil else {
+            guard let durableURL = rips.cachedURL(song.id), let entry = rips.manifest[song.id] else {
                 let why = rips.hasServer ? "not ripped — Rip first" : "not ripped (no rip server)"
                 items[song.id] = errorItem(song, message: why)
                 result.notRipped += 1
+                continue
+            }
+
+            // BACKGROUND PATH: hand the durable mp3 to a background download task that survives
+            // suspend. Pre-render the sidecar HERE (on the main actor) so the nonisolated
+            // delegate can finish a cold-launch file with no catalog lookup, persist the
+            // `.downloading` item IMMEDIATELY (incremental — a relaunch knows what's pending),
+            // and DON'T await bytes (the delegate finalizes via `finalizeBurn`).
+            if let transfers {
+                let (audioName, sidecarName) = fileNames(for: song.id, entry: entry)
+                let (s, a) = lookup?(song.id) ?? (nil, nil)
+                let sidecar = Self.buildSidecar(songId: song.id, fallback: song, song: s, album: a, entry: entry)
+                let record = TransferCoordinator.TransferRecord(
+                    taskIdentifier: 0, songId: song.id, kind: .burn,
+                    audioFileName: audioName, sidecarFileName: sidecarName, sidecarText: sidecar,
+                    wasAppStorage: !isUserFolder, burnFolderBookmark: runBookmark, expectedBytes: nil,
+                    manifestKey: entry.key, source: entry.source ?? "digital",
+                    bpm: entry.bpm, musicalKey: entry.musicalKey, camelot: entry.camelot,
+                    durationMs: entry.durationMs,
+                    startMs: entry.source == "analog" ? entry.startMs : nil,
+                    rippedAt: entry.rippedAt, title: song.title, artist: song.artist,
+                    createdAt: now)
+                items[song.id] = BurnItem(
+                    songId: song.id, title: song.title, artist: song.artist,
+                    audioFileName: audioName, sidecarFileName: sidecarName,
+                    source: entry.source ?? "digital",
+                    bpm: entry.bpm, musicalKey: entry.musicalKey, camelot: entry.camelot,
+                    durationMs: entry.durationMs,
+                    startMs: entry.source == "analog" ? entry.startMs : nil,
+                    bytes: 0, rippedAt: entry.rippedAt, downloadedAt: now,
+                    state: .downloading, error: nil, wasAppStorage: !isUserFolder)
+                save()   // incremental persistence — survive relaunch mid-flight
+                transfers.enqueueDownload(url: durableURL, token: rips.token, record: record)
+                result.burned += 1   // "enqueued" — the overlay tracks completion via the coordinator
                 continue
             }
 

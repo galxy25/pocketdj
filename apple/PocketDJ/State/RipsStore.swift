@@ -520,7 +520,7 @@ final class RipsStore {
     /// App-managed storage for burned audio + sidecars (NOT user-visible Documents —
     /// these are app-managed offline files the future offline player / live-mixer reads).
     /// Mirrors `documentsDirectory()` but in Application Support, under `burns/`.
-    static func burnsDirectory() throws -> URL {
+    nonisolated static func burnsDirectory() throws -> URL {
         let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                appropriateFor: nil, create: true)
         let dir = base.appendingPathComponent("burns", isDirectory: true)

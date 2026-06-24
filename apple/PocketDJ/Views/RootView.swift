@@ -69,6 +69,11 @@ struct RootView: View {
             // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
             coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
+            #if os(iOS)
+            // Let the BGAppRefreshTask reconcile the rips manifest while backgrounded (the rip
+            // itself is server-side; this only catches up the client's "ripped" view).
+            RipReconcileBridge.shared.refresh = { [weak rips] in await rips?.refreshManifest() }
+            #endif
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],

@@ -23,6 +23,13 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.levi.pocketdj.burn-drain</string>
+		<string>com.levi.pocketdj.rip-reconcile</string>
 	</array>
 </dict>
 </plist>

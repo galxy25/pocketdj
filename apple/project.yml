@@ -63,7 +63,14 @@ targets:
     info:
       path: PocketDJ/Generated/Info.plist
       properties:
-        UIBackgroundModes: [audio]
+        # `audio` keeps playback alive; `fetch`+`processing` let the BGAppRefreshTask /
+        # BGProcessingTask run (rip-reconcile + burn-drain). iOS-only keys — macOS ignores
+        # them harmlessly.
+        UIBackgroundModes: [audio, fetch, processing]
+        # Every BGTask id submitted must be declared here or register/submit throws.
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.levi.pocketdj.burn-drain
+          - com.levi.pocketdj.rip-reconcile
         # Apple Music opt-in flag (read by AppleMusicCredentials.isEnabled). MUST live
         # in this base plist: INFOPLIST_KEY_* only injects Apple's KNOWN keys, not custom
         # ones, so the build-setting form silently no-ops (the "Apple Music not available"

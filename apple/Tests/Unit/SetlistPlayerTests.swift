@@ -202,6 +202,53 @@ final class SetlistPlayerTests: XCTestCase {
         cleanBurnedFiles(["sng_ok.mp3", "sng_ok.txt"])
     }
 
+    // MARK: lock-screen NEXT / PREVIOUS drive the set (Feature: background audio)
+
+    /// `play()` assigns the engine's `onNext`/`onPrevious` hooks (which the lock-screen /
+    /// Control Center commands call) and `stop()` releases them. `skipNext` advances the set;
+    /// `skipPrevious` steps back (never below index 0).
+    func testNextPreviousHooksDriveTheSet() async {
+        cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_2.mp3", "sng_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_1")
+        await burn(rips, burns, songId: "sng_2")
+
+        // Before a set runs, the engine has no next/previous consumer.
+        XCTAssertNil(player.onNext)
+        XCTAssertNil(player.onPrevious)
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_1", title: "One", artist: "A"),
+            .init(id: "sng_2", title: "Two", artist: "A"),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_1" }
+        XCTAssertNotNil(player.onNext, "play() wires the lock-screen NEXT hook")
+        XCTAssertNotNil(player.onPrevious, "play() wires the lock-screen PREVIOUS hook")
+
+        // Simulate the lock-screen NEXT command target firing the engine hook.
+        player.onNext?()
+        await waitUntil("NEXT advanced to track 1") { rips.nowPlaying?.songId == "sng_2" }
+        XCTAssertEqual(seq.index, 1)
+
+        // Simulate lock-screen PREVIOUS → step back to track 0.
+        player.onPrevious?()
+        await waitUntil("PREVIOUS stepped back to track 0") { rips.nowPlaying?.songId == "sng_1" }
+        XCTAssertEqual(seq.index, 0)
+
+        // PREVIOUS at the top is clamped (stays at index 0).
+        player.onPrevious?()
+        XCTAssertEqual(seq.index, 0)
+
+        seq.stop()
+        XCTAssertNil(player.onNext, "stop() releases the NEXT hook")
+        XCTAssertNil(player.onPrevious, "stop() releases the PREVIOUS hook")
+        cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_2.mp3", "sng_2.txt"])
+    }
+
     // MARK: stop() tears down and resets
 
     func testStopResetsSequenceAndNowPlaying() async {

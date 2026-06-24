@@ -406,6 +406,13 @@ struct RowTransport: View {
     /// Resolve the durable mp3 (ripping on demand if needed — the row shows the live
     /// rip phase off `activeJob` meanwhile), then arm the save-location picker by setting
     /// `exportDoc`; the `.fileExporter` presents and the user chooses where it lands.
+    ///
+    /// DELIBERATELY foreground (NOT routed through the background `TransferCoordinator`): the
+    /// `.fileExporter` is an inherently-foreground interaction — it needs the bytes in-hand AND
+    /// the user present to pick a save location, so a backgrounded transfer can't complete this
+    /// flow anyway. The user's "survive suspend" goal is served by the multi-song Burn (now
+    /// background) + playback + rip-in; this single-song export stays on the in-memory path
+    /// (and so the existing foreground `downloadData` tests are unchanged).
     private func doDownload() {
         busy = .download
         Task {

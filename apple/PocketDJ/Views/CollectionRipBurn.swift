@@ -263,6 +263,18 @@ private struct CollectionRipBurnAlert: ViewModifier {
     @Environment(RipsStore.self) private var rips
     @Bindable var controller: CollectionRipBurnController
 
+    /// Background-burn progress string ("Burning N of M") when transfers are in flight via the
+    /// coordinator; nil when idle or on the in-process (test) path.
+    private var backgroundBurnProgress: String? {
+        guard let transfers = burns.transfers else { return nil }
+        // Read the MAIN-ACTOR snapshot (published via an explicit main hop when records change),
+        // not the lock-guarded delegate-queue counters — no data-race-by-convention. The
+        // counters are run-scoped (reset at each burn's `beginRun()`), so a 2nd burn starts at 0.
+        let (total, done) = transfers.progressSnapshot
+        guard total > 0, done < total else { return nil }
+        return "Burning \(done + 1) of \(total)"
+    }
+
     func body(content: Content) -> some View {
         content
             .alert("Done", isPresented: $controller.showSummary) {
@@ -279,6 +291,17 @@ private struct CollectionRipBurnAlert: ViewModifier {
                         ProgressView().controlSize(.small)
                         Text("Burning \(p.done + 1)/\(p.total): \(p.label)")
                             .font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.bottom, 12)
+                    .accessibilityIdentifier("burn-progress")
+                } else if let bg = backgroundBurnProgress {
+                    // Background path: the serial loop returns after enqueue (so `burns.progress`
+                    // is nil) — drive the overlay off the coordinator's done/total counters.
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(bg).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(.ultraThinMaterial, in: Capsule())

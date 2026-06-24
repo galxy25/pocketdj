@@ -45,8 +45,12 @@ final class SetlistPlayer {
         queue = items
         index = 0
         isRunning = true
-        // Own the engine's end hook only while running (released in stop()).
+        // Own the engine's end hook + lock-screen next/previous only while running (released in
+        // stop()). The lock screen / Control Center next/prev now advance the SET.
         player.onTrackEnded = { [weak self] in self?.handleEnded() }
+        player.onNext = { [weak self] in self?.skipNext() }
+        player.onPrevious = { [weak self] in self?.skipPrevious() }
+        player.setNextPreviousEnabled(true)
         Task { await playCurrent() }
     }
 
@@ -55,6 +59,9 @@ final class SetlistPlayer {
         isRunning = false
         waitingForLive = false
         player.onTrackEnded = nil          // release ownership of the shared hook
+        player.onNext = nil
+        player.onPrevious = nil
+        player.setNextPreviousEnabled(false)
         player.stop()
         coordinator.stop()
         rips.setNowPlaying(nil)
@@ -62,8 +69,17 @@ final class SetlistPlayer {
         queue = []
     }
 
-    /// Manually advance (used by the live-track "Next" affordance).
+    /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
     func skipNext() { advance() }
+
+    /// Manually go back one track (lock-screen PREVIOUS). No-op past the top of the set; never
+    /// goes below index 0. Re-resolves + plays the (now) current track.
+    func skipPrevious() {
+        guard isRunning else { return }
+        waitingForLive = false
+        index = max(0, index - 1)
+        Task { await playCurrent() }
+    }
 
     // MARK: - Internals
 
