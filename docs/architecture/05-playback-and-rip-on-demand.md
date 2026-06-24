@@ -44,6 +44,7 @@ manifest in memory.
 | `GET /status/:songId` | is it ripped? | `{ ready:true, url, entry }` or `{ ready:false, job }` |
 | `POST /rip` `{songId}` | start/join a rip | `JobView` |
 | `POST /rip-collection` `{songIds[]}` | batch-enqueue a whole collection (reuses the durable queue) | `{ results:[{songId,status,jobId,url}], counts }` |
+| `POST /rip-cancel` `{songIds[]}` | cancel queued matching jobs + kill the in-flight capture child (§2.1) | `{ results:[{songId,status}], counts }` (`status ∈ canceled\|notFound\|alreadyDone`) |
 | `GET /jobs/:id` | poll a job | `JobView` |
 | `GET /hls/<songId>/index.m3u8` · `…/seg_N.ts` | live HLS (iOS-native) | playlist / TS segment |
 | `GET /stream/<songId>.mp3` | live progressive mp3 (tail) | chunked `audio/mpeg` |
@@ -74,6 +75,47 @@ native app ([`RipsStore.ripCollection`](../../apple/PocketDJ/State/RipsStore.swi
 it and **falls back to a per-song `/rip` loop** if the server `404`s the path (older
 build); it classifies each fallback result by the song's actual job phase so the counts
 line up with the batch path's vocabulary.
+
+### 2.1 `POST /rip-cancel` — STOP a rip + kill the capture worker
+
+**Why.** A cloud rip is **real-time** (a 4-minute song takes ~4 minutes of Audio Hijack
+capture; Ch. 8), and a whole-collection Rip serializes at concurrency-1, so a user who
+fired a large set needs a **Stop**. `POST /rip-cancel {songIds:[...]}` cancels every
+matching job and is **idempotent** — re-sending or canceling an already-finished song is
+a clean no-op. The native [`RipsStore.cancelCollection`](../../apple/PocketDJ/State/RipsStore.swift)
+calls it from the collection **Stop** button (Ch. 5 §9 / storybook §33); an older server
+that 404s the path is a silent no-op.
+
+```
+ cancelOne(songId, canceledAlbums):
+   manifest[songId]?           → 'alreadyDone'   (already ripped — nothing to cancel)
+   resolve inflight job by BOTH candidate keys: [songId, albumId]   (digital/cloud · analog)
+   no job                      → 'notFound'
+   job is the RUNNING one (activeJobId == jobId):
+        job.canceled = true
+        phase=='uploading' → DON'T kill (aws s3 cp + saveManifest are idempotent; let finish)
+        else activeChild.p → process.kill(-pid, SIGKILL)   (GROUP kill: reaps rip-one,
+                                                             tail, HLS ffmpeg grandchildren)
+   job is QUEUED → splice from queue + inflight.delete + clearQueue + phase='error'(canceled)
+   → 'canceled'   (analog album: remember albumId so batch siblings also report 'canceled')
+```
+
+**Reading the diagram.** Cancellation hinges on two pieces of pump() state:
+**`activeJobId`** is set the instant a job leaves the queue (**before** spawn, closing the
+shift→spawn race — a cancel landing in that gap flips `job.canceled` and the **pre-spawn
+guard** in `runJob` short-circuits to `fail`), and **`activeChild.p`** is the in-flight
+**capture** child (`rip-one.mjs` / the analog `ffmpeg`) — the *only* process cancel ever
+kills. The capture children are `spawn`ed **detached** (own process group) so a single
+`process.kill(-pid, SIGKILL)` reaps the worker **and** its grandchildren (the rip skill, the
+stream tail, the HLS ffmpeg). Cancel **refuses the kill mid-`uploading`** — the `aws s3 cp`
+and `saveManifest` are idempotent and must finish — and a **canceled mid-capture analog
+cloud rip does NOT Tier-2-fall-back to vinyl** (cancel means *stop*, not *try the other
+path*). Because one analog job covers a whole album, the handler resolves **album-first**:
+canceling any sibling removes the shared `albumId` inflight entry, so it records the
+`albumId` in `canceledAlbums` and fills `'canceled'` for the batch's other album songs that
+would otherwise miss their own lookup. Terminal cleanup is per-branch — a queued cancel does
+its own `inflight.delete`; a running cancel lets the job's terminal `canceled`-guard call
+`fail()` (which deletes inflight), then `pump()` drains the next queued job.
 
 ---
 
@@ -405,9 +447,14 @@ downloads songs that are *already ripped* and never blocks on a live capture.
 
 **Source of truth:**
 [`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
-(`ripCollection`, `downloadDataIfCached`, `burnsDirectory`),
+(`ripCollection`, `cancelCollection`, `downloadDataIfCached`, `burnsDirectory`),
 [`apple/PocketDJ/State/BurnStore.swift`](../../apple/PocketDJ/State/BurnStore.swift)
-(the download queue + local index),
+(the download queue + local index + `requestStop` + the security-scoped folder
+resolution),
+[`apple/PocketDJ/Views/SettingsView.swift`](../../apple/PocketDJ/Views/SettingsView.swift)
+(`burnFolderSection`, the folder picker) +
+[`apple/PocketDJ/Settings/SettingsStore.swift`](../../apple/PocketDJ/Settings/SettingsStore.swift)
+(`burnFolderBookmark`),
 [`apple/PocketDJ/State/CollectionsStore.swift`](../../apple/PocketDJ/State/CollectionsStore.swift)
 (`songIds(forPlaylist/forPocket/forSetlist/forSource)` + `burnTuples` resolvers),
 [`apple/PocketDJ/Views/CollectionRipBurn.swift`](../../apple/PocketDJ/Views/CollectionRipBurn.swift)
@@ -460,6 +507,72 @@ make the layout eviction-ready. Offline playback and live mixing themselves are
 `PlayerEngine.load(url:live:startMs:title:artist:)` (§7), which already accepts any local
 URL + `startMs`. The human-readable `<songId>.txt` sidecar mirrors the `burn-setlist`
 skill's format (§6) as a companion; the JSON index, not the prose, is the source of truth.
+
+**The user-browsable burnt-music folder (security-scoped bookmark).** By default burns
+write to the app-private Application Support `burns/` dir. A **Settings ▸ Choose
+burnt-music folder** picker (`SettingsView.burnFolderSection`) lets the user save them to a
+folder they can browse in Finder/Files instead: one cross-platform `.fileImporter([.folder])`
+presents an `NSOpenPanel` on macOS and the directory document picker on iOS. The picked
+URL is **security-scoped**, so the store persists a **bookmark** (`makeBookmark` —
+`.withSecurityScope` on macOS, plain on iOS) in `SettingsStore.burnFolderBookmark` rather
+than a raw path. Each `BurnItem` records **`appStorage: Bool`** so a later folder switch
+never mis-resolves or prunes an item against the wrong dir: `resolveBurnFolder` resolves the
+bookmark (re-persisting a stale one only on the **write** path), brackets scoped access
+around the whole `burn(...)` loop, and **falls back to app storage on any problem** (denied,
+unmounted, not writable). `localURL`/`remove`/`reconcileOnLaunch` resolve each item via
+`itemDir(_:)` read-only and **skip** (never prune) an item whose user folder is currently
+unmounted — no data destruction from an ejected drive.
+
+**Stop a burn (Feature 1).** The same collection **Stop** that cancels a server rip
+(§2.1) also stops a burn: `BurnStore.requestStop()` sets a `stopRequested` flag the serial
+`burn(...)` loop checks between items, so **already-downloaded files are kept** and the rest
+are simply not attempted (`BurnResult.stopped`). The view's controller routes the one Stop
+button to the right path — cancel the app-side burn `Task` for a burn, `POST /rip-cancel`
+for a rip — by tracking which long-running op is in flight (Ch. 5 §9 view).
+
+---
+
+## 10. Setlist PLAY — the `SetlistPlayer` sequencer (burnt-or-stream)
+
+**Why.** A setlist is an ordered set; the DJ wants a single **Play** that runs it
+top-to-bottom hands-free. `SetlistPlayer` is a thin sequencer that plays each track in
+order, auto-advancing on end, and — crucially — chooses **burnt-local-file-if-present,
+else stream** per track, so a partially-burnt set still plays end-to-end (offline tracks
+from disk, the rest streamed).
+
+**Source of truth:**
+[`apple/PocketDJ/Playback/SetlistPlayer.swift`](../../apple/PocketDJ/Playback/SetlistPlayer.swift),
+driven by the **Play/Stop** toolbar button in
+[`apple/PocketDJ/Views/SetlistDetailView.swift`](../../apple/PocketDJ/Views/SetlistDetailView.swift)
+(storybook §32).
+
+```
+ SetlistPlayer.play(items)  ── items = [{id,title,artist}] in setlist order
+   index=0; player.onTrackEnded = handleEnded   (owns the hook only while running)
+   ▼ playCurrent()  — resolves the SOURCE FRESH each track:
+   burns.localURL(forSong: id) ≠ nil ?
+        → set rips.nowPlaying + player.load(localURL, live:false, startMs:nil)   (BURNT)
+        else → coordinator.play(id)   (Apple Music → rip fallback, §8)           (STREAM)
+              coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
+              player.isLive            → waitingForLive = true ("Next" affordance, no auto-end)
+   ▼ handleEnded()  (player.onTrackEnded fires on a finite item)
+   GUARD rips.nowPlaying?.songId == queue[index].id  → advance() ; index≥count → stop()
+```
+
+**Reading the diagram.** `play(items)` seeds the queue and takes ownership of the shared
+`PlayerEngine.onTrackEnded` hook (released in `stop()`). `playCurrent()` re-resolves the
+source **fresh each track** (a burnt file may have been purged since the queue was built):
+a burnt local file drives the **same `PlayerEngine`** the inline player binds to (set
+`nowPlaying`, then `load`), so the existing per-row `InlinePlayerSlot` (§7) lights up the
+current track with **zero new player UI**; otherwise it streams via `PlaybackCoordinator`
+(§8, Apple Music → rip fallback). Auto-advance rides the engine's finite-item end
+notification, but with an **ownership guard** — `handleEnded` ignores a stray end from an
+unrelated manual single-row play by checking `rips.nowPlaying?.songId == queue[index].id`.
+Two edges keep it from freezing: a **dead source** (coordinator error, or a purged burnt
+file) advances immediately since no end event will ever fire, and a **live HLS** capture
+(no natural end) sets `waitingForLive` so the UI shows a manual **Next** instead of stalling.
+Reaching the end tears down cleanly (releases the hook, clears now-playing) so the toolbar
+flips back to **Play**.
 
 ## Next
 
