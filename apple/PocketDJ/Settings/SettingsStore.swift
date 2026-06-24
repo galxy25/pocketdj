@@ -29,6 +29,10 @@ final class SettingsStore {
     var searchAccessKeyID: String
     var searchSecretKey: String
     var searchEndpoint: String
+    /// Feature 2 (burnt-music FOLDER): a SECURITY-SCOPED bookmark to the user-picked folder
+    /// burnt audio + sidecars are written into (so the files are browsable in Finder/Files).
+    /// `nil` → BurnStore falls back to the app-managed Application Support `burns/` dir.
+    var burnFolderBookmark: Data?
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -43,6 +47,7 @@ final class SettingsStore {
         self.searchAccessKeyID = data.searchAccessKeyID
         self.searchSecretKey = data.searchSecretKey
         self.searchEndpoint = data.searchEndpoint
+        self.burnFolderBookmark = data.burnFolderBookmark
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -102,7 +107,7 @@ final class SettingsStore {
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
             ripFromCloud: ripFromCloud,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
-            searchEndpoint: searchEndpoint)
+            searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -118,6 +123,7 @@ final class SettingsStore {
         ripFromCloud = d.ripFromCloud ?? false
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
         searchEndpoint = d.searchEndpoint
+        burnFolderBookmark = d.burnFolderBookmark
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -140,6 +146,9 @@ struct SettingsData: Codable {
     var searchAccessKeyID: String
     var searchSecretKey: String
     var searchEndpoint: String
+    /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — same
+    /// backward-compat rationale as `ripFromCloud` above.
+    var burnFolderBookmark: Data?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -148,5 +157,6 @@ struct SettingsData: Codable {
         ripFromCloud: false,
         searchAccessKeyID: "",
         searchSecretKey: "",
-        searchEndpoint: "")
+        searchEndpoint: "",
+        burnFolderBookmark: nil)
 }

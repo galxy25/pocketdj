@@ -440,6 +440,53 @@ final class RipsStore {
         return result
     }
 
+    /// One song's outcome from a batch cancel (mirrors the server's per-song result).
+    struct CancelItem: Decodable, Equatable {
+        var songId: String
+        /// "canceled" | "notFound" | "alreadyDone".
+        var status: String
+    }
+
+    /// The `/rip-cancel` response envelope.
+    private struct CancelResponse: Decodable {
+        var results: [CancelItem]
+        var counts: [String: Int]?
+    }
+
+    /// STOP an in-flight collection RIP (Feature 1): POST `/rip-cancel` so the server removes
+    /// still-queued matching jobs (+ their durable queue files) and KILLS the in-flight capture
+    /// worker for a currently-running match, marking each canceled. Idempotent — a second call
+    /// for the same song reports `notFound`. Deduplicates `ids`. No-op when there's no server.
+    /// An older server that 404s `/rip-cancel` is a silent no-op (forward-compatible). After a
+    /// successful cancel, the canceled songs' local job entries are cleared so the row's phase
+    /// label resets. Mirrors `ripCollection`'s request/decode structure.
+    @discardableResult
+    func cancelCollection(_ songIds: [String]) async -> [CancelItem] {
+        let ids = Self.orderedUnique(songIds)
+        guard !ids.isEmpty, hasServer else { return [] }
+
+        let base = serverUrl, tok = token
+        var post = URLRequest(url: URL(string: "\(base)/rip-cancel")!)
+        post.httpMethod = "POST"
+        post.setValue("application/json", forHTTPHeaderField: "content-type")
+        applyAuth(&post, token: tok)
+        post.httpBody = try? JSONSerialization.data(withJSONObject: ["songIds": ids])
+
+        guard let (data, response) = try? await session.data(for: post),
+              let http = response as? HTTPURLResponse else { return [] }
+        // Older server without the cancel endpoint → silent no-op.
+        if http.statusCode == 404 { return [] }
+        guard (200..<300).contains(http.statusCode) else { return [] }
+
+        if let decoded = try? JSONDecoder().decode(CancelResponse.self, from: data) {
+            for item in decoded.results where item.status == "canceled" { jobs[item.songId] = nil }
+            return decoded.results
+        }
+        // Couldn't decode but the server accepted it — best-effort reset of the requested ids.
+        for id in ids { jobs[id] = nil }
+        return ids.map { CancelItem(songId: $0, status: "canceled") }
+    }
+
     /// Map an observed per-song job phase to the batch endpoint's status vocabulary
     /// ("ready" | "queued" | "inflight" | "unknown") so the fallback's counts line up with
     /// the `/rip-collection` path. A nil phase (no/failed response) is "unknown".

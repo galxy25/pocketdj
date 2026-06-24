@@ -9,6 +9,11 @@ struct SetlistDetailView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
+    // Feature 3 — Play All sources (the sequencer crosses all four into the player path).
+    @Environment(RipsStore.self) private var rips
+    @Environment(BurnStore.self) private var burns
+    @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
     let setlistId: String
 
     @State private var nameDraft = ""
@@ -18,8 +23,30 @@ struct SetlistDetailView: View {
     @State private var addingNote = false      // top-level "Add note" composer
     @State private var addNoteDraft = ""
     @State private var ripBurn = CollectionRipBurnController()
+    /// The sequential Play-All sequencer (Feature 3) — built lazily from the env stores on
+    /// first Play, mirroring the `ripBurn` controller pattern.
+    @State private var setlistPlayer: SetlistPlayer?
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
+
+    /// Whether Play All is currently running (drives the toolbar glyph + edit gating).
+    private var isPlaying: Bool { setlistPlayer?.isRunning == true }
+
+    /// Build (once) the sequencer from the environment stores.
+    private func ensurePlayer() -> SetlistPlayer {
+        if let p = setlistPlayer { return p }
+        let p = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
+        setlistPlayer = p
+        return p
+    }
+
+    /// The ordered, playable tracks (cue/empty rows stripped), carrying title + artist so
+    /// the now-playing label + coordinator.play have what they need.
+    private func playableItems(_ setlist: Setlist) -> [SetlistPlayer.Item] {
+        setlist.tracks
+            .filter { $0.isText != true && !$0.songId.isEmpty }
+            .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist) }
+    }
 
     var body: some View {
         Group {
@@ -50,10 +77,17 @@ struct SetlistDetailView: View {
                                         collections.removeSetlistTrack(setlistId: setlistId, at: idx)
                                     } label: { Label("Delete from set list", systemImage: "trash") }
                                     .accessibilityIdentifier("setlist-delete-\(idx)")
+                                    .disabled(isPlaying)
                                 }
                         }
-                        .onMove { from, to in collections.moveSetlistTracks(setlistId: setlistId, from: from, to: to) }
+                        // Disable reorder/delete while Play-All runs so the sequencer's queue
+                        // index can't desync from the on-screen rows (Feature 3).
+                        .onMove { from, to in
+                            guard !isPlaying else { return }
+                            collections.moveSetlistTracks(setlistId: setlistId, from: from, to: to)
+                        }
                         .onDelete { offsets in
+                            guard !isPlaying else { return }
                             // Remove highest-index first so earlier offsets stay valid.
                             offsets.sorted(by: >).forEach { collections.removeSetlistTrack(setlistId: setlistId, at: $0) }
                         }
@@ -63,7 +97,7 @@ struct SetlistDetailView: View {
                 }
                 .navigationTitle(setlist.name ?? "Set list")
                 #if os(iOS)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton().accessibilityIdentifier("setlist-edit-order") } }
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton().accessibilityIdentifier("setlist-edit-order").disabled(isPlaying) } }
                 #endif
             } else {
                 ContentUnavailableView("Set list gone", systemImage: "waveform.slash",
@@ -73,8 +107,36 @@ struct SetlistDetailView: View {
         .accessibilityIdentifier("setlist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
+        // Feature 3 — tear down Play-All on REAL teardown only (a setlist switch), NOT on a
+        // transient onDisappear (SwiftUI fires that on a navigation push too).
+        .onChange(of: setlistId) { setlistPlayer?.stop() }
         .toolbar {
             if let setlist {
+                ToolbarItem(placement: .primaryAction) {
+                    // PLAY ALL / STOP — plays the set in order, auto-advancing on track-end.
+                    Button {
+                        if isPlaying {
+                            setlistPlayer?.stop()
+                        } else {
+                            ensurePlayer().play(playableItems(setlist))
+                        }
+                    } label: {
+                        Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                    }
+                    .help(isPlaying ? "Stop playing the set list" : "Play the set list in order")
+                    .disabled(!isPlaying && playableItems(setlist).isEmpty)
+                    .accessibilityIdentifier("setlist-play")
+                }
+                if setlistPlayer?.waitingForLive == true {
+                    ToolbarItem(placement: .primaryAction) {
+                        // A live track has no natural end — let the DJ advance manually.
+                        Button { setlistPlayer?.skipNext() } label: {
+                            Image(systemName: "forward.fill")
+                        }
+                        .help("Skip to the next track (the current one is live)")
+                        .accessibilityIdentifier("setlist-play-next")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { addNoteDraft = ""; addingNote = true } label: { Image(systemName: "text.badge.plus") }
                         .help("Add a note between tracks")

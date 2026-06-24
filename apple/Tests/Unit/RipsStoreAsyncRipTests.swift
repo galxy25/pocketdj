@@ -234,6 +234,82 @@ final class RipsStoreAsyncRipTests: XCTestCase {
         XCTAssertEqual(result.total, 2)
         XCTAssertTrue(result.results.allSatisfy { $0.status == "unknown" })
     }
+
+    // MARK: Feature 1 STOP — cancelCollection POSTs /rip-cancel + clears canceled jobs
+
+    /// `cancelCollection` POSTs `{songIds:[...]}` to `/rip-cancel` (deduped, order-preserving)
+    /// and, on a successful response, clears the LOCAL job entry for each `canceled` id so the
+    /// row's phase label resets. A `notFound` / `alreadyDone` id keeps its job entry.
+    func testCancelCollectionPostsRipCancelAndClearsCanceledJobs() async {
+        let rips = makeStore()
+        // Seed local jobs so we can prove the canceled ones are cleared and others survive.
+        RecordingURLProtocol.body = Data(#"{"jobId":"j1","phase":"queued"}"#.utf8)
+        await rips.requestRipIfNeeded("sng_1")
+        RecordingURLProtocol.body = Data(#"{"jobId":"j2","phase":"queued"}"#.utf8)
+        await rips.requestRipIfNeeded("sng_2")
+        RecordingURLProtocol.reset()   // clear the /rip counts; keep the seeded jobs
+        XCTAssertNotNil(rips.jobs["sng_1"])
+        XCTAssertNotNil(rips.jobs["sng_2"])
+
+        RecordingURLProtocol.bodyByPath["/rip-cancel"] = Data("""
+        { "results": [
+            { "songId": "sng_1", "status": "canceled" },
+            { "songId": "sng_2", "status": "notFound" }
+          ],
+          "counts": { "canceled": 1, "notFound": 1 } }
+        """.utf8)
+
+        let results = await rips.cancelCollection(["sng_1", "sng_2"])
+
+        // Path + body: exactly one POST to /rip-cancel carrying {songIds:[...]}.
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip-cancel"), 1)
+        let sent = RecordingURLProtocol.lastBodyJSON(path: "/rip-cancel")
+        XCTAssertEqual(sent?["songIds"] as? [String], ["sng_1", "sng_2"])
+        // Decoded per-song results.
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results.first { $0.songId == "sng_1" }?.status, "canceled")
+        XCTAssertEqual(results.first { $0.songId == "sng_2" }?.status, "notFound")
+        // Canceled id's job is cleared; the not-found id keeps its job entry.
+        XCTAssertNil(rips.jobs["sng_1"], "canceled job entry is cleared")
+        XCTAssertNotNil(rips.jobs["sng_2"], "a notFound id keeps its job entry")
+    }
+
+    func testCancelCollectionDedupesSongIds() async {
+        let rips = makeStore()
+        RecordingURLProtocol.bodyByPath["/rip-cancel"] = Data("""
+        { "results": [], "counts": {} }
+        """.utf8)
+        _ = await rips.cancelCollection(["sng_1", "sng_1", "", "sng_2", "sng_1"])
+        let sent = RecordingURLProtocol.lastBodyJSON(path: "/rip-cancel")?["songIds"] as? [String]
+        XCTAssertEqual(sent, ["sng_1", "sng_2"], "deduped, order-preserving, empties dropped")
+    }
+
+    func testCancelCollectionEmptyIsNoOp() async {
+        let rips = makeStore()
+        let results = await rips.cancelCollection([])
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip-cancel"), 0, "empty input → no POST")
+    }
+
+    func testCancelCollectionNoServerIsNoOp() async {
+        let rips = makeStore(serverURL: "")
+        let results = await rips.cancelCollection(["sng_1"])
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip-cancel"), 0, "no server → no POST")
+    }
+
+    /// An older server that 404s `/rip-cancel` is a silent no-op (forward-compatible): no
+    /// results, and a seeded job entry is NOT cleared (the cancel never took effect).
+    func testCancelCollection404IsSilentNoOp() async {
+        let rips = makeStore()
+        RecordingURLProtocol.body = Data(#"{"jobId":"j1","phase":"queued"}"#.utf8)
+        await rips.requestRipIfNeeded("sng_1")
+        RecordingURLProtocol.statusCodeByPath["/rip-cancel"] = 404
+
+        let results = await rips.cancelCollection(["sng_1"])
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertNotNil(rips.jobs["sng_1"], "a 404 cancel leaves the job entry intact")
+    }
 }
 
 /// A scriptable, request-counting `URLProtocol` standing in for the rip server. Serves

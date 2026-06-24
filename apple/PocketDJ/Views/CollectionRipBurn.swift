@@ -42,6 +42,17 @@ struct CollectionRipBurnButtons: View {
         }
         .disabled(ids.isEmpty || controller.working)
         .accessibilityIdentifier("collection-burn")
+
+        // STOP (Feature 1) — shown only while a rip/burn is in flight. Idempotent + silent:
+        // routes to the right cancel path (app-side burn Task vs. server `/rip-cancel`).
+        if controller.working {
+            Button(role: .destructive) {
+                controller.stop(rips: rips, burns: burns)
+            } label: {
+                Label("Stop \(noun)", systemImage: "stop.circle")
+            }
+            .accessibilityIdentifier("collection-stop")
+        }
     }
 }
 
@@ -55,8 +66,19 @@ final class CollectionRipBurnController {
     var showSummary = false
     var canRefresh = false
 
+    /// Which long-running op is in flight (so a single STOP routes to the right cancel path).
+    enum Op { case rip, burn }
+    private(set) var inFlightOp: Op?
+    /// The burn Task, stored so STOP can cancel it (mirrors OnlineSearchModel's stored Task).
+    private var burnTask: Task<Void, Never>?
+    /// The ids enqueued by the last rip — captured so STOP RIP can target exactly those
+    /// (ripCollection is fire-and-forget and doesn't retain them).
+    private var lastRipIds: [String] = []
+
     func rip(_ ids: [String], rips: RipsStore, noun: String) {
         working = true
+        inFlightOp = .rip
+        lastRipIds = ids
         Task {
             let r = await rips.ripCollection(ids)
             // Real-time, concurrency-1: "queued/inflight" means enqueued, not done. Don't
@@ -70,30 +92,60 @@ final class CollectionRipBurnController {
             summary = parts.isEmpty ? "Nothing to rip." : parts.joined(separator: " · ")
             canRefresh = pending > 0 || r.ready > 0
             working = false
+            inFlightOp = nil
             showSummary = true
         }
     }
 
     func burn(_ ids: [String], rips: RipsStore, burns: BurnStore, collections: CollectionsStore) {
         working = true
-        Task {
+        inFlightOp = .burn
+        burnTask = Task {
             // BURN downloads only already-ripped songs; optionally enqueue the rest so a
             // later Burn pass (after a manifest Refresh) can pick them up.
             let tuples = collections.burnTuples(ids)
             let r = await burns.burn(tuples)
-            if r.notRipped > 0 && rips.hasServer {
+            // Don't auto-enqueue rips when the user STOPped the burn.
+            if !r.stopped && r.notRipped > 0 && rips.hasServer {
                 let missing = tuples.map { $0.id }.filter { rips.cachedURL($0) == nil }
                 if !missing.isEmpty { _ = await rips.ripCollection(missing) }
             }
-            var parts: [String] = ["Burned \(r.burned) of \(r.total)"]
-            if r.notRipped > 0 { parts.append("\(r.notRipped) not yet ripped") }
-            if r.failed > 0 { parts.append("\(r.failed) failed") }
-            if r.outOfSpace { parts.append("out of space — stopped early") }
-            if rips.ripFromCloud && r.notRipped > 0 && rips.hasServer { parts.append("cloud rips capture in real time, one at a time") }
+            var parts: [String]
+            if r.folderUnavailable {
+                parts = ["Couldn’t write to the burnt-music folder — check Settings"]
+            } else {
+                parts = ["Burned \(r.burned) of \(r.total)"]
+                if r.notRipped > 0 { parts.append("\(r.notRipped) not yet ripped") }
+                if r.failed > 0 { parts.append("\(r.failed) failed") }
+                if r.outOfSpace { parts.append("out of space — stopped early") }
+                if r.stopped { parts.append("stopped") }
+                if rips.ripFromCloud && !r.stopped && r.notRipped > 0 && rips.hasServer { parts.append("cloud rips capture in real time, one at a time") }
+            }
             summary = parts.joined(separator: " · ")
-            canRefresh = r.notRipped > 0
+            canRefresh = !r.stopped && !r.folderUnavailable && r.notRipped > 0
             working = false
+            inFlightOp = nil
             showSummary = true
+        }
+    }
+
+    /// STOP the in-flight op (Feature 1). BURN is app-side: signal the BurnStore loop to
+    /// stop after the current item + cancel the Task. RIP needs the server: cancel the
+    /// collection's queued/running jobs via `/rip-cancel`. Idempotent + silent (the result
+    /// alert already covers the partial state). Clears `working` for the rip path immediately
+    /// (the burn path clears it when its Task returns its partial result).
+    func stop(rips: RipsStore, burns: BurnStore) {
+        switch inFlightOp {
+        case .burn:
+            burns.requestStop()
+            burnTask?.cancel()
+        case .rip:
+            let ids = lastRipIds
+            inFlightOp = nil
+            working = false
+            Task { await rips.cancelCollection(ids) }
+        case .none:
+            break
         }
     }
 }

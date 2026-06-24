@@ -136,6 +136,13 @@ const jobs = new Map();         // jobId -> job
 const inflight = new Map();      // resourceKey -> jobId
 const queue = [];
 let working = false;
+// Cancellation support (POST /rip-cancel). activeJobId is set the INSTANT a job leaves
+// the queue in pump() (BEFORE spawn) so a cancel landing in the shift→spawn gap is seen
+// as "running" and short-circuits via the pre-spawn job.canceled guard. activeChild.p is
+// the in-flight CAPTURE child (rip-one.mjs / ffmpeg) — the ONLY process /rip-cancel ever
+// kills (never the aws s3 cp upload or saveManifest, which are idempotent and must finish).
+const activeChild = { p: null };
+let activeJobId = null;
 
 function setPhase(job, phase, extra = {}) {
   Object.assign(job, { phase, ...extra, updatedAt: Date.now() });
@@ -191,6 +198,59 @@ function acceptRip(songId, ripFromCloud = false) {
   return { job, status: 'queued', url: null };
 }
 
+// ---- cancel one song's rip (POST /rip-cancel) ----
+// Idempotent. Returns 'alreadyDone' (already in the manifest), 'canceled' (a queued or
+// running job for this song's resource was removed/killed), or 'notFound' (nothing to do).
+// Mirrors acceptRip's single-flight key resolution: a job is keyed by songId (digital, or
+// an analog cloud rip) OR by albumId (the analog vinyl path covers the whole album), so we
+// probe inflight by BOTH candidate keys. canceledAlbums collects albumIds we canceled this
+// request so /rip-cancel can fill 'canceled' for batch siblings of an analog album.
+function cancelOne(songId, canceledAlbums) {
+  const song = songId && songById.get(songId);
+  if (!song) return 'notFound';
+  if (manifest[songId]) return 'alreadyDone'; // already ripped (mirrors acceptRip 171)
+  // digital/cloud uses songId; analog vinyl uses albumId — try both.
+  const keys = song.albumId ? [songId, song.albumId] : [songId];
+  let jobId = null;
+  for (const k of keys) { const id = inflight.get(k); if (id && jobs.has(id)) { jobId = id; break; } }
+  if (!jobId) return 'notFound';
+  const job = jobs.get(jobId);
+
+  // remember the album so batch siblings of an analog album also report canceled.
+  if (job.resourceKey === song.albumId && song.albumId) canceledAlbums.add(song.albumId);
+
+  // (A) the CURRENTLY-RUNNING job for this resource.
+  if (activeJobId === jobId) {
+    job.canceled = true;
+    if (job.phase === 'uploading') {
+      // Refuse the hard kill mid-upload: the aws s3 cp + saveManifest are idempotent and
+      // must finish; the terminal canceled-guard then cleans up (fail → inflight.delete).
+    } else if (activeChild.p) {
+      // Group-kill (detached) to reap the worker's grandchildren (rip skill, tail, HLS
+      // ffmpeg). Best-effort: fall back to a direct kill if the group kill throws.
+      try { process.kill(-activeChild.p.pid, 'SIGKILL'); }
+      catch { try { activeChild.p.kill('SIGKILL'); } catch { /* already gone */ } }
+    }
+    // working stays true until runJob returns; pump() then drains the queue and the
+    // terminal canceled-guard calls fail() → inflight.delete + clearQueue.
+    return 'canceled';
+  }
+
+  // (B) a QUEUED job (not yet running).
+  const qi = queue.findIndex((q) => q.jobId === jobId);
+  if (qi >= 0) {
+    job.canceled = true;
+    queue.splice(qi, 1);
+    if (job.resourceKey) inflight.delete(job.resourceKey);
+    clearQueue(job.songId);
+    setPhase(job, 'error', { error: 'canceled' });
+    return 'canceled';
+  }
+  // inflight points at a job that is neither active nor queued (e.g. a finished/errored job
+  // whose inflight entry lingers) → nothing to cancel.
+  return 'notFound';
+}
+
 // ---- durable queue: a pending rip request survives a restart ----
 // One file per songId; written on accept, deleted when the job finishes (ready/error).
 // On startup any leftover files are re-enqueued (idempotent — skipped if already ripped).
@@ -206,9 +266,12 @@ async function pump() {
   const job = queue.shift();
   if (!job) return;
   working = true;
+  activeJobId = job.jobId; // mark running the instant it leaves the queue (closes the cancel race)
   try { await runJob(job); } catch (e) { fail(job, e.message); }
   clearQueue(job.songId); // terminal (ready or error) → drop the durable request
   working = false;
+  activeJobId = null;
+  activeChild.p = null;
   pump();
 }
 
@@ -270,6 +333,9 @@ function serveHls(res, songId, file) {
 }
 
 async function runJob(job) {
+  // Pre-spawn cancel guard: a /rip-cancel that landed in the shift→spawn gap (activeJobId
+  // set, activeChild.p still null) short-circuits here before any worker starts.
+  if (job.canceled) return fail(job, 'canceled');
   setPhase(job, 'searching');
   const song = songById.get(job.songId);
   if (!song) return fail(job, 'unknown songId');
@@ -283,6 +349,7 @@ async function runJob(job) {
 // own terminal inflight.delete so it can be invoked both from runJob and from
 // runDigitalJob's fallback branch.
 async function runAnalogJob(job, song) {
+  if (job.canceled) return fail(job, 'canceled'); // pre-spawn guard (also the Tier-2 fallback entry)
   const album = albumById.get(song.albumId);
   if (!album?.pointer?.originalFilename) return fail(job, 'no analog file reference for this album');
   const src = join(CFG.analogBase, album.pointer.originalFilename);
@@ -292,12 +359,15 @@ async function runAnalogJob(job, song) {
   setPhase(job, 'ripping', { realtime: false, message: 'transcoding album' });
   const out = join(CFG.tmp, `${album.id}.mp3`);
   await new Promise((res, rej) => {
-    const ff = spawn('ffmpeg', ['-y', '-i', src, '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k', out]);
+    // detached → own process group so /rip-cancel can group-kill the transcode child.
+    const ff = spawn('ffmpeg', ['-y', '-i', src, '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k', out], { detached: true });
+    activeChild.p = ff;
     let err = '';
     ff.stderr.on('data', (d) => { err += d; });
-    ff.on('close', (code) => (code === 0 ? res() : rej(new Error('ffmpeg failed: ' + err.slice(-300)))));
+    ff.on('close', (code) => { activeChild.p = null; (code === 0 ? res() : rej(new Error('ffmpeg failed: ' + err.slice(-300)))); });
   });
 
+  if (job.canceled) return fail(job, 'canceled'); // killed mid-transcode → don't upload
   setPhase(job, 'uploading', { message: 'uploading to S3' });
   const key = `rips/${album.id}.mp3`;
   await aws(['s3', 'cp', out, `s3://${CFG.bucket}/${key}`, '--content-type', 'audio/mpeg']);
@@ -338,8 +408,12 @@ async function runDigitalJob(job, song) {
     '--bucket', CFG.bucket, '--region', CFG.region, '--profile', CFG.profile, '--tmp', CFG.tmp,
     '--ah-recordings-dir', CFG.ahRecDir,
   ];
+  if (job.canceled) return fail(job, 'canceled'); // pre-spawn guard
   await new Promise((res) => {
     let p;
+    // detached → own process group so /rip-cancel can group-kill the worker AND its
+    // grandchildren (rip skill, `tail -f`, the HLS ffmpeg). stdio stays inherited/piped
+    // (detached only makes the child a group leader) so the stderr surfacing below works.
     if (CFG.useAgent) {
       const cmd = 'node scripts/rip-one.mjs ' + args.map(shq).join(' ');
       const prompt =
@@ -347,13 +421,14 @@ async function runDigitalJob(job, song) {
         `When it prints a line starting with RESULT {"ok":true …} you are done — stop. ` +
         `If it fails because the track isn't in the Apple Music library, add "${song.artist} — ${song.name}" ` +
         `to the library (search Music.app), then re-run the command once. Do nothing else.`;
-      p = spawn('claude', ['-p', prompt, '--dangerously-skip-permissions'], { cwd: REPO });
+      p = spawn('claude', ['-p', prompt, '--dangerously-skip-permissions'], { cwd: REPO, detached: true });
     } else {
-      p = spawn('node', [CFG.worker, ...args], { cwd: REPO });
+      p = spawn('node', [CFG.worker, ...args], { cwd: REPO, detached: true });
     }
+    activeChild.p = p;
     p.stdout.on('data', (d) => process.stderr.write(d));
     p.stderr.on('data', (d) => process.stderr.write(d));
-    p.on('close', () => res());
+    p.on('close', () => { activeChild.p = null; res(); });
   });
   // the worker wrote phases to the status file; read its final state
   let st = {};
@@ -361,6 +436,9 @@ async function runDigitalJob(job, song) {
   // Terminal section with explicit PER-BRANCH inflight cleanup (NOT a trailing
   // unconditional delete) so Tier-2 fallback works: runAnalogJob owns the inflight.delete
   // when we fall back, and fail() already deletes inflight for a genuine failure.
+  // Canceled mid-capture: do NOT fall back to ripping the vinyl (that's not what cancel
+  // means) and do NOT register the partial capture. fail() clears inflight.
+  if (job.canceled) return fail(job, 'canceled');
   const ok = st.phase === 'uploaded' && st.key;
   if (ok) {
     manifest[song.id] = {
@@ -513,6 +591,32 @@ const server = http.createServer(async (req, res) => {
     });
     const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
       { ready: 0, queued: 0, inflight: 0, unknown: 0, total: 0 });
+    return send(res, 200, { results, counts });
+  }
+  // POST /rip-cancel {songIds:[...]} — Feature 1 STOP RIP. Cancels still-queued matching
+  // jobs (splice queue + clear inflight + delete durable file) and KILLS the in-flight
+  // capture child when a matching job is the currently-running one. Idempotent; returns a
+  // per-song {canceled|notFound|alreadyDone} (same envelope shape as /rip-collection).
+  // Resolves cancellations ALBUM-FIRST so every analog-album sibling in the batch reports
+  // canceled (a single analog job covers every song of its album; the first sibling's
+  // cancel removes the shared inflight entry, so subsequent siblings would otherwise miss).
+  if (path === '/rip-cancel' && req.method === 'POST') {
+    const { songIds } = await readJson(req);
+    const ids = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    const canceledAlbums = new Set(); // albumIds whose analog job we canceled this request
+    const status = ids.map((songId) => cancelOne(songId, canceledAlbums));
+    const results = ids.map((songId, i) => {
+      let s = status[i];
+      // Album-first fill: a sibling that missed its own lookup but whose album was canceled
+      // in THIS request still reports canceled.
+      if (s === 'notFound') {
+        const song = songById.get(songId);
+        if (song && !manifest[songId] && song.albumId && canceledAlbums.has(song.albumId)) s = 'canceled';
+      }
+      return { songId, status: s };
+    });
+    const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
+      { canceled: 0, notFound: 0, alreadyDone: 0, total: 0 });
     return send(res, 200, { results, counts });
   }
   // POST /analysis {songId, key?, bpm, musicalKey, camelot, waveform, durationMs?}

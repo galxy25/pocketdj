@@ -62,6 +62,7 @@ struct RootView: View {
             // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum,
             // and prune any burned files iOS purged while the app was gone.
             burns.lookup = { [weak app] id in (app?.songsById[id], app?.songsById[id]?.albumId.flatMap { app?.albumsById[$0] }) }
+            burns.settings = settings   // Feature 2: resolve the user-picked burnt-music folder
             burns.reconcileOnLaunch()
             // The matching engine orders providers by a song's ORIGIN SOURCE — give it the
             // catalog's per-id source map so an Apple Music (Local) track tries Apple Music

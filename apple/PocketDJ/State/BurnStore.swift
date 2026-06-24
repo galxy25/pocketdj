@@ -52,6 +52,13 @@ final class BurnStore {
         var downloadedAt: Double
         var state: State
         var error: String?
+        /// Feature 2 (burnt-music FOLDER): whether this item's files were written to the
+        /// app-managed Application Support `burns/` dir (true) vs. the user-picked folder
+        /// (false). Each item is resolved against the dir it was ACTUALLY written to, so a
+        /// later folder switch never mis-resolves or prunes an item against the wrong dir.
+        /// Optional for backward-compat decode of older index json — coalesced nil → true
+        /// (every pre-feature burn lives in Application Support).
+        var wasAppStorage: Bool?
 
         var id: String { songId }
     }
@@ -76,6 +83,8 @@ final class BurnStore {
         var failed = 0          // per-item download/write errors
         var total = 0
         var outOfSpace = false  // disk filled — remaining items aborted
+        var folderUnavailable = false // the chosen burnt-music folder couldn't be written
+        var stopped = false     // the user pressed STOP — remaining items not attempted
     }
 
     // MARK: Observed state
@@ -84,10 +93,19 @@ final class BurnStore {
     /// Drives the collection screen's progress UI; nil when no burn is running.
     private(set) var progress: Progress?
 
+    /// Feature 1 (STOP burn): set by `requestStop()`; checked at the TOP of each burn-loop
+    /// iteration (never mid-item, so each item is fully written+recorded or never started —
+    /// no orphan sidecar). Reset at the start of every `burn(...)` run.
+    private(set) var stopRequested = false
+
     private let fileURL: URL
     /// Catalog lookup wired at launch (mirrors CollectionsStore.app) so the sidecar can
     /// resolve the IndexSong / IndexAlbum for a songId.
     var lookup: ((String) -> (song: IndexSong?, album: IndexAlbum?))?
+
+    /// Feature 2 (burnt-music FOLDER): supplies the security-scoped bookmark for the
+    /// user-picked burn folder. `nil` in tests / before wiring → app-storage fallback.
+    var settings: SettingsStore?
 
     private let rips: RipsStore
 
@@ -119,6 +137,74 @@ final class BurnStore {
 
     private var now: Double { Date().timeIntervalSince1970 * 1000 }
 
+    // MARK: Feature 1 — STOP a running burn
+
+    /// Request the in-flight `burn(...)` serial loop to stop after the current item. The loop
+    /// checks this (and `Task.isCancelled`) ONLY at the top of each iteration, so the item
+    /// being written when STOP is pressed completes (fully written + recorded) and no orphan
+    /// half-written sidecar is left behind. Idempotent.
+    func requestStop() { stopRequested = true }
+
+    // MARK: Feature 2 — burnt-music folder resolution (security-scoped)
+
+    /// Resolve the ACTIVE burn folder: the user-picked security-scoped folder when a bookmark
+    /// is set AND it resolves to a writable directory, else the app-managed Application
+    /// Support `burns/` dir. Returns the dir + whether security-scoped access was started
+    /// (the caller must `stopAccessingSecurityScopedResource()` then) + whether it is the
+    /// user folder. Falls back on ANY problem (denied access / unmounted / not writable) so a
+    /// burn never writes to an inaccessible path. `allowRePersist` re-creates + re-persists a
+    /// stale bookmark (only on the write path; the read path resolves read-only).
+    private func resolveBurnFolder(allowRePersist: Bool) -> (url: URL, scoped: Bool, isUserFolder: Bool)? {
+        if let data = settings?.burnFolderBookmark {
+            var stale = false
+            #if os(macOS)
+            let opts: URL.BookmarkResolutionOptions = [.withSecurityScope]
+            #else
+            let opts: URL.BookmarkResolutionOptions = []
+            #endif
+            if let url = try? URL(resolvingBookmarkData: data, options: opts,
+                                  relativeTo: nil, bookmarkDataIsStale: &stale) {
+                let ok = url.startAccessingSecurityScopedResource()
+                if ok && FileManager.default.isWritableFile(atPath: url.path) {
+                    if stale && allowRePersist, let fresh = Self.makeBookmark(for: url) {
+                        settings?.burnFolderBookmark = fresh
+                        settings?.persist()
+                    }
+                    return (url, true, true)
+                }
+                if ok { url.stopAccessingSecurityScopedResource() }   // resolved but unusable
+            }
+        }
+        return (try? RipsStore.burnsDirectory()).map { ($0, false, false) }
+    }
+
+    /// Create a security-scoped bookmark for a folder URL (macOS adds `.withSecurityScope`;
+    /// iOS uses a plain bookmark). The caller must hold access while creating it.
+    nonisolated static func makeBookmark(for url: URL) -> Data? {
+        #if os(macOS)
+        return try? url.bookmarkData(options: .withSecurityScope,
+                                     includingResourceValuesForKeys: nil, relativeTo: nil)
+        #else
+        return try? url.bookmarkData()
+        #endif
+    }
+
+    /// The base dir a given item's files live in — resolved by the dir it was ACTUALLY
+    /// written to (`wasAppStorage`), never assuming the current setting. Returns the dir +
+    /// whether security-scoped access was started (caller must stop it). For an app-storage
+    /// item this is always Application Support (no scope); for a user-folder item it resolves
+    /// the bookmark read-only (falling back to app storage only if the folder is gone).
+    private func itemDir(_ item: BurnItem) -> (url: URL, scoped: Bool)? {
+        // nil coalesces to true: every pre-feature burn lives in Application Support.
+        if item.wasAppStorage ?? true {
+            return (try? RipsStore.burnsDirectory()).map { ($0, false) }
+        }
+        guard let resolved = resolveBurnFolder(allowRePersist: false), resolved.isUserFolder else {
+            return nil   // the user folder is gone — the item can't be resolved right now
+        }
+        return (resolved.url, resolved.scoped)
+    }
+
     // MARK: Future-consumer seam (designed-for, NOT used here)
 
     /// The persisted audio file URL for a ready item — ONLY when the file still exists
@@ -126,7 +212,8 @@ final class BurnStore {
     /// for analog) into `PlayerEngine.load`; this store does NOT play anything.
     func localURL(forSong songId: String) -> URL? {
         guard let item = items[songId], item.state == .ready,
-              let dir = try? RipsStore.burnsDirectory() else { return nil }
+              let (dir, scoped) = itemDir(item) else { return nil }
+        defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
         let url = dir.appendingPathComponent(item.audioFileName)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
@@ -136,7 +223,8 @@ final class BurnStore {
 
     /// Remove a burned item + its files (eviction-ready; not wired to any UI yet).
     func remove(_ songId: String) {
-        if let item = items[songId], let dir = try? RipsStore.burnsDirectory() {
+        if let item = items[songId], let (dir, scoped) = itemDir(item) {
+            defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
             // The analog album mp3 is shared — only delete it if no other ready item uses it.
             let shared = items.values.contains { $0.songId != songId && $0.audioFileName == item.audioFileName }
             if !shared { try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.audioFileName)) }
@@ -149,11 +237,16 @@ final class BurnStore {
     /// Prune index entries whose audio file vanished (iOS purges Application Support
     /// under storage pressure without touching the index). Call at launch.
     func reconcileOnLaunch() {
-        guard let dir = try? RipsStore.burnsDirectory() else { return }
         var changed = false
         for (songId, item) in items where item.state == .ready {
+            // Resolve per-item against the dir it was ACTUALLY written to. If that dir is
+            // currently unresolvable (a user folder that's unmounted/ejected), SKIP the item
+            // — never prune based on a folder it was never written to (no data destruction).
+            guard let (dir, scoped) = itemDir(item) else { continue }
             let url = dir.appendingPathComponent(item.audioFileName)
-            if !FileManager.default.fileExists(atPath: url.path) { items[songId] = nil; changed = true }
+            let exists = FileManager.default.fileExists(atPath: url.path)
+            if scoped { dir.stopAccessingSecurityScopedResource() }
+            if !exists { items[songId] = nil; changed = true }
         }
         if changed { save() }
     }
@@ -167,24 +260,50 @@ final class BurnStore {
     /// Empty input is a no-op.
     @discardableResult
     func burn(_ songs: [(id: String, title: String, artist: String)]) async -> BurnResult {
+        stopRequested = false   // Feature 1: fresh STOP signal for this run.
         let unique = orderedUnique(songs)
         var result = BurnResult(total: unique.count)
         guard !unique.isEmpty else { return result }
 
-        let dir: URL
-        do { dir = try RipsStore.burnsDirectory() }
-        catch { result.failed = unique.count; return result }
+        // Feature 2: resolve the active burn folder ONCE for the whole run (user-picked +
+        // security-scoped when set, else Application Support). Bracket scoped access around
+        // the entire loop; re-persist a stale bookmark on this (write) path.
+        guard let folder = resolveBurnFolder(allowRePersist: true) else {
+            result.failed = unique.count; return result
+        }
+        let dir = folder.url
+        let isUserFolder = folder.isUserFolder
+        defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
+
+        // Feature 2: PROBE the folder ONCE with a sentinel write+delete. If it fails, abort
+        // with a single clear message (mirroring the out-of-space abort) instead of N
+        // per-item errors.
+        let sentinel = dir.appendingPathComponent(".pdj-burn-probe-\(UUID().uuidString)")
+        do {
+            try Data("ok".utf8).write(to: sentinel, options: .atomic)
+            try? FileManager.default.removeItem(at: sentinel)
+        } catch {
+            try? FileManager.default.removeItem(at: sentinel)
+            result.folderUnavailable = true
+            return result
+        }
 
         var done = 0
         for song in unique {
+            // Feature 1: STOP / cancel is checked ONLY here (loop top) — never mid-item, so
+            // each item is fully written+recorded or never started (no orphan sidecar).
+            if stopRequested || Task.isCancelled { result.stopped = true; break }
+
             progress = Progress(done: done, total: unique.count, label: "\(song.artist) — \(song.title)")
             defer { done += 1 }
 
             // (1) Idempotency: already burned, file present, right size, not stale → skip.
+            // Resolve freshness against the dir the EXISTING item was actually written to.
             if let existing = items[song.id], existing.state == .ready,
-               isFresh(existing, dir: dir, rippedAt: rips.manifest[song.id]?.rippedAt) {
-                result.burned += 1
-                continue
+               let (exDir, exScoped) = itemDir(existing) {
+                let fresh = isFresh(existing, dir: exDir, rippedAt: rips.manifest[song.id]?.rippedAt)
+                if exScoped { exDir.stopAccessingSecurityScopedResource() }
+                if fresh { result.burned += 1; continue }
             }
 
             // (2) Not-ripped short-circuit — Burn never blocks on the 30-min ensureURL.
@@ -227,7 +346,8 @@ final class BurnStore {
                     durationMs: entry.durationMs,
                     startMs: entry.source == "analog" ? entry.startMs : nil,
                     bytes: data.count, rippedAt: entry.rippedAt, downloadedAt: now,
-                    state: .ready, error: nil)
+                    state: .ready, error: nil,
+                    wasAppStorage: !isUserFolder)
                 result.burned += 1
             } catch let err as NSError where err.code == NSFileWriteOutOfSpaceError {
                 // Disk full — every remaining item would fail too. Abort the rest.
@@ -274,7 +394,8 @@ final class BurnStore {
         BurnItem(songId: song.id, title: song.title, artist: song.artist,
                  audioFileName: "", sidecarFileName: "", source: "digital",
                  bpm: nil, musicalKey: nil, camelot: nil, durationMs: nil, startMs: nil,
-                 bytes: 0, rippedAt: nil, downloadedAt: now, state: .error, error: message)
+                 bytes: 0, rippedAt: nil, downloadedAt: now, state: .error, error: message,
+                 wasAppStorage: nil)
     }
 
     /// Stable de-dupe preserving first-seen order (don't double-download a repeated song).
