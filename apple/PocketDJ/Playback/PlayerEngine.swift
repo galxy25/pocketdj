@@ -53,6 +53,15 @@ final class PlayerEngine {
     /// The seek target (ms) to apply once the current item becomes ready (analog only).
     private var pendingSeekMs: Int?
 
+    /// Fired when the CURRENT item plays to its natural end (finite mp3 / burnt-local file).
+    /// The setlist sequencer (Feature 3) owns this to auto-advance; nil means no consumer.
+    /// A LIVE HLS stream has no natural end, so this never fires for `live` tracks — the
+    /// sequencer handles those separately. The engine does NOT nil this on stop() (the
+    /// sequencer owns its lifecycle); only `load()` re-registers the per-item observer.
+    var onTrackEnded: (() -> Void)?
+    /// The end-of-track NotificationCenter observer, re-registered per loaded item.
+    private var endObserver: NSObjectProtocol?
+
     // Current track's lock-screen metadata (title / artist) for MPNowPlayingInfoCenter.
     private var nowPlayingTitle: String = ""
     private var nowPlayingArtist: String = ""
@@ -107,6 +116,14 @@ final class PlayerEngine {
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor in self?.itemBecameReady(item) }
         }
+        // Re-arm the natural-end observer on the NEW item (auto-advance, Feature 3). Fires
+        // only for a finite item; a live HLS stream never posts this. `assumeIsolated` keeps
+        // the @MainActor closure hop-free (the notification is delivered on .main).
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onTrackEnded?() }
+        }
         player.replaceCurrentItem(with: item)
         player.play()
         updateNowPlayingInfo()
@@ -146,6 +163,9 @@ final class PlayerEngine {
         player.pause()
         player.replaceCurrentItem(with: nil)
         statusObservation?.invalidate(); statusObservation = nil
+        // Drop the per-item end observer (a nil'd item can't fire). Do NOT nil `onTrackEnded`
+        // — the setlist sequencer owns that hook across its own play()/stop() lifecycle.
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
         clock.currentTime = 0; clock.duration = 0; duration = 0; isPlaying = false; isLive = false
         pendingSeekMs = nil
         clearNowPlayingInfo()

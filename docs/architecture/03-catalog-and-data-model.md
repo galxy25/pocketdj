@@ -21,7 +21,7 @@ and the JSON Schema `.claude/skills/analog-indexer/schema/index.schema.json`.
 ```
  IndexJson
   ├─ manifest  { source, generatedAt, schemaVersion, sourceType:'analog'|'digital',
-  │              sourceName?, counts, deferredFields[], batches? }
+  │              sourceName?, counts, deferredFields[], batches?, cloudReindex? (§1.2) }
   ├─ albums[]  IndexAlbum
   │   ├─ id "alb_"+sha1(normArtist|normAlbum|dupIndex)[:12]
   │   ├─ artist · name · genre? · year? · country?
@@ -33,8 +33,9 @@ and the JSON Schema `.claude/skills/analog-indexer/schema/index.schema.json`.
   │   ├─ id "sng_"+sha1(albumId|track|disc)[:12]   (analog)
   │   ├─ albumId? · artist · name · trackNumber? · year? · length(ms)?
   │   ├─ lyrics? · lyricsStatus? · sentimentKeywords? · sentimentSource? · explicit?
-  │   ├─ bpm? · key? · camelot?   (AUDIO stage; null until analyzed)
+  │   ├─ bpm? · key? · camelot?   (AUDIO stage; null until analyzed; may be CLOUD-overridden §1.2)
   │   ├─ appleMusicId?   (Apple catalog "adam id", e.g. "944459436"; CATALOG stage — §1.1)
+  │   ├─ cloudReindex?  {persistentID?, fields[], length?, cloudSongId?}  (CLOUD RE-INDEX prov. — §1.2)
   │   └─ pointer? {fileLocation?,filename?,originalFilename?,disc?,track?,startMs?,endMs?}
   └─ playlists?[] IndexPlaylist { id, name, songIds[] }   (iTunes mirrors)
 ```
@@ -104,6 +105,102 @@ treats it as a **candidate**: the native `AppleMusicProvider.resolve(_:)` verifi
 with a real MusicKit catalog fetch and **degrades to ripping** on a miss (Ch. 5 §8).
 The `--catalog-cache` flag on the indexer re-bakes resolved ids onto songs on every
 re-index, so the slow crawl's output survives a fast re-parse.
+
+### 1.2 The CLOUD RE-INDEX — folding Apple Music truth into the analog catalog
+
+**Why.** The **analog** catalog's audio analysis is weak: the librosa pass on a vinyl
+rip is only ~70% right for **length** and ~30% right for **bpm/key** (it segments one
+big side into tracks and estimates tempo/key per segment). But for many of those analog
+songs the user *also* owns the track in Apple Music, where the library's `Total Time` is
+**exact** and a cloud rip (Ch. 5 §8) can produce a clean per-song bpm/key. The cloud is
+the source of truth; the re-index folds it back into `current-index.json` **per field,
+with cloud precedence**, without touching the rest of the catalog.
+
+**Source of truth:**
+[`scripts/reindex-cloud-analysis.mjs`](../../scripts/reindex-cloud-analysis.mjs)
+(the durable folder) and the shared matcher
+[`scripts/lib/am-match.mjs`](../../scripts/lib/am-match.mjs) (§1.3).
+
+```
+ reindex-cloud-analysis.mjs   (inputs: catalog · Library.xml · rips manifest)
+   for each ANALOG song:
+     findInLibrary(lib, artist, name)  ── EXACT match only (am-match §1.3)
+        │ loose/none → leave analog value UNTOUCHED (a wrong overwrite is worse)
+        ▼ exact
+     ┌─ LENGTH    song.length = lib hit "Total Time" (ms)   ── mass fix, metadata-only
+     ├─ BPM/KEY   if a CLOUD manifest entry exists (source:'digital' ∧ analyzed):
+     │   /CAMELOT   song.bpm/key/camelot ← entry.bpm/musicalKey/camelot   ── opportunistic
+     │             (entry keyed by THIS song's id, else the derived Apple-Music songId
+     │              sng_+sha1("digital|Apple Music (Local)|<persistentID>")[:12])
+     └─ stamp     song.cloudReindex = {persistentID, fields[], length?, cloudSongId?}
+   write SIDE output index-out/reindex/current-index.json + a JSON report
+   (NEVER overwrites public/current-index.json; NEVER deploys — owner reviews + applies)
+```
+
+**Reading the diagram.** Per analog song the folder asks `am-match.findInLibrary` for an
+**exact** Apple Music match (loose/none ⇒ skip, keeping the analog estimate — a wrong
+length/key is worse than a fuzzy one). On an exact hit it applies **per-field cloud
+precedence**: (1) **length** from the matched library entry's `Total Time` (a metadata-only
+mass fix that runs for the whole catalog in minutes, no audio capture); (2) **bpm/key/camelot**
+*opportunistically* from a **cloud manifest entry** — `source:'digital' && analyzed === true`
+(Ch. 5 §5) — looked up first by the song's **own** id (a "Rip from cloud source" of this very
+vinyl track, Ch. 5 §8) and otherwise by the **derived Apple Music songId**
+(`sng_+sha1("digital|Apple Music (Local)|<persistentID>")[:12]`, the same namespace
+[`index-apple-music.mjs`](../../scripts/index-apple-music.mjs) mints, so a separately-ripped
+digital copy's analysis flows in). Every touched song gets a `cloudReindex` provenance stamp
+(persistentID + which `fields` changed), and the run is **idempotent**: the output is a pure
+function of (catalog, library, manifest) — even the `manifest.cloudReindex` stamp uses the
+newest *input* mtime, not wall-clock — so re-running yields a byte-identical
+`current-index.json`. It writes to a **side output** (`index-out/reindex/…`) plus a delta
+report and **never** mutates `public/current-index.json` or deploys; the owner reviews the
+report (which surfaces every >60s length change) and applies the fold by hand. Re-running
+later picks up more bpm/key rows as cloud rips accumulate.
+
+### 1.3 Tight matching — `am-match` (the recording must agree)
+
+**Why.** Both the cloud re-index (§1.2) and the cloud-rip routing (Ch. 5 §8) hinge on one
+question: *is this analog song the same recording as an Apple Music library entry?* A naive
+title match is dangerous — it would collapse a **club mix** onto the **radio edit** and
+overwrite the length (e.g. *Living In Danger (For The Big Clubs Only Mix)* 620s vs the
+standard 193s) or capture the wrong cut. PocketDJ is built around the user's **own**
+collection, so the specific mix/edit/version they own is an intentional choice that must be
+preserved.
+
+**Source of truth:** [`scripts/lib/am-match.mjs`](../../scripts/lib/am-match.mjs), shared by
+the rip skill (`.claude/skills/rip/rip.mjs`), the rip server, and the re-index (extracted
+into one module because `rip.mjs` runs `main()` on import and so can't be imported as-is).
+
+```
+ findInLibrary(lib, artist, title) → { hit, match:'exact'|'loose'|'none' }
+   na = normArtist(artist)         ct = comparableTitle(title)
+   EXACT  na agrees ∧ ct agrees    ── the ONLY class that overwrites / cloud-captures
+   loose  paren-stripped subset    ── diagnostics only, NEVER used
+   none   no hit
+
+ comparableTitle: keep RECORDING-ALTERING paren groups, drop COSMETIC ones
+   RECORDING-ALTERING (must AGREE)  mix·remix·edit·radio·single·instrumental·live·
+     acoustic·7"/12" (inch)·dub·extended·club·a cappella·reprise·demo·sped/slowed·
+     reverb·karaoke·cover·rework·vip·bootleg·session·take
+   COSMETIC (ignored)  remaster·deluxe·anniversary·bonus·mono/stereo·explicit/clean·
+     feat./credits·original mix/version·AND a bare/LP/Album "Version" (= standard recording)
+```
+
+**Reading the diagram.** `findInLibrary` returns `exact` only when the normalized artist
+agrees **and** the *comparable* title agrees. The work is in `comparableTitle`: `normTitle`
+strips **all** parentheticals (so a remix would collapse onto the standard recording and
+falsely exact-match), so `comparableTitle` instead **keeps** any paren/bracket group that
+denotes a different **recording** (a `RECORDING_ALTERING` keyword) and **drops** only purely
+**cosmetic** groups (remaster/deluxe/explicit/credits, and — deliberately — a bare/`LP`/`Album`
+**"Version"** label, which just denotes the standard album recording, not a different cut).
+The exact index is keyed by `normArtist + comparableTitle`, so *"Steelo (LP Version)" ==
+"Steelo"* but *"X (Club Mix)" != "X"*. On **any** version-marker disagreement there is **no**
+match, so the cloud rip falls back to vinyl and the re-index leaves the analog value
+untouched — lower coverage is the accepted price of fidelity. (Tightening the matcher dropped
+exact matches ~11% but cut spurious >60s length overwrites 153 → 70, all 70 genuine.) The
+same `match === 'exact'` gate is the cloud-eligibility probe in
+[Ch. 5 §8](./05-playback-and-rip-on-demand.md#8-stream-first-rip-last--the-native-provider-chain-playbackcoordinator);
+the full product rationale lives in
+[`docs/design-rip-from-cloud.md`](../design-rip-from-cloud.md).
 
 ---
 

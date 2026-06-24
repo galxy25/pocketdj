@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var showCollectionsImporter = false
+    @State private var showBurnFolderPicker = false
     @State private var exportDoc = EditsFile(data: Data())
 
     // Full backup (.pocketdj.zip)
@@ -34,6 +35,7 @@ struct SettingsView: View {
             streamingSection
             searchSection
             ripSection
+            burnFolderSection
             editsSection
             collectionsSection
             backupSection
@@ -71,6 +73,75 @@ struct SettingsView: View {
         .alert("Backup imported", isPresented: Binding(get: { backupSummary != nil }, set: { if !$0 { backupSummary = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(backupSummary ?? "") }
+        // Feature 2 — burnt-music folder. [.folder] presents NSOpenPanel(canChooseDirectories)
+        // on macOS and the directory document picker on iOS — one cross-platform call.
+        .fileImporter(isPresented: $showBurnFolderPicker, allowedContentTypes: [.folder]) { result in
+            guard case .success(let url) = result else { return }
+            // The picked folder URL is security-scoped: hold access while creating the bookmark.
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            if let data = BurnStore.makeBookmark(for: url) {
+                settings.burnFolderBookmark = data
+                settings.persist()
+            }
+        }
+    }
+
+    // MARK: Burnt-music folder (Feature 2)
+
+    /// A user-pickable folder for burnt audio + sidecars, so the files are browsable in
+    /// Finder (macOS) / the Files app (iOS). Stored as a security-scoped bookmark; unset
+    /// falls back to the app-managed Application Support `burns/` dir (not user-browsable).
+    private var burnFolderSection: some View {
+        Section {
+            Button { showBurnFolderPicker = true } label: {
+                Label("Choose burnt-music folder…", systemImage: "folder.badge.plus")
+            }
+            .accessibilityIdentifier("settings-burn-folder-pick")
+            if let name = burnFolderName {
+                HStack {
+                    Label(name, systemImage: "folder")
+                        .font(.caption).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
+                        .accessibilityIdentifier("settings-burn-folder-path")
+                    Spacer()
+                    Button("Use app storage", role: .destructive) {
+                        settings.burnFolderBookmark = nil
+                        settings.persist()
+                    }
+                    .font(.caption)
+                    .accessibilityIdentifier("settings-burn-folder-reset")
+                }
+            }
+        } header: {
+            Text("Burnt music")
+        } footer: {
+            Text("Where burnt audio + their `.txt` sidecars are saved. Pick a folder to browse the files yourself in \(browseAppName). Leave unset to keep them in the app’s private storage.")
+        }
+    }
+
+    /// The display name of the currently-chosen burnt-music folder (resolved read-only from
+    /// the bookmark), or nil when none is set (app-storage fallback).
+    private var burnFolderName: String? {
+        guard let data = settings.burnFolderBookmark else { return nil }
+        var stale = false
+        #if os(macOS)
+        let opts: URL.BookmarkResolutionOptions = [.withSecurityScope]
+        #else
+        let opts: URL.BookmarkResolutionOptions = []
+        #endif
+        guard let url = try? URL(resolvingBookmarkData: data, options: opts,
+                                 relativeTo: nil, bookmarkDataIsStale: &stale) else {
+            return "Chosen folder (unavailable)"
+        }
+        return url.lastPathComponent
+    }
+
+    private var browseAppName: String {
+        #if os(macOS)
+        return "Finder"
+        #else
+        return "the Files app"
+        #endif
     }
 
     // MARK: Backup (full .pocketdj.zip — collections + sources + edits)
@@ -256,6 +327,9 @@ struct SettingsView: View {
             TextField("Token (optional)", text: $settings.ripToken)
                 .pocketField()
                 .accessibilityIdentifier("settings-rip-token")
+            Toggle("Rip from cloud source", isOn: $settings.ripFromCloud)
+                .accessibilityIdentifier("settings-rip-from-cloud")
+                .onChange(of: settings.ripFromCloud) { settings.persist() }
             HStack {
                 Button {
                     settings.persist()
@@ -271,7 +345,7 @@ struct SettingsView: View {
         } header: {
             Text("Rip server")
         } footer: {
-            Text("The iMac rip-on-demand server (over Tailscale). Streams/downloads any song; only needed to create a rip — once ripped it plays from S3 anywhere.")
+            Text("The iMac rip-on-demand server (over Tailscale). Streams/downloads any song; only needed to create a rip — once ripped it plays from S3 anywhere. When “Rip from cloud source” is on, songs that match your Apple Music library are captured from Apple Music (real-time, one at a time) and fall back to vinyl otherwise — a large Rip/Burn can take a while.")
         }
     }
 

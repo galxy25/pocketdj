@@ -10,12 +10,16 @@ enum ItemKind: String, CaseIterable, Identifiable, Codable { case album, song; v
 /// can match on it; nil when unknown (e.g. online hits built before tagging).
 enum BrowseItem: Identifiable, Hashable {
     case album(IndexAlbum, source: String? = nil)
-    case song(IndexSong, albumName: String, source: String? = nil)
+    /// `genre` is the song's top-tier CATEGORY, resolved from its owning album at
+    /// construction time (IndexSong has no genre field of its own). Mirrors the PWA's
+    /// `SongItem.genre`, which carries the derived category — so the genre filter/sort
+    /// reads it directly here just like the PWA reads `song.genre`.
+    case song(IndexSong, albumName: String, source: String? = nil, genre: String? = nil)
 
     var id: String {
         switch self {
         case .album(let a, _): return a.id
-        case .song(let s, _, _): return s.id
+        case .song(let s, _, _, _): return s.id
         }
     }
     var kind: ItemKind {
@@ -24,17 +28,20 @@ enum BrowseItem: Identifiable, Hashable {
     var source: String? {
         switch self {
         case .album(_, let s): return s
-        case .song(_, _, let s): return s
+        case .song(_, _, let s, _): return s
         }
     }
 }
 
 enum FieldKind { case string, number, bool, stringArray }
 enum FilterOp: String, CaseIterable, Identifiable, Codable {
-    case eq, neq, inList, between
+    case eq, neq, inList, notInList, between
     var id: String { rawValue }
     var label: String {
-        switch self { case .eq: "is"; case .neq: "is not"; case .inList: "any of"; case .between: "between" }
+        switch self {
+        case .eq: "is"; case .neq: "is not"; case .inList: "any of"
+        case .notInList: "none of"; case .between: "between"
+        }
     }
 }
 
@@ -66,9 +73,11 @@ enum Fields {
               appliesTo: [.album, .song], ops: [.eq, .neq, .inList], hasOptions: false),
         Field(id: "year", label: "Year", kind: .number, numeric: true, sortable: true,
               appliesTo: [.album, .song], ops: [.eq, .neq, .inList, .between], hasOptions: false),
-        // Genre lives on albums in the native catalog (songs carry no genre field).
+        // Genre filters on the TOP-LEVEL category for BOTH albums and songs (same as
+        // the PWA / star map). Albums map their raw genre through Genre.category here;
+        // songs carry the category resolved from their owning album at construction.
         Field(id: "genre", label: "Genre", kind: .string, numeric: false, sortable: true,
-              appliesTo: [.album], ops: [.eq, .neq, .inList], hasOptions: true),
+              appliesTo: [.album, .song], ops: [.eq, .neq, .inList, .notInList], hasOptions: true),
         Field(id: "fileType", label: "File type", kind: .string, numeric: false, sortable: true,
               appliesTo: [.album, .song], ops: [.eq, .neq, .inList], hasOptions: true),
         // Origin source (e.g. "My Vinyl", "Apple Music (Local)") — threaded onto
@@ -118,11 +127,13 @@ enum Fields {
             case "trackCount": return .number(Double(a.trackList.count))
             default: return .none
             }
-        case .song(let s, _, _):
+        case .song(let s, _, _, let genre):
             switch fieldID {
             case "artist": return .string(s.artist)
             case "name": return .string(s.name)
             case "year": return s.year.map { .number(Double($0)) } ?? .none
+            // Top-tier category resolved from the owning album at construction time.
+            case "genre": return genre.map { .string($0) } ?? .none
             case "fileType": return s.fileType.map { .string($0) } ?? .none
             case "trackNumber": return s.trackNumber.map { .number(Double($0)) } ?? .none
             case "length": return s.length.map { .number(Double($0)) } ?? .none
@@ -150,9 +161,9 @@ struct Clause: Identifiable, Hashable, Codable {
 
     var isIncomplete: Bool {
         switch op {
-        case .eq, .neq: return value.isEmpty && values.isEmpty
-        case .inList:   return values.isEmpty
-        case .between:  return min == nil && max == nil
+        case .eq, .neq:           return value.isEmpty && values.isEmpty
+        case .inList, .notInList: return values.isEmpty
+        case .between:            return min == nil && max == nil
         }
     }
 }
@@ -185,6 +196,8 @@ enum FilterEngine {
             case .eq:      return n != nil && n == Double(c.value)
             case .neq:     return n == nil || n != Double(c.value)
             case .inList:  return n != nil && c.values.compactMap(Double.init).contains(n!)
+            // none-of for numbers: keep when value is absent or not among the selected.
+            case .notInList: return n == nil || !c.values.compactMap(Double.init).contains(n!)
             case .between:
                 guard let n else { return false }
                 return n >= (c.min ?? -.infinity) && n <= (c.max ?? .infinity)
@@ -193,10 +206,13 @@ enum FilterEngine {
             let s: String? = { if case .string(let v) = raw { return v }; return nil }()
             let ns = norm(s ?? "")
             switch c.op {
-            case .eq:     return ns == norm(c.value)
-            case .neq:    return ns != norm(c.value)
-            case .inList: return c.values.map(norm).contains(ns)
-            default:      return true
+            case .eq:        return ns == norm(c.value)
+            case .neq:       return ns != norm(c.value)
+            case .inList:    return c.values.map(norm).contains(ns)
+            // none-of: keep when the value is NOT among the selected. An ungenred
+            // song (ns == "") is kept — symmetric with .neq and HIDE membership.
+            case .notInList: return !c.values.map(norm).contains(ns)
+            default:         return true
             }
         }
     }

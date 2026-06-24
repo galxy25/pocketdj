@@ -10,6 +10,7 @@ struct BrowseView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    @Environment(CollectionsStore.self) private var collections
     /// Shared navigation path (owned by RootView) — lets keyboard "open" push an
     /// album/song detail programmatically, alongside the row-tap NavigationLinks.
     @Binding var path: NavigationPath
@@ -56,12 +57,14 @@ struct BrowseView: View {
         .searchable(text: $browse.query, prompt: "Search artist, album, genre")
         .searchFocused($searchFocused)
         .toolbar { toolbarItems }
-        .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app) }
+        .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
         .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
         .onChange(of: browse.kind) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.layout) { browse.persist() }
         .onChange(of: browse.clauses) { browse.persist(); if browse.searchOnline { triggerOnline() } }
-        .onChange(of: browse.sortKeys) { browse.persist() }
+        // Sort changes RESET + re-fetch online (the server sorts the full result
+        // set; the client only holds loaded pages so it can't re-order them).
+        .onChange(of: browse.sortKeys) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.searchOnline) {
             browse.persist()
             if browse.searchOnline { triggerOnline() } else { online.cancel() }
@@ -72,7 +75,7 @@ struct BrowseView: View {
 
     /// The visible items (on-device or online) for the current kind, in display order.
     private var visibleItems: [BrowseItem] {
-        browse.searchOnline ? online.items : browse.results(app)
+        browse.searchOnline ? online.items : browse.results(app, collections: collections)
     }
 
     /// The row ids currently shown in WHICHEVER list is up (on-device or online), in
@@ -81,7 +84,7 @@ struct BrowseView: View {
     private var visibleRowIds: [String] {
         visibleItems.compactMap { item in
             switch (browse.kind, item) {
-            case (.song, .song(let s, _, _)):  return s.id
+            case (.song, .song(let s, _, _, _)):  return s.id
             case (.album, .album(let a, _)):   return a.id
             default:                           return nil
             }
@@ -149,7 +152,7 @@ struct BrowseView: View {
     }
 
     private func focusedItemSong(_ id: String) -> IndexSong? {
-        for case .song(let s, _, _) in visibleItems where s.id == id { return s }
+        for case .song(let s, _, _, _) in visibleItems where s.id == id { return s }
         return app.songsById[id]
     }
 
@@ -161,7 +164,8 @@ struct BrowseView: View {
 
     private func triggerOnline() {
         online.searchDebounced(query: browse.query, kind: browse.kind,
-                               clauses: browse.clauses, creds: searchCreds, app: app)
+                               clauses: browse.clauses, sortKeys: browse.sortKeys,
+                               creds: searchCreds, app: app)
     }
 
     /// SF Symbol for the current device — shown when searching on-device.
@@ -193,7 +197,8 @@ struct BrowseView: View {
             Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
                 .accessibilityIdentifier("sort-button")
             Button { showFilter = true } label: {
-                Image(systemName: browse.activeFilterCount > 0
+                Image(systemName: (browse.activeFilterCount > 0
+                                   || (browse.kind == .song && browse.membershipActive))
                       ? "line.3.horizontal.decrease.circle.fill"
                       : "line.3.horizontal.decrease.circle")
             }
@@ -244,7 +249,7 @@ struct BrowseView: View {
             if browse.searchOnline {
                 onlineContent
             } else {
-                let items = browse.results(app)
+                let items = browse.results(app, collections: collections)
                 resultsHeader(items.count)
                 if browse.kind == .album { albumResults(items) } else { songResults(items) }
             }
@@ -262,7 +267,9 @@ struct BrowseView: View {
             } description: { Text(message) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
         case .idle, .loaded:
-            resultsHeader(online.items.count)
+            // Header shows the FULL match count (online.total), not just the rows
+            // loaded so far — the pager appends more as you scroll.
+            resultsHeader(online.total)
             if browse.kind == .album { albumResults(online.items) } else { songResults(online.items) }
         }
     }
@@ -302,10 +309,12 @@ struct BrowseView: View {
                                             ? Theme.accent.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("album-\(album.id)")
+                                .onAppear { pageInIfLast(item, in: items) }
                         }
                     }
                 }
                 .padding(16)
+                pagingFooter
             } else {
                 LazyVStack(spacing: 0) {
                     ForEach(items) { item in
@@ -317,21 +326,44 @@ struct BrowseView: View {
                                             ? Theme.accent.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 6))
                                 .accessibilityIdentifier("album-\(album.id)")
+                                .onAppear { pageInIfLast(item, in: items) }
                             Divider().overlay(Theme.border)
                         }
                     }
                 }
                 .padding(.horizontal, 8)
+                pagingFooter
             }
         }
         .background(Theme.bg)
+    }
+
+    /// When the LAST loaded row scrolls into view during ONLINE search, pull the
+    /// next page. `loadMore()` self-guards on `hasMore && !isLoadingPage`, so this
+    /// is a no-op on-device or once everything's loaded.
+    private func pageInIfLast(_ item: BrowseItem, in items: [BrowseItem]) {
+        guard browse.searchOnline, item.id == items.last?.id else { return }
+        Task { await online.loadMore() }
+    }
+
+    /// Bottom-of-list spinner shown while a NEXT page is paging in (online only).
+    @ViewBuilder private var pagingFooter: some View {
+        if browse.searchOnline && online.isLoadingPage {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Loading more…").font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .accessibilityIdentifier("paging-indicator")
+        }
     }
 
     private func songResults(_ items: [BrowseItem]) -> some View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(items) { item in
-                    if case .song(let song, let albumName, _) = item {
+                    if case .song(let song, let albumName, _, _) = item {
                         // The row's transport ▶/⤓ buttons must stay independently
                         // hit-testable. Wrapping the whole row in a NavigationLink
                         // (a Button on macOS) swallows those nested buttons — XCUITest
@@ -356,11 +388,13 @@ struct BrowseView: View {
                                         ? Theme.accent.opacity(0.16) : .clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                         InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)
+                            .onAppear { pageInIfLast(item, in: items) }
                         Divider().overlay(Theme.border)
                     }
                 }
             }
             .padding(.horizontal, 8)
+            pagingFooter
         }
         .background(Theme.bg)
         .accessibilityIdentifier("song-list")

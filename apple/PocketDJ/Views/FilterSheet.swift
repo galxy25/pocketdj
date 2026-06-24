@@ -5,9 +5,15 @@ import SwiftUI
 struct FilterSheet: View {
     @Bindable var browse: BrowseState
     let app: AppModel
+    let collections: CollectionsStore
     @Environment(\.dismiss) private var dismiss
 
     private var fields: [Field] { Fields.forKind(browse.kind) }
+    /// The membership filter is song-mode only and only meaningful when the user has
+    /// at least one collection (mirrors BrowserView.tsx's render gate).
+    private var showMembership: Bool {
+        browse.kind == .song && !(collections.playlists.isEmpty && collections.pockets.isEmpty)
+    }
 
     var body: some View {
         NavigationStack {
@@ -21,6 +27,17 @@ struct FilterSheet: View {
                 ForEach($browse.clauses) { $clause in
                     Section {
                         ClauseEditor(clause: $clause, fields: fields, app: app, browse: browse)
+                        Button(role: .destructive) {
+                            browse.removeClause(id: clause.id)
+                        } label: {
+                            Label("Remove filter", systemImage: "trash")
+                        }
+                        .accessibilityIdentifier("remove-clause-\(clause.field)")
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                browse.removeClause(id: clause.id)
+                            } label: { Label("Remove", systemImage: "trash") }
+                        }
                     }
                 }
                 Section {
@@ -29,6 +46,10 @@ struct FilterSheet: View {
                         browse.clauses.append(Clause(field: f.id, op: f.ops.first!))
                     } label: { Label("Add filter", systemImage: "plus.circle") }
                     .accessibilityIdentifier("add-filter")
+                }
+
+                if showMembership {
+                    MembershipSection(browse: browse, collections: collections)
                 }
             }
             .navigationTitle("Filter")
@@ -97,7 +118,9 @@ private struct ClauseEditor: View {
                     Text("–").foregroundStyle(.secondary)
                     numberField("Max", value: $clause.max)
                 }
-            case .inList:
+            // any-of (.inList) and none-of (.notInList) share the same multi-select
+            // (chips/checkbox) UX over a Set<String>; only the predicate differs.
+            case .inList, .notInList:
                 if field.hasOptions {
                     MultiSelect(title: field.label, options: options, selection: $clause.values)
                 } else {
@@ -135,6 +158,85 @@ private struct ClauseEditor: View {
         .keyboardType(.numbersAndPunctuation)
         #endif
         .pocketField()
+    }
+}
+
+/// Collection-membership filter (song mode) — ports the PWA's two MembershipFilter
+/// variants (src/components/browser/MembershipFilter.tsx): SHOW ("in playlist/pocket",
+/// keep only members) and HIDE ("not in playlist/pocket", drop members). Each is an
+/// "Any playlist / pocket" toggle plus grouped per-collection checkboxes, with Clear.
+private struct MembershipSection: View {
+    @Bindable var browse: BrowseState
+    let collections: CollectionsStore
+
+    var body: some View {
+        Section("Collection membership") {
+            MembershipPicker(
+                title: "In playlist / pocket",
+                anyHint: "any collection",
+                idPrefix: "include",
+                collections: collections,
+                any: $browse.includeAny,
+                ids: $browse.includeIds)
+            MembershipPicker(
+                title: "Not in playlist / pocket",
+                anyHint: "any collection",
+                idPrefix: "exclude",
+                collections: collections,
+                any: $browse.excludeAny,
+                ids: $browse.excludeIds)
+            if browse.membershipActive {
+                Button("Clear membership", role: .destructive) { browse.clearMembership() }
+                    .accessibilityIdentifier("membership-clear")
+            }
+        }
+    }
+}
+
+/// One membership variant: an "Any playlist / pocket" toggle (which disables the
+/// per-collection list, like the PWA's `<fieldset disabled={any}>`), then a Playlists
+/// group and a Pockets group of checkboxes. Mixed playlist+pocket ids share one Set.
+private struct MembershipPicker: View {
+    let title: String
+    let anyHint: String
+    let idPrefix: String
+    let collections: CollectionsStore
+    @Binding var any: Bool
+    @Binding var ids: Set<String>
+
+    private var summary: String {
+        any ? anyHint : (ids.isEmpty ? "off" : "\(ids.count) selected")
+    }
+
+    var body: some View {
+        DisclosureGroup("\(title): \(summary)") {
+            Toggle("Any playlist / pocket", isOn: $any)
+                .accessibilityIdentifier("\(idPrefix)-any")
+            if !any {
+                if !collections.playlists.isEmpty {
+                    Text("Playlists").font(.caption).foregroundStyle(.secondary)
+                    ForEach(collections.playlists) { row("\u{266B} \($0.name)", id: $0.id) }
+                }
+                if !collections.pockets.isEmpty {
+                    Text("Pockets").font(.caption).foregroundStyle(.secondary)
+                    ForEach(collections.pockets) { row("\u{25D6} \($0.name)", id: $0.id) }
+                }
+            }
+        }
+        .accessibilityIdentifier("membership-\(idPrefix)")
+    }
+
+    private func row(_ label: String, id: String) -> some View {
+        Button {
+            if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+        } label: {
+            HStack {
+                Text(label).foregroundStyle(.primary)
+                Spacer()
+                if ids.contains(id) { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
+            }
+        }
+        .accessibilityIdentifier("\(idPrefix)-chip-\(id)")
     }
 }
 

@@ -316,6 +316,21 @@ When the resolver process is gone (`pgrep`), it does a **final** snapshot+deploy
 remaining progress and exits. It's independent of any Claude session — local AWS creds,
 local index files — so the days-long crawl ships incrementally on its own.
 
+**The catalog-id crawl completed — and the `backfill-rip` skill for the misses.** The
+~2-day crawl resolved **76,134 / 92,865** songs to an `appleMusicId` (Ch. 3 §1.1) — those
+**stream** via Apple Music (Ch. 5 §8). The remaining **16,730** never resolved
+(`storeId === null`) — they aren't in the streaming catalog at all, so the app **falls back
+to ripping** them. That miss list is written to **`apple-music-catalog-misses.csv`** at the
+repo root (`songId,artist,title,album,albumId,year,trackNumber,lengthMs,fileType,source`).
+The [`backfill-rip` skill](../../.claude/skills/backfill-rip/SKILL.md) turns that list into
+**local rips**: it `POST`s the miss `songId`s to the rip server's batch
+**`/rip-collection`** (Ch. 5 §2) — the same durable queue + single-flight dedup as the in-app
+**Rip all** — so the server local-rips each from Apple Music (real-time Audio Hijack capture
+→ mp3 → public S3), backfilling a streamable file for songs that can't stream. It reads the
+S3 manifest up front (reporting already-ripped vs to-rip) and is **idempotent** (the server
+skips songs already in the manifest), so re-running is safe; ripping is real-time at
+concurrency-1, so it's a long unattended job (`scripts/rip-server.mjs` must be running).
+
 ---
 
 ## 5. The native app's extra sources — streaming accounts + ShazamKit

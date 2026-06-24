@@ -876,3 +876,146 @@ Other shortcuts round it out: **⌘1 / ⌘2** Albums / Songs, **⌘L** focus sea
 
 **User story:** "On a laptop I want to fly — Spotlight-style: type, arrow down,
 hit Return to open or ⌘P to play, hands never leaving the keyboard."
+
+---
+
+## 33. Rip & Burn a whole set — take it offline
+
+Playing one song at a time is great in the room with signal. But a gig is a *set*, and
+the venue might have no signal at all. So every collection you can perform from — a
+**playlist**, a **pocket**, a **setlist**, or a whole **source** ("From your sources")
+— gets two collection-level buttons in its detail screen: **Rip** and **Burn**.
+
+**Rip = "send the whole set to be recorded."** Tap **Rip** and the app hands the entire
+set to your iMac to capture — analog tracks from your vinyl recordings, Apple Music
+tracks in real time — and upload each as an mp3 to the shared cache. Nothing downloads to
+your phone; this is just *"make sure every track in this set exists as a rip."* Because
+ripping Apple Music happens in real time and one track at a time, it **completes over
+time** in the background — so the result reads like *"Ripped 8 of 10 — 2 unrippable,
+enqueued, completes over time,"* with a **Refresh** to reconcile the final counts later.
+Re-tapping Rip on a set that's mostly done is cheap: already-ripped and in-progress tracks
+are skipped. (Rip is only offered when you've pointed the app at a rip server.)
+
+> **You usually don't even have to ask.** Whenever you simply *play* an Apple Music track
+> in the app, it quietly gets ripped in the background too (no waiting, no prompt) — so a
+> set you've been playing through is often already half-ripped before you ever tap **Rip**.
+
+**Burn = "download this set for offline."** Tap **Burn** and the app downloads every
+*already-ripped* track in the set onto the device, so the whole set plays with **no
+signal and no rip server**. Burn never waits on a live recording — it only pulls tracks
+that are already ripped, and reports the rest as *"not yet ripped — Rip first"* (so the
+natural flow is **Rip**, let it finish, then **Burn**). Alongside each downloaded track it
+writes a plain-text companion with the track's **BPM, key (musical + Camelot), sentiment,
+album, and full metadata** — the same kind of mixer-ready sidecar the desktop burn
+produces. Burning the same set again is smart: it re-downloads only what's **missing or
+stale** (e.g. a track you re-ripped, or whose BPM/key was re-analyzed since), and skips
+everything still current. Progress shows as *"Burning 6 of 10,"* ending in a summary like
+*"Burned 6 of 10 — 4 not yet ripped."*
+
+**Where you'll see them.** The pair appears on the playlist detail, the pocket detail, the
+setlist detail, and the read-only "From your sources" list — anywhere you've gathered a set
+worth carrying. Both buttons disable when the collection has nothing rippable in it.
+
+**⏹ Stop — cancel a rip or burn in flight.** While a Rip or Burn is running, a red **Stop**
+item joins the same menu. Tap it and the in-flight job halts: a **Stop rip** tells the iMac
+to drop this set's still-queued and currently-recording tracks; a **Stop burn** ends the
+download loop after the current file (so whatever already finished stays on the device). Either
+way you get the partial summary so far — handy when you change your mind about a long set
+mid-capture, or only meant to grab the first few tracks.
+
+**User story:** "I've built the set — now make it bulletproof: rip everything so it's
+captured, then burn it onto my phone so it plays in a basement with no bars, every track
+carrying the BPM and key I mix on — and let me call it off if I started the wrong one."
+
+---
+
+## 34. Settings ▸ Rip from cloud · burnt-music folder
+
+Two new native Settings controls refine *how* and *where* the app rips and burns.
+
+**Rip from cloud source.** In **Settings ▸ Rip server**, below the URL, a **Rip from cloud
+source** toggle changes where a rip comes from. With it **on**, any song that *exactly* matches
+a track in your iMac's Apple Music library is captured from **Apple Music itself** (real-time,
+one track at a time) instead of from a vinyl recording — so even a set built from the vinyl
+crate can be ripped at full digital quality when the same recording lives in your library. When
+there's no exact match it **falls back to the vinyl rip** automatically, so nothing is skipped.
+The match is deliberately strict: a *remix*, *radio edit*, *live*, or *instrumental* version
+won't masquerade as the standard recording (and vice-versa) — only the genuinely-same recording
+matches, so a cloud rip never quietly swaps in the wrong version. The setting's footer warns that
+because cloud rips capture in real time, one at a time, a large **Rip/Burn can take a while**.
+
+**Burnt-music folder.** A new **Burnt music** section lets you pick **where burned audio +
+their `.txt` sidecars are saved**. By default they live in the app's private storage; tap
+**Choose burnt-music folder…** and pick any folder (the system folder picker on each platform)
+to have burns land somewhere **you can browse yourself** — in **Finder** on the Mac or **the
+Files app** on iPhone/iPad. The chosen folder's name is shown with a **Use app storage** button
+to revert. Now the mixer-ready files (audio + BPM/key/sentiment sidecar) are right where you can
+drag them into a DJ app or back them up.
+
+**User story:** "Rip from my actual Apple Music library when it's the same record — and drop
+the burned files in a folder I can open, not buried inside the app."
+
+---
+
+## 35. Setlist ▸ ▶ Play — play the whole set in order
+
+A realized set list gains a **▶ Play** button in its toolbar (beside Rip/Burn). Tap it and the
+app plays the set **start to finish, in order**, in the inline player — auto-advancing to the
+next track as each one ends. For each track it prefers the **burned local file** if you've
+burned the set (so it plays with no signal), otherwise it **streams** the rip; a track that
+can't be played at all (no rip, no server) is **skipped** rather than stalling the set. The
+button flips to **⏹ Stop** while it runs (and reorder/delete are locked so the queue can't
+shift under playback). When the current track is a **live** stream — which has no natural end —
+a **⏭ Next** button appears so you can advance by hand.
+
+**User story:** "Hit one button and let the set play itself through, in order — the way I'll
+actually run it on the night — pulling from what I've burned and skipping anything not ready."
+
+---
+
+## 36. Browse — genre & collection-membership filters, per-clause remove
+
+The native Browser's **Filter** sheet gains the PWA's richer filtering (and a little more).
+
+**Genre filter.** Add a **Genre** clause and pick from a multi-select of **top-level
+categories** — the ~15 buckets the star map groups by (Disco, Soul, House…), not the ~600 raw
+sub-genres. Two operators: **in list** (any-of — keep songs/albums in any of the picked
+categories) and **not in list** (none-of — drop them). It works in both Albums and Songs mode
+(a song inherits its album's category). **Genre** is also a **Sort** key, so you can order the
+list by category.
+
+**Collection-membership filters (Songs mode).** When you've got playlists or pockets, a
+**Collection membership** section adds two filters: **In playlist / pocket** keeps **only** songs
+that *are* in a chosen collection (or *any*), and **Not in playlist / pocket** **drops** songs
+that are. Each is an *"Any playlist / pocket"* toggle plus per-collection checkboxes, with its
+own **Clear**. Both can be on at once — the list shows the **intersection** (e.g. *everything
+in Peak Hour that isn't already in Saturday Set*) — exactly mirroring the web app, including
+your **imported iTunes** playlists.
+
+**Per-clause remove.** Every filter clause now has its **own remove** — a **trash** button (and
+a left **swipe**) on the row — alongside the existing **Clear All**. So you can drop a single
+clause without tearing down the whole query.
+
+**User story:** "Filter by the genre buckets I think in, slice by what's already in my sets,
+and peel off one filter at a time instead of starting over."
+
+---
+
+## 37. Online search — load-more pagination & server-side sort
+
+The native **⚡ Online** search (OpenSearch) gets two refinements over the offline filter.
+
+**Pagination — scroll to load more.** Instead of stopping at a fixed cap, online results now
+**page in as you scroll**: the first page loads on a query/filter change, and reaching the
+bottom of the list **fetches and appends** the next page, until every match is loaded. The
+results header shows the **real total** (e.g. *"470 songs"*) — the full match count across the
+entire indexed catalog, not just the rows currently on screen — so you always know how big the
+result set actually is.
+
+**Sort applies online too.** The Browser's **Sort** (field + ↑/↓) now drives the **online**
+search as well: OpenSearch sorts the *whole* result set server-side and pages come back already
+in order — so sorting by BPM, key, genre, year, or title behaves the same whether you're
+searching offline or online, across the entire catalog rather than just the loaded slice.
+
+**User story:** "Search the whole library online, scroll to pull in as many matches as I want,
+see the true total, and sort it the way I always do."

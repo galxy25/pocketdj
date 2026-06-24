@@ -274,6 +274,37 @@ final class CollectionsStore {
                                  pocketsById: pocketsById)
     }
 
+    // MARK: Collection → songIds (for batch RIP / BURN — Feature 2)
+    //
+    // Pure, deduped resolvers, one per collection type (each resolves differently).
+    // Text/note nodes are excluded — CollectionCatalog only yields IndexSongs, and the
+    // setlist resolver filters `isText` cues. An empty / missing collection yields [].
+
+    /// Every resolved song id of an editable playlist (album/pocket expanded, deduped).
+    func songIds(forPlaylist id: String) -> [String] {
+        guard let pl = playlist(id) else { return [] }
+        return catalog().songs(inPlaylist: pl).map { $0.id }
+    }
+    /// Every resolved song id of a pocket DAG (own + album tracks + nested, cycle-guarded).
+    func songIds(forPocket id: String) -> [String] {
+        var seen = Set<String>()
+        return catalog().resolvePocketSongs(id, seen: &seen).map { $0.id }
+    }
+    /// Every audio track's song id of a frozen setlist (text cues excluded).
+    func songIds(forSetlist id: String) -> [String] {
+        guard let sl = setlist(id) else { return [] }
+        return sl.tracks.filter { $0.isText != true && !$0.songId.isEmpty }.map { $0.songId }
+    }
+    /// A read-only "From your sources" playlist's song ids (already a flat list).
+    func songIds(forSource source: SourcePlaylist) -> [String] { source.songIds }
+
+    /// Resolve a list of song ids to the `(id,title,artist)` tuples the BURN queue +
+    /// sidecar need, using the live catalog. Ids with no catalog song are dropped (the
+    /// server is the unknown-id backstop for RIP; BURN can't burn a song it can't name).
+    func burnTuples(_ songIds: [String]) -> [(id: String, title: String, artist: String)] {
+        songIds.compactMap { id in app?.songsById[id].map { (id: id, title: $0.name, artist: $0.artist) } }
+    }
+
     // MARK: Setlists (Play → realize → freeze)
 
     /// Build the read-only RealizeCtx from the injected catalog (AppModel). The

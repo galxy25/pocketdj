@@ -62,7 +62,11 @@ enum TestData {
     static func songItemsTagged(source: String = "Test Crate") throws -> [BrowseItem] {
         let idx = try index()
         let byId = Dictionary(uniqueKeysWithValues: idx.albums.map { ($0.id, $0.name) })
-        return idx.songs.map { .song($0, albumName: $0.albumId.flatMap { byId[$0] } ?? "", source: source) }
+        let genreById = Dictionary(uniqueKeysWithValues: idx.albums.map { ($0.id, $0.genre) })
+        return idx.songs.map {
+            .song($0, albumName: $0.albumId.flatMap { byId[$0] } ?? "", source: source,
+                  genre: Genre.category($0.albumId.flatMap { genreById[$0] ?? nil }))
+        }
     }
 
     static func albumItems() throws -> [BrowseItem] {
@@ -72,7 +76,11 @@ enum TestData {
     static func songItems() throws -> [BrowseItem] {
         let idx = try index()
         let byId = Dictionary(uniqueKeysWithValues: idx.albums.map { ($0.id, $0.name) })
-        return idx.songs.map { .song($0, albumName: $0.albumId.flatMap { byId[$0] } ?? "") }
+        let genreById = Dictionary(uniqueKeysWithValues: idx.albums.map { ($0.id, $0.genre) })
+        return idx.songs.map {
+            .song($0, albumName: $0.albumId.flatMap { byId[$0] } ?? "",
+                  genre: Genre.category($0.albumId.flatMap { genreById[$0] ?? nil }))
+        }
     }
 
     /// Loader stub for AppModel — returns the in-memory index.

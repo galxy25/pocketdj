@@ -60,6 +60,14 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
     private(set) var lastError: Error?
     func takeLastError() -> Error? { defer { lastError = nil }; return lastError }
 
+    /// Feature 1 — stream-through-ripping. Fire-and-forget: kick off the async rip of a
+    /// song that's being streamed elsewhere (Apple Music) so a durable rip is ready
+    /// shortly after. The rip POLICY lives with the rip provider (which already owns
+    /// `rips`); `requestRipIfNeeded` is idempotent + never throws + never blocks playback.
+    func requestAsyncRip(_ songId: String) async {
+        await rips.requestRipIfNeeded(songId)
+    }
+
     func togglePlayPause() { player.toggle() }
 
     func stop() {

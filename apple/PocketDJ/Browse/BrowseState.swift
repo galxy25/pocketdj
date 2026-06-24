@@ -17,6 +17,23 @@ final class BrowseState {
     /// Search mode: false = on-device (local filter), true = online (OpenSearch).
     var searchOnline: Bool = false
 
+    // MARK: Collection-membership filter (song mode only) — mirrors the PWA's
+    // BrowserView SHOW/HIDE filters (src/components/browser/BrowserView.tsx). Held as
+    // TRANSIENT state (not persisted in the Snapshot), exactly like the PWA keeps it in
+    // component useState. Each Set mixes playlist (pls_) AND pocket (pkt_) ids together.
+    //   include* → SHOW: keep ONLY songs in ANY selected collection ("in playlist/pocket").
+    //   exclude* → HIDE: drop songs in ANY selected collection ("not in playlist/pocket").
+    // The *Any flags expand to "every playlist + pocket" (PWA's allIds()).
+    var includeAny = false
+    var includeIds: Set<String> = []
+    var excludeAny = false
+    var excludeIds: Set<String> = []
+
+    /// True when any membership constraint is active (drives the song-mode gating).
+    var membershipActive: Bool {
+        includeAny || !includeIds.isEmpty || excludeAny || !excludeIds.isEmpty
+    }
+
     private let defaults: UserDefaults
     private static let key = "pdj.browse.v1"
 
@@ -50,16 +67,71 @@ final class BrowseState {
         case .album:
             return app.albums.map { .album($0, source: app.source(ofAlbum: $0.id)) }
         case .song:
-            return app.songs.map { .song($0, albumName: app.albumName(forSong: $0),
-                                         source: app.source(ofSong: $0.id)) }
+            return app.songs.map { song in
+                // Resolve the song's top-tier genre category from its owning album, so
+                // the genre filter/sort reads it like the PWA reads SongItem.genre.
+                let albumGenre = song.albumId.flatMap { app.albumsById[$0]?.genre }
+                return .song(song, albumName: app.albumName(forSong: song),
+                             source: app.source(ofSong: song.id),
+                             genre: Genre.category(albumGenre))
+            }
         }
     }
 
-    /// Query → filter clauses → multi-key sort. The pipeline the PWA browser uses.
-    func results(_ app: AppModel) -> [BrowseItem] {
+    /// Query → filter clauses → multi-key sort → collection membership. The pipeline
+    /// the PWA browser uses (membership applied last, song mode only).
+    func results(_ app: AppModel, collections: CollectionsStore? = nil) -> [BrowseItem] {
         var base = baseItems(app)
         if !query.isEmpty { base = base.filter { textMatch($0, query) } }
-        return SortEngine.apply(FilterEngine.apply(base, clauses), sortKeys)
+        let sorted = SortEngine.apply(FilterEngine.apply(base, clauses), sortKeys)
+        guard let collections else { return sorted }
+        return applyMembership(sorted, collections)
+    }
+
+    /// Resolve the union of song ids placed in the selected collection ids (mixed
+    /// pls_/pkt_). The native analog of the PWA's `membersOf` + `isMember`: the native
+    /// `songIds(forPlaylist:/forPocket:)` resolvers already expand placed albums to their
+    /// tracks, so a flat Set of song ids reproduces the PWA's id-OR-albumId membership.
+    private func memberSongIds(_ ids: Set<String>, _ collections: CollectionsStore) -> Set<String> {
+        var out = Set<String>()
+        for id in ids {
+            let resolved = id.hasPrefix("pkt_")
+                ? collections.songIds(forPocket: id)
+                : collections.songIds(forPlaylist: id)
+            out.formUnion(resolved)
+        }
+        return out
+    }
+
+    /// Apply the SHOW/HIDE membership filters (song mode only). Mirrors
+    /// BrowserView.tsx: SHOW keeps only members of any selected collection; HIDE drops
+    /// members of any selected; both active = intersection; "any" = every collection.
+    private func applyMembership(_ items: [BrowseItem], _ collections: CollectionsStore) -> [BrowseItem] {
+        guard kind == .song, membershipActive else { return items }
+        let allIds = Set(collections.playlists.map(\.id) + collections.pockets.map(\.id))
+        let showActive = includeAny || !includeIds.isEmpty
+        let hideActive = excludeAny || !excludeIds.isEmpty
+        let showSet: Set<String>? = showActive
+            ? memberSongIds(includeAny ? allIds : includeIds, collections) : nil
+        let hideSet: Set<String>? = hideActive
+            ? memberSongIds(excludeAny ? allIds : excludeIds, collections) : nil
+        return items.filter { item in
+            guard case .song = item else { return true }
+            if let showSet, !showSet.contains(item.id) { return false }
+            if let hideSet, hideSet.contains(item.id) { return false }
+            return true
+        }
+    }
+
+    /// Remove a single filter clause by id (the per-row remove action), leaving the
+    /// other AND-composed clauses intact.
+    func removeClause(id: Clause.ID) {
+        clauses.removeAll { $0.id == id }
+    }
+
+    /// Clear all membership selections (the membership "Clear" action).
+    func clearMembership() {
+        includeAny = false; includeIds = []; excludeAny = false; excludeIds = []
     }
 
     private func textMatch(_ item: BrowseItem, _ q: String) -> Bool {
@@ -68,7 +140,7 @@ final class BrowseState {
             return a.name.localizedCaseInsensitiveContains(q)
                 || a.artist.localizedCaseInsensitiveContains(q)
                 || (a.genre ?? "").localizedCaseInsensitiveContains(q)
-        case .song(let s, let albumName, _):
+        case .song(let s, let albumName, _, _):
             return s.name.localizedCaseInsensitiveContains(q)
                 || s.artist.localizedCaseInsensitiveContains(q)
                 || albumName.localizedCaseInsensitiveContains(q)

@@ -87,11 +87,11 @@ server-less coordination work.
 |---|---|---|---|
 | 1 | [**Foundations**](./architecture/01-foundations.md) | the whole | System entities, ownership table, the files-as-API spine, content-derived ids. **Start here.** |
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
-| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage**), internal model, collections — the one shape everything speaks. Reference chapter. |
+| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — the one shape everything speaks. Reference chapter. |
 | 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **and the deferred AI auto-mixing seam**. |
-| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API, job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), **and the stream-first → rip-last provider chain (`PlaybackCoordinator`).** |
-| 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, the star map. |
-| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, **and the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`).** |
+| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder**), **and the `SetlistPlayer` burnt-or-stream sequencer.** |
+| 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, **online pagination (`from/size` + `track_total_hits`) + server-side sort + the `genreCategory` field**, **the native Browse genre + collection-membership filters**, the star map. |
+| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **and the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`).** |
 
 ---
 
@@ -120,6 +120,33 @@ contract**. Honest status:
   than always ripping: an out-of-band catalog-id resolver mints an `appleMusicId` onto
   each song (Ch. 3 §1.1), and the native `PlaybackCoordinator` tries that verified
   Apple Music stream **first**, degrading to rip-on-demand only on a miss (Ch. 5 §8).
+  **That crawl has now completed — 76,134 / 92,865 songs resolved → stream; the 16,730
+  misses fall back to ripping and are listed in `apple-music-catalog-misses.csv`, which the
+  `backfill-rip` skill local-rips through `/rip-collection` (Ch. 7 §4).**
+- **New current-state — stream-through-rip + offline Collection Rip/Burn.** When an
+  Apple Music stream wins a play, the native app fires **one fire-and-forget rip** so the
+  track is silently captured to the public S3 cache for later (zero playback latency,
+  idempotent, never blocks; Ch. 5 §8). Playlist / pocket / setlist / source detail views
+  gain **Rip collection** (batch `POST /rip-collection` → the durable queue → S3) and
+  **Burn collection** (a new `@Observable` `BurnStore` serial download queue that pulls
+  *already-ripped* songs to an on-device offline store + a mixer-readable `.txt` sidecar;
+  Ch. 5 §9). Each manifest entry now stamps **`rippedAt`** so a burn re-downloads when the
+  source rip is newer. The offline player + live-mixer that consume the burn store are
+  still **deferred** — only the storage layout + seams ship.
+- **New current-state — cloud rips, Stop, Setlist Play, burnt-music folder, richer
+  Browse + paged search.** A handful of features round out playback/discovery: a
+  **"Rip from cloud source"** setting captures an *analog* song from the iMac's Apple Music
+  library when it **exactly** matches (tight `am-match`, Ch. 3 §1.3), else falls back to the
+  vinyl rip — and a durable **cloud re-index** folds Apple Music length + cloud bpm/key/camelot
+  into `current-index.json` with cloud precedence (Ch. 3 §1.2). A **`POST /rip-cancel`**
+  endpoint backs a collection **Stop** that cancels an in-flight rip (dequeue + kill the
+  capture worker) or burn (keeps finished files; Ch. 5 §2.1, §9). Burns can save to a
+  **user-browsable folder** (security-scoped bookmark; Ch. 5 §9). A **Setlist Play** button
+  runs a set in order via the **`SetlistPlayer`** sequencer (burnt-local-file else stream,
+  auto-advance; Ch. 5 §10). Online search **pages** (`from/size` + `track_total_hits`,
+  accumulating, real total) and applies the Browser **sort server-side** (Ch. 6 §4.1), and
+  the native **Browse** gains **genre** (tier-1-category, multi-select any-of / none-of) +
+  **collection-membership** filters and a **per-clause remove** (Ch. 6 §6).
 - **Coming — AI-assisted auto-mixing & auto-building playlists.** The seams already
   exist (no migration needed to light them up): `SetlistTrack.mixSuggestions` +
   the `MixSuggestion` shape, the reserved `PocketKind:'performance'`, and the
@@ -178,4 +205,32 @@ Things found while writing that don't fully line up, gathered here so they're no
     ripping on a miss; a maintainer who "optimizes" by playing `appleMusicId` *without*
     the `fetchRow` verification would silently regress to wrong/failed tracks.
     (Ch. 3 §1.1, Ch. 5 §8)
-```
+12. **Three names for the cloud-rip flag, on purpose.** Client/persisted `ripFromCloud`,
+    the request-body field `"ripFromCloud"` (sent only when true), and the server job's
+    `preferCloud` (the **RESOLVED** post-probe boolean) are deliberately distinct. The
+    server persists `preferCloud` (not the raw request flag) and **never re-probes on
+    resume**, so a track later deleted from the library can't flip the `resourceKey`
+    between persist and resume. (Ch. 3 §1.2, design-rip-from-cloud.md)
+13. **The cloud re-index writes a SIDE output, never the live catalog.**
+    `scripts/reindex-cloud-analysis.mjs` writes `index-out/reindex/current-index.json` +
+    a report and **never** mutates `public/current-index.json` or deploys; the owner
+    reviews + applies by hand. A maintainer expecting it to publish would be surprised.
+    (Ch. 3 §1.2)
+14. **`am-match` deliberately trades coverage for fidelity.** Tight matching means analog
+    songs that exist in Apple Music under a slightly different version label (a loose
+    match) **silently rip from vinyl / keep the analog value** instead of cloud — by
+    design (vinyl is always the correct personal cut), but it "misses" some cloud-eligible
+    songs. (Ch. 3 §1.3)
+15. **`/rip-cancel` refuses the kill mid-`uploading` and never Tier-2-falls-back.** A
+    cancel landing while a job is uploading lets the idempotent `aws s3 cp` + `saveManifest`
+    finish; a cancel mid-capture on an analog cloud rip does **not** fall back to vinyl
+    (cancel means stop, not "try the other path"). A maintainer "simplifying" the cancel
+    path could corrupt the manifest or resurrect a canceled rip as a vinyl rip. (Ch. 5 §2.1)
+16. **Online pagination tops out at the 10k `from+size` window.** `hasMore` is false once
+    the accumulator reaches the exact `total` *or* `SearchService.maxResultWindow` (10,000)
+    — aoss's `index.max_result_window`. A query with >10k matches can't be paged to the end
+    by offset; deep pagination would need `search_after`. (Ch. 6 §4.1)
+17. **Online genre filter/sort depends on the `genreCategory` keyword existing in the
+    index.** `FilterQuery`/`sortBody` map `genre → genreCategory`; if a stale index built
+    before `scripts/es-index.mjs` added that field is live, online genre clauses silently
+    match nothing. Re-run the `es-search-index` skill after upgrading. (Ch. 6 §2, §4.1, §6)
