@@ -72,8 +72,9 @@ const SELFHEAL = {
   digitalDefaultLenMs: 6 * 60_000, // unknown length → assume a 6-min song
   digitalFloorMs: numEnv('RIP_TEST_DIGITAL_FLOOR_MS', 90_000), // never kill a legit capture before this
   digitalCeilMs: 30 * 60_000,     // hard ceiling (a single track can't legitimately run 30 min)
-  // analog ffmpeg transcode of a whole album: a generous fixed cap (transcode is fast).
-  analogCapMs: numEnv('RIP_TEST_ANALOG_CAP_MS', 12 * 60_000),
+  // analog ffmpeg transcode of a whole album + per-song cuts: a generous fixed cap (transcode
+  // is fast; the cut pass adds a few ffmpeg+upload passes per song).
+  analogCapMs: numEnv('RIP_TEST_ANALOG_CAP_MS', 20 * 60_000),
   // capped exponential backoff requeue for TRANSIENT failures.
   maxAttempts: numEnv('RIP_TEST_MAX_ATTEMPTS', 5), // total tries (attempt 1 = the original run)
   backoffMs: process.env.RIP_TEST_BACKOFF_MS
@@ -521,6 +522,49 @@ async function runAnalogJob(job, song) {
       key, ext: 'mp3', bytes, source: 'analog', albumId: album.id,
       startMs: s.pointer?.startMs ?? null, durationMs: s.length ?? null, rippedAt,
     };
+  }
+  // PER-SONG CUTS (burn-only): cut each song's chunk out of the album mp3 and upload it as
+  // cuts/<songId>.mp3, so a Burn can include the individual track (for other DJ software's
+  // "full song list" view) ALONGSIDE the whole-album backcase. Playback still uses the album +
+  // startMs seek — `cutKey` is consumed only by the burn. A per-song cut failure is NON-FATAL
+  // (the album entry alone still works). The album mp3 (`out`) is still in tmp here.
+  for (const s of songsByAlbum.get(album.id) || []) {
+    if (job.phase === 'error' || job.canceled) break;
+    const e = manifest[s.id];
+    if (!e || e.source !== 'analog' || e.albumId !== album.id) continue;   // skip cloud-rip songs
+    const startMs = s.pointer?.startMs ?? e.startMs;
+    const durMs = s.length ?? e.durationMs;
+    if (startMs == null || !durMs) continue;                               // no cut points → album-only
+    const cutOut = join(CFG.tmp, `${s.id}.cut.mp3`);
+    try {
+      setPhase(job, 'ripping', { realtime: false, message: `cutting ${s.name || s.id}` });
+      await new Promise((res, rej) => {
+        const ff = spawn('ffmpeg', ['-y', '-ss', String(startMs / 1000), '-i', out,
+          '-t', String(durMs / 1000), '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k', cutOut],
+          { detached: true });
+        activeChild.p = ff;
+        let err = '';
+        ff.stderr.on('data', (d) => { err += d; });
+        ff.on('close', (code) => {
+          activeChild.p = null;
+          if (code === 0) return res();
+          if (job.phase === 'error' || job.canceled) return res();        // killed → swallow
+          rej(new Error('cut ffmpeg failed: ' + err.slice(-200)));
+        });
+      });
+      if (job.phase === 'error' || job.canceled) { rmSync(cutOut, { force: true }); break; }
+      // Under the PUBLIC `rips/` prefix (the bucket policy only makes rips/* public) and
+      // distinct from a per-song cloud rip's `rips/<songId>.mp3` (the `.cut.` infix).
+      const cutKey = `rips/${s.id}.cut.mp3`;
+      await aws(['s3', 'cp', cutOut, `s3://${CFG.bucket}/${cutKey}`, '--content-type', 'audio/mpeg']);
+      e.cutKey = cutKey;
+      e.cutBytes = statSync(cutOut).size;
+      e.cutRippedAt = Date.now();
+    } catch (err) {
+      console.error(`  cut failed for ${s.id}: ${err.message}`);
+    } finally {
+      rmSync(cutOut, { force: true });
+    }
   }
   await saveManifest();
 

@@ -59,6 +59,12 @@ final class RipsStore {
         /// Epoch-ms when this rip completed + uploaded (the server emits `Date.now()`).
         /// Optional for backward-compat with older manifest entries that predate it.
         var rippedAt: Double? = nil
+        /// ANALOG only: the per-song CUT chunk (`cuts/<songId>.mp3`) sliced out of the album,
+        /// for the burn's individual-track export (DJ software). nil ⇒ album-only (no cut). The
+        /// album `key` + `startMs` remain the playback source (cut is burn-only).
+        var cutKey: String? = nil
+        var cutBytes: Int? = nil
+        var cutRippedAt: Double? = nil
     }
 
     /// The "now playing" handoff to the inline player (mirrors the PWA's `NowPlaying`).
@@ -300,6 +306,42 @@ final class RipsStore {
     }
 
     func setNowPlaying(_ n: NowPlaying?) { nowPlaying = n }
+
+    // MARK: Analog cut export (burn-only)
+
+    /// The public URL for a manifest key (e.g. an analog `cutKey` = "cuts/<songId>.mp3").
+    func url(forKey key: String) -> URL { ripsBase.appendingPathComponent(key) }
+
+    /// HEAD `url` → its Last-Modified as epoch-ms (nil offline / missing). Drives the burn's
+    /// analog-cut auto-repull: re-download when the S3 cut is newer than the device's copy (so a
+    /// MANUALLY re-uploaded cut is picked up without any manifest change).
+    func remoteLastModifiedMs(_ url: URL) async -> Double? {
+        var req = URLRequest(url: url); req.httpMethod = "HEAD"; req.timeoutInterval = 12
+        guard let (_, resp) = try? await session.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let lm = http.value(forHTTPHeaderField: "Last-Modified"),
+              let date = Self.httpDateFormatter.date(from: lm) else { return nil }
+        return date.timeIntervalSince1970 * 1000
+    }
+
+    /// GET raw bytes from a public URL (the analog cut chunk). Throws offline / on non-2xx.
+    func downloadBytes(_ url: URL) async throws -> Data {
+        var req = URLRequest(url: url); req.timeoutInterval = 30
+        let (data, resp) = try await session.data(for: req)
+        if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw RipError.serverError(nil)
+        }
+        return data
+    }
+
+    /// RFC-1123 HTTP-date parser for the `Last-Modified` header (fixed POSIX/GMT).
+    private static let httpDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f
+    }()
 
     // MARK: Feature 1 — stream-through-ripping (fire-and-forget async rip)
 

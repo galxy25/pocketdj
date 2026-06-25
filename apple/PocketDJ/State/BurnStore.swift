@@ -59,6 +59,13 @@ final class BurnStore {
         /// Optional for backward-compat decode of older index json — coalesced nil → true
         /// (every pre-feature burn lives in Application Support).
         var wasAppStorage: Bool?
+        /// ANALOG cut export: the individual per-song cut chunk's filename in the burn folder
+        /// (paired with the per-song sidecar) — the single-track view for DJ software, alongside
+        /// the whole-album backcase. nil ⇒ no cut exported. `cutDownloadedAt` is the S3
+        /// Last-Modified epoch-ms at download, so a later burn re-pulls when the S3 cut is newer
+        /// (the manual-recut auto-repull). Both optional for back-compat decode.
+        var cutFileName: String? = nil
+        var cutDownloadedAt: Double? = nil
 
         var id: String { songId }
     }
@@ -206,6 +213,10 @@ final class BurnStore {
     /// BurnItem from the record + persist. Idempotent (a duplicate callback re-writes the same
     /// ready item).
     func finalizeBurn(record: TransferCoordinator.TransferRecord, bytes: Int) {
+        // Preserve any per-song cut export already written for this song (the cut pass runs
+        // in-process during burn(); this album-finalize fires later from the background download
+        // and would otherwise rebuild the item and drop the cut fields).
+        let prevCut = items[record.songId]
         items[record.songId] = BurnItem(
             songId: record.songId, title: record.title, artist: record.artist,
             audioFileName: record.audioFileName, sidecarFileName: record.sidecarFileName,
@@ -213,7 +224,8 @@ final class BurnStore {
             bpm: record.bpm, musicalKey: record.musicalKey, camelot: record.camelot,
             durationMs: record.durationMs, startMs: record.startMs,
             bytes: bytes, rippedAt: record.rippedAt, downloadedAt: now,
-            state: .ready, error: nil, wasAppStorage: record.wasAppStorage)
+            state: .ready, error: nil, wasAppStorage: record.wasAppStorage,
+            cutFileName: prevCut?.cutFileName, cutDownloadedAt: prevCut?.cutDownloadedAt)
         save()
     }
 
@@ -515,9 +527,54 @@ final class BurnStore {
             }
         }
 
+        // ANALOG CUT EXPORT (best-effort, in-process): write each analog song's individual cut
+        // chunk into the burn folder so DJ software sees the full single-track list alongside the
+        // album backcase. Runs here, inside burn()'s held folder scope.
+        await exportAnalogCuts(unique, dir: dir)
+
         save()
         progress = nil
         return result
+    }
+
+    /// Download each analog song's server-sliced cut (`cuts/<songId>.mp3`) into the burn folder
+    /// under a per-song name (digital-style, pairing with the per-song sidecar already written),
+    /// so other DJ software gets the individual track alongside the whole-album backcase.
+    /// Auto-repull: re-download only when the S3 cut is NEWER than the device's copy (a manual
+    /// re-upload bumps the S3 Last-Modified). Offline / HEAD-miss keeps any existing cut. A cut
+    /// failure NEVER fails the burn (the album entry alone still plays + is the backcase).
+    private func exportAnalogCuts(_ songs: [(id: String, title: String, artist: String)], dir: URL) async {
+        let cuts = songs.compactMap { s -> (id: String, entry: RipsStore.ManifestEntry, key: String)? in
+            guard let e = rips.manifest[s.id], e.source == "analog", let k = e.cutKey else { return nil }
+            return (s.id, e, k)
+        }
+        guard !cuts.isEmpty else { return }
+        var done = 0
+        for c in cuts {
+            if stopRequested || Task.isCancelled { break }
+            let (s, a) = lookup?(c.id) ?? (nil, nil)
+            let cutName = Self.descriptiveName(
+                prefix: Self.digitalSongPrefix(song: s, album: a, entry: c.entry),
+                idSuffix: c.id, ext: "mp3")
+            progress = Progress(done: done, total: cuts.count, label: "Cut: \(s?.name ?? c.id)")
+            defer { done += 1 }
+            let cutFileURL = dir.appendingPathComponent(cutName)
+            let remoteMs = await rips.remoteLastModifiedMs(rips.url(forKey: c.key))
+            let exists = FileManager.default.fileExists(atPath: cutFileURL.path)
+            // Up-to-date (local present + last download timestamp ≥ the current S3 one) → keep.
+            if exists, let remoteMs, let storedMs = items[c.id]?.cutDownloadedAt, storedMs >= remoteMs {
+                items[c.id]?.cutFileName = cutName
+                continue
+            }
+            // Offline (HEAD failed) but a local cut already exists → keep it; don't clobber.
+            if remoteMs == nil, exists { items[c.id]?.cutFileName = cutName; continue }
+            do {
+                let data = try await rips.downloadBytes(rips.url(forKey: c.key))
+                try data.write(to: cutFileURL, options: .atomic)
+                items[c.id]?.cutFileName = cutName
+                items[c.id]?.cutDownloadedAt = remoteMs ?? now
+            } catch { /* best-effort — a cut export failure never fails the burn */ }
+        }
     }
 
     // MARK: Helpers
