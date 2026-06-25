@@ -195,7 +195,7 @@ seconds).
         reject('watchdog timeout') → job fail()s
 
  jobDeadlineMs(job, song):
-   analog (sourceType==='analog' && !preferCloud) → analogCapMs               = 12 min (fixed)
+   analog (sourceType==='analog' && !preferCloud) → analogCapMs               = 20 min (fixed)
    digital / cloud                                → clamp( (song.length||6min)*1.5 + 90s,
                                                             floor 90s … ceil 30min )
 
@@ -216,7 +216,8 @@ seconds).
 queue (before spawn — the same pre-spawn cancel guard §2.1 relies on), then
 **`Promise.race`s** the real `runJob` against a **duration-aware watchdog**. The
 **deadline** is computed per job by `jobDeadlineMs`: an analog ffmpeg transcode (fast,
-not real-time) gets a generous **fixed 12-minute** cap; a digital/cloud **real-time**
+not real-time) gets a generous **fixed 20-minute** cap (raised from 12 to cover the
+per-song cut passes — Ch. 5 §14); a digital/cloud **real-time**
 capture gets `song.length × 1.5 + 90s` (the 90s buffers spawn/seek/upload slack),
 **clamped to a 90s floor** (never kill a legitimate short capture early) and a **30-min
 ceiling** (no single track legitimately runs that long; an unknown length assumes a
@@ -314,7 +315,8 @@ off.
  rips/manifest.json : { [songId]: ManifestEntry }
    ManifestEntry { key:"rips/<id>.mp3", ext, bytes, source:'analog'|'digital',
                    albumId?, startMs?, durationMs?, rippedAt,
-                   bpm?, musicalKey?, camelot?, waveform?, analyzed? }
+                   bpm?, musicalKey?, camelot?, waveform?, analyzed?,
+                   cutKey?, cutBytes?, cutRippedAt? }   // analog per-song CUT (§14)
 
  JobView { jobId, songId, phase:RipPhase, message?, url?, error?,
            streamUrl?(/hls/<id>/index.m3u8), progress?{elapsedMs,totalMs,pct,indeterminate} }
@@ -324,10 +326,13 @@ off.
 **Reading the diagram.** `manifest.json` is keyed by `songId` → a `ManifestEntry`:
 where the audio lives (`key`), how it was made (`source`), the auto-seek
 `startMs`/`durationMs`, a **`rippedAt`** epoch-ms completion stamp, and background
-analysis (`bpm`/`musicalKey`/`camelot`/`waveform`/`analyzed`). `JobView` is the
-client-facing job projection: `phase` (the `RipPhase` enum), an optional `streamUrl`
-once live HLS is ready, and `progress` (definite for a real-time digital capture,
-`indeterminate` otherwise).
+analysis (`bpm`/`musicalKey`/`camelot`/`waveform`/`analyzed`). For an **analog** entry it
+may also carry the per-song **CUT** triple (`cutKey`/`cutBytes`/`cutRippedAt`) — the
+individual track sliced out of the album for the Burn's single-file export, §14;
+playback is unchanged (album `key` + `startMs` seek). `JobView` is the client-facing job
+projection: `phase` (the `RipPhase` enum), an optional `streamUrl` once live HLS is
+ready, and `progress` (definite for a real-time digital capture, `indeterminate`
+otherwise).
 
 **`rippedAt` — the freshness stamp for offline burns.** The server writes `rippedAt =
 Date.now()` into the manifest entry whenever a rip completes and uploads (analog album
@@ -415,13 +420,41 @@ stomp a user's pause. **`InlinePlayerSlot(songId:)`** renders the panel only whe
 **`PlayerEngine`** ([`PlayerEngine.swift`](../../apple/PocketDJ/Playback/PlayerEngine.swift))
 is a thin `@MainActor @Observable` wrapper over one **`AVPlayer`** — which plays HLS
 (`.m3u8`) **and** mp3 natively, so no third-party HLS library is needed on Apple
-platforms. `load(url:live:startMs:…)` swaps the item; a non-live (analog) item seeks to
-`startMs` once it reports a usable duration; a live HLS item starts immediately and
-never seeks (no static duration). It also wires **`MPNowPlayingInfoCenter` +
-`MPRemoteCommandCenter`** so the lock screen / Control Center / AirPods / CarPlay drive
-play / pause / scrub — **and next / previous, which advance a running setlist while
-locked** (§11.3) — and configures the `.playback` audio session so audio continues in the
-background (the `UIBackgroundModes` capability, Ch. 7 §6).
+platforms. `load(url:live:startMs:endBoundaryMs:scopeRelease:…)` swaps the item; a
+non-live (analog) item seeks to `startMs` once it reports a usable duration; a live HLS
+item starts immediately and never seeks (no static duration). It also wires
+**`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`** so the lock screen / Control
+Center / AirPods / CarPlay drive play / pause / scrub — **and next / previous, which
+advance a running setlist while locked** (§11.3) — and configures the `.playback` audio
+session so audio continues in the background (the `UIBackgroundModes` capability,
+Ch. 7 §6).
+
+**The position end boundary + the shared one-shot end latch (§10's load-bearing primitive).**
+A track that lives inside a **shared album-rip mp3** (an analog album, or a cloud rip of an
+analog side — one file, several songs, each at its own `startMs`) plays *past* its own
+logical end straight into the next album track, because `.AVPlayerItemDidPlayToEndTime`
+only posts at the end of the **whole file**. So the setlist sequencer needs the track to
+advance at its **own known length**, not the file's. `load`'s **`endBoundaryMs`** (and the
+no-reload **`setEndBoundary(ms:)`**) arm a `endBoundarySec` — an absolute position (seconds)
+within the file — and the **periodic time observer** (the same 0.25s `addPeriodicTimeObserver`
+that drives the clock) calls **`checkEndBoundary(atSeconds:)`** each tick: once the position
+crosses the boundary it signals end. Because position only advances while playing, a paused
+track can't fire it early; a live stream is never armed (`endBoundarySec` stays nil). Both
+end paths — the natural `.AVPlayerItemDidPlayToEndTime` **and** the position boundary —
+funnel through **`signalTrackEnded()`**, a **one-shot latch** (`trackEndSignaled`, reset on
+every `load`/`setEndBoundary`): whichever lands first fires `onTrackEnded` and the other is
+suppressed, so a set can never double-advance. `checkEndBoundary` is split out from the
+observer purely so the fire is **deterministically unit-testable** (drive a position in, assert
+exactly one end).
+
+**The security-scope release (offline burned-folder playback).** A burned file in a
+**user-picked** (security-scoped) folder must keep its scoped access **open the whole time
+`AVPlayer` reads it** — releasing it early leaves the player unable to read the file, a silent
+**0:00 / no-audio**. So `load`'s **`scopeRelease`** closure holds that scope for the lifetime
+of the item: `load` calls the *previous* item's `scopeRelease?()` before swapping, stores the
+new one, and `stop` releases it (nil for app-storage files, which need no scope). This is the
+playback-side half of `BurnStore.localURLForPlayback` (§9), which opens the scope and hands the
+release here.
 
 **The `PlayerClock` / TimelineView trick (the load-bearing part).** The playback
 position ticks ~4×/s (a `addPeriodicTimeObserver` at 0.25 s). If that tick lived on the
@@ -442,9 +475,13 @@ header buttons); `WaveformView` loads its PNG **once** via `URLSession` into one
 the panel border is drawn with **`.allowsHitTesting(false)`** so the shape overlay
 doesn't swallow taps to the controls beneath it. The waveform is a fixed-height,
 edge-to-edge `.background` so it lines up with the full-width scrubber and never
-resizes the panel. (For a **live** stream there's no scrubber — `InlinePlayerExpanded`
-shows a *"Streaming live as it rips"* state and a `● live` badge instead, since a live
-HLS playlist has no fixed length.)
+resizes the panel. The scrubber's end timestamp **falls back to the catalog index length**
+(`app.songsById[songId].length`, via `InlinePlayerExpanded.catalogDurationSec` —
+`max(player.duration, catalogDurationSec, 0.01)`) when the audio file's real duration isn't
+known yet (still loading, or a burned file whose duration can't be read), so the panel always
+shows a sensible `/ m:ss`. (For a **live** stream there's no scrubber —
+`InlinePlayerExpanded` shows a *"Streaming live as it rips"* state and a `● live` badge
+instead, since a live HLS playlist has no fixed length.)
 
 **Album rows reuse all of this.**
 [`AlbumDetailView.swift`](../../apple/PocketDJ/Views/AlbumDetailView.swift)'s `TrackRow`
@@ -540,6 +577,59 @@ The method **never throws** to the caller. Vinyl never streams, so this only fir
 Apple-Music-won path; the resulting rip is the same durable mp3 every later play (and
 every Burn, §9) reads.
 
+**Cloud-offline fast skip — the 12s rip POST timeout.** The rip path's `POST /rip` in
+[`RipsStore.play`](../../apple/PocketDJ/State/RipsStore.swift) sets
+**`timeoutInterval = 12`** (matching `RipServerService.health`). Without it, a **configured
+but unreachable** rip server — the common case at a venue: the Tailscale/home iMac is asleep
+while the phone's on venue wifi — would hang on `URLSession.shared`'s **60s default** before
+failing, stalling a cloud-mode **Play-All** for a full minute per un-burned track before the
+sequencer could skip it. The 12s cap makes that fail in seconds so the set advances promptly.
+(`remoteLastModifiedMs`'s HEAD, §14, uses the same 12s.)
+
+### 8.1 Offline-first catalog — explicit per-source disk cache + graceful degrade
+
+**Why.** Playback offline (§9) is pointless if the **catalog itself** won't open offline.
+`URLRequest.cachePolicy = .returnCacheDataElseLoad` leans on `URLSession`'s shared `URLCache`,
+which silently **refuses to persist** responses past its small default capacity — and the
+catalog index (1,300+ albums) routinely **exceeds** it, so an offline relaunch had nothing to
+fall back to and opened **empty**.
+
+**Source of truth:**
+[`apple/PocketDJ/Services/CatalogService.swift`](../../apple/PocketDJ/Services/CatalogService.swift)
+(the per-source disk cache),
+[`apple/PocketDJ/State/AppModel.swift`](../../apple/PocketDJ/State/AppModel.swift)
+(`fetchIndex` multi-source degrade).
+
+```
+ CatalogService.loadIndex():
+   try  GET url (.returnCacheDataElseLoad, 30s) → decode IndexJSON
+        success → writeCache(rawBytes, for: url)  (ONLY after a valid decode)  → return
+   catch (no network / non-2xx / decode fail):
+        loadCachedIndex(for: url) ≠ nil → return it          (OFFLINE fallback)
+        else → re-throw                                       (never loaded online)
+
+ cacheFileURL(for url) = AppSupport/catalog-cache/<SHA-256(url.absoluteString)>.json
+        (SHA-256, NOT Swift's per-process-seeded Hasher — must survive relaunch)
+
+ AppModel.fetchIndex():  for url in enabledSourceURLs:
+        try load → indexes.append    else → remember firstError, SKIP this source
+   guard !indexes.isEmpty  else throw firstError    (fail ONLY if EVERY source failed)
+```
+
+**Reading the diagram.** `loadIndex()` fetches + decodes as before, then — **only after a
+valid decode** (so a partial/garbage response is never cached) — persists the **raw bytes** to
+an explicit file under `Application Support/catalog-cache/`, named by the **SHA-256 of the
+source URL string** (a deterministic, flat, O(1), *relaunch-stable* filename — Swift's `Hasher`
+is per-process-seeded and wouldn't survive a relaunch). On **any** failure — no network, a
+non-2xx, a decode error — it serves the last good index for **that source** from disk and only
+re-throws when there's no cache (a source never loaded online). A plain file in Application
+Support has no `URLCache` capacity cap, so the catalog opens with its **full** contents
+offline. `AppModel.fetchIndex` then **degrades gracefully across sources**: a source that
+fails *and* has no cache is **skipped** so the **other** sources' cached catalogs still open;
+the whole load fails **only when every source failed** (`indexes` empty). One un-cached source
+can't hide an already-cached one. (`cacheDirectory`/`cacheFileURL` take a `dir` override as the
+unit-test seam, so the round-trip is testable without touching Application Support.)
+
 ---
 
 ## 9. Collection Rip + Burn — the offline local store (`BurnStore`)
@@ -630,9 +720,37 @@ existence-checks before returning a URL (so a purged file degrades gracefully),
 `reconcileOnLaunch()` prunes items whose audio vanished, and `remove(_:)` + `totalBytes`
 make the layout eviction-ready. Offline playback and live mixing themselves are
 **deferred** — this is the storage layout + seams those will consume, feeding
-`PlayerEngine.load(url:live:startMs:title:artist:)` (§7), which already accepts any local
+`PlayerEngine.load(url:live:startMs:title:artist:…)` (§7), which already accepts any local
 URL + `startMs`. The human-readable `<songId>.txt` sidecar mirrors the `burn-setlist`
 skill's format (§6) as a companion; the JSON index, not the prose, is the source of truth.
+
+**`localURLForPlayback` — the scope-held playback resolver.** `localURL(forSong:)` is the
+**existence-check** path: it opens the user-folder scope, stats the file, and **stops the
+scope immediately in its `defer`** — correct for a yes/no check, but fatal for *playback*,
+because `AVPlayer` reads the file lazily over the whole track and the scope is already gone (a
+silent **0:00 / no-audio offline**). So every **song-start path now resolves through
+`localURLForPlayback(forSong:)`** instead: it keeps the scoped access **open** and returns
+`(url, release:(() -> Void)?)` — the `release` is handed to `PlayerEngine.load`'s
+`scopeRelease` (§7), which holds it for the item's lifetime and calls it on the next
+`load`/`stop`; `release` is nil for app-storage files. (A *missing* file still stops the scope
+so it never leaks.) The read side of `resolveBurnFolder` also gained
+**`requireWritable: false`**: playback only needs the folder **readable**, so a Files-provider
+folder that resolves but isn't currently writable (e.g. an offline iCloud Drive folder) still
+satisfies a read — gating reads on writability was a *second* way burned songs failed to
+resolve. `itemDir` (the read/playback path) now calls
+`resolveBurnFolder(allowRePersist:false, requireWritable:false)`.
+
+**Burned-first on every song-start path (offline-first).** Every play entry point now prefers
+a **burned local file before any rip/stream**, in **both device and cloud mode** — so a song
+already on the device plays with **zero latency and no network**: the row ▶
+(`RowTransport.doPlay` in [`CollectionSongRow.swift`](../../apple/PocketDJ/Views/CollectionSongRow.swift),
+an O(1) `songId`→dict hit + one `fileExists`), the keyboard **⌘P** (`BrowseView`'s play
+handler), and **Play-All** (the `SetlistPlayer` cloud branch, §10) all do
+`burns.localURLForPlayback → playLocalFile` first, falling through to the coordinator only
+when there's no local file. The same change fixed the row's **dead pause button for burned
+songs**: a burned file has **no coordinator backend** (`activeBackend == nil`), so the
+now-playing toggle now routes `isAppleMusic ? coordinator.togglePlayPause() : player.toggle()`
+— the rip-stream and the burned file both toggle the shared `PlayerEngine` directly.
 
 **The user-browsable burnt-music folder (security-scoped bookmark).** By default burns
 write to the app-private Application Support `burns/` dir. A **Settings ▸ Choose
@@ -700,8 +818,22 @@ Refresh still reconciles). **Stop** routes on the in-flight op: a burn signals t
 (`inFlightOp == .rip`) **or** already enqueued and polling (`inFlightOp == nil` but
 `ripInProgress`) — tears down the poll and `cancelCollection(lastRipIds)` → **`POST
 /rip-cancel`** (§2.1). It's idempotent: a second Stop after the ids are cleared cancels
-nothing. (The burn's own progress capsule is unchanged; a third overlay branch reads the
-background-transfer coordinator's `progressSnapshot` for the backgrounded-burn path, §11.)
+nothing. (The burn's own progress capsule is unchanged; a third overlay branch shows the
+**"Burning N of M"** background-burn progress, §11.1.)
+
+**The "Burning N of M" count fix — the `@Observable` progress mirror.** That overlay
+branch (`CollectionRipBurnAlert.backgroundBurnProgress` in
+[`CollectionRipBurn.swift`](../../apple/PocketDJ/Views/CollectionRipBurn.swift)) used to read
+the **`TransferCoordinator.progressSnapshot`** directly — but the coordinator is a plain
+**`NSObject`** (it *must* be, to be the background-session delegate, §11.1), so SwiftUI can't
+track it and the overlay **froze at the enqueue total**, never re-rendering as each background
+download finished (the "burning number doesn't update" bug). The fix: the coordinator now also
+calls an **`onProgress(enqueued,finished)`** hook on the **main actor** alongside
+`progressSnapshot` (from `publishProgress`), and `BurnStore` wires it to mirror the value into
+its own **`@Observable backgroundProgress`** property. The overlay reads
+**`burns.backgroundProgress`** — a tracked `@Observable` on the `@MainActor @Observable`
+`BurnStore` — so it re-renders as each download completes. The counters are run-scoped
+(`beginRun` republishes `(0,0)`), so a second burn starts at 0.
 
 ---
 
@@ -711,58 +843,117 @@ background-transfer coordinator's `progressSnapshot` for the backgrounded-burn p
 top-to-bottom hands-free. `SetlistPlayer` is a thin sequencer that plays each track in
 order, auto-advancing on end, and — crucially — chooses **burnt-local-file-if-present,
 else stream** per track, so a partially-burnt set still plays end-to-end (offline tracks
-from disk, the rest streamed).
+from disk, the rest streamed). This branch makes its advance **length-aware** (so a track
+inside a *shared* album mp3 advances at its OWN end), gives it a **persistent ⏮/⏭
+transport**, and lets a **manual row ▶ on an in-set track reposition the running set**
+instead of derailing it.
 
 **Source of truth:**
 [`apple/PocketDJ/Playback/SetlistPlayer.swift`](../../apple/PocketDJ/Playback/SetlistPlayer.swift),
-driven by the **Play/Stop** toolbar button in
+driven by the **Play/Stop + ⏮/⏯/⏭** toolbar in
 [`apple/PocketDJ/Views/SetlistDetailView.swift`](../../apple/PocketDJ/Views/SetlistDetailView.swift)
-(storybook §32).
+(storybook §32). The `Item` now carries **`lengthMs`** (the track's known length from the
+setlist snapshot, `track.shownMs`) — `playableItems(_:)` maps it in.
 
 ```
- SetlistPlayer.play(items)  ── items = [{id,title,artist}] in setlist order
-   index=0; player.onTrackEnded = handleEnded   (owns the hook only while running)
-   deviceQueueUnplayable=false; loadedAnyDeviceTrack=false   (fresh-run banner reset)
+ SetlistPlayer.play(items)  ── items = [{id,title,artist,lengthMs?}] in setlist order
+   index=0; isRunning=true
+   player.onTrackEnded = handleEnded ;  player.onNext = skipNext ;  player.onPrevious = skipPrevious
+   player.setNextPreviousEnabled(true)   (lock-screen ⏭/⏮ enabled only while running)
+   (observeNowPlaying armed ONCE in init — self-re-arms; NOT re-armed per play())
    ▼ playCurrent()  — resolves the SOURCE FRESH each track, branching on playbackMode():
+   bound = sharedFileEndBoundaryMs(it, startMs)   = startMs + lengthMs   (nil if startMs nil)
    mode == .device :                                          (§12 — global toggle)
-        burns.localURL(forSong: id) ≠ nil ?
-            → playLocalFile(local, startMs: burns.startMs(id), …)  loadedAnyDeviceTrack=true (BURNT)
-            else → SKIP the track (advance NOW — un-burned, no file to play, no end event)
+        burns.localURLForPlayback(id) ≠ nil ?
+            → playLocalFile(url, startMs, endBoundaryMs: bound, release: res.release)  (BURNT)
+                                                                  loadedAnyDeviceTrack=true
+            else → SKIP the track (advance NOW — un-burned, no file, no end event)
    mode == .cloud (else) :
-        burns.localURL(forSong: id) ≠ nil ?
-            → set rips.nowPlaying + player.load(localURL, live:false, startMs:nil)   (BURNT)
-            else → coordinator.play(id)   (Apple Music → rip fallback, §8)           (STREAM)
+        burns.localURLForPlayback(id) ≠ nil ?
+            → playLocalFile(url, startMs, endBoundaryMs: bound, release: res.release)  (BURNT)
+            else → coordinator.play(id)   (Apple Music → rip fallback, §8)             (STREAM)
                   coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
-                  player.isLive            → waitingForLive = true ("Next" affordance, no auto-end)
-   ▼ handleEnded()  (player.onTrackEnded fires on a finite item)
+                  player.isLive → waitingForLive = true ("Next" affordance, no auto-end)
+                  else (cloud-analog = ONE shared mp3) → player.setEndBoundary(ms: bound)
+   ▼ handleEnded()  (natural end OR position boundary — §7 one-shot latch)
    GUARD rips.nowPlaying?.songId == queue[index].id  → advance() ; index≥count → stop()
         on stop, if mode==.device && !loadedAnyDeviceTrack → deviceQueueUnplayable=true (banner)
+
+ observeNowPlaying → adoptNowPlayingIfJumped()  (RipsStore.nowPlaying changed):
+   re-arm observation ; guard isRunning ; nowPlaying.songId ≠ queue[index].id ?
+     pos = nearestOccurrence(of: npId, to: index)   (in-set? FORWARD-preferred on a tie)
+     index = pos ; player.setEndBoundary(ms: startMs(nowPlaying) + lengthMs)   ← ADOPT
 ```
 
-**Reading the diagram.** `play(items)` seeds the queue and takes ownership of the shared
-`PlayerEngine.onTrackEnded` hook (released in `stop()`). `playCurrent()` re-resolves the
-source **fresh each track** (a burnt file may have been purged since the queue was built)
-and **branches on the global `playbackMode()` seam** (§12). In **`.cloud`** (today's
-default) it plays the burnt local file if present else streams via `PlaybackCoordinator`
-(§8, Apple Music → rip fallback). In **`.device`** it plays **only** the burnt local file
-and **skips** an un-burned track (advance immediately — there's no file and no end event
-would ever fire); a mode flip applies to the **next** track (the current one finishes under
-the mode it started with). Either way a burnt local file drives the **same `PlayerEngine`**
-the inline player binds to — via the shared `playLocalFile` helper (§12) in device mode, so
-`nowPlaying` + the per-row `InlinePlayerSlot` (§7) + the row pause/resume toggle stay
-consistent — so the current track lights up with **zero new player UI**. If a whole
-device-mode set reaches the end having loaded **no** burnt file, the end-of-set teardown
-raises a one-shot **`deviceQueueUnplayable`** flag the playback surface reads to show a
-transient "nothing on device" banner (so device mode never silently dead-ends with nothing
-playing; cleared on the next `play(_:)` or `clearDeviceUnplayable()`). Auto-advance rides
-the engine's finite-item end notification, with the same **ownership guard** —
-`handleEnded` ignores a stray end from an unrelated manual single-row play by checking
-`rips.nowPlaying?.songId == queue[index].id`. Two edges still keep cloud mode from
-freezing: a **dead source** (coordinator error, or a purged burnt file) advances
-immediately since no end event will ever fire, and a **live HLS** capture (no natural end)
-sets `waitingForLive` so the UI shows a manual **Next** instead of stalling. Reaching the
-end tears down cleanly (releases the hook, clears now-playing) so the toolbar flips back to
+**Reading the diagram.** `play(items)` seeds the queue, flips `isRunning`, and takes
+ownership of the shared `PlayerEngine.onTrackEnded` hook **plus `onNext`/`onPrevious`** and
+enables the lock-screen ⏭/⏮ — all released in `stop()`. `playCurrent()` re-resolves the
+source **fresh each track** (a burnt file may have been purged since the queue was built),
+computes the **length boundary** `bound = startMs + lengthMs` via `sharedFileEndBoundaryMs`,
+and **branches on the global `playbackMode()` seam** (§12).
+
+**Length-aware advance.** `sharedFileEndBoundaryMs` returns nil when `startMs` is nil — a
+**per-song** file (digital rip, digital cloud rip) has its **own** natural end, so it must
+*not* be cut at the catalog length (which can be missing or short). A **non-nil `startMs` is
+exactly the signal that the track shares a multi-song file** — only analog album rips share
+one mp3 across songs, and each carries a per-song `startMs` — so there the boundary
+`startMs + lengthMs` is armed (via `endBoundaryMs:` on a burnt file, or `setEndBoundary` after
+a cloud-analog stream resolves) and the **position observer advances at the track's own end**
+even though `.AVPlayerItemDidPlayToEndTime` won't fire until the end of the **whole** album
+file. Both end signals funnel through §7's **one-shot latch**, so the shared boundary and a
+natural end can't double-advance.
+
+**Mode branch.** In **`.cloud`** (today's default) it plays the burnt local file if present
+else streams via `PlaybackCoordinator` (§8). In **`.device`** it plays **only** the burnt
+local file and **skips** an un-burned track (advance immediately — no file, no end event);
+a mode flip applies to the **next** track (the current one finishes under the mode it
+started with). Either way a burnt local file drives the **same `PlayerEngine`** the inline
+player binds to — via the shared `playLocalFile` helper (§12), now passing `endBoundaryMs:`
+**and the `release:`** from `localURLForPlayback` (§9) so a user-folder file's security scope
+stays open through playback — so `nowPlaying` + the per-row `InlinePlayerSlot` (§7) + the row
+pause/resume toggle stay consistent and the current track lights up with **zero new player UI**.
+If a whole device-mode set reaches the end having loaded **no** burnt file, the end-of-set
+teardown raises a one-shot **`deviceQueueUnplayable`** flag the playback surface reads to show a
+transient "nothing on device" banner (cleared on the next `play(_:)` or
+`clearDeviceUnplayable()`).
+
+**Manual-jump adoption — `observeNowPlaying` / `adoptNowPlayingIfJumped`.** Before this branch,
+tapping a row ▶ on a song that's already *in* the running set changed `RipsStore.nowPlaying`,
+which `handleEnded`'s ownership guard read as a **stray** play — so when that manually-started
+track ended, the guard failed and the **set silently stopped**. Now the sequencer **observes**
+`RipsStore.nowPlaying` (`withObservationTracking`, armed **once in `init`** and self-re-arming
+on the first line of every callback — never re-armed from `play()`, which would stack
+observers): when the now-playing song is a **different queue member** than the current index, it
+**adopts** the jump — moves `index` onto that occurrence and re-arms its length boundary off
+`nowPlaying.startMs` (the source the row actually loaded). The sequencer's *own* plays already
+set `nowPlaying = queue[index]`, so the equality guard makes those a no-op (no restart loop),
+and `handleEnded`'s guard then **passes** for the adopted track so it auto-advances normally.
+**Duplicate songs** are disambiguated by **`nearestOccurrence(of:to:)`** — the occurrence
+nearest the current index, **preferring a forward occurrence on a tie** (the DJ usually taps a
+row later in the set), since the now-playing handoff carries no queue position.
+
+**Persistent prev/next transport.** `play()` enables the lock-screen `nextTrackCommand` /
+`previousTrackCommand` (via `setNextPreviousEnabled(true)`, §11.3) and wires the engine's
+`onNext`/`onPrevious` to **`skipNext()`** (= `advance()`) and **`skipPrevious()`** (clamps to
+index 0, never below; re-resolves + plays the now-current track). The iOS play-mode toolbar
+surfaces the same ⏮/⏯/⏭ **centered** in the nav bar (`SetlistDetailView`'s `.principal`
+`transportCluster`), so prev/next are always reachable, not just on a live track. Two edges
+still keep cloud mode from freezing: a **dead source** (coordinator error, or a purged burnt
+file) advances immediately since no end event fires, and a **live HLS** capture (no natural
+end) sets `waitingForLive` so the UI shows a manual **Next**. Reaching the end tears down
+cleanly (releases the hooks, disables ⏭/⏮, clears now-playing) so the toolbar flips back to
 **Play**.
+
+**The iOS play-mode toolbar.** While a set plays on iOS,
+[`SetlistDetailView.setlistToolbar(_:)`](../../apple/PocketDJ/Views/SetlistDetailView.swift)
+reshapes the bar into a clean music transport: the **⏮ · ⏯ · ⏭ `transportCluster` is centered**
+via `.principal` (its middle toggles play/pause on whichever backend is active —
+`coordinator.togglePlayPause()` for Apple Music else `player.toggle()`), **STOP takes the play
+button's trailing slot** (`startStopButton` — not a menu item), and the secondary actions
+(**Edit · Rip · Burn as separate flat items · Rename · Delete**) collapse into a single •••
+`overflowMenu` (Edit is present-but-disabled mid-set, since reordering would desync the
+sequencer's queue index). **macOS** keeps the flat trailing toolbar (no `.principal` nav bar)
+with prev/next inline while running.
 
 ---
 
@@ -851,8 +1042,11 @@ their records; **`reconcileOnLaunch`** cross-checks persisted records against th
 live tasks on foreground/launch and drops any whose task is gone. Live **progress** is read
 by the UI **only** from the main-actor `progressSnapshot` (published via an explicit main
 hop on every record change), never the `NSLock`-guarded delegate-queue counters — no
-data-race-by-convention; the overlay's "Burning N of M" background-burn branch (§9.1) reads
-exactly that snapshot.
+data-race-by-convention. The coordinator is a plain `NSObject` (not `@Observable`), so the
+same main hop *also* fires an **`onProgress(enqueued,finished)`** callback that
+**`BurnStore` mirrors into its `@Observable backgroundProgress`** — and the overlay's "Burning
+N of M" branch reads **that** tracked value (§9.1), not the un-observable `progressSnapshot`,
+so it actually re-renders as each background download finishes.
 
 ### 11.2 `AppDelegate` — the completion bridge + BGTasks
 
@@ -925,9 +1119,12 @@ to **playing burned files off the device**, and a DJ with signal wants it to com
      Play-All (SetlistPlayer §10)  → SKIPS un-burned tracks; "nothing on device" banner if NONE
      single-row tap                → burnt file if present, else FALL BACK TO CLOUD (one song)
 
- playLocalFile(url, songId, title, artist, startMs, rips, player)   ── SHARED @MainActor helper
-   rips.setNowPlaying(NowPlaying{songId,title,artist,url,live:false,startMs}) ; player.load(…)
-   (used by BOTH SetlistPlayer device-mode AND the single-row burnt path → one consistent now-playing)
+ playLocalFile(url, songId, title, artist, startMs, rips, player,
+               endBoundaryMs?, release?)                            ── SHARED @MainActor helper
+   rips.setNowPlaying(NowPlaying{songId,title,artist,url,live:false,startMs})
+   player.load(url, live:false, startMs, …, endBoundaryMs: endBoundaryMs, scopeRelease: release)
+   (used by SetlistPlayer device+cloud burnt paths AND the row ▶ / ⌘P burnt path → one consistent now-playing,
+    one length-boundary, one held security scope)
 ```
 
 **Reading the diagram.** **`PlaybackMode`** is a two-case enum (`cloud` | `device`)
@@ -947,14 +1144,17 @@ single missing track shouldn't go silent). The **mode is read lazily** through a
 under the mode it started with.
 
 **The shared `playLocalFile` helper (the consistency rule).** A burnt local file can be
-started from two surfaces — the `SetlistPlayer` device-mode path *and* the single-row
-burnt-file transport — and both must leave **`RipsStore.nowPlaying`** (and therefore the
-inline player + the row pause/resume toggle) in the *same* state as the rip path does. So
-both call **one `@MainActor` `playLocalFile`** in `PlaybackCoordinator.swift`: it stamps
-`nowPlaying` then `load`s the **same `PlayerEngine`** the inline waveform/scrubber (§7)
-binds to (passing `startMs` as the analog seek offset into a shared album mp3), mirroring
-`RipServerPlaybackProvider.tryPlay` for the rip path. One helper ⇒ now-playing is
-consistent no matter which surface started the burned file.
+started from several surfaces — the `SetlistPlayer` device **and** cloud burnt paths *and*
+the single-row ▶ / ⌘P burnt-file transport — and all must leave **`RipsStore.nowPlaying`**
+(and therefore the inline player + the row pause/resume toggle) in the *same* state as the
+rip path does. So they all call **one `@MainActor` `playLocalFile`** in
+`PlaybackCoordinator.swift`: it stamps `nowPlaying` then `load`s the **same `PlayerEngine`**
+the inline waveform/scrubber (§7) binds to, passing `startMs` as the analog seek offset into
+a shared album mp3 **plus the optional `endBoundaryMs:`** (the length boundary for a shared
+album file, §10) **and `release:`** (the held security scope for a user-folder file, mapped
+to the engine's `scopeRelease`, §7/§9), mirroring `RipServerPlaybackProvider.tryPlay` for the
+rip path. One helper ⇒ now-playing, the length boundary, and the security scope are consistent
+no matter which surface started the burned file.
 
 ---
 
@@ -1026,6 +1226,101 @@ uncommitted edit (no git baseline ⇒ nothing to protect ⇒ proceed); and it wr
 target's `manifest.sourceType === 'analog'` (it's the *analog* catalog being enriched with
 cloud truth). Disable entirely with `RIP_PUBLIC_FOLD=0`; point at a different catalog with
 `RIP_PUBLIC_INDEX`.
+
+---
+
+## 14. The analog CUT pipeline — per-song slices for the Burn's single-track export
+
+**Why.** An analog rip is **one whole-album mp3**; the app plays a song out of it by seeking
+to `startMs` (§3). That's perfect for in-app playback but wrong for **other DJ software**,
+which wants a folder where every track is its **own file** ("full song list" view). The Burn
+already downloads the whole-album backcase; this branch makes the rip server *also* slice each
+analog song into its **own cut** so the Burn can drop the **individual track alongside** the
+album. Playback is **unchanged** — `cutKey` is consumed only by the Burn; the album mp3 +
+`startMs` seek stays the playback source.
+
+**Source of truth:** the rip server cut pass + endpoints in
+[`scripts/rip-server.mjs`](../../scripts/rip-server.mjs) (`runAnalogJob`'s cut loop,
+`cutDurationMs`, `backfillCuts`, `retagCuts`, the `POST /backfill-cuts` + `POST /retag-cuts`
+routes), the manifest `cutKey`/`cutBytes`/`cutRippedAt` triple (§5), and the device side in
+[`apple/PocketDJ/State/BurnStore.swift`](../../apple/PocketDJ/State/BurnStore.swift)
+(`exportAnalogCuts`) +
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
+(`url(forKey:)` · `remoteLastModifiedMs` · `downloadBytes`).
+
+```
+ SERVER — runAnalogJob, AFTER the whole-album mp3 is uploaded (album mp3 still in tmp):
+   for each analog song of the album (skip cloud-rip songs):
+     startMs = pointer.startMs ?? entry.startMs
+     durMs   = cutDurationMs(s,e) = length ?? durationMs ?? (pointer.endMs - startMs)
+     startMs|durMs missing → album-only (no cut)
+     ffmpeg -ss startMs/1000 -i <album.mp3> -t durMs/1000 -map 0:a:0 -b:a 256k
+            -metadata title/artist/album  -id3v2_version 3   →  <songId>.cut.mp3
+     aws s3 cp → rips/<songId>.cut.mp3        (the PUBLIC rips/ prefix; `.cut.` infix)
+     entry.cutKey/cutBytes/cutRippedAt = …    (and persist derived durationMs if it was null)
+     (per-cut failure is NON-FATAL — the album entry alone still plays + is the backcase)
+
+   POST /backfill-cuts  → backfillCuts():  retro-slice EVERY analog entry missing a cutKey,
+        straight from the RAW album source (NO whole-album re-transcode); single-flight
+   POST /retag-cuts     → retagCuts():  tag-only remux of EVERY existing cut
+        (download → ffmpeg -c copy -map_metadata -1 + fresh title/artist/album → re-upload),
+        bumps cutRippedAt so the app auto-repulls; no re-encode, no source drive needed
+
+ DEVICE — BurnStore.exportAnalogCuts(songs, dir)  (in-process, inside burn()'s held folder scope):
+   for each analog song whose manifest entry has a cutKey:
+     cutName = descriptiveName(digitalSongPrefix, idSuffix: songId, "mp3")   (PER-SONG name)
+     remoteMs = rips.remoteLastModifiedMs(url(forKey: cutKey))   (HEAD → Last-Modified epoch-ms)
+     local present ∧ storedCutDownloadedAt ≥ remoteMs → KEEP (up-to-date)
+     offline (HEAD failed) ∧ local present            → KEEP (don't clobber)
+     else: data = downloadBytes(url(forKey: cutKey))
+           DELETE old cut (prev name if renamed, + target) AFTER bytes in hand → write atomic
+           item.cutFileName = cutName ; item.cutDownloadedAt = remoteMs ?? now
+   (a cut failure NEVER fails the burn)
+```
+
+**Reading the diagram — server.** After `runAnalogJob` uploads the whole-album mp3 (which is
+still in `tmp`), it loops the album's analog songs and, for each, derives the cut length via
+**`cutDurationMs`** — the catalog `length`, else the manifest `durationMs`, else **derived from
+the segment boundaries** (`pointer.endMs - startMs`), since many analog tracks carry start/end
+boundaries but a **null** `length`. With a usable `startMs` + duration it `ffmpeg -ss …-t …`
+slices the song out, **tags it** title/artist/album as **ID3v2.3**, and `aws s3 cp`s it to
+**`rips/<songId>.cut.mp3`** — under the **public `rips/` prefix** (the bucket policy makes only
+`rips/*` public) and distinguished from a per-song *cloud* rip's `rips/<songId>.mp3` by the
+**`.cut.` infix** — then records `cutKey`/`cutBytes`/`cutRippedAt` on the manifest entry (and
+persists the derived `durationMs` if it was null). A per-cut failure is **non-fatal** (the
+album entry alone still plays and is the backcase), and a cancel/error mid-loop breaks out and
+cleans the temp cut. The watchdog's analog cap was raised **12 → 20 min** to cover the extra
+ffmpeg+upload passes (§3.1).
+
+Two **out-of-queue** endpoints (single-flight via `backfillRunning`, returning a candidate
+count immediately and logging progress) cover albums ripped *before* the feature and tag fixes:
+**`POST /backfill-cuts`** retro-slices every analog entry **missing** a `cutKey` straight from
+the **raw album source** (no whole-album re-transcode), giving old albums the per-song export
+retroactively; **`POST /retag-cuts`** does a **tag-only remux** of *every existing* cut —
+download, `ffmpeg -c copy -map_metadata -1` with fresh title/artist/album, re-upload — so **no
+re-encode and no source drive are needed**, and it **bumps `cutRippedAt`** so the app's
+S3-timestamp auto-repull (below) pulls the re-tagged file. Both share the in-memory `manifest`
+object so a concurrent rip's `saveManifest` won't drop the new `cutKey`s.
+
+**Reading the diagram — device (`BurnStore.exportAnalogCuts`).** The Burn loop calls this
+**in-process, inside the held burn-folder scope**, after writing the per-song sidecars. For
+each analog song whose manifest entry carries a `cutKey` it names the cut with the **per-song
+`digitalSongPrefix`** (digital-style, so the single-track cut pairs with the per-song sidecar,
+distinct from the album-level whole-file name, §9.0) and decides whether to (re)download via an
+**auto-repull check**: `RipsStore.remoteLastModifiedMs` HEADs the public cut URL and parses its
+**`Last-Modified`** into epoch-ms (RFC-1123, fixed POSIX/GMT); if the device's
+`cutDownloadedAt` is **≥** that, the local cut is up-to-date and **kept** — but a **newer** S3
+`Last-Modified` (which a manual `/retag-cuts` or re-upload bumps) means the cut is stale and
+gets re-pulled, **with no manifest change required**. Offline (HEAD failed) with a local cut
+present keeps it (never clobber). On a (re)download it fetches the bytes (`downloadBytes`), and
+**only after the new bytes are in hand** deletes the **old** cut (both the previously-recorded
+name — in case the descriptive name changed — and the current target) so an updated, re-tagged
+version cleanly replaces the prior file without ever losing the existing one on a failed
+download, writes atomically, and records `cutFileName`/`cutDownloadedAt`. A cut failure
+**never fails the burn**. The `BurnItem` gains **`cutFileName`/`cutDownloadedAt`** (both
+optional for back-compat decode), and `finalizeBurn` **preserves** them when the later
+background album-download finalizes the item (otherwise rebuilding the item would drop the cut
+fields written during the in-process cut pass).
 
 ## Next
 

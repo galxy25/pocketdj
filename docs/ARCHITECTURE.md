@@ -89,7 +89,7 @@ server-less coordination work.
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
 | 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — incl. the **`CollectionsDocument` schema versioning (v2→v3) + flat playlist `folders`** — the one shape everything speaks. Reference chapter. |
 | 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **and the deferred AI auto-mixing seam**. |
-| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme**), the `SetlistPlayer` burnt-or-stream sequencer, **the global device/cloud `PlaybackMode` + shared `playLocalFile`**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), and the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`).** |
+| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp, **the analog per-song CUT export + `POST /backfill-cuts` / `POST /retag-cuts`**), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView, **now with a length-aware position end-boundary + held playback security-scope**), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme + the per-song analog-cut burn + the `@Observable` background-burn progress mirror**), the **length-aware + manual-jump-adopting** `SetlistPlayer` burnt-or-stream sequencer with **persistent ⏮/⏭ transport**, **the global device/cloud `PlaybackMode` + shared `playLocalFile` (now burned-first + scope-held on EVERY song-start path) + the explicit offline catalog disk cache (`CatalogService` `catalog-cache/`)**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), and the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, **online pagination (`from/size` + `track_total_hits`) + server-side sort + the `genreCategory` field**, **the native Browse genre + collection-membership filters**, the star map. |
 | 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **and the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`).** |
 
@@ -174,6 +174,44 @@ contract**. Honest status:
   `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter` next/previous driving `SetlistPlayer`
   (auto-advance while locked). Capability flips: `UIBackgroundModes` += `processing,fetch`,
   `BGTaskSchedulerPermittedIdentifiers` added (Ch. 5 §11, Ch. 7 §5.3).
+- **New current-state — offline-first catalog cache + burned playback, analog CUT
+  export, length-aware Setlist Play transport.** Three clusters harden offline play and
+  the burn export:
+  - **Offline-first (no network at the venue).** `CatalogService` now persists the raw
+    index bytes per source URL to an explicit disk cache (`Application Support/catalog-cache/`,
+    SHA-256-of-URL filename) on every good decode and **falls back to that cache** on any
+    network failure — `URLCache` silently refused to keep the 1,300+-album index, so offline
+    relaunch had nothing. `AppModel.fetchIndex` degrades gracefully (skip an un-cached source,
+    fail only if **every** source fails). Every song-start path is **burned-first** — row ▶,
+    ⌘P (`BrowseView`), Play-All (`SetlistPlayer`) — in **both** device and cloud mode, and a
+    user-folder burn's **security scope is now held through playback** (`BurnStore.localURLForPlayback`
+    + `PlayerEngine` `scopeRelease`; `resolveBurnFolder` reads with `requireWritable=false`),
+    fixing the 0:00/no-audio offline case. The rip `POST` timeout drops to **12 s** (fast-skip
+    an asleep server) and the inline scrubber falls back to the catalog length for its end
+    timestamp. (Ch. 5 §9, §12; Ch. 7 §1)
+  - **Analog CUT export (burn-only).** The rip server now slices each analog song out of the
+    album mp3 (`ffmpeg -ss startMs -t duration`; duration derived from `pointer.endMs-startMs`
+    when the catalog length is null) and uploads `rips/<songId>.cut.mp3` — the **public** `rips/`
+    prefix — ID3v2.3-tagged with title/artist/album; the manifest gains `cutKey`/`cutBytes`/
+    `cutRippedAt`. A **Burn** downloads the per-song cut (paired with the per-song sidecar)
+    **alongside** the whole-album backcase, named digital-style, auto-repulling when the S3
+    `Last-Modified` is newer (delete-then-place). **Playback is unchanged** — album + `startMs`
+    seek; the cut is burn-only. New endpoints **`POST /backfill-cuts`** (retro-slice analog
+    entries missing a cut, straight from the raw source — no whole-album re-transcode) and
+    **`POST /retag-cuts`** (tag-only `-c copy` remux of every existing cut). (Ch. 5 §2, §5, §9;
+    Ch. 3 §1)
+  - **Length-aware + manual-jump Setlist Play transport.** `PlayerEngine` arms a **position
+    end-boundary** (`startMs+length`) so a track inside a **shared** album-rip mp3 advances at
+    its **own** length — a one-shot latch is shared with the natural end so the set can't
+    double-advance, and the boundary only arms when the analog `startMs` is non-nil (per-song
+    files keep their natural end). `SetlistPlayer` observes `RipsStore.nowPlaying`, so a manual
+    in-set row ▶ **repositions** the running set (nearest-forward occurrence for a duplicate
+    song) instead of stranding it; ⏮/⏭ are now a **persistent** transport. The
+    "Burning N of M" overlay, previously bound to the non-`@Observable` `TransferCoordinator`,
+    is now **mirrored into `BurnStore.backgroundProgress`** (`@Observable`) via an `onProgress`
+    hook so it re-renders per finished download. The iOS play-mode toolbar centers ⏮/⏯/⏭ via
+    `.principal`, gives **Stop** the play button's trailing slot, and collapses Edit/Rip/Burn/
+    Rename/Delete into a `•••` menu; macOS keeps the flat toolbar. (Ch. 5 §7, §10)
 - **New current-state — playlist/pocket Play+Shuffle, playlist folders, device/cloud
   mode, metadata burns, cloud-analog index fold.** A playlist (and pocket) **▶ Play** now
   plays its songs **in order** and a new **🔀 Shuffle** plays a random order — both backing a
@@ -330,3 +368,37 @@ Things found while writing that don't fully line up, gathered here so they're no
     `idSuffix` (albumId/songId) + extension are **never** truncated; only the descriptive
     prefix is capped. A maintainer adding per-song tokens to the analog prefix would break the
     shared-file dedup. (Ch. 5 §9)
+25. **The analog CUT is BURN-ONLY — playback never touches `cutKey`.** Playback of an analog
+    song stays *album mp3 + `startMs` seek*; `cutKey`/`cutBytes`/`cutRippedAt` (manifest) and
+    `cutFileName`/`cutDownloadedAt` (`BurnItem`) are consumed **only** by the burn's per-song
+    export. The cut goes under the **public** `rips/` prefix with a `.cut.` infix
+    (`rips/<songId>.cut.mp3`) to stay distinct from a per-song cloud rip's `rips/<songId>.mp3`.
+    A maintainer routing playback through the cut (or filing it under a private prefix) would
+    break offline play and the public read. (Ch. 5 §5, §9, Ch. 3 §1)
+26. **The position end-boundary arms ONLY on a non-nil analog `startMs`.** `PlayerEngine`'s
+    `endBoundarySec` (= `startMs+length`) exists so a track inside a **shared** album mp3
+    advances at its own length; a **per-song** file (`startMs` nil) must rely on its natural
+    end, because the catalog `length` can be missing/short and would cut it early. Both end
+    paths funnel through one `signalTrackEnded` latch (reset per `load`/`setEndBoundary`) so the
+    set can't double-advance. A maintainer arming the boundary for every track would truncate
+    per-song burns. (Ch. 5 §7, §10)
+27. **Burned playback MUST hold the security scope until the player is done.** `localURL`
+    stops the scoped-folder access in its `defer` (fine for an existence check), so playback
+    uses **`localURLForPlayback`**, which keeps the scope OPEN and hands `PlayerEngine` a
+    `release` closure fired on the next `load`/`stop`. Releasing early leaves AVPlayer unable to
+    read a user-folder burn → a silent 0:00/no audio. Relatedly, the playback `resolveBurnFolder`
+    read path uses `requireWritable=false` (an offline iCloud-Drive folder resolves read-only).
+    A maintainer reusing `localURL` for playback regresses the offline no-audio bug. (Ch. 5 §9, §12)
+28. **The catalog disk cache is a deliberate replacement for `URLCache`, and is per-source.**
+    `CatalogService` keeps an explicit `catalog-cache/<sha256-of-url>.json` because `URLCache`
+    silently refuses to persist the (large) index past relaunch, leaving offline launch with
+    nothing. `AppModel.fetchIndex` fails only when **every** enabled source has neither network
+    nor cache — an un-cached source is skipped so an already-cached one still opens. A
+    maintainer reverting to `.returnCacheDataElseLoad`-on-`URLCache` alone would silently break
+    offline relaunch. (Ch. 5 §12, Ch. 7 §1)
+29. **The "Burning N of M" overlay reads `BurnStore.backgroundProgress`, NOT the coordinator.**
+    `TransferCoordinator` is a plain `NSObject` (it must be the background-`URLSession` delegate),
+    so a view bound to its `progressSnapshot` never re-renders as downloads finish (the
+    "burning number doesn't update" bug). The count is mirrored onto the `@Observable`
+    `BurnStore.backgroundProgress` via an `onProgress` main-actor hook. A maintainer re-binding
+    the overlay to the coordinator would freeze it at the enqueue total. (Ch. 5 §9)

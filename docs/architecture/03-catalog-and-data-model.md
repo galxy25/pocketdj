@@ -331,8 +331,103 @@ playback/realize/Play-Shuffle semantics that consume these live in
 
 - **Web:** IndexedDB via `src/storage` (`importIndexJson`, `repo`, `db`); first boot
   `seedIfEmpty()` pulls `current-index.json`; Apple Music is opt-in. (Ch. 7)
-- **Native:** decoded into `IndexJSON` via `CatalogService`; cached by URLCache.
-  Edits are a separate overlay (Ch. 7).
+- **Native:** decoded into `IndexJSON` via `CatalogService`, backed by an **explicit
+  per-source disk cache** so the catalog opens fully OFFLINE (§4.1). Edits are a separate
+  overlay (Ch. 7).
+
+### 4.1 The native offline catalog cache — `CatalogService` + `AppModel` degradation
+
+**Source of truth:**
+[`apple/PocketDJ/Services/CatalogService.swift`](../../apple/PocketDJ/Services/CatalogService.swift)
+(per-URL disk cache) and
+[`apple/PocketDJ/State/AppModel.swift`](../../apple/PocketDJ/State/AppModel.swift)
+(`fetchIndex` multi-source merge).
+
+**Why a file cache and not just `URLCache`.** `CatalogService.loadIndex()` fetches each
+source URL with `cachePolicy = .returnCacheDataElseLoad`, but the shared `URLCache`
+silently refuses to persist responses past its small default capacity — and a real catalog
+(1,300+ albums) routinely exceeds it, so an offline relaunch had nothing to fall back to.
+So on every **successful** load — *after* a valid `IndexJSON` decode, never on a partial
+response — the raw bytes are persisted to an explicit file cache, and any later **failure**
+(no network / server down / non-2xx) serves the last good index from disk instead of
+throwing.
+
+```
+ CatalogService.loadIndex()  (per source URL)
+   try fetch (returnCacheDataElseLoad, 30s) → decode IndexJSON
+        ├─ ok    → writeCache(rawBytes, for:url)  → return fresh index
+        └─ throw → loadCachedIndex(for:url) ?? rethrow      (OFFLINE fallback)
+
+ disk cache: Application Support/catalog-cache/<sha256(url.absoluteString)>.json
+   cacheDirectory(_:)  Application Support/catalog-cache/  (dir override = unit-test seam)
+   cacheFileURL(for:)  SHA-256 of the URL string (CryptoKit, NOT Swift's per-process
+                       Hasher — that wouldn't survive relaunch) → "<hex>.json"
+   writeCache(_:for:)  atomic, best-effort (a cache-write failure never fails the load)
+   loadCachedIndex(for:)  read + decode, or nil when there's no (valid) cache
+```
+
+**Reading it.** The cache is keyed **per source URL** by a stable **SHA-256** of
+`url.absoluteString` (deliberately not Swift's `Hasher`, which is per-process-seeded and so
+wouldn't survive a relaunch), giving an O(1), flat `<hex>.json` filename under
+`Application Support/catalog-cache/`. Writes are `.atomic` and best-effort; the cache is
+only ever written after a clean decode, so a truncated download never poisons it. The
+`dir` override on every static helper is the unit-test seam (a temp dir) so the
+write→read round-trip is testable without touching Application Support.
+
+**Multi-source graceful degradation (`AppModel.fetchIndex`).** A user can enable several
+sources at once (vinyl + Apple Music); `fetchIndex` loads `settings.enabledSourceURLs`,
+each through its own `CatalogService` (hence its own disk cache). A per-source load that
+throws is **swallowed** (its first error retained as `firstError`) so the *other* sources'
+cached catalogs still open — an un-cached source (never loaded online) plus no network must
+not hide an already-cached one. The whole load fails **only when every source failed**
+(`indexes.isEmpty` ⇒ rethrow `firstError ?? URLError(.cannotLoadFromNetwork)`); otherwise it
+returns the merge of whatever loaded.
+
+### 4.2 The rips manifest cut fields + the offline-burn `BurnItem` cut fields
+
+The catalog index isn't the only data shape clients persist: the **rips manifest** and the
+native **offline-burn store** carry their own per-song records. The manifest's full
+`ManifestEntry` shape and the burn store live in
+[Ch. 5 §5 / §9](./05-playback-and-rip-on-demand.md#5-the-rips-manifest--job-payloads); the
+**analog per-song cut** export adds matching fields to both, recorded here because they are
+part of the data model the burn consumes.
+
+**Source of truth:** `scripts/rip-server.mjs` (producer of the manifest cut fields),
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
+(`ManifestEntry`, consumer) and
+[`apple/PocketDJ/State/BurnStore.swift`](../../apple/PocketDJ/State/BurnStore.swift)
+(`BurnItem`).
+
+```
+ ManifestEntry  (+ analog-cut fields; ANALOG only, nil ⇒ album-only, no cut)
+   cutKey?     "rips/<songId>.cut.mp3"   the per-song chunk sliced out of the album,
+               under the PUBLIC rips/ prefix, distinguished from a cloud rip's
+               rips/<songId>.mp3 by the `.cut.` infix; tagged title/artist/album (ID3v2.3)
+   cutBytes?   the cut object's size            cutRippedAt?  epoch-ms the cut was uploaded
+   (album `key` + `startMs` stay the PLAYBACK source; the cut is burn-only)
+
+ BurnItem  (+ analog-cut fields; both optional for back-compat decode)
+   cutFileName?     the per-song cut's filename in the burn folder (digital-style name,
+                    pairs with the per-song sidecar) — the single-track view for DJ
+                    software, alongside the whole-album backcase. nil ⇒ no cut exported.
+   cutDownloadedAt? the S3 Last-Modified epoch-ms at download → a later burn re-pulls
+                    when the S3 cut is NEWER (the manual-recut auto-repull)
+```
+
+**Reading it.** When the rip server slices an analog album, it also `ffmpeg -ss/-t`-cuts
+each song out (duration = catalog `length`, else manifest `durationMs`, else derived
+`pointer.endMs - startMs`), tags it (title/artist/album ID3v2.3), uploads it to
+`rips/<songId>.cut.mp3`, and stamps the entry with **`cutKey` / `cutBytes` / `cutRippedAt`**
+(`POST /backfill-cuts` retro-slices entries missing a cut; `POST /retag-cuts` is a tag-only
+remux). Playback is **unchanged** — the album `key` + `startMs` seek remain the source; the
+cut exists solely for the burn. On the burn side, `BurnStore.exportAnalogCuts` downloads each
+`cutKey` into the user's burn folder under a descriptive per-song name and records
+**`cutFileName`** + **`cutDownloadedAt`** on the `BurnItem`. `cutDownloadedAt` holds the S3
+`Last-Modified` epoch-ms (via `RipsStore.remoteLastModifiedMs`), so a later burn re-pulls only
+when the S3 cut is newer (a manual re-upload bumps `Last-Modified`) — deleting the stale cut
+before writing the update, and keeping the existing cut offline / on a download failure. Both
+fields are optional so older burn records decode unchanged; `finalizeBurn` preserves them when
+the background album-download rebuilds the item.
 
 ## Next
 

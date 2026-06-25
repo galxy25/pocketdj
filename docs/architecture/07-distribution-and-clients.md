@@ -494,6 +494,44 @@ provisions those providers. Until then the default build links neither SDK and s
 inert. See [`docs/streaming-integration.md`](../streaming-integration.md) for the
 end-to-end provisioning checklist.
 
+### 5.4 The setlist play-mode toolbar — platform-shaped transport
+
+**Why.** Once a set is *playing*, the detail screen stops being an editor and becomes a
+**music transport**: the bar should read like one. iOS gets a centered ⏮ · ⏯ · ⏭
+cluster; macOS — which has no centered nav-bar slot — keeps the flat trailing row it
+always had. Both are built by one `@ToolbarContentBuilder` helper,
+`setlistToolbar(_:)`, in
+[`apple/PocketDJ/Views/SetlistDetailView.swift`](../../apple/PocketDJ/Views/SetlistDetailView.swift),
+that branches on `#if os(iOS)` and the `isPlaying` (`setlistPlayer?.isRunning`) state.
+
+```
+ iOS — PLAYING                       iOS — IDLE  /  macOS — always
+ ┌──────────────────────────────┐    ┌──────────────────────────────────────┐
+ │  .principal:  ⏮  ⏯  ⏭        │    │ trailing/primaryAction (flat row):   │
+ │   (transportCluster, centered)│    │  ▶Play · mode toggle · Edit · •••    │
+ │                               │    │  (macOS while running adds ◀ ▶ flat) │
+ │  .topBarTrailing:             │    │                                      │
+ │   ⏹Stop · mode toggle · •••   │    │ •••: Add note · Rip · Burn · Rename · │
+ └──────────────────────────────┘    │      Delete  (no Stop; Stop = ▶'s slot)│
+   ⏹ takes ▶'s slot (NOT a menu item)└──────────────────────────────────────┘
+```
+
+**Reading the diagram.** On **iOS in play mode** the transport (`transportCluster`) is
+**centered** via `ToolbarItem(placement: .principal)` — its middle button is play/**pause**
+(not stop), toggling whichever backend is active (`transportIsPlaying` reads
+`coordinator.isPlaying` for Apple Music streaming, else `player.isPlaying`); ⏮/⏭ step the
+SET (`setlistPlayer?.skipPrevious()` / `skipNext()`, the persistent transport of §1). **Stop**
+takes the **play button's own trailing slot** (`startStopButton` shows ⏹ while running) — it
+is deliberately **not** a menu item. Every other action collapses into a single ••• overflow
+(`overflowMenu`, `setlist-overflow`): **Add note**, then **Rip** and **Burn** as **two
+separate flat items** (`CollectionRipBurnButtons` renders directly into the `Menu`, not behind
+a nested submenu), **Rename**, a disabled **Edit order** (reordering mid-set would desync the
+sequencer's queue index), and **Delete**. When **idle**, iOS shows the flat trailing row
+(▶ Play · `PlaybackModeToggle` · `EditButton` · •••). **macOS** has no `.principal` nav bar,
+so `setlistToolbar` always emits the flat `.primaryAction` layout (mode toggle · ◀/▶ while
+running · ▶/⏹ · add-note · rip/burn menu · rename · delete) — same actions, no centered
+cluster.
+
 ---
 
 ## 6. The rip-server launchd agent — config & external-volume access
@@ -522,6 +560,32 @@ Files & Folders TCC** access granted to `node` (System Settings ▸ Privacy & Se
 or the read fails even with the base set. (To require a bearer token, add `RIP_TOKEN`
 to the same block and set it in Settings ▸ Rip server — tailnet-only by default; the
 rips S3 bucket is public per the design.)
+
+### 6.1 The device-deploy helper — `apple/scripts/deploy-iphone.sh`
+
+**Why.** Iterating native features on real hardware (background playback, Now Playing,
+the play-mode transport above) needs a one-shot build → install → launch onto the tethered
+iPhone — without the App Store Connect round-trip of TestFlight (`apple-publish` /
+[`apple/scripts/testflight.sh`](../../apple/scripts/testflight.sh)).
+[`apple/scripts/deploy-iphone.sh`](../../apple/scripts/deploy-iphone.sh) does exactly that:
+
+```
+ deploy-iphone.sh   (DEV id 59C072A6-…; DEVELOPER_DIR=/Applications/Xcode.app/…)
+   ▸ xcodebuild -scheme PocketDJ -destination "platform=iOS,id=$DEV"
+       -configuration Debug -allowProvisioningUpdates build   (signed, → build-device/)
+   ▸ xcrun devicectl device install app  --device $DEV  …/Debug-iphoneos/PocketDJ.app
+   ▸ xcrun devicectl device process launch --device $DEV  com.levi.pocketdj
+```
+
+**Aqua-session codesign note.** It **must run from a GUI (Aqua) login-session shell** —
+e.g. Claude Code's `!` prefix or your own Terminal — because **code-signing needs
+Aqua-session keychain access** that a detached / Background-session process can't reach
+(it fails `errSecInternalComponent`). The script `grep`s the build log for
+`error:`/`CodeSign failed`/`BUILD SUCCEEDED|FAILED`, bails if the
+`Debug-iphoneos/PocketDJ.app` product is missing, then installs + launches via
+`devicectl` against the hard-coded device id. It signs with `-allowProvisioningUpdates`
+against the `com.levi.pocketdj` App ID (§5.3) — the same identity TestFlight uses, so a
+device build exercises the real MusicKit/ShazamKit App Services.
 
 ---
 
