@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.levi.pocketdj.burn-drain</string>
+		<string>com.levi.pocketdj.rip-reconcile</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>
@@ -18,6 +23,8 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>PocketDJAppleMusicEnabled</key>
 	<true/>
 	<key>UIBackgroundModes</key>
@@ -25,11 +32,6 @@
 		<string>audio</string>
 		<string>fetch</string>
 		<string>processing</string>
-	</array>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>com.levi.pocketdj.burn-drain</string>
-		<string>com.levi.pocketdj.rip-reconcile</string>
 	</array>
 </dict>
 </plist>
