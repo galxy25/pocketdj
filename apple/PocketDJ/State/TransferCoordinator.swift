@@ -90,6 +90,12 @@ final class TransferCoordinator: NSObject {
     var onBurnFinalized: (@MainActor (TransferRecord, Int) -> Void)?
     /// Called on the MAIN actor when a burn download fails terminally (so the row shows error).
     var onBurnFailed: (@MainActor (TransferRecord, String) -> Void)?
+    /// Called on the MAIN actor whenever the run-scoped progress changes (enqueue / finish /
+    /// cancel / beginRun), so an `@Observable` store (BurnStore) can MIRROR it for the UI. This
+    /// coordinator is a plain `NSObject` (it must be the background-session delegate), so a view
+    /// bound to `progressSnapshot` here would never re-render as downloads finish — the
+    /// "burning number doesn't update" bug. Set by `BurnStore` when a coordinator is injected.
+    var onProgress: (@MainActor (_ enqueued: Int, _ finished: Int) -> Void)?
 
     /// Live progress snapshot, published to the MAIN actor whenever records change (enqueue /
     /// finish / cancel). The UI reads ONLY this — never the `lock`-guarded counters below — so
@@ -175,10 +181,16 @@ final class TransferCoordinator: NSObject {
 
     private func publishProgress(enqueued: Int, finished: Int) {
         if Thread.isMainThread {
-            MainActor.assumeIsolated { progressSnapshot = (enqueued, finished) }
+            MainActor.assumeIsolated {
+                progressSnapshot = (enqueued, finished)
+                onProgress?(enqueued, finished)
+            }
         } else {
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.progressSnapshot = (enqueued, finished) }
+                MainActor.assumeIsolated {
+                    self?.progressSnapshot = (enqueued, finished)
+                    self?.onProgress?(enqueued, finished)
+                }
             }
         }
     }

@@ -266,11 +266,12 @@ private struct CollectionRipBurnAlert: ViewModifier {
     /// Background-burn progress string ("Burning N of M") when transfers are in flight via the
     /// coordinator; nil when idle or on the in-process (test) path.
     private var backgroundBurnProgress: String? {
-        guard let transfers = burns.transfers else { return nil }
-        // Read the MAIN-ACTOR snapshot (published via an explicit main hop when records change),
-        // not the lock-guarded delegate-queue counters — no data-race-by-convention. The
-        // counters are run-scoped (reset at each burn's `beginRun()`), so a 2nd burn starts at 0.
-        let (total, done) = transfers.progressSnapshot
+        guard burns.transfers != nil else { return nil }
+        // Read the @Observable mirror on BurnStore (updated on the main actor as each download
+        // finishes) — NOT the coordinator's `progressSnapshot`, which lives on a plain NSObject
+        // SwiftUI can't track, so the overlay would freeze at the enqueue total. The counters are
+        // run-scoped (reset at each burn's `beginRun()`), so a 2nd burn starts at 0.
+        let (total, done) = burns.backgroundProgress
         guard total > 0, done < total else { return nil }
         return "Burning \(done + 1) of \(total)"
     }

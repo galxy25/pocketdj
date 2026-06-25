@@ -103,6 +103,37 @@ final class BurnStoreBackgroundTests: XCTestCase {
         XCTAssertNil(burns.items["sng_2"])
     }
 
+    // MARK: background progress mirrors into BurnStore's @Observable state (the overlay reads it)
+
+    /// The collection overlay's "Burning N of M" reads `BurnStore.backgroundProgress` (an
+    /// @Observable), NOT the non-observable coordinator snapshot — so it actually re-renders as
+    /// the run progresses. Enqueue publishes (N,0); Stop clears it so the overlay hides.
+    func testBackgroundProgressMirrorsCoordinatorIntoObservableState() async {
+        let rips = makeRips()
+        let transfers = makeCoordinator()
+        let burns = makeBurns(rips, transfers)
+        // Idle: nothing in flight.
+        XCTAssertEqual(burns.backgroundProgress.enqueued, 0)
+        XCTAssertEqual(burns.backgroundProgress.finished, 0)
+
+        rips.setManifest([
+            "sng_1": .init(key: "rips/sng_1.mp3", source: "digital"),
+            "sng_2": .init(key: "rips/sng_2.mp3", source: "digital"),
+        ])
+        _ = await burns.burn([
+            (id: "sng_1", title: "One", artist: "A"),
+            (id: "sng_2", title: "Two", artist: "A"),
+        ])
+        // Enqueuing 2 songs mirrored (2, 0) into the observable the overlay binds to.
+        XCTAssertEqual(burns.backgroundProgress.enqueued, 2)
+        XCTAssertEqual(burns.backgroundProgress.finished, 0)
+
+        // Stop drops the in-flight records and re-publishes (0,0) so the overlay clears.
+        burns.requestStop()
+        XCTAssertEqual(burns.backgroundProgress.enqueued, 0)
+        XCTAssertEqual(burns.backgroundProgress.finished, 0)
+    }
+
     // MARK: not-ripped songs are still reported (never enqueued)
 
     func testNotRippedSongIsNotEnqueued() async {

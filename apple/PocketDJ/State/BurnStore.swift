@@ -92,6 +92,13 @@ final class BurnStore {
     private(set) var items: [String: BurnItem] = [:]
     /// Drives the collection screen's progress UI; nil when no burn is running.
     private(set) var progress: Progress?
+    /// Live BACKGROUND-burn progress (enqueued, finished) for the current run, MIRRORED from the
+    /// coordinator on the main actor. The collection overlay reads THIS `@Observable` value (this
+    /// store is `@MainActor @Observable`) rather than the coordinator's `progressSnapshot` — the
+    /// coordinator is a plain `NSObject` (background-session delegate), so a view bound to it would
+    /// never re-render as each download finishes (the "burning number doesn't update" bug). (0,0)
+    /// when idle / between runs (`beginRun` republishes 0,0).
+    private(set) var backgroundProgress: (enqueued: Int, finished: Int) = (0, 0)
 
     /// Feature 1 (STOP burn): set by `requestStop()`; checked at the TOP of each burn-loop
     /// iteration (never mid-item, so each item is fully written+recorded or never started —
@@ -140,6 +147,12 @@ final class BurnStore {
             self?.items[record.songId] = self?.errorItem(
                 (id: record.songId, title: record.title, artist: record.artist), message: message)
             self?.save()
+        }
+        // Mirror the coordinator's run-scoped progress into this @Observable store so the
+        // collection overlay re-renders as each background download finishes (the coordinator
+        // itself isn't observable). Fires on the main actor (see TransferCoordinator.publishProgress).
+        transfers.onProgress = { [weak self] enqueued, finished in
+            self?.backgroundProgress = (enqueued, finished)
         }
         // NOTE: the burn-folder bookmark is NOT exposed to the coordinator via a closure anymore.
         // The delegate runs off the main actor (and may run cold-relaunched before this store
