@@ -10,6 +10,7 @@ struct BrowseView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    @Environment(BurnStore.self) private var burns
     @Environment(CollectionsStore.self) private var collections
     /// Shared navigation path (owned by RootView) — lets keyboard "open" push an
     /// album/song detail programmatically, alongside the row-tap NavigationLinks.
@@ -119,6 +120,14 @@ struct BrowseView: View {
               let song = app.songsById[id] else { return }
         focusedRowId = id
         if rips.nowPlaying?.songId == id { player.toggle(); return }
+        // OFFLINE-FIRST: prefer a BURNED local file (zero-latency, no network) before any rip —
+        // mirrors the row ▶ so ⌘P also plays burned songs with no connection.
+        if let res = burns.localURLForPlayback(forSong: id) {
+            playLocalFile(res.url, songId: id, title: song.name, artist: song.artist,
+                          startMs: burns.startMs(forSong: id), rips: rips, player: player,
+                          release: res.release)
+            return
+        }
         Task {
             if let now = try? await rips.play((id: song.id, title: song.name, artist: song.artist)) {
                 player.load(url: now.url, live: now.live, startMs: now.startMs,

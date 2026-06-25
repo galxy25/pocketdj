@@ -17,7 +17,13 @@ import Observation
 @Observable
 final class SetlistPlayer {
     /// One playable track. `id` is the catalog songId; title/artist label the now-playing.
-    struct Item: Equatable { let id: String; let title: String; let artist: String }
+    /// `lengthMs` (the track's known length from the catalog/setlist snapshot) drives the
+    /// position boundary so a track inside a shared album-rip file advances at its OWN end,
+    /// not the album file's; nil ⇒ rely on the natural end.
+    struct Item: Equatable {
+        let id: String; let title: String; let artist: String
+        var lengthMs: Int? = nil
+    }
 
     private(set) var queue: [Item] = []
     /// Index into `queue` (NOT track.id — a song can repeat in a setlist).
@@ -51,6 +57,9 @@ final class SetlistPlayer {
         self.rips = rips
         self.burns = burns
         self.coordinator = coordinator
+        // Arm the now-playing observation ONCE; it self-re-arms on every change (see
+        // `adoptNowPlayingIfJumped`). Single arm avoids stacking observers across play() calls.
+        observeNowPlaying()
     }
 
     /// Start playing `items` from the top. No-op for an empty list.
@@ -103,9 +112,72 @@ final class SetlistPlayer {
 
     // MARK: - Internals
 
+    /// The absolute position (ms) at which a track that SHARES a multi-song file should
+    /// advance: its per-song start offset within the shared mp3 + its known length. Returns
+    /// nil for a PER-SONG file (no shared offset → `startMs` nil): those have their OWN natural
+    /// end, so we must NOT cut them at the catalog length (which can be missing/short). ONLY
+    /// analog album rips share one mp3 across songs, and they carry a non-nil per-song
+    /// `startMs` — so a non-nil `startMs` is exactly the signal that the length boundary is
+    /// needed (the natural `.AVPlayerItemDidPlayToEndTime` would otherwise only fire at the
+    /// END OF THE WHOLE album file).
+    private func sharedFileEndBoundaryMs(_ it: Item, startMs: Int?) -> Int? {
+        guard let startMs, let len = it.lengthMs, len > 0 else { return nil }
+        return startMs + len
+    }
+
+    /// The queue index of the occurrence of `id` NEAREST to `ref`, preferring a FORWARD
+    /// occurrence on a tie (the DJ usually taps a row later in the set). A setlist may repeat a
+    /// song and the now-playing handoff carries no queue position, so this is the best
+    /// disambiguation available from the song id alone.
+    private func nearestOccurrence(of id: String, to ref: Int) -> Int? {
+        var best: Int?
+        for i in queue.indices where queue[i].id == id {
+            guard let b = best else { best = i; continue }
+            let di = abs(i - ref), db = abs(b - ref)
+            if di < db || (di == db && i >= ref) { best = i }
+        }
+        return best
+    }
+
+    /// Observe `RipsStore.nowPlaying` so a manual row ▶ on a track that's IN this running set
+    /// REPOSITIONS the sequencer to it (and keeps auto-advancing) instead of the set silently
+    /// stopping when that manually-started track ends. One-shot tracking, re-armed on each
+    /// change (the first line of `adoptNowPlayingIfJumped`). `onChange` is a nonisolated
+    /// `@Sendable` closure, so it can only hop back onto the main actor — it can't re-arm
+    /// synchronously; the one-turn gap is sub-millisecond and unreachable by a human tap.
+    /// Armed ONCE in `init` and self-perpetuating — never re-armed from `play()` (that would
+    /// stack observers and fan out). Dies when this player deallocates (`weak self`).
+    private func observeNowPlaying() {
+        withObservationTracking {
+            _ = rips.nowPlaying?.songId
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.adoptNowPlayingIfJumped() }
+        }
+    }
+
+    /// Reacts to a `nowPlaying` change. If a set is running and the now-playing song is a
+    /// DIFFERENT queue member than the current index (a manual jump from a row ▶), move the
+    /// index onto it and arm its length boundary so it auto-advances. The sequencer's OWN
+    /// plays set `nowPlaying` to `queue[index]`, so the equality guard makes those a no-op —
+    /// no restart loop. The adopted track's boundary is keyed off `nowPlaying.startMs` (the
+    /// source the row actually loaded) so a shared-album track is bounded and a per-song one
+    /// keeps its natural end. (Duplicate occurrences: disambiguated by `nearestOccurrence`; an
+    /// exact-tie jump to another occurrence of the CURRENT song stays put — see the guard.)
+    private func adoptNowPlayingIfJumped() {
+        observeNowPlaying()   // re-arm for the next change (always, even on the no-op paths)
+        guard isRunning, index < queue.count else { return }
+        guard let npId = rips.nowPlaying?.songId, queue[index].id != npId else { return }
+        guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
+        index = pos
+        waitingForLive = false
+        if burns.localURL(forSong: queue[pos].id) != nil { loadedAnyDeviceTrack = true }
+        player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs))
+    }
+
     /// Natural end-of-track. OWNERSHIP GUARD: ignore a stray end-event from an unrelated /
     /// manual single-row play (which changes `rips.nowPlaying`), so only OUR current track
-    /// auto-advances.
+    /// auto-advances. A manual play of an IN-SET track is first adopted by
+    /// `adoptNowPlayingIfJumped` (index moves onto it), so this guard then passes for it.
     private func handleEnded() {
         guard isRunning, index < queue.count,
               rips.nowPlaying?.songId == queue[index].id else { return }
@@ -140,13 +212,16 @@ final class SetlistPlayer {
         // end-of-set advance raises the CRITIC-D banner. Mode-flip mid-set applies to the
         // NEXT track: the current track keeps playing under the mode it started with.
         if mode == .device {
-            if let local = burns.localURL(forSong: it.id) {
+            if let res = burns.localURLForPlayback(forSong: it.id) {
                 loadedAnyDeviceTrack = true
                 // SHARED helper so nowPlaying + the inline player + the row toggle stay
-                // consistent with the single-row burned path.
-                playLocalFile(local, songId: it.id, title: it.title, artist: it.artist,
-                              startMs: burns.startMs(forSong: it.id), rips: rips, player: player)
-                // Finite local file → the end notification advances us.
+                // consistent with the single-row burned path. `res.release` keeps a user-folder
+                // file's security scope open through playback.
+                playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
+                              startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
+                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                              release: res.release)
+                // Finite local file → the end notification (or length boundary) advances us.
             } else {
                 advance()   // no on-device file for this track → skip it
             }
@@ -155,16 +230,27 @@ final class SetlistPlayer {
 
         // CLOUD mode (default): prefer a burned local file when present (zero-latency,
         // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
-        if let local = burns.localURL(forSong: it.id) {
+        if let res = burns.localURLForPlayback(forSong: it.id) {
             loadedAnyDeviceTrack = true
-            playLocalFile(local, songId: it.id, title: it.title, artist: it.artist,
-                          startMs: burns.startMs(forSong: it.id), rips: rips, player: player)
+            playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
+                          startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
+                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                          release: res.release)
         } else {
             await coordinator.play(id: it.id, title: it.title, artist: it.artist)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advance(); return }
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".
-            if player.isLive { waitingForLive = true }
+            if player.isLive {
+                waitingForLive = true
+            } else {
+                // A cloud rip of an ANALOG album is ONE shared mp3 + per-song startMs (the rip
+                // server transcodes the whole side once), so its natural end only fires at the
+                // END OF THE WHOLE FILE — arm the per-song length boundary to advance at this
+                // track's own end. A digital cloud rip is per-song (startMs nil → no boundary,
+                // the natural end governs). `nowPlaying.startMs` is what the rip path resolved.
+                player.setEndBoundary(ms: sharedFileEndBoundaryMs(it, startMs: rips.nowPlaying?.startMs))
+            }
         }
     }
 }

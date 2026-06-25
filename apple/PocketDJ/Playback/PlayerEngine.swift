@@ -52,6 +52,23 @@ final class PlayerEngine {
     private var rateObservation: NSKeyValueObservation?
     /// The seek target (ms) to apply once the current item becomes ready (analog only).
     private var pendingSeekMs: Int?
+    /// A POSITION-based end boundary for the current item (absolute seconds within the file).
+    /// When playback passes it we signal end ONCE — so the setlist sequencer advances at the
+    /// track's KNOWN length even when the natural end won't fire there. A track inside a shared
+    /// album-rip mp3 plays past its own logical end into the NEXT album track; its
+    /// `.AVPlayerItemDidPlayToEndTime` only posts at the end of the WHOLE FILE. nil ⇒ rely
+    /// solely on the natural end (per-song files, live streams).
+    private var endBoundarySec: Double?
+    /// One-shot latch shared by BOTH end paths (the natural `.AVPlayerItemDidPlayToEndTime`
+    /// AND the position boundary): whichever lands first fires `onTrackEnded` and the other is
+    /// suppressed, so the set can't double-advance. Reset on every `load`/`setEndBoundary`.
+    private var trackEndSignaled = false
+    /// A security-scoped-access RELEASE for the currently-loaded burned file in a USER-PICKED
+    /// burn folder. The scope MUST stay open while AVPlayer reads the file, so the burn store
+    /// hands it here; we release it when the item is replaced (next `load`) or `stop`ped.
+    /// Releasing it early leaves AVPlayer unable to READ the file → a silent 0:00 / no audio.
+    /// nil for app-storage files (no scope needed).
+    private var scopeRelease: (() -> Void)?
 
     /// Fired when the CURRENT item plays to its natural end (finite mp3 / burnt-local file).
     /// The setlist sequencer (Feature 3) owns this to auto-advance; nil means no consumer.
@@ -94,6 +111,10 @@ final class PlayerEngine {
                     self.clock.duration = d
                     self.duration = d
                 }
+                // Advance at the track's KNOWN length even inside a shared album file: when the
+                // position passes the armed boundary, signal end ONCE. While paused the position
+                // doesn't advance, so this can't fire early. (Extracted for unit-testability.)
+                self.checkEndBoundary(atSeconds: self.clock.currentTime)
             }
         }
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
@@ -111,15 +132,24 @@ final class PlayerEngine {
     /// Load a new track. `live` HLS starts immediately and won't seek; otherwise we
     /// seek to `startMs` (analog track offset) once the item reports a usable duration.
     /// `title`/`artist` populate the lock-screen / Control Center Now Playing card.
-    func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "") {
+    /// `endBoundaryMs` (optional) arms a position-based end boundary (absolute ms in the
+    /// file) so the sequencer advances at the track's own length inside a shared album mp3.
+    func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "",
+              endBoundaryMs: Int? = nil, scopeRelease: (() -> Void)? = nil) {
         // Defensively re-arm the audio session: an interruption (call / other app) can
         // deactivate it, and a backgrounded set must keep playing across track boundaries.
         configureAudioSession()
+        // Release the PREVIOUS track's scoped-folder access before swapping items, then hold the
+        // NEW one for the lifetime of this item so AVPlayer can read a user-folder burned file.
+        self.scopeRelease?()
+        self.scopeRelease = scopeRelease
         isLive = live
         clock.currentTime = 0
         clock.duration = 0
         duration = 0
         pendingSeekMs = live ? nil : startMs
+        endBoundarySec = (live ? nil : endBoundaryMs).map { Double($0) / 1000 }
+        trackEndSignaled = false
         nowPlayingTitle = title
         nowPlayingArtist = artist
 
@@ -134,7 +164,7 @@ final class PlayerEngine {
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onTrackEnded?() }
+            MainActor.assumeIsolated { self?.signalTrackEnded() }
         }
         player.replaceCurrentItem(with: item)
         player.play()
@@ -162,6 +192,31 @@ final class PlayerEngine {
         player.timeControlStatus == .paused ? play() : pause()
     }
 
+    /// Arm/disarm the position-based end boundary for the CURRENTLY-loaded item WITHOUT
+    /// reloading it — used when the setlist sequencer ADOPTS a track that another surface
+    /// (a row ▶) just started, so the adopted track still auto-advances at its known length.
+    func setEndBoundary(ms: Int?) {
+        endBoundarySec = (isLive ? nil : ms).map { Double($0) / 1000 }
+        trackEndSignaled = false
+    }
+
+    /// Evaluate the position boundary against `seconds`, signalling end ONCE if it's passed.
+    /// Extracted from the periodic time observer so the boundary fire is deterministically
+    /// unit-testable. A live stream is never armed (`endBoundarySec` stays nil).
+    func checkEndBoundary(atSeconds seconds: Double) {
+        guard let b = endBoundarySec, !isLive, seconds >= b else { return }
+        signalTrackEnded()
+    }
+
+    /// Fire `onTrackEnded` AT MOST ONCE per loaded item — the single funnel for BOTH the
+    /// natural `.AVPlayerItemDidPlayToEndTime` and the position boundary, so whichever lands
+    /// first advances the set and the other can't double-advance. The latch resets on load.
+    private func signalTrackEnded() {
+        guard !trackEndSignaled else { return }
+        trackEndSignaled = true
+        onTrackEnded?()
+    }
+
     /// Seek to an absolute time (seconds). No-op for a live stream beyond its buffer.
     func seek(to seconds: Double) {
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
@@ -180,6 +235,8 @@ final class PlayerEngine {
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
         clock.currentTime = 0; clock.duration = 0; duration = 0; isPlaying = false; isLive = false
         pendingSeekMs = nil
+        endBoundarySec = nil; trackEndSignaled = false
+        scopeRelease?(); scopeRelease = nil   // release the user-folder file's security scope
         clearNowPlayingInfo()
     }
 

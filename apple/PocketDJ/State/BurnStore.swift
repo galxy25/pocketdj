@@ -59,6 +59,13 @@ final class BurnStore {
         /// Optional for backward-compat decode of older index json — coalesced nil → true
         /// (every pre-feature burn lives in Application Support).
         var wasAppStorage: Bool?
+        /// ANALOG cut export: the individual per-song cut chunk's filename in the burn folder
+        /// (paired with the per-song sidecar) — the single-track view for DJ software, alongside
+        /// the whole-album backcase. nil ⇒ no cut exported. `cutDownloadedAt` is the S3
+        /// Last-Modified epoch-ms at download, so a later burn re-pulls when the S3 cut is newer
+        /// (the manual-recut auto-repull). Both optional for back-compat decode.
+        var cutFileName: String? = nil
+        var cutDownloadedAt: Double? = nil
 
         var id: String { songId }
     }
@@ -92,6 +99,13 @@ final class BurnStore {
     private(set) var items: [String: BurnItem] = [:]
     /// Drives the collection screen's progress UI; nil when no burn is running.
     private(set) var progress: Progress?
+    /// Live BACKGROUND-burn progress (enqueued, finished) for the current run, MIRRORED from the
+    /// coordinator on the main actor. The collection overlay reads THIS `@Observable` value (this
+    /// store is `@MainActor @Observable`) rather than the coordinator's `progressSnapshot` — the
+    /// coordinator is a plain `NSObject` (background-session delegate), so a view bound to it would
+    /// never re-render as each download finishes (the "burning number doesn't update" bug). (0,0)
+    /// when idle / between runs (`beginRun` republishes 0,0).
+    private(set) var backgroundProgress: (enqueued: Int, finished: Int) = (0, 0)
 
     /// Feature 1 (STOP burn): set by `requestStop()`; checked at the TOP of each burn-loop
     /// iteration (never mid-item, so each item is fully written+recorded or never started —
@@ -140,6 +154,12 @@ final class BurnStore {
             self?.items[record.songId] = self?.errorItem(
                 (id: record.songId, title: record.title, artist: record.artist), message: message)
             self?.save()
+        }
+        // Mirror the coordinator's run-scoped progress into this @Observable store so the
+        // collection overlay re-renders as each background download finishes (the coordinator
+        // itself isn't observable). Fires on the main actor (see TransferCoordinator.publishProgress).
+        transfers.onProgress = { [weak self] enqueued, finished in
+            self?.backgroundProgress = (enqueued, finished)
         }
         // NOTE: the burn-folder bookmark is NOT exposed to the coordinator via a closure anymore.
         // The delegate runs off the main actor (and may run cold-relaunched before this store
@@ -193,6 +213,10 @@ final class BurnStore {
     /// BurnItem from the record + persist. Idempotent (a duplicate callback re-writes the same
     /// ready item).
     func finalizeBurn(record: TransferCoordinator.TransferRecord, bytes: Int) {
+        // Preserve any per-song cut export already written for this song (the cut pass runs
+        // in-process during burn(); this album-finalize fires later from the background download
+        // and would otherwise rebuild the item and drop the cut fields).
+        let prevCut = items[record.songId]
         items[record.songId] = BurnItem(
             songId: record.songId, title: record.title, artist: record.artist,
             audioFileName: record.audioFileName, sidecarFileName: record.sidecarFileName,
@@ -200,7 +224,8 @@ final class BurnStore {
             bpm: record.bpm, musicalKey: record.musicalKey, camelot: record.camelot,
             durationMs: record.durationMs, startMs: record.startMs,
             bytes: bytes, rippedAt: record.rippedAt, downloadedAt: now,
-            state: .ready, error: nil, wasAppStorage: record.wasAppStorage)
+            state: .ready, error: nil, wasAppStorage: record.wasAppStorage,
+            cutFileName: prevCut?.cutFileName, cutDownloadedAt: prevCut?.cutDownloadedAt)
         save()
     }
 
@@ -212,8 +237,12 @@ final class BurnStore {
     /// (the caller must `stopAccessingSecurityScopedResource()` then) + whether it is the
     /// user folder. Falls back on ANY problem (denied access / unmounted / not writable) so a
     /// burn never writes to an inaccessible path. `allowRePersist` re-creates + re-persists a
-    /// stale bookmark (only on the write path; the read path resolves read-only).
-    private func resolveBurnFolder(allowRePersist: Bool) -> (url: URL, scoped: Bool, isUserFolder: Bool)? {
+    /// stale bookmark (only on the write path; the read path resolves read-only). `requireWritable`
+    /// (true on the WRITE path, false on the READ/playback path): PLAYBACK only needs the folder
+    /// READABLE, so a Files-provider folder that resolves but isn't currently writable (e.g. an
+    /// offline iCloud Drive folder) must still satisfy a read — gating reads on writability was a
+    /// second way burned songs failed to resolve.
+    private func resolveBurnFolder(allowRePersist: Bool, requireWritable: Bool = true) -> (url: URL, scoped: Bool, isUserFolder: Bool)? {
         if let data = settings?.burnFolderBookmark {
             var stale = false
             #if os(macOS)
@@ -224,7 +253,7 @@ final class BurnStore {
             if let url = try? URL(resolvingBookmarkData: data, options: opts,
                                   relativeTo: nil, bookmarkDataIsStale: &stale) {
                 let ok = url.startAccessingSecurityScopedResource()
-                if ok && FileManager.default.isWritableFile(atPath: url.path) {
+                if ok && (!requireWritable || FileManager.default.isWritableFile(atPath: url.path)) {
                     if stale && allowRePersist, let fresh = Self.makeBookmark(for: url) {
                         settings?.burnFolderBookmark = fresh
                         settings?.persist()
@@ -258,7 +287,9 @@ final class BurnStore {
         if item.wasAppStorage ?? true {
             return (try? RipsStore.burnsDirectory()).map { ($0, false) }
         }
-        guard let resolved = resolveBurnFolder(allowRePersist: false), resolved.isUserFolder else {
+        // READ/playback path: the folder only needs to be READABLE, not writable.
+        guard let resolved = resolveBurnFolder(allowRePersist: false, requireWritable: false),
+              resolved.isUserFolder else {
             return nil   // the user folder is gone — the item can't be resolved right now
         }
         return (resolved.url, resolved.scoped)
@@ -275,6 +306,25 @@ final class BurnStore {
         defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
         let url = dir.appendingPathComponent(item.audioFileName)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Like `localURL`, but for PLAYBACK: when the burned file lives in a USER-PICKED
+    /// (security-scoped) folder, this KEEPS the scoped access OPEN and returns a `release`
+    /// closure for the player to call when it's done. `localURL` stops the scope immediately in
+    /// its `defer` — fine for an existence check, but it leaves AVPlayer unable to READ the file
+    /// during playback (a silent 0:00 / no audio). `release` is nil for app-storage files (no
+    /// scope needed). Returns nil when the item isn't ready / the file is missing (then the
+    /// caller skips or streams).
+    func localURLForPlayback(forSong songId: String) -> (url: URL, release: (() -> Void)?)? {
+        guard let item = items[songId], item.state == .ready,
+              let (dir, scoped) = itemDir(item) else { return nil }
+        let url = dir.appendingPathComponent(item.audioFileName)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if scoped { dir.stopAccessingSecurityScopedResource() }   // missing → don't leak scope
+            return nil
+        }
+        // KEEP the scope open; the player releases it on the next load / stop.
+        return (url, scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
     }
 
     /// The analog seek offset (ms) within a shared album mp3 for a ready burned song, so a
@@ -477,9 +527,62 @@ final class BurnStore {
             }
         }
 
+        // ANALOG CUT EXPORT (best-effort, in-process): write each analog song's individual cut
+        // chunk into the burn folder so DJ software sees the full single-track list alongside the
+        // album backcase. Runs here, inside burn()'s held folder scope.
+        await exportAnalogCuts(unique, dir: dir)
+
         save()
         progress = nil
         return result
+    }
+
+    /// Download each analog song's server-sliced cut (`cuts/<songId>.mp3`) into the burn folder
+    /// under a per-song name (digital-style, pairing with the per-song sidecar already written),
+    /// so other DJ software gets the individual track alongside the whole-album backcase.
+    /// Auto-repull: re-download only when the S3 cut is NEWER than the device's copy (a manual
+    /// re-upload bumps the S3 Last-Modified). Offline / HEAD-miss keeps any existing cut. A cut
+    /// failure NEVER fails the burn (the album entry alone still plays + is the backcase).
+    private func exportAnalogCuts(_ songs: [(id: String, title: String, artist: String)], dir: URL) async {
+        let cuts = songs.compactMap { s -> (id: String, entry: RipsStore.ManifestEntry, key: String)? in
+            guard let e = rips.manifest[s.id], e.source == "analog", let k = e.cutKey else { return nil }
+            return (s.id, e, k)
+        }
+        guard !cuts.isEmpty else { return }
+        var done = 0
+        for c in cuts {
+            if stopRequested || Task.isCancelled { break }
+            let (s, a) = lookup?(c.id) ?? (nil, nil)
+            let cutName = Self.descriptiveName(
+                prefix: Self.digitalSongPrefix(song: s, album: a, entry: c.entry),
+                idSuffix: c.id, ext: "mp3")
+            progress = Progress(done: done, total: cuts.count, label: "Cut: \(s?.name ?? c.id)")
+            defer { done += 1 }
+            let cutFileURL = dir.appendingPathComponent(cutName)
+            let remoteMs = await rips.remoteLastModifiedMs(rips.url(forKey: c.key))
+            let exists = FileManager.default.fileExists(atPath: cutFileURL.path)
+            // Up-to-date (local present + last download timestamp ≥ the current S3 one) → keep.
+            if exists, let remoteMs, let storedMs = items[c.id]?.cutDownloadedAt, storedMs >= remoteMs {
+                items[c.id]?.cutFileName = cutName
+                continue
+            }
+            // Offline (HEAD failed) but a local cut already exists → keep it; don't clobber.
+            if remoteMs == nil, exists { items[c.id]?.cutFileName = cutName; continue }
+            do {
+                let data = try await rips.downloadBytes(rips.url(forKey: c.key))
+                // DELETE the old cut before placing the updated (re-tagged) one — both the
+                // previously-recorded name (in case the descriptive name changed) AND the current
+                // target — so an updated version cleanly replaces the prior file. Done AFTER the
+                // new bytes are in hand, so a download failure never loses the existing cut.
+                if let old = items[c.id]?.cutFileName, old != cutName {
+                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(old))
+                }
+                try? FileManager.default.removeItem(at: cutFileURL)
+                try data.write(to: cutFileURL, options: .atomic)
+                items[c.id]?.cutFileName = cutName
+                items[c.id]?.cutDownloadedAt = remoteMs ?? now
+            } catch { /* best-effort — a cut export failure never fails the burn */ }
+        }
     }
 
     // MARK: Helpers

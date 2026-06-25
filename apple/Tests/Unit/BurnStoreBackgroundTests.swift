@@ -103,6 +103,65 @@ final class BurnStoreBackgroundTests: XCTestCase {
         XCTAssertNil(burns.items["sng_2"])
     }
 
+    // MARK: background progress mirrors into BurnStore's @Observable state (the overlay reads it)
+
+    /// The collection overlay's "Burning N of M" reads `BurnStore.backgroundProgress` (an
+    /// @Observable), NOT the non-observable coordinator snapshot — so it actually re-renders as
+    /// the run progresses. Enqueue publishes (N,0); Stop clears it so the overlay hides.
+    func testBackgroundProgressMirrorsCoordinatorIntoObservableState() async {
+        let rips = makeRips()
+        let transfers = makeCoordinator()
+        let burns = makeBurns(rips, transfers)
+        // Idle: nothing in flight.
+        XCTAssertEqual(burns.backgroundProgress.enqueued, 0)
+        XCTAssertEqual(burns.backgroundProgress.finished, 0)
+
+        rips.setManifest([
+            "sng_1": .init(key: "rips/sng_1.mp3", source: "digital"),
+            "sng_2": .init(key: "rips/sng_2.mp3", source: "digital"),
+        ])
+        _ = await burns.burn([
+            (id: "sng_1", title: "One", artist: "A"),
+            (id: "sng_2", title: "Two", artist: "A"),
+        ])
+        // Enqueuing 2 songs mirrored (2, 0) into the observable the overlay binds to.
+        XCTAssertEqual(burns.backgroundProgress.enqueued, 2)
+        XCTAssertEqual(burns.backgroundProgress.finished, 0)
+
+        // Stop drops the in-flight records and re-publishes (0,0) so the overlay clears.
+        burns.requestStop()
+        XCTAssertEqual(burns.backgroundProgress.enqueued, 0)
+        XCTAssertEqual(burns.backgroundProgress.finished, 0)
+    }
+
+    // MARK: analog burn ALSO exports the per-song cut chunk (DJ-software single-track list)
+
+    /// An analog song whose manifest entry carries a `cutKey` (the server sliced the song out of
+    /// the album) gets its individual cut mp3 written into the burn folder under a per-song name,
+    /// recorded on the BurnItem — alongside the whole-album backcase. The album entry still burns
+    /// as usual (playback stays album + seek).
+    func testAnalogBurnExportsPerSongCut() async {
+        let rips = makeRips()
+        let transfers = makeCoordinator()
+        let burns = makeBurns(rips, transfers)
+        rips.setManifest([
+            "an_x": .init(key: "rips/alb_1.mp3", source: "analog", startMs: 0, durationMs: 200_000,
+                          cutKey: "cuts/an_x.mp3", cutBytes: 123, cutRippedAt: 1000),
+        ])
+
+        let r = await burns.burn([(id: "an_x", title: "X", artist: "A")])
+        XCTAssertEqual(r.burned, 1)                       // the album entry enqueued as usual
+        // The per-song cut was exported + recorded on the item.
+        let cutName = burns.items["an_x"]?.cutFileName
+        XCTAssertNotNil(cutName, "the cut filename is recorded on the BurnItem")
+        if let dir = try? RipsStore.burnsDirectory(), let cutName {
+            let url = dir.appendingPathComponent(cutName)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
+                          "the per-song cut mp3 was written into the burn folder")
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     // MARK: not-ripped songs are still reported (never enqueued)
 
     func testNotRippedSongIsNotEnqueued() async {

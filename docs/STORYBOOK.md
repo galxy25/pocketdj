@@ -1165,3 +1165,146 @@ read-out.
 
 **User story:** "When I drag the burned files into my DJ app, the filename alone already tells me
 the key, Camelot code and BPM — I can order a set straight from the folder."
+
+---
+
+## 44. Play mode — the set runs like a music transport (iPhone)
+
+Once a set list is **playing** (§35), the iPhone toolbar reshapes itself into a clean **music
+transport**. The three controls — **⏮ previous · ⏯ play/pause · ⏭ next** — move to the **center
+of the nav bar**, evenly spaced and accent-tinted, so the bar reads exactly like a player rather
+than a row of mixed buttons. Prev/next step the **whole set** (not just the current track); the
+middle button toggles **play/pause on whichever backend is live** — Apple Music streaming, or the
+rip/local engine — and shows ⏸ while it's playing, ▶ while paused.
+
+**Stop takes the play button's slot.** The **⏹ Stop** that ends the run sits in the **same
+trailing spot** that showed **▶ Play** when the set was idle — so the one obvious "start / end the
+set" affordance never moves and is never buried. (It is *not* hidden in a menu.)
+
+**Everything else folds into ••• .** While the set plays, the secondary actions collapse into a
+single **••• overflow** menu — **Add note**, **Rip**, **Burn**, **Rename**, **Edit order**
+(present but **disabled** mid-play, since reordering would desync the running queue), and a
+**Delete set list** below a divider. **Rip and Burn are two separate, flat menu items**, not a
+nested "Rip / Burn" submenu — one tap each.
+
+When the set is **idle**, the iPhone bar stays the familiar flat layout (▶ Play · the
+device/cloud toggle · Edit · •••). And the **Mac keeps its flat toolbar** in every state (it has
+no centered nav-bar slot) — play/stop with ⏮/⏭ flanking it while running, and the secondary
+actions laid out in a row.
+
+**User story:** "When the set is actually playing, give me a real transport — prev, play/pause,
+next, centered — and tuck everything else out of the way so I'm not fat-fingering Delete reaching
+for Next."
+
+---
+
+## 45. The set advances at each track's *own* length
+
+A whole side of vinyl is ripped as **one mp3**, with every song pointing at its **start offset**
+inside that shared file. That used to mean the auto-advance only fired at the **end of the entire
+album file** — so a set built from analog tracks would play one song, then keep rolling straight
+into the *next* album track instead of moving to the next set entry.
+
+Now each playing track **advances at its own end**: the player arms a boundary at *this song's
+start + its known length*, and when playback passes it the set moves on to the next entry — even
+though the audio file keeps going. Per-song files (digital rips, individual burns) are untouched:
+they have a real end of their own, so they advance naturally and are never cut short by a missing
+or short catalog length. The same length-aware advance works whether the track is **streaming a
+cloud rip**, **playing a burned file**, or sitting **inside a shared album rip** — so a set plays
+through cleanly regardless of where its audio comes from.
+
+**Tap a row mid-set and the set follows you.** If a set is running and you tap **▶** on a *row
+that's in that set*, the set **repositions onto it** and keeps auto-advancing from there — instead
+of the set silently stopping when that hand-started track ends. (If the same song appears more
+than once, it jumps to the **nearest occurrence**, preferring the one ahead of where you are.) The
+persistent **⏮ / ⏭** transport (§44) is always there to step by hand.
+
+**User story:** "Each track should hand off to the next one at *its* end, not the end of the whole
+record side — and if I tap a song in the set to jump there, the set should pick up from that song,
+not quit on me."
+
+---
+
+## 46. Opens with no network — the offline-first catalog & playback
+
+PocketDJ is offline-*first*, and the native app now lives up to it from the very first second: it
+**opens with your full catalog even with no signal at all**.
+
+**The catalog opens offline.** Every time the app successfully loads a source's index online, it
+**caches the raw catalog to disk** (one file per source, under the app's Application Support). On a
+later launch with **no network — or a server that's down — it falls back to that cached catalog**,
+so all 1,300+ albums / 12k+ songs are right there, browsable and searchable, on a plane or in a
+basement. With multiple sources, it degrades **gracefully**: each source falls back to its own
+cache independently, an un-cached source (one you never loaded online) is simply **skipped**, and
+the app only fails to open if **every** source fails. (The catalog index is too big for the
+system's default response cache to keep, which is why offline relaunch used to come up empty — the
+app now keeps its own copy that survives restarts.)
+
+**Burned songs always play first — and actually make sound offline.** On **every** way you start a
+song — tapping **▶** on a row, **⌘P** on the keyboard, or **Play-All** — the app now **prefers a
+burned local file** whenever one exists, in **both** Device and Cloud mode. So a song you've
+burned plays **instantly and with no network**, never reaching for the rip server first. Crucially,
+a burned file living in a **folder you picked yourself** (§34) now **plays its audio** offline —
+the app **holds that folder's read access open for the whole song** instead of dropping it the
+instant it found the file, which is what used to leave a picked-folder burn stuck at **0:00 with no
+sound**. (Playback only needs the folder *readable*, so a folder that's momentarily not writable —
+say an offline iCloud Drive folder — still plays.)
+
+**Snappier when the server's just unreachable.** When a rip server is configured but can't be
+reached (asleep at home while you're on venue wifi), a play request now gives up in **~12 seconds**
+instead of stalling a full minute — so **Play-All skips an un-burned track promptly** and keeps the
+set moving. And the inline scrubber falls back to the **catalog's length** for its end timestamp,
+so the **/ m:ss** is sensible even before the audio file reports its real duration.
+
+**User story:** "Open the app in a dead zone and still have my whole crate — and have everything
+I burned play instantly, with sound, no signal, no waiting on a server that isn't there."
+
+---
+
+## 47. The background "Burning N of M" count now actually ticks up
+
+A **Burn** runs as a string of background downloads, and the collection screen shows a
+**"Burning N of M"** overlay while it works. That counter used to **freeze at the starting total**
+— it was reading from the background-transfer engine, which (because it has to be the system's
+download delegate) isn't the kind of object the UI can watch for changes. Now the progress is
+**mirrored into an observable store** as each download lands, so the overlay **re-renders and
+counts up** — *Burning 3 of 10 → 4 of 10 → …* — as the set burns, finishing on the run's summary
+(§33).
+
+**User story:** "When I burn a set I want to watch it actually progress — not stare at 'Burning 1
+of 10' until the whole thing's silently done."
+
+---
+
+## 48. Analog cut export — the full single-track list for your DJ software
+
+A side of vinyl rips as **one album mp3**, and that whole-album file (the "backcase") is what a
+burn has always written. But other DJ software wants the **individual tracks** as their own files.
+So a Burn now also exports a **per-song cut** of every analog track **alongside** the whole-album
+file.
+
+**How it's made.** When the rip server rips an analog album, it **slices each song out** of the
+freshly-made album mp3 (from the song's start offset, for its own length — *derived from the
+segment boundaries* when the catalog doesn't carry a length) and uploads it as its own file, **ID3
+tagged** with the track's **title, artist and album**. A **Burn** then downloads each cut into your
+burn folder under the **same descriptive, mixer-ready name** as a digital track (§43 —
+Artist · Song · Album · Year · Genre · Camelot · Key · BPM), **paired with its own `.txt`
+sidecar**. So your folder ends up with both: the **whole-album backcase** *and* the **full list of
+individual, tagged single tracks** ready to drop into any DJ app.
+
+**It stays current on its own.** If a cut is **re-uploaded** on the server (re-sliced or re-tagged),
+the next burn notices it's **newer** and **re-pulls just that file**, cleanly replacing the old one
+— no manifest change needed. A cut that fails to export **never fails the burn** (the album file
+alone still plays and is the backcase). And playback is **completely unchanged**: songs still play
+from the album file at their start offset — the per-song cut is **burn-only**, purely for handing
+off to other software.
+
+**Retro-fitting older rips.** Two server actions backfill the cuts for albums ripped before this
+existed: one **slices a cut for every analog track that's missing one** (straight from the raw
+album source, no full re-transcode), and one **re-tags every existing cut** (title/artist/album,
+a fast tag-only pass with no re-encode) — bumping each file's timestamp so the next burn auto-pulls
+the freshly-tagged version.
+
+**User story:** "Burn me the whole record *and* every song as its own properly-tagged file, named
+with the key and BPM, so I can load the single tracks straight into my DJ software — and quietly
+keep them up to date."

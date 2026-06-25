@@ -72,8 +72,9 @@ const SELFHEAL = {
   digitalDefaultLenMs: 6 * 60_000, // unknown length → assume a 6-min song
   digitalFloorMs: numEnv('RIP_TEST_DIGITAL_FLOOR_MS', 90_000), // never kill a legit capture before this
   digitalCeilMs: 30 * 60_000,     // hard ceiling (a single track can't legitimately run 30 min)
-  // analog ffmpeg transcode of a whole album: a generous fixed cap (transcode is fast).
-  analogCapMs: numEnv('RIP_TEST_ANALOG_CAP_MS', 12 * 60_000),
+  // analog ffmpeg transcode of a whole album + per-song cuts: a generous fixed cap (transcode
+  // is fast; the cut pass adds a few ffmpeg+upload passes per song).
+  analogCapMs: numEnv('RIP_TEST_ANALOG_CAP_MS', 20 * 60_000),
   // capped exponential backoff requeue for TRANSIENT failures.
   maxAttempts: numEnv('RIP_TEST_MAX_ATTEMPTS', 5), // total tries (attempt 1 = the original run)
   backoffMs: process.env.RIP_TEST_BACKOFF_MS
@@ -522,6 +523,52 @@ async function runAnalogJob(job, song) {
       startMs: s.pointer?.startMs ?? null, durationMs: s.length ?? null, rippedAt,
     };
   }
+  // PER-SONG CUTS (burn-only): cut each song's chunk out of the album mp3 and upload it as
+  // cuts/<songId>.mp3, so a Burn can include the individual track (for other DJ software's
+  // "full song list" view) ALONGSIDE the whole-album backcase. Playback still uses the album +
+  // startMs seek — `cutKey` is consumed only by the burn. A per-song cut failure is NON-FATAL
+  // (the album entry alone still works). The album mp3 (`out`) is still in tmp here.
+  for (const s of songsByAlbum.get(album.id) || []) {
+    if (job.phase === 'error' || job.canceled) break;
+    const e = manifest[s.id];
+    if (!e || e.source !== 'analog' || e.albumId !== album.id) continue;   // skip cloud-rip songs
+    const startMs = s.pointer?.startMs ?? e.startMs;
+    const durMs = cutDurationMs(s, e);
+    if (startMs == null || !durMs) continue;                               // no cut points → album-only
+    const cutOut = join(CFG.tmp, `${s.id}.cut.mp3`);
+    try {
+      setPhase(job, 'ripping', { realtime: false, message: `cutting ${s.name || s.id}` });
+      await new Promise((res, rej) => {
+        const ff = spawn('ffmpeg', ['-y', '-ss', String(startMs / 1000), '-i', out,
+          '-t', String(durMs / 1000), '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k',
+          '-metadata', `title=${s.name || ''}`, '-metadata', `artist=${s.artist || ''}`,
+          '-metadata', `album=${album.name || ''}`, '-id3v2_version', '3', cutOut],
+          { detached: true });
+        activeChild.p = ff;
+        let err = '';
+        ff.stderr.on('data', (d) => { err += d; });
+        ff.on('close', (code) => {
+          activeChild.p = null;
+          if (code === 0) return res();
+          if (job.phase === 'error' || job.canceled) return res();        // killed → swallow
+          rej(new Error('cut ffmpeg failed: ' + err.slice(-200)));
+        });
+      });
+      if (job.phase === 'error' || job.canceled) { rmSync(cutOut, { force: true }); break; }
+      // Under the PUBLIC `rips/` prefix (the bucket policy only makes rips/* public) and
+      // distinct from a per-song cloud rip's `rips/<songId>.mp3` (the `.cut.` infix).
+      const cutKey = `rips/${s.id}.cut.mp3`;
+      await aws(['s3', 'cp', cutOut, `s3://${CFG.bucket}/${cutKey}`, '--content-type', 'audio/mpeg']);
+      e.cutKey = cutKey;
+      e.cutBytes = statSync(cutOut).size;
+      e.cutRippedAt = Date.now();
+      if (e.durationMs == null) e.durationMs = durMs;   // persist the derived length too
+    } catch (err) {
+      console.error(`  cut failed for ${s.id}: ${err.message}`);
+    } finally {
+      rmSync(cutOut, { force: true });
+    }
+  }
   await saveManifest();
 
   job.url = publicUrl(key);
@@ -531,6 +578,111 @@ async function runAnalogJob(job, song) {
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+// The cut duration (ms) for an analog song: the catalog `length`, else the manifest
+// `durationMs`, else DERIVED from the segment boundaries (`pointer.endMs - startMs`) — many
+// analog tracks carry start/end boundaries but a null `length`. Returns null when there's no
+// usable duration (→ that song stays album-only, can't be cut).
+function cutDurationMs(s, e) {
+  let d = (s && s.length) ?? (e && e.durationMs);
+  if (d == null && s?.pointer?.startMs != null && s?.pointer?.endMs != null) {
+    d = s.pointer.endMs - s.pointer.startMs;
+  }
+  return d != null && d > 0 ? d : null;
+}
+
+// BACKFILL: slice a per-song cut for every analog manifest entry missing one, straight from the
+// raw album source (no whole-album re-transcode), and add `cutKey` to the entry. Lets albums
+// ripped before the cut feature gain the per-song burn export retroactively. Single-flight via
+// `backfillRunning`. Runs OUTSIDE the job queue (its own ffmpeg passes); shares the in-memory
+// `manifest` object so a concurrent rip's saveManifest won't drop these cutKeys.
+let backfillRunning = false;
+// Cut per-song chunks (MISSING a cut) out of analog album sources, TAGGED with title/artist/
+// album ID3 metadata, and upload them. Single-flight via `backfillRunning`; runs OUTSIDE the job
+// queue and shares the in-memory `manifest` so a concurrent rip's save won't drop these cutKeys.
+async function backfillCuts() {
+  const label = 'backfill-cuts';
+  let done = 0, failed = 0, skipped = 0;
+  const want = (e) => e.source === 'analog' && e.albumId && !e.cutKey;
+  const albumIds = new Set();
+  for (const e of Object.values(manifest)) if (want(e)) albumIds.add(e.albumId);
+  console.error(`  ${label}: scanning ${albumIds.size} albums`);
+  for (const albumId of albumIds) {
+    const album = albumById.get(albumId);
+    if (!album?.pointer?.originalFilename) { skipped++; continue; }
+    const src = join(CFG.analogBase, album.pointer.originalFilename);
+    if (!existsSync(src)) { console.error(`  ${label} skip ${albumId}: src missing ${src}`); skipped++; continue; }
+    for (const s of songsByAlbum.get(albumId) || []) {
+      const e = manifest[s.id];
+      if (!e || !want(e)) continue;
+      const startMs = s.pointer?.startMs ?? e.startMs;
+      const durMs = cutDurationMs(s, e);
+      if (startMs == null || !durMs) continue;
+      const cutOut = join(CFG.tmp, `${s.id}.cut.mp3`);
+      try {
+        await new Promise((res, rej) => {
+          const ff = spawn('ffmpeg', ['-y', '-ss', String(startMs / 1000), '-i', src,
+            '-t', String(durMs / 1000), '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k',
+            '-metadata', `title=${s.name || ''}`, '-metadata', `artist=${s.artist || ''}`,
+            '-metadata', `album=${album.name || ''}`, '-id3v2_version', '3', cutOut]);
+          let err = ''; ff.stderr.on('data', (d) => { err += d; });
+          ff.on('close', (code) => (code === 0 ? res() : rej(new Error(err.slice(-200)))));
+        });
+        const cutKey = `rips/${s.id}.cut.mp3`;
+        await aws(['s3', 'cp', cutOut, `s3://${CFG.bucket}/${cutKey}`, '--content-type', 'audio/mpeg']);
+        e.cutKey = cutKey; e.cutBytes = statSync(cutOut).size; e.cutRippedAt = Date.now();
+        if (e.durationMs == null) e.durationMs = durMs;
+        done++;
+        if (done % 10 === 0) await saveManifest();
+      } catch (err) {
+        failed++; console.error(`  ${label} failed ${s.id}: ${err.message}`);
+      } finally {
+        rmSync(cutOut, { force: true });
+      }
+    }
+    await saveManifest();
+    console.error(`  ${label}: ${album.name} done (${done} done, ${failed} failed so far)`);
+  }
+  await saveManifest();
+  console.error(`  ${label} DONE: ${done} cuts, ${failed} failed, ${skipped} albums skipped`);
+}
+
+// RETAG (tag-only): rewrite title/artist/album ID3 tags on EVERY existing analog cut WITHOUT
+// re-cutting — download the cut, remux with `-c copy` (no re-encode, no source/drive needed),
+// re-upload. Bumps cutRippedAt so the app's S3-timestamp auto-repull pulls the re-tagged file.
+async function retagCuts() {
+  let done = 0, failed = 0;
+  const entries = Object.entries(manifest).filter(([, e]) => e.source === 'analog' && e.cutKey);
+  console.error(`  retag-cuts: ${entries.length} cuts to re-tag`);
+  for (const [id, e] of entries) {
+    const s = songById.get(id);
+    if (!s) continue;
+    const album = albumById.get(e.albumId) || albumById.get(s.albumId);
+    const inF = join(CFG.tmp, `${id}.in.mp3`);
+    const outF = join(CFG.tmp, `${id}.tagged.mp3`);
+    try {
+      await aws(['s3', 'cp', `s3://${CFG.bucket}/${e.cutKey}`, inF]);
+      await new Promise((res, rej) => {
+        const ff = spawn('ffmpeg', ['-y', '-i', inF, '-map', '0:a:0', '-c', 'copy',
+          '-map_metadata', '-1',
+          '-metadata', `title=${s.name || ''}`, '-metadata', `artist=${s.artist || ''}`,
+          '-metadata', `album=${album?.name || ''}`, '-id3v2_version', '3', outF]);
+        let err = ''; ff.stderr.on('data', (d) => { err += d; });
+        ff.on('close', (code) => (code === 0 ? res() : rej(new Error(err.slice(-200)))));
+      });
+      await aws(['s3', 'cp', outF, `s3://${CFG.bucket}/${e.cutKey}`, '--content-type', 'audio/mpeg']);
+      e.cutBytes = statSync(outF).size; e.cutRippedAt = Date.now();
+      done++;
+      if (done % 10 === 0) await saveManifest();
+    } catch (err) {
+      failed++; console.error(`  retag failed ${id}: ${err.message}`);
+    } finally {
+      rmSync(inF, { force: true }); rmSync(outF, { force: true });
+    }
+  }
+  await saveManifest();
+  console.error(`  retag-cuts DONE: ${done} re-tagged, ${failed} failed`);
+}
 
 // Phase 2: Apple Music real-time capture via the `rip` skill (rip-one.mjs worker).
 // Default: run the worker directly (deterministic). RIP_AGENT=1: run it via a headless
@@ -877,6 +1029,23 @@ const server = http.createServer(async (req, res) => {
     const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
       { ready: 0, queued: 0, inflight: 0, unknown: 0, total: 0 });
     return send(res, 200, { results, counts });
+  }
+  // POST /backfill-cuts — slice a per-song cut chunk for EVERY analog manifest entry that lacks
+  // one (`cutKey`), straight from the raw album source (NO whole-album re-transcode), so albums
+  // ripped before the cut feature gain the per-song burn export retroactively. Runs in the
+  // BACKGROUND (returns the candidate count immediately); progress + the final tally go to the
+  // log. Idempotent + single-flight (a 2nd call while running is a no-op).
+  if (path === '/backfill-cuts' && req.method === 'POST') {
+    const candidates = Object.values(manifest).filter((e) => e.source === 'analog' && !e.cutKey).length;
+    if (!backfillRunning) { backfillRunning = true; backfillCuts().finally(() => { backfillRunning = false; }); }
+    return send(res, 200, { ok: true, candidates, running: backfillRunning });
+  }
+  // POST /retag-cuts — rewrite title/artist/album ID3 tags on every existing analog cut
+  // (tag-only, no re-cut) + bump cutRippedAt so the app auto-repulls the re-tagged files.
+  if (path === '/retag-cuts' && req.method === 'POST') {
+    const cuts = Object.values(manifest).filter((e) => e.source === 'analog' && e.cutKey).length;
+    if (!backfillRunning) { backfillRunning = true; retagCuts().finally(() => { backfillRunning = false; }); }
+    return send(res, 200, { ok: true, cuts, running: backfillRunning });
   }
   // POST /rip-cancel {songIds:[...]} — Feature 1 STOP RIP. Cancels still-queued matching
   // jobs (splice queue + clear inflight + delete durable file) and KILLS the in-flight
