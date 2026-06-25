@@ -300,6 +300,9 @@ struct IndexPlaylistDetailView: View {
                     .accessibilityIdentifier("indexplaylist-play")
                 Button { duplicate() } label: { Label("Duplicate as editable playlist", systemImage: "plus.square.on.square") }
                     .accessibilityIdentifier("indexplaylist-duplicate")
+                Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
+                    .disabled(source.songIds.isEmpty)
+                    .accessibilityIdentifier("indexplaylist-convert")
                 CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSource: source) }, noun: "playlist")
             } footer: {
                 Text("\(songs.count) of \(source.songIds.count) song\(source.songIds.count == 1 ? "" : "s") resolved from \(source.sourceName).")
@@ -328,6 +331,11 @@ struct IndexPlaylistDetailView: View {
         // Replace the read-only detail with the new editable one.
         path.removeLast()
         path.append(pl)
+    }
+    /// Convert this read-only source playlist (e.g. an Apple Music user playlist) into a new
+    /// reusable pocket of its songs and jump straight into it.
+    private func convertToPocket() {
+        path.append(collections.convertToPocket(source: source))
     }
 }
 
@@ -407,28 +415,27 @@ struct PlaylistDetailView: View {
                     .disabled(itemCount == 0)
                     .accessibilityIdentifier("playlist-shuffle")
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button { realizeToSetlist() } label: { Image(systemName: "list.bullet.clipboard") }
-                    .help("Realize this template into a frozen set list")
-                    .disabled(itemCount == 0)
-                    .accessibilityIdentifier("playlist-realize")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { showNewSeq = true } label: { Image(systemName: "plus.rectangle.on.rectangle") }
-                    .help("Add chapter")
-                    .accessibilityIdentifier("add-chapter")
-            }
-            #if os(iOS)
-            ToolbarItem(placement: .primaryAction) {
-                EditButton().accessibilityIdentifier("edit-order")   // toggles drag-reorder of chapters + items
-            }
-            #endif
+            // The ⋯ menu holds everything beyond the primary Play/Shuffle so the toolbar
+            // stays at 4 items and never overflows on compact-width iPhone (where a 7th
+            // item used to collapse the whole menu behind a nested system "More").
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button { realizeToSetlist() } label: { Label("Make set list", systemImage: "list.bullet.clipboard") }
+                        .disabled(itemCount == 0)
+                        .accessibilityIdentifier("playlist-realize")
+                    Button { showNewSeq = true } label: { Label("Add chapter", systemImage: "plus.rectangle.on.rectangle") }
+                        .accessibilityIdentifier("add-chapter")
+                    #if os(iOS)
+                    EditButton().accessibilityIdentifier("edit-order")   // toggles drag-reorder of chapters + items
+                    #endif
+                    Divider()
                     Button { nameDraft = playlist?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
                         .accessibilityIdentifier("rename-playlist")
                     Button { export() } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                         .accessibilityIdentifier("export-playlist")
+                    Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
+                        .disabled(itemCount == 0)
+                        .accessibilityIdentifier("convert-to-pocket")
                     Divider()
                     CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPlaylist: playlistId) }, noun: "playlist")
                     Divider()
@@ -510,6 +517,12 @@ struct PlaylistDetailView: View {
         if let data = try? collections.exportPlaylistZip(playlistId) {
             exportDoc = PlaylistZipFile(data: data); showExporter = true
         }
+    }
+
+    /// Convert this playlist into a new reusable pocket (its songs/albums/pockets become
+    /// members, text cues become notes) and jump straight into it. Source playlist intact.
+    private func convertToPocket() {
+        if let pocket = collections.convertToPocket(playlistId: playlistId) { path.append(pocket) }
     }
 
     @ViewBuilder private func chapterSection(_ seq: PlaylistNode, chapterCount: Int) -> some View {

@@ -44,13 +44,13 @@ struct RootView: View {
         } detail: {
             NavigationStack(path: $path) {
                 detail
-                    .navigationDestination(for: IndexAlbum.self) { AlbumDetailView(album: $0) }
+                    .navigationDestination(for: IndexAlbum.self) { AlbumDetailView(album: $0, path: $path) }
                     .navigationDestination(for: IndexSong.self) { SongDetailView(song: $0) }
                     .navigationDestination(for: Pocket.self) { PocketDetailView(pocketId: $0.id, path: $path) }
                     .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlistId: $0.id, path: $path) }
                     .navigationDestination(for: SourcePlaylist.self) { IndexPlaylistDetailView(source: $0, path: $path) }
-                    .navigationDestination(for: Setlist.self) { SetlistDetailView(setlistId: $0.id) }
-                    .navigationDestination(for: SetlistLaunch.self) { SetlistDetailView(setlistId: $0.setlistId, autoplay: $0.autoplay) }
+                    .navigationDestination(for: Setlist.self) { SetlistDetailView(setlistId: $0.id, path: $path) }
+                    .navigationDestination(for: SetlistLaunch.self) { SetlistDetailView(setlistId: $0.setlistId, autoplay: $0.autoplay, path: $path) }
             }
         }
         .background { navigationShortcuts }

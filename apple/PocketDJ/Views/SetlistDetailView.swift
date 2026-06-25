@@ -27,6 +27,8 @@ struct SetlistDetailView: View {
     let setlistId: String
     /// When true (a ▶ Play / 🔀 Shuffle launch), start Play-All on first appear.
     var autoplay: Bool = false
+    /// The shared navigation stack — lets a track row open its song's detail on tap.
+    @Binding var path: NavigationPath
     /// One-shot guard so the autostart fires exactly once per view lifetime.
     @State private var didAutostart = false
 
@@ -364,6 +366,12 @@ struct SetlistDetailView: View {
                         data: rowData,
                         trailing: AnyView(provenanceBadges(track))
                     )
+                    // Tap-to-open the song's detail (when its catalog song still exists). A
+                    // row-level .onTapGesture — NOT a wrapping NavigationLink — so the row's
+                    // ▶/⤓ transport buttons keep intercepting their own taps (see BrowseView).
+                    .contentShape(Rectangle())
+                    .onTapGesture { if let song { path.append(song) } }
+                    .accessibilityElement(children: .contain)
                 }
                 // Inline player below the row when this track's song is the one playing.
                 InlinePlayerSlot(songId: rowData.songId).padding(.leading, 30)

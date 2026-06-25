@@ -25,6 +25,12 @@ struct PocketDJApp: App {
     /// Apple Music (Local) songs (when ready), always falls back to the rip server. Built
     /// from the SAME rips/player/streaming instances so the rip path is unchanged.
     @State private var coordinator: PlaybackCoordinator
+    /// Lazily resolves streaming cover art (Apple Music) for albums lacking a bundled
+    /// cover, keyed off the indexer's catalog id — fetched ONLY when an album is on-screen.
+    @State private var albumArt: AlbumArtworkStore
+    /// On-demand lyrics: fetches `{catalogBase}/lyrics/<songId>.txt` when a song detail
+    /// opens and caches the text on disk for instant + offline re-opens.
+    @State private var lyrics: LyricsStore
     @Environment(\.scenePhase) private var scenePhase
 
     // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
@@ -51,6 +57,13 @@ struct PocketDJApp: App {
         _coordinator = State(initialValue: PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: amProvider)))
+        // Lazy streaming cover art: resolve an album's art via the Apple Music provider
+        // (recognize one of its tracks by catalog id → its artwork URL). Ready only when
+        // the provider can resolve; both gated so the default build never hits the network.
+        _albumArt = State(initialValue: AlbumArtworkStore(
+            ready: { amProvider.canResolve },
+            resolve: { song in await amProvider.resolve(song)?.artworkURL }))
+        _lyrics = State(initialValue: LyricsStore())
     }
 
     var body: some Scene {
@@ -65,6 +78,8 @@ struct PocketDJApp: App {
                 .environment(streaming)
                 .environment(burns)
                 .environment(coordinator)
+                .environment(albumArt)
+                .environment(lyrics)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // Streaming OAuth redirect (e.g. pocketdj://spotify-login-callback)

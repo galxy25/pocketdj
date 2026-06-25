@@ -244,6 +244,70 @@ final class CollectionsStore {
         playlists.append(pl); save(); return pl
     }
 
+    // MARK: Convert playlist → pocket
+
+    /// Convert an editable playlist TEMPLATE into a NEW, reusable Pocket. Its song /
+    /// album / pocket node refs become the pocket's direct members (songs, albums,
+    /// nested child pockets) and its free-text cues become ordered notes. Order +
+    /// per-kind dedup are preserved; albums and pockets are kept as REFS (not
+    /// expanded — a pocket holds them directly). The source playlist is left
+    /// untouched. Returns the new pocket, or nil if the playlist id is unknown.
+    @discardableResult
+    func convertToPocket(playlistId id: String) -> Pocket? {
+        guard let pl = playlist(id) else { return nil }
+        let refs = pocketRefs(from: pl.sequences)
+        return makeAndSavePocket(named: pl.name, songIds: refs.songIds, albumIds: refs.albumIds,
+                                 childPocketIds: refs.childPocketIds, noteTexts: refs.noteTexts)
+    }
+
+    /// Convert a read-only "From your sources" playlist (e.g. an Apple Music user
+    /// playlist carried in the catalog) into a NEW Pocket of its songs (order
+    /// preserved, deduped). Always succeeds — even an empty source yields a pocket.
+    @discardableResult
+    func convertToPocket(source: SourcePlaylist) -> Pocket {
+        var seen = Set<String>(); var ids: [String] = []
+        for sid in source.songIds where seen.insert(sid).inserted { ids.append(sid) }
+        return makeAndSavePocket(named: source.name, songIds: ids)
+    }
+
+    /// Walk a playlist's nodes (recursing into sub-sequences) and collect its DIRECT
+    /// member refs — order-preserving + deduped per kind. Albums/pockets are NOT
+    /// expanded (a pocket stores them as members); text cues are kept in order.
+    private func pocketRefs(from sequences: [PlaylistNode])
+        -> (songIds: [String], albumIds: [String], childPocketIds: [String], noteTexts: [String]) {
+        var songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [], noteTexts: [String] = []
+        var sSeen = Set<String>(), aSeen = Set<String>(), pSeen = Set<String>()
+        func walk(_ nodes: [PlaylistNode]) {
+            for n in nodes {
+                switch n.kind {
+                case .song:     if let id = n.songId, sSeen.insert(id).inserted { songIds.append(id) }
+                case .album:    if let id = n.albumId, aSeen.insert(id).inserted { albumIds.append(id) }
+                case .pocket:   if let id = n.pocketId, pSeen.insert(id).inserted { childPocketIds.append(id) }
+                case .text:     if let t = n.text, !t.trimmingCharacters(in: .whitespaces).isEmpty { noteTexts.append(t) }
+                case .sequence: walk(n.children ?? [])
+                }
+            }
+        }
+        walk(sequences)
+        return (songIds, albumIds, childPocketIds, noteTexts)
+    }
+
+    /// Build + persist a new pocket from already-deduped/ordered member refs. Text
+    /// cues become ordered `PocketNote`s (position = their index among the notes).
+    @discardableResult
+    private func makeAndSavePocket(named name: String, songIds: [String] = [], albumIds: [String] = [],
+                                   childPocketIds: [String] = [], noteTexts: [String] = []) -> Pocket {
+        let ts = now
+        let notes = noteTexts.enumerated().map { i, t in
+            PocketNote(id: CollectionsFactory.newPocketNoteId(), text: t, position: i)
+        }
+        let pocket = Pocket(id: CollectionsFactory.newPocketId(), name: name,
+                            songIds: songIds, albumIds: albumIds, childPocketIds: childPocketIds,
+                            notes: notes, createdAt: ts, updatedAt: ts)
+        pockets.append(pocket); save()
+        return pocket
+    }
+
     // MARK: Playlist folders (FLAT — v3)
 
     func folder(_ id: String) -> PlaylistFolder? { folders.first { $0.id == id } }
