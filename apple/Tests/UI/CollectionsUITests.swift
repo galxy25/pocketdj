@@ -208,7 +208,11 @@ final class PlaylistsUITests: XCTestCase {
 // MARK: - Setlist (Play → frozen)
 
 final class SetlistUITests: XCTestCase {
+    private var app: XCUIApplication!
     override func setUp() { continueAfterFailure = false }
+    // Terminate between tests so each gets a clean launch — back-to-back relaunches in one
+    // class otherwise race (a lingering prior instance), an intermittent first-tap flake.
+    override func tearDown() { app?.terminate(); app = nil }
 
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
@@ -216,6 +220,7 @@ final class SetlistUITests: XCTestCase {
         app.launchEnvironment["PDJ_SEED_COLLECTIONS"] = "1"   // seed "Seeded Set" w/ sng_1
         app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
         app.launch()
+        self.app = app
         return app
     }
 

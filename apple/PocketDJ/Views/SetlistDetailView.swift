@@ -199,10 +199,9 @@ struct SetlistDetailView: View {
     private func setlistToolbar(_ setlist: Setlist) -> some ToolbarContent {
         #if os(iOS)
         if isPlaying {
+            // The centered cluster already carries play/PAUSE — no separate ⏹ Stop button
+            // (play/pause is sufficient). Pausing halts the set; leave the screen to end it.
             ToolbarItem(placement: .principal) { transportCluster }
-            // STOP takes the play button's place (NOT a menu item): same trailing slot that
-            // shows ▶ Play when idle shows ⏹ Stop while running.
-            ToolbarItem(placement: .topBarTrailing) { startStopButton(setlist) }
             ToolbarItem(placement: .topBarTrailing) { PlaybackModeToggle() }
             ToolbarItem(placement: .topBarTrailing) { overflowMenu(setlist) }
         } else {
@@ -271,16 +270,18 @@ struct SetlistDetailView: View {
         .tint(Theme.accent)
     }
 
-    /// PLAY ALL (start) / STOP (end) the set. The iOS play-mode transport uses play/PAUSE
-    /// instead (Stop lives in the ••• menu there); this is the idle-iOS / macOS button.
+    /// PLAY / PAUSE the set — no dedicated ⏹ Stop (play/pause is sufficient). Idle ⇒ ▶ starts
+    /// the set; while running it pauses/resumes the active backend (the same toggle as the
+    /// centered cluster). The set ends by finishing or leaving the screen (which stops it).
+    /// This is the idle-iOS button and the macOS toolbar's sole transport.
     private func startStopButton(_ setlist: Setlist) -> some View {
         Button {
-            if isPlaying { setlistPlayer?.stop() }
+            if isPlaying { toggleTransport() }
             else { ensurePlayer().play(playableItems(setlist)) }
         } label: {
-            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+            Image(systemName: isPlaying && transportIsPlaying ? "pause.fill" : "play.fill")
         }
-        .help(isPlaying ? "Stop playing the set list" : "Play the set list in order")
+        .help(isPlaying ? (transportIsPlaying ? "Pause" : "Resume") : "Play the set list in order")
         .disabled(!isPlaying && playableItems(setlist).isEmpty)
         .accessibilityIdentifier("setlist-play")
     }
