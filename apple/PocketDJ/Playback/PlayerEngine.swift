@@ -63,6 +63,12 @@ final class PlayerEngine {
     /// AND the position boundary): whichever lands first fires `onTrackEnded` and the other is
     /// suppressed, so the set can't double-advance. Reset on every `load`/`setEndBoundary`.
     private var trackEndSignaled = false
+    /// A security-scoped-access RELEASE for the currently-loaded burned file in a USER-PICKED
+    /// burn folder. The scope MUST stay open while AVPlayer reads the file, so the burn store
+    /// hands it here; we release it when the item is replaced (next `load`) or `stop`ped.
+    /// Releasing it early leaves AVPlayer unable to READ the file → a silent 0:00 / no audio.
+    /// nil for app-storage files (no scope needed).
+    private var scopeRelease: (() -> Void)?
 
     /// Fired when the CURRENT item plays to its natural end (finite mp3 / burnt-local file).
     /// The setlist sequencer (Feature 3) owns this to auto-advance; nil means no consumer.
@@ -129,10 +135,14 @@ final class PlayerEngine {
     /// `endBoundaryMs` (optional) arms a position-based end boundary (absolute ms in the
     /// file) so the sequencer advances at the track's own length inside a shared album mp3.
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "",
-              endBoundaryMs: Int? = nil) {
+              endBoundaryMs: Int? = nil, scopeRelease: (() -> Void)? = nil) {
         // Defensively re-arm the audio session: an interruption (call / other app) can
         // deactivate it, and a backgrounded set must keep playing across track boundaries.
         configureAudioSession()
+        // Release the PREVIOUS track's scoped-folder access before swapping items, then hold the
+        // NEW one for the lifetime of this item so AVPlayer can read a user-folder burned file.
+        self.scopeRelease?()
+        self.scopeRelease = scopeRelease
         isLive = live
         clock.currentTime = 0
         clock.duration = 0
@@ -226,6 +236,7 @@ final class PlayerEngine {
         clock.currentTime = 0; clock.duration = 0; duration = 0; isPlaying = false; isLive = false
         pendingSeekMs = nil
         endBoundarySec = nil; trackEndSignaled = false
+        scopeRelease?(); scopeRelease = nil   // release the user-folder file's security scope
         clearNowPlayingInfo()
     }
 

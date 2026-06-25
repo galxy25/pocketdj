@@ -430,9 +430,10 @@ struct RowTransport: View {
         // burned-first rule, so single taps and Play-All agree). The lookup is O(1): a songId →
         // dict hit → one `fileExists` stat. Only when there's NO local file does cloud stream /
         // device fall back to cloud for this single tap.
-        if let local = burns.localURL(forSong: song.id) {
-            playLocalFile(local, songId: song.id, title: song.title, artist: song.artist,
-                          startMs: burns.startMs(forSong: song.id), rips: rips, player: player)
+        if let res = burns.localURLForPlayback(forSong: song.id) {
+            playLocalFile(res.url, songId: song.id, title: song.title, artist: song.artist,
+                          startMs: burns.startMs(forSong: song.id), rips: rips, player: player,
+                          release: res.release)
             return
         }
         busy = .play
@@ -561,8 +562,16 @@ struct InlinePlayerPanel: View {
 /// the slide-out" bug); isolating the churn here keeps play/pause · ✕ · chevron responsive.
 private struct InlinePlayerExpanded: View {
     @Environment(PlayerEngine.self) private var player
+    @Environment(AppModel.self) private var app
     @State private var scrubbing: Double?
     let now: RipsStore.NowPlaying
+
+    /// The song's length (seconds) from the catalog INDEX metadata — used as the scrubber's
+    /// end-timestamp fallback when the audio file's real duration isn't known yet (still
+    /// loading, or it couldn't be read), so the panel always shows a sensible "/ m:ss".
+    private var catalogDurationSec: Double {
+        Double(app.songsById[now.songId]?.length ?? 0) / 1000
+    }
 
     var body: some View {
         if now.live {
@@ -596,7 +605,9 @@ private struct InlinePlayerExpanded: View {
         // ONLY this TimelineView's content and never invalidates Observation state in the
         // panel — keeping the sibling control buttons' identity stable so their clicks
         // aren't dropped. Duration is observable (changes once per track) → slider range.
-        let duration = max(player.duration, 0.01)
+        // Fall back to the catalog index length so the END timestamp shows even when the audio
+        // file's real duration isn't known (still loading, or the file couldn't be read).
+        let duration = max(player.duration, catalogDurationSec, 0.01)
         return TimelineView(.periodic(from: .now, by: 0.25)) { _ in
             let now = scrubbing ?? player.clock.currentTime
             // Full-width slider so it lines up edge-to-edge with the waveform above it;

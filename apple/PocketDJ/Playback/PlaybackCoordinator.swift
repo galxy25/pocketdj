@@ -27,12 +27,12 @@ import Observation
 @MainActor
 func playLocalFile(_ url: URL, songId: String, title: String, artist: String,
                    startMs: Int?, rips: RipsStore, player: PlayerEngine,
-                   endBoundaryMs: Int? = nil) {
+                   endBoundaryMs: Int? = nil, release: (() -> Void)? = nil) {
     let np = RipsStore.NowPlaying(songId: songId, title: title, artist: artist,
                                   url: url, live: false, startMs: startMs, waveform: nil)
     rips.setNowPlaying(np)
     player.load(url: url, live: false, startMs: startMs, title: title, artist: artist,
-                endBoundaryMs: endBoundaryMs)
+                endBoundaryMs: endBoundaryMs, scopeRelease: release)
 }
 
 @MainActor

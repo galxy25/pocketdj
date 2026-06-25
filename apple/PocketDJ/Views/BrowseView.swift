@@ -122,9 +122,10 @@ struct BrowseView: View {
         if rips.nowPlaying?.songId == id { player.toggle(); return }
         // OFFLINE-FIRST: prefer a BURNED local file (zero-latency, no network) before any rip —
         // mirrors the row ▶ so ⌘P also plays burned songs with no connection.
-        if let local = burns.localURL(forSong: id) {
-            playLocalFile(local, songId: id, title: song.name, artist: song.artist,
-                          startMs: burns.startMs(forSong: id), rips: rips, player: player)
+        if let res = burns.localURLForPlayback(forSong: id) {
+            playLocalFile(res.url, songId: id, title: song.name, artist: song.artist,
+                          startMs: burns.startMs(forSong: id), rips: rips, player: player,
+                          release: res.release)
             return
         }
         Task {

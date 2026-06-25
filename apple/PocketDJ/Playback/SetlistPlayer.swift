@@ -212,13 +212,15 @@ final class SetlistPlayer {
         // end-of-set advance raises the CRITIC-D banner. Mode-flip mid-set applies to the
         // NEXT track: the current track keeps playing under the mode it started with.
         if mode == .device {
-            if let local = burns.localURL(forSong: it.id) {
+            if let res = burns.localURLForPlayback(forSong: it.id) {
                 loadedAnyDeviceTrack = true
                 // SHARED helper so nowPlaying + the inline player + the row toggle stay
-                // consistent with the single-row burned path.
-                playLocalFile(local, songId: it.id, title: it.title, artist: it.artist,
+                // consistent with the single-row burned path. `res.release` keeps a user-folder
+                // file's security scope open through playback.
+                playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                               startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
-                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)))
+                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                              release: res.release)
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
                 advance()   // no on-device file for this track → skip it
@@ -228,11 +230,12 @@ final class SetlistPlayer {
 
         // CLOUD mode (default): prefer a burned local file when present (zero-latency,
         // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
-        if let local = burns.localURL(forSong: it.id) {
+        if let res = burns.localURLForPlayback(forSong: it.id) {
             loadedAnyDeviceTrack = true
-            playLocalFile(local, songId: it.id, title: it.title, artist: it.artist,
+            playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
-                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)))
+                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                          release: res.release)
         } else {
             await coordinator.play(id: it.id, title: it.title, artist: it.artist)
             // Dead source (no server / rip error) → no end event will fire; advance now.

@@ -225,8 +225,12 @@ final class BurnStore {
     /// (the caller must `stopAccessingSecurityScopedResource()` then) + whether it is the
     /// user folder. Falls back on ANY problem (denied access / unmounted / not writable) so a
     /// burn never writes to an inaccessible path. `allowRePersist` re-creates + re-persists a
-    /// stale bookmark (only on the write path; the read path resolves read-only).
-    private func resolveBurnFolder(allowRePersist: Bool) -> (url: URL, scoped: Bool, isUserFolder: Bool)? {
+    /// stale bookmark (only on the write path; the read path resolves read-only). `requireWritable`
+    /// (true on the WRITE path, false on the READ/playback path): PLAYBACK only needs the folder
+    /// READABLE, so a Files-provider folder that resolves but isn't currently writable (e.g. an
+    /// offline iCloud Drive folder) must still satisfy a read — gating reads on writability was a
+    /// second way burned songs failed to resolve.
+    private func resolveBurnFolder(allowRePersist: Bool, requireWritable: Bool = true) -> (url: URL, scoped: Bool, isUserFolder: Bool)? {
         if let data = settings?.burnFolderBookmark {
             var stale = false
             #if os(macOS)
@@ -237,7 +241,7 @@ final class BurnStore {
             if let url = try? URL(resolvingBookmarkData: data, options: opts,
                                   relativeTo: nil, bookmarkDataIsStale: &stale) {
                 let ok = url.startAccessingSecurityScopedResource()
-                if ok && FileManager.default.isWritableFile(atPath: url.path) {
+                if ok && (!requireWritable || FileManager.default.isWritableFile(atPath: url.path)) {
                     if stale && allowRePersist, let fresh = Self.makeBookmark(for: url) {
                         settings?.burnFolderBookmark = fresh
                         settings?.persist()
@@ -271,7 +275,9 @@ final class BurnStore {
         if item.wasAppStorage ?? true {
             return (try? RipsStore.burnsDirectory()).map { ($0, false) }
         }
-        guard let resolved = resolveBurnFolder(allowRePersist: false), resolved.isUserFolder else {
+        // READ/playback path: the folder only needs to be READABLE, not writable.
+        guard let resolved = resolveBurnFolder(allowRePersist: false, requireWritable: false),
+              resolved.isUserFolder else {
             return nil   // the user folder is gone — the item can't be resolved right now
         }
         return (resolved.url, resolved.scoped)
@@ -288,6 +294,25 @@ final class BurnStore {
         defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
         let url = dir.appendingPathComponent(item.audioFileName)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Like `localURL`, but for PLAYBACK: when the burned file lives in a USER-PICKED
+    /// (security-scoped) folder, this KEEPS the scoped access OPEN and returns a `release`
+    /// closure for the player to call when it's done. `localURL` stops the scope immediately in
+    /// its `defer` — fine for an existence check, but it leaves AVPlayer unable to READ the file
+    /// during playback (a silent 0:00 / no audio). `release` is nil for app-storage files (no
+    /// scope needed). Returns nil when the item isn't ready / the file is missing (then the
+    /// caller skips or streams).
+    func localURLForPlayback(forSong songId: String) -> (url: URL, release: (() -> Void)?)? {
+        guard let item = items[songId], item.state == .ready,
+              let (dir, scoped) = itemDir(item) else { return nil }
+        let url = dir.appendingPathComponent(item.audioFileName)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if scoped { dir.stopAccessingSecurityScopedResource() }   // missing → don't leak scope
+            return nil
+        }
+        // KEEP the scope open; the player releases it on the next load / stop.
+        return (url, scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
     }
 
     /// The analog seek offset (ms) within a shared album mp3 for a ready burned song, so a
