@@ -254,7 +254,9 @@ view/realize time. (The full performance semantics are
                    childPocketIds[], notes?:PocketNote[] }   DAG, cycle-guarded; albums expand at realize
    PocketNote   pnt_  { id, text, position }   v2: free-text item ("poetry pocket"), orderable
                                                 AMONG members by position in [pockets,albums,songs,notes]
- Playlist pls_   { name, sequences:SequenceNode[], targetMs?, importedFrom? }
+ PlaylistFolder fld_ { id, name, createdAt, updatedAt }   v3: FLAT named group; carries NO member
+                                                list (membership is Playlist.folderId — see below)
+ Playlist pls_   { name, sequences:SequenceNode[], targetMs?, importedFrom?, folderId? }   folderId v3
    SequenceNode  { name, targetMs?, children: PlaylistNode[] }   sequences[0]=Default
      PlaylistNode = SongNode | AlbumNode | PocketNode | SequenceNode | TextNode(cue)
                     (each node may carry a performer `note`, and a source `sourceId`)
@@ -262,6 +264,7 @@ view/realize time. (The full performance semantics are
    SetlistTrack  { songId, artist,name,bpm,camelot,lengthMs   (SNAPSHOT),
                    source:'explicit'|'pocket'|'autofill', sequenceName?, note?,
                    isText?, pocketId?, mixSuggestions?[] (DEFERRED) }
+   set_now_playing · pls_now_playing   RESERVED reusable "Now Playing" setlist (§3.1)
 ```
 
 **Reading the diagram.** A **Pocket** (`pkt_`) is a reusable grouping that nests
@@ -272,7 +275,55 @@ other pockets into a cycle-guarded **DAG** (only `kind:'harmonic'` is built;
 `importedFrom` marks an iTunes mirror. A **Setlist** (`set_`) is the **frozen
 instance**: each `SetlistTrack` snapshots artist/bpm/camelot/length **inline** so it
 reads standalone even if the catalog later changes; `source` records provenance; and
-`mixSuggestions` is the **deferred AI seam** (Ch. 4).
+`mixSuggestions` is the **deferred AI seam** (Ch. 4). A **`PlaylistFolder`** (`fld_`) is
+a **flat, named group** of playlists; it carries **no member list** — membership is the
+optional **`Playlist.folderId`** back-reference (`nil` ⇒ top level), so a folder is just
+an id + name + timestamps. The reserved `set_now_playing` / `pls_now_playing` ids back the
+reusable Play/Shuffle setlist (§3.1).
+
+### 3.1 The `CollectionsDocument` envelope, schema versioning, and folders (native)
+
+**Source of truth:**
+[`apple/PocketDJ/Models/CollectionsSchema.swift`](../../apple/PocketDJ/Models/CollectionsSchema.swift)
+(`CollectionsDocument`, `PlaylistFolder`, `CollectionsMigration`).
+
+The native app persists the whole collections graph as **one versioned, lenient-decode
+`CollectionsDocument`** so the *shape* can evolve without breaking older docs:
+
+```
+ CollectionsDocument { schemaVersion, pockets[], playlists[], setlists[],
+                       folders:[PlaylistFolder]  (v3),  lastAddTarget? }
+   collectionsSchemaVersion = 3      additive-only · lenient (missing version ⇒ v0; missing lists ⇒ [])
+
+ CollectionsMigration.migrate(doc):                      runs when doc.schemaVersion < current
+   v1 → v2   pockets gain ordered notes:[PocketNote]    (each older pocket gets notes:[])
+   v2 → v3   playlists gain folderId?  +  doc gains folders:[PlaylistFolder]
+             (lenient decode already defaults folders→[] and every folderId→nil ⇒ top level;
+              the migration just stamps schemaVersion — a no-op remap, the seam for a future
+              folder-shape transform)
+```
+
+**Reading it.** `schemaVersion` is bumped on any shape change and
+`CollectionsMigration.migrate` upgrades older documents on load; decode is **lenient**
+(a missing version ⇒ v0, a missing list ⇒ empty) and **additive-only** (never remove or
+repurpose a field). The **v2→v3** step is the playlist-folders one: playlists gained an
+optional **`folderId: String?`** and the document gained a **flat `folders:
+[PlaylistFolder]`** list. It's fully back-compat in *both* directions — a v2 doc migrates
+forward (folders defaults to `[]`, every `folderId` stays `nil` ⇒ top level), and a v3 doc
+**loads degraded on a v2 app** (the unknown `folders` / `folderId` keys are ignored,
+playlists intact). Deleting a folder keeps its playlists (they fall back to top level —
+`folderId ⇒ nil`); folders are name-ordered (case-insensitive) for stable display.
+
+**Folders survive import / merge / backup.** Because a folder is pure id+name, it carries
+cleanly through every transfer path (`CollectionsStore.importCollection` + the backup zip):
+on a full-doc import, fresh folder ids are minted up-front (`folderIdMap`) and each imported
+playlist's `folderId` is **remapped** through that map (a ref to a folder *not* in the
+import is dropped ⇒ top level), exactly like the pocket-id remap. The native backup zip
+([`apple/PocketDJ/Services/BackupZip.swift`](../../apple/PocketDJ/Services/BackupZip.swift))
+adds a **`folders.json`** member alongside `pockets`/`playlists`/`setlists`, decoded
+leniently (absent ⇒ `[]`) so an older backup restores without folders. The full
+playback/realize/Play-Shuffle semantics that consume these live in
+[Ch. 4 §6](./04-performance-engine.md#6-play--shuffle--the-reusable-now-playing-setlist-native).
 
 ---
 

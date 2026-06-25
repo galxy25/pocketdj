@@ -169,7 +169,112 @@ enqueues background analysis. Any failure → **error**.
 **Durability.** An accepted `/rip` writes `<tmp>/queue/<songId>.json`, deleted only on
 terminal (ready/error) — so a pending rip **survives a restart** (`resumePending()`
 re-enqueues, skipping anything already cached). `resumeAnalysis()` likewise re-queues
-ripped-but-unanalyzed entries on boot.
+ripped-but-unanalyzed entries on boot. The durable record also carries the retry
+**`attempt`** count (§3.1) so a restart preserves the self-heal budget.
+
+### 3.1 Queue self-heal — per-job watchdog + transient backoff retry
+
+**Why.** The queue is **concurrency-1** and capture is **real-time**: a single capture
+that *hangs* (Music.app / Audio Hijack wedged, an ffmpeg that never closes) would leave
+`working` true forever and **freeze the whole queue** behind it, and a *transient* blip
+(a vinyl drive unmounted for a moment, a network hiccup) would permanently fail a job
+that a retry seconds later would sail through. The self-heal layer in
+[`scripts/rip-server.mjs`](../../scripts/rip-server.mjs) (the `SELFHEAL` config +
+`pump()` race + `scheduleRetry()`) makes one stuck or flaky job **unable to wedge the
+queue** and lets a remounted drive **self-heal**. End-to-end test:
+[`scripts/test/rip-selfheal-e2e.mjs`](../../scripts/test/rip-selfheal-e2e.mjs)
+(`RIP_TEST_*` env vars shrink the timeouts/backoff so a hang→retry cycle runs in
+seconds).
+
+```
+ pump(): shift job → activeJobId set → Promise.race([ runJob(job), watchdog(deadline) ])
+   │
+   ├─ runJob wins → job sets its OWN terminal phase (ready | error)
+   └─ watchdog wins (deadline elapsed):
+        group-kill activeChild.p (process.kill(-pid, SIGKILL) — same kill /rip-cancel uses)
+        reject('watchdog timeout') → job fail()s
+
+ jobDeadlineMs(job, song):
+   analog (sourceType==='analog' && !preferCloud) → analogCapMs               = 12 min (fixed)
+   digital / cloud                                → clamp( (song.length||6min)*1.5 + 90s,
+                                                            floor 90s … ceil 30min )
+
+ on terminal error → retryable = phase==='error' && !canceled
+                                  && isTransient(job,msg) && attempt < maxAttempts(5)
+   isTransient:  /unknown songId/ → false (PERMANENT)
+                 /no analog file reference/ → false (PERMANENT)
+                 canceled → false
+                 else (analog source missing, aws/s3/network, watchdog timeout,
+                       spawn/exit, generic capture failure) → TRUE
+   retryable → scheduleRetry(): bump attempt, KEEP resourceKey inflight across the gap,
+               re-persist the durable queue record, setTimeout(backoffMs[attempt-1]) → enqueue
+               backoffMs = [30s, 2m, 8m, 8m]   (index by attempt-1, clamped to last)
+   not retryable → terminal 'error' (gave-up logged), pump() drains the next job
+```
+
+**Reading the diagram.** `pump()` sets **`activeJobId`** the instant a job leaves the
+queue (before spawn — the same pre-spawn cancel guard §2.1 relies on), then
+**`Promise.race`s** the real `runJob` against a **duration-aware watchdog**. The
+**deadline** is computed per job by `jobDeadlineMs`: an analog ffmpeg transcode (fast,
+not real-time) gets a generous **fixed 12-minute** cap; a digital/cloud **real-time**
+capture gets `song.length × 1.5 + 90s` (the 90s buffers spawn/seek/upload slack),
+**clamped to a 90s floor** (never kill a legitimate short capture early) and a **30-min
+ceiling** (no single track legitimately runs that long; an unknown length assumes a
+6-min song). If the watchdog wins the race it **group-kills** the in-flight capture
+child with the *same* `process.kill(-pid, SIGKILL)` `/rip-cancel` uses (§2.1 — the
+detached process group reaps the worker and its grandchildren) and rejects with
+`watchdog timeout`, so the job `fail()`s and `pump()` advances. On any terminal error
+the server classifies it via **`isTransient`**: an *unknown song* or *no analog file
+reference* is **permanent** (and a cancel is never a retry), so it stays failed;
+**everything else** — a missing analog drive/file, an aws/network error, the watchdog
+timeout, a spawn/exit failure — is **transient** and, within the `maxAttempts` (5)
+budget, **`scheduleRetry()`** bumps the `attempt`, **keeps the `resourceKey` marked
+inflight across the backoff gap** (so single-flight holds and a duplicate `/rip` still
+joins), re-persists the durable queue record with the bumped attempt, and `setTimeout`s
+a re-`enqueue` after a **capped exponential backoff** (`[30s, 2m, 8m, 8m]`, indexed by
+`attempt-1` and clamped to the last). Crucially the retry is scheduled **without holding
+the worker** — `pump()` is free to run the next queued song during the backoff window —
+so one flaky job can't starve the rest. A cancel landing in the backoff window
+supersedes the pending retry (the timer checks `job.canceled` + that the `resourceKey`
+still points at it). Because the bumped `attempt` rides the durable per-`songId` queue
+record (§3), a **server restart mid-backoff preserves the remaining retry budget**.
+
+### 3.2 Analog source config — `POCKETDJ_ANALOG_BASE` + removable-volume TCC
+
+**Why.** The analog (vinyl) path resolves the raw album file at
+`${analogBase}/<album.pointer.originalFilename>` — e.g. `SWVNewBeginningsRaw.mp3`
+(the `…Raw` filename Ch. 2 indexes from). `analogBase` is
+`process.env.POCKETDJ_ANALOG_BASE` (tilde-expanded) and **defaults to `~/Downloads`**
+when unset. On Levi's iMac the raw rips do **not** live in `~/Downloads` — they're on
+an **external drive, `/Volumes/RipBurnMix`** — so an unset base makes
+`runAnalogJob`'s `existsSync(src)` miss and **every analog rip fail** `analog file not
+found: …` (now a *transient* failure, §3.1, so it backs off and retries — letting a
+remounted drive self-heal, but never succeeding while the base is wrong).
+
+So the launchd agent
+([`scripts/launchd/com.pocketdj.ripserver.plist`](../../scripts/launchd/com.pocketdj.ripserver.plist))
+sets, under `EnvironmentVariables`:
+
+```
+ POCKETDJ_ANALOG_BASE = /Volumes/RipBurnMix
+```
+
+Two operational gotchas come with reading an external volume from a launchd-spawned
+node:
+
+- **Removable-volume TCC.** macOS gates `/Volumes/*` behind the **Files & Folders /
+  removable-volume** privacy permission. `node` (the binary launchd runs) must be
+  granted *Removable Volumes* access (System Settings ▸ Privacy & Security ▸ Files and
+  Folders) or `existsSync`/`ffmpeg` read fails even with the base set correctly.
+- **`originalFilename` resolution.** The rip uses the album's
+  `pointer.originalFilename` verbatim (`join(analogBase, originalFilename)`), so the
+  filename in the index must match the on-disk name exactly; a missing
+  `pointer.originalFilename` is the **permanent** `no analog file reference` failure
+  (never retried, §3.1).
+
+`GET /health` echoes the resolved `analogBase` (and the boot log prints it) so a
+mis-set base is visible without reading the source. This config is also carried in the
+foundations capability table (Ch. 1) and the launchd-agent note (Ch. 7 §6).
 
 ---
 
@@ -314,8 +419,9 @@ platforms. `load(url:live:startMs:…)` swaps the item; a non-live (analog) item
 `startMs` once it reports a usable duration; a live HLS item starts immediately and
 never seeks (no static duration). It also wires **`MPNowPlayingInfoCenter` +
 `MPRemoteCommandCenter`** so the lock screen / Control Center / AirPods / CarPlay drive
-play / pause / scrub, and configures the `.playback` audio session so audio continues
-in the background (the `UIBackgroundModes: [audio]` capability, Ch. 7).
+play / pause / scrub — **and next / previous, which advance a running setlist while
+locked** (§11.3) — and configures the `.playback` audio session so audio continues in the
+background (the `UIBackgroundModes` capability, Ch. 7 §6).
 
 **The `PlayerClock` / TimelineView trick (the load-bearing part).** The playback
 position ticks ~4×/s (a `addPeriodicTimeObserver` at 0.25 s). If that tick lived on the
@@ -478,13 +584,33 @@ like `downloadData`) when the song isn't cached. Per song:
  burn(songs, lookup):  for each song, sequentially —
    isFresh? (state==.ready ∧ file exists ∧ size==bytes ∧ manifest.rippedAt ≤ downloadedAt) → skip
    cachedURL == nil → record "not ripped — Rip first" → continue   (NEVER ensureURL)
+   resolve catalog (song s, album a) BEFORE naming   → fileNames(songId, entry, song:s, album:a)
    downloadDataIfCached → (data, ManifestEntry)
-   analog → <albumId>.mp3 (one shared file/album, reuse if a sibling wrote it; seek by startMs)
-   digital → <songId>.mp3
-   write <songId>.txt sidecar (BPM · Key+Camelot · Sentiment · Album + metadata + raw JSON)
+   analog → <Artist-Album-Year-Genre>-<albumId>.mp3   (ALBUM-LEVEL prefix; one shared file/album,
+                                                        reuse if a sibling wrote it; seek by startMs)
+   digital → <Artist-Song-Album-Year-Genre-Camelot-Key-BPM>-<songId>.mp3   (PER-SONG prefix)
+   write <Artist-Song-…-BPM>-<songId>.txt sidecar (BPM · Key+Camelot · Sentiment · Album + meta + JSON)
    record BurnItem{ audio/sidecar names, bpm/key/camelot/durationMs/startMs, bytes,
                     rippedAt(from entry), downloadedAt(now), state:.ready }  → save()
 ```
+
+**The metadata filename scheme (§9.0).** The burned audio + sidecar names now carry a
+**sanitized, descriptive prefix** so a file is identifiable in Finder/Files without opening
+the sidecar — built by `BurnStore.fileNames(for:entry:song:album:)` (the catalog `song`/
+`album` are resolved **before** naming so the prefix has the real metadata). The digital
+per-song prefix is **`Artist-Song-Album-Year-Genre-Camelot-Key-BPM`** (analyzed
+bpm/key/camelot preferred from the manifest `entry`, falling back to the catalog song);
+the **analog** shared whole-album file gets an **album-level** prefix
+(`Artist-Album-Year-Genre`, **no** per-song bpm/key — it's one file for the whole side, so
+every song of the album must map to the *same* audio name to keep the shared-file
+reuse/dedup/`isFresh` logic correct). The `.txt` sidecar always uses the per-song prefix.
+Each token is **sanitized** (`sanitizeToken`: illegal/reserved filename chars **and** the
+`-` separator → spaces, whitespace collapsed, capped at 40 chars) and missing fields are
+**dropped** (no empty placeholder tokens); `descriptiveName` then joins the prefix with
+`-`, **caps only the prefix** (150 chars) and **never truncates** the `idSuffix` (the
+`albumId` for analog / `songId` for digital, from the manifest key's basename) or the
+extension — so keying, dedup, and finalize stay stable. A blank prefix degrades to just
+`<id>.<ext>`.
 
 **Freshness — `isFresh(_:dir:rippedAt:)`.** A burn is reused only when its file still
 exists **and** its size matches the recorded `bytes` **and** the manifest entry's
@@ -528,7 +654,54 @@ unmounted — no data destruction from an ejected drive.
 `burn(...)` loop checks between items, so **already-downloaded files are kept** and the rest
 are simply not attempted (`BurnResult.stopped`). The view's controller routes the one Stop
 button to the right path — cancel the app-side burn `Task` for a burn, `POST /rip-cancel`
-for a rip — by tracking which long-running op is in flight (Ch. 5 §9 view).
+for a rip — by tracking which long-running op is in flight.
+
+### 9.1 Persistent collection-RIP Stop + live progress (the `CollectionRipBurnController` poll)
+
+**Why.** A **burn** runs *in-app*: its `burn(...)` Task lives for the whole download, so
+`working` stays true and the Stop button is naturally visible the entire time. A
+**collection RIP** is different — `ripCollection` only **enqueues** (the `/rip-collection`
+POST returns in ~1–2s), and the actual capture happens **server-side, real-time,
+concurrency-1, over minutes-to-hours**. With the old logic, Stop was tied to `working`, so
+it vanished the instant the enqueue POST returned — leaving the user **no way to cancel** a
+long-running set rip they'd just started, and **no progress** for it. The
+[`CollectionRipBurnController`](../../apple/PocketDJ/Views/CollectionRipBurn.swift) now
+drives a **manifest poll** that keeps a Stop + a live "X of N ripped" indicator visible
+until the server finishes the queue.
+
+```
+ rip(ids):  working=true → ripCollection(ids) (enqueue) → working=false
+   pending = queued+inflight > 0 ?  → startRipPoll(ids)
+                                                 │
+   startRipPoll:  ripInProgress = true; capture lastRipIds = ids
+     loop (≤ ripPollMaxTicks ≈ 1600 @ 4.5s = ~2h cap):
+        sleep(ripPollIntervalMs)  → rips.refreshManifest()
+        done = ids.count { rips.cachedURL(id) != nil }
+        ripProgress = "ripping — \(done) of \(total) done"
+        done == total → finishRipPoll() (ripInProgress=false, "Ripped N of N")
+   STOP (visible while working || ripInProgress):
+        inFlightOp==.burn → burns.requestStop() + burnTask.cancel()
+        else (rip)        → clearRipProgress() + cancelCollection(lastRipIds)  (POST /rip-cancel)
+```
+
+**Reading the diagram.** After `ripCollection` enqueues, if anything is still
+`queued`/`inflight` the controller starts **`startRipPoll`**: it flips
+**`ripInProgress`** true (the buttons view shows Stop while `working || ripInProgress`,
+and the screen-level overlay shows a persistent **"ripping — X of N done"** capsule with
+its own Stop **outside the Menu**, since a Menu dismisses its content on selection), then
+loops on a cancellable Task — every `ripPollIntervalMs` (~4.5s) it `refreshManifest()`s
+the **public S3 manifest** and counts how many of the captured `lastRipIds` now have a
+`cachedURL`, driving `ripProgress` + the result summary. It stops when all are ripped
+(`finishRipPoll`), on Stop, or after a generous **safety cap** (`ripPollMaxTicks` ≈ 1600
+ticks ≈ 2h) so the poll Task **never leaks or polls forever** (a real-time concurrency-1
+rip can be slow, but a leaked Task is worse than ending the *indicator* early — a manual
+Refresh still reconciles). **Stop** routes on the in-flight op: a burn signals the
+`BurnStore` loop + cancels the app-side Task (§9); a rip — whether still enqueuing
+(`inFlightOp == .rip`) **or** already enqueued and polling (`inFlightOp == nil` but
+`ripInProgress`) — tears down the poll and `cancelCollection(lastRipIds)` → **`POST
+/rip-cancel`** (§2.1). It's idempotent: a second Stop after the ids are cleared cancels
+nothing. (The burn's own progress capsule is unchanged; a third overlay branch reads the
+background-transfer coordinator's `progressSnapshot` for the backgrounded-burn path, §11.)
 
 ---
 
@@ -549,30 +722,310 @@ driven by the **Play/Stop** toolbar button in
 ```
  SetlistPlayer.play(items)  ── items = [{id,title,artist}] in setlist order
    index=0; player.onTrackEnded = handleEnded   (owns the hook only while running)
-   ▼ playCurrent()  — resolves the SOURCE FRESH each track:
-   burns.localURL(forSong: id) ≠ nil ?
-        → set rips.nowPlaying + player.load(localURL, live:false, startMs:nil)   (BURNT)
-        else → coordinator.play(id)   (Apple Music → rip fallback, §8)           (STREAM)
-              coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
-              player.isLive            → waitingForLive = true ("Next" affordance, no auto-end)
+   deviceQueueUnplayable=false; loadedAnyDeviceTrack=false   (fresh-run banner reset)
+   ▼ playCurrent()  — resolves the SOURCE FRESH each track, branching on playbackMode():
+   mode == .device :                                          (§12 — global toggle)
+        burns.localURL(forSong: id) ≠ nil ?
+            → playLocalFile(local, startMs: burns.startMs(id), …)  loadedAnyDeviceTrack=true (BURNT)
+            else → SKIP the track (advance NOW — un-burned, no file to play, no end event)
+   mode == .cloud (else) :
+        burns.localURL(forSong: id) ≠ nil ?
+            → set rips.nowPlaying + player.load(localURL, live:false, startMs:nil)   (BURNT)
+            else → coordinator.play(id)   (Apple Music → rip fallback, §8)           (STREAM)
+                  coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
+                  player.isLive            → waitingForLive = true ("Next" affordance, no auto-end)
    ▼ handleEnded()  (player.onTrackEnded fires on a finite item)
    GUARD rips.nowPlaying?.songId == queue[index].id  → advance() ; index≥count → stop()
+        on stop, if mode==.device && !loadedAnyDeviceTrack → deviceQueueUnplayable=true (banner)
 ```
 
 **Reading the diagram.** `play(items)` seeds the queue and takes ownership of the shared
 `PlayerEngine.onTrackEnded` hook (released in `stop()`). `playCurrent()` re-resolves the
-source **fresh each track** (a burnt file may have been purged since the queue was built):
-a burnt local file drives the **same `PlayerEngine`** the inline player binds to (set
-`nowPlaying`, then `load`), so the existing per-row `InlinePlayerSlot` (§7) lights up the
-current track with **zero new player UI**; otherwise it streams via `PlaybackCoordinator`
-(§8, Apple Music → rip fallback). Auto-advance rides the engine's finite-item end
-notification, but with an **ownership guard** — `handleEnded` ignores a stray end from an
-unrelated manual single-row play by checking `rips.nowPlaying?.songId == queue[index].id`.
-Two edges keep it from freezing: a **dead source** (coordinator error, or a purged burnt
-file) advances immediately since no end event will ever fire, and a **live HLS** capture
-(no natural end) sets `waitingForLive` so the UI shows a manual **Next** instead of stalling.
-Reaching the end tears down cleanly (releases the hook, clears now-playing) so the toolbar
-flips back to **Play**.
+source **fresh each track** (a burnt file may have been purged since the queue was built)
+and **branches on the global `playbackMode()` seam** (§12). In **`.cloud`** (today's
+default) it plays the burnt local file if present else streams via `PlaybackCoordinator`
+(§8, Apple Music → rip fallback). In **`.device`** it plays **only** the burnt local file
+and **skips** an un-burned track (advance immediately — there's no file and no end event
+would ever fire); a mode flip applies to the **next** track (the current one finishes under
+the mode it started with). Either way a burnt local file drives the **same `PlayerEngine`**
+the inline player binds to — via the shared `playLocalFile` helper (§12) in device mode, so
+`nowPlaying` + the per-row `InlinePlayerSlot` (§7) + the row pause/resume toggle stay
+consistent — so the current track lights up with **zero new player UI**. If a whole
+device-mode set reaches the end having loaded **no** burnt file, the end-of-set teardown
+raises a one-shot **`deviceQueueUnplayable`** flag the playback surface reads to show a
+transient "nothing on device" banner (so device mode never silently dead-ends with nothing
+playing; cleared on the next `play(_:)` or `clearDeviceUnplayable()`). Auto-advance rides
+the engine's finite-item end notification, with the same **ownership guard** —
+`handleEnded` ignores a stray end from an unrelated manual single-row play by checking
+`rips.nowPlaying?.songId == queue[index].id`. Two edges still keep cloud mode from
+freezing: a **dead source** (coordinator error, or a purged burnt file) advances
+immediately since no end event will ever fire, and a **live HLS** capture (no natural end)
+sets `waitingForLive` so the UI shows a manual **Next** instead of stalling. Reaching the
+end tears down cleanly (releases the hook, clears now-playing) so the toolbar flips back to
+**Play**.
+
+---
+
+## 11. Background processing — transfers + audio survive suspend/lock (native)
+
+**Why.** §9–§10 burn/download/play **only while the app is foreground**. A foreground
+`URLSession.shared.data(for:)` is killed the moment iOS suspends the app — so a Burn of a
+large set, a single-song Download, or a Setlist Play would all **stall when the user locks
+the phone or switches apps**. This branch makes rip-in reconcile, **burning, downloading,
+AND setlist playback continue while backgrounded / suspended / locked** (iOS especially;
+macOS compiles and relies on the background `URLSession` since it doesn't suspend the same
+way). Four pieces cooperate: a background-`URLSession` **`TransferCoordinator`**, an
+**`AppDelegate`** that bridges the system's relaunch callbacks + schedules BGTasks,
+**background audio** Now-Playing/remote-commands, and the **capability/config** flips
+(Ch. 7 §6).
+
+**Source of truth:**
+[`apple/PocketDJ/State/TransferCoordinator.swift`](../../apple/PocketDJ/State/TransferCoordinator.swift),
+[`apple/PocketDJ/AppDelegate.swift`](../../apple/PocketDJ/AppDelegate.swift),
+[`apple/PocketDJ/PocketDJApp.swift`](../../apple/PocketDJ/PocketDJApp.swift)
+(`@UIApplicationDelegateAdaptor` / `@NSApplicationDelegateAdaptor` + the `.background`
+scenePhase hook),
+[`apple/PocketDJ/Playback/PlayerEngine.swift`](../../apple/PocketDJ/Playback/PlayerEngine.swift)
+(MPNowPlayingInfoCenter + MPRemoteCommandCenter, including `next`/`previous`).
+
+### 11.1 `TransferCoordinator` — one background URLSession + download-task delegate
+
+```
+ BurnStore.burn(songs) (coordinator injected, §9)
+   beginRun() (reset run counters) → for each ALREADY-RIPPED song, on the @MainActor:
+     CAPTURE at enqueue: sidecarText (pre-rendered), burnFolderBookmark Data,
+                         wasAppStorage, manifest fields, title/artist
+     enqueueDownload(url, token, TransferRecord)  ─┐
+                                                    ▼
+ TransferCoordinator (process-wide .shared, NSObject, NOT @MainActor)
+   one URLSession.background(withIdentifier:"com.levi.pocketdj.transfers"),
+       sessionSendsLaunchEvents=true
+   persist record → pocketdj-transfers.json (ATOMIC, BEFORE task.resume())
+   downloadTask(with:request).resume()    (survives suspend; resumes; finishes after relaunch)
+        │  delegate callbacks arrive on a BACKGROUND queue (NSLock-guarded map)
+        ▼
+   urlSession(_:downloadTask:didFinishDownloadingTo:)   ── NONISOLATED, ZERO @MainActor access
+     join taskIdentifier → TransferRecord (the cold-relaunch reconnect)
+     resolveDestDir(record): wasAppStorage ? AppSupport/burns
+                             : resolve record.burnFolderBookmark (the CAPTURED Data) + scope
+                             (fall back to app storage if the user folder is gone — never drop)
+     move temp → <dir>/<audioFileName>  (analog: reuse a sibling's shared <albumId>.mp3)
+     write <sidecarFileName> from record.sidecarText
+     remove record + persist + finishedTotal++ + publishProgress (main hop)
+     DispatchQueue.main → onBurnFinalized(record, bytes)  → BurnStore upserts .ready BurnItem
+```
+
+**Reading the diagram.** `TransferCoordinator.shared` is a **single process-wide
+`NSObject`** owning the one **background `URLSession`** (identifier
+`com.levi.pocketdj.transfers`, `sessionSendsLaunchEvents = true`) and acting as its
+`URLSessionDownloadDelegate`. A background session must be created **once per identifier
+per process** and exist **at launch** (so a cold relaunch can finish in-flight files), and
+its delegate callbacks arrive on a **background queue** — which is why the coordinator is
+**deliberately not `@MainActor`**: it serializes its persisted map behind an `NSLock` and
+hops to the main actor *only* to notify `BurnStore` of a finished/failed item.
+`BurnStore.burn` (when a coordinator is injected — it's **optional**, `nil` ⇒ the original
+in-process serial loop the tests use, byte-for-byte unchanged) hands each already-ripped
+song to **`enqueueDownload`** as a background **download task**, which **survives
+suspension, resumes, and finishes even after a cold background relaunch** — the whole
+point. Each task's `TransferRecord` is **persisted atomically to `pocketdj-transfers.json`
+BEFORE `task.resume()`** (a death between persist and resume is recoverable), and the
+record's `taskIdentifier ⇄ songId ⇄ destination` join is the **only** thing that lets the
+delegate finish a file after a cold relaunch (the delegate gets only the
+`downloadTask.taskIdentifier`).
+
+**The @MainActor-free delegate rule (the load-bearing constraint).** The download delegate
+runs on a non-main queue with **no inherited security scope** and may run during a **cold
+background relaunch when `BurnStore` doesn't even exist yet** — so it must touch **neither
+the main actor nor any `@MainActor`-isolated state**. Everything it needs is therefore
+**captured onto the `TransferRecord` at enqueue time (on the `@MainActor`)**: the
+**pre-rendered sidecar text** (no catalog lookup in the delegate) and the **security-scoped
+burn-folder bookmark `Data`** (so `resolveDestDir` re-resolves the user folder purely from
+disk via `record.burnFolderBookmark` — never a `@MainActor` closure, with **no
+`MainActor.assumeIsolated` off the main thread to trap**, the documented BLOCKER fix). The
+delegate moves the temp file synchronously (it vanishes on return), reusing a sibling's
+shared `<albumId>.mp3` for analog, falls back to app storage if the user folder is gone
+(**never dropping the file**), writes the sidecar from the stored text, then makes the
+**single** main hop to `onBurnFinalized` so `BurnStore` upserts the `.ready` `BurnItem`.
+Stop (§9.1) calls `cancelAll(songIds:)` → cancels the in-flight background tasks + drops
+their records; **`reconcileOnLaunch`** cross-checks persisted records against the session's
+live tasks on foreground/launch and drops any whose task is gone. Live **progress** is read
+by the UI **only** from the main-actor `progressSnapshot` (published via an explicit main
+hop on every record change), never the `NSLock`-guarded delegate-queue counters — no
+data-race-by-convention; the overlay's "Burning N of M" background-burn branch (§9.1) reads
+exactly that snapshot.
+
+### 11.2 `AppDelegate` — the completion bridge + BGTasks
+
+SwiftUI can't express two things, so `PocketDJApp` adds an
+`@UIApplicationDelegateAdaptor(AppDelegate.self)` (iOS) /
+`@NSApplicationDelegateAdaptor(MacAppDelegate.self)` (macOS):
+
+- **The background-launch-events bridge (iOS).** When a background download finishes while
+  the app is suspended, the system **relaunches** it and calls
+  `application(_:handleEventsForBackgroundURLSession:completionHandler:)`. The delegate
+  **stashes that system completion handler** on `TransferCoordinator.shared` (matching the
+  session identifier first), and the coordinator **invokes it exactly once, on the main
+  thread, from `urlSessionDidFinishEvents`** — the `UIApplicationDelegate` contract that
+  tells the system the app is done processing so it can re-suspend. `didFinishLaunching`
+  also calls `coordinator.activate()` to **force the session (and its delegate) into
+  existence at launch**.
+- **BGTasks (iOS-only, `#if os(iOS)`).** The delegate **registers** two tasks and the
+  `.background` scenePhase hook **submits** them: a **`BGProcessingTask`**
+  (`com.levi.pocketdj.burn-drain`) that re-arms itself + `reconcileOnLaunch`s stuck
+  transfers (completing the BGTask from *inside* the async reconcile callback, not before
+  it runs), and a **`BGAppRefreshTask`** (`com.levi.pocketdj.rip-reconcile`,
+  `earliestBeginDate` +15 min) that re-arms + refreshes the **public rips manifest** so a
+  backgrounded collection RIP's progress (§9.1) reconciles — via a tiny `@MainActor`
+  `RipReconcileBridge` the app wires to `{ await rips.refreshManifest() }` (the task itself
+  holds no store references). Both identifiers must appear in
+  `BGTaskSchedulerPermittedIdentifiers` (Ch. 7 §6). **macOS** (`MacAppDelegate`) only
+  `activate()`s the session — it doesn't suspend the same way and `BGTaskScheduler` is
+  unavailable, so background transfers ride the background `URLSession` directly.
+
+### 11.3 Background audio — Now Playing + remote commands drive the sequencer
+
+Background **audio** was already configured (`PlayerEngine` sets the `.playback`
+`AVAudioSession`, the `UIBackgroundModes: [audio]` capability), but a *locked* setlist
+needs the lock screen to **advance the set**. `PlayerEngine` now wires
+**`MPNowPlayingInfoCenter`** per track (title/artist/elapsed/rate/`IsLiveStream`) and a
+full **`MPRemoteCommandCenter`** — `play`/`pause`/`toggle`/`changePlaybackPosition` plus
+**`nextTrackCommand`/`previousTrackCommand`**. The next/previous commands route through the
+engine's `onNext`/`onPrevious` hooks, which **`SetlistPlayer`** (§10) owns only while a set
+is running — so the lock screen / Control Center / AirPods / CarPlay **auto-advance the
+setlist while the screen is off**, and the commands stay disabled (reject input) when no
+set is running. `setNextPreviousEnabled` toggles them with the sequencer's lifecycle.
+
+---
+
+## 12. Global device / cloud playback MODE — `PlaybackMode` + the shared `playLocal` helper
+
+**Why.** §8–§11 always resolve a source per-play: stream-first, rip-last, with burnt files
+opportunistically preferred. But a DJ in a no-signal room wants the **whole app** to commit
+to **playing burned files off the device**, and a DJ with signal wants it to commit to
+**streaming** — a single global switch, like the browser's on-device/online search toggle.
+`PlaybackMode` is that switch; it changes how every Play surface resolves a source.
+
+**Source of truth:**
+[`apple/PocketDJ/Settings/SettingsStore.swift`](../../apple/PocketDJ/Settings/SettingsStore.swift)
+(`PlaybackMode` enum + the persisted `playbackMode` property),
+[`apple/PocketDJ/Views/PlaybackModeToggle.swift`](../../apple/PocketDJ/Views/PlaybackModeToggle.swift)
+(the toolbar toggle),
+[`apple/PocketDJ/Playback/PlaybackCoordinator.swift`](../../apple/PocketDJ/Playback/PlaybackCoordinator.swift)
+(the shared `playLocalFile` helper),
+[`apple/PocketDJ/Playback/SetlistPlayer.swift`](../../apple/PocketDJ/Playback/SetlistPlayer.swift)
+(`playbackMode` seam, §10).
+
+```
+ PlaybackMode { cloud, device }        persisted on SettingsStore.playbackMode (default .cloud)
+   toggle: PlaybackModeToggle  — one toolbar button on the Setlist / Playlist / Pocket bars
+     icon  cloud-glyph (cloud) ⇄ current-device-glyph (iphone/ipad/macbook) (device)
+
+ .cloud   = today's behaviour — PlaybackCoordinator stream-first (Apple Music → rip, §8)
+ .device  = play ONLY burned local files
+     Play-All (SetlistPlayer §10)  → SKIPS un-burned tracks; "nothing on device" banner if NONE
+     single-row tap                → burnt file if present, else FALL BACK TO CLOUD (one song)
+
+ playLocalFile(url, songId, title, artist, startMs, rips, player)   ── SHARED @MainActor helper
+   rips.setNowPlaying(NowPlaying{songId,title,artist,url,live:false,startMs}) ; player.load(…)
+   (used by BOTH SetlistPlayer device-mode AND the single-row burnt path → one consistent now-playing)
+```
+
+**Reading the diagram.** **`PlaybackMode`** is a two-case enum (`cloud` | `device`)
+persisted on `SettingsStore.playbackMode` (default `.cloud`, raw-string-coded so an older
+saved settings blob coalesces to `.cloud`). The **`PlaybackModeToggle`** is a single
+toolbar button — styled like the browser's on-device/online search toggle, showing a
+**cloud** glyph in cloud mode and the **current-device** glyph (`iphone`/`ipad`/`macbook`)
+in device mode — dropped onto the **Setlist / Playlist / Pocket** detail toolbars. In
+**`.cloud`** every Play resolves through the stream-first coordinator (§8) exactly as
+before. In **`.device`** the app commits to burned files: **Play-All** (the `SetlistPlayer`
+sequencer, §10) plays only burnt local files and **skips** un-burned tracks — raising the
+"nothing on device" banner if the whole set is un-burned — while a **single-row tap**
+plays the burnt file if present and otherwise **falls back to cloud** for that one song (a
+single missing track shouldn't go silent). The **mode is read lazily** through a
+`playbackMode: () -> PlaybackMode` seam on `SetlistPlayer` (injected from settings), so
+**flipping the toggle mid-set applies to the *next* track** — the current track finishes
+under the mode it started with.
+
+**The shared `playLocalFile` helper (the consistency rule).** A burnt local file can be
+started from two surfaces — the `SetlistPlayer` device-mode path *and* the single-row
+burnt-file transport — and both must leave **`RipsStore.nowPlaying`** (and therefore the
+inline player + the row pause/resume toggle) in the *same* state as the rip path does. So
+both call **one `@MainActor` `playLocalFile`** in `PlaybackCoordinator.swift`: it stamps
+`nowPlaying` then `load`s the **same `PlayerEngine`** the inline waveform/scrubber (§7)
+binds to (passing `startMs` as the analog seek offset into a shared album mp3), mirroring
+`RipServerPlaybackProvider.tryPlay` for the rip path. One helper ⇒ now-playing is
+consistent no matter which surface started the burned file.
+
+---
+
+## 13. Cloud-analog → `public/current-index.json` — the in-process fold (closing the gap)
+
+**Why.** [Ch. 3 §1.2](./03-catalog-and-data-model.md#12-the-cloud-re-index--folding-apple-music-truth-into-the-analog-catalog)
+describes the **offline** cloud re-index that folds Apple Music length + cloud bpm/key into
+the analog catalog — but it ran only as a manual CLI tool writing a side output (appendix
+inconsistency #13). That left a gap: when a **cloud rip of an analog song** finishes
+analysis on the live rip server, its freshly-computed bpm/key/camelot/length sat in the
+**rips manifest** and never reached the public catalog until someone re-ran the CLI by hand.
+This branch closes that loop — the rip server now folds a just-analyzed cloud-analog entry
+into `public/current-index.json` **in-process**, the moment analysis completes.
+
+**Source of truth:** the extracted pure fold
+[`scripts/lib/cloud-reindex-fold.mjs`](../../scripts/lib/cloud-reindex-fold.mjs)
+(`foldCloudReindex(index, lib, manifest)` — now shared by **both** the offline CLI
+[`scripts/reindex-cloud-analysis.mjs`](../../scripts/reindex-cloud-analysis.mjs) and the
+server) and the rip server's debounced driver in
+[`scripts/rip-server.mjs`](../../scripts/rip-server.mjs)
+(`requestPublicFold` / `runPublicFoldOnce` / `foldPublicIndex`, the `RIP_PUBLIC_FOLD` /
+`RIP_PUBLIC_INDEX` config). End-to-end test:
+[`scripts/test/rip-public-fold-e2e.mjs`](../../scripts/test/rip-public-fold-e2e.mjs).
+
+```
+ enqueueAnalysis(songId) completes  (digital/cloud rip, source:'digital' && analyzed)
+   isCloudAnalogEntry(songId)? ── analyzed digital manifest entry ──▶ requestPublicFold()
+        │                                                              (analog rips never fold —
+        │                                                               they keep the catalog values)
+        ▼  DEBOUNCE (1.5s trailing) — a collection rip's many analyses coalesce into ONE fold
+ runPublicFoldOnce()  (single-flight: foldRunning guard; a mid-run request re-fires trailing)
+        ▼
+ foldPublicIndex()                                  ── synchronous metadata pass, in-memory catalog
+   guard: index exists · manifest.sourceType=='analog' · library index warm
+   WORKING-TREE GUARD: head = git show HEAD:<rel>; isFoldOnlyDiff(head, index)?
+        any difference OUTSIDE fold-owned fields {length,bpm,key,camelot,cloudReindex} → REFUSE
+        (don't clobber uncommitted NON-reindex edits; no git/HEAD baseline ⇒ proceed)
+   report = foldCloudReindex(index, libIndex, manifest)      ── EXACT am-match only, cloud precedence
+   report.changed == 0 → no-op (idempotent: values already folded)
+   else: stamp index.manifest.cloudReindex{generatedAt, source:'rip-server in-process', counts}
+         ATOMIC write: <path>.fold-<pid>.tmp → renameSync(tmp, path)   (atomic on same fs)
+         log "✓ public-fold: N updated"  +  "⚠ did NOT deploy — run scripts/deploy.sh"
+```
+
+**Reading the diagram.** When `enqueueAnalysis` finishes for a rip, the server asks
+**`isCloudAnalogEntry`** — true only for an analyzed **digital** manifest entry (the only
+kind a cloud/digital rip produces; an analog rip keeps the catalog's per-song values and so
+never triggers a fold). If so it calls **`requestPublicFold`**, which **debounces** to a
+single **trailing** run (1.5s) so a whole-collection cloud rip's many back-to-back analyses
+coalesce into **one** fold, and runs it **single-flight** (a request arriving mid-run
+re-fires exactly one trailing run). The fold itself is **in-process** (no detached node),
+running **inside the analysis flow** over the **in-memory catalog** + the warm library
+index + the live manifest — a fast metadata pass. It reuses the **same pure
+`foldCloudReindex`** the offline CLI uses (extracted into `scripts/lib/cloud-reindex-fold.mjs`
+so there's one implementation): **exact `am-match` only** (Ch. 3 §1.3 — a loose/none match
+never overwrites), per-field **cloud precedence** (length from Apple Music `Total Time`;
+bpm/key/camelot from the cloud rip keyed by the song's own id or the derived Apple-Music
+songId), each touched song **provenance-stamped** with `cloudReindex`, and **idempotent**
+(a re-run with the values already folded reports `changed == 0` and writes nothing).
+
+Three safety properties make it safe to run on the live catalog automatically: it **never
+auto-deploys** (it logs a publish hint — `run scripts/deploy.sh` — and leaves CloudFront
+untouched, so the owner still reviews + ships the catalog); it **guards the working tree**
+by diffing the committed (`git show HEAD:<path>`) JSON against the on-disk file and
+**refusing** to write if any difference lives **outside** the fold-owned fields
+(`{length, bpm, key, camelot, cloudReindex}`), so it can never clobber an unrelated
+uncommitted edit (no git baseline ⇒ nothing to protect ⇒ proceed); and it writes
+**atomically** (temp file in the same dir + `renameSync`). It also only folds when the
+target's `manifest.sourceType === 'analog'` (it's the *analog* catalog being enriched with
+cloud truth). Disable entirely with `RIP_PUBLIC_FOLD=0`; point at a different catalog with
+`RIP_PUBLIC_INDEX`.
 
 ## Next
 

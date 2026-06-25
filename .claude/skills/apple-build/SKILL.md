@@ -82,3 +82,6 @@ created the first time you build in Xcode.app with a team selected.
 
 - `apple/README.md` — project layout + endpoints.
 - **apple-test** skill — unit + XCUITests per device.
+- **apple-publish** skill — archive + upload an iOS build to **TestFlight**
+  (`apple/scripts/testflight.sh`); distribution signing + App Store Connect, auto-shared
+  to the "Alphas" internal group.

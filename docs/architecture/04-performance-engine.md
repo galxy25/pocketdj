@@ -338,6 +338,76 @@ track's audio segment in O(1). Playlists also export to a tiny
 `.playlist.pocketdj.zip` that references the catalog by id (≈4 KB) or a `portable`
 bundle for a foreign/empty catalog.
 
+---
+
+## 6. Play / Shuffle — the reusable "Now Playing" setlist (native)
+
+**Why.** `realize()` (§2) freezes a **new** setlist every Play — the right behaviour for
+*rolling a take* you keep in history, but the wrong one for the everyday "just play this
+playlist *now*, in order" tap: a DJ pressing ▶ on a playlist or pocket doesn't want a new
+history entry and an autofilled/sampled/deduped reorder, they want **exactly these songs,
+in this order**, playing immediately. So Play/Shuffle take a separate, lighter path that
+backs a **single reused setlist** while the realize-take path moves to its own button.
+
+**Source of truth:**
+[`apple/PocketDJ/State/CollectionsStore.swift`](../../apple/PocketDJ/State/CollectionsStore.swift)
+(`playNow(songIds:/playlistId:/pocketId:, shuffle:)`, `nowPlayingRevision`),
+[`apple/PocketDJ/Models/CollectionsSchema.swift`](../../apple/PocketDJ/Models/CollectionsSchema.swift)
+(`nowPlayingSetlistId = "set_now_playing"`, `nowPlayingPlaylistId = "pls_now_playing"`),
+[`apple/PocketDJ/Views/PlaylistsView.swift`](../../apple/PocketDJ/Views/PlaylistsView.swift)
++ [`apple/PocketDJ/Views/PocketsView.swift`](../../apple/PocketDJ/Views/PocketsView.swift)
+(the ▶/🔀 buttons), [`apple/PocketDJ/Views/SetlistDetailView.swift`](../../apple/PocketDJ/Views/SetlistDetailView.swift)
+(`SetlistLaunch` nav value + autostart).
+
+```
+ ▶ Play / 🔀 Shuffle on a playlist/pocket  →  CollectionsStore.playNow(playlistId:/pocketId:, shuffle:)
+   resolve songIds (playlist: songIds(forPlaylist:) literal · pocket: DAG-resolved order)
+        ▼  playNow(songIds:, name:, shuffle:)        ── NOT realize: no autofill/sample/dedup
+   tracks = songIds.compactMap { songsById[$0] → SetlistTrack(snapshot, source:.explicit) }
+            └─ DROPS ids with no catalog song (literal order otherwise preserved)
+   if shuffle: tracks.shuffle()                      ── fresh random order each call
+   nowPlayingRevision &+= 1                           ── monotonic restart token (never epoch-ms)
+   UPSERT the reserved setlist  id=set_now_playing / playlistId=pls_now_playing  (replace-in-place)
+        ▼
+   navigate → SetlistLaunch{ setlistId: set_now_playing, autoplay: true }
+        ▼  SetlistDetailView
+   .onAppear  guard autoplay && !didAutostart → start Play-All (§Ch.5 §10 SetlistPlayer)
+   .onChange(nowPlayingRevision) → re-snapshot the freshly-upserted set + restart (Shuffle re-tap)
+```
+
+**Reading the diagram.** Both buttons funnel through **`playNow`**, which builds the
+track list **directly** from the resolved song ids — for a playlist
+`songIds(forPlaylist:)` (literal node order), for a pocket the DAG-flattened order — and
+turns each into a `SetlistTrack` snapshot with `source: .explicit`. It is **deliberately
+not `realize()`**: there is **no** autofill bridging, no over-budget pocket sampling, and
+no cross-chapter dedup — ids that don't resolve to a catalog song are simply **dropped**,
+and everything else keeps its literal order (or, for 🔀 Shuffle, a freshly randomized one
+each call). The result **upserts one reserved setlist** (`set_now_playing` /
+`pls_now_playing`, replaced in place — last-writer-wins) rather than appending a new take,
+and bumps a **monotonic `nowPlayingRevision`** (`&+=`, so rapid taps never collide the way
+epoch-ms timestamps could). This reserved setlist is **cleared on launch** (it's a
+per-session scratch set, never restored) and **hidden from setlist history** —
+`setlists(forPlaylist:)` returns `[]` for `pls_now_playing` and filters the reserved id out
+elsewhere — so it never shows up as a saved take.
+
+Tapping ▶/🔀 then navigates to **`SetlistDetailView`** via a **`SetlistLaunch{setlistId,
+autoplay}`** navigation value and **autostarts** Play-All (the `SetlistPlayer` sequencer,
+[Ch. 5 §10](./05-playback-and-rip-on-demand.md#10-setlist-play--the-setlistplayer-sequencer-burnt-or-stream)):
+the view's `onAppear` fires the autostart **exactly once** (a `didAutostart` one-shot guard
++ a no-duplicate-push guard so a second ▶ doesn't stack the view), and an
+`onChange(nowPlayingRevision)` **re-snapshots** the freshly-upserted set and restarts when
+the same screen is already open (the Shuffle-again-from-detail case). The user lands in the
+normal setlist detail, so the same screen lets them **reorder / see what's next** — the
+reusable set is a live, editable scratch surface, not a frozen artifact.
+
+**The old realize-take Play moved.** Because ▶/🔀 now own "play it now," the prior Play
+behaviour — `realize()` → a **frozen take** appended to history (§2, §5) — moved to its own
+toolbar button (SF Symbol **`list.bullet.clipboard`**), so both flows coexist: ▶/🔀 for an
+immediate literal play, `list.bullet.clipboard` for rolling a saved, autofilled take. (In
+the Playlists list, **your** editable playlists also now render **above** the read-only
+"From your sources" index playlists, organized into the optional collapsible
+folders of [Ch. 3 §3.1](./03-catalog-and-data-model.md#31-the-collectionsdocument-envelope-schema-versioning-and-folders-native).)
+
 ## Next
 
 → [Chapter 5 — Playback & Rip-on-Demand](./05-playback-and-rip-on-demand.md)

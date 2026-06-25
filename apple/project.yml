@@ -63,12 +63,25 @@ targets:
     info:
       path: PocketDJ/Generated/Info.plist
       properties:
-        UIBackgroundModes: [audio]
+        # `audio` keeps playback alive; `fetch`+`processing` let the BGAppRefreshTask /
+        # BGProcessingTask run (rip-reconcile + burn-drain). iOS-only keys — macOS ignores
+        # them harmlessly.
+        UIBackgroundModes: [audio, fetch, processing]
+        # Every BGTask id submitted must be declared here or register/submit throws.
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.levi.pocketdj.burn-drain
+          - com.levi.pocketdj.rip-reconcile
         # Apple Music opt-in flag (read by AppleMusicCredentials.isEnabled). MUST live
         # in this base plist: INFOPLIST_KEY_* only injects Apple's KNOWN keys, not custom
         # ones, so the build-setting form silently no-ops (the "Apple Music not available"
         # bug). A boolean here lands in the built Info.plist.
         PocketDJAppleMusicEnabled: true
+        # Export-compliance exemption. PocketDJ uses only standard/exempt encryption
+        # (HTTPS/TLS), so `false` tells App Store Connect there's no non-exempt
+        # encryption — TestFlight then STOPS asking the per-build "export compliance"
+        # question on every upload. Lands in the built Info.plist (same reason as the
+        # keys above), so apple/scripts/testflight.sh uploads are submit-ready immediately.
+        ITSAppUsesNonExemptEncryption: false
     dependencies:
       - package: ZIPFoundation
       # Uncomment to link the Spotify SDK (see packages.SpotifyiOS above):

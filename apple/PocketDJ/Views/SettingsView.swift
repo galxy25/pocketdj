@@ -169,6 +169,7 @@ struct SettingsView: View {
                              pockets: collections.pockets,
                              playlists: collections.playlists,
                              setlists: collections.setlists,
+                             folders: collections.folders,
                              editsData: try edits.exportData())
     }
 
@@ -178,7 +179,8 @@ struct SettingsView: View {
         guard let (payload, skipped) = try? BackupZip.import(data: data) else { return }
         let c = collections.mergeBackupCollections(pockets: payload.pockets,
                                                    playlists: payload.playlists,
-                                                   setlists: payload.setlists)
+                                                   setlists: payload.setlists,
+                                                   folders: payload.folders)
         let addedSources = settings.addSources(payload.sources)
         if let ed = payload.editsData { try? edits.importData(ed); app.applyEdits() }
         if addedSources > 0 { Task { await app.reload() } }

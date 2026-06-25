@@ -917,11 +917,23 @@ setlist detail, and the read-only "From your sources" list — anywhere you've g
 worth carrying. Both buttons disable when the collection has nothing rippable in it.
 
 **⏹ Stop — cancel a rip or burn in flight.** While a Rip or Burn is running, a red **Stop**
-item joins the same menu. Tap it and the in-flight job halts: a **Stop rip** tells the iMac
+control stays reachable. Tap it and the in-flight job halts: a **Stop rip** tells the iMac
 to drop this set's still-queued and currently-recording tracks; a **Stop burn** ends the
 download loop after the current file (so whatever already finished stays on the device). Either
 way you get the partial summary so far — handy when you change your mind about a long set
 mid-capture, or only meant to grab the first few tracks.
+
+**Live "X of N ripped" — and a Stop that stays put.** A collection **Rip** captures every
+track in real time, one at a time, so it finishes *over minutes or hours* on the iMac long
+after the app has handed off the set. The app now follows that progress: a small **"ripping —
+3 of 12 done"** chip ticks up as each track lands in the cache, sitting beside a persistent red
+**Stop** the whole time the rip is running — not just for the split-second it takes to send the
+set off. (Earlier, Stop flashed by in about a second and was effectively unusable for a long
+rip.) When the last track completes, the chip resolves to **"Ripped 12 of 12"**; tap **Stop**
+at any point to drop whatever's still queued or recording and keep what already finished.
+Rips also **self-heal** server-side — a stuck capture or a briefly-unplugged vinyl drive no
+longer freezes the queue, so a long Rip reliably grinds to completion (it just keeps going,
+retrying transient hiccups) instead of stalling forever.
 
 **User story:** "I've built the set — now make it bulletproof: rip everything so it's
 captured, then burn it onto my phone so it plays in a basement with no bars, every track
@@ -1019,3 +1031,137 @@ searching offline or online, across the entire catalog rather than just the load
 
 **User story:** "Search the whole library online, scroll to pull in as many matches as I want,
 see the true total, and sort it the way I always do."
+
+---
+
+## 38. Keep going in the background — rips, burns, downloads & playback don't stop when you leave
+
+Capturing a whole set or burning it for offline takes real time — minutes for a long Rip,
+a steady download-by-download grind for a Burn. Before, leaving the app (switching to
+Messages, locking the phone, letting the screen sleep) could pause or drop that work
+half-finished. Now the native app keeps the long jobs **alive in the background** so you can
+start something big, pocket the phone, and come back to it done.
+
+**Rips, burns & downloads continue while the app is backgrounded or locked.** Kick off a
+collection **Rip** or **Burn**, or a single-track **⤓ Download**, then switch away or lock the
+device — the work keeps running. Downloads and burns hand off to the system so each file
+finishes (and the next one starts) even while the app is suspended; a **Burn** that was halfway
+through when you locked the phone keeps landing tracks, and you'll find the set fully burned when
+you return — its **"Burning 6 of 10"** progress having carried on the whole time. Even a **cold**
+relaunch (the system having fully unloaded the app mid-transfer) picks the finished files back up
+rather than losing them.
+
+**Setlist playback plays on past the lock screen.** Hit **▶ Play** on a setlist (§35), lock the
+phone or switch apps, and the set keeps playing — **auto-advancing from track to track** on its
+own. The currently-playing song shows on the **lock screen / Control Center** (and on AirPods,
+CarPlay, or a watch) with working **play / pause / next / previous** — so you can run the set, or
+skip ahead, without ever unlocking. This is the whole set sequencing in the background, not just
+a single track: each track ends, the next begins, hands-free.
+
+**User story:** "Start a big rip or burn, lock my phone, and trust it'll be finished when I pull
+it back out — and once a set is playing, run the whole thing from the lock screen, skipping tracks
+from my headphones, without the music ever cutting out because I left the app."
+
+---
+
+## 39. Press Play on a playlist or pocket — hear it now, in order or shuffled
+
+A playlist and a pocket aren't just things you *shape* — now you can **hear them straight away**.
+Each playlist and pocket detail screen carries two side-by-side buttons:
+
+- **▶ Play** — play its songs **in their listed order**, top to bottom,
+- **🔀 Shuffle** — play the same songs in a **random order**.
+
+Tap either and the app jumps you to a single reusable **"Now Playing"** set and **starts playing
+at once** in the inline player, auto-advancing track to track. It's built **literally from the
+songs you're looking at** — the exact list, in order (or shuffled) — not the "realized" set the
+**make-a-set-list** button produces (§40): no sampling, no harmonic autofill, no dedup. A song
+that can't be resolved to anything playable is simply dropped from the run. Because it's **one
+shared set** that's **reused** every time, hitting **▶ Play** or **🔀 Shuffle** anywhere just
+**replaces** what's in Now Playing rather than piling up a new set each time — and it's **hidden
+from your set-list history** and **cleared on launch**, so it never clutters the sets you've
+deliberately saved.
+
+Landing in **Now Playing** drops you into the normal setlist screen (§35), so you can **see
+what's next and reorder it on the fly** while it plays — exactly the controls you'd want with a
+set running.
+
+**User story:** "I just want to *hear* this crate right now — one tap to play it in order, one
+to shuffle it — and still see and nudge what's coming up next."
+
+---
+
+## 40. The "make a set list" button — freeze a take from a playlist
+
+The **older** ▶ Play behavior — *realize* a playlist into a frozen, saved take (expanding albums,
+sampling over-budget pockets to fit, autofilling harmonic bridges; §22–§23) — now lives on its
+own toolbar button marked with the **list.bullet.clipboard** icon. Tap it to generate a concrete,
+persisted **set list** from the template, just as before; the plain **▶ Play** beside it is now
+the play-it-now button from §39.
+
+**User story:** "Keep the two ideas separate: one button just plays the crate, the other builds
+me a real, saved set list I can tweak, rip, and burn."
+
+---
+
+## 41. Your playlists on top; folders to organize them
+
+**Your playlists come first.** The Playlists screen now renders **your own playlists above** the
+**"From your sources"** section — the sets you build are what you reach for, so they sit at the
+top.
+
+**Folders.** You can now group playlists into **folders**:
+
+- **＋ New folder** — create one and name it,
+- **rename** or **delete** a folder — deleting it **keeps the playlists**; they simply fall back
+  to the top level,
+- **move** a playlist into (or out of) a folder.
+
+Folders show as **collapsible sections** ordered by name, and **each section remembers whether
+you left it collapsed** — so a long shelf of sets stays tidy. Folders ride along through
+**import/merge** and the **backup zip**, so the way you've organized your sets travels with them
+to another device.
+
+**User story:** "I've got a lot of sets — let me file them into folders I can fold shut, and keep
+the ones I made up top where I actually look."
+
+---
+
+## 42. Device / Cloud playback — play burned files or stream
+
+A small **browser-style toggle** now sits on the **setlist, playlist and pocket** toolbars, with
+two modes that change **where the audio comes from**:
+
+- **☁ Cloud** (the streaming default) — play from your **streaming provider**, falling back to a
+  **rip** from the server. This is the behavior you've had.
+- **📱 Device** — play the **burned files** from your designated **burnt-music folder** (§34), so
+  the set plays with **no signal and no rip server**.
+
+In **Device** mode, a **Play-all skips any track that isn't burned yet** (it plays only what's
+actually on the device) — and if *nothing* in the set is on the device, you get a **"nothing on
+device"** banner instead of silence. Tapping a **single** un-burned song still **falls back to
+Cloud** for that one track, so you're never stuck. The toggle is global and the now-playing state
+stays consistent across it; flipping mode mid-set lets the **current track finish** before the
+next one honors the new mode.
+
+On **iPhone/iPad** the inline per-song player **slides and collapses as the set advances** —
+collapsing the track that just finished and expanding the next — so the open player always tracks
+the song you're hearing. (The Mac player stays a plain, fixed panel.)
+
+**User story:** "In a basement with no bars I flip to Device and run the set off what I burned; on
+the couch I flip to Cloud and stream — same toggle, same set, no fuss."
+
+---
+
+## 43. Burned files are named so you can mix from them
+
+When you **Burn** a set, the downloaded files now carry **descriptive, mixer-ready names** instead
+of a bare title. Each filename is built from the track's
+**Artist · Song · Album · Year · Genre · Camelot · Key · BPM** (sanitized for the filesystem and
+length-capped, with the song id kept on the end so names never collide). Digital and cloud rips
+are named **per song**; a shared **analog whole-album** file is named at the **album** level. Each
+audio file still gets its same-named **`.txt` sidecar** with the full BPM/key/sentiment/metadata
+read-out.
+
+**User story:** "When I drag the burned files into my DJ app, the filename alone already tells me
+the key, Camelot code and BPM — I can order a set straight from the folder."

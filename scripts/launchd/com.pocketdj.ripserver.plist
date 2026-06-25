@@ -34,6 +34,11 @@
     <string>/Users/deepspacenine</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/Users/deepspacenine/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- Vinyl rip source files (analog rips). On Levi's iMac these live on the external
+         RipBurnMix drive, not ~/Downloads. node also needs macOS removable-volume access
+         (System Settings ▸ Privacy ▸ Files and Folders) to read /Volumes/*. -->
+    <key>POCKETDJ_ANALOG_BASE</key>
+    <string>/Volumes/RipBurnMix</string>
   </dict>
   <key>WorkingDirectory</key>
   <string>/Users/deepspacenine/forges/levi/pocketdj</string>

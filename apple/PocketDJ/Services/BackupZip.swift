@@ -111,13 +111,20 @@ enum BackupZip {
         var pockets: [Pocket]
         var playlists: [Playlist]
         var setlists: [Setlist]
+        var folders: [PlaylistFolder]
         var editsData: Data?
+
+        init(sources: [SourceConfig], pockets: [Pocket], playlists: [Playlist],
+             setlists: [Setlist], folders: [PlaylistFolder] = [], editsData: Data?) {
+            self.sources = sources; self.pockets = pockets; self.playlists = playlists
+            self.setlists = setlists; self.folders = folders; self.editsData = editsData
+        }
     }
 
     /// Build a `.pocketdj.zip` from the collections + sources + edits. `items.json`
     /// and `art/` are intentionally OMITTED (client-only catalog); their counts are 0.
     static func export(sources: [SourceConfig], pockets: [Pocket], playlists: [Playlist],
-                       setlists: [Setlist], editsData: Data) throws -> Data {
+                       setlists: [Setlist], folders: [PlaylistFolder] = [], editsData: Data) throws -> Data {
         let manifest = Manifest(
             schemaVersion: schemaVersion,
             portable: false,
@@ -132,6 +139,7 @@ enum BackupZip {
             "pockets.json": try encoder.encode(pockets),
             "playlists.json": try encoder.encode(playlists),
             "setlists.json": try encoder.encode(setlists),
+            "folders.json": try encoder.encode(folders),
             "edits.json": editsData,
         ]
 
@@ -188,6 +196,8 @@ enum BackupZip {
             .flatMap { try? decoder.decode([Playlist].self, from: $0) } ?? []
         let setlists: [Setlist] = extract("setlists.json")
             .flatMap { try? decoder.decode([Setlist].self, from: $0) } ?? []
+        let folders: [PlaylistFolder] = extract("folders.json")
+            .flatMap { try? decoder.decode([PlaylistFolder].self, from: $0) } ?? []
 
         let editsData = extract("edits.json")
 
@@ -198,7 +208,7 @@ enum BackupZip {
         for entry in archive where entry.path.hasPrefix("art/") && entry.path.hasSuffix(".webp") { artCount += 1 }
 
         let payload = Payload(sources: sources, pockets: pockets, playlists: playlists,
-                              setlists: setlists, editsData: editsData)
+                              setlists: setlists, folders: folders, editsData: editsData)
         return (payload, SkippedCatalog(items: itemCount, art: artCount))
     }
 }

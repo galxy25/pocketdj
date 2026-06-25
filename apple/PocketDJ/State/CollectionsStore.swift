@@ -10,7 +10,14 @@ final class CollectionsStore {
     private(set) var pockets: [Pocket] = []
     private(set) var playlists: [Playlist] = []
     private(set) var setlists: [Setlist] = []
+    private(set) var folders: [PlaylistFolder] = []
     private(set) var lastAddTarget: AddTarget?
+
+    /// MONOTONIC restart token for the reserved "Now Playing" setlist. Bumped on every
+    /// `playNow` (even when the same list re-plays / Shuffle re-orders) so an on-screen
+    /// SetlistDetailView can `.onChange` it and re-snapshot the fresh order. Monotonic
+    /// (not epoch-ms) so rapid taps never collide.
+    private(set) var nowPlayingRevision = 0
     private let fileURL: URL
 
     /// The catalog the realize engine resolves ids against (wired at launch, like
@@ -23,8 +30,12 @@ final class CollectionsStore {
             pockets = doc.pockets
             playlists = doc.playlists
             setlists = doc.setlists
+            folders = doc.folders
             lastAddTarget = doc.lastAddTarget
         }
+        // LIFECYCLE: drop any stale reserved "Now Playing" setlist persisted last session
+        // so it never shows on launch (it's a per-session, reusable scratch set).
+        setlists.removeAll { $0.id == nowPlayingSetlistId || $0.playlistId == nowPlayingPlaylistId }
         seedForUITestsIfRequested()
     }
 
@@ -59,10 +70,14 @@ final class CollectionsStore {
     func pocket(_ id: String) -> Pocket? { pockets.first { $0.id == id } }
     func playlist(_ id: String) -> Playlist? { playlists.first { $0.id == id } }
     func setlist(_ id: String) -> Setlist? { setlists.first { $0.id == id } }
-    /// Setlists for a playlist, most-recent first (a performance history).
+    /// Setlists for a playlist, most-recent first (a performance history). The reserved
+    /// "Now Playing" setlist is never a member (its synthetic parent id is filtered).
     func setlists(forPlaylist id: String) -> [Setlist] {
-        setlists.filter { $0.playlistId == id }.sorted { $0.generatedAt > $1.generatedAt }
+        guard id != nowPlayingPlaylistId else { return [] }
+        return setlists.filter { $0.playlistId == id }.sorted { $0.generatedAt > $1.generatedAt }
     }
+    /// The reserved, reusable "Now Playing" setlist (nil until a first ▶ Play / 🔀 Shuffle).
+    func nowPlayingSetlist() -> Setlist? { setlist(nowPlayingSetlistId) }
 
     // MARK: Pockets
 
@@ -229,6 +244,41 @@ final class CollectionsStore {
         playlists.append(pl); save(); return pl
     }
 
+    // MARK: Playlist folders (FLAT — v3)
+
+    func folder(_ id: String) -> PlaylistFolder? { folders.first { $0.id == id } }
+    /// Folders, name-ordered (case-insensitive) for stable display.
+    func foldersOrdered() -> [PlaylistFolder] {
+        folders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    /// Playlists in a folder (nil ⇒ top level), name-ordered.
+    func playlists(inFolder id: String?) -> [Playlist] {
+        playlists.filter { $0.folderId == id }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    @discardableResult
+    func createFolder(_ name: String) -> PlaylistFolder {
+        let f = PlaylistFolder(id: CollectionsFactory.newFolderId(), name: name, createdAt: now, updatedAt: now)
+        folders.append(f); save(); return f
+    }
+    func renameFolder(_ id: String, _ name: String) {
+        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        folders[i].name = name; folders[i].updatedAt = now; save()
+    }
+    /// Delete a folder; its member playlists fall back to the top level (folderId ⇒ nil).
+    func deleteFolder(_ id: String) {
+        folders.removeAll { $0.id == id }
+        for i in playlists.indices where playlists[i].folderId == id {
+            playlists[i].folderId = nil; playlists[i].updatedAt = now
+        }
+        save()
+    }
+    /// Move a playlist into a folder (nil ⇒ top level).
+    func setPlaylistFolder(_ playlistId: String, folderId: String?) {
+        mutatePlaylist(playlistId) { $0.folderId = folderId }
+    }
+
     // MARK: Add-to memory ("remembers last" target + chapter, for fast repeat adds)
 
     func setLastAddTarget(_ target: AddTarget?) { lastAddTarget = target; save() }
@@ -357,6 +407,49 @@ final class CollectionsStore {
         return setlist
     }
 
+    // MARK: Now Playing (the reusable ▶ Play / 🔀 Shuffle setlist)
+
+    /// Build the reserved, reusable "Now Playing" setlist DIRECTLY from `songIds` — literal
+    /// order, NO realize autofill / pocket-sampling / dedup-surprise. Ids with no catalog
+    /// song are dropped; `shuffle` re-orders the resolved tracks fresh each call. UPSERTS the
+    /// reserved setlist (last-writer-wins) and bumps the monotonic restart token so an
+    /// on-screen detail view re-snapshots the new order. Returns nil if the catalog isn't wired.
+    @discardableResult
+    func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false) -> Setlist? {
+        guard let app else { return nil }
+        var tracks: [SetlistTrack] = songIds.compactMap { id in
+            guard let s = app.songsById[id] else { return nil }   // drop unresolvable ids
+            return SetlistTrack(songId: s.id, artist: s.artist, name: s.name,
+                                bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
+                                source: .explicit)
+        }
+        if shuffle { tracks.shuffle() }
+        let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
+        nowPlayingRevision &+= 1   // monotonic; survives rapid taps (never epoch-ms collision)
+        let set = Setlist(id: nowPlayingSetlistId, playlistId: nowPlayingPlaylistId, name: name,
+                          seed: "now-playing", generatedAt: now, totalMs: totalMs, tracks: tracks)
+        if let i = setlists.firstIndex(where: { $0.id == nowPlayingSetlistId }) {
+            setlists[i] = set                  // replace in place (reuse)
+        } else {
+            setlists.append(set)
+        }
+        save()
+        return set
+    }
+
+    /// ▶ Play a playlist into the reusable Now Playing setlist (literal resolved order).
+    @discardableResult
+    func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
+        playNow(songIds: songIds(forPlaylist: playlistId),
+                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle)
+    }
+    /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
+    @discardableResult
+    func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
+        playNow(songIds: songIds(forPocket: pocketId),
+                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle)
+    }
+
     func deleteSetlist(_ id: String) { setlists.removeAll { $0.id == id }; save() }
 
     @discardableResult
@@ -449,6 +542,9 @@ final class CollectionsStore {
         for p in doc.pockets { pocketIdMap[p.id] = CollectionsFactory.newPocketId() }
         var playlistIdMap: [String: String] = [:]
         for pl in doc.playlists { playlistIdMap[pl.id] = CollectionsFactory.newPlaylistId() }
+        // CRITIC-G: carry folders + remap their ids (a full-doc import preserves grouping).
+        var folderIdMap: [String: String] = [:]
+        for f in doc.folders { folderIdMap[f.id] = CollectionsFactory.newFolderId() }
 
         // 2) Pockets: remap id + child refs (drop refs to pockets not in the import).
         for var p in doc.pockets {
@@ -458,9 +554,18 @@ final class CollectionsStore {
             pockets.append(p)
         }
 
-        // 3) Playlists: remap id + freshen every node id (recursively for sub-sequences).
+        // 3) Folders: remap id (kept only when present in the import).
+        for var f in doc.folders {
+            f.id = folderIdMap[f.id] ?? CollectionsFactory.newFolderId()
+            f.createdAt = now; f.updatedAt = now
+            folders.append(f)
+        }
+
+        // 4) Playlists: remap id + folder ref (drop a folder ref not in the import) +
+        //    freshen every node id (recursively for sub-sequences).
         for var pl in doc.playlists {
             pl.id = playlistIdMap[pl.id] ?? CollectionsFactory.newPlaylistId()
+            pl.folderId = pl.folderId.flatMap { folderIdMap[$0] }
             pl.sequences = pl.sequences.map { remintNode($0, pocketIdMap: pocketIdMap) }
             pl.createdAt = now; pl.updatedAt = now
             playlists.append(pl)
@@ -527,11 +632,15 @@ final class CollectionsStore {
     /// Returns the number of pockets/playlists/setlists added.
     @discardableResult
     func mergeBackupCollections(pockets incPockets: [Pocket], playlists incPlaylists: [Playlist],
-                                setlists incSetlists: [Setlist]) -> (pockets: Int, playlists: Int, setlists: Int) {
+                                setlists incSetlists: [Setlist],
+                                folders incFolders: [PlaylistFolder] = []) -> (pockets: Int, playlists: Int, setlists: Int) {
         var pocketIdMap: [String: String] = [:]
         for p in incPockets { pocketIdMap[p.id] = CollectionsFactory.newPocketId() }
         var playlistIdMap: [String: String] = [:]
         for pl in incPlaylists { playlistIdMap[pl.id] = CollectionsFactory.newPlaylistId() }
+        // CRITIC-G: carry folders + remap their ids (preserve playlist grouping on merge).
+        var folderIdMap: [String: String] = [:]
+        for f in incFolders { folderIdMap[f.id] = CollectionsFactory.newFolderId() }
 
         for var p in incPockets {
             p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
@@ -539,8 +648,14 @@ final class CollectionsStore {
             p.createdAt = now; p.updatedAt = now
             pockets.append(p)
         }
+        for var f in incFolders {
+            f.id = folderIdMap[f.id] ?? CollectionsFactory.newFolderId()
+            f.createdAt = now; f.updatedAt = now
+            folders.append(f)
+        }
         for var pl in incPlaylists {
             pl.id = playlistIdMap[pl.id] ?? CollectionsFactory.newPlaylistId()
+            pl.folderId = pl.folderId.flatMap { folderIdMap[$0] }
             pl.sequences = pl.sequences.map { remintNode($0, pocketIdMap: pocketIdMap) }
             pl.createdAt = now; pl.updatedAt = now
             playlists.append(pl)
@@ -602,7 +717,7 @@ final class CollectionsStore {
         case .backup:
             let (payload, _) = try BackupZip.import(data: data)
             mergeBackupCollections(pockets: payload.pockets, playlists: payload.playlists,
-                                   setlists: payload.setlists)
+                                   setlists: payload.setlists, folders: payload.folders)
         case .collectionsJSON: try importCollection(data: data)
         }
     }
@@ -629,7 +744,8 @@ final class CollectionsStore {
     }
     private func save() {
         let doc = CollectionsDocument(schemaVersion: collectionsSchemaVersion, pockets: pockets,
-                                      playlists: playlists, setlists: setlists, lastAddTarget: lastAddTarget)
+                                      playlists: playlists, setlists: setlists,
+                                      folders: folders, lastAddTarget: lastAddTarget)
         if let data = try? CollectionsCodec.encode(doc) { try? data.write(to: fileURL, options: .atomic) }
     }
 }

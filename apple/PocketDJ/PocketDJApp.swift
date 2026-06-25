@@ -27,6 +27,16 @@ struct PocketDJApp: App {
     @State private var coordinator: PlaybackCoordinator
     @Environment(\.scenePhase) private var scenePhase
 
+    // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
+    // handles BGTasks (iOS); on macOS it only force-creates the background session. SwiftUI
+    // instantiates the adaptor, so the delegate reaches the shared stores via
+    // `TransferCoordinator.shared` (a process-wide singleton).
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #elseif os(macOS)
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
+    #endif
+
     init() {
         let rips = RipsStore()
         let player = PlayerEngine()
@@ -35,7 +45,9 @@ struct PocketDJApp: App {
         _rips = State(initialValue: rips)
         _player = State(initialValue: player)
         _streaming = State(initialValue: streaming)
-        _burns = State(initialValue: BurnStore(rips: rips, fileURL: BurnStore.launchURL()))
+        // Inject the shared background-transfer coordinator so Burn hands each song to a
+        // background download task that survives suspend (nil in tests ⇒ the in-process loop).
+        _burns = State(initialValue: BurnStore(rips: rips, transfers: .shared, fileURL: BurnStore.launchURL()))
         _coordinator = State(initialValue: PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: amProvider)))
@@ -60,8 +72,17 @@ struct PocketDJApp: App {
                 .onOpenURL { streaming.handleCallback(url: $0) }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
-                    case .active: streaming.onScenePhaseActive()
-                    case .background: streaming.onScenePhaseBackground()
+                    case .active:
+                        streaming.onScenePhaseActive()
+                        // Resume the background transfer reconcile on foreground (idempotent).
+                        TransferCoordinator.shared.reconcileOnLaunch()
+                    case .background:
+                        streaming.onScenePhaseBackground()
+                        // Submit/re-submit the BGTasks (burn-drain + rip-reconcile) so a
+                        // backgrounded burn/rip keeps advancing/reconciling. iOS-only.
+                        #if os(iOS)
+                        AppDelegate.scheduleBackgroundTasks()
+                        #endif
                     default: break
                     }
                 }

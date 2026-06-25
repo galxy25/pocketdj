@@ -202,6 +202,119 @@ final class SetlistPlayerTests: XCTestCase {
         cleanBurnedFiles(["sng_ok.mp3", "sng_ok.txt"])
     }
 
+    // MARK: lock-screen NEXT / PREVIOUS drive the set (Feature: background audio)
+
+    /// `play()` assigns the engine's `onNext`/`onPrevious` hooks (which the lock-screen /
+    /// Control Center commands call) and `stop()` releases them. `skipNext` advances the set;
+    /// `skipPrevious` steps back (never below index 0).
+    func testNextPreviousHooksDriveTheSet() async {
+        cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_2.mp3", "sng_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_1")
+        await burn(rips, burns, songId: "sng_2")
+
+        // Before a set runs, the engine has no next/previous consumer.
+        XCTAssertNil(player.onNext)
+        XCTAssertNil(player.onPrevious)
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_1", title: "One", artist: "A"),
+            .init(id: "sng_2", title: "Two", artist: "A"),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_1" }
+        XCTAssertNotNil(player.onNext, "play() wires the lock-screen NEXT hook")
+        XCTAssertNotNil(player.onPrevious, "play() wires the lock-screen PREVIOUS hook")
+
+        // Simulate the lock-screen NEXT command target firing the engine hook.
+        player.onNext?()
+        await waitUntil("NEXT advanced to track 1") { rips.nowPlaying?.songId == "sng_2" }
+        XCTAssertEqual(seq.index, 1)
+
+        // Simulate lock-screen PREVIOUS → step back to track 0.
+        player.onPrevious?()
+        await waitUntil("PREVIOUS stepped back to track 0") { rips.nowPlaying?.songId == "sng_1" }
+        XCTAssertEqual(seq.index, 0)
+
+        // PREVIOUS at the top is clamped (stays at index 0).
+        player.onPrevious?()
+        XCTAssertEqual(seq.index, 0)
+
+        seq.stop()
+        XCTAssertNil(player.onNext, "stop() releases the NEXT hook")
+        XCTAssertNil(player.onPrevious, "stop() releases the PREVIOUS hook")
+        cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_2.mp3", "sng_2.txt"])
+    }
+
+    // MARK: Item 7 — DEVICE mode skips streamable-only tracks + advances
+
+    /// In DEVICE mode a track with NO burned file is SKIPPED (even though it WOULD stream in
+    /// cloud mode), and the next BURNED track plays. The coordinator/stream path is never
+    /// engaged for the skipped track.
+    func testDeviceModeSkipsUnburnedTrackAndPlaysNextBurned() async {
+        cleanBurnedFiles(["sng_ok.mp3", "sng_ok.txt"])
+        // A working rip server: in CLOUD mode the first track WOULD stream — device mode must
+        // still skip it because it has no burned file.
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_ok")            // only the 2nd track is burned
+        rips.setManifest([                                    // both cached (streamable)
+            "sng_stream": .init(key: "rips/sng_stream.mp3", source: "digital"),
+            "sng_ok": .init(key: "rips/sng_ok.mp3", source: "digital"),
+        ])
+        XCTAssertNil(burns.localURL(forSong: "sng_stream"), "precondition: 1st track not burned")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.playbackMode = { .device }
+        seq.play([
+            .init(id: "sng_stream", title: "Streamable", artist: "A"),
+            .init(id: "sng_ok", title: "Burned", artist: "A"),
+        ])
+
+        await waitUntil("skipped the un-burned track to the burned one") { rips.nowPlaying?.songId == "sng_ok" }
+        XCTAssertEqual(seq.index, 1, "device mode skipped the streamable-but-unburned track")
+        XCTAssertEqual(rips.nowPlaying?.url, burns.localURL(forSong: "sng_ok"), "played from the burned file")
+        XCTAssertNil(coord.activeBackend, "device mode never engaged the stream/coordinator")
+        XCTAssertFalse(seq.deviceQueueUnplayable, "at least one track was playable → no banner")
+        seq.stop()
+        cleanBurnedFiles(["sng_ok.mp3", "sng_ok.txt"])
+    }
+
+    /// CRITIC-D — a DEVICE-mode set whose WHOLE queue has no burned files plays nothing,
+    /// stops, and raises the one-shot `deviceQueueUnplayable` banner signal.
+    func testDeviceModeWholeQueueUnplayableRaisesBanner() async {
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        // Both cached (would stream in cloud mode) but NEITHER is burned.
+        rips.setManifest([
+            "sng_a": .init(key: "rips/sng_a.mp3", source: "digital"),
+            "sng_b": .init(key: "rips/sng_b.mp3", source: "digital"),
+        ])
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.playbackMode = { .device }
+        seq.play([
+            .init(id: "sng_a", title: "A", artist: "A"),
+            .init(id: "sng_b", title: "B", artist: "A"),
+        ])
+
+        await waitUntil("device set with no burned files stops") { !seq.isRunning }
+        XCTAssertNil(rips.nowPlaying, "nothing ever played on-device")
+        XCTAssertNil(coord.activeBackend, "the stream path was never engaged")
+        XCTAssertTrue(seq.deviceQueueUnplayable, "the whole-queue-unplayable banner is raised")
+
+        // Acknowledging clears it; a fresh play resets it.
+        seq.clearDeviceUnplayable()
+        XCTAssertFalse(seq.deviceQueueUnplayable)
+    }
+
     // MARK: stop() tears down and resets
 
     func testStopResetsSequenceAndNowPlaying() async {

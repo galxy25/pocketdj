@@ -1,6 +1,12 @@
 import SwiftUI
 import Observation
 
+/// Global device/cloud playback mode (Item 7 — fully wired by Native2/Server). Defined
+/// here as the natural home; the `SetlistPlayer.playbackMode` seam already consumes it.
+///   • `.cloud`  — stream (Apple Music → rip-on-demand fallback), today's behaviour.
+///   • `.device` — play from burned local files (fall back to cloud for a missing file).
+enum PlaybackMode: String, Codable, Hashable, Sendable { case cloud, device }
+
 /// A configurable catalog source (name + index URL + whether it's shown).
 struct SourceConfig: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
@@ -26,6 +32,11 @@ final class SettingsStore {
     /// source when there's no Apple Music match or the capture fails. No-op for songs that
     /// already rip from Apple Music (digital sources).
     var ripFromCloud: Bool
+    /// Item 7 — global device/cloud playback mode. `.cloud` (default) streams via the
+    /// coordinator (Apple Music → rip-on-demand); `.device` plays burned local files,
+    /// falling back to cloud for a missing file. Read by `SetlistPlayer.playbackMode`
+    /// + the single-row transport; toggled by the per-screen `PlaybackModeToggle`.
+    var playbackMode: PlaybackMode
     var searchAccessKeyID: String
     var searchSecretKey: String
     var searchEndpoint: String
@@ -44,6 +55,7 @@ final class SettingsStore {
         self.ripServerURL = data.ripServerURL
         self.ripToken = data.ripToken
         self.ripFromCloud = data.ripFromCloud ?? false
+        self.playbackMode = data.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         self.searchAccessKeyID = data.searchAccessKeyID
         self.searchSecretKey = data.searchSecretKey
         self.searchEndpoint = data.searchEndpoint
@@ -105,7 +117,7 @@ final class SettingsStore {
     func persist() {
         let snapshot = SettingsData(
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
-            ripFromCloud: ripFromCloud,
+            ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark)
         if let encoded = try? JSONEncoder().encode(snapshot) {
@@ -121,6 +133,7 @@ final class SettingsStore {
         sources = d.sources
         ripServerURL = d.ripServerURL; ripToken = d.ripToken
         ripFromCloud = d.ripFromCloud ?? false
+        playbackMode = d.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
         searchEndpoint = d.searchEndpoint
         burnFolderBookmark = d.burnFolderBookmark
@@ -143,6 +156,10 @@ struct SettingsData: Codable {
     /// non-optional Bool would fail decode and silently reset ALL settings to defaults
     /// (load() falls back to .default via `try?`). Coalesced to false at the read sites.
     var ripFromCloud: Bool?
+    /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — same
+    /// backward-compat rationale as `ripFromCloud`. Stored as the enum's raw string;
+    /// coalesced to `.cloud` at the read sites.
+    var playbackMode: String?
     var searchAccessKeyID: String
     var searchSecretKey: String
     var searchEndpoint: String
@@ -155,6 +172,7 @@ struct SettingsData: Codable {
         ripServerURL: Config.ripServerBase.absoluteString,
         ripToken: "",
         ripFromCloud: false,
+        playbackMode: PlaybackMode.cloud.rawValue,
         searchAccessKeyID: "",
         searchSecretKey: "",
         searchEndpoint: "",

@@ -18,6 +18,21 @@ import Observation
 /// `stop()` that delegate to whichever provider won. The rip path is transparent: its
 /// provider just drives the same `PlayerEngine` the inline waveform/scrubber already binds
 /// to, so that verified UI is untouched.
+/// Item 7 — the SHARED "play a burned local file" helper, used by BOTH the
+/// `SetlistPlayer` sequencer AND the single-row transport so `RipsStore.nowPlaying`
+/// (and therefore the inline player + the row pause/resume toggle) stays consistent no
+/// matter which surface started the burned file. It mirrors `RipServerPlaybackProvider.tryPlay`
+/// for the rip path: stamp `nowPlaying`, then load the SAME `PlayerEngine` the inline
+/// waveform/scrubber binds to. `startMs` is the analog seek offset within a shared album mp3.
+@MainActor
+func playLocalFile(_ url: URL, songId: String, title: String, artist: String,
+                   startMs: Int?, rips: RipsStore, player: PlayerEngine) {
+    let np = RipsStore.NowPlaying(songId: songId, title: title, artist: artist,
+                                  url: url, live: false, startMs: startMs, waveform: nil)
+    rips.setNowPlaying(np)
+    player.load(url: url, live: false, startMs: startMs, title: title, artist: artist)
+}
+
 @MainActor
 @Observable
 final class PlaybackCoordinator {

@@ -27,10 +27,24 @@ final class SetlistPlayer {
     /// "Next" control so the set never silently freezes on it.
     private(set) var waitingForLive = false
 
+    /// CRITIC-D — set when a DEVICE-mode run finished without EVER loading a single burned
+    /// file (the whole queue was unplayable on-device). One-shot, non-optional signal the
+    /// playback surface reads to show a transient "no burned files" banner — so device mode
+    /// never silently dead-ends with nothing playing. Cleared on the next `play(_:)`.
+    private(set) var deviceQueueUnplayable = false
+    /// Tracks (within the current run) whether ANY track has loaded a burned file — so a
+    /// device-mode set that reaches the end with nothing loaded can raise the banner.
+    private var loadedAnyDeviceTrack = false
+
     private let player: PlayerEngine
     private let rips: RipsStore
     private let burns: BurnStore
     private let coordinator: PlaybackCoordinator
+
+    /// SEAM (Item 7, owned by Native2/Server): the global device/cloud playback mode,
+    /// injected from settings at `ensurePlayer` time. Defaults to `.cloud` so today's
+    /// stream-first behaviour is unchanged until the mode toggle is wired.
+    var playbackMode: () -> PlaybackMode = { .cloud }
 
     init(player: PlayerEngine, rips: RipsStore, burns: BurnStore, coordinator: PlaybackCoordinator) {
         self.player = player
@@ -45,8 +59,14 @@ final class SetlistPlayer {
         queue = items
         index = 0
         isRunning = true
-        // Own the engine's end hook only while running (released in stop()).
+        deviceQueueUnplayable = false   // fresh run — clear any prior banner signal
+        loadedAnyDeviceTrack = false
+        // Own the engine's end hook + lock-screen next/previous only while running (released in
+        // stop()). The lock screen / Control Center next/prev now advance the SET.
         player.onTrackEnded = { [weak self] in self?.handleEnded() }
+        player.onNext = { [weak self] in self?.skipNext() }
+        player.onPrevious = { [weak self] in self?.skipPrevious() }
+        player.setNextPreviousEnabled(true)
         Task { await playCurrent() }
     }
 
@@ -55,6 +75,9 @@ final class SetlistPlayer {
         isRunning = false
         waitingForLive = false
         player.onTrackEnded = nil          // release ownership of the shared hook
+        player.onNext = nil
+        player.onPrevious = nil
+        player.setNextPreviousEnabled(false)
         player.stop()
         coordinator.stop()
         rips.setNowPlaying(nil)
@@ -62,8 +85,21 @@ final class SetlistPlayer {
         queue = []
     }
 
-    /// Manually advance (used by the live-track "Next" affordance).
+    /// Acknowledge + clear the one-shot device-unplayable banner (the surface calls this
+    /// once it has shown the transient message).
+    func clearDeviceUnplayable() { deviceQueueUnplayable = false }
+
+    /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
     func skipNext() { advance() }
+
+    /// Manually go back one track (lock-screen PREVIOUS). No-op past the top of the set; never
+    /// goes below index 0. Re-resolves + plays the (now) current track.
+    func skipPrevious() {
+        guard isRunning else { return }
+        waitingForLive = false
+        index = max(0, index - 1)
+        Task { await playCurrent() }
+    }
 
     // MARK: - Internals
 
@@ -81,7 +117,12 @@ final class SetlistPlayer {
         waitingForLive = false
         index += 1
         if index >= queue.count {
+            // CRITIC-D — a DEVICE-mode set that reached the end having never loaded a single
+            // burned file: raise the one-shot banner so the surface tells the DJ nothing was
+            // playable on-device (rather than silently ending with no audio).
+            let unplayable = playbackMode() == .device && !loadedAnyDeviceTrack
             stop()                          // reached the end — tear down cleanly
+            if unplayable { deviceQueueUnplayable = true }
         } else {
             Task { await playCurrent() }
         }
@@ -92,17 +133,33 @@ final class SetlistPlayer {
     private func playCurrent() async {
         guard isRunning, index < queue.count else { return }
         let it = queue[index]
+        let mode = playbackMode()
 
+        // DEVICE mode: play ONLY a burned local file. A track with no burned file is SKIPPED
+        // (advance now — no end event would ever fire). If the whole queue has none, the
+        // end-of-set advance raises the CRITIC-D banner. Mode-flip mid-set applies to the
+        // NEXT track: the current track keeps playing under the mode it started with.
+        if mode == .device {
+            if let local = burns.localURL(forSong: it.id) {
+                loadedAnyDeviceTrack = true
+                // SHARED helper so nowPlaying + the inline player + the row toggle stay
+                // consistent with the single-row burned path.
+                playLocalFile(local, songId: it.id, title: it.title, artist: it.artist,
+                              startMs: burns.startMs(forSong: it.id), rips: rips, player: player)
+                // Finite local file → the end notification advances us.
+            } else {
+                advance()   // no on-device file for this track → skip it
+            }
+            return
+        }
+
+        // CLOUD mode (default): prefer a burned local file when present (zero-latency,
+        // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
         if let local = burns.localURL(forSong: it.id) {
-            // Burnt local file → drive the SAME PlayerEngine the rip path uses (mirrors
-            // RipServerPlaybackProvider.tryPlay: set nowPlaying, then load the engine).
-            let np = RipsStore.NowPlaying(songId: it.id, title: it.title, artist: it.artist,
-                                          url: local, live: false, startMs: nil, waveform: nil)
-            rips.setNowPlaying(np)
-            player.load(url: local, live: false, startMs: nil, title: it.title, artist: it.artist)
-            // Finite local file → the end notification will advance us.
+            loadedAnyDeviceTrack = true
+            playLocalFile(local, songId: it.id, title: it.title, artist: it.artist,
+                          startMs: burns.startMs(forSong: it.id), rips: rips, player: player)
         } else {
-            // Stream / rip-on-demand via the coordinator (Apple Music → rip fallback).
             await coordinator.play(id: it.id, title: it.title, artist: it.artist)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advance(); return }

@@ -59,8 +59,16 @@ final class PlayerEngine {
     /// sequencer handles those separately. The engine does NOT nil this on stop() (the
     /// sequencer owns its lifecycle); only `load()` re-registers the per-item observer.
     var onTrackEnded: (() -> Void)?
+    /// Lock-screen / Control Center / CarPlay NEXT + PREVIOUS drive these (Feature: background
+    /// audio). The setlist sequencer owns them across its play()/stop() lifecycle (mirroring
+    /// `onTrackEnded`); nil ⇒ no set is running, so the commands are disabled + reject input.
+    var onNext: (() -> Void)?
+    var onPrevious: (() -> Void)?
     /// The end-of-track NotificationCenter observer, re-registered per loaded item.
     private var endObserver: NSObjectProtocol?
+    /// The AVAudioSession interruption observer (iOS) — re-activates + resumes after a call /
+    /// other-app interruption ends so a backgrounded set keeps playing per the user's intent.
+    private var interruptionObserver: NSObjectProtocol?
 
     // Current track's lock-screen metadata (title / artist) for MPNowPlayingInfoCenter.
     private var nowPlayingTitle: String = ""
@@ -68,6 +76,7 @@ final class PlayerEngine {
 
     init() {
         configureAudioSession()
+        configureInterruptionObserver()
         configureRemoteCommands()
         // Drive the scrubber ~4×/s.
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
@@ -103,6 +112,9 @@ final class PlayerEngine {
     /// seek to `startMs` (analog track offset) once the item reports a usable duration.
     /// `title`/`artist` populate the lock-screen / Control Center Now Playing card.
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "") {
+        // Defensively re-arm the audio session: an interruption (call / other app) can
+        // deactivate it, and a backgrounded set must keep playing across track boundaries.
+        configureAudioSession()
         isLive = live
         clock.currentTime = 0
         clock.duration = 0
@@ -180,6 +192,40 @@ final class PlayerEngine {
         #endif
     }
 
+    /// Re-activate the audio session + resume playback when an interruption (call, other app)
+    /// ends, so a backgrounded/locked set keeps going per the user's intent. iOS-only — macOS
+    /// has no `AVAudioSession` interruption notification.
+    private func configureInterruptionObserver() {
+        #if canImport(UIKit) && !os(macOS)
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let info = note.userInfo,
+                      let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+                if type == .ended {
+                    // The system signals whether we SHOULD resume; honor it (and the user intent
+                    // to keep the set running) by re-activating + playing.
+                    let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
+                        .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
+                    self.configureAudioSession()
+                    if shouldResume { self.play() }
+                }
+            }
+        }
+        #endif
+    }
+
+    /// Enable/disable the lock-screen NEXT + PREVIOUS commands — the setlist sequencer turns
+    /// them on while a set is running (so they advance the SET) and off otherwise.
+    func setNextPreviousEnabled(_ enabled: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        center.nextTrackCommand.isEnabled = enabled
+        center.previousTrackCommand.isEnabled = enabled
+    }
+
     // MARK: - Lock-screen / Control Center (MPNowPlayingInfoCenter + remote commands)
 
     /// Wire the remote command center once: the lock screen, Control Center, AirPods,
@@ -204,6 +250,18 @@ final class PlayerEngine {
             guard let self, !self.isLive,
                   let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self.seek(to: e.positionTime); return .success
+        }
+        // NEXT / PREVIOUS drive the setlist sequencer (Feature: background audio). They reject
+        // input (and stay disabled) when no set is running (`onNext`/`onPrevious` nil).
+        center.nextTrackCommand.isEnabled = false
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self, let onNext = self.onNext else { return .commandFailed }
+            onNext(); return .success
+        }
+        center.previousTrackCommand.isEnabled = false
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self, let onPrevious = self.onPrevious else { return .commandFailed }
+            onPrevious(); return .success
         }
     }
 

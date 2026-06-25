@@ -17,14 +17,15 @@
 //   POCKETDJ_ANALOG_BASE=~/Downloads RIP_TOKEN=secret node scripts/rip-server.mjs
 //   curl localhost:8787/health
 import http from 'node:http';
-import { spawn, execFile } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync } from 'node:fs';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeAudio } from './lib/audio-analyze.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
+import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
@@ -43,10 +44,60 @@ const CFG = {
   sources: (process.env.RIP_SOURCES || `${REPO}/public/current-index.json,${REPO}/public/apple-music-index.json`)
     .split(',').map((s) => s.trim()).filter(Boolean),
   tmp: join(homedir(), '.pocketdj', 'rips'),
+  // ITEM 10 (CRITIC-H): in-process cloud-analog -> public/current-index.json fold. The
+  // ANALOG catalog file we fold INTO (cloud bpm/key/length precedence). Disable with
+  // RIP_PUBLIC_FOLD=0. Defaults to the analog source in RIP_SOURCES (current-index.json).
+  publicIndex: (process.env.RIP_PUBLIC_INDEX || `${REPO}/public/current-index.json`).replace(/^~/, homedir()),
+  publicFold: process.env.RIP_PUBLIC_FOLD !== '0',
 };
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------- self-healing: per-job watchdog + transient retry/backoff ----------------
+// A capture that hangs (Music.app / Audio Hijack stuck) would otherwise leave `working`
+// true forever and freeze the WHOLE queue. pump() races runJob against a DURATION-AWARE
+// deadline; on the deadline we group-kill the active worker (the SAME kill /rip-cancel
+// uses) and reject so the job fail()s and the queue advances. A transient failure (drive
+// unmounted, network blip, watchdog timeout, spawn error) is REQUEUED with capped
+// exponential backoff so a remount / blip self-heals; a permanent failure (unknown song,
+// no analog reference, explicit cancel) is NOT retried.
+// The test-override env vars (RIP_TEST_*) let the e2e shrink the timeouts/backoff so a
+// hang/retry cycle runs in seconds; production uses the safe defaults.
+const numEnv = (k, d) => (process.env[k] ? parseInt(process.env[k], 10) : d);
+const SELFHEAL = {
+  // digital/cloud real-time capture: (song length || default) * mult + buffer, floored/ceiled.
+  digitalMult: 1.5,
+  digitalBufferMs: numEnv('RIP_TEST_DIGITAL_BUFFER_MS', 90_000), // +90s for spawn/seek/upload slack
+  digitalDefaultLenMs: 6 * 60_000, // unknown length → assume a 6-min song
+  digitalFloorMs: numEnv('RIP_TEST_DIGITAL_FLOOR_MS', 90_000), // never kill a legit capture before this
+  digitalCeilMs: 30 * 60_000,     // hard ceiling (a single track can't legitimately run 30 min)
+  // analog ffmpeg transcode of a whole album: a generous fixed cap (transcode is fast).
+  analogCapMs: numEnv('RIP_TEST_ANALOG_CAP_MS', 12 * 60_000),
+  // capped exponential backoff requeue for TRANSIENT failures.
+  maxAttempts: numEnv('RIP_TEST_MAX_ATTEMPTS', 5), // total tries (attempt 1 = the original run)
+  backoffMs: process.env.RIP_TEST_BACKOFF_MS
+    ? process.env.RIP_TEST_BACKOFF_MS.split(',').map((s) => parseInt(s, 10))
+    : [30_000, 120_000, 480_000, 480_000], // ~30s, 2m, 8m, 8m between retries (index by attempt-1)
+};
+function jobDeadlineMs(job, song) {
+  const analog = song && song.sourceType === 'analog' && !job.preferCloud;
+  if (analog) return SELFHEAL.analogCapMs;
+  const lenMs = (song && song.length) || SELFHEAL.digitalDefaultLenMs;
+  const d = lenMs * SELFHEAL.digitalMult + SELFHEAL.digitalBufferMs;
+  return Math.min(SELFHEAL.digitalCeilMs, Math.max(SELFHEAL.digitalFloorMs, d));
+}
+// Permanent (never retry): not in catalog, no analog file reference, explicit cancel.
+// Everything else (transient): drive/source missing, aws/s3/network, watchdog timeout,
+// generic capture/ffmpeg spawn/exit errors → retry with backoff.
+const TIMEOUT_MARK = 'watchdog timeout';
+function isTransient(job, msg) {
+  if (job.canceled || msg === 'canceled') return false;
+  const m = String(msg || '');
+  if (/unknown songId/.test(m)) return false;
+  if (/no analog file reference/.test(m)) return false;
+  return true; // analog source missing, s3/network, timeout, spawn/exit, generic capture failure
+}
 
 // Bump when the server gains capabilities the app must detect. The app warns (banner)
 // when a reachable server reports an older protocol than it needs.
@@ -189,10 +240,10 @@ function acceptRip(songId, ripFromCloud = false) {
     const job = jobs.get(existingId);
     return { job, status: 'inflight', url: job.url || null };
   }
-  const job = { jobId: randomUUID(), songId, resourceKey, preferCloud: wantCloud, phase: 'queued', createdAt: Date.now() };
+  const job = { jobId: randomUUID(), songId, resourceKey, preferCloud: wantCloud, phase: 'queued', createdAt: Date.now(), attempt: 1 };
   jobs.set(job.jobId, job);
   inflight.set(resourceKey, job.jobId);
-  persistQueue(job); // durable: survives a restart
+  persistQueue(job); // durable: survives a restart (retry budget included)
   setPhase(job, 'queued');
   enqueue(job);
   return { job, status: 'queued', url: null };
@@ -227,27 +278,29 @@ function cancelOne(songId, canceledAlbums) {
       // must finish; the terminal canceled-guard then cleans up (fail → inflight.delete).
     } else if (activeChild.p) {
       // Group-kill (detached) to reap the worker's grandchildren (rip skill, tail, HLS
-      // ffmpeg). Best-effort: fall back to a direct kill if the group kill throws.
-      try { process.kill(-activeChild.p.pid, 'SIGKILL'); }
-      catch { try { activeChild.p.kill('SIGKILL'); } catch { /* already gone */ } }
+      // ffmpeg). Same kill the watchdog uses. Best-effort.
+      killActiveChild();
     }
     // working stays true until runJob returns; pump() then drains the queue and the
     // terminal canceled-guard calls fail() → inflight.delete + clearQueue.
     return 'canceled';
   }
 
-  // (B) a QUEUED job (not yet running).
+  // (B) a QUEUED job (not yet running) OR a job WAITING in a transient-retry backoff window
+  // (inflight points at it, phase 'queued', but not yet in the run queue). Both cases: mark
+  // canceled, drop any queue entry, release inflight + durable file. The backoff timer's
+  // re-enqueue guards on job.canceled / the inflight pointer, so it becomes a no-op.
   const qi = queue.findIndex((q) => q.jobId === jobId);
-  if (qi >= 0) {
+  if (qi >= 0 || job.phase === 'queued') {
     job.canceled = true;
-    queue.splice(qi, 1);
+    if (qi >= 0) queue.splice(qi, 1);
     if (job.resourceKey) inflight.delete(job.resourceKey);
     clearQueue(job.songId);
     setPhase(job, 'error', { error: 'canceled' });
     return 'canceled';
   }
-  // inflight points at a job that is neither active nor queued (e.g. a finished/errored job
-  // whose inflight entry lingers) → nothing to cancel.
+  // inflight points at a job that is neither active nor queued/pending (e.g. a finished/
+  // errored job whose inflight entry lingers) → nothing to cancel.
   return 'notFound';
 }
 
@@ -256,23 +309,94 @@ function cancelOne(songId, canceledAlbums) {
 // On startup any leftover files are re-enqueued (idempotent — skipped if already ripped).
 const queueFile = (songId) => join(QUEUE_DIR, `${songId}.json`);
 function persistQueue(job) {
-  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, preferCloud: !!job.preferCloud, createdAt: job.createdAt })); } catch { /* ignore */ }
+  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, preferCloud: !!job.preferCloud, createdAt: job.createdAt, attempt: job.attempt || 1 })); } catch { /* ignore */ }
 }
 function clearQueue(songId) { try { rmSync(queueFile(songId)); } catch { /* not present */ } }
 
 function enqueue(job) { queue.push(job); pump(); }
+
+// Group-kill the in-flight capture child — the SAME kill /rip-cancel uses (reaps the
+// worker's grandchildren: rip skill, tail, HLS ffmpeg). Best-effort.
+function killActiveChild() {
+  const p = activeChild.p;
+  if (!p) return;
+  try { process.kill(-p.pid, 'SIGKILL'); }
+  catch { try { p.kill('SIGKILL'); } catch { /* already gone */ } }
+}
+
+// Schedule a TRANSIENT-failure retry of the same job WITHOUT holding the worker: the job
+// is re-enqueued by a timer after the backoff so the next queued song runs meanwhile. The
+// durable queue record carries the bumped attempt so a restart preserves the retry budget.
+// A canceled job is never rescheduled (the caller already excludes it).
+function scheduleRetry(job, prevMsg) {
+  const next = (job.attempt || 1) + 1;
+  const delay = SELFHEAL.backoffMs[Math.min(job.attempt - 1, SELFHEAL.backoffMs.length - 1)];
+  console.error(`  retry-scheduled ${job.songId} attempt ${next}/${SELFHEAL.maxAttempts} in ${Math.round(delay / 1000)}s (was: ${prevMsg})`);
+  const retry = {
+    jobId: randomUUID(), songId: job.songId, resourceKey: job.resourceKey,
+    preferCloud: !!job.preferCloud, phase: 'queued', createdAt: job.createdAt || Date.now(), attempt: next,
+  };
+  jobs.set(retry.jobId, retry);
+  // keep single-flight: this resource stays inflight (pointing at the retry job) across the gap.
+  inflight.set(retry.resourceKey, retry.jobId);
+  persistQueue(retry); // durable: survives a restart with the bumped attempt
+  setPhase(retry, 'queued', { message: `retry ${next}/${SELFHEAL.maxAttempts} after ${prevMsg}` });
+  setTimeout(() => {
+    if (retry.canceled) return; // canceled during the backoff window
+    if (!inflight.has(retry.resourceKey) || inflight.get(retry.resourceKey) !== retry.jobId) return; // superseded/canceled
+    enqueue(retry);
+  }, delay).unref?.();
+}
+
 async function pump() {
   if (working) return;
   const job = queue.shift();
   if (!job) return;
   working = true;
   activeJobId = job.jobId; // mark running the instant it leaves the queue (closes the cancel race)
-  try { await runJob(job); } catch (e) { fail(job, e.message); }
-  clearQueue(job.songId); // terminal (ready or error) → drop the durable request
-  working = false;
-  activeJobId = null;
-  activeChild.p = null;
-  pump();
+  let timedOut = false;
+  try {
+    const song = songById.get(job.songId);
+    const deadline = jobDeadlineMs(job, song);
+    let timer;
+    const watchdog = new Promise((_, rej) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        console.error(`  timeout-killed ${job.songId} after ${Math.round(deadline / 1000)}s (job ${job.jobId})`);
+        killActiveChild(); // reuse the /rip-cancel group-kill so runJob's worker promise resolves
+        rej(new Error(TIMEOUT_MARK));
+      }, deadline);
+      timer.unref?.();
+    });
+    try { await Promise.race([runJob(job), watchdog]); }
+    finally { clearTimeout(timer); }
+    // runJob set the terminal phase itself (ready/error). A watchdog win rejects → caught below.
+    if (timedOut && job.phase !== 'error') fail(job, TIMEOUT_MARK);
+  } catch (e) {
+    // any throw (incl. the watchdog) → ensure the job is failed once and inflight is consistent.
+    if (job.phase !== 'error') fail(job, e.message || String(e));
+  } finally {
+    // Decide retry vs terminal from the job's terminal error. A TRANSIENT failure (and not a
+    // cancel) within the attempt cap → schedule a backoff retry (which re-holds inflight);
+    // otherwise this is terminal and we drop the durable request + release inflight.
+    const errMsg = job.error || (timedOut ? TIMEOUT_MARK : '');
+    const retryable = job.phase === 'error' && !job.canceled
+      && isTransient(job, errMsg) && (job.attempt || 1) < SELFHEAL.maxAttempts;
+    if (retryable) {
+      scheduleRetry(job, errMsg); // re-holds inflight for this resource (single-flight preserved)
+      clearQueue(job.songId);     // the retry job re-persisted its own durable record
+    } else {
+      if (job.phase === 'error' && !job.canceled && isTransient(job, errMsg)) {
+        console.error(`  gave-up ${job.songId} after ${job.attempt || 1}/${SELFHEAL.maxAttempts} attempts (${errMsg})`);
+      }
+      clearQueue(job.songId); // terminal (ready or give-up) → drop the durable request
+    }
+    // ALWAYS release the worker so the queue advances, even on an unexpected throw above.
+    working = false;
+    activeJobId = null;
+    activeChild.p = null;
+    pump();
+  }
 }
 
 // Re-enqueue requests left in the queue dir by a previous run (crash/restart safe).
@@ -293,7 +417,7 @@ function resumePending() {
     const perSong = preferCloud || song.sourceType !== 'analog';
     const resourceKey = perSong ? songId : song.albumId;
     if (inflight.has(resourceKey)) continue;
-    const job = { jobId: randomUUID(), songId, resourceKey, preferCloud, phase: 'queued', createdAt: rec.createdAt || Date.now() };
+    const job = { jobId: randomUUID(), songId, resourceKey, preferCloud, phase: 'queued', createdAt: rec.createdAt || Date.now(), attempt: rec.attempt || 1 };
     jobs.set(job.jobId, job);
     inflight.set(resourceKey, job.jobId);
     setPhase(job, 'queued');
@@ -364,9 +488,22 @@ async function runAnalogJob(job, song) {
     activeChild.p = ff;
     let err = '';
     ff.stderr.on('data', (d) => { err += d; });
-    ff.on('close', (code) => { activeChild.p = null; (code === 0 ? res() : rej(new Error('ffmpeg failed: ' + err.slice(-300)))); });
+    ff.on('close', (code) => {
+      activeChild.p = null;
+      if (code === 0) return res();
+      // The non-zero close of a KILLED ffmpeg (watchdog timeout or /rip-cancel) would reject
+      // an ALREADY-SETTLED runAnalogJob promise (the watchdog won the race in pump()), surfacing
+      // as an unhandled rejection. The job already terminated (phase 'error' on timeout) or is
+      // canceled, so swallow it (resolve); the canceled-guard below / pump() handle the outcome.
+      if (job.phase === 'error' || job.canceled) return res();
+      rej(new Error('ffmpeg failed: ' + err.slice(-300)));
+    });
   });
 
+  // Orphaned-continuation guard (mirrors runDigitalJob): on a WATCHDOG TIMEOUT pump() already
+  // failed the job + scheduled the retry (re-holding inflight); the killed ffmpeg's swallowed
+  // close LATER resumes here. Bail without uploading the partial transcode or touching inflight.
+  if (job.phase === 'error') return;
   if (job.canceled) return fail(job, 'canceled'); // killed mid-transcode → don't upload
   setPhase(job, 'uploading', { message: 'uploading to S3' });
   const key = `rips/${album.id}.mp3`;
@@ -430,6 +567,13 @@ async function runDigitalJob(job, song) {
     p.stderr.on('data', (d) => process.stderr.write(d));
     p.on('close', () => { activeChild.p = null; res(); });
   });
+  // Orphaned-continuation guard (mirrors the job.canceled guard below): on a WATCHDOG
+  // TIMEOUT the race already rejected, pump() called fail(job, TIMEOUT) and scheduleRetry()
+  // re-held inflight for the retry job. The killed worker's close event LATER resolves this
+  // promise; that orphaned continuation must NOT run the terminal fail()/inflight.delete a
+  // second time (it would wipe the retry's inflight.set and silently drop the retry). The
+  // job has already terminated (phase 'error'), so bail without touching inflight.
+  if (job.phase === 'error') return;
   // the worker wrote phases to the status file; read its final state
   let st = {};
   try { st = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* ignore */ }
@@ -496,6 +640,10 @@ async function analyzeManifestSong(songId) {
   }
   await saveManifest();
   console.error(`  ✓ analyzed ${audioBase}: bpm=${a.bpm} key=${a.musicalKey} wave=${!!a.waveform}`);
+  // ITEM 10: a cloud (digital) rip just got analyzed → fold its bpm/key/length into the
+  // public analog catalog (debounced, in-process, never deploys). Analog rips keep the
+  // catalog's per-song values, so they don't trigger a fold.
+  if (withKey && isCloudAnalogEntry(songId)) requestPublicFold();
 }
 function resumeAnalysis() {
   const seen = new Set();
@@ -505,6 +653,143 @@ function resumeAnalysis() {
     seen.add(e.key); enqueueAnalysis(songId); n++;
   }
   if (n) console.error(`  queued ${n} pending analysis job(s)`);
+}
+
+// ---------------- ITEM 10 (CRITIC-H): cloud-analog analysis -> public/current-index.json ----------------
+// The runtime manifest overlay covers the row UI, but the SHIPPED analog catalog
+// (public/current-index.json) still carries the suspect librosa bpm/key/length for songs
+// that have since been cloud-ripped + analyzed (source 'digital', analyzed, EXACT am-match
+// to an analog catalog song). When such an entry finishes analysis we fold the cloud
+// bpm/key/camelot/length into public/current-index.json — IN-PROCESS (no detached node),
+// inside the analysis single-flight, debounced to a single trailing run, atomic write,
+// idempotent, cloud-precedence, provenance-stamped. NEVER deploys / invalidates CloudFront
+// (logs a publish hint). Guards against clobbering uncommitted NON-reindex working-tree
+// changes to the file (a human edit / a different content change is never overwritten).
+
+// Is this a CLOUD-ANALOG entry worth a public fold? A digital+analyzed manifest entry whose
+// matched catalog song lives in the ANALOG public index (so its catalog bpm/key is suspect).
+// We do NOT require the song's own id to key the manifest — a separately-ripped DIGITAL copy
+// of the matched Apple Music track (derived am songId) also qualifies; foldCloudReindex
+// resolves both. The cheap gate here is just "an analyzed digital rip exists", which is the
+// only kind of entry analysis ever produces for a digital/cloud rip.
+function isCloudAnalogEntry(songId) {
+  const e = manifest[songId];
+  return !!e && e.source === 'digital' && e.analyzed === true;
+}
+
+// Structural guard: is the working-tree public index DIRTY with a change that is NOT a prior
+// cloud-reindex fold? We compare the committed (HEAD) JSON to the working-tree JSON and
+// require every difference to live ONLY in fold-owned fields: per-song length/bpm/key/
+// camelot/cloudReindex, and index.manifest.cloudReindex. Any other delta (a re-index of a
+// different field, a human edit, an albums change, a song add/remove) => NOT safe to clobber.
+const FOLD_SONG_FIELDS = new Set(['length', 'bpm', 'key', 'camelot', 'cloudReindex']);
+function headIndexJson(path) {
+  // `git show HEAD:<repo-relative path>` — returns null if not tracked / no git.
+  try {
+    const rel = path.startsWith(REPO + '/') ? path.slice(REPO.length + 1) : path;
+    const out = execFileSyncQuiet('git', ['-C', REPO, 'show', `HEAD:${rel}`]);
+    return out == null ? null : JSON.parse(out);
+  } catch { return null; }
+}
+function execFileSyncQuiet(cmd, args) {
+  // tiny sync exec helper that returns stdout string or null (never throws). Used only for
+  // the git working-tree guard, off the hot path (runs once per debounced fold).
+  try {
+    return execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch { return null; }
+}
+// Returns true iff the only differences between `head` and `work` are fold-owned fields.
+function isFoldOnlyDiff(head, work) {
+  if (!head || !work) return false;
+  // manifest: only cloudReindex may differ.
+  const hm = { ...(head.manifest || {}) }; const wm = { ...(work.manifest || {}) };
+  delete hm.cloudReindex; delete wm.cloudReindex;
+  if (JSON.stringify(hm) !== JSON.stringify(wm)) return false;
+  // albums + any other top-level key must be byte-identical.
+  for (const k of new Set([...Object.keys(head), ...Object.keys(work)])) {
+    if (k === 'songs' || k === 'manifest') continue;
+    if (JSON.stringify(head[k]) !== JSON.stringify(work[k])) return false;
+  }
+  // songs: same count + order; each song may differ ONLY in fold-owned fields.
+  const hs = head.songs || []; const ws = work.songs || [];
+  if (hs.length !== ws.length) return false;
+  for (let i = 0; i < hs.length; i++) {
+    const a = hs[i]; const b = ws[i];
+    if (a.id !== b.id) return false;
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      if (FOLD_SONG_FIELDS.has(k)) continue;
+      if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return false;
+    }
+  }
+  return true;
+}
+
+let foldQueued = false;   // a fold is requested (trailing-debounce flag)
+let foldRunning = false;  // a fold is executing (single-flight)
+let foldTimer = null;
+const FOLD_DEBOUNCE_MS = numEnv('RIP_TEST_FOLD_DEBOUNCE_MS', 1500);
+// Request a public-index fold. Debounced to a SINGLE trailing run: rapid back-to-back
+// analyses (a collection rip) coalesce into one fold. Safe to call from anywhere.
+function requestPublicFold() {
+  if (!CFG.publicFold) return;
+  foldQueued = true;
+  if (foldTimer) return;
+  foldTimer = setTimeout(() => { foldTimer = null; runPublicFoldOnce(); }, FOLD_DEBOUNCE_MS);
+  foldTimer.unref?.();
+}
+async function runPublicFoldOnce() {
+  if (foldRunning) { return; } // a run is in flight; the trailing foldQueued flag re-fires it below
+  if (!foldQueued) return;
+  foldQueued = false;
+  foldRunning = true;
+  try { foldPublicIndex(); }
+  catch (e) { console.error('  public-fold failed:', e.message); }
+  finally {
+    foldRunning = false;
+    if (foldQueued) requestPublicFold(); // a request arrived mid-run → one more trailing run
+  }
+}
+// The actual fold (synchronous, fast: it's a metadata pass over the in-memory catalog).
+function foldPublicIndex() {
+  const path = CFG.publicIndex;
+  if (!existsSync(path)) { console.error(`  public-fold skipped: index not found ${path}`); return; }
+  if (!libIndex) { console.error('  public-fold skipped: library index not warm yet'); return; }
+  const index = JSON.parse(readFileSync(path, 'utf8'));
+  if ((index.manifest?.sourceType) !== 'analog') {
+    console.error(`  public-fold skipped: ${path} sourceType is '${index.manifest?.sourceType}', expected 'analog'`);
+    return;
+  }
+  // Working-tree guard: if the file is DIRTY vs HEAD and the dirt is NOT a prior fold, do
+  // NOT clobber it. (A clean file, or one whose only delta is a prior cloudReindex fold, is
+  // safe.) If there's no git/HEAD baseline we proceed (nothing to protect).
+  const head = headIndexJson(path);
+  if (head && !isFoldOnlyDiff(head, index)) {
+    console.error(`  public-fold skipped: ${path} has uncommitted NON-reindex changes — refusing to clobber`);
+    return;
+  }
+
+  const report = foldCloudReindex(index, libIndex, manifest, {});
+  if (report.changed === 0) {
+    // idempotent no-op: nothing to write (re-run after the values are already folded).
+    return;
+  }
+  // stamp provenance (audit) — wall-clock here is fine (the file is NOT byte-idempotent in
+  // the server context; we gate the WRITE on report.changed, not on byte-equality).
+  index.manifest = index.manifest || {};
+  index.manifest.cloudReindex = {
+    generatedAt: new Date().toISOString(),
+    source: 'rip-server in-process',
+    matched: report.matched,
+    lengthUpdated: report.lengthUpdated,
+    bpmKeyUpdatedFromCloud: report.bpmKeyUpdatedFromCloud,
+    changed: report.changed,
+  };
+  // ATOMIC write: temp file in the SAME dir + rename (rename is atomic on the same fs).
+  const tmp = `${path}.fold-${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(index));
+  renameSync(tmp, path);
+  console.error(`  ✓ public-fold: ${report.changed} song(s) updated in ${path} (matched=${report.matched}, length=${report.lengthUpdated}, bpm/key=${report.bpmKeyUpdatedFromCloud})`);
+  console.error(`  ⚠ public-fold did NOT deploy — run \`bash scripts/deploy.sh dev\` (or prod) to publish the updated catalog.`);
 }
 
 // ---------------- HTTP ----------------
@@ -635,6 +920,8 @@ const server = http.createServer(async (req, res) => {
     e.analyzed = true;
     manifest[a.songId] = e;
     await saveManifest();
+    // ITEM 10: external analysis of a cloud (digital) rip → fold into the public catalog.
+    if (isCloudAnalogEntry(a.songId)) requestPublicFold();
     return send(res, 200, { ok: true, songId: a.songId });
   }
   return send(res, 404, { error: 'not found' });

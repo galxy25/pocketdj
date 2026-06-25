@@ -479,7 +479,12 @@ re-run `xcodegen generate` after edits):
 | `INFOPLIST_KEY_NSMicrophoneUsageDescription` | "PocketDJ listens to identify the song that's playing." | mic prompt for the "?♪?" ShazamKit listen |
 | `INFOPLIST_KEY_NSAppleMusicUsageDescription` | "PocketDJ uses Apple Music to play and search tracks from your subscription." | the MusicKit consent prompt |
 | `PocketDJAppleMusicEnabled` (in the **base Info.plist**, not `INFOPLIST_KEY_*`) | **`YES`** | build-time gate that wakes `AppleMusicProvider` (still needs the portal MusicKit App Service to run on device). Must be a real Info.plist key — `INFOPLIST_KEY_PocketDJAppleMusicEnabled` no-ops because `INFOPLIST_KEY_*` only injects Apple's *known* keys |
-| `UIBackgroundModes` | `[audio]` | background playback + lock-screen Now Playing for the inline player (Ch. 5 §7) |
+| `UIBackgroundModes` | **`[audio, fetch, processing]`** (was `[audio]`) | `audio` = background playback + lock-screen Now Playing (Ch. 5 §7, §11.3); **`fetch`** lets the `BGAppRefreshTask` (rip-reconcile) run; **`processing`** lets the `BGProcessingTask` (burn-drain) run — the **background-processing** feature (Ch. 5 §11). iOS-only; macOS ignores them |
+| `BGTaskSchedulerPermittedIdentifiers` | **`[com.levi.pocketdj.burn-drain, com.levi.pocketdj.rip-reconcile]`** | the two BGTask identifiers the `AppDelegate` registers + submits; iOS refuses to register an identifier not declared here (Ch. 5 §11.2) |
+
+The `UIBackgroundModes` array can't be a scalar `INFOPLIST_KEY_*`, so `project.yml`
+declares it (and `BGTaskSchedulerPermittedIdentifiers`) in its base **`info:`** block;
+the same values land in [`apple/PocketDJ/Generated/Info.plist`](../../apple/PocketDJ/Generated/Info.plist).
 
 The **Spotify / YouTube OAuth redirect schemes** are *arrays* (`CFBundleURLTypes`,
 `LSApplicationQueriesSchemes`) and so can't be injected as scalar `INFOPLIST_KEY_*`
@@ -488,6 +493,35 @@ values — `project.yml` keeps a **commented `info:` block** showing exactly wha
 provisions those providers. Until then the default build links neither SDK and ships
 inert. See [`docs/streaming-integration.md`](../streaming-integration.md) for the
 end-to-end provisioning checklist.
+
+---
+
+## 6. The rip-server launchd agent — config & external-volume access
+
+**Why.** The rip server (Ch. 5) is the one piece of live compute the clients depend on,
+so it must **auto-start at login and restart on exit** (the app never hits a stale/down
+server). It runs as a **LaunchAgent** on the iMac —
+[`scripts/launchd/com.pocketdj.ripserver.plist`](../../scripts/launchd/com.pocketdj.ripserver.plist)
+(`com.pocketdj.ripserver`, `RunAtLoad` + `KeepAlive`, logs to
+`~/.pocketdj/rip-server.log`, runs from the stable main checkout). launchd runs with a
+minimal PATH, so `node`/`ffmpeg`/`aws`/`tail` dirs are set in `PATH`, and `AWS_PROFILE=levi`
+is set for the S3 writes.
+
+**`POCKETDJ_ANALOG_BASE` — where the vinyl raw files live.** The analog rip path resolves
+`${POCKETDJ_ANALOG_BASE}/<album.pointer.originalFilename>` (e.g.
+`SWVNewBeginningsRaw.mp3`) and **defaults to `~/Downloads`** when unset — so on the iMac,
+where those raw rips live on an **external drive**, the agent's `EnvironmentVariables` set:
+
+```
+ POCKETDJ_ANALOG_BASE = /Volumes/RipBurnMix
+```
+
+If unset, **every analog rip fails** `analog file not found` (Ch. 5 §3.2). Reading
+`/Volumes/*` from a launchd-spawned `node` also requires macOS **removable-volume /
+Files & Folders TCC** access granted to `node` (System Settings ▸ Privacy & Security),
+or the read fails even with the base set. (To require a bearer token, add `RIP_TOKEN`
+to the same block and set it in Settings ▸ Rip server — tailnet-only by default; the
+rips S3 bucket is public per the design.)
 
 ---
 

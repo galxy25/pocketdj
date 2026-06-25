@@ -63,7 +63,10 @@ container) that turn media into JSON, plus `deploy.sh` which pushes results to A
 and (3) the **Rip server**, a long-running Node HTTP service (`scripts/rip-server.mjs`)
 run as a launchd agent on port 8787 and exposed over **Tailscale HTTPS**. Music.app +
 Audio Hijack (driven by AppleScript + Shortcuts) are how it captures Apple Music
-audio in real time.
+audio in real time. The agent reads its vinyl raw files from the external
+**`POCKETDJ_ANALOG_BASE` = `/Volumes/RipBurnMix`** (set in its launchd plist; requires
+removable-volume TCC for `node` — Ch. 5 §3.2, Ch. 7 §6) and self-heals a stuck/flaky
+job with a per-job watchdog + capped backoff retry (Ch. 5 §3.1).
 
 **AWS** is the passive middle. The **S3 web bucket** (fronted by **CloudFront** for
 HTTPS — a PWA service worker requires it) serves the catalog documents, mirrored art
