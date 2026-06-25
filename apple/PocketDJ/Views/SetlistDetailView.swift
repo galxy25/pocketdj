@@ -113,9 +113,6 @@ struct SetlistDetailView: View {
                     }
                 }
                 .navigationTitle(setlist.name ?? "Set list")
-                #if os(iOS)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton().accessibilityIdentifier("setlist-edit-order").disabled(isPlaying) } }
-                #endif
             } else {
                 ContentUnavailableView("Set list gone", systemImage: "waveform.slash",
                                        description: Text("This set list no longer exists."))
@@ -153,70 +150,7 @@ struct SetlistDetailView: View {
         }
         .toolbar {
             if let setlist {
-                ToolbarItem(placement: .primaryAction) {
-                    PlaybackModeToggle()
-                }
-                // ⏮ PREVIOUS — persistent transport while a set runs (left of the play button);
-                // steps back one track (clamped at the top).
-                if isPlaying {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { setlistPlayer?.skipPrevious() } label: {
-                            Image(systemName: "backward.fill")
-                        }
-                        .help("Previous track")
-                        .accessibilityIdentifier("setlist-play-prev")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    // PLAY ALL / STOP — plays the set in order, auto-advancing on track-end.
-                    Button {
-                        if isPlaying {
-                            setlistPlayer?.stop()
-                        } else {
-                            ensurePlayer().play(playableItems(setlist))
-                        }
-                    } label: {
-                        Image(systemName: isPlaying ? "stop.fill" : "play.fill")
-                    }
-                    .help(isPlaying ? "Stop playing the set list" : "Play the set list in order")
-                    .disabled(!isPlaying && playableItems(setlist).isEmpty)
-                    .accessibilityIdentifier("setlist-play")
-                }
-                // ⏭ NEXT — persistent transport while a set runs (right of the play button).
-                // Advances one track; also the manual escape for a LIVE track (no natural end).
-                if isPlaying {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { setlistPlayer?.skipNext() } label: {
-                            Image(systemName: "forward.fill")
-                        }
-                        .help(setlistPlayer?.waitingForLive == true
-                              ? "Skip to the next track (the current one is live)"
-                              : "Next track")
-                        .accessibilityIdentifier("setlist-play-next")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button { addNoteDraft = ""; addingNote = true } label: { Image(systemName: "text.badge.plus") }
-                        .help("Add a note between tracks")
-                        .accessibilityIdentifier("setlist-add-note")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
-                    } label: { Image(systemName: "arrow.down.circle") }
-                        .help("Rip or burn this set list")
-                        .accessibilityIdentifier("setlist-ripburn-menu")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button { nameDraft = setlist.name ?? ""; renaming = true } label: { Image(systemName: "pencil") }
-                        .accessibilityIdentifier("setlist-rename")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button(role: .destructive) {
-                        collections.deleteSetlist(setlist.id); dismiss()
-                    } label: { Image(systemName: "trash") }
-                        .accessibilityIdentifier("setlist-delete")
-                }
+                setlistToolbar(setlist)
             }
         }
         .alert("Add note", isPresented: $addingNote) {
@@ -250,6 +184,148 @@ struct SetlistDetailView: View {
             }
             Button("Cancel", role: .cancel) { noteEditing = nil }
         }
+    }
+
+    // MARK: Toolbar
+
+    /// The setlist toolbar. On **iOS in play mode** the transport (⏮ · ⏯ · ⏭) is CENTERED in
+    /// the nav bar (`.principal`) and every secondary action — including Edit — collapses into a
+    /// single ••• menu, so the bar reads as a clean music transport. Otherwise (iOS idle, and
+    /// macOS always) it's the flat trailing layout (play/stop · prev/next while running · the
+    /// secondary actions). macOS has no `.principal` nav bar, so it keeps the flat row.
+    @ToolbarContentBuilder
+    private func setlistToolbar(_ setlist: Setlist) -> some ToolbarContent {
+        #if os(iOS)
+        if isPlaying {
+            ToolbarItem(placement: .principal) { transportCluster }
+            ToolbarItem(placement: .topBarTrailing) { PlaybackModeToggle() }
+            ToolbarItem(placement: .topBarTrailing) { overflowMenu(setlist) }
+        } else {
+            ToolbarItem(placement: .topBarTrailing) { startStopButton(setlist) }
+            ToolbarItem(placement: .topBarTrailing) { PlaybackModeToggle() }
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton().accessibilityIdentifier("setlist-edit-order")
+            }
+            ToolbarItem(placement: .topBarTrailing) { overflowMenu(setlist) }
+        }
+        #else
+        ToolbarItem(placement: .primaryAction) { PlaybackModeToggle() }
+        if isPlaying {
+            ToolbarItem(placement: .primaryAction) {
+                Button { setlistPlayer?.skipPrevious() } label: { Image(systemName: "backward.fill") }
+                    .help("Previous track").accessibilityIdentifier("setlist-play-prev")
+            }
+        }
+        ToolbarItem(placement: .primaryAction) { startStopButton(setlist) }
+        if isPlaying {
+            ToolbarItem(placement: .primaryAction) {
+                Button { setlistPlayer?.skipNext() } label: { Image(systemName: "forward.fill") }
+                    .help(setlistPlayer?.waitingForLive == true
+                          ? "Skip to the next track (the current one is live)" : "Next track")
+                    .accessibilityIdentifier("setlist-play-next")
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { addNoteDraft = ""; addingNote = true } label: { Image(systemName: "text.badge.plus") }
+                .help("Add a note between tracks").accessibilityIdentifier("setlist-add-note")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
+            } label: { Image(systemName: "arrow.down.circle") }
+                .help("Rip or burn this set list").accessibilityIdentifier("setlist-ripburn-menu")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { nameDraft = setlist.name ?? ""; renaming = true } label: { Image(systemName: "pencil") }
+                .accessibilityIdentifier("setlist-rename")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button(role: .destructive) { collections.deleteSetlist(setlist.id); dismiss() } label: { Image(systemName: "trash") }
+                .accessibilityIdentifier("setlist-delete")
+        }
+        #endif
+    }
+
+    /// The centered ⏮ · ⏯ · ⏭ transport shown in the nav bar while a set plays (iOS). The middle
+    /// toggles play/pause on whichever backend is active (Apple Music streaming via the
+    /// coordinator, else the rip/local `PlayerEngine`); prev/next step the SET.
+    private var transportCluster: some View {
+        HStack(spacing: 30) {
+            Button { setlistPlayer?.skipPrevious() } label: { Image(systemName: "backward.fill") }
+                .help("Previous track").accessibilityIdentifier("setlist-play-prev")
+            Button { toggleTransport() } label: {
+                Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill")
+            }
+            .help(transportIsPlaying ? "Pause" : "Play").accessibilityIdentifier("setlist-play")
+            Button { setlistPlayer?.skipNext() } label: { Image(systemName: "forward.fill") }
+                .help(setlistPlayer?.waitingForLive == true
+                      ? "Skip to the next track (the current one is live)" : "Next track")
+                .accessibilityIdentifier("setlist-play-next")
+        }
+        .font(.title3)
+        .tint(Theme.accent)
+    }
+
+    /// PLAY ALL (start) / STOP (end) the set. The iOS play-mode transport uses play/PAUSE
+    /// instead (Stop lives in the ••• menu there); this is the idle-iOS / macOS button.
+    private func startStopButton(_ setlist: Setlist) -> some View {
+        Button {
+            if isPlaying { setlistPlayer?.stop() }
+            else { ensurePlayer().play(playableItems(setlist)) }
+        } label: {
+            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+        }
+        .help(isPlaying ? "Stop playing the set list" : "Play the set list in order")
+        .disabled(!isPlaying && playableItems(setlist).isEmpty)
+        .accessibilityIdentifier("setlist-play")
+    }
+
+    /// The ••• overflow gathering every secondary action so the play-mode bar stays clean.
+    /// While playing it also carries Stop and a (disabled) Edit entry — reordering mid-set would
+    /// desync the sequencer's queue index, so Edit is only live when the set isn't running.
+    private func overflowMenu(_ setlist: Setlist) -> some View {
+        Menu {
+            if isPlaying {
+                Button(role: .destructive) { setlistPlayer?.stop() } label: {
+                    Label("Stop playing", systemImage: "stop.fill")
+                }
+                Divider()
+            }
+            Button { addNoteDraft = ""; addingNote = true } label: {
+                Label("Add note", systemImage: "text.badge.plus")
+            }.accessibilityIdentifier("setlist-add-note")
+            Menu {
+                CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
+            } label: { Label("Rip / Burn", systemImage: "arrow.down.circle") }
+                .accessibilityIdentifier("setlist-ripburn-menu")
+            Button { nameDraft = setlist.name ?? ""; renaming = true } label: {
+                Label("Rename", systemImage: "pencil")
+            }.accessibilityIdentifier("setlist-rename")
+            #if os(iOS)
+            if isPlaying {
+                // Edit (reorder) collapsed into the dropdown per the play-mode design; disabled
+                // while running (reordering mid-set would desync the sequencer's queue index).
+                Button {} label: { Label("Edit order", systemImage: "arrow.up.arrow.down") }
+                    .disabled(true).accessibilityIdentifier("setlist-edit-order")
+            }
+            #endif
+            Divider()
+            Button(role: .destructive) { collections.deleteSetlist(setlist.id); dismiss() } label: {
+                Label("Delete set list", systemImage: "trash")
+            }.accessibilityIdentifier("setlist-delete")
+        } label: { Image(systemName: "ellipsis.circle") }
+            .accessibilityIdentifier("setlist-overflow")
+    }
+
+    /// Play/pause state for the centered transport — mirrors whichever backend is active.
+    private var transportIsPlaying: Bool {
+        coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying
+    }
+
+    /// Toggle play/pause on the active backend (Apple Music streaming else the rip/local engine).
+    private func toggleTransport() {
+        if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
+        else { player.toggle() }
     }
 
     /// The album behind a frozen track, for its cover-art thumbnail — resolved from
