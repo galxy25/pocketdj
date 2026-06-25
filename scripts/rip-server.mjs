@@ -576,6 +576,56 @@ async function runAnalogJob(job, song) {
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
+// BACKFILL: slice a per-song cut for every analog manifest entry missing one, straight from the
+// raw album source (no whole-album re-transcode), and add `cutKey` to the entry. Lets albums
+// ripped before the cut feature gain the per-song burn export retroactively. Single-flight via
+// `backfillRunning`. Runs OUTSIDE the job queue (its own ffmpeg passes); shares the in-memory
+// `manifest` object so a concurrent rip's saveManifest won't drop these cutKeys.
+let backfillRunning = false;
+async function backfillCuts() {
+  let done = 0, failed = 0, skipped = 0;
+  const albumIds = new Set();
+  for (const e of Object.values(manifest)) {
+    if (e.source === 'analog' && !e.cutKey && e.albumId) albumIds.add(e.albumId);
+  }
+  console.error(`  backfill-cuts: scanning ${albumIds.size} albums`);
+  for (const albumId of albumIds) {
+    const album = albumById.get(albumId);
+    if (!album?.pointer?.originalFilename) { skipped++; continue; }
+    const src = join(CFG.analogBase, album.pointer.originalFilename);
+    if (!existsSync(src)) { console.error(`  backfill skip ${albumId}: src missing ${src}`); skipped++; continue; }
+    for (const s of songsByAlbum.get(albumId) || []) {
+      const e = manifest[s.id];
+      if (!e || e.source !== 'analog' || e.cutKey) continue;
+      const startMs = s.pointer?.startMs ?? e.startMs;
+      const durMs = s.length ?? e.durationMs;
+      if (startMs == null || !durMs) continue;
+      const cutOut = join(CFG.tmp, `${s.id}.cut.mp3`);
+      try {
+        await new Promise((res, rej) => {
+          const ff = spawn('ffmpeg', ['-y', '-ss', String(startMs / 1000), '-i', src,
+            '-t', String(durMs / 1000), '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k', cutOut]);
+          let err = ''; ff.stderr.on('data', (d) => { err += d; });
+          ff.on('close', (code) => (code === 0 ? res() : rej(new Error(err.slice(-200)))));
+        });
+        const cutKey = `rips/${s.id}.cut.mp3`;
+        await aws(['s3', 'cp', cutOut, `s3://${CFG.bucket}/${cutKey}`, '--content-type', 'audio/mpeg']);
+        e.cutKey = cutKey; e.cutBytes = statSync(cutOut).size; e.cutRippedAt = Date.now();
+        done++;
+        if (done % 10 === 0) await saveManifest();
+      } catch (err) {
+        failed++; console.error(`  backfill cut failed ${s.id}: ${err.message}`);
+      } finally {
+        rmSync(cutOut, { force: true });
+      }
+    }
+    await saveManifest();
+    console.error(`  backfill: ${album.name} done (${done} cuts, ${failed} failed so far)`);
+  }
+  await saveManifest();
+  console.error(`  backfill-cuts DONE: ${done} cuts, ${failed} failed, ${skipped} albums skipped`);
+}
+
 // Phase 2: Apple Music real-time capture via the `rip` skill (rip-one.mjs worker).
 // Default: run the worker directly (deterministic). RIP_AGENT=1: run it via a headless
 // Claude agent that can adaptively add a missing track to the library + retry.
@@ -921,6 +971,16 @@ const server = http.createServer(async (req, res) => {
     const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
       { ready: 0, queued: 0, inflight: 0, unknown: 0, total: 0 });
     return send(res, 200, { results, counts });
+  }
+  // POST /backfill-cuts — slice a per-song cut chunk for EVERY analog manifest entry that lacks
+  // one (`cutKey`), straight from the raw album source (NO whole-album re-transcode), so albums
+  // ripped before the cut feature gain the per-song burn export retroactively. Runs in the
+  // BACKGROUND (returns the candidate count immediately); progress + the final tally go to the
+  // log. Idempotent + single-flight (a 2nd call while running is a no-op).
+  if (path === '/backfill-cuts' && req.method === 'POST') {
+    const candidates = Object.values(manifest).filter((e) => e.source === 'analog' && !e.cutKey).length;
+    if (!backfillRunning) { backfillRunning = true; backfillCuts().finally(() => { backfillRunning = false; }); }
+    return send(res, 200, { ok: true, candidates, running: backfillRunning });
   }
   // POST /rip-cancel {songIds:[...]} — Feature 1 STOP RIP. Cancels still-queued matching
   // jobs (splice queue + clear inflight + delete durable file) and KILLS the in-flight
