@@ -584,13 +584,33 @@ like `downloadData`) when the song isn't cached. Per song:
  burn(songs, lookup):  for each song, sequentially —
    isFresh? (state==.ready ∧ file exists ∧ size==bytes ∧ manifest.rippedAt ≤ downloadedAt) → skip
    cachedURL == nil → record "not ripped — Rip first" → continue   (NEVER ensureURL)
+   resolve catalog (song s, album a) BEFORE naming   → fileNames(songId, entry, song:s, album:a)
    downloadDataIfCached → (data, ManifestEntry)
-   analog → <albumId>.mp3 (one shared file/album, reuse if a sibling wrote it; seek by startMs)
-   digital → <songId>.mp3
-   write <songId>.txt sidecar (BPM · Key+Camelot · Sentiment · Album + metadata + raw JSON)
+   analog → <Artist-Album-Year-Genre>-<albumId>.mp3   (ALBUM-LEVEL prefix; one shared file/album,
+                                                        reuse if a sibling wrote it; seek by startMs)
+   digital → <Artist-Song-Album-Year-Genre-Camelot-Key-BPM>-<songId>.mp3   (PER-SONG prefix)
+   write <Artist-Song-…-BPM>-<songId>.txt sidecar (BPM · Key+Camelot · Sentiment · Album + meta + JSON)
    record BurnItem{ audio/sidecar names, bpm/key/camelot/durationMs/startMs, bytes,
                     rippedAt(from entry), downloadedAt(now), state:.ready }  → save()
 ```
+
+**The metadata filename scheme (§9.0).** The burned audio + sidecar names now carry a
+**sanitized, descriptive prefix** so a file is identifiable in Finder/Files without opening
+the sidecar — built by `BurnStore.fileNames(for:entry:song:album:)` (the catalog `song`/
+`album` are resolved **before** naming so the prefix has the real metadata). The digital
+per-song prefix is **`Artist-Song-Album-Year-Genre-Camelot-Key-BPM`** (analyzed
+bpm/key/camelot preferred from the manifest `entry`, falling back to the catalog song);
+the **analog** shared whole-album file gets an **album-level** prefix
+(`Artist-Album-Year-Genre`, **no** per-song bpm/key — it's one file for the whole side, so
+every song of the album must map to the *same* audio name to keep the shared-file
+reuse/dedup/`isFresh` logic correct). The `.txt` sidecar always uses the per-song prefix.
+Each token is **sanitized** (`sanitizeToken`: illegal/reserved filename chars **and** the
+`-` separator → spaces, whitespace collapsed, capped at 40 chars) and missing fields are
+**dropped** (no empty placeholder tokens); `descriptiveName` then joins the prefix with
+`-`, **caps only the prefix** (150 chars) and **never truncates** the `idSuffix` (the
+`albumId` for analog / `songId` for digital, from the manifest key's basename) or the
+extension — so keying, dedup, and finalize stay stable. A blank prefix degrades to just
+`<id>.<ext>`.
 
 **Freshness — `isFresh(_:dir:rippedAt:)`.** A burn is reused only when its file still
 exists **and** its size matches the recorded `bytes` **and** the manifest entry's
@@ -702,30 +722,47 @@ driven by the **Play/Stop** toolbar button in
 ```
  SetlistPlayer.play(items)  ── items = [{id,title,artist}] in setlist order
    index=0; player.onTrackEnded = handleEnded   (owns the hook only while running)
-   ▼ playCurrent()  — resolves the SOURCE FRESH each track:
-   burns.localURL(forSong: id) ≠ nil ?
-        → set rips.nowPlaying + player.load(localURL, live:false, startMs:nil)   (BURNT)
-        else → coordinator.play(id)   (Apple Music → rip fallback, §8)           (STREAM)
-              coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
-              player.isLive            → waitingForLive = true ("Next" affordance, no auto-end)
+   deviceQueueUnplayable=false; loadedAnyDeviceTrack=false   (fresh-run banner reset)
+   ▼ playCurrent()  — resolves the SOURCE FRESH each track, branching on playbackMode():
+   mode == .device :                                          (§12 — global toggle)
+        burns.localURL(forSong: id) ≠ nil ?
+            → playLocalFile(local, startMs: burns.startMs(id), …)  loadedAnyDeviceTrack=true (BURNT)
+            else → SKIP the track (advance NOW — un-burned, no file to play, no end event)
+   mode == .cloud (else) :
+        burns.localURL(forSong: id) ≠ nil ?
+            → set rips.nowPlaying + player.load(localURL, live:false, startMs:nil)   (BURNT)
+            else → coordinator.play(id)   (Apple Music → rip fallback, §8)           (STREAM)
+                  coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
+                  player.isLive            → waitingForLive = true ("Next" affordance, no auto-end)
    ▼ handleEnded()  (player.onTrackEnded fires on a finite item)
    GUARD rips.nowPlaying?.songId == queue[index].id  → advance() ; index≥count → stop()
+        on stop, if mode==.device && !loadedAnyDeviceTrack → deviceQueueUnplayable=true (banner)
 ```
 
 **Reading the diagram.** `play(items)` seeds the queue and takes ownership of the shared
 `PlayerEngine.onTrackEnded` hook (released in `stop()`). `playCurrent()` re-resolves the
-source **fresh each track** (a burnt file may have been purged since the queue was built):
-a burnt local file drives the **same `PlayerEngine`** the inline player binds to (set
-`nowPlaying`, then `load`), so the existing per-row `InlinePlayerSlot` (§7) lights up the
-current track with **zero new player UI**; otherwise it streams via `PlaybackCoordinator`
-(§8, Apple Music → rip fallback). Auto-advance rides the engine's finite-item end
-notification, but with an **ownership guard** — `handleEnded` ignores a stray end from an
-unrelated manual single-row play by checking `rips.nowPlaying?.songId == queue[index].id`.
-Two edges keep it from freezing: a **dead source** (coordinator error, or a purged burnt
-file) advances immediately since no end event will ever fire, and a **live HLS** capture
-(no natural end) sets `waitingForLive` so the UI shows a manual **Next** instead of stalling.
-Reaching the end tears down cleanly (releases the hook, clears now-playing) so the toolbar
-flips back to **Play**.
+source **fresh each track** (a burnt file may have been purged since the queue was built)
+and **branches on the global `playbackMode()` seam** (§12). In **`.cloud`** (today's
+default) it plays the burnt local file if present else streams via `PlaybackCoordinator`
+(§8, Apple Music → rip fallback). In **`.device`** it plays **only** the burnt local file
+and **skips** an un-burned track (advance immediately — there's no file and no end event
+would ever fire); a mode flip applies to the **next** track (the current one finishes under
+the mode it started with). Either way a burnt local file drives the **same `PlayerEngine`**
+the inline player binds to — via the shared `playLocalFile` helper (§12) in device mode, so
+`nowPlaying` + the per-row `InlinePlayerSlot` (§7) + the row pause/resume toggle stay
+consistent — so the current track lights up with **zero new player UI**. If a whole
+device-mode set reaches the end having loaded **no** burnt file, the end-of-set teardown
+raises a one-shot **`deviceQueueUnplayable`** flag the playback surface reads to show a
+transient "nothing on device" banner (so device mode never silently dead-ends with nothing
+playing; cleared on the next `play(_:)` or `clearDeviceUnplayable()`). Auto-advance rides
+the engine's finite-item end notification, with the same **ownership guard** —
+`handleEnded` ignores a stray end from an unrelated manual single-row play by checking
+`rips.nowPlaying?.songId == queue[index].id`. Two edges still keep cloud mode from
+freezing: a **dead source** (coordinator error, or a purged burnt file) advances
+immediately since no end event will ever fire, and a **live HLS** capture (no natural end)
+sets `waitingForLive` so the UI shows a manual **Next** instead of stalling. Reaching the
+end tears down cleanly (releases the hook, clears now-playing) so the toolbar flips back to
+**Play**.
 
 ---
 
@@ -857,6 +894,138 @@ engine's `onNext`/`onPrevious` hooks, which **`SetlistPlayer`** (§10) owns only
 is running — so the lock screen / Control Center / AirPods / CarPlay **auto-advance the
 setlist while the screen is off**, and the commands stay disabled (reject input) when no
 set is running. `setNextPreviousEnabled` toggles them with the sequencer's lifecycle.
+
+---
+
+## 12. Global device / cloud playback MODE — `PlaybackMode` + the shared `playLocal` helper
+
+**Why.** §8–§11 always resolve a source per-play: stream-first, rip-last, with burnt files
+opportunistically preferred. But a DJ in a no-signal room wants the **whole app** to commit
+to **playing burned files off the device**, and a DJ with signal wants it to commit to
+**streaming** — a single global switch, like the browser's on-device/online search toggle.
+`PlaybackMode` is that switch; it changes how every Play surface resolves a source.
+
+**Source of truth:**
+[`apple/PocketDJ/Settings/SettingsStore.swift`](../../apple/PocketDJ/Settings/SettingsStore.swift)
+(`PlaybackMode` enum + the persisted `playbackMode` property),
+[`apple/PocketDJ/Views/PlaybackModeToggle.swift`](../../apple/PocketDJ/Views/PlaybackModeToggle.swift)
+(the toolbar toggle),
+[`apple/PocketDJ/Playback/PlaybackCoordinator.swift`](../../apple/PocketDJ/Playback/PlaybackCoordinator.swift)
+(the shared `playLocalFile` helper),
+[`apple/PocketDJ/Playback/SetlistPlayer.swift`](../../apple/PocketDJ/Playback/SetlistPlayer.swift)
+(`playbackMode` seam, §10).
+
+```
+ PlaybackMode { cloud, device }        persisted on SettingsStore.playbackMode (default .cloud)
+   toggle: PlaybackModeToggle  — one toolbar button on the Setlist / Playlist / Pocket bars
+     icon  cloud-glyph (cloud) ⇄ current-device-glyph (iphone/ipad/macbook) (device)
+
+ .cloud   = today's behaviour — PlaybackCoordinator stream-first (Apple Music → rip, §8)
+ .device  = play ONLY burned local files
+     Play-All (SetlistPlayer §10)  → SKIPS un-burned tracks; "nothing on device" banner if NONE
+     single-row tap                → burnt file if present, else FALL BACK TO CLOUD (one song)
+
+ playLocalFile(url, songId, title, artist, startMs, rips, player)   ── SHARED @MainActor helper
+   rips.setNowPlaying(NowPlaying{songId,title,artist,url,live:false,startMs}) ; player.load(…)
+   (used by BOTH SetlistPlayer device-mode AND the single-row burnt path → one consistent now-playing)
+```
+
+**Reading the diagram.** **`PlaybackMode`** is a two-case enum (`cloud` | `device`)
+persisted on `SettingsStore.playbackMode` (default `.cloud`, raw-string-coded so an older
+saved settings blob coalesces to `.cloud`). The **`PlaybackModeToggle`** is a single
+toolbar button — styled like the browser's on-device/online search toggle, showing a
+**cloud** glyph in cloud mode and the **current-device** glyph (`iphone`/`ipad`/`macbook`)
+in device mode — dropped onto the **Setlist / Playlist / Pocket** detail toolbars. In
+**`.cloud`** every Play resolves through the stream-first coordinator (§8) exactly as
+before. In **`.device`** the app commits to burned files: **Play-All** (the `SetlistPlayer`
+sequencer, §10) plays only burnt local files and **skips** un-burned tracks — raising the
+"nothing on device" banner if the whole set is un-burned — while a **single-row tap**
+plays the burnt file if present and otherwise **falls back to cloud** for that one song (a
+single missing track shouldn't go silent). The **mode is read lazily** through a
+`playbackMode: () -> PlaybackMode` seam on `SetlistPlayer` (injected from settings), so
+**flipping the toggle mid-set applies to the *next* track** — the current track finishes
+under the mode it started with.
+
+**The shared `playLocalFile` helper (the consistency rule).** A burnt local file can be
+started from two surfaces — the `SetlistPlayer` device-mode path *and* the single-row
+burnt-file transport — and both must leave **`RipsStore.nowPlaying`** (and therefore the
+inline player + the row pause/resume toggle) in the *same* state as the rip path does. So
+both call **one `@MainActor` `playLocalFile`** in `PlaybackCoordinator.swift`: it stamps
+`nowPlaying` then `load`s the **same `PlayerEngine`** the inline waveform/scrubber (§7)
+binds to (passing `startMs` as the analog seek offset into a shared album mp3), mirroring
+`RipServerPlaybackProvider.tryPlay` for the rip path. One helper ⇒ now-playing is
+consistent no matter which surface started the burned file.
+
+---
+
+## 13. Cloud-analog → `public/current-index.json` — the in-process fold (closing the gap)
+
+**Why.** [Ch. 3 §1.2](./03-catalog-and-data-model.md#12-the-cloud-re-index--folding-apple-music-truth-into-the-analog-catalog)
+describes the **offline** cloud re-index that folds Apple Music length + cloud bpm/key into
+the analog catalog — but it ran only as a manual CLI tool writing a side output (appendix
+inconsistency #13). That left a gap: when a **cloud rip of an analog song** finishes
+analysis on the live rip server, its freshly-computed bpm/key/camelot/length sat in the
+**rips manifest** and never reached the public catalog until someone re-ran the CLI by hand.
+This branch closes that loop — the rip server now folds a just-analyzed cloud-analog entry
+into `public/current-index.json` **in-process**, the moment analysis completes.
+
+**Source of truth:** the extracted pure fold
+[`scripts/lib/cloud-reindex-fold.mjs`](../../scripts/lib/cloud-reindex-fold.mjs)
+(`foldCloudReindex(index, lib, manifest)` — now shared by **both** the offline CLI
+[`scripts/reindex-cloud-analysis.mjs`](../../scripts/reindex-cloud-analysis.mjs) and the
+server) and the rip server's debounced driver in
+[`scripts/rip-server.mjs`](../../scripts/rip-server.mjs)
+(`requestPublicFold` / `runPublicFoldOnce` / `foldPublicIndex`, the `RIP_PUBLIC_FOLD` /
+`RIP_PUBLIC_INDEX` config). End-to-end test:
+[`scripts/test/rip-public-fold-e2e.mjs`](../../scripts/test/rip-public-fold-e2e.mjs).
+
+```
+ enqueueAnalysis(songId) completes  (digital/cloud rip, source:'digital' && analyzed)
+   isCloudAnalogEntry(songId)? ── analyzed digital manifest entry ──▶ requestPublicFold()
+        │                                                              (analog rips never fold —
+        │                                                               they keep the catalog values)
+        ▼  DEBOUNCE (1.5s trailing) — a collection rip's many analyses coalesce into ONE fold
+ runPublicFoldOnce()  (single-flight: foldRunning guard; a mid-run request re-fires trailing)
+        ▼
+ foldPublicIndex()                                  ── synchronous metadata pass, in-memory catalog
+   guard: index exists · manifest.sourceType=='analog' · library index warm
+   WORKING-TREE GUARD: head = git show HEAD:<rel>; isFoldOnlyDiff(head, index)?
+        any difference OUTSIDE fold-owned fields {length,bpm,key,camelot,cloudReindex} → REFUSE
+        (don't clobber uncommitted NON-reindex edits; no git/HEAD baseline ⇒ proceed)
+   report = foldCloudReindex(index, libIndex, manifest)      ── EXACT am-match only, cloud precedence
+   report.changed == 0 → no-op (idempotent: values already folded)
+   else: stamp index.manifest.cloudReindex{generatedAt, source:'rip-server in-process', counts}
+         ATOMIC write: <path>.fold-<pid>.tmp → renameSync(tmp, path)   (atomic on same fs)
+         log "✓ public-fold: N updated"  +  "⚠ did NOT deploy — run scripts/deploy.sh"
+```
+
+**Reading the diagram.** When `enqueueAnalysis` finishes for a rip, the server asks
+**`isCloudAnalogEntry`** — true only for an analyzed **digital** manifest entry (the only
+kind a cloud/digital rip produces; an analog rip keeps the catalog's per-song values and so
+never triggers a fold). If so it calls **`requestPublicFold`**, which **debounces** to a
+single **trailing** run (1.5s) so a whole-collection cloud rip's many back-to-back analyses
+coalesce into **one** fold, and runs it **single-flight** (a request arriving mid-run
+re-fires exactly one trailing run). The fold itself is **in-process** (no detached node),
+running **inside the analysis flow** over the **in-memory catalog** + the warm library
+index + the live manifest — a fast metadata pass. It reuses the **same pure
+`foldCloudReindex`** the offline CLI uses (extracted into `scripts/lib/cloud-reindex-fold.mjs`
+so there's one implementation): **exact `am-match` only** (Ch. 3 §1.3 — a loose/none match
+never overwrites), per-field **cloud precedence** (length from Apple Music `Total Time`;
+bpm/key/camelot from the cloud rip keyed by the song's own id or the derived Apple-Music
+songId), each touched song **provenance-stamped** with `cloudReindex`, and **idempotent**
+(a re-run with the values already folded reports `changed == 0` and writes nothing).
+
+Three safety properties make it safe to run on the live catalog automatically: it **never
+auto-deploys** (it logs a publish hint — `run scripts/deploy.sh` — and leaves CloudFront
+untouched, so the owner still reviews + ships the catalog); it **guards the working tree**
+by diffing the committed (`git show HEAD:<path>`) JSON against the on-disk file and
+**refusing** to write if any difference lives **outside** the fold-owned fields
+(`{length, bpm, key, camelot, cloudReindex}`), so it can never clobber an unrelated
+uncommitted edit (no git baseline ⇒ nothing to protect ⇒ proceed); and it writes
+**atomically** (temp file in the same dir + `renameSync`). It also only folds when the
+target's `manifest.sourceType === 'analog'` (it's the *analog* catalog being enriched with
+cloud truth). Disable entirely with `RIP_PUBLIC_FOLD=0`; point at a different catalog with
+`RIP_PUBLIC_INDEX`.
 
 ## Next
 

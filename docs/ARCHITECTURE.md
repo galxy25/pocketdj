@@ -87,9 +87,9 @@ server-less coordination work.
 |---|---|---|---|
 | 1 | [**Foundations**](./architecture/01-foundations.md) | the whole | System entities, ownership table, the files-as-API spine, content-derived ids. **Start here.** |
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
-| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — the one shape everything speaks. Reference chapter. |
-| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **and the deferred AI auto-mixing seam**. |
-| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder**), the `SetlistPlayer` burnt-or-stream sequencer, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, and native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio).** |
+| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — incl. the **`CollectionsDocument` schema versioning (v2→v3) + flat playlist `folders`** — the one shape everything speaks. Reference chapter. |
+| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **and the deferred AI auto-mixing seam**. |
+| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme**), the `SetlistPlayer` burnt-or-stream sequencer, **the global device/cloud `PlaybackMode` + shared `playLocalFile`**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), and the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, **online pagination (`from/size` + `track_total_hits`) + server-side sort + the `genreCategory` field**, **the native Browse genre + collection-membership filters**, the star map. |
 | 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **and the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`).** |
 
@@ -174,6 +174,29 @@ contract**. Honest status:
   `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter` next/previous driving `SetlistPlayer`
   (auto-advance while locked). Capability flips: `UIBackgroundModes` += `processing,fetch`,
   `BGTaskSchedulerPermittedIdentifiers` added (Ch. 5 §11, Ch. 7 §5.3).
+- **New current-state — playlist/pocket Play+Shuffle, playlist folders, device/cloud
+  mode, metadata burns, cloud-analog index fold.** A playlist (and pocket) **▶ Play** now
+  plays its songs **in order** and a new **🔀 Shuffle** plays a random order — both backing a
+  **single reused "Now Playing" setlist** built **directly** from the songs (literal order,
+  drops unresolvable ids, **not** via `realize()`'s autofill/sample/dedup; reserved
+  `set_now_playing`/`pls_now_playing`, monotonic `nowPlayingRevision`, cleared on launch,
+  hidden from history) that you land in (a `SetlistLaunch` nav value autostarts) to
+  reorder/see-next; the **old realize-take Play** moved to a `list.bullet.clipboard` toolbar
+  button (Ch. 4 §6). Your playlists render **above** "From your sources" and organize into
+  flat, collapsible **playlist FOLDERS** (`PlaylistFolder` + `Playlist.folderId`, schema
+  **v2→v3** back-compat, carried through import/merge + the backup zip's `folders.json`;
+  Ch. 3 §3.1). A global **device/cloud `PlaybackMode`** + a browser-style toolbar toggle
+  picks the source for every Play: **device** plays burned files (Play-All **skips** un-burned
+  + a "nothing on device" banner; a single-row tap **falls back to cloud**), **cloud** streams
+  (provider → rip); a shared **`playLocalFile`** keeps now-playing consistent and flipping mode
+  lets the current track finish (Ch. 5 §12, §10). Burn filenames now carry a sanitized,
+  length-capped **`Artist-Song-Album-Year-Genre-Camelot-Key-BPM`** prefix (per-song digital,
+  album-level for the shared analog file; Ch. 5 §9). And the cloud-analog **gap closes**: a
+  cloud rip of an analog song now folds its bpm/key/camelot/length into
+  `public/current-index.json` **in-process** within the analysis flow (extracted
+  `scripts/lib/cloud-reindex-fold.mjs`; atomic, exact-match-only, idempotent, cloud
+  precedence, provenance-stamped, **never auto-deploys**, guards uncommitted working-tree
+  changes; Ch. 5 §13).
 - **Coming — AI-assisted auto-mixing & auto-building playlists.** The seams already
   exist (no migration needed to light them up): `SetlistTrack.mixSuggestions` +
   the `MixSuggestion` shape, the reserved `PocketKind:'performance'`, and the
@@ -238,11 +261,15 @@ Things found while writing that don't fully line up, gathered here so they're no
     server persists `preferCloud` (not the raw request flag) and **never re-probes on
     resume**, so a track later deleted from the library can't flip the `resourceKey`
     between persist and resume. (Ch. 3 §1.2, design-rip-from-cloud.md)
-13. **The cloud re-index writes a SIDE output, never the live catalog.**
-    `scripts/reindex-cloud-analysis.mjs` writes `index-out/reindex/current-index.json` +
-    a report and **never** mutates `public/current-index.json` or deploys; the owner
-    reviews + applies by hand. A maintainer expecting it to publish would be surprised.
-    (Ch. 3 §1.2)
+13. **Two cloud-fold paths with opposite write targets — by design.** The **offline CLI**
+    `scripts/reindex-cloud-analysis.mjs` writes a **SIDE output**
+    (`index-out/reindex/current-index.json` + a report) and **never** touches
+    `public/current-index.json`; the **rip-server in-process fold** (Ch. 5 §13) *does* write
+    `public/current-index.json` directly (atomic, fold-fields-only working-tree guard,
+    `report.changed`-gated). Both share the same pure `scripts/lib/cloud-reindex-fold.mjs`,
+    but **neither deploys** — the in-process one logs a publish hint and leaves CloudFront
+    untouched. A maintainer expecting *either* to ship the catalog, or expecting the CLI to
+    mutate the live file, would be surprised. (Ch. 3 §1.2, Ch. 5 §13)
 14. **`am-match` deliberately trades coverage for fidelity.** Tight matching means analog
     songs that exist in Apple Music under a slightly different version label (a loose
     match) **silently rip from vinyl / keep the analog value** instead of cloud — by
@@ -281,3 +308,25 @@ Things found while writing that don't fully line up, gathered here so they're no
     `TransferCoordinator`, declared in `BGTaskSchedulerPermittedIdentifiers`, and registered
     in `AppDelegate`; iOS refuses to register/submit an id missing from the plist. Changing
     one without the others silently disables a background task. (Ch. 5 §11.2, Ch. 7 §5.3)
+22. **The "Now Playing" setlist is deliberately NOT `realize()`.** `CollectionsStore.playNow`
+    builds the reserved `set_now_playing` setlist **directly** from the resolved song ids —
+    literal order, unresolvable ids dropped, **no** autofill/pocket-sampling/dedup. A
+    maintainer "unifying" Play through `realize()` would reintroduce reordering and bridge
+    inserts the ▶/🔀 buttons exist to avoid (and would start appending history takes). It's
+    also cleared on launch + filtered out of `setlists(forPlaylist:)` history on purpose.
+    (Ch. 4 §6)
+23. **Playback `PlaybackMode` is read through a lazy seam so a mid-set flip is deferred.**
+    `SetlistPlayer.playbackMode` is a `() -> PlaybackMode` closure read **per track**, so
+    toggling device⇄cloud mid-set applies to the **next** track (the current one finishes
+    under its starting mode). In **device** mode Play-All **skips** un-burned tracks (no
+    fallback to cloud — that's the single-row tap's behaviour, not Play-All's), and a wholly
+    un-burned set raises the one-shot `deviceQueueUnplayable` banner instead of silently
+    ending. A maintainer expecting Play-All to stream a missing track in device mode, or the
+    flip to interrupt the current track, would be wrong. (Ch. 5 §10, §12)
+24. **The analog burn file is named ALBUM-level, not per-song.** Because one analog rip is a
+    whole-side mp3 shared by every song of the album, `BurnStore.fileNames` gives analog the
+    `Artist-Album-Year-Genre` prefix (no per-song bpm/key) so all the album's songs map to the
+    **same** audio name — the shared-file reuse / `isFresh` / dedup logic depends on that. The
+    `idSuffix` (albumId/songId) + extension are **never** truncated; only the descriptive
+    prefix is capped. A maintainer adding per-song tokens to the analog prefix would break the
+    shared-file dedup. (Ch. 5 §9)
