@@ -198,6 +198,9 @@ struct SetlistDetailView: View {
         #if os(iOS)
         if isPlaying {
             ToolbarItem(placement: .principal) { transportCluster }
+            // STOP takes the play button's place (NOT a menu item): same trailing slot that
+            // shows ▶ Play when idle shows ⏹ Stop while running.
+            ToolbarItem(placement: .topBarTrailing) { startStopButton(setlist) }
             ToolbarItem(placement: .topBarTrailing) { PlaybackModeToggle() }
             ToolbarItem(placement: .topBarTrailing) { overflowMenu(setlist) }
         } else {
@@ -256,7 +259,7 @@ struct SetlistDetailView: View {
             Button { toggleTransport() } label: {
                 Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill")
             }
-            .help(transportIsPlaying ? "Pause" : "Play").accessibilityIdentifier("setlist-play")
+            .help(transportIsPlaying ? "Pause" : "Play").accessibilityIdentifier("setlist-playpause")
             Button { setlistPlayer?.skipNext() } label: { Image(systemName: "forward.fill") }
                 .help(setlistPlayer?.waitingForLive == true
                       ? "Skip to the next track (the current one is live)" : "Next track")
@@ -280,31 +283,23 @@ struct SetlistDetailView: View {
         .accessibilityIdentifier("setlist-play")
     }
 
-    /// The ••• overflow gathering every secondary action so the play-mode bar stays clean.
-    /// While playing it also carries Stop and a (disabled) Edit entry — reordering mid-set would
-    /// desync the sequencer's queue index, so Edit is only live when the set isn't running.
+    /// The ••• overflow gathering the secondary actions so the play-mode bar stays clean. Stop
+    /// is NOT here (it's the play button's place — see startStopButton). Rip and Burn are
+    /// SEPARATE flat items, not a nested submenu. While playing it carries a disabled Edit entry
+    /// (reordering mid-set would desync the sequencer's queue index).
     private func overflowMenu(_ setlist: Setlist) -> some View {
         Menu {
-            if isPlaying {
-                Button(role: .destructive) { setlistPlayer?.stop() } label: {
-                    Label("Stop playing", systemImage: "stop.fill")
-                }
-                Divider()
-            }
             Button { addNoteDraft = ""; addingNote = true } label: {
                 Label("Add note", systemImage: "text.badge.plus")
             }.accessibilityIdentifier("setlist-add-note")
-            Menu {
-                CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
-            } label: { Label("Rip / Burn", systemImage: "arrow.down.circle") }
-                .accessibilityIdentifier("setlist-ripburn-menu")
+            // Rip + Burn rendered as TWO separate top-level items (the buttons render flat — they
+            // were designed to sit directly in a Menu), not collapsed behind a "Rip / Burn" submenu.
+            CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
             Button { nameDraft = setlist.name ?? ""; renaming = true } label: {
                 Label("Rename", systemImage: "pencil")
             }.accessibilityIdentifier("setlist-rename")
             #if os(iOS)
             if isPlaying {
-                // Edit (reorder) collapsed into the dropdown per the play-mode design; disabled
-                // while running (reordering mid-set would desync the sequencer's queue index).
                 Button {} label: { Label("Edit order", systemImage: "arrow.up.arrow.down") }
                     .disabled(true).accessibilityIdentifier("setlist-edit-order")
             }
