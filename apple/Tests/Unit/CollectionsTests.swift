@@ -185,6 +185,73 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(s.playlist(pl.id)?.sequences.first?.children?.compactMap(\.songId), ["sng_1", "sng_2"])
     }
 
+    // MARK: Convert playlist → pocket
+
+    /// A playlist's song/album/pocket node refs map to the new pocket's direct members
+    /// (order + dedup preserved, albums/pockets kept as refs) and text cues become notes;
+    /// the source playlist is untouched.
+    func testConvertPlaylistToPocketCollectsRefsDedupedAndOrdered() {
+        let s = store()
+        let child = s.createPocket("Child")
+        let pl = s.createPlaylist("BBQ")
+        s.addSong("sng_1", toPlaylist: pl.id)
+        s.addSong("sng_1", toPlaylist: pl.id)        // duplicate → deduped
+        s.addSong("sng_2", toPlaylist: pl.id)
+        s.addAlbum("alb_1", toPlaylist: pl.id)
+        s.addPocketRef(child.id, toPlaylist: pl.id)
+        s.addText("mic break", toPlaylist: pl.id)
+
+        let before = s.pockets.count
+        let pocket = s.convertToPocket(playlistId: pl.id)
+        let p = try! XCTUnwrap(pocket)
+        XCTAssertEqual(p.name, "BBQ")
+        XCTAssertEqual(p.songIds, ["sng_1", "sng_2"])     // order + dedup
+        XCTAssertEqual(p.albumIds, ["alb_1"])
+        XCTAssertEqual(p.childPocketIds, [child.id])      // pockets nested, not expanded
+        XCTAssertEqual(p.notes.map(\.text), ["mic break"])
+        XCTAssertEqual(p.notes.map(\.position), [0])
+        XCTAssertEqual(s.pockets.count, before + 1)       // a brand-new pocket
+        XCTAssertNotNil(s.pocket(p.id))
+        // Source playlist is left intact (6 nodes added, none removed).
+        XCTAssertEqual(s.playlist(pl.id)?.sequences.first?.children?.count, 6)
+    }
+
+    /// Refs in nested sub-sequences are collected too, and the new pocket persists.
+    func testConvertPlaylistToPocketRecursesAndPersists() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-conv-\(UUID().uuidString).json")
+        let s1 = CollectionsStore(fileURL: url)
+        let pl = s1.createPlaylist("Set")
+        s1.addSong("sng_1", toPlaylist: pl.id)
+        // A sub-sequence node carrying its own song child (mutate the playlist directly).
+        var sub = CollectionsFactory.makeSequence("Sub")
+        sub.children = [PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: "sng_9")]
+        s1.addNode(sub, toPlaylist: pl.id)
+        let p = try! XCTUnwrap(s1.convertToPocket(playlistId: pl.id))
+        XCTAssertEqual(p.songIds, ["sng_1", "sng_9"])      // recursed into the sub-sequence
+
+        // Reload from disk → the converted pocket survived.
+        let s2 = CollectionsStore(fileURL: url)
+        XCTAssertEqual(s2.pocket(p.id)?.songIds, ["sng_1", "sng_9"])
+    }
+
+    /// A read-only "From your sources" playlist converts to a pocket of its songs (deduped).
+    func testConvertSourcePlaylistToPocket() {
+        let s = store()
+        let src = SourcePlaylist(
+            playlist: IndexPlaylist(id: "ipl_1", name: "My AM Mix", songIds: ["sng_1", "sng_2", "sng_1"]),
+            sourceName: "Apple Music (Local)")
+        let p = s.convertToPocket(source: src)
+        XCTAssertEqual(p.name, "My AM Mix")
+        XCTAssertEqual(p.songIds, ["sng_1", "sng_2"])      // order preserved, deduped
+        XCTAssertNotNil(s.pocket(p.id))
+    }
+
+    func testConvertUnknownPlaylistReturnsNil() {
+        let s = store()
+        XCTAssertNil(s.convertToPocket(playlistId: "pls_nope"))
+        XCTAssertTrue(s.pockets.isEmpty)
+    }
+
     func testExportImportPlaylistMintsFreshIds() throws {
         let s = store()
         let pl = s.createPlaylist("Set", songIds: ["sng_1", "sng_2"])

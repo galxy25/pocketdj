@@ -132,7 +132,8 @@ final class PlaylistsUITests: XCTestCase {
         row.tap()
         XCTAssertTrue(app.navigationBars["BBQ"].waitForExistence(timeout: 5))
 
-        // Add a chapter.
+        // Add a chapter — now lives in the ⋯ menu (toolbar decluttered to Play/Shuffle/⋯).
+        app.buttons["playlist-menu"].tap()
         app.buttons["add-chapter"].tap()
         let chapField = app.textFields.firstMatch
         XCTAssertTrue(chapField.waitForExistence(timeout: 5))
@@ -157,13 +158,61 @@ final class PlaylistsUITests: XCTestCase {
         confirm.tap()
         XCTAssertTrue(app.buttons["new-playlist"].waitForExistence(timeout: 5))
     }
+
+    /// Convert a playlist into a pocket from the same ⋯ menu that holds Rip/Burn/Delete,
+    /// then assert we land on the NEW pocket's detail (its `pocket-menu` is unique to
+    /// PocketDetailView, so it disambiguates from the same-named playlist screen).
+    func testConvertPlaylistToPocketFromMenu() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_SEED_COLLECTIONS"] = "1"   // seeds "Seeded Set" w/ sng_1
+        app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
+        app.launch()
+
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-pls_'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+
+        // On compact iPhone the detail toolbar overflows — the ⋯ menu (holding Convert /
+        // Rip / Burn / Delete, exactly like Delete) collapses behind the system "More"
+        // button, where it re-surfaces as an unidentified nested "More" submenu. Drive
+        // whichever layout the device presents (iPad shows the ⋯ menu directly).
+        let convert = app.buttons["convert-to-pocket"]
+        let menu = app.buttons["playlist-menu"]
+        if menu.waitForExistence(timeout: 3) {
+            menu.tap()
+        } else if app.buttons["OverflowBarButtonItem"].waitForExistence(timeout: 3) {
+            app.buttons["OverflowBarButtonItem"].tap()
+            if menu.waitForExistence(timeout: 3) {
+                menu.tap()
+            } else {
+                // The overflowed ⋯ Menu loses its id and reads as a second "More" button.
+                let inner = app.buttons.matching(
+                    NSPredicate(format: "label == %@ AND identifier != %@", "More", "OverflowBarButtonItem")
+                ).firstMatch
+                if inner.waitForExistence(timeout: 3) { inner.tap() }
+            }
+        }
+        XCTAssertTrue(convert.waitForExistence(timeout: 5), app.debugDescription)
+        convert.tap()
+
+        // Landed on the converted pocket's detail.
+        XCTAssertTrue(app.buttons["pocket-menu"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["pocket-detail"].waitForExistence(timeout: 5)
+                      || app.collectionViews["pocket-detail"].waitForExistence(timeout: 1)
+                      || app.navigationBars["Seeded Set"].waitForExistence(timeout: 5))
+    }
     #endif
 }
 
 // MARK: - Setlist (Play → frozen)
 
 final class SetlistUITests: XCTestCase {
+    private var app: XCUIApplication!
     override func setUp() { continueAfterFailure = false }
+    // Terminate between tests so each gets a clean launch — back-to-back relaunches in one
+    // class otherwise race (a lingering prior instance), an intermittent first-tap flake.
+    override func tearDown() { app?.terminate(); app = nil }
 
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
@@ -171,6 +220,7 @@ final class SetlistUITests: XCTestCase {
         app.launchEnvironment["PDJ_SEED_COLLECTIONS"] = "1"   // seed "Seeded Set" w/ sng_1
         app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
         app.launch()
+        self.app = app
         return app
     }
 
@@ -195,6 +245,26 @@ final class SetlistUITests: XCTestCase {
                       || app.navigationBars.element.waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["setlist-track-0"].waitForExistence(timeout: 5)
                       || app.staticTexts.matching(NSPredicate(format: "identifier == 'setlist-track-0'")).firstMatch.exists)
+    }
+
+    /// Tapping a track in a set list (a track list) opens that song's detail — the fix for
+    /// "tap does nothing". Uses 📋 Realize (a frozen take, no autostart) to avoid playback.
+    func testSetlistTrackTapOpensSongDetail() {
+        let app = launch()
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-pls_'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+        // 📋 Make-set-list now lives in the ⋯ menu (decluttered toolbar).
+        XCTAssertTrue(app.buttons["playlist-menu"].waitForExistence(timeout: 5))
+        app.buttons["playlist-menu"].tap()
+        XCTAssertTrue(app.buttons["playlist-realize"].waitForExistence(timeout: 5))
+        app.buttons["playlist-realize"].tap()
+        XCTAssertTrue(app.buttons["setlist-track-0"].waitForExistence(timeout: 8))
+        // Tap the track's title → the tap-to-open navigates to the song's detail.
+        let title = app.staticTexts["Neon"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.tap()
+        XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 5))
     }
     #endif
 }

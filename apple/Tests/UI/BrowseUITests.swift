@@ -43,6 +43,42 @@ final class BrowseUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["3 tracks"].waitForExistence(timeout: 5))
     }
 
+    #if !os(macOS)
+    /// Album detail has Play + Shuffle (like a playlist); ▶ pushes the reusable Now
+    /// Playing setlist so the album's tracks start in order.
+    func testAlbumPlayAndShuffleButtons() {
+        let app = launch()
+        let card = app.el("album-alb_1")
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        card.tap()
+        XCTAssertTrue(app.el("album-shuffle").waitForExistence(timeout: 5))
+        XCTAssertTrue(app.el("album-play").waitForExistence(timeout: 5))
+        app.el("album-play").tap()
+        // ▶ pushes the Now Playing setlist (autostarting) — its first track row appears.
+        XCTAssertTrue(app.buttons["setlist-track-0"].waitForExistence(timeout: 8)
+                      || app.otherElements["setlist-detail"].waitForExistence(timeout: 2)
+                      || app.staticTexts["setlist-stats"].waitForExistence(timeout: 2))
+    }
+
+    /// Song detail shows the album artwork near the top and the bottom play/download
+    /// transport (the same ▶/⤓ used in every row, revealing the slide-out player).
+    func testSongDetailHasArtworkAndPlaybackTransport() {
+        let app = launch()
+        let card = app.el("album-alb_1")
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        card.tap()
+        let track = app.el("track-sng_1")
+        XCTAssertTrue(track.waitForExistence(timeout: 5))
+        track.tap()
+        XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 5))
+        XCTAssertTrue(app.any("song-detail-art").waitForExistence(timeout: 5))   // art near the top
+        // The play/download transport sits at the BOTTOM — scroll it into view first.
+        app.swipeUp(); app.swipeUp()
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))      // bottom ▶
+        XCTAssertTrue(app.el("row-download-sng_1").exists)                        // bottom ⤓
+    }
+    #endif
+
     func testSongDetailFromTrackTable() {
         let app = launch()
         let card = app.el("album-alb_1")

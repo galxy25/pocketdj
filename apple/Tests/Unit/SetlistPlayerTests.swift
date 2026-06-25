@@ -81,6 +81,46 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertTrue(seq.queue.isEmpty)
     }
 
+    // MARK: Source tracking — a fresh play REPLACES the running set
+
+    /// `play(_:sourceSetlistId:)` tags the run, and playing a DIFFERENT collection REPLACES
+    /// the first (queue + index + source swap). Nothing else stops a set — that contract is
+    /// what lets one set keep playing (the player is app-scoped) while you build others,
+    /// until you explicitly play another collection.
+    func testNewPlayReplacesRunningSetAndTracksSource() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+
+        seq.play([.init(id: "sng_a1", title: "A1", artist: "A"),
+                  .init(id: "sng_a2", title: "A2", artist: "A")], sourceSetlistId: "set_A")
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertEqual(seq.sourceSetlistId, "set_A")
+        XCTAssertEqual(seq.queue.map(\.id), ["sng_a1", "sng_a2"])
+
+        // Playing another collection swaps the queue + source (the first set is replaced).
+        seq.play([.init(id: "sng_b1", title: "B1", artist: "B")], sourceSetlistId: "set_B")
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertEqual(seq.sourceSetlistId, "set_B")
+        XCTAssertEqual(seq.queue.map(\.id), ["sng_b1"])
+        XCTAssertEqual(seq.index, 0)
+        seq.stop()
+    }
+
+    /// Stop clears the source id, so no detail screen mistakes itself for the one playing.
+    func testStopClearsSourceSetlistId() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([.init(id: "sng_1", title: "1", artist: "A")], sourceSetlistId: "set_1")
+        XCTAssertEqual(seq.sourceSetlistId, "set_1")
+        seq.stop()
+        XCTAssertNil(seq.sourceSetlistId)
+        XCTAssertFalse(seq.isRunning)
+    }
+
     // MARK: Burnt local file WINS over streaming
 
     /// A track with a burnt local file plays that file directly through the `PlayerEngine`

@@ -4,9 +4,12 @@ import SwiftUI
 /// an album's track table. Links back to its album, and supports editing.
 struct SongDetailView: View {
     @Environment(AppModel.self) private var app
+    @Environment(LyricsStore.self) private var lyricsStore: LyricsStore?
     let song: IndexSong
     @State private var showEdit = false
     @State private var showAdd = false
+    /// Lazily-loaded, on-disk-cached lyrics (nil until loaded / when absent).
+    @State private var lyrics: String?
 
     /// Always read the latest (possibly edited) version from the catalog.
     private var current: IndexSong { app.songsById[song.id] ?? song }
@@ -15,10 +18,18 @@ struct SongDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                if let album {
+                    CoverImage(album: album)
+                        .frame(width: 220, height: 220)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .accessibilityIdentifier("song-detail-art")
+                }
                 header
                 Divider().overlay(Theme.border)
                 MetadataGrid(rows: rows)
                 if let kw = current.sentimentKeywords, !kw.isEmpty { sentiment(kw) }
+                if let lyrics, !lyrics.isEmpty { lyricsSection(lyrics) }
+                playback
             }
             .padding(20)
             .frame(maxWidth: 760, alignment: .leading)
@@ -39,6 +50,8 @@ struct SongDetailView: View {
         }
         .sheet(isPresented: $showEdit) { EditSongView(song: current) }
         .sheet(isPresented: $showAdd) { AddToCollectionView(item: .song(current.id)) }
+        // Lyrics: fetch-once + on-disk cache, only when this song's `lyricsStatus == "found"`.
+        .task(id: current.id) { lyrics = await lyricsStore?.lyrics(for: current) }
     }
 
     private var header: some View {
@@ -84,6 +97,39 @@ struct SongDetailView: View {
             Text("Sentiment").font(.caption.weight(.semibold)).textCase(.uppercase)
                 .foregroundStyle(Theme.fgDim)
             FlowTags(tags: keywords)
+        }
+    }
+
+    /// On-demand lyrics (when present + loaded), selectable for copy.
+    private func lyricsSection(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Lyrics").font(.caption.weight(.semibold)).textCase(.uppercase)
+                .foregroundStyle(Theme.fgDim)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(Theme.fg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .accessibilityIdentifier("song-lyrics")
+        }
+    }
+
+    /// Bottom playback bar: the SAME ▶ play / ⤓ download transport used in every track row,
+    /// plus the slide-out streaming / waveform inline player that reveals below it on Play.
+    private var playback: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().overlay(Theme.border)
+            HStack(spacing: 12) {
+                Text("Play").font(.caption.weight(.semibold)).textCase(.uppercase)
+                    .foregroundStyle(Theme.fgDim)
+                Spacer()
+                RowTransport(song: (id: current.id, title: current.name, artist: current.artist),
+                             startMs: nil)
+            }
+            // NOTE: no `.accessibilityIdentifier` on this container — SwiftUI propagates a
+            // container id onto every descendant, clobbering RowTransport's own
+            // `row-play-<id>` / `row-download-<id>` ids (same trap as InlinePlayerPanel).
+            InlinePlayerSlot(songId: current.id)
         }
     }
 }

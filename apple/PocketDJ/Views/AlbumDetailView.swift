@@ -4,10 +4,15 @@ import SwiftUI
 /// DJ-relevant columns (BPM, key, Camelot) for beat- and key-matching.
 struct AlbumDetailView: View {
     @Environment(AppModel.self) private var app
+    @Environment(CollectionsStore.self) private var collections
     let album: IndexAlbum
+    @Binding var path: NavigationPath
     @State private var showEdit = false
     @State private var showAdd = false
     @State private var showAudioEdit = false
+    /// One-shot guard so ▶/🔀 push the reusable Now Playing setlist once per visit; cleared
+    /// on reappear so a fresh Play pushes again (mirrors PlaylistDetailView).
+    @State private var nowPlayingPushed = false
 
     /// Latest (possibly edited) album from the catalog.
     private var current: IndexAlbum { app.albumsById[album.id] ?? album }
@@ -31,7 +36,21 @@ struct AlbumDetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // Reappears when the user pops back from Now Playing — allow the next Play to push.
+        .onAppear { nowPlayingPushed = false }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { play(shuffle: false) } label: { Label("Play", systemImage: "play.fill") }
+                    .help("Play this album now")
+                    .disabled(tracks.isEmpty)
+                    .accessibilityIdentifier("album-play")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { play(shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
+                    .help("Shuffle-play this album now")
+                    .disabled(tracks.isEmpty)
+                    .accessibilityIdentifier("album-shuffle")
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { showAdd = true } label: { Image(systemName: "plus.circle") }
                     .accessibilityIdentifier("add-album-to")
@@ -41,6 +60,17 @@ struct AlbumDetailView: View {
         .sheet(isPresented: $showEdit) { EditAlbumView(album: current) }
         .sheet(isPresented: $showAdd) { AddToCollectionView(item: .album(current.id)) }
         .sheet(isPresented: $showAudioEdit) { EditAudioAnalysisView(album: current) }
+    }
+
+    /// ▶ Play / 🔀 Shuffle the album's tracks into the reusable "Now Playing" setlist
+    /// (literal order, or shuffled) and open it autostarting — the same mechanism the
+    /// playlist ▶/🔀 use. Re-tapping while it's on screen re-snapshots instead of stacking.
+    private func play(shuffle: Bool) {
+        collections.playNow(songIds: tracks.map(\.id), name: current.name, shuffle: shuffle)
+        if !nowPlayingPushed {
+            nowPlayingPushed = true
+            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+        }
     }
 
     private var header: some View {

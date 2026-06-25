@@ -18,15 +18,16 @@ struct SetlistDetailView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
-    // Feature 3 — Play All sources (the sequencer crosses all four into the player path).
-    @Environment(RipsStore.self) private var rips
-    @Environment(BurnStore.self) private var burns
+    // The APP-SCOPED Play-All sequencer (owned by PocketDJApp) — so a set keeps playing after
+    // the user leaves this screen. The view drives + observes it; it never owns/tears it down.
+    @Environment(SetlistPlayer.self) private var sequencer
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
-    @Environment(SettingsStore.self) private var settings
     let setlistId: String
     /// When true (a ▶ Play / 🔀 Shuffle launch), start Play-All on first appear.
     var autoplay: Bool = false
+    /// The shared navigation stack — lets a track row open its song's detail on tap.
+    @Binding var path: NavigationPath
     /// One-shot guard so the autostart fires exactly once per view lifetime.
     @State private var didAutostart = false
 
@@ -37,24 +38,17 @@ struct SetlistDetailView: View {
     @State private var addingNote = false      // top-level "Add note" composer
     @State private var addNoteDraft = ""
     @State private var ripBurn = CollectionRipBurnController()
-    /// The sequential Play-All sequencer (Feature 3) — built lazily from the env stores on
-    /// first Play, mirroring the `ripBurn` controller pattern.
-    @State private var setlistPlayer: SetlistPlayer?
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
 
-    /// Whether Play All is currently running (drives the toolbar glyph + edit gating).
-    private var isPlaying: Bool { setlistPlayer?.isRunning == true }
+    /// Whether THIS set is the one currently playing — source-aware, so a different set
+    /// playing in the background (after the user navigated away) doesn't make this screen's
+    /// toolbar show the running transport. Drives the toolbar glyph + edit gating.
+    private var isPlaying: Bool { sequencer.isRunning && sequencer.sourceSetlistId == setlistId }
 
-    /// Build (once) the sequencer from the environment stores.
-    private func ensurePlayer() -> SetlistPlayer {
-        if let p = setlistPlayer { return p }
-        let p = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
-        // Item 7 — feed the sequencer the live device/cloud mode (read fresh each track, so a
-        // mode-flip mid-set takes effect on the NEXT track).
-        p.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
-        setlistPlayer = p
-        return p
+    /// Start (or restart) THIS set on the shared sequencer, tagged with its id.
+    private func startThisSet(_ setlist: Setlist) {
+        sequencer.play(playableItems(setlist), sourceSetlistId: setlistId)
     }
 
     /// The ordered, playable tracks (cue/empty rows stripped), carrying title + artist so
@@ -121,30 +115,29 @@ struct SetlistDetailView: View {
         .accessibilityIdentifier("setlist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
-        // Feature 3 — tear down Play-All on REAL teardown only (a setlist switch), NOT on a
-        // transient onDisappear (SwiftUI fires that on a navigation push too).
-        .onChange(of: setlistId) { setlistPlayer?.stop() }
+        // NO teardown on navigation: the sequencer is app-scoped now, so leaving this screen
+        // (or switching to another setlist's detail) NEVER stops playback — only starting a
+        // different collection does. That's how a set keeps playing while you build others.
         // Item 4 — autostart Play-All when this view was opened from a ▶ Play / 🔀 Shuffle.
         .task {
             guard autoplay, !didAutostart, let setlist else { return }
             didAutostart = true
-            ensurePlayer().play(playableItems(setlist))
+            startThisSet(setlist)
         }
         // CRITIC-I — Shuffle (or re-Play) WHILE this setlist is on screen bumps the reusable
         // "Now Playing" revision. Re-derive the playable items from the freshly-read setlist
-        // and restart so the new order plays. The bump-only-on-explicit-playNow contract +
-        // the stop()→play() pair guards against an infinite restart loop.
+        // and restart so the new order plays (a fresh `play` replaces the running set).
         .onChange(of: collections.nowPlayingRevision) {
             guard autoplay, setlistId == nowPlayingSetlistId, let setlist = collections.setlist(setlistId) else { return }
-            setlistPlayer?.stop()
-            ensurePlayer().play(playableItems(setlist))
+            startThisSet(setlist)
         }
         // CRITIC-D — device-mode set with no on-device files anywhere: a one-shot transient
-        // alert so the DJ knows nothing was playable on-device (no silent dead-Play).
+        // alert so the DJ knows nothing was playable on-device (no silent dead-Play). Only on
+        // the screen of the set that raised it.
         .alert("No burned files", isPresented: Binding(
-            get: { setlistPlayer?.deviceQueueUnplayable == true },
-            set: { if !$0 { setlistPlayer?.clearDeviceUnplayable() } })) {
-            Button("OK", role: .cancel) { setlistPlayer?.clearDeviceUnplayable() }
+            get: { sequencer.deviceQueueUnplayable && sequencer.sourceSetlistId == setlistId },
+            set: { if !$0 { sequencer.clearDeviceUnplayable() } })) {
+            Button("OK", role: .cancel) { sequencer.clearDeviceUnplayable() }
         } message: {
             Text("Device playback is on, but none of these tracks are burned to this device. Burn them, or switch to cloud streaming.")
         }
@@ -197,10 +190,9 @@ struct SetlistDetailView: View {
     private func setlistToolbar(_ setlist: Setlist) -> some ToolbarContent {
         #if os(iOS)
         if isPlaying {
+            // The centered cluster already carries play/PAUSE — no separate ⏹ Stop button
+            // (play/pause is sufficient). Pausing halts the set; leave the screen to end it.
             ToolbarItem(placement: .principal) { transportCluster }
-            // STOP takes the play button's place (NOT a menu item): same trailing slot that
-            // shows ▶ Play when idle shows ⏹ Stop while running.
-            ToolbarItem(placement: .topBarTrailing) { startStopButton(setlist) }
             ToolbarItem(placement: .topBarTrailing) { PlaybackModeToggle() }
             ToolbarItem(placement: .topBarTrailing) { overflowMenu(setlist) }
         } else {
@@ -215,15 +207,15 @@ struct SetlistDetailView: View {
         ToolbarItem(placement: .primaryAction) { PlaybackModeToggle() }
         if isPlaying {
             ToolbarItem(placement: .primaryAction) {
-                Button { setlistPlayer?.skipPrevious() } label: { Image(systemName: "backward.fill") }
+                Button { sequencer.skipPrevious() } label: { Image(systemName: "backward.fill") }
                     .help("Previous track").accessibilityIdentifier("setlist-play-prev")
             }
         }
         ToolbarItem(placement: .primaryAction) { startStopButton(setlist) }
         if isPlaying {
             ToolbarItem(placement: .primaryAction) {
-                Button { setlistPlayer?.skipNext() } label: { Image(systemName: "forward.fill") }
-                    .help(setlistPlayer?.waitingForLive == true
+                Button { sequencer.skipNext() } label: { Image(systemName: "forward.fill") }
+                    .help(sequencer.waitingForLive
                           ? "Skip to the next track (the current one is live)" : "Next track")
                     .accessibilityIdentifier("setlist-play-next")
             }
@@ -254,14 +246,14 @@ struct SetlistDetailView: View {
     /// coordinator, else the rip/local `PlayerEngine`); prev/next step the SET.
     private var transportCluster: some View {
         HStack(spacing: 30) {
-            Button { setlistPlayer?.skipPrevious() } label: { Image(systemName: "backward.fill") }
+            Button { sequencer.skipPrevious() } label: { Image(systemName: "backward.fill") }
                 .help("Previous track").accessibilityIdentifier("setlist-play-prev")
             Button { toggleTransport() } label: {
                 Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill")
             }
             .help(transportIsPlaying ? "Pause" : "Play").accessibilityIdentifier("setlist-playpause")
-            Button { setlistPlayer?.skipNext() } label: { Image(systemName: "forward.fill") }
-                .help(setlistPlayer?.waitingForLive == true
+            Button { sequencer.skipNext() } label: { Image(systemName: "forward.fill") }
+                .help(sequencer.waitingForLive
                       ? "Skip to the next track (the current one is live)" : "Next track")
                 .accessibilityIdentifier("setlist-play-next")
         }
@@ -269,16 +261,18 @@ struct SetlistDetailView: View {
         .tint(Theme.accent)
     }
 
-    /// PLAY ALL (start) / STOP (end) the set. The iOS play-mode transport uses play/PAUSE
-    /// instead (Stop lives in the ••• menu there); this is the idle-iOS / macOS button.
+    /// PLAY / PAUSE the set — no dedicated ⏹ Stop (play/pause is sufficient). Idle ⇒ ▶ starts
+    /// the set; while running it pauses/resumes the active backend (the same toggle as the
+    /// centered cluster). The set ends by finishing or leaving the screen (which stops it).
+    /// This is the idle-iOS button and the macOS toolbar's sole transport.
     private func startStopButton(_ setlist: Setlist) -> some View {
         Button {
-            if isPlaying { setlistPlayer?.stop() }
-            else { ensurePlayer().play(playableItems(setlist)) }
+            if isPlaying { toggleTransport() }
+            else { startThisSet(setlist) }
         } label: {
-            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+            Image(systemName: isPlaying && transportIsPlaying ? "pause.fill" : "play.fill")
         }
-        .help(isPlaying ? "Stop playing the set list" : "Play the set list in order")
+        .help(isPlaying ? (transportIsPlaying ? "Pause" : "Resume") : "Play the set list in order")
         .disabled(!isPlaying && playableItems(setlist).isEmpty)
         .accessibilityIdentifier("setlist-play")
     }
@@ -364,6 +358,12 @@ struct SetlistDetailView: View {
                         data: rowData,
                         trailing: AnyView(provenanceBadges(track))
                     )
+                    // Tap-to-open the song's detail (when its catalog song still exists). A
+                    // row-level .onTapGesture — NOT a wrapping NavigationLink — so the row's
+                    // ▶/⤓ transport buttons keep intercepting their own taps (see BrowseView).
+                    .contentShape(Rectangle())
+                    .onTapGesture { if let song { path.append(song) } }
+                    .accessibilityElement(children: .contain)
                 }
                 // Inline player below the row when this track's song is the one playing.
                 InlinePlayerSlot(songId: rowData.songId).padding(.leading, 30)
