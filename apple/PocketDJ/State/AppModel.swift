@@ -117,9 +117,20 @@ final class AppModel {
         }
         let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
         var indexes: [IndexJSON] = []
+        var firstError: Error?
         for url in urls {
-            indexes.append(try await CatalogService(url: url).loadIndex())
+            do {
+                // CatalogService falls back to ITS OWN per-URL disk cache when offline.
+                indexes.append(try await CatalogService(url: url).loadIndex())
+            } catch {
+                // OFFLINE GRACEFUL DEGRADATION: a source with no cache (never loaded online) +
+                // no network is SKIPPED so the OTHER sources' cached catalogs still open. We
+                // fail the whole load only when EVERY source failed (indexes empty) — one
+                // un-cached source must not hide an already-cached one.
+                firstError = firstError ?? error
+            }
         }
+        guard !indexes.isEmpty else { throw firstError ?? URLError(.cannotLoadFromNetwork) }
         return (AppModel.merge(indexes), AppModel.sourcePlaylists(indexes), AppModel.sourceTags(indexes))
     }
 

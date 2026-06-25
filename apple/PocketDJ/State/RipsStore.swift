@@ -186,6 +186,11 @@ final class RipsStore {
         // POST /rip {songId} (creates or joins the single-flight job).
         var post = URLRequest(url: URL(string: "\(base)/rip")!)
         post.httpMethod = "POST"
+        // Short connect/request timeout (matches RipServerService.health's 12s) so a CONFIGURED
+        // but unreachable rip server (e.g. an asleep Tailscale/home server while on venue wifi)
+        // fails in seconds — letting Play-All SKIP an un-burned track promptly rather than
+        // stalling on URLSession.shared's 60s default before advancing.
+        post.timeoutInterval = 12
         post.setValue("application/json", forHTTPHeaderField: "content-type")
         applyAuth(&post, token: tok)
         let body: [String: Any] = ripFromCloud ? ["songId": songId, "ripFromCloud": true] : ["songId": songId]

@@ -419,16 +419,18 @@ struct RowTransport: View {
     }
 
     private func doPlay() {
-        // Now-playing row: toggle the ACTIVE backend (pause / resume) — don't replay.
-        // For the rip backend this delegates to `PlayerEngine.toggle()` exactly as before
-        // (so the verified rip play/pause + its toggleCount probe are unchanged); for Apple
-        // Music it pauses/resumes `ApplicationMusicPlayer`.
-        if isNowPlaying { coordinator.togglePlayPause(); return }
-        // Item 7 — DEVICE mode: play the BURNED local file if present (via the shared helper
-        // so nowPlaying + the inline player + this row's pause toggle stay consistent). If
-        // there's NO burned file, FALL BACK TO CLOUD for this single tap (USER DECISION) —
-        // we stay in device mode, but this song streams rather than silently failing.
-        if settings.playbackMode == .device, let local = burns.localURL(forSong: song.id) {
+        // Now-playing row: toggle the ACTIVE backend (pause / resume) — don't replay. Apple
+        // Music pauses/resumes via the coordinator; everything else (a rip stream AND a BURNED
+        // local file) toggles the shared `PlayerEngine` directly. A burned file has NO
+        // coordinator backend (`activeBackend == nil`), so `coordinator.togglePlayPause()` would
+        // no-op — the row's pause button was dead for burned songs until this split.
+        if isNowPlaying { isAppleMusic ? coordinator.togglePlayPause() : player.toggle(); return }
+        // OFFLINE-FIRST: prefer a BURNED local file whenever one exists — zero-latency AND works
+        // with NO network — in BOTH device and cloud mode (mirroring the Play-All sequencer's
+        // burned-first rule, so single taps and Play-All agree). The lookup is O(1): a songId →
+        // dict hit → one `fileExists` stat. Only when there's NO local file does cloud stream /
+        // device fall back to cloud for this single tap.
+        if let local = burns.localURL(forSong: song.id) {
             playLocalFile(local, songId: song.id, title: song.title, artist: song.artist,
                           startMs: burns.startMs(forSong: song.id), rips: rips, player: player)
             return

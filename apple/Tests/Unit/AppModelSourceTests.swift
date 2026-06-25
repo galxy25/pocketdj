@@ -46,3 +46,49 @@ final class AppModelSourceTests: XCTestCase {
         XCTAssertNil(app.source(ofAlbum: "nope"))
     }
 }
+
+/// The explicit on-disk catalog cache (OFFLINE support): a successful `loadIndex` persists the
+/// raw index bytes per source URL; a later FAILED load returns the cached `IndexJSON` so the
+/// catalog opens with NO network. The live `loadIndex` uses `URLSession.shared`, so these tests
+/// drive the cache round-trip directly with an injected temp dir (the network leg is unchanged).
+final class CatalogServiceCacheTests: XCTestCase {
+    private func tempDir() -> URL {
+        let d = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-catcache-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: d) }
+        return d
+    }
+
+    func testCacheRoundTripsTheIndexPerURL() {
+        let dir = tempDir()
+        let url = URL(string: "https://cdn.test/current-index.json")!
+        // No cache yet → nil (a fresh install offline has nothing to show — expected).
+        XCTAssertNil(CatalogService.loadCachedIndex(for: url, in: dir))
+        // A successful load persists the raw bytes; a later offline load decodes them back.
+        CatalogService.writeCache(Data(TestData.json.utf8), for: url, in: dir)
+        let cached = CatalogService.loadCachedIndex(for: url, in: dir)
+        XCTAssertNotNil(cached, "the cached index decodes with no network")
+        XCTAssertEqual(cached?.albums.count, 3)
+        XCTAssertEqual(cached?.songs.count, 7)
+        XCTAssertEqual(cached?.manifest.sourceName, "Test Crate")
+    }
+
+    func testCacheIsKeyedByURLSoSourcesDontCollide() {
+        let dir = tempDir()
+        let urlA = URL(string: "https://cdn.test/a.json")!
+        let urlB = URL(string: "https://cdn.test/b.json")!
+        CatalogService.writeCache(Data(TestData.json.utf8), for: urlA, in: dir)
+        XCTAssertNotNil(CatalogService.loadCachedIndex(for: urlA, in: dir))
+        // A DIFFERENT source URL has its own (empty) cache — one cached source can't satisfy another.
+        XCTAssertNil(CatalogService.loadCachedIndex(for: urlB, in: dir))
+    }
+
+    func testCacheFilenameIsDeterministic() {
+        let dir = tempDir()
+        let url = URL(string: "https://cdn.test/current-index.json")!
+        // The per-URL filename must be STABLE across calls/relaunch (SHA-256 of the URL string,
+        // not Swift's per-process-seeded Hasher) — else a relaunch wouldn't find the cache.
+        XCTAssertEqual(CatalogService.cacheFileURL(for: url, in: dir),
+                       CatalogService.cacheFileURL(for: url, in: dir))
+        XCTAssertNotNil(CatalogService.cacheFileURL(for: url, in: dir))
+    }
+}

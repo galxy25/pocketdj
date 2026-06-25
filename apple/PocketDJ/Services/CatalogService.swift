@@ -1,23 +1,83 @@
 import Foundation
+import CryptoKit
 
 /// Fetches and decodes the catalog index from CloudFront (same document the PWA
-/// auto-seeds from). URLSession's shared URLCache makes repeat launches fast.
+/// auto-seeds from). On a SUCCESSFUL load the raw bytes are persisted to an explicit
+/// on-disk cache (per source URL); if a later load FAILS (no network / server down) the
+/// cached index is returned instead — so the app opens with its full catalog OFFLINE.
+///
+/// Why an explicit file cache and not just `URLCache`: `URLRequest.cachePolicy =
+/// .returnCacheDataElseLoad` leans on `URLSession`'s shared `URLCache`, which silently
+/// REFUSES to persist responses past its (small, default) capacity — and the catalog index
+/// (1,300+ albums) routinely exceeds it, so offline relaunch had nothing to fall back to.
+/// A plain file in Application Support has no such cap and survives relaunch deterministically.
 struct CatalogService: Sendable {
     var url: URL = Config.indexURL
 
     func loadIndex() async throws -> IndexJSON {
-        var request = URLRequest(url: url)
-        request.cachePolicy = .returnCacheDataElseLoad
-        request.timeoutInterval = 30
+        do {
+            var request = URLRequest(url: url)
+            request.cachePolicy = .returnCacheDataElseLoad
+            request.timeoutInterval = 30
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw URLError(.init(rawValue: http.statusCode == 404 ? URLError.fileDoesNotExist.rawValue
+                                                                       : URLError.badServerResponse.rawValue))
+            }
+            let index = try JSONDecoder().decode(IndexJSON.self, from: data)
+            // Persist the raw bytes for an OFFLINE relaunch (only after a valid decode, so we
+            // never cache a garbage/partial response).
+            Self.writeCache(data, for: url)
+            return index
+        } catch {
+            // OFFLINE / server-down FALLBACK: serve the last good index for this source from
+            // disk so the catalog still opens with no network. Re-throw only if there's no cache.
+            if let cached = Self.loadCachedIndex(for: url) { return cached }
+            throw error
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw URLError(.init(rawValue: http.statusCode == 404 ? URLError.fileDoesNotExist.rawValue
-                                                                   : URLError.badServerResponse.rawValue))
+    }
+
+    // MARK: Offline disk cache (per source URL)
+
+    /// The cache directory (`Application Support/catalog-cache/`). A `dir` override is the
+    /// unit-test seam (a temp dir), so the round-trip can be tested without Application Support.
+    static func cacheDirectory(_ dir: URL? = nil) -> URL? {
+        if let dir {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
         }
-        return try JSONDecoder().decode(IndexJSON.self, from: data)
+        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                      in: .userDomainMask, appropriateFor: nil, create: true)
+        else { return nil }
+        let d = base.appendingPathComponent("catalog-cache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    /// A deterministic, flat, O(1) cache filename for a source URL — a SHA-256 of the URL
+    /// string (NOT Swift's per-process-seeded `Hasher`, which wouldn't survive relaunch).
+    static func cacheFileURL(for url: URL, in dir: URL? = nil) -> URL? {
+        guard let directory = cacheDirectory(dir) else { return nil }
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+        let name = digest.map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent("\(name).json")
+    }
+
+    /// Persist the raw index bytes for `url` (atomic). Best-effort — a cache-write failure
+    /// never fails the load.
+    static func writeCache(_ data: Data, for url: URL, in dir: URL? = nil) {
+        guard let dest = cacheFileURL(for: url, in: dir) else { return }
+        try? data.write(to: dest, options: .atomic)
+    }
+
+    /// Load + decode the cached index for `url`, or nil when there's no (valid) cache.
+    static func loadCachedIndex(for url: URL, in dir: URL? = nil) -> IndexJSON? {
+        guard let src = cacheFileURL(for: url, in: dir),
+              let data = try? Data(contentsOf: src) else { return nil }
+        return try? JSONDecoder().decode(IndexJSON.self, from: data)
     }
 }
