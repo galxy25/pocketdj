@@ -88,6 +88,18 @@ then just run `apple/scripts/testflight.sh`.
   (already used). On older Xcode change it to `app-store` in the script's ExportOptions heredoc.
 - **Exit 0 but it actually failed** → don't pipe the script through `tail` (that masks the
   real exit code). Run it directly; `set -euo pipefail` then surfaces failures.
+- **Archive `CodeSign failed … missing Xcode-Username`** → the ARCHIVE step had no API key, so
+  `-allowProvisioningUpdates` looked for an Apple ID signed into Xcode (none, headless). FIXED:
+  the script now passes `-authenticationKey{Path,ID,IssuerID}` to the archive too (cloud signing).
+- **Archive `CodeSign failed … errSecInternalComponent` (ONE-TIME keychain bootstrap)** → two
+  things only an interactive session can establish: (a) there is NO **Apple Distribution** cert
+  in the keychain (only Apple Development — App Store needs Distribution), and (b) `codesign`
+  can't reach the signing key's private key headlessly. BOTH are solved by **one Xcode.app
+  archive**: open `apple/PocketDJ.xcodeproj`, ensure the Apple ID is in Xcode ▸ Settings ▸
+  Accounts (team EC27UF79GL), pick **Any iOS Device**, **Product ▸ Archive**; click **Always
+  Allow** on each keychain prompt. That mints the Distribution cert + grants permanent CLI key
+  access — and you can **Distribute ▸ App Store Connect** right there to ship that build. After
+  that one GUI archive, `testflight.sh` runs fully headless for every future build.
 
 ## Related
 

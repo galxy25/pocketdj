@@ -52,6 +52,11 @@ xcodegen generate
 
 echo "==> Archiving $SCHEME for iOS (build $BUILD_NUMBER)"
 rm -rf "$ARCHIVE" "$EXPORT_DIR"
+# Pass the App Store Connect API key to the ARCHIVE step too (not just export): with it,
+# `-allowProvisioningUpdates` does CLOUD signing — minting the Apple Distribution cert + App
+# Store profile via the key — so no Apple ID needs to be signed into Xcode (headless/CI). The
+# key MUST be Admin role (App Manager fails: "No profiles for com.levi.pocketdj"). Without
+# this, archive looks for an Xcode account and dies with "missing Xcode-Username".
 xcodebuild \
   -project PocketDJ.xcodeproj \
   -scheme "$SCHEME" \
@@ -59,6 +64,9 @@ xcodebuild \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  -authenticationKeyPath "$ASC_KEY_PATH" \
+  -authenticationKeyID "$ASC_KEY_ID" \
+  -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
   -allowProvisioningUpdates \
   clean archive
 
