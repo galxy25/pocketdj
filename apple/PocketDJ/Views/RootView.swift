@@ -11,6 +11,7 @@ struct RootView: View {
     @Environment(PlayerEngine.self) private var player
     @Environment(BurnStore.self) private var burns
     @Environment(PlaybackCoordinator.self) private var coordinator
+    @Environment(SetlistPlayer.self) private var setlistPlayer
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     @State private var section: Section? = .browse
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
@@ -59,6 +60,8 @@ struct RootView: View {
             app.settings = settings   // wire the live multi-source config before loading
             app.edits = edits         // overlay local metadata edits
             collections.app = app     // give realize() the catalog to resolve ids against
+            // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
+            setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
             rips.settings = settings  // rip server URL + token come from settings
             // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum,
             // and prune any burned files iOS purged while the app was gone.

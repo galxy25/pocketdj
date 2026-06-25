@@ -29,6 +29,12 @@ final class SetlistPlayer {
     /// Index into `queue` (NOT track.id — a song can repeat in a setlist).
     private(set) var index = 0
     private(set) var isRunning = false
+    /// The id of the COLLECTION currently playing (a setlist id) — so a detail screen knows
+    /// whether IT is the one playing (vs. another set playing in the background after the user
+    /// navigated away). nil when idle. This is what makes playback survive navigation: the
+    /// sequencer is app-scoped, so leaving a screen never tears it down — only starting a
+    /// DIFFERENT collection (a fresh `play`) replaces it.
+    private(set) var sourceSetlistId: String?
     /// True when the current track is a live stream with no natural end — the UI shows a
     /// "Next" control so the set never silently freezes on it.
     private(set) var waitingForLive = false
@@ -62,9 +68,12 @@ final class SetlistPlayer {
         observeNowPlaying()
     }
 
-    /// Start playing `items` from the top. No-op for an empty list.
-    func play(_ items: [Item]) {
+    /// Start playing `items` from the top, tagged with the source collection's id (so a
+    /// detail screen can tell whether IT is the one playing). No-op for an empty list. A
+    /// fresh `play` replaces whatever was running — that's the ONLY thing that stops a set.
+    func play(_ items: [Item], sourceSetlistId: String? = nil) {
         guard !items.isEmpty else { return }
+        self.sourceSetlistId = sourceSetlistId
         queue = items
         index = 0
         isRunning = true
@@ -92,6 +101,7 @@ final class SetlistPlayer {
         rips.setNowPlaying(nil)
         index = 0
         queue = []
+        sourceSetlistId = nil
     }
 
     /// Acknowledge + clear the one-shot device-unplayable banner (the surface calls this

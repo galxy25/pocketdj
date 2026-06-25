@@ -25,6 +25,10 @@ struct PocketDJApp: App {
     /// Apple Music (Local) songs (when ready), always falls back to the rip server. Built
     /// from the SAME rips/player/streaming instances so the rip path is unchanged.
     @State private var coordinator: PlaybackCoordinator
+    /// APP-SCOPED Play-All sequencer (Feature 3) — owned here, NOT by SetlistDetailView, so a
+    /// playing set keeps advancing after the user leaves the screen to build other collections.
+    /// Only starting a different collection (a fresh `play`) stops it.
+    @State private var setlistPlayer: SetlistPlayer
     /// Lazily resolves streaming cover art (Apple Music) for albums lacking a bundled
     /// cover, keyed off the indexer's catalog id — fetched ONLY when an album is on-screen.
     @State private var albumArt: AlbumArtworkStore
@@ -48,15 +52,19 @@ struct PocketDJApp: App {
         let player = PlayerEngine()
         let streaming = StreamingStore()
         let amProvider = streaming.appleMusicProvider ?? AppleMusicProvider()
+        // Inject the shared background-transfer coordinator so Burn hands each song to a
+        // background download task that survives suspend (nil in tests ⇒ the in-process loop).
+        let burns = BurnStore(rips: rips, transfers: .shared, fileURL: BurnStore.launchURL())
+        let coordinator = PlaybackCoordinator(
+            ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+            appleMusic: AppleMusicPlaybackProvider(provider: amProvider))
         _rips = State(initialValue: rips)
         _player = State(initialValue: player)
         _streaming = State(initialValue: streaming)
-        // Inject the shared background-transfer coordinator so Burn hands each song to a
-        // background download task that survives suspend (nil in tests ⇒ the in-process loop).
-        _burns = State(initialValue: BurnStore(rips: rips, transfers: .shared, fileURL: BurnStore.launchURL()))
-        _coordinator = State(initialValue: PlaybackCoordinator(
-            ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
-            appleMusic: AppleMusicPlaybackProvider(provider: amProvider)))
+        _burns = State(initialValue: burns)
+        _coordinator = State(initialValue: coordinator)
+        // App-scoped Play-All sequencer (survives navigation — see the property comment).
+        _setlistPlayer = State(initialValue: SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator))
         // Lazy streaming cover art: resolve an album's art via the Apple Music provider
         // (recognize one of its tracks by catalog id → its artwork URL). Ready only when
         // the provider can resolve; both gated so the default build never hits the network.
@@ -78,6 +86,7 @@ struct PocketDJApp: App {
                 .environment(streaming)
                 .environment(burns)
                 .environment(coordinator)
+                .environment(setlistPlayer)
                 .environment(albumArt)
                 .environment(lyrics)
                 .preferredColorScheme(.dark)
