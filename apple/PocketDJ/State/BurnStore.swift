@@ -570,6 +570,14 @@ final class BurnStore {
             if remoteMs == nil, exists { items[c.id]?.cutFileName = cutName; continue }
             do {
                 let data = try await rips.downloadBytes(rips.url(forKey: c.key))
+                // DELETE the old cut before placing the updated (re-tagged) one — both the
+                // previously-recorded name (in case the descriptive name changed) AND the current
+                // target — so an updated version cleanly replaces the prior file. Done AFTER the
+                // new bytes are in hand, so a download failure never loses the existing cut.
+                if let old = items[c.id]?.cutFileName, old != cutName {
+                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(old))
+                }
+                try? FileManager.default.removeItem(at: cutFileURL)
                 try data.write(to: cutFileURL, options: .atomic)
                 items[c.id]?.cutFileName = cutName
                 items[c.id]?.cutDownloadedAt = remoteMs ?? now
