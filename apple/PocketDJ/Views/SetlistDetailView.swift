@@ -1,5 +1,14 @@
 import SwiftUI
 
+/// A navigation value that opens a setlist AND (optionally) autostarts Play-All. Used by
+/// the repurposed ▶ Play / 🔀 Shuffle on playlists/pockets, which push the reusable
+/// "Now Playing" setlist and want it to begin immediately. The plain `Setlist`
+/// destination (history rows, index-play) stays non-autoplay.
+struct SetlistLaunch: Hashable, Codable {
+    let setlistId: String
+    let autoplay: Bool
+}
+
 /// The FROZEN, read-only performance produced by ▶ Play. "Spin these tracks, in this
 /// order." Each track carries its own snapshot (artist/name/bpm/camelot/length) so it
 /// reads standalone even if the catalog or pockets change. Mirrors the PWA's
@@ -14,7 +23,12 @@ struct SetlistDetailView: View {
     @Environment(BurnStore.self) private var burns
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
+    @Environment(SettingsStore.self) private var settings
     let setlistId: String
+    /// When true (a ▶ Play / 🔀 Shuffle launch), start Play-All on first appear.
+    var autoplay: Bool = false
+    /// One-shot guard so the autostart fires exactly once per view lifetime.
+    @State private var didAutostart = false
 
     @State private var nameDraft = ""
     @State private var renaming = false
@@ -36,6 +50,9 @@ struct SetlistDetailView: View {
     private func ensurePlayer() -> SetlistPlayer {
         if let p = setlistPlayer { return p }
         let p = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
+        // Item 7 — feed the sequencer the live device/cloud mode (read fresh each track, so a
+        // mode-flip mid-set takes effect on the NEXT track).
+        p.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
         setlistPlayer = p
         return p
     }
@@ -110,8 +127,35 @@ struct SetlistDetailView: View {
         // Feature 3 — tear down Play-All on REAL teardown only (a setlist switch), NOT on a
         // transient onDisappear (SwiftUI fires that on a navigation push too).
         .onChange(of: setlistId) { setlistPlayer?.stop() }
+        // Item 4 — autostart Play-All when this view was opened from a ▶ Play / 🔀 Shuffle.
+        .task {
+            guard autoplay, !didAutostart, let setlist else { return }
+            didAutostart = true
+            ensurePlayer().play(playableItems(setlist))
+        }
+        // CRITIC-I — Shuffle (or re-Play) WHILE this setlist is on screen bumps the reusable
+        // "Now Playing" revision. Re-derive the playable items from the freshly-read setlist
+        // and restart so the new order plays. The bump-only-on-explicit-playNow contract +
+        // the stop()→play() pair guards against an infinite restart loop.
+        .onChange(of: collections.nowPlayingRevision) {
+            guard autoplay, setlistId == nowPlayingSetlistId, let setlist = collections.setlist(setlistId) else { return }
+            setlistPlayer?.stop()
+            ensurePlayer().play(playableItems(setlist))
+        }
+        // CRITIC-D — device-mode set with no on-device files anywhere: a one-shot transient
+        // alert so the DJ knows nothing was playable on-device (no silent dead-Play).
+        .alert("No burned files", isPresented: Binding(
+            get: { setlistPlayer?.deviceQueueUnplayable == true },
+            set: { if !$0 { setlistPlayer?.clearDeviceUnplayable() } })) {
+            Button("OK", role: .cancel) { setlistPlayer?.clearDeviceUnplayable() }
+        } message: {
+            Text("Device playback is on, but none of these tracks are burned to this device. Burn them, or switch to cloud streaming.")
+        }
         .toolbar {
             if let setlist {
+                ToolbarItem(placement: .primaryAction) {
+                    PlaybackModeToggle()
+                }
                 ToolbarItem(placement: .primaryAction) {
                     // PLAY ALL / STOP — plays the set in order, auto-advancing on track-end.
                     Button {

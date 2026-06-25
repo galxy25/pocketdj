@@ -2,8 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Playlists — ordered chapters (sequences) of songs/albums/pockets/text cues.
-/// Lists the read-only playlists carried in the enabled sources ("From your
-/// sources") above the editable local playlists ("Your playlists").
+/// Your editable playlists (organized into optional collapsible FOLDERS) render ABOVE
+/// the read-only "From your sources" index playlists. The body is factored into small
+/// helper subviews so the Swift type-checker never times out.
 struct PlaylistsView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
@@ -14,94 +15,36 @@ struct PlaylistsView: View {
     @State private var renamingId: String?
     @State private var nameDraft = ""
     @State private var deletingId: String?
+    // Folder dialogs
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    @State private var renamingFolderId: String?
+    @State private var folderNameDraft = ""
+    @State private var deletingFolderId: String?
+    /// Collapsed folder ids, persisted across launches (UserDefaults).
+    @State private var collapsed: Set<String> = PlaylistsView.loadCollapsed()
 
     private var indexPlaylists: [SourcePlaylist] { app.indexPlaylists }
 
     var body: some View {
         Group {
             if collections.playlists.isEmpty && indexPlaylists.isEmpty {
-                ContentUnavailableView {
-                    Label("No playlists yet", systemImage: "music.note.list")
-                } description: {
-                    Text("A playlist is a template: ordered chapters of songs, albums, pockets, and text cues.")
-                } actions: {
-                    Button("New Playlist") { showNew = true }.buttonStyle(.borderedProminent)
-                }
+                emptyState
             } else {
                 List {
-                    if !indexPlaylists.isEmpty {
-                        Section {
-                            ForEach(indexPlaylists) { sp in
-                                NavigationLink(value: sp) {
-                                    HStack {
-                                        Image(systemName: "music.note.list").foregroundStyle(Theme.accent2)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(sp.name).foregroundStyle(Theme.fg)
-                                            HStack(spacing: 6) {
-                                                Text(sp.sourceName)
-                                                    .font(.caption2.weight(.semibold))
-                                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                                    .background(Theme.accent2.opacity(0.18), in: Capsule())
-                                                    .foregroundStyle(Theme.accent2)
-                                                Text("\(sp.songIds.count) song\(sp.songIds.count == 1 ? "" : "s")")
-                                                    .font(.caption).foregroundStyle(Theme.fgDim)
-                                            }
-                                        }
-                                    }
-                                }
-                                .accessibilityIdentifier("indexplaylist-\(sp.id)")
-                            }
-                        } header: {
-                            Text("From your sources")
-                        } footer: {
-                            Text("Read-only playlists from your enabled sources. Play one, or duplicate it into an editable playlist.")
-                        }
+                    yourPlaylistsSection
+                    ForEach(collections.foldersOrdered()) { folder in
+                        folderSection(folder)
                     }
-
-                    Section("Your playlists") {
-                        if collections.playlists.isEmpty {
-                            Text("No editable playlists yet — tap + to create one.")
-                                .font(.caption).foregroundStyle(Theme.fgDim)
-                        }
-                        ForEach(collections.playlists) { pl in
-                            NavigationLink(value: pl) {
-                                HStack {
-                                    Image(systemName: "music.note.list").foregroundStyle(Theme.accent)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(pl.name).foregroundStyle(Theme.fg)
-                                        let stats = collections.catalog().stats(forPlaylist: pl)
-                                        Text("\(pl.sequences.count) chapter\(pl.sequences.count == 1 ? "" : "s") · \(stats.summary)")
-                                            .font(.caption).foregroundStyle(Theme.fgDim)
-                                    }
-                                }
-                            }
-                            .accessibilityIdentifier("playlist-\(pl.id)")
-                            .contextMenu {
-                                Button { nameDraft = pl.name; renamingId = pl.id } label: { Label("Rename", systemImage: "pencil") }
-                                    .accessibilityIdentifier("list-rename-\(pl.id)")
-                                Button(role: .destructive) { deletingId = pl.id } label: { Label("Delete", systemImage: "trash") }
-                                    .accessibilityIdentifier("list-delete-\(pl.id)")
-                            }
-                        }
-                        .onDelete { idx in idx.map { collections.playlists[$0].id }.forEach(collections.deletePlaylist) }
-                    }
+                    sourcesSection
                 }
             }
         }
         .navigationTitle("Playlists")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .scrollContentBackground(.hidden).background(Theme.bg)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
-                    .help("Import a playlist export")
-                    .accessibilityIdentifier("import-playlist")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { showNew = true } label: { Image(systemName: "plus") }
-                    .accessibilityIdentifier("new-playlist")
-            }
-        }
+        .toolbar { toolbarContent }
+        .modifier(folderDialogs)
         .alert("New Playlist", isPresented: $showNew) {
             TextField("Name", text: $newName)
             Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPlaylist(n) }; newName = "" }
@@ -127,6 +70,214 @@ struct PlaylistsView: View {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             try? collections.importAny(url: url)
         }
+    }
+
+    // MARK: - Sections
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No playlists yet", systemImage: "music.note.list")
+        } description: {
+            Text("A playlist is a template: ordered chapters of songs, albums, pockets, and text cues.")
+        } actions: {
+            Button("New Playlist") { showNew = true }.buttonStyle(.borderedProminent)
+        }
+    }
+
+    /// YOUR (editable) top-level playlists — those NOT in any folder. Rendered first.
+    @ViewBuilder private var yourPlaylistsSection: some View {
+        let top = collections.playlists(inFolder: nil)
+        Section("Your playlists") {
+            if collections.playlists.isEmpty {
+                Text("No editable playlists yet — tap + to create one.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+            } else if top.isEmpty {
+                Text("All your playlists are in folders below.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            ForEach(top) { pl in playlistRow(pl) }
+        }
+    }
+
+    /// One collapsible FOLDER (flat) of playlists, name-ordered. Collapse state persists.
+    @ViewBuilder private func folderSection(_ folder: PlaylistFolder) -> some View {
+        let members = collections.playlists(inFolder: folder.id)
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if members.isEmpty {
+                    Text("Empty folder — move a playlist in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                ForEach(members) { pl in playlistRow(pl) }
+            } label: {
+                HStack {
+                    Label(folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
+                    Spacer()
+                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                .accessibilityIdentifier("folder-\(folder.id)")
+                .contextMenu {
+                    Button { folderNameDraft = folder.name; renamingFolderId = folder.id } label: { Label("Rename folder", systemImage: "pencil") }
+                        .accessibilityIdentifier("folder-rename-\(folder.id)")
+                    Button(role: .destructive) { deletingFolderId = folder.id } label: { Label("Delete folder", systemImage: "trash") }
+                        .accessibilityIdentifier("folder-delete-\(folder.id)")
+                }
+            }
+        }
+    }
+
+    /// The read-only "From your sources" section, now rendered LAST (below your playlists).
+    @ViewBuilder private var sourcesSection: some View {
+        if !indexPlaylists.isEmpty {
+            Section {
+                ForEach(indexPlaylists) { sp in
+                    NavigationLink(value: sp) {
+                        HStack {
+                            Image(systemName: "music.note.list").foregroundStyle(Theme.accent2)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sp.name).foregroundStyle(Theme.fg)
+                                HStack(spacing: 6) {
+                                    Text(sp.sourceName)
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Theme.accent2.opacity(0.18), in: Capsule())
+                                        .foregroundStyle(Theme.accent2)
+                                    Text("\(sp.songIds.count) song\(sp.songIds.count == 1 ? "" : "s")")
+                                        .font(.caption).foregroundStyle(Theme.fgDim)
+                                }
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("indexplaylist-\(sp.id)")
+                }
+            } header: {
+                Text("From your sources")
+            } footer: {
+                Text("Read-only playlists from your enabled sources. Play one, or duplicate it into an editable playlist.")
+            }
+        }
+    }
+
+    /// One editable-playlist row + its context menu (rename / move to folder / delete).
+    @ViewBuilder private func playlistRow(_ pl: Playlist) -> some View {
+        NavigationLink(value: pl) {
+            HStack {
+                Image(systemName: "music.note.list").foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pl.name).foregroundStyle(Theme.fg)
+                    let stats = collections.catalog().stats(forPlaylist: pl)
+                    Text("\(pl.sequences.count) chapter\(pl.sequences.count == 1 ? "" : "s") · \(stats.summary)")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+            }
+        }
+        .accessibilityIdentifier("playlist-\(pl.id)")
+        .contextMenu { playlistRowMenu(pl) }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { collections.deletePlaylist(pl.id) } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    @ViewBuilder private func playlistRowMenu(_ pl: Playlist) -> some View {
+        Button { nameDraft = pl.name; renamingId = pl.id } label: { Label("Rename", systemImage: "pencil") }
+            .accessibilityIdentifier("list-rename-\(pl.id)")
+        Menu {
+            if pl.folderId != nil {
+                Button { collections.setPlaylistFolder(pl.id, folderId: nil) } label: { Label("Top level", systemImage: "tray") }
+                    .accessibilityIdentifier("move-top-\(pl.id)")
+            }
+            ForEach(collections.foldersOrdered()) { f in
+                Button { collections.setPlaylistFolder(pl.id, folderId: f.id) } label: {
+                    Label(f.name, systemImage: pl.folderId == f.id ? "checkmark" : "folder")
+                }
+                .accessibilityIdentifier("move-to-\(f.id)-\(pl.id)")
+            }
+            Divider()
+            Button { showNewFolder = true } label: { Label("New folder…", systemImage: "folder.badge.plus") }
+        } label: { Label("Move to folder", systemImage: "folder") }
+            .accessibilityIdentifier("move-folder-\(pl.id)")
+        Button(role: .destructive) { deletingId = pl.id } label: { Label("Delete", systemImage: "trash") }
+            .accessibilityIdentifier("list-delete-\(pl.id)")
+    }
+
+    // MARK: - Toolbar + folder dialogs
+
+    @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
+                .help("Import a playlist export")
+                .accessibilityIdentifier("import-playlist")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { newFolderName = ""; showNewFolder = true } label: { Image(systemName: "folder.badge.plus") }
+                .help("New folder")
+                .accessibilityIdentifier("new-folder")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { showNew = true } label: { Image(systemName: "plus") }
+                .accessibilityIdentifier("new-playlist")
+        }
+    }
+
+    private var folderDialogs: FolderDialogs {
+        FolderDialogs(
+            collections: collections,
+            showNewFolder: $showNewFolder, newFolderName: $newFolderName,
+            renamingFolderId: $renamingFolderId, folderNameDraft: $folderNameDraft,
+            deletingFolderId: $deletingFolderId)
+    }
+
+    // MARK: - Collapse persistence
+
+    private static let collapsedKey = "pdj.playlistFolders.collapsed"
+    private static func loadCollapsed() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [])
+    }
+    private func persistCollapsed() {
+        UserDefaults.standard.set(Array(collapsed), forKey: PlaylistsView.collapsedKey)
+    }
+    /// A binding into `collapsed` for a folder's DisclosureGroup, persisting on change.
+    private func folderExpansion(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsed.contains(id) },
+            set: { expanded in
+                if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                persistCollapsed()
+            })
+    }
+}
+
+/// The folder create/rename/delete alerts, lifted out of `body` so the view's main
+/// expression stays type-checkable. Holds only bindings + the store.
+private struct FolderDialogs: ViewModifier {
+    let collections: CollectionsStore
+    @Binding var showNewFolder: Bool
+    @Binding var newFolderName: String
+    @Binding var renamingFolderId: String?
+    @Binding var folderNameDraft: String
+    @Binding var deletingFolderId: String?
+
+    func body(content: Content) -> some View {
+        content
+            .alert("New Folder", isPresented: $showNewFolder) {
+                TextField("Name", text: $newFolderName)
+                Button("Create") { let n = newFolderName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createFolder(n) }; newFolderName = "" }
+                Button("Cancel", role: .cancel) { newFolderName = "" }
+            }
+            .alert("Rename folder", isPresented: Binding(get: { renamingFolderId != nil }, set: { if !$0 { renamingFolderId = nil } })) {
+                TextField("Name", text: $folderNameDraft)
+                Button("Save") {
+                    if let id = renamingFolderId { let n = folderNameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renameFolder(id, n) } }
+                    renamingFolderId = nil
+                }
+                Button("Cancel", role: .cancel) { renamingFolderId = nil }
+            }
+            .confirmationDialog("Delete this folder?", isPresented: Binding(get: { deletingFolderId != nil }, set: { if !$0 { deletingFolderId = nil } }), titleVisibility: .visible) {
+                Button("Delete folder", role: .destructive) { if let id = deletingFolderId { collections.deleteFolder(id) }; deletingFolderId = nil }
+                Button("Cancel", role: .cancel) { deletingFolderId = nil }
+            } message: {
+                Text("The folder's playlists move back to the top level. This can’t be undone.")
+            }
     }
 }
 
@@ -200,6 +351,11 @@ struct PlaylistDetailView: View {
     @State private var addingNoteChapter: String?     // sequence nodeId to add a text note to
     @State private var noteDraft = ""
     @State private var ripBurn = CollectionRipBurnController()
+    /// CRITIC-B: true once we've pushed the reusable Now Playing setlist from HERE and not
+    /// yet returned. A re-tap then only re-snapshots (playNow) instead of stacking a second
+    /// live SetlistDetailView for the same reserved id. Cleared when this view reappears
+    /// (the user popped back) so a fresh Play pushes again.
+    @State private var nowPlayingPushed = false
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
@@ -233,12 +389,29 @@ struct PlaylistDetailView: View {
         .navigationTitle(playlist?.name ?? "Playlist")
         .accessibilityIdentifier("playlist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
+        // Reappears when the user pops back from Now Playing — allow the next Play to push.
+        .onAppear { nowPlayingPushed = false }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { play() } label: { Label("Play", systemImage: "play.fill") }
-                    .help("Realize this template into a frozen set list")
+                PlaybackModeToggle()
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { play(shuffle: false) } label: { Label("Play", systemImage: "play.fill") }
+                    .help("Play this playlist now")
                     .disabled(itemCount == 0)
                     .accessibilityIdentifier("playlist-play")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { play(shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
+                    .help("Shuffle-play this playlist now")
+                    .disabled(itemCount == 0)
+                    .accessibilityIdentifier("playlist-shuffle")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { realizeToSetlist() } label: { Image(systemName: "list.bullet.clipboard") }
+                    .help("Realize this template into a frozen set list")
+                    .disabled(itemCount == 0)
+                    .accessibilityIdentifier("playlist-realize")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showNewSeq = true } label: { Image(systemName: "plus.rectangle.on.rectangle") }
@@ -313,8 +486,23 @@ struct PlaylistDetailView: View {
         return "\(base.isEmpty ? "playlist" : base).playlist.pocketdj"
     }
 
-    /// ▶ Play: realize the template into a frozen Setlist, persist it, and push its view.
-    private func play() {
+    /// ▶ Play / 🔀 Shuffle: snapshot the resolved playlist into the reusable "Now Playing"
+    /// setlist (literal order, or shuffled) and open it autostarting. CRITIC-B: if the nav
+    /// stack ALREADY ends at the Now Playing setlist, don't push a second copy — just call
+    /// playNow and let the on-screen restart (CRITIC-I) fire.
+    private func play(shuffle: Bool) {
+        collections.playNow(playlistId: playlistId, shuffle: shuffle)
+        if !nowPlayingPushed {
+            nowPlayingPushed = true
+            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+        }
+        // else: already on screen — playNow bumped the revision; the open SetlistDetailView
+        // re-snapshots + restarts (CRITIC-I). No second push.
+    }
+
+    /// 📋 Realize: the OLD ▶ behaviour — realize the template into a fresh frozen Setlist
+    /// (a take, kept in history), push it WITHOUT autostart.
+    private func realizeToSetlist() {
         if let sl = collections.realize(playlistId: playlistId) { path.append(sl) }
     }
 

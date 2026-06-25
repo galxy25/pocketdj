@@ -277,6 +277,14 @@ final class BurnStore {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// The analog seek offset (ms) within a shared album mp3 for a ready burned song, so a
+    /// player seeks to the song's start inside the whole-album file. nil for digital
+    /// (per-song file) burns or songs that aren't burned.
+    func startMs(forSong songId: String) -> Int? {
+        guard let item = items[songId], item.state == .ready else { return nil }
+        return item.startMs
+    }
+
     /// Total bytes burned to disk (eviction-ready: a future cap policy reads this).
     var totalBytes: Int { items.values.filter { $0.state == .ready }.reduce(0) { $0 + $1.bytes } }
 
@@ -390,8 +398,10 @@ final class BurnStore {
             // `.downloading` item IMMEDIATELY (incremental — a relaunch knows what's pending),
             // and DON'T await bytes (the delegate finalizes via `finalizeBurn`).
             if let transfers {
-                let (audioName, sidecarName) = fileNames(for: song.id, entry: entry)
+                // CRITIC-A — resolve the catalog lookup BEFORE building the filenames so the
+                // descriptive name can use the IndexSong/IndexAlbum.
                 let (s, a) = lookup?(song.id) ?? (nil, nil)
+                let (audioName, sidecarName) = fileNames(for: song.id, entry: entry, song: s, album: a)
                 let sidecar = Self.buildSidecar(songId: song.id, fallback: song, song: s, album: a, entry: entry)
                 let record = TransferCoordinator.TransferRecord(
                     taskIdentifier: 0, songId: song.id, kind: .burn,
@@ -428,7 +438,10 @@ final class BurnStore {
                     continue
                 }
 
-                let (audioName, sidecarName) = fileNames(for: song.id, entry: entry)
+                // CRITIC-A — resolve the catalog lookup BEFORE building the filenames so the
+                // descriptive name can use the IndexSong/IndexAlbum.
+                let (s, a) = lookup?(song.id) ?? (nil, nil)
+                let (audioName, sidecarName) = fileNames(for: song.id, entry: entry, song: s, album: a)
                 let audioURL = dir.appendingPathComponent(audioName)
 
                 // Analog: the whole-album mp3 is stored ONCE and shared across the album's
@@ -438,7 +451,6 @@ final class BurnStore {
                     try data.write(to: audioURL, options: .atomic)
                 }
 
-                let (s, a) = lookup?(song.id) ?? (nil, nil)
                 let sidecar = Self.buildSidecar(songId: song.id, fallback: song, song: s, album: a, entry: entry)
                 try Data(sidecar.utf8).write(to: dir.appendingPathComponent(sidecarName), options: .atomic)
 
@@ -487,11 +499,103 @@ final class BurnStore {
         return true
     }
 
-    private func fileNames(for songId: String, entry: RipsStore.ManifestEntry) -> (audio: String, sidecar: String) {
-        // Reuse the manifest key's basename so analog songs share `<albumId>.mp3` and
-        // digital songs get `<songId>.mp3` — exactly the server's S3 key scheme.
-        let audio = (entry.key as NSString).lastPathComponent
-        return (audio.isEmpty ? "\(songId).mp3" : audio, "\(songId).txt")
+    /// CRITIC-A — the burned filenames. The audio name carries a SANITIZED, descriptive
+    /// prefix ("Artist-Song-Album-Year-Genre-Camelot-Key-BPM" for digital per-song, or
+    /// "Artist-Album-Year-Genre" for the analog SHARED album file) so the files read in
+    /// Finder/Files, but ALWAYS ends in the stable id suffix + extension so the keying scheme
+    /// (analog → one shared `…-<albumId>.mp3`; digital → per-song `…-<songId>.mp3`) and the
+    /// existing dedup/isFresh/finalize logic are unchanged. The PREFIX is truncated to a cap;
+    /// the id suffix + extension are NEVER truncated.
+    ///
+    /// `song`/`album` come from the catalog lookup (passed in — the call sites resolve them
+    /// BEFORE calling this); `entry` supplies analyzed bpm/key/camelot (preferred over the
+    /// catalog, mirroring `buildSidecar`). The id suffix is the manifest key's basename
+    /// (albumId for analog, songId for digital) so it matches the server's S3 key scheme.
+    private func fileNames(for songId: String, entry: RipsStore.ManifestEntry,
+                           song: IndexSong?, album: IndexAlbum?) -> (audio: String, sidecar: String) {
+        let isAnalog = entry.source == "analog"
+        // The stable id token preserved as the audio suffix (album-shared for analog).
+        let idToken = Self.idToken(entry: entry, songId: songId)
+        let prefix = isAnalog
+            ? Self.analogAlbumPrefix(song: song, album: album)
+            : Self.digitalSongPrefix(song: song, album: album, entry: entry)
+        let audio = Self.descriptiveName(prefix: prefix, idSuffix: idToken, ext: "mp3")
+        // The sidecar is ALWAYS per-song (even for an analog shared album file): a full
+        // descriptive name suffixed with the songId so every song reads standalone.
+        let sidecarPrefix = Self.digitalSongPrefix(song: song, album: album, entry: entry)
+        let sidecar = Self.descriptiveName(prefix: sidecarPrefix, idSuffix: songId, ext: "txt")
+        return (audio, sidecar)
+    }
+
+    /// The id token from the manifest key's basename (albumId for analog / songId for
+    /// digital), falling back to the songId. e.g. "rips/alb_1.mp3" → "alb_1".
+    private nonisolated static func idToken(entry: RipsStore.ManifestEntry, songId: String) -> String {
+        let base = ((entry.key as NSString).lastPathComponent as NSString).deletingPathExtension
+        return base.isEmpty ? songId : base
+    }
+
+    /// "Artist-Song-Album-Year-Genre-Camelot-Key-BPM" for a digital per-song file.
+    /// Missing fields are dropped (no empty placeholder tokens). entry precedence for the
+    /// analyzed bpm/key/camelot (like `buildSidecar`).
+    private nonisolated static func digitalSongPrefix(song: IndexSong?, album: IndexAlbum?,
+                                                      entry: RipsStore.ManifestEntry?) -> String {
+        let bpm = entry?.bpm ?? song?.bpm
+        let parts: [String?] = [
+            song?.artist, song?.name, album?.name,
+            (song?.year ?? album?.year).map(String.init),
+            album?.genre,
+            entry?.camelot ?? song?.camelot,
+            entry?.musicalKey ?? song?.key,
+            bpm.map { String(Int($0.rounded())) },
+        ]
+        return joinTokens(parts)
+    }
+
+    /// "Artist-Album-Year-Genre" for the ANALOG shared album file — ALBUM-LEVEL so every
+    /// song of the album maps to the SAME audio name (keeps analogShared/isFresh/dedup
+    /// correct). No per-song bpm/key here (it's a whole-album file).
+    private nonisolated static func analogAlbumPrefix(song: IndexSong?, album: IndexAlbum?) -> String {
+        let artist = album?.artist ?? song?.artist
+        let parts: [String?] = [
+            artist, album?.name,
+            album?.year.map(String.init),
+            album?.genre,
+        ]
+        return joinTokens(parts)
+    }
+
+    /// Join descriptive tokens with "-", dropping empties + per-token sanitizing/capping.
+    private nonisolated static func joinTokens(_ parts: [String?]) -> String {
+        parts.compactMap { sanitizeToken($0) }.filter { !$0.isEmpty }.joined(separator: "-")
+    }
+
+    /// Sanitize a single token for a filesystem: strip path/illegal characters, collapse
+    /// whitespace + separators to a single space, then cap the token length.
+    private nonisolated static func sanitizeToken(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        // Illegal / reserved filename characters + our own separator (so a value containing
+        // "-" can't fake extra tokens) → spaces; collapse runs of whitespace.
+        let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|-").union(.controlCharacters).union(.newlines)
+        let cleaned = raw.components(separatedBy: illegal).joined(separator: " ")
+        let collapsed = cleaned.split(whereSeparator: { $0 == " " }).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard !collapsed.isEmpty else { return nil }
+        return String(collapsed.prefix(tokenCap))
+    }
+
+    private nonisolated static let tokenCap = 40
+    private nonisolated static let prefixCap = 150
+
+    /// Assemble "<prefix>-<idSuffix>.<ext>", truncating ONLY the prefix to `prefixCap` (the
+    /// id suffix + extension are always kept whole so keying/dedup/finalize are stable). A
+    /// blank prefix yields just "<idSuffix>.<ext>".
+    private nonisolated static func descriptiveName(prefix: String, idSuffix: String, ext: String) -> String {
+        let safeId = idSuffix.isEmpty ? "audio" : idSuffix
+        let cappedPrefix = String(prefix.prefix(prefixCap))
+            .trimmingCharacters(in: CharacterSet(charactersIn: " -"))
+        return cappedPrefix.isEmpty
+            ? "\(safeId).\(ext)"
+            : "\(cappedPrefix)-\(safeId).\(ext)"
     }
 
     private func errorItem(_ song: (id: String, title: String, artist: String), message: String) -> BurnItem {

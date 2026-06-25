@@ -95,6 +95,7 @@ struct PocketDetailView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(\.dismiss) private var dismiss
     let pocketId: String
+    @Binding var path: NavigationPath
     @State private var renaming = false
     @State private var nameDraft = ""
     @State private var confirmingDelete = false
@@ -104,8 +105,11 @@ struct PocketDetailView: View {
     @State private var noteDraft = ""
     @State private var editingNoteId: String?
     @State private var ripBurn = CollectionRipBurnController()
+    /// CRITIC-B: don't stack a duplicate Now Playing SetlistDetailView (see PlaylistDetailView).
+    @State private var nowPlayingPushed = false
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
+    private var hasSongs: Bool { !collections.songIds(forPocket: pocketId).isEmpty }
 
     var body: some View {
         List {
@@ -184,7 +188,23 @@ struct PocketDetailView: View {
         .accessibilityIdentifier("pocket-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
+        .onAppear { nowPlayingPushed = false }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                PlaybackModeToggle()
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { play(shuffle: false) } label: { Image(systemName: "play.fill") }
+                    .help("Play this pocket now")
+                    .disabled(!hasSongs)
+                    .accessibilityIdentifier("pocket-play")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { play(shuffle: true) } label: { Image(systemName: "shuffle") }
+                    .help("Shuffle-play this pocket now")
+                    .disabled(!hasSongs)
+                    .accessibilityIdentifier("pocket-shuffle")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
@@ -260,6 +280,16 @@ struct PocketDetailView: View {
     private func export() {
         if let data = try? collections.exportPocketZip(pocketId) {
             exportDoc = PlaylistZipFile(data: data); showExporter = true
+        }
+    }
+
+    /// ▶ Play / 🔀 Shuffle: snapshot the pocket's resolved (DAG) songs into the reusable
+    /// "Now Playing" setlist and open it autostarting. CRITIC-B no-duplicate-push guard.
+    private func play(shuffle: Bool) {
+        collections.playNow(pocketId: pocketId, shuffle: shuffle)
+        if !nowPlayingPushed {
+            nowPlayingPushed = true
+            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
         }
     }
 }

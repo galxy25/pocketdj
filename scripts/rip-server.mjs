@@ -17,14 +17,15 @@
 //   POCKETDJ_ANALOG_BASE=~/Downloads RIP_TOKEN=secret node scripts/rip-server.mjs
 //   curl localhost:8787/health
 import http from 'node:http';
-import { spawn, execFile } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync } from 'node:fs';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeAudio } from './lib/audio-analyze.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
+import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
@@ -43,6 +44,11 @@ const CFG = {
   sources: (process.env.RIP_SOURCES || `${REPO}/public/current-index.json,${REPO}/public/apple-music-index.json`)
     .split(',').map((s) => s.trim()).filter(Boolean),
   tmp: join(homedir(), '.pocketdj', 'rips'),
+  // ITEM 10 (CRITIC-H): in-process cloud-analog -> public/current-index.json fold. The
+  // ANALOG catalog file we fold INTO (cloud bpm/key/length precedence). Disable with
+  // RIP_PUBLIC_FOLD=0. Defaults to the analog source in RIP_SOURCES (current-index.json).
+  publicIndex: (process.env.RIP_PUBLIC_INDEX || `${REPO}/public/current-index.json`).replace(/^~/, homedir()),
+  publicFold: process.env.RIP_PUBLIC_FOLD !== '0',
 };
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
@@ -634,6 +640,10 @@ async function analyzeManifestSong(songId) {
   }
   await saveManifest();
   console.error(`  ✓ analyzed ${audioBase}: bpm=${a.bpm} key=${a.musicalKey} wave=${!!a.waveform}`);
+  // ITEM 10: a cloud (digital) rip just got analyzed → fold its bpm/key/length into the
+  // public analog catalog (debounced, in-process, never deploys). Analog rips keep the
+  // catalog's per-song values, so they don't trigger a fold.
+  if (withKey && isCloudAnalogEntry(songId)) requestPublicFold();
 }
 function resumeAnalysis() {
   const seen = new Set();
@@ -643,6 +653,143 @@ function resumeAnalysis() {
     seen.add(e.key); enqueueAnalysis(songId); n++;
   }
   if (n) console.error(`  queued ${n} pending analysis job(s)`);
+}
+
+// ---------------- ITEM 10 (CRITIC-H): cloud-analog analysis -> public/current-index.json ----------------
+// The runtime manifest overlay covers the row UI, but the SHIPPED analog catalog
+// (public/current-index.json) still carries the suspect librosa bpm/key/length for songs
+// that have since been cloud-ripped + analyzed (source 'digital', analyzed, EXACT am-match
+// to an analog catalog song). When such an entry finishes analysis we fold the cloud
+// bpm/key/camelot/length into public/current-index.json — IN-PROCESS (no detached node),
+// inside the analysis single-flight, debounced to a single trailing run, atomic write,
+// idempotent, cloud-precedence, provenance-stamped. NEVER deploys / invalidates CloudFront
+// (logs a publish hint). Guards against clobbering uncommitted NON-reindex working-tree
+// changes to the file (a human edit / a different content change is never overwritten).
+
+// Is this a CLOUD-ANALOG entry worth a public fold? A digital+analyzed manifest entry whose
+// matched catalog song lives in the ANALOG public index (so its catalog bpm/key is suspect).
+// We do NOT require the song's own id to key the manifest — a separately-ripped DIGITAL copy
+// of the matched Apple Music track (derived am songId) also qualifies; foldCloudReindex
+// resolves both. The cheap gate here is just "an analyzed digital rip exists", which is the
+// only kind of entry analysis ever produces for a digital/cloud rip.
+function isCloudAnalogEntry(songId) {
+  const e = manifest[songId];
+  return !!e && e.source === 'digital' && e.analyzed === true;
+}
+
+// Structural guard: is the working-tree public index DIRTY with a change that is NOT a prior
+// cloud-reindex fold? We compare the committed (HEAD) JSON to the working-tree JSON and
+// require every difference to live ONLY in fold-owned fields: per-song length/bpm/key/
+// camelot/cloudReindex, and index.manifest.cloudReindex. Any other delta (a re-index of a
+// different field, a human edit, an albums change, a song add/remove) => NOT safe to clobber.
+const FOLD_SONG_FIELDS = new Set(['length', 'bpm', 'key', 'camelot', 'cloudReindex']);
+function headIndexJson(path) {
+  // `git show HEAD:<repo-relative path>` — returns null if not tracked / no git.
+  try {
+    const rel = path.startsWith(REPO + '/') ? path.slice(REPO.length + 1) : path;
+    const out = execFileSyncQuiet('git', ['-C', REPO, 'show', `HEAD:${rel}`]);
+    return out == null ? null : JSON.parse(out);
+  } catch { return null; }
+}
+function execFileSyncQuiet(cmd, args) {
+  // tiny sync exec helper that returns stdout string or null (never throws). Used only for
+  // the git working-tree guard, off the hot path (runs once per debounced fold).
+  try {
+    return execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch { return null; }
+}
+// Returns true iff the only differences between `head` and `work` are fold-owned fields.
+function isFoldOnlyDiff(head, work) {
+  if (!head || !work) return false;
+  // manifest: only cloudReindex may differ.
+  const hm = { ...(head.manifest || {}) }; const wm = { ...(work.manifest || {}) };
+  delete hm.cloudReindex; delete wm.cloudReindex;
+  if (JSON.stringify(hm) !== JSON.stringify(wm)) return false;
+  // albums + any other top-level key must be byte-identical.
+  for (const k of new Set([...Object.keys(head), ...Object.keys(work)])) {
+    if (k === 'songs' || k === 'manifest') continue;
+    if (JSON.stringify(head[k]) !== JSON.stringify(work[k])) return false;
+  }
+  // songs: same count + order; each song may differ ONLY in fold-owned fields.
+  const hs = head.songs || []; const ws = work.songs || [];
+  if (hs.length !== ws.length) return false;
+  for (let i = 0; i < hs.length; i++) {
+    const a = hs[i]; const b = ws[i];
+    if (a.id !== b.id) return false;
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      if (FOLD_SONG_FIELDS.has(k)) continue;
+      if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return false;
+    }
+  }
+  return true;
+}
+
+let foldQueued = false;   // a fold is requested (trailing-debounce flag)
+let foldRunning = false;  // a fold is executing (single-flight)
+let foldTimer = null;
+const FOLD_DEBOUNCE_MS = numEnv('RIP_TEST_FOLD_DEBOUNCE_MS', 1500);
+// Request a public-index fold. Debounced to a SINGLE trailing run: rapid back-to-back
+// analyses (a collection rip) coalesce into one fold. Safe to call from anywhere.
+function requestPublicFold() {
+  if (!CFG.publicFold) return;
+  foldQueued = true;
+  if (foldTimer) return;
+  foldTimer = setTimeout(() => { foldTimer = null; runPublicFoldOnce(); }, FOLD_DEBOUNCE_MS);
+  foldTimer.unref?.();
+}
+async function runPublicFoldOnce() {
+  if (foldRunning) { return; } // a run is in flight; the trailing foldQueued flag re-fires it below
+  if (!foldQueued) return;
+  foldQueued = false;
+  foldRunning = true;
+  try { foldPublicIndex(); }
+  catch (e) { console.error('  public-fold failed:', e.message); }
+  finally {
+    foldRunning = false;
+    if (foldQueued) requestPublicFold(); // a request arrived mid-run → one more trailing run
+  }
+}
+// The actual fold (synchronous, fast: it's a metadata pass over the in-memory catalog).
+function foldPublicIndex() {
+  const path = CFG.publicIndex;
+  if (!existsSync(path)) { console.error(`  public-fold skipped: index not found ${path}`); return; }
+  if (!libIndex) { console.error('  public-fold skipped: library index not warm yet'); return; }
+  const index = JSON.parse(readFileSync(path, 'utf8'));
+  if ((index.manifest?.sourceType) !== 'analog') {
+    console.error(`  public-fold skipped: ${path} sourceType is '${index.manifest?.sourceType}', expected 'analog'`);
+    return;
+  }
+  // Working-tree guard: if the file is DIRTY vs HEAD and the dirt is NOT a prior fold, do
+  // NOT clobber it. (A clean file, or one whose only delta is a prior cloudReindex fold, is
+  // safe.) If there's no git/HEAD baseline we proceed (nothing to protect).
+  const head = headIndexJson(path);
+  if (head && !isFoldOnlyDiff(head, index)) {
+    console.error(`  public-fold skipped: ${path} has uncommitted NON-reindex changes — refusing to clobber`);
+    return;
+  }
+
+  const report = foldCloudReindex(index, libIndex, manifest, {});
+  if (report.changed === 0) {
+    // idempotent no-op: nothing to write (re-run after the values are already folded).
+    return;
+  }
+  // stamp provenance (audit) — wall-clock here is fine (the file is NOT byte-idempotent in
+  // the server context; we gate the WRITE on report.changed, not on byte-equality).
+  index.manifest = index.manifest || {};
+  index.manifest.cloudReindex = {
+    generatedAt: new Date().toISOString(),
+    source: 'rip-server in-process',
+    matched: report.matched,
+    lengthUpdated: report.lengthUpdated,
+    bpmKeyUpdatedFromCloud: report.bpmKeyUpdatedFromCloud,
+    changed: report.changed,
+  };
+  // ATOMIC write: temp file in the SAME dir + rename (rename is atomic on the same fs).
+  const tmp = `${path}.fold-${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(index));
+  renameSync(tmp, path);
+  console.error(`  ✓ public-fold: ${report.changed} song(s) updated in ${path} (matched=${report.matched}, length=${report.lengthUpdated}, bpm/key=${report.bpmKeyUpdatedFromCloud})`);
+  console.error(`  ⚠ public-fold did NOT deploy — run \`bash scripts/deploy.sh dev\` (or prod) to publish the updated catalog.`);
 }
 
 // ---------------- HTTP ----------------
@@ -773,6 +920,8 @@ const server = http.createServer(async (req, res) => {
     e.analyzed = true;
     manifest[a.songId] = e;
     await saveManifest();
+    // ITEM 10: external analysis of a cloud (digital) rip → fold into the public catalog.
+    if (isCloudAnalogEntry(a.songId)) requestPublicFold();
     return send(res, 200, { ok: true, songId: a.songId });
   }
   return send(res, 404, { error: 'not found' });

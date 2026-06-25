@@ -24,9 +24,23 @@ import Foundation
 // orderable AMONG the members — the "poetry pocket"). Additive + lenient: a v1 doc
 // migrates forward (each pocket gets `notes: []`); a v2 doc loads degraded on a v1
 // app (the unknown `notes` key is simply ignored, members intact).
-let collectionsSchemaVersion = 2
+// v2 → v3: playlists gained an optional `folderId: String?` and the document gained a
+//   flat `folders: [PlaylistFolder]` list (organize your playlists into named groups).
+//   Additive + lenient: a v2 doc migrates forward (folders defaults to [], every
+//   playlist's folderId stays nil ⇒ top level); a v3 doc loads degraded on a v2 app
+//   (the unknown `folders`/`folderId` keys are ignored, playlists intact).
+let collectionsSchemaVersion = 3
 
 enum PocketKind: String, Codable, Hashable, Sendable { case harmonic, performance }
+
+// MARK: - Reserved "Now Playing" identifiers (the reusable, hidden setlist)
+//
+// ▶ Play / 🔀 Shuffle on a playlist/pocket build a SINGLE, REUSABLE setlist under these
+// reserved ids (last-writer-wins). It is never surfaced in any setlist list/history —
+// `setlists(forPlaylist:)` filters out `nowPlayingPlaylistId`. Cleared on launch so a
+// stale last-session "Now Playing" set never shows.
+let nowPlayingSetlistId = "set_now_playing"
+let nowPlayingPlaylistId = "pls_now_playing"
 
 /// A free-text item inside a pocket — a mic cue, a line of poetry, an out-of-index
 /// moment. `position` is its slot in the pocket's UNIFIED member ordering (child
@@ -113,6 +127,28 @@ struct PlaylistNode: Codable, Identifiable, Hashable, Sendable {
     var id: String { nodeId }
 }
 
+/// A flat, named grouping of playlists (v3). Membership is by `Playlist.folderId`, so a
+/// folder carries no member list — it's just an id + name + timestamps. Lenient/all-
+/// optional-where-possible (like Pocket) for graceful round-tripping.
+struct PlaylistFolder: Codable, Identifiable, Hashable, Sendable {
+    var id: String
+    var name: String
+    var createdAt: Double = 0
+    var updatedAt: Double = 0
+
+    enum CodingKeys: String, CodingKey { case id, name, createdAt, updatedAt }
+    init(id: String, name: String, createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? CollectionsFactory.newFolderId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
+}
+
 /// A playlist template: ordered chapters (every entry is a `.sequence` node).
 struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var id: String
@@ -120,6 +156,7 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var description: String?
     var sequences: [PlaylistNode]      // each .kind == .sequence; sequences[0] is default
     var targetMs: Int?
+    var folderId: String?              // v3: optional ⇒ back-compat (nil = top level)
     var createdAt: Double = 0
     var updatedAt: Double = 0
 }
@@ -247,19 +284,21 @@ struct CollectionsDocument: Codable, Sendable {
     var pockets: [Pocket]
     var playlists: [Playlist]
     var setlists: [Setlist]           // frozen Play→realize instances (optional/back-compat)
+    var folders: [PlaylistFolder]     // v3: flat playlist folders (optional/back-compat)
     var lastAddTarget: AddTarget?     // "Add-to remembers last"
 
     init(schemaVersion: Int = collectionsSchemaVersion,
          pockets: [Pocket] = [], playlists: [Playlist] = [], setlists: [Setlist] = [],
-         lastAddTarget: AddTarget? = nil) {
+         folders: [PlaylistFolder] = [], lastAddTarget: AddTarget? = nil) {
         self.schemaVersion = schemaVersion
         self.pockets = pockets
         self.playlists = playlists
         self.setlists = setlists
+        self.folders = folders
         self.lastAddTarget = lastAddTarget
     }
 
-    enum CodingKeys: String, CodingKey { case schemaVersion, pockets, playlists, setlists, lastAddTarget }
+    enum CodingKeys: String, CodingKey { case schemaVersion, pockets, playlists, setlists, folders, lastAddTarget }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -267,6 +306,7 @@ struct CollectionsDocument: Codable, Sendable {
         pockets = (try? c.decode([Pocket].self, forKey: .pockets)) ?? []
         playlists = (try? c.decode([Playlist].self, forKey: .playlists)) ?? []
         setlists = (try? c.decode([Setlist].self, forKey: .setlists)) ?? []
+        folders = (try? c.decode([PlaylistFolder].self, forKey: .folders)) ?? []
         lastAddTarget = try? c.decode(AddTarget.self, forKey: .lastAddTarget)
     }
 }
@@ -293,6 +333,11 @@ enum CollectionsMigration {
         for i in doc.pockets.indices where doc.pockets[i].notes.isEmpty {
             doc.pockets[i].notes = []
         }
+        // v2 → v3: playlists gained `folderId` + the doc gained `folders`. Older docs
+        //   have neither — lenient decode already defaults `folders` to [] and each
+        //   playlist's `folderId` to nil (top level), so the mapping forward is the
+        //   no-op identity. Kept explicit so the version bump is visible + the seam
+        //   exists for any future folder-shape transform.
         doc.schemaVersion = collectionsSchemaVersion
         return doc
     }
@@ -307,6 +352,7 @@ enum CollectionsFactory {
     static func newSetlistId() -> String { "set_" + uid() }
     static func newNodeId() -> String { "nd_" + uid() }
     static func newPocketNoteId() -> String { "pnt_" + uid() }
+    static func newFolderId() -> String { "fld_" + uid() }
 
     static func makeSequence(_ name: String, targetMs: Int? = nil) -> PlaylistNode {
         PlaylistNode(nodeId: newNodeId(), kind: .sequence, name: name, targetMs: targetMs, children: [])

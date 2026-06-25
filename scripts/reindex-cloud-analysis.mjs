@@ -45,23 +45,16 @@
 // (~/.pocketdj/rips/manifest.json), then s3.
 
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { loadLibraryXML, indexLibrary, findInLibrary } from './lib/am-match.mjs';
+import { loadLibraryXML, indexLibrary } from './lib/am-match.mjs';
+import { foldCloudReindex, isCloudEntry } from './lib/cloud-reindex-fold.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
 const expand = (p) => (p && p.startsWith('~') ? p.replace(/^~/, homedir()) : p);
-const sha1 = (s) => createHash('sha1').update(s).digest('hex');
-
-// Apple Music (Local) namespace — must match scripts/index-apple-music.mjs (ns =
-// `digital|${sourceName}`; songId = 'sng_' + sha1(`${ns}|${persistentID}`)[:12]).
-const AM_SOURCE_NAME = 'Apple Music (Local)';
-const amSongId = (persistentID) =>
-  'sng_' + sha1(`digital|${AM_SOURCE_NAME}|${persistentID}`).slice(0, 12);
 
 const RIP_BUCKET = process.env.RIP_BUCKET || 'pocketdj-rips-011183829623';
 const AWS_PROFILE = process.env.AWS_PROFILE || 'levi';
@@ -114,10 +107,6 @@ function loadManifest(spec) {
   return { src: 's3', manifest: fetchS3Manifest() };
 }
 
-// A manifest entry is a CLOUD source of truth only if it is a digital rip that has
-// been analyzed (analog entries deliberately keep the catalog's suspect bpm/key).
-const isCloudEntry = (e) => !!e && e.source === 'digital' && e.analyzed === true;
-
 function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
@@ -146,124 +135,15 @@ function main() {
   console.error(`[reindex] manifest ${manifestSrc}: ${Object.keys(manifest).length} entries, ${cloudCount} cloud (digital+analyzed)`);
 
   const n = args.limit > 0 ? Math.min(args.limit, songs.length) : songs.length;
+  // The fold itself (exact-match, cloud-precedence, idempotent provenance) is the SHARED
+  // pure function the rip-server also runs in-process (ITEM 10). The CLI wraps it with the
+  // report envelope (generatedAt/inputs/totals) + the side-output + the index.manifest stamp.
   const report = {
     generatedAt: new Date().toISOString(),
     inputs: { index: indexPath, libraryXml: xmlPath, manifest: manifestSrc, limit: args.limit || null },
     totals: { songsConsidered: n, totalSongs: songs.length },
-    matched: 0,
-    matchExact: 0,
-    matchLoose: 0,      // counted but NOT applied
-    matchNone: 0,
-    lengthUpdated: 0,
-    lengthAdded: 0,     // rows that had no length before
-    bpmKeyUpdatedFromCloud: 0,
-    cloudEntriesUsed: 0,
-    matchedNoValue: 0,  // exact AM match but nothing to write (no Total Time, no cloud rip)
-    unmatched: 0,       // no exact AM match (loose + none)
-    // length-delta breakdown — surfaces the matcher-looseness bug (a recording variant
-    // matching the standard recording overwrites length by a large margin).
-    lengthDelta: {
-      gt60s: 0,         // |after - before| > 60s — the symptom the fix targets
-      gt30s: 0,         // 30s < |delta| <= 60s
-      le30s: 0,         // 0 < |delta| <= 30s
-      newlyAdded: 0,    // had no length before (delta undefined)
-    },
-    lengthDeltaGt60sSamples: [], // before/after for every >60s change (capped)
-    samples: [],
+    ...foldCloudReindex(index, lib, manifest, { limit: args.limit }),
   };
-
-  for (let i = 0; i < n; i++) {
-    const song = songs[i];
-    const r = findInLibrary(lib, song.artist, song.name);
-
-    if (r.match !== 'exact') {
-      if (r.match === 'loose') report.matchLoose++; else report.matchNone++;
-      report.unmatched++;
-      continue;
-    }
-    report.matched++;
-    report.matchExact++;
-
-    const before = { length: song.length ?? null, bpm: song.bpm ?? null, key: song.key ?? null, camelot: song.camelot ?? null };
-    // Provenance carries NO wall-clock so the catalog output is byte-idempotent
-    // (re-running yields an identical current-index.json). The run timestamp lives
-    // only in the report + index.manifest.cloudReindex (audit artifacts).
-    const prov = { persistentID: r.hit.persistentID || null, fields: [] };
-
-    // LENGTH — cloud (Apple Music Total Time) overrides analog length. Guard on a
-    // real ms value (a library entry can lack Total Time for streaming-only tracks).
-    if (r.hit.lengthMs != null && Number.isFinite(r.hit.lengthMs) && r.hit.lengthMs > 0) {
-      const had = song.length != null;
-      const prevLength = song.length;
-      if (song.length !== r.hit.lengthMs) {
-        song.length = r.hit.lengthMs;
-        report.lengthUpdated++;
-        if (!had) report.lengthAdded++;
-        // delta breakdown (only meaningful when a previous length existed)
-        if (had) {
-          const deltaMs = Math.abs(r.hit.lengthMs - prevLength);
-          const deltaS = deltaMs / 1000;
-          if (deltaS > 60) {
-            report.lengthDelta.gt60s++;
-            if (report.lengthDeltaGt60sSamples.length < 200) {
-              report.lengthDeltaGt60sSamples.push({
-                id: song.id, artist: song.artist, name: song.name,
-                amTitle: r.hit.title, persistentID: r.hit.persistentID || null,
-                beforeMs: prevLength, afterMs: r.hit.lengthMs,
-                deltaS: Math.round(deltaS),
-              });
-            }
-          } else if (deltaS > 30) report.lengthDelta.gt30s++;
-          else report.lengthDelta.le30s++;
-        } else {
-          report.lengthDelta.newlyAdded++;
-        }
-      } else if (!had) {
-        song.length = r.hit.lengthMs;
-      }
-      prov.length = r.hit.lengthMs;
-      prov.fields.push('length');
-    }
-
-    // BPM/KEY/CAMELOT — opportunistic, from a digital+analyzed cloud rip. Two sources,
-    // in precedence order: (a) a cloud rip of THIS song itself — e.g. "Rip from cloud
-    // source" of this analog/vinyl track, whose manifest entry is keyed by the song's
-    // OWN id; (b) a separately-ripped DIGITAL copy of the matched Apple Music track,
-    // keyed by the derived am songId. manifest.musicalKey -> catalog key.
-    const derivedId = r.hit.persistentID ? amSongId(r.hit.persistentID) : null;
-    const cloudSongId = isCloudEntry(manifest[song.id]) ? song.id
-      : (derivedId && isCloudEntry(manifest[derivedId]) ? derivedId : null);
-    if (cloudSongId) {
-      const e = manifest[cloudSongId];
-      let touched = false;
-      if (e.bpm != null) { song.bpm = e.bpm; prov.fields.push('bpm'); touched = true; }
-      if (e.musicalKey != null) { song.key = e.musicalKey; prov.fields.push('key'); touched = true; }
-      if (e.camelot != null) { song.camelot = e.camelot; prov.fields.push('camelot'); touched = true; }
-      if (touched) {
-        report.bpmKeyUpdatedFromCloud++;
-        report.cloudEntriesUsed++;
-        prov.cloudSongId = cloudSongId;
-      }
-    }
-
-    if (prov.fields.length) {
-      song.cloudReindex = prov; // idempotent provenance stamp (overwritten each run)
-      if (report.samples.length < 25) {
-        report.samples.push({
-          id: song.id,
-          artist: song.artist,
-          name: song.name,
-          fields: prov.fields,
-          before,
-          after: { length: song.length ?? null, bpm: song.bpm ?? null, key: song.key ?? null, camelot: song.camelot ?? null },
-          persistentID: prov.persistentID,
-        });
-      }
-    } else {
-      // exact match but nothing to write (no Total Time, no cloud rip)
-      report.matchedNoValue++;
-    }
-  }
 
   // stamp the catalog manifest so an applied fold is auditable. Use the newest
   // INPUT mtime (catalog/library/manifest-cache) — a deterministic function of the

@@ -111,16 +111,45 @@ struct InlinePlayerSlot: View {
         // Apple Music streaming is the active backend for this row → show the
         // Apple-Music-flavoured panel (position-only scrubber + "via Apple Music", no
         // waveform). Otherwise the rip path keeps its EXACT verified panel.
-        if isAppleMusicNowPlaying {
-            AppleMusicInlinePanel()
-        } else if isRipNowPlaying {
-            // NO `.animation`/`.transition` here: an animating/transitioning container in
-            // a macOS `ScrollView`+`LazyVStack` drops hit-testing on its child buttons —
-            // the press lands on the frame but the action never fires (the "slide-out
-            // play/pause · ✕ · chevron are dead" bug). Render the panel plainly so its
-            // controls are live. The slide-in is sacrificed for a working player.
-            InlinePlayerPanel()
+        //
+        // Item 8 — iOS ONLY: wrap the conditional panel in an asymmetric slide/collapse
+        // transition (insert: push-from-top + fade; remove: fade) so a row's player slides
+        // in below it and collapses away. The CONDITIONAL insertion/removal itself (driven by
+        // `rips.nowPlaying` / the coordinator) gives collapse-A/expand-B for free — no manual
+        // nil-then-await staging (CRITIC-E). NO explicit `.id` on the slot (CRITIC-F).
+        //
+        // macOS stays STRICTLY PLAIN — NO transition/animation: an animating/transitioning
+        // container in a macOS `ScrollView`+`LazyVStack` drops hit-testing on its child
+        // buttons (the documented "dead slide-out play/pause · ✕ · chevron" bug). The
+        // slide-in is sacrificed there for a working player.
+        Group {
+            if isAppleMusicNowPlaying {
+                AppleMusicInlinePanel()
+                    .panelTransition()
+            } else if isRipNowPlaying {
+                InlinePlayerPanel()
+                    .panelTransition()
+            }
         }
+        #if os(iOS)
+        .animation(.easeInOut(duration: 0.22), value: isRipNowPlaying)
+        .animation(.easeInOut(duration: 0.22), value: isAppleMusicNowPlaying)
+        #endif
+    }
+}
+
+private extension View {
+    /// Item 8 — the per-row inline-player insert/remove transition. iOS: asymmetric
+    /// push-from-top + opacity on insert, opacity on removal. macOS: identity (plain) —
+    /// the documented hit-test bug forbids a transitioning container there.
+    @ViewBuilder func panelTransition() -> some View {
+        #if os(iOS)
+        self.transition(.asymmetric(
+            insertion: .push(from: .top).combined(with: .opacity),
+            removal: .opacity))
+        #else
+        self
+        #endif
     }
 }
 
@@ -269,6 +298,8 @@ struct RowTransport: View {
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
+    @Environment(SettingsStore.self) private var settings
+    @Environment(BurnStore.self) private var burns
     let song: (id: String, title: String, artist: String)
     var startMs: Int?
 
@@ -287,8 +318,11 @@ struct RowTransport: View {
     }
     private var errored: Bool { rips.jobs[song.id]?.phase == .error }
     private var cached: Bool { rips.cachedURL(song.id) != nil }
-    /// Actionable when already ripped, or there's a (configured) server to rip it.
-    private var canAct: Bool { cached || rips.hasServer }
+    /// A burned local file exists for this song (device-mode playable with no server).
+    private var hasBurnedFile: Bool { burns.localURL(forSong: song.id) != nil }
+    /// Actionable when already ripped, there's a (configured) server to rip it, or a burned
+    /// local file is present (so device mode can play it even with no rip server).
+    private var canAct: Bool { cached || rips.hasServer || hasBurnedFile }
 
     /// True when THIS row's song is the live now-playing one — on EITHER backend: the rip
     /// path (keyed off `RipsStore.nowPlaying`, unchanged) OR Apple Music streaming (keyed
@@ -390,6 +424,15 @@ struct RowTransport: View {
         // (so the verified rip play/pause + its toggleCount probe are unchanged); for Apple
         // Music it pauses/resumes `ApplicationMusicPlayer`.
         if isNowPlaying { coordinator.togglePlayPause(); return }
+        // Item 7 — DEVICE mode: play the BURNED local file if present (via the shared helper
+        // so nowPlaying + the inline player + this row's pause toggle stay consistent). If
+        // there's NO burned file, FALL BACK TO CLOUD for this single tap (USER DECISION) —
+        // we stay in device mode, but this song streams rather than silently failing.
+        if settings.playbackMode == .device, let local = burns.localURL(forSong: song.id) {
+            playLocalFile(local, songId: song.id, title: song.title, artist: song.artist,
+                          startMs: burns.startMs(forSong: song.id), rips: rips, player: player)
+            return
+        }
         busy = .play
         Task {
             // Hand the song to the matching engine: it tries Apple Music streaming FIRST for
