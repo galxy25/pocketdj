@@ -315,6 +315,159 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertFalse(seq.deviceQueueUnplayable)
     }
 
+    // MARK: PERSISTENT play state — adopt a manual mid-set jump and keep auto-advancing
+
+    /// While a set runs, manually starting a DIFFERENT in-set track (a row ▶, which just sets
+    /// `RipsStore.nowPlaying` via the shared burned path) REPOSITIONS the sequencer onto that
+    /// track, so when it ends the set advances to the NEXT track instead of stopping. Proves
+    /// the "persistent play state" tweak: starting another song mid-set no longer dead-ends.
+    func testAdoptsManualJumpAndKeepsAutoAdvancing() async {
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_b.mp3","sng_b.txt","sng_c.mp3","sng_c.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_b")
+        await burn(rips, burns, songId: "sng_c")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_a", title: "A", artist: "A"),
+            .init(id: "sng_b", title: "B", artist: "A"),
+            .init(id: "sng_c", title: "C", artist: "A"),
+        ])
+        await waitUntil("track 0 (A) playing") { rips.nowPlaying?.songId == "sng_a" }
+        XCTAssertEqual(seq.index, 0)
+
+        // Simulate a manual row ▶ on the MIDDLE track (B): the shared single-row burned path
+        // just sets nowPlaying to B's burned file — exactly what RowTransport.doPlay does.
+        playLocalFile(burns.localURL(forSong: "sng_b")!, songId: "sng_b", title: "B", artist: "A",
+                      startMs: nil, rips: rips, player: player)
+
+        // The sequencer observes the nowPlaying jump and repositions onto B (index 1).
+        await waitUntil("sequencer adopted the manual jump to B") { seq.index == 1 }
+        XCTAssertTrue(seq.isRunning)
+
+        // B ending now advances to C — the set did NOT stop at the manually-started track.
+        player.onTrackEnded?()
+        await waitUntil("advanced past the adopted track to C") { rips.nowPlaying?.songId == "sng_c" }
+        XCTAssertEqual(seq.index, 2)
+        XCTAssertTrue(seq.isRunning)
+
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_b.mp3","sng_b.txt","sng_c.mp3","sng_c.txt"])
+    }
+
+    /// A manual play of a song that is NOT in the running set must NOT reposition the
+    /// sequencer (its index/queue stay put) — only in-set jumps are adopted.
+    func testManualPlayOfOutOfSetSongDoesNotReposition() async {
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_b.mp3","sng_b.txt","sng_x.mp3","sng_x.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_b")
+        await burn(rips, burns, songId: "sng_x")   // NOT in the set
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_a", title: "A", artist: "A"),
+            .init(id: "sng_b", title: "B", artist: "A"),
+        ])
+        await waitUntil("track 0 (A) playing") { rips.nowPlaying?.songId == "sng_a" }
+
+        // Manually play an OUT-OF-SET song.
+        playLocalFile(burns.localURL(forSong: "sng_x")!, songId: "sng_x", title: "X", artist: "A",
+                      startMs: nil, rips: rips, player: player)
+        // Give the observation a turn to (not) fire.
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertEqual(seq.index, 0, "an out-of-set manual play does not move the sequencer")
+        XCTAssertEqual(seq.queue.count, 2)
+        XCTAssertTrue(seq.isRunning)
+
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_b.mp3","sng_b.txt","sng_x.mp3","sng_x.txt"])
+    }
+
+    // MARK: Requirement 1 over the CLOUD STREAM path — shared-album rip advances at track length
+
+    /// A cloud rip of an ANALOG album is ONE shared mp3 + per-song startMs, so its natural end
+    /// only fires at the WHOLE-file end. A streamed (not-yet-burned) Play-All must still advance
+    /// at each track's OWN length: we arm the boundary off `nowPlaying.startMs` and prove a
+    /// boundary tick at startMs+lengthMs advances the streamed set.
+    func testCloudStreamAnalogArmsLengthBoundaryAndAdvances() async {
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        // Two analog songs SHARING one album mp3 (cached, NOT burned), each with its own startMs.
+        rips.setManifest([
+            "an_1": .init(key: "rips/sideA.mp3", source: "analog", startMs: 0),
+            "an_2": .init(key: "rips/sideA.mp3", source: "analog", startMs: 180_000),
+        ])
+        XCTAssertNil(burns.localURL(forSong: "an_1"), "precondition: not burned → streams")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "an_1", title: "A1", artist: "A", lengthMs: 180_000),  // 0:00–3:00 of the file
+            .init(id: "an_2", title: "A2", artist: "A", lengthMs: 120_000),
+        ])
+        await waitUntil("streamed track 0 playing") { rips.nowPlaying?.songId == "an_1" }
+        XCTAssertEqual(coord.activeBackend, .ripServer, "streamed via the rip server (shared file)")
+        XCTAssertEqual(seq.index, 0)
+
+        // The whole-file natural end is at the END of sideA.mp3 — far past track 0's 3:00. The
+        // armed length boundary (startMs 0 + 180s) must advance at 3:00 instead.
+        player.checkEndBoundary(atSeconds: 180.0)
+        await waitUntil("advanced at the track's own length, not the album end") { rips.nowPlaying?.songId == "an_2" }
+        XCTAssertEqual(seq.index, 1)
+        XCTAssertTrue(seq.isRunning)
+
+        seq.stop()
+    }
+
+    // MARK: Duplicate-song disambiguation — adopt the NEAREST-FORWARD occurrence
+
+    /// A setlist that repeats a song: a manual jump to a later occurrence repositions to the
+    /// nearest-FORWARD occurrence (not always the first), so the set advances correctly from it.
+    func testDuplicateSongJumpPrefersNearestForwardOccurrence() async {
+        cleanBurnedFiles(["d_a.mp3","d_a.txt","d_b.mp3","d_b.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "d_a")
+        await burn(rips, burns, songId: "d_b")
+
+        // Queue [A, B, A] — A repeats. Start at index 0 (first A).
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "d_a", title: "A", artist: "A"),
+            .init(id: "d_b", title: "B", artist: "A"),
+            .init(id: "d_a", title: "A", artist: "A"),
+        ])
+        await waitUntil("first A playing") { rips.nowPlaying?.songId == "d_a" && seq.index == 0 }
+
+        // Manually play B (index 1) → adopt to 1.
+        playLocalFile(burns.localURL(forSong: "d_b")!, songId: "d_b", title: "B", artist: "A",
+                      startMs: nil, rips: rips, player: player)
+        await waitUntil("adopted B at index 1") { seq.index == 1 }
+
+        // Now manually play A again — from index 1 the nearest A is index 2 (forward on the tie),
+        // NOT index 0. The set repositions FORWARD to the last A, not back to the first.
+        playLocalFile(burns.localURL(forSong: "d_a")!, songId: "d_a", title: "A", artist: "A",
+                      startMs: nil, rips: rips, player: player)
+        await waitUntil("adopted the FORWARD A occurrence (index 2)") { seq.index == 2 }
+        XCTAssertEqual(seq.index, 2, "nearest-forward occurrence chosen over the earlier duplicate")
+
+        // Ending the last A stops the set cleanly (it was the final track).
+        player.onTrackEnded?()
+        await waitUntil("set ends after the final track") { !seq.isRunning }
+        cleanBurnedFiles(["d_a.mp3","d_a.txt","d_b.mp3","d_b.txt"])
+    }
+
     // MARK: stop() tears down and resets
 
     func testStopResetsSequenceAndNowPlaying() async {
@@ -335,6 +488,75 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertEqual(seq.index, 0)
         XCTAssertNil(rips.nowPlaying, "now-playing cleared on stop")
         cleanBurnedFiles(["sng_z.mp3", "sng_z.txt"])
+    }
+}
+
+/// The position-based END BOUNDARY (tweak 1): a track inside a shared album-rip mp3 must
+/// advance at its OWN length, not the whole file's end. The fire lives in the AVPlayer
+/// periodic observer (not exercisable headlessly), so it is extracted into the callable
+/// `checkEndBoundary(atSeconds:)` — these tests drive it directly to prove arming, the
+/// one-shot latch shared with the natural end, the live-stream skip, and the resets.
+@MainActor
+final class PlayerEngineBoundaryTests: XCTestCase {
+    private let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-boundary.mp3")
+
+    /// Counts `onTrackEnded` fires for a freshly-loaded engine with a boundary armed via `load`.
+    private func makeEngine(boundaryMs: Int?, live: Bool = false) -> (PlayerEngine, () -> Int) {
+        let engine = PlayerEngine()
+        var fires = 0
+        engine.onTrackEnded = { fires += 1 }
+        engine.load(url: url, live: live, startMs: nil, endBoundaryMs: boundaryMs)
+        return (engine, { fires })
+    }
+
+    /// Below the boundary → no fire; at/after it → fires EXACTLY once; further ticks are latched.
+    func testBoundaryFiresOnceWhenPositionPassesIt() {
+        let (engine, fires) = makeEngine(boundaryMs: 5_000)   // 5.0 s
+        engine.checkEndBoundary(atSeconds: 4.9)
+        XCTAssertEqual(fires(), 0, "before the boundary: no advance")
+        engine.checkEndBoundary(atSeconds: 5.0)
+        XCTAssertEqual(fires(), 1, "at the boundary: advance once")
+        engine.checkEndBoundary(atSeconds: 7.0)
+        XCTAssertEqual(fires(), 1, "after the boundary: latched, no second advance")
+    }
+
+    /// A live stream is NEVER armed — even when `load`/`setEndBoundary` is handed a boundary.
+    func testBoundaryNeverFiresForLiveStream() {
+        let (engine, fires) = makeEngine(boundaryMs: 1_000, live: true)
+        engine.checkEndBoundary(atSeconds: 9_999)
+        XCTAssertEqual(fires(), 0, "live load ignored the boundary")
+        engine.setEndBoundary(ms: 1_000)   // arming while live is also a no-op
+        engine.checkEndBoundary(atSeconds: 9_999)
+        XCTAssertEqual(fires(), 0, "setEndBoundary is a no-op for a live stream")
+    }
+
+    /// `setEndBoundary` arms WITHOUT a reload (the adoption path); nil disarms it.
+    func testSetEndBoundaryArmsAndDisarmsWithoutReload() {
+        let engine = PlayerEngine()
+        var fires = 0
+        engine.onTrackEnded = { fires += 1 }
+        engine.load(url: url, live: false, startMs: nil)   // no boundary at load
+
+        engine.checkEndBoundary(atSeconds: 100)
+        XCTAssertEqual(fires, 0, "no boundary armed → never fires")
+
+        engine.setEndBoundary(ms: 3_000)
+        engine.checkEndBoundary(atSeconds: 3.0)
+        XCTAssertEqual(fires, 1, "armed via setEndBoundary → fires")
+
+        // Disarm, then a fresh load resets the latch so a NEW boundary can fire again.
+        engine.setEndBoundary(ms: nil)
+        engine.load(url: url, live: false, startMs: nil, endBoundaryMs: 2_000)
+        engine.checkEndBoundary(atSeconds: 2.0)
+        XCTAssertEqual(fires, 2, "load reset the one-shot latch → the new boundary fires")
+    }
+
+    /// `stop()` disarms the boundary so a stale tick can't advance a torn-down set.
+    func testStopResetsBoundary() {
+        let (engine, fires) = makeEngine(boundaryMs: 1_000)
+        engine.stop()
+        engine.checkEndBoundary(atSeconds: 9_999)
+        XCTAssertEqual(fires(), 0, "stop() disarmed the boundary")
     }
 }
 

@@ -62,7 +62,7 @@ struct SetlistDetailView: View {
     private func playableItems(_ setlist: Setlist) -> [SetlistPlayer.Item] {
         setlist.tracks
             .filter { $0.isText != true && !$0.songId.isEmpty }
-            .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist) }
+            .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist, lengthMs: $0.shownMs) }
     }
 
     var body: some View {
@@ -156,6 +156,17 @@ struct SetlistDetailView: View {
                 ToolbarItem(placement: .primaryAction) {
                     PlaybackModeToggle()
                 }
+                // ⏮ PREVIOUS — persistent transport while a set runs (left of the play button);
+                // steps back one track (clamped at the top).
+                if isPlaying {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { setlistPlayer?.skipPrevious() } label: {
+                            Image(systemName: "backward.fill")
+                        }
+                        .help("Previous track")
+                        .accessibilityIdentifier("setlist-play-prev")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     // PLAY ALL / STOP — plays the set in order, auto-advancing on track-end.
                     Button {
@@ -171,13 +182,16 @@ struct SetlistDetailView: View {
                     .disabled(!isPlaying && playableItems(setlist).isEmpty)
                     .accessibilityIdentifier("setlist-play")
                 }
-                if setlistPlayer?.waitingForLive == true {
+                // ⏭ NEXT — persistent transport while a set runs (right of the play button).
+                // Advances one track; also the manual escape for a LIVE track (no natural end).
+                if isPlaying {
                     ToolbarItem(placement: .primaryAction) {
-                        // A live track has no natural end — let the DJ advance manually.
                         Button { setlistPlayer?.skipNext() } label: {
                             Image(systemName: "forward.fill")
                         }
-                        .help("Skip to the next track (the current one is live)")
+                        .help(setlistPlayer?.waitingForLive == true
+                              ? "Skip to the next track (the current one is live)"
+                              : "Next track")
                         .accessibilityIdentifier("setlist-play-next")
                     }
                 }

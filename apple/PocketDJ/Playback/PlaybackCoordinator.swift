@@ -26,11 +26,13 @@ import Observation
 /// waveform/scrubber binds to. `startMs` is the analog seek offset within a shared album mp3.
 @MainActor
 func playLocalFile(_ url: URL, songId: String, title: String, artist: String,
-                   startMs: Int?, rips: RipsStore, player: PlayerEngine) {
+                   startMs: Int?, rips: RipsStore, player: PlayerEngine,
+                   endBoundaryMs: Int? = nil) {
     let np = RipsStore.NowPlaying(songId: songId, title: title, artist: artist,
                                   url: url, live: false, startMs: startMs, waveform: nil)
     rips.setNowPlaying(np)
-    player.load(url: url, live: false, startMs: startMs, title: title, artist: artist)
+    player.load(url: url, live: false, startMs: startMs, title: title, artist: artist,
+                endBoundaryMs: endBoundaryMs)
 }
 
 @MainActor
