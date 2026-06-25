@@ -533,7 +533,7 @@ async function runAnalogJob(job, song) {
     const e = manifest[s.id];
     if (!e || e.source !== 'analog' || e.albumId !== album.id) continue;   // skip cloud-rip songs
     const startMs = s.pointer?.startMs ?? e.startMs;
-    const durMs = s.length ?? e.durationMs;
+    const durMs = cutDurationMs(s, e);
     if (startMs == null || !durMs) continue;                               // no cut points → album-only
     const cutOut = join(CFG.tmp, `${s.id}.cut.mp3`);
     try {
@@ -560,6 +560,7 @@ async function runAnalogJob(job, song) {
       e.cutKey = cutKey;
       e.cutBytes = statSync(cutOut).size;
       e.cutRippedAt = Date.now();
+      if (e.durationMs == null) e.durationMs = durMs;   // persist the derived length too
     } catch (err) {
       console.error(`  cut failed for ${s.id}: ${err.message}`);
     } finally {
@@ -575,6 +576,18 @@ async function runAnalogJob(job, song) {
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+// The cut duration (ms) for an analog song: the catalog `length`, else the manifest
+// `durationMs`, else DERIVED from the segment boundaries (`pointer.endMs - startMs`) — many
+// analog tracks carry start/end boundaries but a null `length`. Returns null when there's no
+// usable duration (→ that song stays album-only, can't be cut).
+function cutDurationMs(s, e) {
+  let d = (s && s.length) ?? (e && e.durationMs);
+  if (d == null && s?.pointer?.startMs != null && s?.pointer?.endMs != null) {
+    d = s.pointer.endMs - s.pointer.startMs;
+  }
+  return d != null && d > 0 ? d : null;
+}
 
 // BACKFILL: slice a per-song cut for every analog manifest entry missing one, straight from the
 // raw album source (no whole-album re-transcode), and add `cutKey` to the entry. Lets albums
@@ -598,7 +611,7 @@ async function backfillCuts() {
       const e = manifest[s.id];
       if (!e || e.source !== 'analog' || e.cutKey) continue;
       const startMs = s.pointer?.startMs ?? e.startMs;
-      const durMs = s.length ?? e.durationMs;
+      const durMs = cutDurationMs(s, e);
       if (startMs == null || !durMs) continue;
       const cutOut = join(CFG.tmp, `${s.id}.cut.mp3`);
       try {
@@ -611,6 +624,7 @@ async function backfillCuts() {
         const cutKey = `rips/${s.id}.cut.mp3`;
         await aws(['s3', 'cp', cutOut, `s3://${CFG.bucket}/${cutKey}`, '--content-type', 'audio/mpeg']);
         e.cutKey = cutKey; e.cutBytes = statSync(cutOut).size; e.cutRippedAt = Date.now();
+        if (e.durationMs == null) e.durationMs = durMs;   // backfill the derived length too
         done++;
         if (done % 10 === 0) await saveManifest();
       } catch (err) {
