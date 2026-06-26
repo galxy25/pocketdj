@@ -29,7 +29,11 @@ import Foundation
 //   Additive + lenient: a v2 doc migrates forward (folders defaults to [], every
 //   playlist's folderId stays nil ⇒ top level); a v3 doc loads degraded on a v2 app
 //   (the unknown `folders`/`folderId` keys are ignored, playlists intact).
-let collectionsSchemaVersion = 3
+// v3 → v4: pockets gained an optional `folderId: String?` so pockets can live in the
+//   same heterogeneous folder groups as playlists (folders hold BOTH). Additive + lenient:
+//   a v3 doc migrates forward (every pocket's folderId stays nil ⇒ top level); a v4 doc
+//   loads degraded on a v3 app (the unknown `folderId` key is simply ignored, pockets intact).
+let collectionsSchemaVersion = 4
 
 enum PocketKind: String, Codable, Hashable, Sendable { case harmonic, performance }
 
@@ -74,6 +78,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var albumIds: [String] = []
     var childPocketIds: [String] = []
     var notes: [PocketNote] = []         // v2: ordered free-text items (poetry/cues)
+    var folderId: String?                // v4: optional ⇒ back-compat (nil = top level)
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
@@ -82,14 +87,14 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var memberCount: Int { songIds.count + albumIds.count + childPocketIds.count }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, description, songIds, albumIds, childPocketIds, notes, createdAt, updatedAt
+        case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
-         notes: [PocketNote] = [], createdAt: Double = 0, updatedAt: Double = 0) {
+         notes: [PocketNote] = [], folderId: String? = nil, createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
-        self.notes = notes; self.createdAt = createdAt; self.updatedAt = updatedAt
+        self.notes = notes; self.folderId = folderId; self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -101,6 +106,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         albumIds = (try? c.decode([String].self, forKey: .albumIds)) ?? []
         childPocketIds = (try? c.decode([String].self, forKey: .childPocketIds)) ?? []
         notes = (try? c.decode([PocketNote].self, forKey: .notes)) ?? []
+        folderId = try? c.decode(String.self, forKey: .folderId)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -338,6 +344,10 @@ enum CollectionsMigration {
         //   playlist's `folderId` to nil (top level), so the mapping forward is the
         //   no-op identity. Kept explicit so the version bump is visible + the seam
         //   exists for any future folder-shape transform.
+        // v3 → v4: pockets gained `folderId`. Older pockets simply have none — lenient
+        //   decode already defaults the field to nil (top level), so the mapping forward
+        //   is the no-op identity. Kept explicit so the version bump is visible + the
+        //   seam exists for any future pocket-folder-shape transform.
         doc.schemaVersion = collectionsSchemaVersion
         return doc
     }

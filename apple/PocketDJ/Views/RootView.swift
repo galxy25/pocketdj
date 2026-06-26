@@ -18,15 +18,15 @@ struct RootView: View {
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
         case browse = "Browser"
-        case pockets = "Pockets"
         case playlists = "Playlists"
+        case mix = "Mix"
         case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
             switch self {
             case .browse:    return "list.bullet"
-            case .pockets:   return "rectangle.stack"
             case .playlists: return "music.note.list"
+            case .mix:       return "slider.horizontal.3"
             case .settings:  return "gearshape"
             }
         }
@@ -144,6 +144,12 @@ struct RootView: View {
                 .keyboardShortcut("b", modifiers: .command)
             Button("Settings-shadow") { section = .settings }
                 .keyboardShortcut(",", modifiers: .command)
+            Button("Playlists-shadow") { section = .playlists }
+                .keyboardShortcut("p", modifiers: .command)
+            // ⌘M → Mix. On macOS this INTENTIONALLY overrides the system "minimize" shortcut
+            // (the user asked for it); the Mix tab exists on iPhone, iPad, AND Mac.
+            Button("Mix-shadow") { section = .mix }
+                .keyboardShortcut("m", modifiers: .command)
         }
         .frame(width: 1, height: 1).opacity(0.01)
     }
@@ -151,8 +157,8 @@ struct RootView: View {
     @ViewBuilder private var detail: some View {
         switch section ?? .browse {
         case .browse:    BrowseView(path: $path)
-        case .pockets:   PocketsView()
         case .playlists: PlaylistsView(path: $path)
+        case .mix:       MixView()
         case .settings:  SettingsView(settings: settings)
         }
     }

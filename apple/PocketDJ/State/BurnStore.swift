@@ -327,6 +327,34 @@ final class BurnStore {
         return (url, scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
     }
 
+    /// Like `localURLForPlayback`, but PREFERS the per-song CUT file (`cuts/<songId>.mp3` — a
+    /// standalone slice that plays from 0:00) when one was exported, falling back to the (possibly
+    /// shared, analog whole-side) main audio file. Returns the url, an optional scope-release
+    /// closure, and `isCut` (true when the returned file is the standalone per-song cut). For a
+    /// consumer that CAN'T seek into a shared analog album mp3 (the Mix decks): a cut plays the
+    /// RIGHT song; the shared fallback plays from the side's start. When `isCut` is true the caller
+    /// must NOT apply a `startMs` offset/window — the cut already IS the song. nil when the item
+    /// isn't ready or no file is on disk.
+    func localURLForPlaybackPreferringCut(forSong songId: String) -> (url: URL, release: (() -> Void)?, isCut: Bool)? {
+        guard let item = items[songId], item.state == .ready,
+              let (dir, scoped) = itemDir(item) else { return nil }
+        let releaseClosure: (() -> Void)? = scoped ? { dir.stopAccessingSecurityScopedResource() } : nil
+        // Prefer the standalone per-song cut when it was exported AND is present on disk.
+        if let cut = item.cutFileName {
+            let cutURL = dir.appendingPathComponent(cut)
+            if FileManager.default.fileExists(atPath: cutURL.path) {
+                return (cutURL, releaseClosure, true)   // scope stays open; caller releases
+            }
+        }
+        // Fall back to the (possibly shared) main audio file — same dir, scope still held.
+        let url = dir.appendingPathComponent(item.audioFileName)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if scoped { dir.stopAccessingSecurityScopedResource() }   // missing → don't leak scope
+            return nil
+        }
+        return (url, releaseClosure, false)
+    }
+
     /// The analog seek offset (ms) within a shared album mp3 for a ready burned song, so a
     /// player seeks to the song's start inside the whole-album file. nil for digital
     /// (per-song file) burns or songs that aren't burned.

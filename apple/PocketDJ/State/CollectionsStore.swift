@@ -320,6 +320,11 @@ final class CollectionsStore {
         playlists.filter { $0.folderId == id }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
+    /// Pockets in a folder (nil ⇒ top level), name-ordered.
+    func pockets(inFolder id: String?) -> [Pocket] {
+        pockets.filter { $0.folderId == id }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
 
     @discardableResult
     func createFolder(_ name: String) -> PlaylistFolder {
@@ -330,17 +335,24 @@ final class CollectionsStore {
         guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
         folders[i].name = name; folders[i].updatedAt = now; save()
     }
-    /// Delete a folder; its member playlists fall back to the top level (folderId ⇒ nil).
+    /// Delete a folder; its member playlists AND pockets fall back to the top level (folderId ⇒ nil).
     func deleteFolder(_ id: String) {
         folders.removeAll { $0.id == id }
         for i in playlists.indices where playlists[i].folderId == id {
             playlists[i].folderId = nil; playlists[i].updatedAt = now
+        }
+        for i in pockets.indices where pockets[i].folderId == id {
+            pockets[i].folderId = nil; pockets[i].updatedAt = now
         }
         save()
     }
     /// Move a playlist into a folder (nil ⇒ top level).
     func setPlaylistFolder(_ playlistId: String, folderId: String?) {
         mutatePlaylist(playlistId) { $0.folderId = folderId }
+    }
+    /// Move a pocket into a folder (nil ⇒ top level).
+    func setPocketFolder(_ pocketId: String, folderId: String?) {
+        mutatePocket(pocketId) { $0.folderId = folderId }
     }
 
     // MARK: Add-to memory ("remembers last" target + chapter, for fast repeat adds)
@@ -610,10 +622,11 @@ final class CollectionsStore {
         var folderIdMap: [String: String] = [:]
         for f in doc.folders { folderIdMap[f.id] = CollectionsFactory.newFolderId() }
 
-        // 2) Pockets: remap id + child refs (drop refs to pockets not in the import).
+        // 2) Pockets: remap id + child refs + folder ref (drop refs not in the import).
         for var p in doc.pockets {
             p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
             p.childPocketIds = p.childPocketIds.compactMap { pocketIdMap[$0] }
+            p.folderId = p.folderId.flatMap { folderIdMap[$0] }
             p.createdAt = now; p.updatedAt = now
             pockets.append(p)
         }
@@ -676,9 +689,15 @@ final class CollectionsStore {
 
     /// Insert an already-reminted imported pocket bundle. Child pockets are added only
     /// if their (fresh) id is absent; the root is always appended (never clobbers).
+    /// folderId is cleared on all imported pockets — a single-pocket transfer carries
+    /// no folder context and the referenced folder won't exist on the target.
     func insertImportedPocket(root: Pocket, children: [Pocket]) {
-        for c in children where pocket(c.id) == nil { pockets.append(c) }
-        pockets.append(root)
+        for var c in children where pocket(c.id) == nil {
+            c.folderId = nil
+            pockets.append(c)
+        }
+        var mutableRoot = root; mutableRoot.folderId = nil
+        pockets.append(mutableRoot)
         save()
     }
 
@@ -709,6 +728,7 @@ final class CollectionsStore {
         for var p in incPockets {
             p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
             p.childPocketIds = p.childPocketIds.compactMap { pocketIdMap[$0] }
+            p.folderId = p.folderId.flatMap { folderIdMap[$0] }
             p.createdAt = now; p.updatedAt = now
             pockets.append(p)
         }

@@ -8,22 +8,28 @@ import XCTest
 /// Alert TextField typing + in-content button taps work on iOS; the deeper create/
 /// rename/delete interactions are kept iOS-only (`#if !os(macOS)`) like the other
 /// suites, because the macOS alert/keyboard path isn't reliably drivable headlessly.
+///
+/// NOTE: Pockets are now merged into the Playlists tab. All pocket tests launch via
+/// PDJ_START_SECTION=Playlists and use the new-pocket / pocket-* toolbar + row ids
+/// that live on the merged PlaylistsView.
 
-// MARK: - Pockets
+// MARK: - Pockets (merged into Playlists tab)
 
 final class PocketsUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
 
+    /// Pockets now live on the Playlists page — launch there.
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
-        app.launchEnvironment["PDJ_START_SECTION"] = "Pockets"
+        app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
         app.launch()
         return app
     }
 
     func testEmptyStateShowsCreate() {
         let app = launch()
+        // The merged Playlists page shows both new-playlist and new-pocket in the toolbar.
         XCTAssertTrue(app.buttons["new-pocket"].waitForExistence(timeout: 15))
     }
 
@@ -39,7 +45,7 @@ final class PocketsUITests: XCTestCase {
         nameField.tap(); nameField.typeText("Soul")
         app.alerts.buttons["Create"].tap()
 
-        // A pocket row appears (id pocket-<id>); open it.
+        // A pocket row appears (id pocket-<id>) in the merged list; open it.
         let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'pocket-pkt_'")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         row.tap()
@@ -57,12 +63,13 @@ final class PocketsUITests: XCTestCase {
         app.alerts.buttons["Save"].tap()
         XCTAssertTrue(app.navigationBars["Soul Crate"].waitForExistence(timeout: 5))
 
-        // Delete via the detail menu → confirmation → pops back to the list.
+        // Delete via the detail menu → confirmation → pops back to the merged list.
         app.buttons["pocket-menu"].tap()
         app.buttons["delete-pocket"].tap()
         let confirm = app.buttons.matching(identifier: "delete-pocket-confirm").firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
+        // Back on the merged list — new-pocket button should be visible again.
         XCTAssertTrue(app.buttons["new-pocket"].waitForExistence(timeout: 5))
     }
 
@@ -91,7 +98,7 @@ final class PocketsUITests: XCTestCase {
         renameField.tap(); renameField.typeText(" Box")
         app.alerts.buttons["Save"].tap()
 
-        // The renamed pocket row is still in the list (we never navigated in).
+        // The renamed pocket row is still in the merged list (we never navigated in).
         XCTAssertTrue(app.staticTexts["Groove Box"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["new-pocket"].exists)
     }

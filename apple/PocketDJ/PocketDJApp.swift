@@ -35,6 +35,11 @@ struct PocketDJApp: App {
     /// On-demand lyrics: fetches `{catalogBase}/lyrics/<songId>.txt` when a song detail
     /// opens and caches the text on disk for instant + offline re-opens.
     @State private var lyrics: LyricsStore
+    /// APP-SCOPED DJ mix engine (Switchboard two-deck graph) — owned here, NOT by MixView, so a
+    /// running mix keeps playing across tab switches (mirrors SetlistPlayer's app-scoping). Built
+    /// from the SAME BurnStore so each deck loads ONLY locally-burned files (`localURLForPlayback`).
+    /// Lazily builds its Switchboard graph on first Mix-tab use (so launch never spins up audio).
+    @State private var mix: MixEngine
     @Environment(\.scenePhase) private var scenePhase
 
     // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
@@ -72,6 +77,9 @@ struct PocketDJApp: App {
             ready: { amProvider.canResolve },
             resolve: { song in await amProvider.resolve(song)?.artworkURL }))
         _lyrics = State(initialValue: LyricsStore())
+        // App-scoped two-deck Switchboard engine. Shares `burns` so a deck resolves the on-disk
+        // burned file (+ holds its security scope) for the song it loads.
+        _mix = State(initialValue: MixEngine(burns: burns))
     }
 
     var body: some Scene {
@@ -89,6 +97,7 @@ struct PocketDJApp: App {
                 .environment(setlistPlayer)
                 .environment(albumArt)
                 .environment(lyrics)
+                .environment(mix)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // Streaming OAuth redirect (e.g. pocketdj://spotify-login-callback)

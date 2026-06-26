@@ -162,6 +162,110 @@ final class NowPlayingFoldersTests: XCTestCase {
         XCTAssertEqual(back.playlists.first?.folderId, "fld_1")
     }
 
+    // MARK: Pocket folders (v4)
+
+    // A v3 doc (pocket with no folderId key) migrates forward to v4 with folderId == nil
+    // (top level) — members intact, never crashes.
+    func testV3PocketMigratesToV4WithNilFolderId() throws {
+        let v3 = """
+        { "schemaVersion": 3, "pockets": [
+            { "id": "pkt_x", "name": "Soul", "songIds": ["sng_1"], "createdAt": 0, "updatedAt": 0 }
+        ], "playlists": [] }
+        """
+        let doc = try CollectionsCodec.decode(Data(v3.utf8))
+        XCTAssertEqual(doc.schemaVersion, collectionsSchemaVersion)   // bumped to 4
+        XCTAssertNil(doc.pockets.first?.folderId)                     // top level
+        XCTAssertEqual(doc.pockets.first?.songIds, ["sng_1"])          // members intact
+    }
+
+    // A v4 pocket carrying folderId survives a full round-trip.
+    func testV4PocketFolderIdRoundTrip() throws {
+        var doc = CollectionsDocument()
+        doc.folders = [PlaylistFolder(id: "fld_1", name: "Sets")]
+        doc.pockets = [Pocket(id: "pkt_1", name: "Soul", folderId: "fld_1")]
+        let back = try CollectionsCodec.decode(CollectionsCodec.encode(doc))
+        XCTAssertEqual(back.pockets.first?.folderId, "fld_1")
+        XCTAssertEqual(back.pockets.first?.name, "Soul")
+    }
+
+    func testPocketsInFolderFiltersAndOrders() {
+        let s = store()
+        let f = s.createFolder("Warmups")
+        let pk1 = s.createPocket("Bass")
+        let pk2 = s.createPocket("Ambient")
+        let pk3 = s.createPocket("Solo")     // stays top-level
+        s.setPocketFolder(pk1.id, folderId: f.id)
+        s.setPocketFolder(pk2.id, folderId: f.id)
+        // Folder members are name-ordered (case-insensitive).
+        XCTAssertEqual(s.pockets(inFolder: f.id).map(\.name), ["Ambient", "Bass"])
+        // Top level contains only Solo.
+        XCTAssertEqual(s.pockets(inFolder: nil).map(\.id), [pk3.id])
+    }
+
+    func testSetPocketFolderMovesAndPersists() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-pkfld-\(UUID().uuidString).json")
+        let s1 = CollectionsStore(fileURL: url)
+        let f = s1.createFolder("F")
+        let pk = s1.createPocket("Groove")
+        XCTAssertNil(s1.pocket(pk.id)?.folderId)          // starts top-level
+        s1.setPocketFolder(pk.id, folderId: f.id)
+        XCTAssertEqual(s1.pocket(pk.id)?.folderId, f.id)
+        // Reloads from disk with folderId intact.
+        let s2 = CollectionsStore(fileURL: url)
+        XCTAssertEqual(s2.pocket(pk.id)?.folderId, f.id)
+        // Move back to top level.
+        s2.setPocketFolder(pk.id, folderId: nil)
+        XCTAssertNil(s2.pocket(pk.id)?.folderId)
+    }
+
+    func testDeleteFolderResetsPocketFolderIds() {
+        let s = store()
+        let pl = s.createPlaylist("Mix")
+        let pk = s.createPocket("Soul")
+        let f = s.createFolder("F")
+        s.setPlaylistFolder(pl.id, folderId: f.id)
+        s.setPocketFolder(pk.id, folderId: f.id)
+        s.deleteFolder(f.id)
+        XCTAssertNil(s.folder(f.id))
+        // Both the playlist AND the pocket fall back to top level.
+        XCTAssertNil(s.playlist(pl.id)?.folderId)
+        XCTAssertNil(s.pocket(pk.id)?.folderId)
+        XCTAssertEqual(s.playlists(inFolder: nil).map(\.id), [pl.id])
+        XCTAssertEqual(s.pockets(inFolder: nil).map(\.id), [pk.id])
+    }
+
+    // A full-doc import carrying a pocket with a folderId re-points the pocket at the
+    // reminted folder (not the old id), mirroring the existing playlist behavior.
+    func testFullDocImportRemapsPocketFolderRef() throws {
+        let s = store()
+        let doc = """
+        { "schemaVersion": 4,
+          "folders": [ { "id": "fld_a", "name": "F" } ],
+          "pockets": [ { "id": "pkt_a", "name": "Soul", "folderId": "fld_a", "createdAt": 0, "updatedAt": 0 } ],
+          "playlists": [] }
+        """
+        try s.importCollection(data: Data(doc.utf8))
+        XCTAssertEqual(s.folders.count, 1)
+        let f = s.folders.last!
+        XCTAssertNotEqual(f.id, "fld_a")                   // fresh folder id
+        let pk = s.pockets.last!
+        XCTAssertNotEqual(pk.id, "pkt_a")                  // fresh pocket id
+        XCTAssertEqual(pk.folderId, f.id)                  // re-pointed to the reminted folder
+    }
+
+    // A pocket imported WITHOUT its folder drops the dangling ref (lands at top level).
+    func testImportPocketWithoutFolderDropsDanglingRef() throws {
+        let s = store()
+        let doc = """
+        { "schemaVersion": 4,
+          "pockets": [ { "id": "pkt_a", "name": "Soul", "folderId": "fld_missing", "createdAt": 0, "updatedAt": 0 } ],
+          "playlists": [] }
+        """
+        try s.importCollection(data: Data(doc.utf8))
+        XCTAssertEqual(s.pockets.count, 1)
+        XCTAssertNil(s.pockets.last?.folderId)             // dangling folder ref dropped
+    }
+
     // CRITIC-G: a full-doc import (collections JSON) carries folders + remaps ids so a
     // playlist stays grouped (not silently flattened).
     func testFullDocImportCarriesFoldersWithRemap() throws {

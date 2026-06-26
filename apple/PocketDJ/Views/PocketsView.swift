@@ -1,93 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Pockets — reusable, nestable groupings of items that sound good together.
-struct PocketsView: View {
-    @Environment(CollectionsStore.self) private var collections
-    @State private var newName = ""
-    @State private var showNew = false
-    @State private var showImporter = false
-    @State private var renamingId: String?
-    @State private var nameDraft = ""
-    @State private var deletingId: String?
-
-    var body: some View {
-        Group {
-            if collections.pockets.isEmpty {
-                ContentUnavailableView {
-                    Label("No pockets yet", systemImage: "rectangle.stack")
-                } description: {
-                    Text("A pocket is a collection of items that sound good together — songs, albums, even poetry or cues — that you can drop into playlists. Add items from a song or album.")
-                } actions: {
-                    Button("New Pocket") { showNew = true }.buttonStyle(.borderedProminent)
-                }
-            } else {
-                List {
-                    ForEach(collections.pockets) { pocket in
-                        NavigationLink(value: pocket) {
-                            HStack {
-                                Image(systemName: "rectangle.stack").foregroundStyle(Theme.accent)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(pocket.name).foregroundStyle(Theme.fg)
-                                    let stats = collections.catalog().stats(forPocket: pocket.id)
-                                    Text("\(pocket.memberCount) item\(pocket.memberCount == 1 ? "" : "s") · \(stats.summary)")
-                                        .font(.caption).foregroundStyle(Theme.fgDim)
-                                }
-                            }
-                        }
-                        .accessibilityIdentifier("pocket-\(pocket.id)")
-                        .contextMenu {
-                            Button { nameDraft = pocket.name; renamingId = pocket.id } label: { Label("Rename", systemImage: "pencil") }
-                                .accessibilityIdentifier("list-rename-\(pocket.id)")
-                            Button(role: .destructive) { deletingId = pocket.id } label: { Label("Delete", systemImage: "trash") }
-                                .accessibilityIdentifier("list-delete-\(pocket.id)")
-                        }
-                    }
-                    .onDelete { idx in idx.map { collections.pockets[$0].id }.forEach(collections.deletePocket) }
-                }
-            }
-        }
-        .navigationTitle("Pockets")
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .scrollContentBackground(.hidden).background(Theme.bg)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
-                    .help("Import a pocket export")
-                    .accessibilityIdentifier("import-pocket")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { showNew = true } label: { Image(systemName: "plus") }
-                    .accessibilityIdentifier("new-pocket")
-            }
-        }
-        .alert("New Pocket", isPresented: $showNew) {
-            TextField("Name", text: $newName)
-            Button("Create") { let n = newName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPocket(n) }; newName = "" }
-            Button("Cancel", role: .cancel) { newName = "" }
-        }
-        .alert("Rename pocket", isPresented: Binding(get: { renamingId != nil }, set: { if !$0 { renamingId = nil } })) {
-            TextField("Name", text: $nameDraft)
-            Button("Save") {
-                if let id = renamingId { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePocket(id, n) } }
-                renamingId = nil
-            }
-            Button("Cancel", role: .cancel) { renamingId = nil }
-        }
-        .confirmationDialog("Delete this pocket?", isPresented: Binding(get: { deletingId != nil }, set: { if !$0 { deletingId = nil } }), titleVisibility: .visible) {
-            Button("Delete pocket", role: .destructive) { if let id = deletingId { collections.deletePocket(id) }; deletingId = nil }
-            Button("Cancel", role: .cancel) { deletingId = nil }
-        } message: {
-            Text("Removes the pocket and unnests it from any parent. Its items aren’t deleted. This can’t be undone.")
-        }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .zip]) { result in
-            guard case .success(let url) = result else { return }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            try? collections.importAny(url: url)
-        }
-    }
-}
+// NOTE: The PocketsView list (create/import/list) has been merged into PlaylistsView.
+// This file retains only PocketDetailView (the per-pocket detail) and its helpers,
+// which are still navigated to from the merged list via .navigationDestination(for: Pocket.self).
 
 /// One pocket's members: songs, albums, and nested child pockets.
 struct PocketDetailView: View {
@@ -262,7 +178,7 @@ struct PocketDetailView: View {
                 .accessibilityIdentifier("delete-pocket-confirm")
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Removes the pocket and unnests it from any parent. Its items aren’t deleted. This can’t be undone.")
+            Text("Removes the pocket and unnests it from any parent. Its items aren't deleted. This can't be undone.")
         }
         .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
                       defaultFilename: exportFilename) { _ in }

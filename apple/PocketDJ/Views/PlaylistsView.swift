@@ -1,20 +1,28 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Playlists — ordered chapters (sequences) of songs/albums/pockets/text cues.
-/// Your editable playlists (organized into optional collapsible FOLDERS) render ABOVE
-/// the read-only "From your sources" index playlists. The body is factored into small
-/// helper subviews so the Swift type-checker never times out.
+/// Collections — playlists (ordered chapters) and pockets (reusable groupings), both
+/// organized into optional collapsible FOLDERS (folders are heterogeneous: they hold
+/// BOTH playlists and pockets). Your editable collections render ABOVE the read-only
+/// "From your sources" index playlists. The body is factored into small helper subviews
+/// so the Swift type-checker never times out.
 struct PlaylistsView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Binding var path: NavigationPath
+    // Playlist dialogs
     @State private var newName = ""
     @State private var showNew = false
     @State private var showImporter = false
     @State private var renamingId: String?
     @State private var nameDraft = ""
     @State private var deletingId: String?
+    // Pocket dialogs
+    @State private var showNewPocket = false
+    @State private var newPocketName = ""
+    @State private var renamingPocketId: String?
+    @State private var pocketNameDraft = ""
+    @State private var deletingPocketId: String?
     // Folder dialogs
     @State private var showNewFolder = false
     @State private var newFolderName = ""
@@ -28,11 +36,12 @@ struct PlaylistsView: View {
 
     var body: some View {
         Group {
-            if collections.playlists.isEmpty && indexPlaylists.isEmpty {
+            if collections.playlists.isEmpty && collections.pockets.isEmpty && indexPlaylists.isEmpty {
                 emptyState
             } else {
                 List {
                     yourPlaylistsSection
+                    yourPocketsSection
                     ForEach(collections.foldersOrdered()) { folder in
                         folderSection(folder)
                     }
@@ -62,7 +71,26 @@ struct PlaylistsView: View {
             Button("Delete playlist", role: .destructive) { if let id = deletingId { collections.deletePlaylist(id) }; deletingId = nil }
             Button("Cancel", role: .cancel) { deletingId = nil }
         } message: {
-            Text("This also deletes its set lists. This can’t be undone.")
+            Text("This also deletes its set lists. This can't be undone.")
+        }
+        .alert("New Pocket", isPresented: $showNewPocket) {
+            TextField("Name", text: $newPocketName)
+            Button("Create") { let n = newPocketName.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.createPocket(n) }; newPocketName = "" }
+            Button("Cancel", role: .cancel) { newPocketName = "" }
+        }
+        .alert("Rename pocket", isPresented: Binding(get: { renamingPocketId != nil }, set: { if !$0 { renamingPocketId = nil } })) {
+            TextField("Name", text: $pocketNameDraft)
+            Button("Save") {
+                if let id = renamingPocketId { let n = pocketNameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePocket(id, n) } }
+                renamingPocketId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingPocketId = nil }
+        }
+        .confirmationDialog("Delete this pocket?", isPresented: Binding(get: { deletingPocketId != nil }, set: { if !$0 { deletingPocketId = nil } }), titleVisibility: .visible) {
+            Button("Delete pocket", role: .destructive) { if let id = deletingPocketId { collections.deletePocket(id) }; deletingPocketId = nil }
+            Button("Cancel", role: .cancel) { deletingPocketId = nil }
+        } message: {
+            Text("Removes the pocket and unnests it from any parent. Its items aren't deleted. This can't be undone.")
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .zip]) { result in
             guard case .success(let url) = result else { return }
@@ -76,20 +104,24 @@ struct PlaylistsView: View {
 
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("No playlists yet", systemImage: "music.note.list")
+            Label("No collections yet", systemImage: "music.note.list")
         } description: {
-            Text("A playlist is a template: ordered chapters of songs, albums, pockets, and text cues.")
+            Text("A playlist is a template of ordered chapters. A pocket is a reusable grouping of items that sound good together.")
         } actions: {
-            Button("New Playlist") { showNew = true }.buttonStyle(.borderedProminent)
+            HStack(spacing: 12) {
+                Button("New Playlist") { showNew = true }.buttonStyle(.borderedProminent)
+                Button("New Pocket") { showNewPocket = true }.buttonStyle(.bordered)
+            }
         }
     }
 
-    /// YOUR (editable) top-level playlists — those NOT in any folder. Rendered first.
+    /// YOUR (editable) top-level PLAYLISTS — those NOT in any folder. Own header, distinct
+    /// from pockets and from the read-only "From your sources" section. Rendered first.
     @ViewBuilder private var yourPlaylistsSection: some View {
         let top = collections.playlists(inFolder: nil)
         Section("Your playlists") {
             if collections.playlists.isEmpty {
-                Text("No editable playlists yet — tap + to create one.")
+                Text("No playlists yet — tap + to create one.")
                     .font(.caption).foregroundStyle(Theme.fgDim)
             } else if top.isEmpty {
                 Text("All your playlists are in folders below.")
@@ -99,21 +131,39 @@ struct PlaylistsView: View {
         }
     }
 
-    /// One collapsible FOLDER (flat) of playlists, name-ordered. Collapse state persists.
-    @ViewBuilder private func folderSection(_ folder: PlaylistFolder) -> some View {
-        let members = collections.playlists(inFolder: folder.id)
-        Section {
-            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
-                if members.isEmpty {
-                    Text("Empty folder — move a playlist in with its ⋯ menu.")
+    /// YOUR top-level POCKETS — those NOT in any folder. A SEPARATE section header from your
+    /// playlists. Hidden entirely when you have no pockets at all (no empty "Pockets" header).
+    @ViewBuilder private var yourPocketsSection: some View {
+        if !collections.pockets.isEmpty {
+            let top = collections.pockets(inFolder: nil)
+            Section("Pockets") {
+                if top.isEmpty {
+                    Text("All your pockets are in folders below.")
                         .font(.caption).foregroundStyle(Theme.fgDim)
                 }
-                ForEach(members) { pl in playlistRow(pl) }
+                ForEach(top) { pk in pocketRow(pk) }
+            }
+        }
+    }
+
+    /// One collapsible FOLDER (flat) of playlists AND pockets, name-ordered. Collapse state persists.
+    @ViewBuilder private func folderSection(_ folder: PlaylistFolder) -> some View {
+        let plMembers = collections.playlists(inFolder: folder.id)
+        let pkMembers = collections.pockets(inFolder: folder.id)
+        let memberCount = plMembers.count + pkMembers.count
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if plMembers.isEmpty && pkMembers.isEmpty {
+                    Text("Empty folder — move a playlist or pocket in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                ForEach(plMembers) { pl in playlistRow(pl) }
+                ForEach(pkMembers) { pk in pocketRow(pk) }
             } label: {
                 HStack {
                     Label(folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
                     Spacer()
-                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                    Text("\(memberCount)").font(.caption).foregroundStyle(Theme.fgDim)
                 }
                 .accessibilityIdentifier("folder-\(folder.id)")
                 .contextMenu {
@@ -126,7 +176,7 @@ struct PlaylistsView: View {
         }
     }
 
-    /// The read-only "From your sources" section, now rendered LAST (below your playlists).
+    /// The read-only "From your sources" section, now rendered LAST (below your collections).
     @ViewBuilder private var sourcesSection: some View {
         if !indexPlaylists.isEmpty {
             Section {
@@ -200,12 +250,67 @@ struct PlaylistsView: View {
             .accessibilityIdentifier("list-delete-\(pl.id)")
     }
 
+    /// One reusable-pocket row + its context menu (rename / move to folder / add to playlist / delete).
+    @ViewBuilder private func pocketRow(_ pocket: Pocket) -> some View {
+        NavigationLink(value: pocket) {
+            HStack {
+                Image(systemName: "rectangle.stack").foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pocket.name).foregroundStyle(Theme.fg)
+                    let stats = collections.catalog().stats(forPocket: pocket.id)
+                    Text("\(pocket.memberCount) item\(pocket.memberCount == 1 ? "" : "s") · \(stats.summary)")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+            }
+        }
+        .accessibilityIdentifier("pocket-\(pocket.id)")
+        .contextMenu { pocketRowMenu(pocket) }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { collections.deletePocket(pocket.id) } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    @ViewBuilder private func pocketRowMenu(_ pocket: Pocket) -> some View {
+        Button { pocketNameDraft = pocket.name; renamingPocketId = pocket.id } label: { Label("Rename", systemImage: "pencil") }
+            .accessibilityIdentifier("list-rename-\(pocket.id)")
+        // Move to folder
+        Menu {
+            if pocket.folderId != nil {
+                Button { collections.setPocketFolder(pocket.id, folderId: nil) } label: { Label("Top level", systemImage: "tray") }
+                    .accessibilityIdentifier("move-top-\(pocket.id)")
+            }
+            ForEach(collections.foldersOrdered()) { f in
+                Button { collections.setPocketFolder(pocket.id, folderId: f.id) } label: {
+                    Label(f.name, systemImage: pocket.folderId == f.id ? "checkmark" : "folder")
+                }
+                .accessibilityIdentifier("move-to-\(f.id)-\(pocket.id)")
+            }
+            Divider()
+            Button { showNewFolder = true } label: { Label("New folder…", systemImage: "folder.badge.plus") }
+        } label: { Label("Move to folder", systemImage: "folder") }
+            .accessibilityIdentifier("move-folder-\(pocket.id)")
+        // Add as a pocket-ref into an existing playlist (the "nesting" add)
+        if !collections.playlists.isEmpty {
+            Menu {
+                ForEach(collections.playlists) { pl in
+                    Button {
+                        collections.addPocketRef(pocket.id, toPlaylist: pl.id,
+                                                 sequenceId: pl.sequences.first?.nodeId)
+                    } label: { Label(pl.name, systemImage: "music.note.list") }
+                }
+            } label: { Label("Add to playlist…", systemImage: "music.note.list.badge.plus") }
+                .accessibilityIdentifier("add-to-playlist-\(pocket.id)")
+        }
+        Button(role: .destructive) { deletingPocketId = pocket.id } label: { Label("Delete", systemImage: "trash") }
+            .accessibilityIdentifier("list-delete-\(pocket.id)")
+    }
+
     // MARK: - Toolbar + folder dialogs
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
-                .help("Import a playlist export")
+                .help("Import a playlist or pocket export")
                 .accessibilityIdentifier("import-playlist")
         }
         ToolbarItem(placement: .primaryAction) {
@@ -214,7 +319,13 @@ struct PlaylistsView: View {
                 .accessibilityIdentifier("new-folder")
         }
         ToolbarItem(placement: .primaryAction) {
+            Button { showNewPocket = true } label: { Image(systemName: "rectangle.stack") }
+                .help("New pocket")
+                .accessibilityIdentifier("new-pocket")
+        }
+        ToolbarItem(placement: .primaryAction) {
             Button { showNew = true } label: { Image(systemName: "plus") }
+                .help("New playlist")
                 .accessibilityIdentifier("new-playlist")
         }
     }
@@ -276,7 +387,7 @@ private struct FolderDialogs: ViewModifier {
                 Button("Delete folder", role: .destructive) { if let id = deletingFolderId { collections.deleteFolder(id) }; deletingFolderId = nil }
                 Button("Cancel", role: .cancel) { deletingFolderId = nil }
             } message: {
-                Text("The folder's playlists move back to the top level. This can’t be undone.")
+                Text("The folder's playlists and pockets move back to the top level. This can't be undone.")
             }
     }
 }
@@ -455,7 +566,7 @@ struct PlaylistDetailView: View {
             .accessibilityIdentifier("delete-playlist-confirm")
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This also deletes its set lists. This can’t be undone.")
+            Text("This also deletes its set lists. This can't be undone.")
         }
         .alert("Rename set list", isPresented: Binding(get: { renamingSetlistId != nil }, set: { if !$0 { renamingSetlistId = nil } })) {
             TextField("Name", text: $setlistNameDraft)
