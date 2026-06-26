@@ -25,7 +25,7 @@ extension MixEngine {
 
 // MARK: - Mix tab
 
-/// The Mix screen (iPhone · iPad · Mac). Mirrors Switchboard's DJ "Main Screen": two decks
+/// The Mix screen (iPhone · iPad · Mac). A two-deck DJ "Main Screen": two decks
 /// side-by-side, a single crossfader spanning both, then ONE big Play/Pause that drives both
 /// decks. The engine is app-scoped (env), so a mix keeps playing while you leave the tab; the
 /// per-deck SOURCE is local view state (the loaded track itself is read back from the engine).
@@ -64,7 +64,7 @@ struct MixView: View {
         .navigationTitle("Mix")
         .accessibilityIdentifier("mix-tab")
         .toolbar { autoMixToolbar }                    // Auto/Manual + collection Play/Shuffle
-        .task { engine.prepare() }                     // warm the Switchboard graph when the tab opens
+        .task { engine.prepare() }                     // warm the AVAudioEngine graph when the tab opens
         // Track loader: long-press (iOS) / right-click (macOS) on a deck, or tap its header.
         .sheet(item: $loaderDeck) { deck in
             TrackLoaderSheet(deck: deck, engine: engine,

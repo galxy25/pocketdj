@@ -2,31 +2,6 @@ import Foundation
 import Observation
 import AVFoundation        // AVAudioEngine + nodes (iOS · iPad · Mac); AVAudioSession is iOS-only (guarded below)
 import AudioToolbox        // DynamicsProcessor AU parameter ids + AudioUnitSetParameter
-import SwitchboardSDK      // (retained ONLY for the dead `SwitchboardRuntime` init below — the Mix DSP no
-import SwitchboardSuperpowered  //  longer uses Switchboard; ripping the vendored SDK out is a follow-up)
-
-/// One-time Switchboard runtime bootstrap. Still invoked at launch by the platform app delegates, but
-/// the Mix engine NO LONGER uses Switchboard — the two-deck DSP is now a first-party `AVAudioEngine`
-/// graph (live tempo/pitch/seek/beat-match the Superpowered 3.2.3 player could not do). This init is
-/// therefore dead weight; left in place to keep the change focused (removing the vendored SDK +
-/// MixAudioGraph.json + the gitignored secret is a separate cleanup). Reads the gitignored
-/// `SwitchboardSecrets`; NEVER hardcode the secret in committed code.
-enum SwitchboardRuntime {
-    private static var didActivate = false
-
-    static func activate() {
-        guard !didActivate else { return }
-        didActivate = true
-        SBSuperpoweredExtension.loadExtension()
-        Switchboard.initialize(withConfig: [
-            "appID": SwitchboardSecrets.appID,
-            "appSecret": SwitchboardSecrets.appSecret,
-            "extensions": [
-                "Superpowered": ["superpoweredLicenseKey": SwitchboardSecrets.superpoweredLicenseKey],
-            ],
-        ])
-    }
-}
 
 /// Cross-platform DJ mix engine — a first-party two-deck `AVAudioEngine` graph. Each deck is
 ///
@@ -212,8 +187,8 @@ final class MixEngine {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private var lastTickAt: Date?
 
-    // Auto-Mix machine (Date/wall-clock based — unchanged from the Switchboard era; it only drives the
-    // public transport, so it works identically on the AVAudioEngine backend).
+    // Auto-Mix machine (Date/wall-clock based; it only drives the public transport, independent of the
+    // audio backend).
     @ObservationIgnored private var autoQueue: [AutoMixItem] = []
     @ObservationIgnored private var autoLivePos = 0
     @ObservationIgnored private var autoNextToLoad = 0

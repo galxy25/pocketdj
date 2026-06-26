@@ -20,9 +20,6 @@ import AppKit
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        // Initialize the Switchboard runtime ONCE, before the Mix tab can build its engine.
-        // Idempotent (safe on a background relaunch). Reads the gitignored SwitchboardSecrets.
-        SwitchboardRuntime.activate()
         // Force the background session into existence so its delegate is alive at launch —
         // a cold background relaunch can then finish in-flight files before the normal store
         // wiring runs.
@@ -118,8 +115,6 @@ final class RipReconcileBridge {
 /// handler dance).
 final class MacAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Same Switchboard bootstrap as iOS — the Mix tab + engine run on Mac too (no #if os).
-        SwitchboardRuntime.activate()
         TransferCoordinator.shared.activate()
     }
 }

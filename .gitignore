@@ -69,6 +69,3 @@ dev-dist/
 
 # Xcode code-coverage scratch (written when running tests from the repo root)
 *.profraw
-
-# Switchboard SDK credentials (real account keys for the Mix tab) — never commit
-/switchboard-credentials.json

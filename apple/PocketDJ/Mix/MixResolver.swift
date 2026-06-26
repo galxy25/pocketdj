@@ -1,7 +1,7 @@
 import Foundation
 
 /// One LOADABLE deck candidate — a song that is actually present on disk as a BURNED file
-/// (so a Switchboard player can `open(path:)` it). Notes/text/un-burned songs never become a
+/// (so a deck's AVAudioFile can open it). Notes/text/un-burned songs never become a
 /// MixLoadable (the resolver drops them — "degrade gracefully"). Snapshot metadata is inlined so
 /// the picker row reads standalone, exactly like a setlist freezes its tracks.
 struct MixLoadable: Identifiable, Hashable {

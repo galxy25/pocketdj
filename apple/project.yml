@@ -56,11 +56,6 @@ targets:
     supportedDestinations: [iOS, macOS]
     sources:
       - path: PocketDJ
-        excludes:
-          # The committed template (real keys live in the gitignored sibling
-          # SwitchboardSecrets.swift) — excluded so its duplicate `SwitchboardSecrets`
-          # enum doesn't collide with the generated one.
-          - Mix/SwitchboardSecrets.example.swift
     # A base Info.plist supplies the one key Xcode's INFOPLIST_KEY_* generation can't
     # express: UIBackgroundModes (an array). Xcode still LAYERS its generated keys +
     # the INFOPLIST_KEY_* settings below on top of this file, so we only declare the
@@ -89,20 +84,9 @@ targets:
         ITSAppUsesNonExemptEncryption: false
     dependencies:
       - package: ZIPFoundation
-      # --- Switchboard DJ engine (Mix tab) -----------------------------------
-      # Universal xcframeworks (iOS device + iOS sim + macOS) produced by
-      # scripts/fetch-switchboard.sh into the gitignored Vendor/Switchboard dir.
-      # Paths resolve relative to this spec dir (apple/). NO platform filter — the
-      # SAME multiplatform target links Switchboard on iPhone, iPad, AND Mac.
-      # `embed: true` adds the "Embed Frameworks" copy phase; `codeSign: true`
-      # re-signs each slice on copy (the XcodeGen key is `codeSign`). RUN
-      # scripts/fetch-switchboard.sh BEFORE `xcodegen generate` so the paths exist.
-      - framework: Vendor/Switchboard/SwitchboardSDK.xcframework
-        embed: true
-        codeSign: true
-      - framework: Vendor/Switchboard/SwitchboardSuperpowered.xcframework
-        embed: true
-        codeSign: true
+      # The Mix tab's DJ engine is a first-party AVAudioEngine graph (MixEngine.swift) —
+      # no third-party audio SDK. (Tempo/pitch/seek/crossfader/effects/beat-match are all
+      # AVFoundation nodes; the former Switchboard/Superpowered SDK was removed.)
       # Uncomment to link the Spotify SDK (see packages.SpotifyiOS above):
       # - package: SpotifyiOS
       # Uncomment to link the YouTube player helper (see the package above):
@@ -138,12 +122,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.levi.pocketdj
         PRODUCT_NAME: PocketDJ
-        # Embedded Switchboard frameworks live in DIFFERENT places per platform: the iOS
-        # app puts them in `.app/Frameworks` (=@executable_path/Frameworks) but the macOS
-        # app puts them in `.app/Contents/Frameworks` (=@executable_path/../Frameworks).
-        # This multiplatform target's default runpath only carried the iOS path, so the
-        # Mac app aborted at launch (dyld: SwitchboardSDK.framework not loaded). List BOTH
-        # so each platform's embedded slice resolves at runtime.
+        # Any embedded framework lives in DIFFERENT places per platform: the iOS app puts
+        # them in `.app/Frameworks` (=@executable_path/Frameworks), the macOS app in
+        # `.app/Contents/Frameworks` (=@executable_path/../Frameworks). List BOTH so a
+        # multiplatform embedded slice resolves at runtime on each platform.
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
