@@ -16,6 +16,9 @@ struct PocketDJApp: App {
     @State private var edits = EditsStore(fileURL: EditsStore.launchURL())
     @State private var collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
     @State private var rips: RipsStore
+    /// Apple Music (Local) sync client (Settings ▸ "Sync Apple Music library"). Talks to the
+    /// SAME rip server (URL + token from settings) to detect newly-added library tracks.
+    @State private var musicSync = MusicSyncClient()
     @State private var player: PlayerEngine
     @State private var streaming: StreamingStore
     /// App-side BURN queue (Feature 2): downloads ripped songs + sidecars into managed
@@ -82,6 +85,7 @@ struct PocketDJApp: App {
                 .environment(edits)
                 .environment(collections)
                 .environment(rips)
+                .environment(musicSync)
                 .environment(player)
                 .environment(streaming)
                 .environment(burns)

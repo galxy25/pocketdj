@@ -18,8 +18,8 @@
 //   curl localhost:8787/health
 import http from 'node:http';
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync, copyFileSync } from 'node:fs';
+import { randomUUID, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +38,20 @@ const CFG = {
   bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
   analogBase: (process.env.POCKETDJ_ANALOG_BASE || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
   libraryXml: (process.env.POCKETDJ_LIBRARY_XML || join(homedir(), 'Downloads', 'Library.xml')).replace(/^~/, homedir()),
+  // ---- AM-sync (daily 04:00 + on-demand /am-sync): keep "Apple Music (Local)" in step ----
+  // Read the AUTO-MAINTAINED shared Library.xml (Music ▸ Settings ▸ Advanced ▸ "Share Library
+  // XML…" writes ~/Music/Music/Library.xml as the library changes — always fresh, plain file
+  // read, no removable-volume TCC). Distinct from CFG.libraryXml (the ~/Downloads/Library.xml
+  // that feeds the cloud-rip probe + the rip skill). Falls back to CFG.libraryXml at runtime
+  // if this file doesn't exist (warned). The change-set OUTPUT goes to downloadsDir (overridable
+  // to a temp dir for tests); the machine-local DETECTION cursor lives in amSyncStateDir (never
+  // in the repo — the cron-agent owns a SEPARATE ship cursor in index-out/apple-music/state.json).
+  amLibraryXml: (process.env.POCKETDJ_AM_LIBRARY_XML
+    || join(homedir(), 'Music', 'Music', 'Library.xml')).replace(/^~/, homedir()),
+  downloadsDir: (process.env.POCKETDJ_DOWNLOADS_DIR
+    || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
+  amSyncStateDir: (process.env.POCKETDJ_AM_STATE_DIR
+    || join(homedir(), '.pocketdj', 'am-sync')).replace(/^~/, homedir()),
   ahRecDir: (process.env.POCKETDJ_AH_REC_DIR || join(homedir(), 'Music', 'Audio Hijack')).replace(/^~/, homedir()),
   useAgent: process.env.RIP_AGENT === '1', // Phase 2: run the rip skill via a headless Claude agent (adaptive)
   worker: process.env.RIP_WORKER || join(REPO, 'scripts/rip-one.mjs'), // digital capture worker (swappable for tests)
@@ -107,6 +121,8 @@ const RIP_PROTOCOL = 2;
 mkdirSync(join(CFG.tmp, 'jobs'), { recursive: true });
 const QUEUE_DIR = join(CFG.tmp, 'queue');
 mkdirSync(QUEUE_DIR, { recursive: true });
+const SYNC_JOBS_DIR = join(CFG.tmp, 'sync-jobs'); // AM-sync job state (survives a mid-poll restart)
+mkdirSync(SYNC_JOBS_DIR, { recursive: true });
 
 // ---------------- catalog (songId/albumId → metadata) ----------------
 const songById = new Map();
@@ -195,6 +211,154 @@ let working = false;
 // kills (never the aws s3 cp upload or saveManifest, which are idempotent and must finish).
 const activeChild = { p: null };
 let activeJobId = null;
+
+// ---------------- AM-sync jobs (POST /am-sync → jobId · GET /am-sync/<id> → result set) ----------------
+// A DEDICATED lightweight registry, NOT the capture `queue`/`pump`: jobView() strips
+// everything except rip fields, so it can't carry the added/changed/removed result set the
+// app + cron-agent consume. The sync job mirrors the SHAPE of a rip job (immediate jobId,
+// poll-by-id) but owns its own map + on-disk mirror. Phases: queued → scanning → diffing →
+// ready | error. Single-flight via amCheckRunning (mirrors backfillRunning).
+const syncJobs = new Map();   // syncJobId -> { jobId, phase, message, error, result, createdAt, updatedAt }
+let amCheckRunning = false;
+const syncJobFile = (id) => join(SYNC_JOBS_DIR, `${id}.json`);
+function setSyncPhase(job, phase, extra = {}) {
+  Object.assign(job, { phase, ...extra, updatedAt: Date.now() });
+  try { writeFileSync(syncJobFile(job.jobId), JSON.stringify(job)); } catch { /* ignore */ }
+}
+function readSyncJobFile(id) {
+  try { return JSON.parse(readFileSync(syncJobFile(id), 'utf8')); } catch { return null; }
+}
+function newSyncJob() {
+  const job = { jobId: randomUUID(), phase: 'queued', createdAt: Date.now(), message: null, error: null, result: null };
+  syncJobs.set(job.jobId, job);
+  setSyncPhase(job, 'queued');
+  return job;
+}
+
+// Thin promise wrapper over spawn('node', …) resolving on a clean (code 0) exit — the house
+// style for shelling to a node sub-script (mirrors runDigitalJob's detached spawn). Rejects
+// with the tail of stderr on a non-zero exit so a diff failure surfaces in the sync job.
+function spawnNode(args, opts = {}) {
+  return new Promise((res, rej) => {
+    const p = spawn('node', args, { cwd: REPO, ...opts });
+    let err = '';
+    p.stderr?.on('data', (d) => { err += d; if (err.length > 4000) err = err.slice(-4000); });
+    p.stdout?.on('data', (d) => process.stderr.write(d)); // surface the indexer's progress
+    p.on('error', rej);
+    p.on('close', (code) => (code === 0 ? res() : rej(new Error(`node ${args[0]} exited ${code}: ${err.slice(-400)}`))));
+  });
+}
+
+// Build the ~/Downloads change-set record (schema pocketdj-am-changeset/1). Self-sufficient:
+// carries the EXACT library snapshot path + its sha256 so the cron-agent's full rebuild is
+// deterministic + decoupled from Music's live state at cron time. Written only when added>0.
+function buildChangeset(ms, snapshotPath, delta, added, counts, since) {
+  let snapSha = null;
+  try { snapSha = createHash('sha256').update(readFileSync(snapshotPath)).digest('hex'); } catch { /* best-effort */ }
+  const albumNameById = new Map((delta.albums || []).map((a) => [a.id, a]));
+  const addedFull = (delta.songs || []).map((s) => ({
+    songId: s.id, albumId: s.albumId, title: s.name, artist: s.artist,
+    album: albumNameById.get(s.albumId)?.name || null,
+    trackNumber: s.trackNumber ?? null, appleMusicId: s.appleMusicId ?? null,
+  }));
+  return {
+    schema: 'pocketdj-am-changeset/1',
+    generatedAt: new Date(ms).toISOString(),
+    ts: ms,
+    source: { type: 'digital', sourceName: 'Apple Music (Local)' },
+    librarySnapshot: snapshotPath,
+    librarySnapshotSha256: snapSha,
+    since: since || null,
+    counts: { ...counts, albumsTouched: (delta.albums || []).length, playlists: (delta.playlists || []).length },
+    added: addedFull,
+    changed: [],
+    removed: [],
+  };
+}
+
+// The AM-check: read the (fresh) Library.xml, diff via the existing incremental indexer to a
+// temp delta, harvest the ADDED set, and (when non-empty) write a change-set + an exact library
+// snapshot to downloadsDir. Shared by the 04:00 timer and POST /am-sync. Single-flight.
+//
+// Cursor atomicity: run the indexer to a TEMP state file, and only rename(tmpState → stateFile)
+// AFTER the change-set is durably written — so "change-set written" and "detection cursor
+// advanced" are atomic. A crash before the rename re-detects the same set on the next call
+// (no lost changeset); a crash after leaves a written changeset whose cursor already advanced.
+async function runAmCheck(job) {
+  if (amCheckRunning) { setSyncPhase(job, 'scanning', { message: 'another check is already running' }); }
+  amCheckRunning = true;
+  try {
+    setSyncPhase(job, 'scanning');
+    const haveShared = existsSync(CFG.amLibraryXml);
+    const xml = haveShared ? CFG.amLibraryXml : CFG.libraryXml;
+    if (!haveShared) console.error(`  am-sync: ${CFG.amLibraryXml} not found — falling back to ${CFG.libraryXml}`);
+    if (!existsSync(xml)) throw new Error(`no Library.xml to read (looked at ${CFG.amLibraryXml} and ${CFG.libraryXml})`);
+    mkdirSync(CFG.amSyncStateDir, { recursive: true });
+    mkdirSync(CFG.downloadsDir, { recursive: true });
+    const stateFile = join(CFG.amSyncStateDir, 'state.json');
+    const tmpState = join(CFG.amSyncStateDir, `state.next-${Date.now()}.json`);
+    const firstRun = !existsSync(stateFile);
+    // The indexer's `Date Added` boundary is INCLUSIVE (it emits tracks with added >= since, and
+    // writes back lastDateAdded = maxDateAdded). Reusing the raw cursor as `since` would re-detect
+    // the single track sitting exactly at the cursor on EVERY run — writing a spurious change-set
+    // (and copying the whole ~160MB library snapshot into Downloads) daily even with no new music.
+    // So we pass an EXCLUSIVE since = cursor + 1ms: the boundary track is skipped, genuinely newer
+    // tracks still emit, and a no-change day is a true zero. (A track added in the SAME millisecond
+    // as the previous max but only present in a later export is the sole edge it can miss — and the
+    // cron-agent's FULL rebuild indexes the whole snapshot anyway, so the live catalog still gets it.)
+    let cursorIso = null;
+    if (!firstRun) { try { cursorIso = JSON.parse(readFileSync(stateFile, 'utf8')).lastDateAdded || null; } catch { /* ignore */ } }
+    let sinceIso;
+    if (firstRun) {
+      // SEED the cursor to "now" so the first run does NOT emit the whole (~93k-track) library
+      // as "added" — only genuinely new tracks from the next run forward are detected.
+      sinceIso = new Date().toISOString();
+    } else if (cursorIso) {
+      const t = Date.parse(cursorIso);
+      sinceIso = Number.isFinite(t) ? new Date(t + 1).toISOString() : cursorIso;
+    } else {
+      sinceIso = new Date().toISOString();
+    }
+    const tmpDelta = join(CFG.tmp, `am-delta-${Date.now()}.json`);
+
+    setSyncPhase(job, 'diffing');
+    const args = [join(REPO, 'scripts/index-apple-music.mjs'), '--xml', xml, '--out', tmpDelta,
+                  '--state', tmpState, '--since', sinceIso];
+    await spawnNode(args);
+
+    const delta = JSON.parse(readFileSync(tmpDelta, 'utf8'));
+    rmSync(tmpDelta, { force: true });
+    const added = (delta.songs || []).map((s) => ({
+      songId: s.id, albumId: s.albumId, title: s.name, artist: s.artist, change: 'added',
+    }));
+    const counts = { added: added.length, changed: 0, removed: 0 };
+
+    let changeSetPath = null;
+    if (added.length > 0) {
+      const ms = Date.now();
+      const snap = join(CFG.downloadsDir, `pocketdj-am-library-${ms}.xml`);
+      copyFileSync(xml, snap); // the EXACT snapshot the cron-agent rebuilds from
+      changeSetPath = join(CFG.downloadsDir, `pocketdj-am-changeset-${ms}.json`);
+      const cs = buildChangeset(ms, snap, delta, added, counts, sinceIso);
+      writeFileSync(changeSetPath, JSON.stringify(cs, null, 2));
+      console.error(`  am-sync: ${added.length} added → ${changeSetPath}`);
+    } else {
+      console.error('  am-sync: no new tracks (cursor advanced, no change-set written)');
+    }
+    // Advance the detection cursor ATOMICALLY only after the change-set is durable.
+    renameSync(tmpState, stateFile);
+
+    job.result = { added, changed: [], removed: [], counts, changeSetPath };
+    setSyncPhase(job, 'ready');
+    return job.result;
+  } catch (e) {
+    job.error = String(e?.message || e);
+    setSyncPhase(job, 'error');
+    throw e;
+  } finally {
+    amCheckRunning = false;
+  }
+}
 
 function setPhase(job, phase, extra = {}) {
   Object.assign(job, { phase, ...extra, updatedAt: Date.now() });
@@ -1093,6 +1257,28 @@ const server = http.createServer(async (req, res) => {
     if (isCloudAnalogEntry(a.songId)) requestPublicFold();
     return send(res, 200, { ok: true, songId: a.songId });
   }
+  // POST /am-sync — kick an Apple Music (Local) library check and return IMMEDIATELY with a
+  // jobId (mirrors POST /rip's accept-and-poll shape). The check runs fire-and-forget; the
+  // app polls GET /am-sync/<id> for the result set. A 404 here ⇒ older server ⇒ the client
+  // surfaces "Server too old".
+  if (path === '/am-sync' && req.method === 'POST') {
+    const job = newSyncJob();
+    const phase = job.phase; // snapshot 'queued' BEFORE the kick (runAmCheck's sync prefix mutates it)
+    runAmCheck(job).catch((e) => { job.error = String(e?.message || e); setSyncPhase(job, 'error'); });
+    return send(res, 200, { jobId: job.jobId, phase });
+  }
+  // GET /am-sync/<id> — poll the sync job's full result set (the app/agent contract). Falls
+  // back to the on-disk mirror so a mid-poll server restart still resolves the job.
+  const sm = path.match(/^\/am-sync\/([^/]+)$/);
+  if (sm && req.method === 'GET') {
+    const id = decodeURIComponent(sm[1]);
+    const st = syncJobs.get(id) || readSyncJobFile(id);
+    if (!st) return send(res, 404, { error: 'unknown sync job' });
+    return send(res, 200, {
+      jobId: st.jobId, phase: st.phase, message: st.message || null, error: st.error || null,
+      result: st.result || null,
+    });
+  }
   return send(res, 404, { error: 'not found' });
 });
 
@@ -1105,3 +1291,34 @@ resumeAnalysis(); // analyze any ripped songs that don't have bpm/key/waveform y
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });
+
+// ---------------- daily 04:00 AM-sync scheduler (self-rearming setTimeout) ----------------
+// The server is always up (Tailscale-exposed, externally supervised), so an in-process timer
+// is the simplest scheduler — no launchd needed, matches house style (unref'd setTimeout).
+// SELF-REARMING (recompute ms-to-next-04:00 on each fire) is DST- + missed-run-tolerant; a
+// plain setInterval would drift. Idempotent: the amCheckRunning guard prevents overlap with a
+// manual POST /am-sync, and re-arming just schedules the following 04:00 after a sleep/miss.
+// The change-set it produces is consumed by the app (Settings button) + the cron Claude-agent.
+function msUntilNext(hour = 4, now = new Date()) {
+  const next = new Date(now);
+  next.setHours(hour, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next - now;
+}
+function scheduleDailyAmCheck() {
+  const t = setTimeout(async () => {
+    try {
+      if (!amCheckRunning) {
+        const job = newSyncJob(); // internal (not exposed via an endpoint)
+        console.error('  am-sync: 04:00 scheduled check starting…');
+        await runAmCheck(job).catch((e) => console.error('  am-sync 04:00 check failed:', e.message));
+      }
+    } finally {
+      scheduleDailyAmCheck(); // re-arm for the NEXT 04:00
+    }
+  }, msUntilNext(4));
+  t.unref?.();
+}
+// INERT GATE: never arm under tests/offline dry-runs (POCKETDJ_DISABLE_SCHEDULER=1). The user
+// activates the daily check simply by NOT setting that env var on the running server.
+if (process.env.POCKETDJ_DISABLE_SCHEDULER !== '1') scheduleDailyAmCheck();
