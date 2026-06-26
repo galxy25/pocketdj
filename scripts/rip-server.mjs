@@ -285,7 +285,14 @@ function buildChangeset(ms, snapshotPath, delta, added, counts, since) {
 // advanced" are atomic. A crash before the rename re-detects the same set on the next call
 // (no lost changeset); a crash after leaves a written changeset whose cursor already advanced.
 async function runAmCheck(job) {
-  if (amCheckRunning) { setSyncPhase(job, 'scanning', { message: 'another check is already running' }); }
+  // Single-flight: a check is a whole-library read + diff + cursor advance — two concurrent
+  // runs would write duplicate change-sets for the same added set and race the renameSync of
+  // the detection cursor. Early-out (the flag is cleared in finally ONLY for the run that owns
+  // it — this throw happens BEFORE the try, so the in-flight run keeps the flag).
+  if (amCheckRunning) {
+    setSyncPhase(job, 'error', { error: 'another Apple Music check is already running' });
+    throw new Error('a check is already running');
+  }
   amCheckRunning = true;
   try {
     setSyncPhase(job, 'scanning');

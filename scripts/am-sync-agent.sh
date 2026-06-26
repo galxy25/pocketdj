@@ -62,9 +62,13 @@ run() {
   if [ "$DRY_RUN" = "1" ]; then echo "DRYRUN: $*" | tee -a "$LOG"; else "$@"; fi
 }
 
-INDEX_OUT="index-out/apple-music/index.json"
-STATE_OUT="index-out/apple-music/state.json"
 PUBLIC_INDEX="public/apple-music-index.json"
+# write a gitignored local file (the deploy receipt) — echoed-only under --dry-run.
+write_file() { if [ "$DRY_RUN" = "1" ]; then echo "DRYRUN: write $1" | tee -a "$LOG"; else printf '%s\n' "$2" > "$1"; fi; }
+# the committed index's blob sha of the LAST run we confirmed-deployed (gitignored, machine-local).
+RECEIPT_DIR="${POCKETDJ_AM_AGENT_STATE:-$HOME/.pocketdj}"
+RECEIPT="$RECEIPT_DIR/am-last-deployed-blob"
+mkdir -p "$RECEIPT_DIR" 2>/dev/null || true
 
 process_one() {
   local CS="$1"
@@ -97,20 +101,55 @@ process_one() {
   run "$GIT" checkout main
   run "$GIT" pull --ff-only origin main
 
-  # (1) FULL idempotent rebuild from the EXACT snapshot (namespaced Persistent-ID ids → stable).
-  log "rebuilding index from snapshot $SNAP"
-  "$NODE" --max-old-space-size=4096 "$REPO/scripts/index-apple-music.mjs" \
-    --xml "$SNAP" --out "$INDEX_OUT" --state "$STATE_OUT"
-  cp "$INDEX_OUT" "$PUBLIC_INDEX"
+  # All rebuild outputs go to a per-changeset SCRATCH dir, NOT the repo: the tracked
+  # public/apple-music-index.json is touched ONLY by the `run cp` below (skipped under --dry-run),
+  # so a preview mutates nothing in the working tree. (index-out/ is gitignored, but writing the
+  # full ~93k-track index there each --dry-run would still churn the clone; a temp dir is clean.)
+  local SCRATCH; SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/pdj-am-rebuild.XXXXXX")"
+  local INDEX_OUT="$SCRATCH/index.json" FINAL="$SCRATCH/final.json"
 
-  # (1a) EMPTY-DIFF GUARD: no real change ⇒ archive + stop (no empty commit / no prod invalidation).
-  if "$GIT" diff --quiet -- "$PUBLIC_INDEX"; then
-    log "no index change for $base — archiving (empty-diff guard)"
+  # (1) FULL idempotent rebuild from the EXACT snapshot (namespaced Persistent-ID ids → stable).
+  # NO --state: --state makes the indexer treat its lastDateAdded as a `since` cursor and emit only
+  # a DELTA on the 2nd+ run — which would `cp` a handful-of-tracks index over the full catalog. The
+  # agent always wants a deterministic FULL rebuild; the git-diff guard (not a cursor) decides ship.
+  log "rebuilding index from snapshot $SNAP → $SCRATCH"
+  "$NODE" --max-old-space-size=4096 "$REPO/scripts/index-apple-music.mjs" \
+    --xml "$SNAP" --out "$INDEX_OUT"
+
+  # (1b) PRESERVE resolved Apple Music catalog ids. The multi-day iTunes crawl
+  # (scripts/resolve-apple-music-catalog.mjs) bakes ~76k `appleMusicId` storeIds straight into the
+  # COMMITTED public index; its cache ndjson is gitignored + ABSENT in this clone, so the committed
+  # file is the ONLY copy. A raw rebuild drops them all (→ streaming falls back to local-ripping),
+  # so merge them forward by song id. First-ever ship (no committed file) → rebuilt index as-is.
+  if [ -e "$PUBLIC_INDEX" ]; then
+    "$NODE" --max-old-space-size=4096 "$REPO/scripts/am-merge-catalog-ids.mjs" \
+      --old "$PUBLIC_INDEX" --new "$INDEX_OUT" --out "$FINAL"
+  else
+    FINAL="$INDEX_OUT"
+  fi
+
+  # (1a) EMPTY-DIFF GUARD: compare the would-be-published FINAL against the committed index WITHOUT
+  # writing it (so --dry-run stays non-mutating). No NEW change ⇒ usually archive — BUT a prior run
+  # may have committed+pushed this changeset and then FAILED to deploy (crash / S3 hiccup), leaving
+  # the changeset un-archived and S3 stale. Detect that via the changeset's unique commit message
+  # and RE-DEPLOY from the committed file before consuming, so S3 always converges.
+  if "$GIT" diff --no-index --quiet -- "$PUBLIC_INDEX" "$FINAL"; then
+    if "$GIT" log -1 --grep="apply changeset $TS\$" --format=%H 2>/dev/null | grep -q .; then
+      log "changeset $TS already committed but not confirmed-deployed — re-deploying then archiving"
+      run "$DEPLOY" dev
+      run "$DEPLOY" prod
+      write_file "$RECEIPT" "$("$GIT" rev-parse "HEAD:public/apple-music-index.json" 2>/dev/null || echo unknown)"
+    else
+      log "no index change for $base — archiving (empty-diff guard)"
+    fi
     run mv "$CS" "$PROCESSED"/
     [ -e "$SNAP" ] && run mv "$SNAP" "$PROCESSED"/ || true
+    rm -rf "$SCRATCH"
     return 0
   fi
 
+  # publish: cp is the FIRST tracked-tree write (skipped under --dry-run).
+  run cp "$FINAL" "$PUBLIC_INDEX"
   # (2) COMMIT
   run "$GIT" add "$PUBLIC_INDEX"
   run "$GIT" commit -m "Apple Music sync: apply changeset $TS"
@@ -121,6 +160,8 @@ process_one() {
   # (5) DEPLOY S3 — only AFTER GitHub has the commit.
   run "$DEPLOY" dev
   run "$DEPLOY" prod
+  # record the deployed blob so a re-run after a deploy-only failure can tell "already shipped".
+  write_file "$RECEIPT" "$("$GIT" rev-parse "HEAD:public/apple-music-index.json" 2>/dev/null || echo unknown)"
   # (6) OPTIONAL search refresh (non-fatal, opt-in).
   if [ "${POCKETDJ_AM_REINDEX_SEARCH:-0}" = "1" ]; then
     run "$NODE" "$REPO/scripts/es-index.mjs" \
@@ -130,6 +171,7 @@ process_one() {
   # (7) MARK CONSUMED — only after full success.
   run mv "$CS" "$PROCESSED"/
   [ -e "$SNAP" ] && run mv "$SNAP" "$PROCESSED"/ || true
+  rm -rf "$SCRATCH"
   log "done $base"
 }
 

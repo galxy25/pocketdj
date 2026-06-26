@@ -200,14 +200,19 @@ try {
   mkdirSync(join(agentRepo, 'public'), { recursive: true });
   mkdirSync(join(agentRepo, 'index-out', 'apple-music'), { recursive: true });
   const agentDL = join(work, 'agent-downloads'); mkdirSync(agentDL, { recursive: true });
+  const agentState = join(work, 'agent-state'); mkdirSync(agentState, { recursive: true }); // deploy receipt → TEMP, not real ~/.pocketdj
   const fakes = join(work, 'fakes'); mkdirSync(fakes, { recursive: true });
   const callLog = join(work, 'agent-calls.log');
 
-  // fake git: logs each subcommand; `diff --quiet` exits per FAKE_GIT_DIFF_EXIT (default 1 = dirty).
+  // fake git: logs each subcommand; `diff` exits per FAKE_GIT_DIFF_EXIT (default 1 = dirty);
+  // `log` prints a hash only when FAKE_GIT_LOG_MATCH is set (simulates "this changeset was already
+  // committed"); `rev-parse` prints a stub blob sha so the deploy-receipt write has content.
   const fakeGit = join(fakes, 'git');
   writeFileSync(fakeGit, `#!/bin/sh
 echo "git $*" >> "$CALLLOG"
 if [ "$1" = "diff" ]; then exit \${FAKE_GIT_DIFF_EXIT:-1}; fi
+if [ "$1" = "log" ]; then [ -n "$FAKE_GIT_LOG_MATCH" ] && echo deadbeefcafe1234; exit 0; fi
+if [ "$1" = "rev-parse" ]; then echo blobsha-stub; exit 0; fi
 exit 0
 `); chmodSync(fakeGit, 0o755);
   // fake deploy.sh: logs argv.
@@ -251,6 +256,7 @@ exit 0
         POCKETDJ_NODE_CMD: fakeNode,
         POCKETDJ_JQ_CMD: fakeJq,
         POCKETDJ_AM_AGENT_LOG: join(work, 'agent.log'),
+        POCKETDJ_AM_AGENT_STATE: agentState,
         CALLLOG: callLog,
         ...extraEnv,
       },
@@ -306,7 +312,8 @@ exit 0
     const p = spawn('bash', [join(REPO, 'scripts/am-sync-agent.sh'), '--dry-run'], {
       env: { ...process.env, POCKETDJ_AGENT_REPO: agentRepo, POCKETDJ_DOWNLOADS_DIR: agentDL,
         POCKETDJ_GIT_CMD: fakeGit, POCKETDJ_DEPLOY_CMD: fakeDeploy, POCKETDJ_NODE_CMD: fakeNode,
-        POCKETDJ_JQ_CMD: fakeJq, POCKETDJ_AM_AGENT_LOG: join(work, 'agent.log'), CALLLOG: join(work, 'dry-calls.log') },
+        POCKETDJ_JQ_CMD: fakeJq, POCKETDJ_AM_AGENT_LOG: join(work, 'agent.log'),
+        POCKETDJ_AM_AGENT_STATE: agentState, CALLLOG: join(work, 'dry-calls.log') },
       stdio: ['ignore', 'ignore', 'ignore'] });
     p.on('close', (c) => res(c));
   });
@@ -317,6 +324,49 @@ exit 0
   const dryCalls = existsSync(join(work, 'dry-calls.log')) ? readFileSync(join(work, 'dry-calls.log'), 'utf8') : '';
   ok(!/^git commit/m.test(dryCalls) && !/^deploy /m.test(dryCalls), '--dry-run executed no commit/deploy (echo-only)');
   ok(existsSync(e.csp), '--dry-run left the change-set in place (did NOT move to processed)');
+
+  // --- scenario E: committed-but-not-deployed RECOVERY (a prior run pushed, then deploy failed) ---
+  // The rebuild now matches the (already-committed) index (empty diff), but the changeset's commit
+  // EXISTS in git log → the agent must RE-DEPLOY (never leave S3 stale) and archive WITHOUT recommitting.
+  writeFileSync(callLog, '');
+  mkChangeset(1750000000005);
+  code = await runAgent({ FAKE_GIT_DIFF_EXIT: '0', FAKE_GIT_LOG_MATCH: '1' });
+  ok(code === 0, `agent (committed-but-not-deployed) exits 0 (got ${code})`);
+  const logE = readFileSync(callLog, 'utf8');
+  ok(!/^git commit/m.test(logE), 'recovery: does NOT re-commit (index already committed last run)');
+  ok(/^deploy dev/m.test(logE) && /^deploy prod/m.test(logE), 'recovery: RE-DEPLOYS dev+prod so S3 is never left stale');
+  ok(existsSync(join(agentDL, 'pocketdj-am-processed', 'pocketdj-am-changeset-1750000000005.json')),
+    'recovery: change-set archived only after the re-deploy');
+
+  // ============================================================================
+  // (5) am-merge-catalog-ids.mjs — the catalog-id PRESERVATION the agent runs after a rebuild.
+  //     A raw rebuild drops the resolver-baked appleMusicId storeIds; this merge carries them back.
+  // ============================================================================
+  console.log('\n(5) am-merge-catalog-ids.mjs preserves resolved appleMusicId across a full rebuild');
+  const mergeDir = join(work, 'merge'); mkdirSync(mergeDir, { recursive: true });
+  const oldIdx = { manifest: { counts: {} }, albums: [], songs: [
+    { id: 'sng_a', name: 'A', artist: 'X', appleMusicId: '111' },
+    { id: 'sng_b', name: 'B', artist: 'Y', appleMusicId: '222' },
+    { id: 'sng_c', name: 'C', artist: 'Z' },                    // genuine miss — never resolved
+  ] };
+  const newIdx = { manifest: { counts: {} }, albums: [], songs: [
+    { id: 'sng_a', name: 'A', artist: 'X' },                    // rebuild DROPPED the resolved id
+    { id: 'sng_b', name: 'B2', artist: 'Y' },                   // edited title, same id
+    { id: 'sng_c', name: 'C', artist: 'Z' },
+    { id: 'sng_d', name: 'D', artist: 'W' },                    // brand-new track (no id yet)
+  ] };
+  writeFileSync(join(mergeDir, 'old.json'), JSON.stringify(oldIdx));
+  writeFileSync(join(mergeDir, 'new.json'), JSON.stringify(newIdx));
+  const mr = await runNode(['scripts/am-merge-catalog-ids.mjs', '--old', join(mergeDir, 'old.json'),
+    '--new', join(mergeDir, 'new.json'), '--out', join(mergeDir, 'merged.json')]);
+  ok(mr.code === 0, `merge exits 0 (got ${mr.code})`);
+  const merged = JSON.parse(readFileSync(join(mergeDir, 'merged.json'), 'utf8'));
+  const byId = Object.fromEntries(merged.songs.map((s) => [s.id, s]));
+  ok(byId.sng_a.appleMusicId === '111', 'dropped id sng_a restored from the committed index (111)');
+  ok(byId.sng_b.appleMusicId === '222' && byId.sng_b.name === 'B2', 'id restored AND the rebuild content (edited title) is kept');
+  ok(byId.sng_c.appleMusicId === undefined, 'a genuine miss stays unresolved');
+  ok(!byId.sng_d.appleMusicId, 'a brand-new track has no id (the resolver crawl will fill it later)');
+  ok(merged.manifest.counts.songsWithAppleMusicId === 2, 'coverage count refreshed (2 songs with ids)');
 
   console.log(`\n${fail ? '✗ ' + fail + ' check(s) failed' : '✓ all am-sync dry-run checks passed'}`);
 } finally {

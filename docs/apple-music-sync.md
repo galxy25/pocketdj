@@ -68,7 +68,8 @@ library as "added"; only tracks added after that first run are detected.
 
 ```bash
 cd ~/pocketdj-am-agent
-# Preview first — SAFE, commits/pushes/deploys nothing:
+# Preview first — SAFE: rebuilds into a temp dir to show what WOULD ship, but writes nothing to the
+# repo working tree and runs no git commit/push/deploy (every mutating step is echoed, not executed):
 POCKETDJ_AGENT_REPO=$PWD scripts/am-sync-agent.sh --dry-run
 
 # Then install the timer (edit the placeholders in the template first):
@@ -102,15 +103,29 @@ skipped, and an empty rebuild diff archives without committing.
 + sibling snapshot `pocketdj-am-library-<unixms>.xml`. See the `am-sync-deploy` skill for the full
 schema. Written only when `added > 0`.
 
-## Two independent cursors (the key decoupling)
+## The detection cursor + the agent's full rebuild (the key decoupling)
 
 - **Detection cursor** — `~/.pocketdj/am-sync/state.json` (machine-local, NOT in the repo). Owned
-  by the rip server; advances atomically only after the change-set is durably written.
-- **Ship cursor** — `index-out/apple-music/state.json` (in the repo). Owned by the cron agent's
-  full rebuild.
+  by the rip server; advances atomically only after the change-set is durably written. It decides
+  *what the server reports as added* and *when to write a change-set*.
+- **The agent does a FULL rebuild — no ship cursor.** For each change-set it rebuilds the WHOLE
+  index from the change-set's library snapshot (`index-apple-music.mjs --xml <snap> --out <scratch>`,
+  **without `--state`** — `--state` would turn the rebuild into a delta and publish a handful of
+  tracks over the full catalog). Whether to ship is decided by `git diff`, never a cursor.
+- **Catalog-id preservation.** A raw rebuild does not know the ~76k `appleMusicId` storeIds that the
+  multi-day resolver crawl (`scripts/resolve-apple-music-catalog.mjs`) bakes into the *committed*
+  `public/apple-music-index.json` (its cache ndjson is gitignored + absent in the agent's clone). So
+  the agent runs `scripts/am-merge-catalog-ids.mjs --old public/apple-music-index.json --new <scratch>`
+  to carry those ids forward before publishing — otherwise every ship would strip streaming
+  resolution and fall the whole source back to local-ripping.
+- **Deploy-after-push recovery.** If a prior run committed + pushed a change-set but the S3 deploy
+  failed, the next rebuild's diff is empty (the index is already committed). The empty-diff guard
+  does NOT just archive: it checks `git log --grep="apply changeset <ts>"`, and if that commit
+  exists it **re-deploys** from the committed file before consuming, so S3 never lags GitHub. A
+  machine-local receipt (`~/.pocketdj/am-last-deployed-blob`, override with `POCKETDJ_AM_AGENT_STATE`)
+  records the last confirmed-deployed blob.
 
-They never fight: the agent does a full idempotent rebuild guarded by `git diff --quiet`, and the
-change-set is the audit handoff between them.
+The change-set is the audit handoff: the server detects + snapshots, the agent rebuilds + ships.
 
 ## Scope / known gaps (v1)
 

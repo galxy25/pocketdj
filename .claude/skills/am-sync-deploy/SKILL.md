@@ -50,11 +50,25 @@ SNAP="$(jq -r .librarySnapshot "$CS")"
 [ -e "$SNAP" ] || { echo "snapshot missing"; exit 1; }
 
 # (1) FULL idempotent rebuild from the snapshot (namespaced Persistent-ID ids → stable across runs).
-node --max-old-space-size=4096 scripts/index-apple-music.mjs \
-  --xml "$SNAP" --out index-out/apple-music/index.json --state index-out/apple-music/state.json
-cp index-out/apple-music/index.json public/apple-music-index.json
+# NO --state: with --state the indexer treats its lastDateAdded as a `since` cursor and emits only a
+# DELTA on the 2nd+ run — which would publish a handful-of-tracks index over the full ~93k catalog.
+# The agent always wants a full rebuild; the git-diff guard (not a cursor) decides whether to ship.
+SCRATCH="$(mktemp -d)"
+node --max-old-space-size=4096 scripts/index-apple-music.mjs --xml "$SNAP" --out "$SCRATCH/index.json"
+
+# (1b) PRESERVE resolved Apple Music catalog ids. The multi-day iTunes crawl
+# (scripts/resolve-apple-music-catalog.mjs) bakes ~76k `appleMusicId` storeIds straight into the
+# COMMITTED public/apple-music-index.json; its cache ndjson is gitignored + ABSENT in this clone, so
+# the committed file is the ONLY copy. A raw rebuild drops every one (→ streaming falls back to
+# local-ripping), so merge them forward by song id before publishing.
+node --max-old-space-size=4096 scripts/am-merge-catalog-ids.mjs \
+  --old public/apple-music-index.json --new "$SCRATCH/index.json" --out "$SCRATCH/final.json"
+cp "$SCRATCH/final.json" public/apple-music-index.json
 
 # (1a) EMPTY-DIFF GUARD — no real change ⇒ archive + stop (no empty commit, no prod invalidation).
+# RECOVERY: if a PRIOR run committed+pushed THIS changeset but then failed to deploy, the diff is
+# empty yet S3 is stale. If `git log -1 --grep="apply changeset $TS\$"` finds the commit, RE-DEPLOY
+# (scripts/deploy.sh dev && prod) before archiving — never leave S3 behind the audit trail.
 if git diff --quiet -- public/apple-music-index.json; then
   mv "$CS" "$PROCESSED"/; mv "$SNAP" "$PROCESSED"/ 2>/dev/null || true; exit 0
 fi
@@ -78,9 +92,11 @@ mv "$CS" "$PROCESSED"/; mv "$SNAP" "$PROCESSED"/ 2>/dev/null || true
 ## Why this order + idempotency
 
 - **GitHub before S3**: there is always a committed audit trail of exactly what went live, BEFORE
-  the live catalog changes. A crash after push / before deploy leaves GitHub ahead → the next run
-  re-deploys from the committed file and converges. A crash before `git push` re-runs the rebuild,
-  which (1a) collapses to a no-op if nothing changed.
+  the live catalog changes. A crash after push / before deploy leaves GitHub ahead → the next run's
+  rebuild diff is now EMPTY (the index is already committed), so the empty-diff guard's RECOVERY
+  branch (the `git log --grep` check above) re-deploys from the committed file and converges — it
+  does NOT silently archive a still-undeployed changeset. A crash before `git push` re-runs the
+  rebuild, which (1a) collapses to a no-op if nothing changed.
 - **Full rebuild, not a delta apply**: the index is idempotent by namespaced Persistent-ID sha, so
   re-running is safe; a removed/edited track is reconciled (omitted/updated) on the next rebuild even
   though v1 change-sets only itemize `added`.
