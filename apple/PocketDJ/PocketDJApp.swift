@@ -59,7 +59,14 @@ struct PocketDJApp: App {
         let amProvider = streaming.appleMusicProvider ?? AppleMusicProvider()
         // Inject the shared background-transfer coordinator so Burn hands each song to a
         // background download task that survives suspend (nil in tests ⇒ the in-process loop).
+        // macOS is NOT suspended like iOS, and the background `URLSession` (nsurlsessiond) path
+        // doesn't reliably deliver downloads on Mac (burns stuck at "Burning 1 of N"). So on macOS
+        // use the in-process serial loop, which runs to completion in the foreground.
+        #if os(macOS)
+        let burns = BurnStore(rips: rips, transfers: nil, fileURL: BurnStore.launchURL())
+        #else
         let burns = BurnStore(rips: rips, transfers: .shared, fileURL: BurnStore.launchURL())
+        #endif
         let coordinator = PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: amProvider))

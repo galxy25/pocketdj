@@ -219,6 +219,20 @@ final class CollectionRipBurnController {
         }
     }
 
+    /// STOP a burn from the progress PILL. Unlike `stop(rips:burns:)` (which routes on
+    /// `inFlightOp`), this works in BOTH burn shapes: the macOS in-process loop (the burn Task is
+    /// still running, `inFlightOp == .burn`) AND the iOS background path (the Task already returned
+    /// after enqueue, `inFlightOp == nil`, downloads still in flight). Signal the BurnStore (halts
+    /// the in-process loop at the next item + cancels in-flight background download tasks) and
+    /// cancel the stored Task. We deliberately DON'T clear `working`/`inFlightOp` here: the
+    /// in-process burn Task clears them itself when it returns its partial result (so the Burn
+    /// button isn't re-enabled while the loop is still finishing the current item); on the
+    /// background path they're already clear. Idempotent.
+    func stopBurn(burns: BurnStore) {
+        burns.requestStop()
+        burnTask?.cancel()
+    }
+
     /// STOP the in-flight op (Feature 1). BURN is app-side: signal the BurnStore loop to
     /// stop after the current item + cancel the Task. RIP needs the server: cancel the
     /// collection's queued/running jobs via `/rip-cancel`, and stop the manifest poll +
@@ -263,17 +277,22 @@ private struct CollectionRipBurnAlert: ViewModifier {
     @Environment(RipsStore.self) private var rips
     @Bindable var controller: CollectionRipBurnController
 
-    /// Background-burn progress string ("Burning N of M") when transfers are in flight via the
-    /// coordinator; nil when idle or on the in-process (test) path.
-    private var backgroundBurnProgress: String? {
-        guard burns.transfers != nil else { return nil }
-        // Read the @Observable mirror on BurnStore (updated on the main actor as each download
-        // finishes) — NOT the coordinator's `progressSnapshot`, which lives on a plain NSObject
-        // SwiftUI can't track, so the overlay would freeze at the enqueue total. The counters are
-        // run-scoped (reset at each burn's `beginRun()`), so a 2nd burn starts at 0.
-        let (total, done) = burns.backgroundProgress
-        guard total > 0, done < total else { return nil }
-        return "Burning \(done + 1) of \(total)"
+    /// ONE unified burn-progress string ("Burning X of N") regardless of path — the user just
+    /// wants "how many songs are left", not whether we're downloading albums or making cuts.
+    ///   • IN-PROCESS path (macOS / tests): driven by `burns.progress` (a single counter; the cut
+    ///     export runs inline, so there's no separate "making cuts" phase).
+    ///   • BACKGROUND path (iOS): driven by the `@Observable` mirror of the coordinator's run-scoped
+    ///     counters (updated on the main actor as each download finishes — NOT the coordinator's
+    ///     `progressSnapshot`, a plain NSObject SwiftUI can't track).
+    private var burnProgressText: String? {
+        if let p = burns.progress, p.total > 0 {
+            return "Burning \(min(p.done + 1, p.total)) of \(p.total)"
+        }
+        if burns.transfers != nil {
+            let (total, done) = burns.backgroundProgress
+            if total > 0, done < total { return "Burning \(done + 1) of \(total)" }
+        }
+        return nil
     }
 
     func body(content: Content) -> some View {
@@ -287,49 +306,39 @@ private struct CollectionRipBurnAlert: ViewModifier {
                 Text(controller.summary ?? "")
             }
             .overlay(alignment: .bottom) {
-                if let p = burns.progress {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("Burning \(p.done + 1)/\(p.total): \(p.label)")
-                            .font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.bottom, 12)
-                    .accessibilityIdentifier("burn-progress")
-                } else if let bg = backgroundBurnProgress {
-                    // Background path: the serial loop returns after enqueue (so `burns.progress`
-                    // is nil) — drive the overlay off the coordinator's done/total counters.
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(bg).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.bottom, 12)
-                    .accessibilityIdentifier("burn-progress")
+                if let text = burnProgressText {
+                    // Single progress pill with an inline STOP (the burn equivalent of the rip
+                    // pill's Stop). STOP works whether the burn Task is still running (macOS
+                    // in-process) or already returned after enqueue (iOS background downloads
+                    // still in flight) — see `stopBurn`.
+                    pill(text, stopId: "collection-burn-stop") { controller.stopBurn(burns: burns) }
+                        .accessibilityIdentifier("burn-progress")
                 } else if controller.ripInProgress {
                     // The collection RIP enqueues fast but completes server-side over time —
                     // keep a live "ripping X of N" indicator + a reachable STOP OUTSIDE the
                     // Menu (a Menu dismisses on selection, so the persistent STOP/progress
                     // lives here, mirroring the burn-progress overlay above).
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(controller.ripProgress ?? "ripping…")
-                            .font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
-                        Button(role: .destructive) {
-                            controller.stop(rips: rips, burns: burns)
-                        } label: {
-                            Label("Stop", systemImage: "stop.circle").labelStyle(.iconOnly)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("collection-rip-stop")
+                    pill(controller.ripProgress ?? "ripping…", stopId: "collection-rip-stop") {
+                        controller.stop(rips: rips, burns: burns)
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.bottom, 12)
                     .accessibilityIdentifier("rip-progress")
                 }
             }
+    }
+
+    /// A bottom progress capsule: spinner + text + an inline destructive Stop button.
+    private func pill(_ text: String, stopId: String, stop: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(text).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
+            Button(role: .destructive, action: stop) {
+                Label("Stop", systemImage: "stop.circle").labelStyle(.iconOnly)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(stopId)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.bottom, 12)
     }
 }
