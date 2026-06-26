@@ -23,7 +23,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyzeAudio } from './lib/audio-analyze.mjs';
+import { analyzeAudio, ANALYSIS_VERSION } from './lib/audio-analyze.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 
@@ -952,21 +952,86 @@ async function analyzeManifestSong(songId) {
   const local = join(CFG.tmp, `${audioBase}.dl.mp3`);
   try { await aws(['s3', 'cp', `s3://${CFG.bucket}/${e.key}`, local]); } catch { return; }
   console.error(`  analyzing ${audioBase} (key=${withKey})…`);
-  const a = await analyzeAudio({ file: local, songId: audioBase, bucket: CFG.bucket, region: CFG.region, profile: CFG.profile, tmp: CFG.tmp, withKey });
+  // Digital: the file IS the song, so compute the beat grid in the SAME pass (no 2nd download).
+  // Analog: the shared album side is the wrong timeline for the grid — it runs on the per-song
+  // cut below, so the beat grid is skipped here.
+  const a = await analyzeAudio({ file: local, songId: audioBase, bucket: CFG.bucket, region: CFG.region, profile: CFG.profile, tmp: CFG.tmp, withKey, withBeatgrid: withKey });
   try { rmSync(local); } catch { /* ignore */ }
   // apply to every manifest entry that shares this audio file
   for (const ent of Object.values(manifest)) {
     if (ent.key !== e.key) continue;
     if (a.waveform) ent.waveform = a.waveform;
     if (withKey) { ent.bpm = a.bpm; ent.musicalKey = a.musicalKey; ent.camelot = a.camelot; if (a.durationSec) ent.durationMs = Math.round(a.durationSec * 1000); }
+    if (a.beatgrid) applyBeatgrid(ent, a);
     ent.analyzed = true;
   }
   await saveManifest();
-  console.error(`  ✓ analyzed ${audioBase}: bpm=${a.bpm} key=${a.musicalKey} wave=${!!a.waveform}`);
+  console.error(`  ✓ analyzed ${audioBase}: bpm=${a.bpm} key=${a.musicalKey} wave=${!!a.waveform} grid=${a.beatgrid ? a.beatgrid.beatGridBpm : '-'}`);
+  // Analog: grid the per-song CUT (cut-relative downbeat == the burned file the deck opens), not
+  // the shared album side. Couples to /backfill-cuts (no cut yet → skipped, re-run after cuts).
+  if (e.source === 'analog' && e.cutKey) {
+    try { if (await analyzeBeatgridForSong(songId)) { await saveManifest(); console.error(`  ✓ beatgrid ${songId} (cut)`); } }
+    catch (err) { console.error('  beatgrid failed', songId, err.message); }
+  }
   // ITEM 10: a cloud (digital) rip just got analyzed → fold its bpm/key/length into the
   // public analog catalog (debounced, in-process, never deploys). Analog rips keep the
   // catalog's per-song values, so they don't trigger a fold.
   if (withKey && isCloudAnalogEntry(songId)) requestPublicFold();
+}
+
+// Write a beat-grid result onto a manifest entry: the scalars the app reads directly + the lazy
+// sidecar key + the analysisVersion stamp that makes /backfill-beatgrids idempotent/resumable.
+function applyBeatgrid(e, a) {
+  if (!a || !a.beatgrid) return false;
+  const g = a.beatgrid;
+  e.firstBeatMs = g.firstBeatMs; e.firstDownbeatMs = g.firstDownbeatMs;
+  e.beatGridBpm = g.beatGridBpm; e.beatsPerBar = g.beatsPerBar;
+  e.tempoConfidence = g.tempoConfidence; e.tempoVar = g.tempoVar; e.steady = g.steady;
+  if (a.beatgridKey) e.beatgrid = a.beatgridKey;
+  e.analysisVersion = ANALYSIS_VERSION;
+  return true;
+}
+
+// Run the beat grid for ONE song on the burned file the deck opens (digital → its mp3; analog →
+// its per-song cut), writing the scalars + sidecar key + analysisVersion onto its entry. Returns
+// true on success. No-op for an analog song with no cut yet (needs /backfill-cuts first).
+async function analyzeBeatgridForSong(songId) {
+  const e = manifest[songId];
+  if (!e) return false;
+  const gridKey = e.source === 'analog' ? e.cutKey : e.key;
+  if (!gridKey) return false;
+  const local = join(CFG.tmp, `${songId}.grid.mp3`);
+  try { await aws(['s3', 'cp', `s3://${CFG.bucket}/${gridKey}`, local]); } catch { return false; }
+  try {
+    const a = await analyzeAudio({ file: local, songId, bucket: CFG.bucket, region: CFG.region,
+      profile: CFG.profile, tmp: CFG.tmp, withKey: false, withWaveform: false, withBeatgrid: true });
+    return applyBeatgrid(e, a);
+  } finally { try { rmSync(local); } catch { /* ignore */ } }
+}
+
+// BACKFILL: compute a beat grid for every already-ripped song that lacks a current one
+// (analysisVersion < ANALYSIS_VERSION). Digital → its mp3; analog → its per-song cut (analog
+// without a cut yet is skipped — run /backfill-cuts first). Mirrors backfillCuts: single-flight
+// via `backfillRunning`, shares the in-memory `manifest` (so a concurrent rip's save can't drop
+// the grids), saves periodically, and is resumable — a restart re-scans and skips done entries.
+async function backfillBeatgrids() {
+  const label = 'backfill-beatgrids';
+  const eligible = (e) => (e.source === 'digital' && e.key) || (e.source === 'analog' && e.cutKey);
+  const want = (e) => eligible(e) && (e.analysisVersion ?? 0) < ANALYSIS_VERSION;
+  const ids = Object.entries(manifest).filter(([, e]) => want(e)).map(([id]) => id);
+  let done = 0, failed = 0, skipped = 0;
+  console.error(`  ${label}: ${ids.length} songs need a beat grid (version < ${ANALYSIS_VERSION})`);
+  for (const songId of ids) {
+    if (!want(manifest[songId] || {})) continue;     // a concurrent rip may have just done it
+    try {
+      if (await analyzeBeatgridForSong(songId)) {
+        done++;
+        if (done % 5 === 0) { await saveManifest(); console.error(`  ${label}: ${done}/${ids.length}`); }
+      } else { skipped++; }
+    } catch (err) { failed++; console.error(`  ${label} failed ${songId}: ${err.message}`); }
+  }
+  await saveManifest();
+  console.error(`  ${label} DONE: ${done} gridded, ${failed} failed, ${skipped} skipped`);
 }
 function resumeAnalysis() {
   const seen = new Set();
@@ -1218,6 +1283,17 @@ const server = http.createServer(async (req, res) => {
     if (!backfillRunning) { backfillRunning = true; retagCuts().finally(() => { backfillRunning = false; }); }
     return send(res, 200, { ok: true, cuts, running: backfillRunning });
   }
+  // POST /backfill-beatgrids — compute a beat grid (firstDownbeatMs/beatGridBpm/steady + lazy
+  // sidecar) for EVERY already-ripped song whose analysisVersion is stale (digital mp3 / analog
+  // per-song cut). Background, idempotent + single-flight; resumable across restarts. Feeds the
+  // Mix tab's beat-matching (docs/design/mix-ondevice-tempo-pitch-beatmatch-spec.md §3).
+  if (path === '/backfill-beatgrids' && req.method === 'POST') {
+    const candidates = Object.values(manifest).filter((e) =>
+      ((e.source === 'digital' && e.key) || (e.source === 'analog' && e.cutKey))
+      && (e.analysisVersion ?? 0) < ANALYSIS_VERSION).length;
+    if (!backfillRunning) { backfillRunning = true; backfillBeatgrids().finally(() => { backfillRunning = false; }); }
+    return send(res, 200, { ok: true, candidates, version: ANALYSIS_VERSION, running: backfillRunning });
+  }
   // POST /rip-cancel {songIds:[...]} — Feature 1 STOP RIP. Cancels still-queued matching
   // jobs (splice queue + clear inflight + delete durable file) and KILLS the in-flight
   // capture child when a matching job is the currently-running one. Idempotent; returns a
@@ -1244,7 +1320,7 @@ const server = http.createServer(async (req, res) => {
       { canceled: 0, notFound: 0, alreadyDone: 0, total: 0 });
     return send(res, 200, { results, counts });
   }
-  // POST /analysis {songId, key?, bpm, musicalKey, camelot, waveform, durationMs?}
+  // POST /analysis {songId, key?, bpm, musicalKey, camelot, waveform, durationMs?, beatgrid?, beatgridKey?}
   // External analysis submission (the batch tool, for skill-ripped songs). Merges into
   // the manifest (creating the entry if a `key` is supplied for a freshly-uploaded mp3).
   if (path === '/analysis' && req.method === 'POST') {
@@ -1257,6 +1333,8 @@ const server = http.createServer(async (req, res) => {
     if (a.camelot != null) e.camelot = a.camelot;
     if (a.waveform) e.waveform = a.waveform;
     if (a.durationMs != null) e.durationMs = a.durationMs;
+    // Beat-grid scalars (+ optional sidecar key) — stamps analysisVersion so /backfill-beatgrids skips it.
+    if (a.beatgrid && typeof a.beatgrid === 'object') applyBeatgrid(e, { beatgrid: a.beatgrid, beatgridKey: a.beatgridKey });
     e.analyzed = true;
     manifest[a.songId] = e;
     await saveManifest();

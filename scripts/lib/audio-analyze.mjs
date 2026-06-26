@@ -4,32 +4,41 @@
 //   • a waveform PNG via ffmpeg showwavespic → uploaded to rips/waveforms/<id>.png
 // Returns the analysis; the CALLER decides what to write into the manifest.
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { copyFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const ANALYZE_PY = join(REPO, '.claude/skills/analog-indexer/audio/analyze-one.py');
+const BEATGRID_PY = join(REPO, '.claude/skills/analog-indexer/audio/analyze-beatgrid.py');
+// Bump when the beat-grid algorithm changes so /backfill-beatgrids re-runs stale entries.
+export const ANALYSIS_VERSION = 1;
 
 /**
  * @param {{file:string, songId:string, bucket:string, region?:string, profile?:string,
- *          image?:string, tmp?:string, withKey?:boolean, withWaveform?:boolean}} opts
+ *          image?:string, tmp?:string, withKey?:boolean, withWaveform?:boolean,
+ *          withBeatgrid?:boolean}} opts
  * @returns {Promise<{bpm:number|null, musicalKey:string|null, camelot:string|null,
- *          keyStrength:number|null, durationSec:number|null, waveform:string|null}>}
+ *          keyStrength:number|null, durationSec:number|null, waveform:string|null,
+ *          beatgrid:object|null, beatgridKey:string|null}>}
  */
 export async function analyzeAudio(opts) {
   const {
     file, songId, bucket, region = 'us-west-2', profile = 'levi',
     image = process.env.AUDIO_IMAGE || 'pocketdj-audio:latest',
-    tmp = join(homedir(), '.pocketdj', 'rips'), withKey = true, withWaveform = true,
+    tmp = join(homedir(), '.pocketdj', 'rips'),
+    withKey = true, withWaveform = true, withBeatgrid = false,
   } = opts;
   const work = join(tmp, `ana-${songId}`);
   mkdirSync(work, { recursive: true });
   const mp3 = join(work, 'song.mp3');
   copyFileSync(file, mp3);
 
-  const out = { bpm: null, musicalKey: null, camelot: null, keyStrength: null, durationSec: null, waveform: null };
+  const out = {
+    bpm: null, musicalKey: null, camelot: null, keyStrength: null, durationSec: null,
+    waveform: null, beatgrid: null, beatgridKey: null,
+  };
 
   // --- BPM / key / Camelot (Docker librosa) ---
   if (withKey && existsSync(ANALYZE_PY)) {
@@ -41,6 +50,35 @@ export async function analyzeAudio(opts) {
       const j = JSON.parse(res.trim().split('\n').filter(Boolean).pop());
       if (j.ok) { out.bpm = j.bpm; out.musicalKey = j.key; out.camelot = j.camelot; out.keyStrength = j.keyStrength; out.durationSec = j.durationSec; }
     } catch { /* analysis is best-effort */ }
+  }
+
+  // --- beat grid (Docker librosa): per-beat + downbeat timestamps → manifest scalars + a lazy
+  //     sidecar rips/analysis/<id>.json (mirrors the waveform-PNG sidecar so manifest.json stays
+  //     lean). Run on the burned file the deck OPENS (digital mp3 / analog per-song cut) so
+  //     firstDownbeatMs is relative to that file's 0:00. ---
+  if (withBeatgrid && existsSync(BEATGRID_PY)) {
+    try {
+      copyFileSync(BEATGRID_PY, join(work, 'analyze-beatgrid.py'));
+      const res = execFileSync('docker',
+        ['run', '--rm', '--entrypoint', 'python', '-v', `${work}:/work`, image, '/work/analyze-beatgrid.py', '/work/song.mp3'],
+        { encoding: 'utf8', timeout: 180000 });
+      const j = JSON.parse(res.trim().split('\n').filter(Boolean).pop());
+      if (j.ok) {
+        out.beatgrid = {
+          firstBeatMs: j.firstBeatMs, firstDownbeatMs: j.firstDownbeatMs, beatGridBpm: j.beatGridBpm,
+          beatsPerBar: j.beatsPerBar, tempoVar: j.tempoVar, tempoConfidence: j.tempoConfidence,
+          gridResidualMs: j.gridResidualMs, steady: j.steady,
+        };
+        const key = `rips/analysis/${songId}.json`;
+        const sidecar = join(work, 'analysis.json');
+        writeFileSync(sidecar, JSON.stringify({
+          version: ANALYSIS_VERSION, analyzer: 'librosa-beatgrid',
+          ...out.beatgrid, beatsMs: j.beatsMs || [], downbeatsMs: j.downbeatsMs || [],
+        }));
+        execFileSync('aws', ['s3', 'cp', sidecar, `s3://${bucket}/${key}`, '--content-type', 'application/json', '--profile', profile, '--region', region], { stdio: 'ignore' });
+        out.beatgridKey = key;
+      }
+    } catch { /* beat grid is best-effort */ }
   }
 
   // --- waveform PNG (ffmpeg) → S3 rips/waveforms/<songId>.png ---
