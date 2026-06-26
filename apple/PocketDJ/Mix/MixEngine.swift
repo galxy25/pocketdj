@@ -93,6 +93,14 @@ final class MixEngine {
         let albumId: String?
     }
 
+    /// One entry in an Auto-Mix queue: a loadable track plus its known length (ms). The view
+    /// builds these from `MixResolver` + the catalog song length (the player has no position
+    /// readback, so the engine times each crossfade off this duration + a wall clock).
+    struct AutoMixItem: Equatable {
+        let loadable: MixLoadable
+        let durationMs: Int
+    }
+
     // MARK: Observable state
 
     // NOTE: tempo / pitch / beat-sync are intentionally absent. The vendored Switchboard 3.2.3
@@ -142,6 +150,18 @@ final class MixEngine {
     /// True once the Switchboard graph exists. The view can gate controls on it.
     var isReady: Bool { engineID != nil }
 
+    // MARK: Auto-Mix (auto-DJ) — observable
+
+    /// Auto vs Manual. When Auto, the toolbar exposes a collection + Play/Shuffle that drive
+    /// `startAutoMix`. Manual leaves the decks under direct user control. Persists across tab
+    /// switches (the engine is app-scoped).
+    private(set) var autoEnabled = false
+    /// True while an auto-mix queue is actively playing through (set by `startAutoMix`, cleared
+    /// when the queue ends or `stopAutoMix`). Drives the toolbar's Stop button + status banner.
+    private(set) var autoMixing = false
+    /// One-line status for the UI, e.g. "3 / 12 · Deck B" or "3 / 12 · fading". nil when idle.
+    private(set) var autoStatus: String?
+
     // MARK: Private
 
     /// The burn store — resolves a songId → on-disk burned file + its (held) security scope.
@@ -158,6 +178,30 @@ final class MixEngine {
     /// node has no seek/`position` key, so re-opening is how we return a deck to 0:00).
     @ObservationIgnored private var pathA: String?
     @ObservationIgnored private var pathB: String?
+
+    // Auto-Mix machine (all @ObservationIgnored — the UI only watches the published trio above).
+    /// The ordered queue (already shuffled if requested).
+    @ObservationIgnored private var autoQueue: [AutoMixItem] = []
+    /// Queue index of the track currently LIVE (audible/playing forward).
+    @ObservationIgnored private var autoLivePos = 0
+    /// Queue index of the NEXT track to preload onto the freed deck.
+    @ObservationIgnored private var autoNextToLoad = 0
+    /// Which deck holds the live track.
+    @ObservationIgnored private var autoLiveDeck: Deck = .a
+    /// Wall-clock instant each deck's current track will END (start + duration). Used to decide
+    /// when to begin the crossfade (player exposes no playhead).
+    @ObservationIgnored private var autoDeckEndsAt: [Deck: Date] = [:]
+    /// Duration (ms) of the track currently loaded on each deck — so a deck that becomes live
+    /// can compute its own `endsAt`.
+    @ObservationIgnored private var autoDeckDurationMs: [Deck: Int] = [:]
+    /// Non-nil WHILE a crossfade is animating: the instant it began.
+    @ObservationIgnored private var autoFadeStartedAt: Date?
+    /// The deck we are fading FROM during the active crossfade.
+    @ObservationIgnored private var autoFadeFrom: Deck = .a
+    @ObservationIgnored private var autoLeadSeconds: Double = 15
+    @ObservationIgnored private var autoFadeSeconds: Double = 3
+    /// The ~10 Hz driver that polls the wall clock + steps the crossfade.
+    @ObservationIgnored private var autoTickTask: Task<Void, Never>?
 
     init(burns: BurnStore) { self.burns = burns }   // graph is built lazily in ensureEngine.
 
@@ -197,6 +241,7 @@ final class MixEngine {
     /// navigation). The engine object itself persists; a later `ensureEngine` is a no-op and
     /// play/start resumes it.
     func teardown() {
+        endAutoLoop()
         pauseBoth()
         if let id = engineID { Switchboard.callAction(withObject: id, actionName: "stop", params: nil) }
         releaseA?(); releaseA = nil
@@ -307,6 +352,146 @@ final class MixEngine {
     func setCrossfader(_ value: Double) {
         crossfader = min(max(value, 0), 1)
         applyMixGains()
+    }
+
+    // MARK: - Auto-Mix (auto-DJ)
+
+    /// A song with no known length still has to advance — fall back to 3 min so the mix never
+    /// stalls on a missing duration.
+    private static let autoFallbackDurationMs = 180_000
+
+    /// Toggle Auto vs Manual. Turning Auto OFF stops auto-advancing but leaves the decks playing
+    /// — the user is taking manual control, not silencing the mix.
+    func setAutoEnabled(_ on: Bool) {
+        autoEnabled = on
+        if !on { endAutoLoop() }
+    }
+
+    /// Start auto-mixing a queue: load the first track onto deck A (and the second onto deck B,
+    /// kept silent by the crossfader), play A, then drive timed crossfades A↔B until the queue is
+    /// exhausted. `lead`/`fade` come from Settings. Restarting replaces any in-progress mix.
+    func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double) {
+        guard !items.isEmpty else { return }
+        ensureEngine()
+        endAutoLoop()                       // tear down any prior run cleanly
+
+        autoEnabled = true
+        autoLeadSeconds = max(1, lead)
+        autoFadeSeconds = max(0.2, fade)
+        autoQueue = shuffled ? items.shuffled() : items
+        autoLivePos = 0
+        autoLiveDeck = .a
+        autoFadeStartedAt = nil
+        autoDeckEndsAt = [:]
+        autoDeckDurationMs = [:]
+
+        setCrossfader(0)                    // full A — deck B is loaded but silent
+        loadAuto(autoQueue[0], onto: .a)
+        if autoQueue.count > 1 { loadAuto(autoQueue[1], onto: .b) }
+        autoNextToLoad = min(2, autoQueue.count)
+
+        let now = Date()
+        autoDeckEndsAt[.a] = now.addingTimeInterval(Double(autoDeckDurationMs[.a] ?? Self.autoFallbackDurationMs) / 1000)
+        autoMixing = true
+        play(.a)
+        startAutoTick()
+        refreshAutoStatus()
+    }
+
+    /// Stop auto-mixing entirely: cancel the driver, pause both decks, clear status. Leaves
+    /// `autoEnabled` as-is (Auto mode stays selected so another queue can be started).
+    func stopAutoMix() {
+        endAutoLoop()
+        pauseBoth()
+    }
+
+    /// Cancel the tick + clear the "mixing" flags WITHOUT touching the decks (used by both stop
+    /// paths and by switching to Manual).
+    private func endAutoLoop() {
+        autoTickTask?.cancel(); autoTickTask = nil
+        autoFadeStartedAt = nil
+        autoMixing = false
+        autoStatus = nil
+    }
+
+    private func startAutoTick() {
+        autoTickTask?.cancel()
+        autoTickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)   // ~10 Hz
+                if Task.isCancelled { break }
+                self?.autoFire()
+            }
+        }
+    }
+
+    /// One driver step: either advance the active crossfade, or check whether the live deck has
+    /// reached its lead point (and either start the next crossfade or end the mix on the last
+    /// track).
+    private func autoFire() {
+        guard autoEnabled, autoMixing, isReady else { return }
+        let now = Date()
+        if let fadeStart = autoFadeStartedAt {
+            let p = min(max(now.timeIntervalSince(fadeStart) / autoFadeSeconds, 0), 1)
+            // Crossfader sweeps full-FROM → full-TO; the engine's equal-power law turns this into
+            // the requested volume sweep (outgoing 100%→0%, incoming 0%→100%).
+            setCrossfader(autoFadeFrom == .a ? p : 1 - p)
+            if p >= 1 { finishAutoCrossfade() }
+        } else {
+            guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
+            let secondsLeft = endsAt.timeIntervalSince(now)
+            if autoLivePos + 1 < autoQueue.count {
+                if secondsLeft <= autoLeadSeconds { beginAutoCrossfade(now: now) }
+            } else if secondsLeft <= 0 {
+                stopAutoMix()                 // last track played out
+            }
+        }
+        refreshAutoStatus()
+    }
+
+    /// Begin fading from the live deck to the other deck (which already holds the next track).
+    private func beginAutoCrossfade(now: Date) {
+        let to = other(autoLiveDeck)
+        autoFadeFrom = autoLiveDeck
+        autoFadeStartedAt = now
+        restart(to)                            // ensure the incoming deck is at 0:00
+        play(to)
+        autoDeckEndsAt[to] = now.addingTimeInterval(Double(autoDeckDurationMs[to] ?? Self.autoFallbackDurationMs) / 1000)
+    }
+
+    /// The crossfade reached the far side: pin the fader, pause the outgoing deck, promote the
+    /// incoming deck to live, and preload the next queued track onto the now-free deck.
+    private func finishAutoCrossfade() {
+        let from = autoFadeFrom
+        let to = other(from)
+        setCrossfader(from == .a ? 1 : 0)
+        pause(from)
+        autoLiveDeck = to
+        autoLivePos += 1
+        autoFadeStartedAt = nil
+        if autoNextToLoad < autoQueue.count {
+            loadAuto(autoQueue[autoNextToLoad], onto: from)
+            autoNextToLoad += 1
+        }
+    }
+
+    /// Load an item onto a deck AND remember its duration (so the deck can time its own end).
+    private func loadAuto(_ item: AutoMixItem, onto deck: Deck) {
+        load(item.loadable, on: deck)
+        autoDeckDurationMs[deck] = item.durationMs
+    }
+
+    private func other(_ d: Deck) -> Deck { d == .a ? .b : .a }
+
+    private func refreshAutoStatus() {
+        let s: String?
+        if autoMixing {
+            let detail = autoFadeStartedAt != nil ? "fading" : "Deck \(autoLiveDeck.rawValue)"
+            s = "\(min(autoLivePos + 1, autoQueue.count)) / \(autoQueue.count) · \(detail)"
+        } else {
+            s = nil
+        }
+        if s != autoStatus { autoStatus = s }   // avoid 10 Hz no-op observation churn
     }
 
     // MARK: - Readers (for the UI)

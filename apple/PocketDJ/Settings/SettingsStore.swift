@@ -44,6 +44,12 @@ final class SettingsStore {
     /// burnt audio + sidecars are written into (so the files are browsable in Finder/Files).
     /// `nil` → BurnStore falls back to the app-managed Application Support `burns/` dir.
     var burnFolderBookmark: Data?
+    /// Auto-Mix (Mix tab): seconds BEFORE a track ends to begin crossfading to the next deck.
+    /// Default 15. Read when the user starts an auto-mix; clamped to a sane range in the UI.
+    var autoMixLeadSeconds: Double
+    /// Auto-Mix (Mix tab): duration in seconds of the crossfade (volume sweep) between decks.
+    /// Default 3.
+    var autoMixFadeSeconds: Double
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -60,6 +66,8 @@ final class SettingsStore {
         self.searchSecretKey = data.searchSecretKey
         self.searchEndpoint = data.searchEndpoint
         self.burnFolderBookmark = data.burnFolderBookmark
+        self.autoMixLeadSeconds = data.autoMixLeadSeconds ?? 15
+        self.autoMixFadeSeconds = data.autoMixFadeSeconds ?? 3
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -119,7 +127,8 @@ final class SettingsStore {
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
             ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
-            searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark)
+            searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
+            autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -137,6 +146,8 @@ final class SettingsStore {
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
         searchEndpoint = d.searchEndpoint
         burnFolderBookmark = d.burnFolderBookmark
+        autoMixLeadSeconds = d.autoMixLeadSeconds ?? 15
+        autoMixFadeSeconds = d.autoMixFadeSeconds ?? 3
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -166,6 +177,9 @@ struct SettingsData: Codable {
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — same
     /// backward-compat rationale as `ripFromCloud` above.
     var burnFolderBookmark: Data?
+    /// Optional so older blobs still decode (coalesced to 15 / 3 at the read sites).
+    var autoMixLeadSeconds: Double?
+    var autoMixFadeSeconds: Double?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -176,5 +190,7 @@ struct SettingsData: Codable {
         searchAccessKeyID: "",
         searchSecretKey: "",
         searchEndpoint: "",
-        burnFolderBookmark: nil)
+        burnFolderBookmark: nil,
+        autoMixLeadSeconds: 15,
+        autoMixFadeSeconds: 3)
 }

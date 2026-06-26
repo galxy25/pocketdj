@@ -39,6 +39,7 @@ struct SettingsView: View {
             streamingSection
             searchSection
             ripSection
+            mixSection
             appleMusicSyncSection
             burnFolderSection
             editsSection
@@ -317,6 +318,41 @@ struct SettingsView: View {
             Text("Online search (OpenSearch)")
         } footer: {
             Text("Enables full-text search across the whole collection. Leave blank to stay fully offline.")
+        }
+    }
+
+    // MARK: Mix (auto-mix)
+
+    /// Auto-Mix crossfade timing: when to start fading before a track ends, and how long the
+    /// fade (volume sweep) lasts. Whole-second steppers — the engine reads these the moment an
+    /// auto-mix starts. Persisted on change.
+    private var mixSection: some View {
+        Section {
+            Stepper(value: $settings.autoMixLeadSeconds, in: 3...60, step: 1) {
+                HStack {
+                    Text("Crossfade lead")
+                    Spacer()
+                    Text("\(Int(settings.autoMixLeadSeconds)) s")
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("settings-automix-lead")
+            .onChange(of: settings.autoMixLeadSeconds) { settings.persist() }
+
+            Stepper(value: $settings.autoMixFadeSeconds, in: 1...12, step: 1) {
+                HStack {
+                    Text("Crossfade length")
+                    Spacer()
+                    Text("\(Int(settings.autoMixFadeSeconds)) s")
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("settings-automix-fade")
+            .onChange(of: settings.autoMixFadeSeconds) { settings.persist() }
+        } header: {
+            Text("Auto-Mix")
+        } footer: {
+            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length.")
         }
     }
 

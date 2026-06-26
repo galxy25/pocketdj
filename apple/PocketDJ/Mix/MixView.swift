@@ -31,16 +31,23 @@ extension MixEngine {
 /// per-deck SOURCE is local view state (the loaded track itself is read back from the engine).
 struct MixView: View {
     @Environment(MixEngine.self) private var engine
+    @Environment(AppModel.self) private var app
+    @Environment(CollectionsStore.self) private var collections
+    @Environment(BurnStore.self) private var burns
+    @Environment(SettingsStore.self) private var settings
 
     /// Per-deck source (nil ⇒ none picked yet). Two vars so each deck can hold its own.
     @State private var sourceA: MixSource?
     @State private var sourceB: MixSource?
     /// Which deck's track-loader sheet is open (`.sheet(item:)`).
     @State private var loaderDeck: MixEngine.Deck?
+    /// The GLOBAL collection Auto mode plays end-to-end (distinct from the per-deck sources).
+    @State private var autoSource: MixSource?
 
     var body: some View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
             VStack(spacing: 18) {
+                if engine.autoMixing { autoMixBanner }  // Auto-DJ status + Stop (visible on every size)
                 // Two decks side-by-side (A left, B right), equal width.
                 HStack(alignment: .top, spacing: 12) {
                     DeckView(deck: .a, engine: engine, source: $sourceA) { loaderDeck = .a }
@@ -56,12 +63,117 @@ struct MixView: View {
         .background(Theme.bg)
         .navigationTitle("Mix")
         .accessibilityIdentifier("mix-tab")
+        .toolbar { autoMixToolbar }                    // Auto/Manual + collection Play/Shuffle
         .task { engine.prepare() }                     // warm the Switchboard graph when the tab opens
         // Track loader: long-press (iOS) / right-click (macOS) on a deck, or tap its header.
         .sheet(item: $loaderDeck) { deck in
             TrackLoaderSheet(deck: deck, engine: engine,
                              source: deck == .a ? $sourceA : $sourceB)
         }
+    }
+
+    // MARK: Auto-Mix (auto-DJ)
+
+    /// Auto vs Manual flows through the engine (it owns the mode so it survives tab switches).
+    private var autoModeBinding: Binding<Bool> {
+        Binding(get: { engine.autoEnabled }, set: { engine.setAutoEnabled($0) })
+    }
+
+    /// Toolbar: a Manual/Auto menu button, then (in Auto) the global-collection picker + ▶ Play /
+    /// 🔀 Shuffle / ⏹ Stop — mirroring the Playlists tab's menu-bar play/shuffle.
+    @ToolbarContentBuilder private var autoMixToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Picker("Mix mode", selection: autoModeBinding) {
+                Label("Manual", systemImage: "slider.horizontal.3").tag(false)
+                Label("Auto", systemImage: "wand.and.stars").tag(true)
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("mix-auto-mode")
+
+            if engine.autoEnabled {
+                Menu {
+                    autoSourceMenuItems
+                } label: {
+                    Label(autoSourceName ?? "Collection", systemImage: "rectangle.stack")
+                }
+                .accessibilityIdentifier("mix-auto-source")
+
+                Button { startAuto(shuffled: false) } label: { Image(systemName: "play.fill") }
+                    .disabled(autoSource == nil)
+                    .help("Auto-mix this collection in order")
+                    .accessibilityIdentifier("mix-auto-play")
+
+                Button { startAuto(shuffled: true) } label: { Image(systemName: "shuffle") }
+                    .disabled(autoSource == nil)
+                    .help("Auto-mix this collection shuffled")
+                    .accessibilityIdentifier("mix-auto-shuffle")
+                // Stop lives in the always-visible in-body banner (`autoMixBanner`) so it stays
+                // reachable on iPhone, where a crowded nav bar collapses extra items into "•••".
+            }
+        }
+    }
+
+    @ViewBuilder private var autoSourceMenuItems: some View {
+        if collections.pockets.isEmpty && collections.setlists.isEmpty {
+            Text("No pockets or set lists yet")
+        }
+        if !collections.pockets.isEmpty {
+            Section("Pockets") {
+                ForEach(collections.pockets) { p in Button(p.name) { autoSource = .pocket(p.id) } }
+            }
+        }
+        if !collections.setlists.isEmpty {
+            Section("Set lists") {
+                ForEach(collections.setlists) { s in Button(s.name ?? "Set list") { autoSource = .setlist(s.id) } }
+            }
+        }
+    }
+
+    private var autoSourceName: String? {
+        switch autoSource {
+        case .pocket(let id):  return collections.pocket(id)?.name
+        case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
+        case nil:              return nil
+        }
+    }
+
+    /// In-body banner so the Stop control + progress are reachable on iPhone (where a crowded
+    /// nav bar can hide toolbar items).
+    private var autoMixBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Auto-mixing").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                if let status = engine.autoStatus {
+                    Text(status).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                }
+            }
+            Spacer()
+            Button(role: .destructive) { engine.stopAutoMix() } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(.bordered)
+            .tint(Theme.accent)
+            .accessibilityIdentifier("mix-auto-stop-banner")
+        }
+        .padding(12)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1))
+        .accessibilityIdentifier("mix-auto-banner")
+    }
+
+    /// Build the queue from the chosen collection (resolver order) + each song's catalog length,
+    /// then hand it to the engine with the Settings-configured lead/fade. Shuffle is applied in
+    /// the engine so order/shuffle share one path.
+    private func startAuto(shuffled: Bool) {
+        guard let src = autoSource else { return }
+        let loadables = MixResolver(app: app, collections: collections, burns: burns).loadables(for: src)
+        let items = loadables.map { l in
+            MixEngine.AutoMixItem(loadable: l, durationMs: app.songsById[l.songId]?.length ?? 180_000)
+        }
+        engine.startAutoMix(items, shuffled: shuffled,
+                            lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds)
     }
 
     /// The single bottom Play/Pause — starts/stops BOTH decks (and the engine). Mirrors the

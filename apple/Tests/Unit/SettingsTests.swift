@@ -98,6 +98,57 @@ final class SettingsStoreTests: XCTestCase {
         // and it's gone from disk
         XCTAssertNil(defaults.data(forKey: "pdj.settings.v1"))
     }
+
+    // MARK: Auto-Mix crossfade settings
+
+    func testAutoMixDefaults() {
+        let s = SettingsStore(defaults: freshDefaults())
+        XCTAssertEqual(s.autoMixLeadSeconds, 15)
+        XCTAssertEqual(s.autoMixFadeSeconds, 3)
+    }
+
+    func testAutoMixPersistsAndReloads() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        s.autoMixLeadSeconds = 20
+        s.autoMixFadeSeconds = 5
+        s.persist()
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.autoMixLeadSeconds, 20)
+        XCTAssertEqual(reloaded.autoMixFadeSeconds, 5)
+    }
+
+    /// REGRESSION (Codable back-compat): a legacy blob predating the auto-mix keys must still
+    /// decode (preserving other settings) and coalesce the missing keys to 15 / 3.
+    func testLegacyBlobWithoutAutoMixDecodesWithDefaults() {
+        let defaults = freshDefaults()
+        let legacy = """
+        {
+          "sources": [{"id":"\(UUID().uuidString)","name":"Old Crate","urlString":"https://old.test/i.json","enabled":true}],
+          "ripServerURL": "https://legacy.test",
+          "ripToken": "legacy-token",
+          "searchAccessKeyID": "",
+          "searchSecretKey": "",
+          "searchEndpoint": ""
+        }
+        """
+        defaults.set(Data(legacy.utf8), forKey: "pdj.settings.v1")
+
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.ripServerURL, "https://legacy.test", "legacy settings must survive")
+        XCTAssertEqual(s.autoMixLeadSeconds, 15, "missing key coalesces to default")
+        XCTAssertEqual(s.autoMixFadeSeconds, 3)
+    }
+
+    func testResetRestoresAutoMixDefaults() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        s.autoMixLeadSeconds = 30; s.autoMixFadeSeconds = 8; s.persist()
+        s.resetEverything()
+        XCTAssertEqual(s.autoMixLeadSeconds, 15)
+        XCTAssertEqual(s.autoMixFadeSeconds, 3)
+    }
 }
 
 final class CatalogMergeTests: XCTestCase {
