@@ -185,3 +185,52 @@ private final class FolderBurnStubURLProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
 }
+
+/// `BurnStore.cutFileName(amongst:songId:audioFileName:)` — the pure matcher behind the cut
+/// self-heal: when an analog shared-album song's in-memory `cutFileName` is stale/nil, the reader
+/// re-finds the on-disk cut by its deterministic `-<songId>.mp3` suffix so a no-seek Mix deck loads
+/// the RIGHT song instead of silently opening the whole-album mp3. (Regression for the "On & On
+/// loaded the whole album" bug.)
+final class BurnStoreCutMatchTests: XCTestCase {
+    private let albumFile = "SWV-New Beginning (SWV album)-1996-R&B-alb_cd9fed0030f2.mp3"
+    private let cutFile = "SWV-On & On (featuring Erick Sermon)-New Beginning (SWV album)-1996-R&B-11B-A major-96-sng_26d99e750931.mp3"
+    private let songId = "sng_26d99e750931"
+
+    func testAnalogSharedAlbumFindsTheCutNotTheAlbum() {
+        let names = [albumFile, cutFile, "Other-Artist-Song-alb_dead.mp3"]
+        XCTAssertEqual(
+            BurnStore.cutFileName(amongst: names, songId: songId, audioFileName: albumFile),
+            cutFile)
+    }
+
+    func testDigitalPerSongFileIsNotMistakenForACut() {
+        // A digital burn's audio file ALSO ends "-<songId>.mp3" but IS the song — excluding the
+        // item's own audioFileName means no false cut is returned.
+        let digital = "Aaliyah-Back & Forth-...-sng_c7ea598bd2dd.mp3"
+        XCTAssertNil(
+            BurnStore.cutFileName(amongst: [digital], songId: "sng_c7ea598bd2dd", audioFileName: digital))
+    }
+
+    func testNoCutOnDiskReturnsNil() {
+        XCTAssertNil(
+            BurnStore.cutFileName(amongst: [albumFile], songId: songId, audioFileName: albumFile))
+    }
+
+    func testBarePrefixlessCutName() {
+        let bare = "\(songId).mp3"
+        XCTAssertEqual(
+            BurnStore.cutFileName(amongst: [albumFile, bare], songId: songId, audioFileName: albumFile),
+            bare)
+    }
+
+    func testOtherSongsCutsAreIgnored() {
+        let names = [albumFile, "SWV-You're The One-...-sng_aaaaaaaaaaaa.mp3", cutFile]
+        XCTAssertEqual(
+            BurnStore.cutFileName(amongst: names, songId: songId, audioFileName: albumFile),
+            cutFile)
+    }
+
+    func testEmptySongIdReturnsNil() {
+        XCTAssertNil(BurnStore.cutFileName(amongst: [cutFile], songId: "", audioFileName: albumFile))
+    }
+}

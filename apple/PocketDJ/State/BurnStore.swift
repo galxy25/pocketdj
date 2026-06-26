@@ -339,12 +339,14 @@ final class BurnStore {
         guard let item = items[songId], item.state == .ready,
               let (dir, scoped) = itemDir(item) else { return nil }
         let releaseClosure: (() -> Void)? = scoped ? { dir.stopAccessingSecurityScopedResource() } : nil
-        // Prefer the standalone per-song cut when it was exported AND is present on disk.
-        if let cut = item.cutFileName {
-            let cutURL = dir.appendingPathComponent(cut)
-            if FileManager.default.fileExists(atPath: cutURL.path) {
-                return (cutURL, releaseClosure, true)   // scope stays open; caller releases
-            }
+        // Prefer the standalone per-song cut. Trust the recorded `cutFileName` first; if it's
+        // absent or its file is gone — a STALE in-memory record that predates the cut landing (the
+        // in-process cut pass races the background album-download `finalizeBurn`, which rebuilds the
+        // item and can drop the cut fields) — SELF-HEAL by finding the cut on disk by its
+        // deterministic `-<songId>.mp3` suffix. Without this, a no-seek Mix deck silently loads the
+        // whole shared-album mp3 from 0:00 (the wrong song).
+        if let cut = resolveCutFileName(for: item, in: dir) {
+            return (dir.appendingPathComponent(cut), releaseClosure, true)   // scope stays open; caller releases
         }
         // Fall back to the (possibly shared) main audio file — same dir, scope still held.
         let url = dir.appendingPathComponent(item.audioFileName)
@@ -353,6 +355,42 @@ final class BurnStore {
             return nil
         }
         return (url, releaseClosure, false)
+    }
+
+    /// The per-song cut filename for a ready item, or nil if there genuinely is no cut on disk.
+    /// Prefers the recorded `cutFileName`; if that's missing or its file is gone, scans the burn
+    /// dir for the cut by its deterministic `-<songId>.mp3` suffix and HEALS the record (so the
+    /// next load is O(1) and the ledger becomes correct). Caller must already hold the dir's scope.
+    private func resolveCutFileName(for item: BurnItem, in dir: URL) -> String? {
+        if let cut = item.cutFileName,
+           FileManager.default.fileExists(atPath: dir.appendingPathComponent(cut).path) {
+            return cut
+        }
+        // Cuts are an ANALOG-only concept (a per-song slice out of the shared whole-album mp3). A
+        // DIGITAL item's audio file IS the song — and a re-rip writes a NEW descriptive name (the
+        // prefix embeds re-analyzed bpm/key) without deleting the old one, so a sibling
+        // "-<songId>.mp3" would be an ORPHAN from a prior burn, not a cut. Never scan/heal for
+        // digital: fall back to the current audioFileName.
+        guard item.source == "analog" else { return nil }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
+              let found = Self.cutFileName(amongst: names, songId: item.songId,
+                                           audioFileName: item.audioFileName) else { return nil }
+        items[item.songId]?.cutFileName = found   // self-heal the stale record + persist
+        save()
+        return found
+    }
+
+    /// Pick the per-song CUT out of a burn dir's listing. Every exported cut is named
+    /// `<prefix>-<songId>.mp3` (or bare `<songId>.mp3` with no prefix), so the cut is the file
+    /// ending in `-<songId>.mp3` that is NOT the item's own `audioFileName` — the exclusion matters
+    /// because a DIGITAL per-song file ALSO ends `-<songId>.mp3` but IS the song (no separate cut),
+    /// whereas an analog shared-album file ends `-<albumId>.mp3` and never matches. Pure + testable.
+    nonisolated static func cutFileName(amongst names: [String], songId: String,
+                                        audioFileName: String) -> String? {
+        guard !songId.isEmpty else { return nil }
+        let suffix = "-\(songId).mp3"
+        let exact = "\(songId).mp3"
+        return names.first { $0 != audioFileName && ($0.hasSuffix(suffix) || $0 == exact) }
     }
 
     /// The analog seek offset (ms) within a shared album mp3 for a ready burned song, so a
