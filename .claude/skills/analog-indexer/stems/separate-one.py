@@ -20,7 +20,10 @@ def main():
     fmt = os.environ.get("STEM_FORMAT", "mp3")
     br = os.environ.get("STEM_BITRATE", "256")      # integer kbps (demucs --mp3-bitrate)
     out = os.path.join(work, "out")
-    cmd = ["python", "-m", "demucs", "-n", model, "-j", "1", "--device", device, "-o", out]
+    # Use THIS interpreter (the venv's python in native mode / the image's python in Docker) so
+    # `-m demucs` resolves to the demucs installed alongside it — a bare "python" may be absent
+    # from PATH (native venv) or the wrong interpreter entirely.
+    cmd = [sys.executable, "-m", "demucs", "-n", model, "-j", "1", "--device", device, "-o", out]
     cmd += ["--flac"] if fmt == "flac" else ["--mp3", "--mp3-bitrate", str(br)]
     cmd += [src]
     env = dict(os.environ, PYTORCH_ENABLE_MPS_FALLBACK="1")
