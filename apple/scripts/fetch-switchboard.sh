@@ -12,6 +12,13 @@
 # gitignored. Idempotent: re-run any time (each module is wiped + rebuilt).
 set -euo pipefail
 
+# NOTE on the player's tempo/pitch/seek limits (verified by an in-app SBDIAG probe across
+# 3.2.0–3.2.3, all identical): the `Superpowered.AdvancedAudioPlayer` node exposes ONLY
+# open/play/pause through this string-config API. Its C++ `setPlaybackRate`/`setSyncModeTempoAndBeat`
+# methods exist but are NOT bridged to setValue/callAction, and no typed `SBAdvancedAudioPlayerNode`
+# class is shipped in these builds (the dj-app-ios reference's playbackRate slider is a no-op on its
+# own pinned 3.2.2). So tempo / pitch / beat-sync / arbitrary seek are NOT achievable here — they'd
+# need a newer (gated) SDK that exposes the typed node API. The Mix tab ships without them.
 VERSION="3.2.3"
 MODULES=(SwitchboardSDK SwitchboardSuperpowered)
 BASE_URL="https://switchboard-sdk-public.s3.amazonaws.com/builds/release/${VERSION}"
@@ -70,6 +77,19 @@ for M in "${MODULES[@]}"; do
     -framework "${iosXC}/ios-arm64_x86_64-simulator/${M}.framework" \
     -framework "${macFW}" \
     -output "${out}"
+
+  # 3a) The SwitchboardSuperpowered umbrella header ships INCOMPLETE: it imports only
+  #     SBSuperpoweredExtension.h, yet the Headers dir also ships
+  #     AutomaticVocalPitchCorrectionNodeParameters.h + FilterParameters.h. `import
+  #     SwitchboardSuperpowered` then warns -Wincomplete-umbrella ("umbrella header does not
+  #     include header ..."), which Xcode can treat as a build error. Add the missing imports to
+  #     every slice's umbrella (idempotent — find skips the macOS Versions/Current symlinks).
+  if [ "${M}" = "SwitchboardSuperpowered" ]; then
+    while IFS= read -r h; do
+      grep -q 'FilterParameters.h' "${h}" || \
+        printf '#import <SwitchboardSuperpowered/AutomaticVocalPitchCorrectionNodeParameters.h>\n#import <SwitchboardSuperpowered/FilterParameters.h>\n' >> "${h}"
+    done < <(find "${out}" -path '*/Headers/SwitchboardSuperpowered.h' -type f)
+  fi
 done
 
 echo "==> Done. Universal xcframeworks in: ${VENDOR_DIR}"

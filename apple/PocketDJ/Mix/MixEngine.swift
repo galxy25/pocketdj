@@ -93,15 +93,14 @@ final class MixEngine {
         let albumId: String?
     }
 
-    // MARK: Tempo range (DECISION — see file header / PR notes)
-
-    /// Superpowered time-stretches, so pitch holds across the whole range. 0.5…2.0 (vs. a
-    /// tighter ±8% DJ fader) lets the user match this catalog's widely-varied BPMs; tighten by
-    /// editing these constants.
-    static let rateRange: ClosedRange<Double> = 0.5...2.0
-    static let rateDefault: Double = 1.0
-
     // MARK: Observable state
+
+    // NOTE: tempo / pitch / beat-sync are intentionally absent. The vendored Switchboard 3.2.3
+    // `AdvancedAudioPlayer` exposes ONLY open/play/pause through the string API (no tempo, pitch,
+    // seek, loop, or sync key/action — verified empirically; the C++ methods aren't bridged and no
+    // typed node class ships). The Mix tab is the controllable subset: load + play/pause + volume +
+    // crossfader + effects + waveform + restart(re-open to 0:00). Restoring tempo/pitch/beat-match
+    // needs on-device DSP or a newer SDK (see fetch-switchboard.sh note + the mix-dsp-prototype spec).
 
     /// Per-deck observable state. The held security-scope `release` is NOT here — it lives in a
     /// separate `@ObservationIgnored` slot so swapping it never invalidates a view.
@@ -109,7 +108,6 @@ final class MixEngine {
         var loaded: LoadedTrack?
         var startMs: Int?
         var isPlaying = false
-        var rate: Double = MixEngine.rateDefault
         var volume: Double = 1.0
         var compressor = false
         var reverb = false
@@ -156,6 +154,10 @@ final class MixEngine {
     /// must never invalidate a SwiftUI view (and closures aren't Equatable).
     @ObservationIgnored private var releaseA: (() -> Void)?
     @ObservationIgnored private var releaseB: (() -> Void)?
+    /// The opened file path per deck — kept so `restart` can re-`open` (the AdvancedAudioPlayer
+    /// node has no seek/`position` key, so re-opening is how we return a deck to 0:00).
+    @ObservationIgnored private var pathA: String?
+    @ObservationIgnored private var pathB: String?
 
     init(burns: BurnStore) { self.burns = burns }   // graph is built lazily in ensureEngine.
 
@@ -178,15 +180,9 @@ final class MixEngine {
         guard let id = result.value as? String else { assertionFailure("createEngine failed"); return }
         engineID = id
 
-        // Mirror MainAudioSystem: loop each deck (so a finished track doesn't dead-end the mix)
-        // and declare A↔B tempo sync (benign without active beat-matching; enables it later).
-        Switchboard.setValue(true, forKey: "isLoopingEnabled", onObject: playerID(.a))
-        Switchboard.setValue(true, forKey: "isLoopingEnabled", onObject: playerID(.b))
-        Switchboard.callAction(withObject: playerID(.a), actionName: "setNodeToSyncWith",
-                               params: ["nodeID": playerID(.b)])
-
-        // Push whatever state the UI already set (e.g. a slider moved before the tab built the
-        // engine) so the graph matches the observable model, then start rendering.
+        // Push whatever state the UI already set (e.g. an effect toggled before the tab built the
+        // engine) so the graph matches the observable model, then start rendering. (No looping/sync
+        // setup — `isLoopingEnabled`/`setNodeToSyncWith` aren't valid on the 3.2.3 player.)
         pushDeckState(.a)
         pushDeckState(.b)
         applyMixGains()
@@ -215,7 +211,7 @@ final class MixEngine {
     /// `BurnStore.localURLForPlayback` — which returns the url WITH its security scope already
     /// OPEN plus a `release` closure — and HOLDS `release` until the next load / teardown so the
     /// deck can read the file throughout playback. A non-loadable song (no burned file) is a
-    /// no-op (degrade gracefully). `bpm` arms the beatgrid for tempo sync.
+    /// no-op (degrade gracefully).
     func load(songId: String, title: String, artist: String, bpm: Double?,
               camelot: String?, key: String?, albumId: String?, on deck: Deck) {
         guard let handle = burns.localURLForPlaybackPreferringCut(forSong: songId) else { return }   // not local → skip
@@ -225,15 +221,12 @@ final class MixEngine {
         // Now that the NEW file is open, release the PREVIOUS file's scope and hold the new one.
         release(deck)?()
         setRelease(deck, handle.release)
+        setPath(deck, handle.url.path)            // remember it so `restart` can re-open to 0:00
 
-        if let bpm {
-            Switchboard.callAction(withObject: player, actionName: "setBeatGridInformation",
-                                   params: ["originalBPM": bpm, "firstBeatMs": 0.0])
-        }
         // A per-song CUT file (handle.isCut) already IS the song and plays from 0:00 — no offset.
         // The shared-album fallback (an analog whole-side mp3 with NO cut exported) has no confirmed
-        // seek action in the vendored Superpowered headers, so it plays from the side's start; we
-        // keep its startMs only for the UI's waveform window.  // TODO(seek) — only the no-cut case.
+        // seek action in the vendored Superpowered API, so it plays from the side's start; we keep
+        // its startMs only for the UI's waveform window.
         let startMs = handle.isCut ? nil : burns.startMs(forSong: songId)
         mutate(deck) {
             $0.loaded = LoadedTrack(songId: songId, title: title, artist: artist,
@@ -284,13 +277,18 @@ final class MixEngine {
 
     func toggleAll() { isRunning ? pauseBoth() : playBoth() }
 
-    // MARK: - Tempo / volume / effects / crossfader
-
-    func setRate(_ rate: Double, on deck: Deck) {
-        let r = min(max(rate, Self.rateRange.lowerBound), Self.rateRange.upperBound)
-        mutate(deck) { $0.rate = r }
-        if isReady { Switchboard.setValue(r, forKey: "playbackRate", onObject: playerID(deck)) }
+    /// Refresh a deck: return it to the BEGINNING. The AdvancedAudioPlayer node has no seek/`position`
+    /// key, so we re-`open` the same file (which rewinds to 0:00) and resume playing if it was. No-op
+    /// if nothing is loaded.
+    func restart(_ deck: Deck) {
+        guard isReady, state(deck).loaded != nil, let p = path(deck) else { return }
+        let player = playerID(deck)
+        let wasPlaying = state(deck).isPlaying
+        Switchboard.callAction(withObject: player, actionName: "open", params: ["path": p])
+        if wasPlaying { Switchboard.callAction(withObject: player, actionName: "play", params: nil) }
     }
+
+    // MARK: - Volume / effects / crossfader
 
     func setVolume(_ volume: Double, on deck: Deck) {
         mutate(deck) { $0.volume = min(max(volume, 0), 1) }
@@ -315,7 +313,6 @@ final class MixEngine {
 
     func loaded(_ deck: Deck) -> LoadedTrack? { state(deck).loaded }
     func isPlaying(_ deck: Deck) -> Bool { state(deck).isPlaying }
-    func rate(_ deck: Deck) -> Double { state(deck).rate }
     func volume(_ deck: Deck) -> Double { state(deck).volume }
     func isEnabled(_ effect: Effect, on deck: Deck) -> Bool { state(deck).isEnabled(effect) }
 
@@ -323,9 +320,9 @@ final class MixEngine {
 
     private func state(_ deck: Deck) -> DeckState { deck == .a ? deckA : deckB }
 
-    /// Equal-power law (cosine), writing the resulting gains through the gain nodes and flipping
-    /// `isMaster` to whichever deck the fader favours — exactly the reference's math, but driven
-    /// from stored state so volume + crossfader stay consistent.
+    /// Equal-power law (cosine), writing the resulting gains through the gain nodes — driven from
+    /// stored state so volume + crossfader stay consistent. (The reference's `isMaster` write is
+    /// dropped: that key isn't valid on the 3.2.3 player and only mattered for the unavailable sync.)
     private func applyMixGains() {
         guard isReady else { return }
         let v = Float(crossfader)
@@ -333,14 +330,12 @@ final class MixEngine {
         let gainB = Float(deckB.volume) * cosf(.pi / 2 * (1 - v))
         Switchboard.setValue(gainA, forKey: "gain", onObject: gainID(.a))
         Switchboard.setValue(gainB, forKey: "gain", onObject: gainID(.b))
-        Switchboard.setValue(crossfader <= 0.5, forKey: "isMaster", onObject: playerID(.a))
     }
 
-    /// Re-assert a deck's rate + effect toggles onto the graph (used after `ensureEngine` builds
-    /// it, so any pre-build UI changes land). Gains are pushed separately by `applyMixGains`.
+    /// Re-assert a deck's effect toggles onto the graph (used after `ensureEngine` builds it, so any
+    /// pre-build UI changes land). Gains are pushed separately by `applyMixGains`.
     private func pushDeckState(_ deck: Deck) {
         let s = state(deck)
-        Switchboard.setValue(s.rate, forKey: "playbackRate", onObject: playerID(deck))
         for e in Effect.allCases {
             Switchboard.setValue(s.isEnabled(e), forKey: "enabled", onObject: effectNodeID(e, deck))
         }
@@ -362,6 +357,14 @@ final class MixEngine {
         }
     }
     private func release(_ deck: Deck) -> (() -> Void)? { deck == .a ? releaseA : releaseB }
+
+    private func setPath(_ deck: Deck, _ p: String?) {
+        switch deck {
+        case .a: pathA = p
+        case .b: pathB = p
+        }
+    }
+    private func path(_ deck: Deck) -> String? { deck == .a ? pathA : pathB }
 
     // Node-id helpers — derived from the rawValues so they always match MixAudioGraph.json.
     private func playerID(_ d: Deck) -> String { "player\(d.rawValue)" }

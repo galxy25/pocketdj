@@ -110,7 +110,7 @@ private struct DeckView: View {
         VStack(alignment: .leading, spacing: 10) {
             deckLabel
             header
-            rateSlider
+            refreshRow             // ↺ rewind-to-start — under the waveform
             effectsGrid
             volSlider
             playButton
@@ -224,13 +224,21 @@ private struct DeckView: View {
         }
     }
 
-    // Tempo (Superpowered time-stretches, so pitch holds). Range/default from the engine.
-    private var rateSlider: some View {
-        DeckSlider(title: "Rate",
-                   display: String(format: "%.2f×", engine.rate(deck)),
-                   value: engine.rate(deck),
-                   range: MixEngine.rateRange,
-                   a11y: "\(a11y)-rate") { engine.setRate($0, on: deck) }
+    // ↺ Refresh row (under the waveform): re-open the deck's file to rewind to 0:00. (Tempo, pitch,
+    // and beat-sync are intentionally absent — the vendored Switchboard 3.2.3 player can't do them;
+    // see MixEngine's note. Rewind is the only position control the SDK exposes.)
+    private var refreshRow: some View {
+        HStack {
+            Spacer()
+            Button { engine.restart(deck) } label: {
+                Image(systemName: "arrow.counterclockwise").font(.callout)
+            }
+            .buttonStyle(.bordered)
+            .tint(Theme.accent)
+            .disabled(loaded == nil)
+            .help("Rewind to the start")
+            .accessibilityIdentifier("\(a11y)-restart")
+        }
     }
 
     private var volSlider: some View {
