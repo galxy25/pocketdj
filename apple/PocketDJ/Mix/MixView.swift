@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// A deck's playback SOURCE — a pocket or a set list. UI-only value; `MixResolver.loadables(for:)`
 /// expands it to the loadable local tracks the loader lists. Two decks can share one source OR
@@ -211,12 +214,35 @@ private struct DeckView: View {
     /// Open the track-loader sheet for this deck (owned by MixView).
     let onLoad: () -> Void
 
+    // iPhone portrait packs two decks into a narrow width — show Lead/Sync as icons only there.
+    // Size classes are iOS-only (unavailable on plain macOS), so guard the env reads.
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.verticalSizeClass) private var vSizeClass
+    #endif
+
     /// Local, recomputed-once-per-load waveform peaks (R3 reads the burned file off the main
     /// actor; keyed on the loaded songId so it fires exactly once per track — never on a redraw).
     @State private var peaks: [Float] = []
 
     private var loaded: MixEngine.LoadedTrack? { engine.loaded(deck) }
     private var a11y: String { "deck-\(deck.rawValue)" }      // "deck-A" / "deck-B"
+
+    /// iPhone portrait (cramped two-deck width) → render Lead/Sync icon-only; macOS/iPad keep labels.
+    private var compactControls: Bool {
+        #if os(iOS)
+        return hSizeClass == .compact && vSizeClass == .regular
+        #else
+        return false
+        #endif
+    }
+
+    /// A Lead/Sync label that drops its text (icon-only) in iPhone portrait. `.iconOnly` keeps the
+    /// title in the accessibility tree, so VoiceOver still reads "Lead"/"Sync".
+    @ViewBuilder private func sizedLabel(_ title: String, systemImage: String) -> some View {
+        let label = Label(title, systemImage: systemImage)
+        if compactControls { label.labelStyle(.iconOnly) } else { label }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -258,7 +284,7 @@ private struct DeckView: View {
     // clears it). Lives next to Sync (left of it) so it reads as the reference Sync matches to.
     private var leadButton: some View {
         Button { engine.setLead(deck) } label: {
-            Label("Lead", systemImage: engine.isLead(deck) ? "star.fill" : "star")
+            sizedLabel("Lead", systemImage: engine.isLead(deck) ? "star.fill" : "star")
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(engine.isLead(deck) ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
@@ -364,7 +390,7 @@ private struct DeckView: View {
         HStack(spacing: 8) {
             leadButton
             Button { engine.syncToLead(deck) } label: {
-                Label("Sync", systemImage: "arrow.triangle.2.circlepath").font(.caption.weight(.medium))
+                sizedLabel("Sync", systemImage: "arrow.triangle.2.circlepath").font(.caption.weight(.medium))
             }
             .buttonStyle(.bordered)
             .tint(Theme.accent2)
@@ -519,10 +545,12 @@ private struct EffectButton: View {
             .foregroundStyle(isOn ? Theme.accent : Theme.fgDim)
         }
         .buttonStyle(.plain)
+        // Secondary gesture flips STRAIGHT to the slider — no "Adjust strength…" menu step (that
+        // popup took people out of the mixing flow). iOS: long-press. macOS: press-hold + right-click.
         .onLongPressGesture { flipToSlider() }
-        .contextMenu {
-            Button { flipToSlider() } label: { Label("Adjust strength…", systemImage: "dial.medium") }
-        }
+        #if os(macOS)
+        .overlay(SecondaryClick { flipToSlider() })
+        #endif
         .accessibilityIdentifier(a11y)
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
@@ -551,6 +579,29 @@ private struct EffectButton: View {
         interaction += 1
     }
 }
+
+#if os(macOS)
+/// Fires `action` on a macOS SECONDARY (right) click, while staying transparent to left-clicks (so
+/// the chip's normal tap still toggles). Lets an effect chip reveal its slider IMMEDIATELY on
+/// right-click — no context menu. The hitTest trick: claim the hit only when the in-flight event is
+/// a right-click, else return nil so the click passes through to the SwiftUI button beneath.
+private struct SecondaryClick: NSViewRepresentable {
+    let action: () -> Void
+    func makeNSView(context: Context) -> NSView { CatcherView(action) }
+    func updateNSView(_ view: NSView, context: Context) { (view as? CatcherView)?.action = action }
+
+    final class CatcherView: NSView {
+        var action: () -> Void
+        init(_ action: @escaping () -> Void) { self.action = action; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let t = NSApp.currentEvent?.type
+            return (t == .rightMouseDown || t == .rightMouseUp) ? self : nil
+        }
+        override func rightMouseDown(with event: NSEvent) { action() }
+    }
+}
+#endif
 
 /// The per-deck playback-position scrubber (under the waveform). A SEPARATE view so the ~10 Hz
 /// playhead updates re-render only this slider, not the whole deck. Drag to seek (sample-accurate).
