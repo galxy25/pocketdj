@@ -65,6 +65,20 @@ final class RipsStore {
         var cutKey: String? = nil
         var cutBytes: Int? = nil
         var cutRippedAt: Double? = nil
+        // Beat-grid analysis (the mix-analysis indexer; all optional ⇒ back-compat). Measured on the
+        // burned file the deck opens (digital mp3 / analog per-song cut), so `firstDownbeatMs` is
+        // relative to the song's 0:00 and `beatGridBpm` is preferred over the catalog BPM for
+        // beat-matching. `steady` gates whether single-ratio sync holds; `beatgrid` is the lazy
+        // per-beat sidecar key (rips/analysis/<id>.json).
+        var firstBeatMs: Int? = nil
+        var firstDownbeatMs: Int? = nil
+        var beatGridBpm: Double? = nil
+        var beatsPerBar: Int? = nil
+        var tempoConfidence: Double? = nil
+        var tempoVar: Double? = nil
+        var steady: Bool? = nil
+        var beatgrid: String? = nil
+        var analysisVersion: Int? = nil
     }
 
     /// The "now playing" handoff to the inline player (mirrors the PWA's `NowPlaying`).

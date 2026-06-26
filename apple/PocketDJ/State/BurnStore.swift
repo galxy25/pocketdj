@@ -401,6 +401,16 @@ final class BurnStore {
         return item.startMs
     }
 
+    /// The measured beat grid for a song (from the rips manifest), if the indexer has analyzed it.
+    /// `bpm` (preferred over the catalog BPM for beat-matching) + the `firstDownbeatMs` phase
+    /// reference + the `steady` gate. nil when there's no grid yet (engine falls back to catalog
+    /// BPM + a downbeat-at-0 assumption). The grid is measured on the file the deck opens, so the
+    /// downbeat is relative to the song's 0:00 either way (cut from 0; windowed album from startMs).
+    func beatGrid(forSong songId: String) -> (bpm: Double?, firstDownbeatMs: Int?, steady: Bool?)? {
+        guard let e = rips.manifest[songId], e.beatGridBpm != nil || e.firstDownbeatMs != nil else { return nil }
+        return (e.beatGridBpm, e.firstDownbeatMs, e.steady)
+    }
+
     /// Total bytes burned to disk (eviction-ready: a future cap policy reads this).
     var totalBytes: Int { items.values.filter { $0.state == .ready }.reduce(0) { $0 + $1.bytes } }
 

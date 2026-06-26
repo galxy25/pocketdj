@@ -85,6 +85,13 @@ final class MixEngine {
         let camelot: String?
         let key: String?
         let albumId: String?
+        /// Measured beat grid (from the rips manifest indexer), when available. `gridBpm` is
+        /// preferred over the catalog `bpm` for beat-matching; `firstDownbeatMs` is the downbeat
+        /// phase reference (relative to the song's 0:00); `steady` gates single-ratio sync. All
+        /// default nil ⇒ the engine falls back to catalog bpm + a downbeat-at-0 assumption.
+        var gridBpm: Double? = nil
+        var firstDownbeatMs: Int? = nil
+        var steady: Bool? = nil
     }
 
     /// One entry in an Auto-Mix queue: a loadable track plus its known length (ms).
@@ -287,9 +294,12 @@ final class MixEngine {
         // boundary instead of bleeding into the next song on the side.
         let startMs = handle.isCut ? nil : burns.startMs(forSong: songId)
         let windowMs = handle.isCut ? nil : lengthMs
+        let grid = burns.beatGrid(forSong: songId)
         loadFile(handle.url, release: handle.release, startMs: startMs, lengthMs: windowMs,
                  meta: LoadedTrack(songId: songId, title: title, artist: artist,
-                                   bpm: bpm, camelot: camelot, key: key, albumId: albumId), on: deck)
+                                   bpm: bpm, camelot: camelot, key: key, albumId: albumId,
+                                   gridBpm: grid?.bpm, firstDownbeatMs: grid?.firstDownbeatMs,
+                                   steady: grid?.steady), on: deck)
     }
 
     /// Internal load seam (shared by the BurnStore path above AND the integration/stress tests):
@@ -436,21 +446,30 @@ final class MixEngine {
     func isLead(_ deck: Deck) -> Bool { leadDeck == deck }
 
     /// Match the follower's effective BPM to the Lead (rate = leadBPM·leadRate / followerBPM,
-    /// octave-folded into range), then best-effort phase-align the downbeats. Needs both decks'
-    /// catalog BPM. No-op if there's no Lead, the follower IS the lead, or a BPM is unknown.
+    /// octave-folded into range), then best-effort phase-align the downbeats. Prefers each deck's
+    /// MEASURED grid BPM (rips indexer) over the catalog. No-op if there's no Lead, the follower IS
+    /// the lead, or a BPM is unknown.
     func syncToLead(_ follower: Deck) {
         guard let lead = leadDeck, lead != follower,
-              let leadBPM = state(lead).loaded?.bpm, leadBPM > 0,
-              let folBPM = state(follower).loaded?.bpm, folBPM > 0 else { return }
+              let leadBPM = matchBPM(lead), let folBPM = matchBPM(follower) else { return }
         setRate(Self.syncRate(leadBPM: leadBPM, leadRate: state(lead).rate, followerBPM: folBPM), on: follower)
         phaseAlign(follower: follower, lead: lead)
     }
 
-    /// Whether a follower CAN sync (there's a lead ≠ this deck, both with known BPM).
+    /// Whether a follower CAN sync (there's a lead ≠ this deck, both with a known BPM).
     func canSync(_ deck: Deck) -> Bool {
-        guard let lead = leadDeck, lead != deck,
-              (state(lead).loaded?.bpm ?? 0) > 0, (state(deck).loaded?.bpm ?? 0) > 0 else { return false }
+        guard let lead = leadDeck, lead != deck, matchBPM(lead) != nil, matchBPM(deck) != nil else { return false }
         return true
+    }
+
+    /// The BPM to beat-match on: the MEASURED grid BPM (from the rips indexer) when available — it's
+    /// measured on the exact burned file, so it avoids the catalog's rounded-BPM drift — else the
+    /// catalog BPM. nil if neither is known.
+    private func matchBPM(_ deck: Deck) -> Double? {
+        let l = state(deck).loaded
+        if let g = l?.gridBpm, g > 0 { return g }
+        if let b = l?.bpm, b > 0 { return b }
+        return nil
     }
 
     // MARK: - Volume / crossfader / effects
@@ -703,12 +722,16 @@ final class MixEngine {
     /// indexer (see docs/design/mix-ondevice-tempo-pitch-beatmatch-spec.md) makes this exact.
     private func phaseAlign(follower f: Deck, lead l: Deck) {
         guard state(f).isPlaying, state(l).isPlaying,
-              let leadBPM = state(l).loaded?.bpm, leadBPM > 0,
-              let folBPM = state(f).loaded?.bpm, folBPM > 0 else { return }
+              let leadBPM = matchBPM(l), let folBPM = matchBPM(f) else { return }
         let leadBeat = 60.0 / leadBPM
         let folBeat = 60.0 / folBPM
-        let leadPhase = (position(l) / leadBeat).truncatingRemainder(dividingBy: 1)
-        let folPhase = (position(f) / folBeat).truncatingRemainder(dividingBy: 1)
+        // Phase RELATIVE TO each song's measured first downbeat (0 when the grid is absent — the old
+        // beat-0-at-song-start assumption). Both positions are song-relative, so this aligns the
+        // decks' actual downbeats rather than an arbitrary beat-of-bar.
+        let leadDb = Double(state(l).loaded?.firstDownbeatMs ?? 0) / 1000.0
+        let folDb = Double(state(f).loaded?.firstDownbeatMs ?? 0) / 1000.0
+        let leadPhase = ((position(l) - leadDb) / leadBeat).truncatingRemainder(dividingBy: 1)
+        let folPhase = ((position(f) - folDb) / folBeat).truncatingRemainder(dividingBy: 1)
         var delta = leadPhase - folPhase
         if delta > 0.5 { delta -= 1 } else if delta < -0.5 { delta += 1 }
         seek(f, toSeconds: max(0, position(f) + delta * folBeat))

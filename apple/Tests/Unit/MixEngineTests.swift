@@ -246,6 +246,24 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    /// Beat-grid ingestion (#5): a deck's MEASURED grid BPM is preferred over the catalog BPM for
+    /// sync. Lead grid 128 (catalog 120) over follower grid 100 ⇒ rate 1.28, not the catalog 1.2x.
+    func testSyncPrefersMeasuredGridBpmOverCatalog() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 2)
+        let b = try makeSineWAV(seconds: 2)
+        defer { [a, b].forEach { try? FileManager.default.removeItem(at: $0) } }
+        var ma = meta("a", bpm: 120); ma.gridBpm = 128
+        var mb = meta("b", bpm: 99);  mb.gridBpm = 100
+        e.loadFile(a, release: nil, startMs: nil, meta: ma, on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: mb, on: .b)
+        e.setLead(.a); e.play(.a); e.play(.b)
+        e.syncToLead(.b)
+        XCTAssertEqual(e.rate(.b), 1.28, accuracy: 1e-6)   // 128/100 grid, not 120/99 catalog
+    }
+
     // MARK: - Helpers
 
     private func makeEngine() -> MixEngine {
