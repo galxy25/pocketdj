@@ -77,20 +77,17 @@ struct MixView: View {
 
     // MARK: Auto-Mix (auto-DJ)
 
-    /// Auto vs Manual flows through the engine (it owns the mode so it survives tab switches).
-    private var autoModeBinding: Binding<Bool> {
-        Binding(get: { engine.autoEnabled }, set: { engine.setAutoEnabled($0) })
-    }
-
-    /// Toolbar: a Manual/Auto menu button, then (in Auto) the global-collection picker + ▶ Play /
+    /// Toolbar: a Manual/Auto toggle button, then (in Auto) the global-collection picker + ▶ Play /
     /// 🔀 Shuffle / ⏹ Stop — mirroring the Playlists tab's menu-bar play/shuffle.
     @ToolbarContentBuilder private var autoMixToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            Picker("Mix mode", selection: autoModeBinding) {
-                Label("Manual", systemImage: "slider.horizontal.3").tag(false)
-                Label("Auto", systemImage: "wand.and.stars").tag(true)
+            // ONE-TAP mode toggle: shows the current mode and flips to the other on tap (no dropdown).
+            Button { engine.setAutoEnabled(!engine.autoEnabled) } label: {
+                Label(engine.autoEnabled ? "Auto" : "Manual",
+                      systemImage: engine.autoEnabled ? "wand.and.stars" : "slider.horizontal.3")
             }
-            .pickerStyle(.menu)
+            .help(engine.autoEnabled ? "Auto mode — tap to switch to Manual"
+                                     : "Manual mode — tap to switch to Auto")
             .accessibilityIdentifier("mix-auto-mode")
 
             if engine.autoEnabled {
@@ -528,30 +525,33 @@ private struct EffectButton: View {
         }
     }
 
-    // TAP toggles; long-press / right-click flips to the strength slider.
+    // TAP toggles; long-press (iOS) / right-click (macOS) flips to the strength slider. A plain
+    // tappable view, NOT a Button — a SwiftUI Button swallows the long-press on iOS (the flip never
+    // fired), so tap + long-press are explicit gestures here instead.
     private var buttonFace: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 4) {
-                Image(systemName: effect.icon)
-                Text(effect.label).lineLimit(1)
-            }
-            .font(.caption.weight(.medium))
-            .frame(maxWidth: .infinity, minHeight: 18)
-            .padding(.vertical, 7)
-            .background(isOn ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(isOn ? Theme.accent : Theme.border, lineWidth: 1))
-            .foregroundStyle(isOn ? Theme.accent : Theme.fgDim)
+        HStack(spacing: 4) {
+            Image(systemName: effect.icon)
+            Text(effect.label).lineLimit(1)
         }
-        .buttonStyle(.plain)
-        // Secondary gesture flips STRAIGHT to the slider — no "Adjust strength…" menu step (that
-        // popup took people out of the mixing flow). iOS: long-press. macOS: press-hold + right-click.
-        .onLongPressGesture { flipToSlider() }
+        .font(.caption.weight(.medium))
+        .frame(maxWidth: .infinity, minHeight: 18)
+        .padding(.vertical, 7)
+        .background(isOn ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .strokeBorder(isOn ? Theme.accent : Theme.border, lineWidth: 1))
+        .foregroundStyle(isOn ? Theme.accent : Theme.fgDim)
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        // Secondary gesture flips STRAIGHT to the slider — no "Adjust strength…" menu step.
+        .onTapGesture { onToggle() }
+        .onLongPressGesture(minimumDuration: 0.4) { flipToSlider() }
         #if os(macOS)
         .overlay(SecondaryClick { flipToSlider() })
         #endif
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(effect.label)
         .accessibilityIdentifier(a11y)
+        .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 
