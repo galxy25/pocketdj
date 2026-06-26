@@ -381,6 +381,24 @@ final class MixEngine {
         startTickIfNeeded()
     }
 
+    /// Full deck RESET: return EVERY per-deck parameter to default — tempo (1.0×), pitch (0),
+    /// volume (100%), and all four effects OFF with their strength back to the 0.5 default — then
+    /// rewind to the start. Keeps the loaded track + its lead role. The ↺ button calls this so one
+    /// tap clears a deck back to a clean slate.
+    func resetDeck(_ deck: Deck) {
+        mutate(deck) {
+            $0.rate = 1.0
+            $0.pitch = 0.0
+            $0.volume = 1.0
+            $0.compressor = false; $0.reverb = false; $0.flanger = false; $0.filter = false
+            $0.compStrength = 0.5; $0.reverbStrength = 0.5; $0.flangerStrength = 0.5; $0.filterStrength = 0.5
+        }
+        applyRate(deck); applyPitch(deck)
+        for e in Effect.allCases { applyEffect(e, on: deck) }
+        applyMixGains()
+        restart(deck)            // rewind to the start (no-op if nothing is loaded)
+    }
+
     /// Seek to an absolute SOURCE position (seconds from the song's start). Sample-accurate, bounded
     /// to the song's window so an analog fallback can't scrub past its slice into the next song.
     func seek(_ deck: Deck, toSeconds sec: Double) {

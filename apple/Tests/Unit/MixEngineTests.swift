@@ -69,6 +69,26 @@ final class MixEngineTests: XCTestCase {
         e.setCrossfader(0.3);  XCTAssertEqual(e.crossfader, 0.3, accuracy: 1e-9)
     }
 
+    /// Reset (↺) returns EVERY per-deck parameter to default: tempo, pitch, volume, all effects off,
+    /// and effect strengths back to 0.5.
+    func testResetDeckClearsAllParameters() {
+        let e = makeEngine()
+        e.setRate(1.6, on: .a)
+        e.setPitch(7, on: .a)
+        e.setVolume(0.2, on: .a)
+        e.setEffect(.reverb, enabled: true, on: .a)
+        e.setEffectStrength(.reverb, 0.9, on: .a)
+        e.setEffect(.filter, enabled: true, on: .a)
+        e.resetDeck(.a)
+        XCTAssertEqual(e.rate(.a), 1.0)
+        XCTAssertEqual(e.pitch(.a), 0.0)
+        XCTAssertEqual(e.volume(.a), 1.0)
+        XCTAssertFalse(e.isEnabled(.reverb, on: .a))
+        XCTAssertFalse(e.isEnabled(.filter, on: .a))
+        XCTAssertEqual(e.strength(.reverb, on: .a), 0.5, accuracy: 1e-9)
+        XCTAssertEqual(e.strength(.filter, on: .a), 0.5, accuracy: 1e-9)
+    }
+
     func testLeadToggleAndCanSync() {
         let e = makeEngine()
         XCTAssertNil(e.leadDeck)

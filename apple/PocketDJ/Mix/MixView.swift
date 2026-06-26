@@ -249,22 +249,28 @@ private struct DeckView: View {
         HStack(spacing: 8) {
             Text("Deck \(deck.rawValue)")
                 .font(.headline).foregroundStyle(Theme.fg)
-            leadButton
             Spacer()
             sourceMenu
         }
     }
 
-    // ★ designate this deck as the beat-match LEAD (exclusive; tapping the current lead clears it).
+    // ★ "Lead" — designate this deck as the beat-match LEAD (exclusive; tapping the current lead
+    // clears it). Lives next to Sync (left of it) so it reads as the reference Sync matches to.
     private var leadButton: some View {
         Button { engine.setLead(deck) } label: {
-            Image(systemName: engine.isLead(deck) ? "star.fill" : "star")
-                .font(.caption)
+            Label("Lead", systemImage: engine.isLead(deck) ? "star.fill" : "star")
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(engine.isLead(deck) ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(engine.isLead(deck) ? Theme.accent : Theme.border, lineWidth: 1))
                 .foregroundStyle(engine.isLead(deck) ? Theme.accent : Theme.fgDim)
         }
         .buttonStyle(.plain)
-        .help(engine.isLead(deck) ? "Lead deck (tempo reference) — tap to clear" : "Make this the Lead deck")
+        .help(engine.isLead(deck) ? "Lead deck (tempo reference) — tap to clear" : "Make this the Lead deck (beat-match reference)")
         .accessibilityIdentifier("\(a11y)-lead")
+        .accessibilityAddTraits(engine.isLead(deck) ? .isSelected : [])
     }
 
     private var sourceMenu: some View {
@@ -352,9 +358,11 @@ private struct DeckView: View {
         }
     }
 
-    // ↺ Rewind + Sync. Sync matches this deck's tempo (and best-effort aligns beats) to the Lead.
+    // Lead · Sync · Reset. Lead (left) is the beat-match reference; Sync matches this deck's tempo
+    // (and best-effort aligns beats) to the Lead; Reset (↺) clears the whole deck + rewinds.
     private var transportRow: some View {
         HStack(spacing: 8) {
+            leadButton
             Button { engine.syncToLead(deck) } label: {
                 Label("Sync", systemImage: "arrow.triangle.2.circlepath").font(.caption.weight(.medium))
             }
@@ -364,13 +372,13 @@ private struct DeckView: View {
             .help("Match this deck's tempo to the Lead deck (downbeat alignment is best-effort)")
             .accessibilityIdentifier("\(a11y)-sync")
             Spacer()
-            Button { engine.restart(deck) } label: {
+            Button { engine.resetDeck(deck) } label: {
                 Image(systemName: "arrow.counterclockwise").font(.callout)
             }
             .buttonStyle(.bordered)
             .tint(Theme.accent)
             .disabled(loaded == nil)
-            .help("Rewind to the start")
+            .help("Reset deck — clear tempo, pitch, effects & volume, then rewind")
             .accessibilityIdentifier("\(a11y)-restart")
         }
     }
@@ -463,8 +471,11 @@ private struct DeckSlider: View {
     }
 }
 
-/// One effect chip: TAP toggles it; LONG-PRESS (iOS) / RIGHT-CLICK (macOS) pops a strength slider so
-/// you can dial in the wet amount per deck. Accent-filled + "selected" trait when on.
+/// One effect chip with an IN-PLACE flip: TAP toggles the effect; LONG-PRESS (iOS) / RIGHT-CLICK
+/// (macOS) flips the chip — same footprint, no popover, no screen nav — to a strength slider so you
+/// dial the wet amount right there. After 3 s with no interaction it flips back to the labelled
+/// button, keeping you in the flow. Flipping to the slider also enables the effect (so the dial is
+/// immediately audible). Accent-filled + "selected" when the effect is on.
 private struct EffectButton: View {
     let effect: MixEngine.Effect
     let isOn: Bool
@@ -472,16 +483,34 @@ private struct EffectButton: View {
     let a11y: String
     let onToggle: () -> Void
     let onStrength: (Double) -> Void
-    @State private var showStrength = false
+
+    /// Showing the strength slider (vs the labelled button)?
+    @State private var editing = false
+    /// Bumped on every interaction (flip-in + each slider change) to (re)start the 3 s idle timer.
+    @State private var interaction = 0
 
     var body: some View {
+        Group {
+            if editing { sliderFace } else { buttonFace }
+        }
+        .animation(.easeInOut(duration: 0.15), value: editing)
+        // Idle auto-revert: each interaction restarts this; 3 s with no new interaction flips back.
+        .task(id: interaction) {
+            guard editing else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { editing = false }
+        }
+    }
+
+    // TAP toggles; long-press / right-click flips to the strength slider.
+    private var buttonFace: some View {
         Button(action: onToggle) {
             HStack(spacing: 4) {
                 Image(systemName: effect.icon)
                 Text(effect.label).lineLimit(1)
             }
             .font(.caption.weight(.medium))
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 18)
             .padding(.vertical, 7)
             .background(isOn ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
                         in: RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -490,32 +519,36 @@ private struct EffectButton: View {
             .foregroundStyle(isOn ? Theme.accent : Theme.fgDim)
         }
         .buttonStyle(.plain)
-        .onLongPressGesture { showStrength = true }
+        .onLongPressGesture { flipToSlider() }
         .contextMenu {
-            Button { showStrength = true } label: { Label("Adjust strength…", systemImage: "dial.medium") }
+            Button { flipToSlider() } label: { Label("Adjust strength…", systemImage: "dial.medium") }
         }
-        .popover(isPresented: $showStrength, arrowEdge: .bottom) { strengthPopover }
         .accessibilityIdentifier(a11y)
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 
-    private var strengthPopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("\(effect.label) strength").font(.caption.weight(.semibold)).foregroundStyle(Theme.fg)
-            HStack(spacing: 8) {
-                Slider(value: Binding(get: { strength }, set: onStrength), in: 0...1)
-                    .frame(width: 170)
-                    .accessibilityIdentifier("\(a11y)-strength")
-                Text("\(Int((strength * 100).rounded()))%")
-                    .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
-                    .frame(width: 40, alignment: .trailing)
-            }
+    // The flipped-in strength slider — same chip footprint. Each change restarts the idle timer.
+    private var sliderFace: some View {
+        HStack(spacing: 6) {
+            Image(systemName: effect.icon)
+            Slider(value: Binding(get: { strength }, set: { onStrength($0); interaction += 1 }), in: 0...1)
+                .controlSize(.small)
+                .accessibilityIdentifier("\(a11y)-strength")
+            Text("\(Int((strength * 100).rounded()))%")
+                .monospacedDigit().frame(width: 30, alignment: .trailing)
         }
-        .padding(14)
-        .background(Theme.bgRaised)
-        #if os(macOS)
-        .frame(minWidth: 250)
-        #endif
+        .font(.caption.weight(.medium))
+        .frame(maxWidth: .infinity, minHeight: 18)
+        .padding(.vertical, 7).padding(.horizontal, 8)
+        .background(Theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.accent, lineWidth: 1))
+        .foregroundStyle(Theme.accent)
+    }
+
+    private func flipToSlider() {
+        if !isOn { onToggle() }     // dialling strength should be audible → enable on reveal
+        editing = true
+        interaction += 1
     }
 }
 
