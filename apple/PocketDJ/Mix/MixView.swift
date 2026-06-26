@@ -19,7 +19,7 @@ enum MixSource: Hashable, Identifiable {
 extension MixEngine {
     func load(_ l: MixLoadable, on deck: MixEngine.Deck) {
         load(songId: l.songId, title: l.title, artist: l.artist,
-             bpm: l.bpm, camelot: l.camelot, key: l.key, albumId: l.albumId, on: deck)
+             bpm: l.bpm, camelot: l.camelot, key: l.key, albumId: l.albumId, lengthMs: l.lengthMs, on: deck)
     }
 }
 
@@ -170,7 +170,7 @@ struct MixView: View {
         guard let src = autoSource else { return }
         let loadables = MixResolver(app: app, collections: collections, burns: burns).loadables(for: src)
         let items = loadables.map { l in
-            MixEngine.AutoMixItem(loadable: l, durationMs: app.songsById[l.songId]?.length ?? 180_000)
+            MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
         }
         engine.startAutoMix(items, shuffled: shuffled,
                             lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds)
@@ -222,8 +222,11 @@ private struct DeckView: View {
         VStack(alignment: .leading, spacing: 10) {
             deckLabel
             header
-            refreshRow             // ↺ rewind-to-start — under the waveform
-            effectsGrid
+            DeckSeekSlider(engine: engine, deck: deck)   // playback position scrubber (drag to seek)
+            transportRow                                 // ↺ rewind · Sync to Lead
+            tempoSlider                                  // live time-stretch (pitch preserved)
+            pitchSlider                                  // live pitch shift (tempo preserved)
+            effectsGrid                                  // tap = toggle · long-press / right-click = strength
             volSlider
             playButton
         }
@@ -243,12 +246,25 @@ private struct DeckView: View {
 
     // Deck letter + quick source picker (pocket / set list).
     private var deckLabel: some View {
-        HStack {
+        HStack(spacing: 8) {
             Text("Deck \(deck.rawValue)")
                 .font(.headline).foregroundStyle(Theme.fg)
+            leadButton
             Spacer()
             sourceMenu
         }
+    }
+
+    // ★ designate this deck as the beat-match LEAD (exclusive; tapping the current lead clears it).
+    private var leadButton: some View {
+        Button { engine.setLead(deck) } label: {
+            Image(systemName: engine.isLead(deck) ? "star.fill" : "star")
+                .font(.caption)
+                .foregroundStyle(engine.isLead(deck) ? Theme.accent : Theme.fgDim)
+        }
+        .buttonStyle(.plain)
+        .help(engine.isLead(deck) ? "Lead deck (tempo reference) — tap to clear" : "Make this the Lead deck")
+        .accessibilityIdentifier("\(a11y)-lead")
     }
 
     private var sourceMenu: some View {
@@ -336,11 +352,17 @@ private struct DeckView: View {
         }
     }
 
-    // ↺ Refresh row (under the waveform): re-open the deck's file to rewind to 0:00. (Tempo, pitch,
-    // and beat-sync are intentionally absent — the vendored Switchboard 3.2.3 player can't do them;
-    // see MixEngine's note. Rewind is the only position control the SDK exposes.)
-    private var refreshRow: some View {
-        HStack {
+    // ↺ Rewind + Sync. Sync matches this deck's tempo (and best-effort aligns beats) to the Lead.
+    private var transportRow: some View {
+        HStack(spacing: 8) {
+            Button { engine.syncToLead(deck) } label: {
+                Label("Sync", systemImage: "arrow.triangle.2.circlepath").font(.caption.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .tint(Theme.accent2)
+            .disabled(!engine.canSync(deck))
+            .help("Match this deck's tempo to the Lead deck (downbeat alignment is best-effort)")
+            .accessibilityIdentifier("\(a11y)-sync")
             Spacer()
             Button { engine.restart(deck) } label: {
                 Image(systemName: "arrow.counterclockwise").font(.callout)
@@ -351,6 +373,23 @@ private struct DeckView: View {
             .help("Rewind to the start")
             .accessibilityIdentifier("\(a11y)-restart")
         }
+    }
+
+    private var tempoSlider: some View {
+        DeckSlider(title: "Tempo",
+                   display: String(format: "%.2f×", engine.rate(deck)),
+                   value: engine.rate(deck),
+                   range: MixEngine.rateRange,
+                   a11y: "\(a11y)-tempo") { engine.setRate($0, on: deck) }
+    }
+
+    private var pitchSlider: some View {
+        let p = engine.pitch(deck)
+        return DeckSlider(title: "Pitch",
+                          display: p == 0 ? "0" : String(format: "%+.1f", p),
+                          value: p,
+                          range: MixEngine.pitchRange,
+                          a11y: "\(a11y)-pitch") { engine.setPitch($0, on: deck) }
     }
 
     private var volSlider: some View {
@@ -368,9 +407,10 @@ private struct DeckView: View {
             ForEach(MixEngine.Effect.allCases) { fx in
                 EffectButton(effect: fx,
                              isOn: engine.isEnabled(fx, on: deck),
-                             a11y: "\(a11y)-fx-\(fx.rawValue)") {
-                    engine.setEffect(fx, enabled: !engine.isEnabled(fx, on: deck), on: deck)
-                }
+                             strength: engine.strength(fx, on: deck),
+                             a11y: "\(a11y)-fx-\(fx.rawValue)",
+                             onToggle: { engine.setEffect(fx, enabled: !engine.isEnabled(fx, on: deck), on: deck) },
+                             onStrength: { engine.setEffectStrength(fx, $0, on: deck) })
             }
         }
     }
@@ -423,15 +463,19 @@ private struct DeckSlider: View {
     }
 }
 
-/// One effect toggle chip: accent-filled + "selected" trait when on, dim outline when off.
+/// One effect chip: TAP toggles it; LONG-PRESS (iOS) / RIGHT-CLICK (macOS) pops a strength slider so
+/// you can dial in the wet amount per deck. Accent-filled + "selected" trait when on.
 private struct EffectButton: View {
     let effect: MixEngine.Effect
     let isOn: Bool
+    let strength: Double
     let a11y: String
-    let action: () -> Void
+    let onToggle: () -> Void
+    let onStrength: (Double) -> Void
+    @State private var showStrength = false
 
     var body: some View {
-        Button(action: action) {
+        Button(action: onToggle) {
             HStack(spacing: 4) {
                 Image(systemName: effect.icon)
                 Text(effect.label).lineLimit(1)
@@ -446,8 +490,66 @@ private struct EffectButton: View {
             .foregroundStyle(isOn ? Theme.accent : Theme.fgDim)
         }
         .buttonStyle(.plain)
+        .onLongPressGesture { showStrength = true }
+        .contextMenu {
+            Button { showStrength = true } label: { Label("Adjust strength…", systemImage: "dial.medium") }
+        }
+        .popover(isPresented: $showStrength, arrowEdge: .bottom) { strengthPopover }
         .accessibilityIdentifier(a11y)
         .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+
+    private var strengthPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(effect.label) strength").font(.caption.weight(.semibold)).foregroundStyle(Theme.fg)
+            HStack(spacing: 8) {
+                Slider(value: Binding(get: { strength }, set: onStrength), in: 0...1)
+                    .frame(width: 170)
+                    .accessibilityIdentifier("\(a11y)-strength")
+                Text("\(Int((strength * 100).rounded()))%")
+                    .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    .frame(width: 40, alignment: .trailing)
+            }
+        }
+        .padding(14)
+        .background(Theme.bgRaised)
+        #if os(macOS)
+        .frame(minWidth: 250)
+        #endif
+    }
+}
+
+/// The per-deck playback-position scrubber (under the waveform). A SEPARATE view so the ~10 Hz
+/// playhead updates re-render only this slider, not the whole deck. Drag to seek (sample-accurate).
+private struct DeckSeekSlider: View {
+    let engine: MixEngine
+    let deck: MixEngine.Deck
+    @State private var scrubbing: Double?
+
+    var body: some View {
+        let dur = engine.duration(deck)
+        let pos = scrubbing ?? engine.position(deck)
+        VStack(spacing: 1) {
+            Slider(value: Binding(get: { dur > 0 ? min(max(pos, 0), dur) : 0 },
+                                  set: { scrubbing = $0 }),
+                   in: 0...max(dur, 0.001),
+                   onEditingChanged: { editing in
+                       if !editing, let s = scrubbing { engine.seek(deck, toSeconds: s); scrubbing = nil }
+                   })
+                .tint(Theme.accent2)
+                .disabled(dur <= 0)
+                .accessibilityIdentifier("deck-\(deck.rawValue)-seek")
+            HStack {
+                Text(Self.clock(pos)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                Spacer()
+                Text(Self.clock(dur)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            }
+        }
+    }
+
+    private static func clock(_ s: Double) -> String {
+        guard s.isFinite, s >= 0 else { return "0:00" }
+        let t = Int(s.rounded()); return String(format: "%d:%02d", t / 60, t % 60)
     }
 }
 

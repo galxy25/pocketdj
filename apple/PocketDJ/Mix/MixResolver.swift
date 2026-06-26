@@ -12,6 +12,7 @@ struct MixLoadable: Identifiable, Hashable {
     let camelot: String?
     let key: String?
     let albumId: String?
+    let lengthMs: Int?      // song length (ms) — bounds an analog shared-album fallback to its slice
     var id: String { songId }
 }
 
@@ -40,7 +41,8 @@ struct MixResolver {
         return songIds.compactMap { id -> MixLoadable? in
             guard seen.insert(id).inserted, let song = app.songsById[id], isLoadable(id) else { return nil }
             return MixLoadable(songId: id, title: song.name, artist: song.artist,
-                               bpm: song.bpm, camelot: song.camelot, key: song.key, albumId: song.albumId)
+                               bpm: song.bpm, camelot: song.camelot, key: song.key, albumId: song.albumId,
+                               lengthMs: song.length)
         }
     }
 
@@ -60,7 +62,8 @@ struct MixResolver {
                                bpm: t.bpm ?? song?.bpm,
                                camelot: t.camelot ?? song?.camelot,
                                key: song?.key,
-                               albumId: song?.albumId)
+                               albumId: song?.albumId,
+                               lengthMs: t.lengthMs ?? song?.length)
         }
     }
 

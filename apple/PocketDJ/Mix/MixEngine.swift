@@ -1,23 +1,19 @@
 import Foundation
 import Observation
-import SwitchboardSDK
-import SwitchboardSuperpowered
-#if os(iOS)
-import AVFoundation   // iOS-only: AVAudioSession (Switchboard drives its own IO, we just set the category)
-#endif
+import AVFoundation        // AVAudioEngine + nodes (iOS · iPad · Mac); AVAudioSession is iOS-only (guarded below)
+import AudioToolbox        // DynamicsProcessor AU parameter ids + AudioUnitSetParameter
+import SwitchboardSDK      // (retained ONLY for the dead `SwitchboardRuntime` init below — the Mix DSP no
+import SwitchboardSuperpowered  //  longer uses Switchboard; ripping the vendored SDK out is a follow-up)
 
-/// One-time Switchboard runtime bootstrap. Runs at app launch from BOTH platform app
-/// delegates (iOS `AppDelegate`, macOS `MacAppDelegate`) — BEFORE the Mix tab can build its
-/// engine — so `Switchboard.createEngine` always sees an initialized runtime. Idempotent: a
-/// background relaunch (which re-enters `didFinishLaunching`) is a no-op. Reads the gitignored
-/// `SwitchboardSecrets` (generated from <repo>/switchboard-credentials.json by
-/// apple/scripts/setup-switchboard-secrets.sh — NEVER hardcode the secret in committed code).
+/// One-time Switchboard runtime bootstrap. Still invoked at launch by the platform app delegates, but
+/// the Mix engine NO LONGER uses Switchboard — the two-deck DSP is now a first-party `AVAudioEngine`
+/// graph (live tempo/pitch/seek/beat-match the Superpowered 3.2.3 player could not do). This init is
+/// therefore dead weight; left in place to keep the change focused (removing the vendored SDK +
+/// MixAudioGraph.json + the gitignored secret is a separate cleanup). Reads the gitignored
+/// `SwitchboardSecrets`; NEVER hardcode the secret in committed code.
 enum SwitchboardRuntime {
     private static var didActivate = false
 
-    /// Load the Superpowered extension + initialize Switchboard with the appID/appSecret and
-    /// the Superpowered license. Cross-platform (no `#if os`): the same SDK initializes on
-    /// iPhone, iPad, and Mac. Call from the main thread at launch (the delegates do).
     static func activate() {
         guard !didActivate else { return }
         didActivate = true
@@ -32,36 +28,35 @@ enum SwitchboardRuntime {
     }
 }
 
-/// Cross-platform DJ mix engine — a SwiftUI-native port of the dj-app reference's
-/// `MainAudioSystem`. Drives a two-deck Superpowered graph (see MixAudioGraph.json) entirely
-/// by STRING node ids through `Switchboard.{setValue,callAction}`.
+/// Cross-platform DJ mix engine — a first-party two-deck `AVAudioEngine` graph. Each deck is
 ///
-/// Runs on iPhone, iPad, AND Mac with NO `#if os` gating of the engine — the vendored
-/// universal xcframeworks link on every platform and `RealTimeGraphRenderer` manages its own
-/// audio IO (output-only, `microphoneEnabled:false`). The ONLY platform-gated code is the
-/// genuinely iOS-only `AVAudioSession` category activation.
+///   AVAudioPlayerNode → AVAudioUnitTimePitch → DynamicsProcessor(comp) → AVAudioUnitEQ(filter)
+///                     → AVAudioUnitReverb → AVAudioUnitDelay(flanger) → mainMixerNode → output
 ///
-/// App-scoped (injected as an `@Observable` env object alongside `PlayerEngine`/`SetlistPlayer`)
-/// so deck state — loaded track, rate, volume, effects, crossfader — survives tab switches. It
-/// owns the `BurnStore` so a deck can resolve ONLY locally-burned files (`localURLForPlayback`),
-/// holding each file's security scope while loaded and releasing it on reload / teardown.
+/// which gives, live and on-device: **tempo** (`timePitch.rate`, pitch preserved), **pitch**
+/// (`timePitch.pitch`, tempo preserved), sample-accurate **seek** (`scheduleSegment(startingFrame:)`
+/// — which also lets an analog shared-album file start at the song's `startMs`), an equal-power
+/// **crossfader** (per-deck player volume), four **effects** with a continuous per-deck **strength**,
+/// and **beat-matching** (designate a Lead deck → Sync matches the follower's effective BPM via rate
+/// + best-effort downbeat phase align). Runs on iPhone · iPad · Mac with no `#if os` gating of the
+/// graph (only `AVAudioSession` is iOS-only).
 ///
-/// Engine creation is LAZY (`ensureEngine`, on first use) — so the realtime audio graph is NOT
-/// spun up at app launch, and it can never race the app-delegate's `Switchboard.initialize`.
+/// App-scoped (`@Observable` env object) so deck state survives tab switches. Owns the `BurnStore`
+/// so a deck resolves ONLY locally-burned files, holding each file's security scope while loaded.
+/// Engine build is LAZY (`ensureEngine`, first use) so the realtime graph isn't spun up at launch.
 @MainActor
 @Observable
 final class MixEngine {
 
     // MARK: Types
 
-    /// The two decks. The rawValue is the node-id suffix in MixAudioGraph.json (playerA / gainA …).
+    /// The two decks. The rawValue ("A"/"B") labels the UI + namespaces node dictionaries.
     enum Deck: String, CaseIterable, Identifiable { case a = "A", b = "B"; var id: String { rawValue } }
 
-    /// The four per-deck effects. The rawValue is the node-id prefix (compressorA, reverbA …).
+    /// The four per-deck effects.
     enum Effect: String, CaseIterable, Identifiable {
         case compressor, reverb, flanger, filter
         var id: String { rawValue }
-        /// 2×2 grid label.
         var label: String {
             switch self {
             case .compressor: return "Comp"
@@ -70,7 +65,6 @@ final class MixEngine {
             case .filter:     return "Filter"
             }
         }
-        /// SF Symbol for the grid chip.
         var icon: String {
             switch self {
             case .compressor: return "waveform.path.ecg"
@@ -81,8 +75,8 @@ final class MixEngine {
         }
     }
 
-    /// A deck's display payload — the view re-resolves artwork (via AppModel/`albumId`) +
-    /// waveform from this, so the engine stays free of catalog/UI types.
+    /// A deck's display payload — the view re-resolves artwork + waveform from this, so the engine
+    /// stays free of catalog/UI types.
     struct LoadedTrack: Equatable {
         let songId: String
         let title: String
@@ -93,34 +87,30 @@ final class MixEngine {
         let albumId: String?
     }
 
-    /// One entry in an Auto-Mix queue: a loadable track plus its known length (ms). The view
-    /// builds these from `MixResolver` + the catalog song length (the player has no position
-    /// readback, so the engine times each crossfade off this duration + a wall clock).
+    /// One entry in an Auto-Mix queue: a loadable track plus its known length (ms).
     struct AutoMixItem: Equatable {
         let loadable: MixLoadable
         let durationMs: Int
     }
 
+    // MARK: Tunable ranges
+
+    /// Tempo multiplier range (time-stretch, pitch preserved). 1.0 = original.
+    static let rateRange: ClosedRange<Double> = 0.5...2.0
+    /// Pitch range in semitones (frequency shift, tempo preserved). 0 = original.
+    static let pitchRange: ClosedRange<Double> = -12...12
+
     // MARK: Observable state
 
-    // NOTE: tempo / pitch / beat-sync are intentionally absent. The vendored Switchboard 3.2.3
-    // `AdvancedAudioPlayer` exposes ONLY open/play/pause through the string API (no tempo, pitch,
-    // seek, loop, or sync key/action — verified empirically; the C++ methods aren't bridged and no
-    // typed node class ships). The Mix tab is the controllable subset: load + play/pause + volume +
-    // crossfader + effects + waveform + restart(re-open to 0:00). Restoring tempo/pitch/beat-match
-    // needs on-device DSP or a newer SDK (see fetch-switchboard.sh note + the mix-dsp-prototype spec).
-
-    /// Per-deck observable state. The held security-scope `release` is NOT here — it lives in a
-    /// separate `@ObservationIgnored` slot so swapping it never invalidates a view.
     private struct DeckState: Equatable {
         var loaded: LoadedTrack?
         var startMs: Int?
         var isPlaying = false
         var volume: Double = 1.0
-        var compressor = false
-        var reverb = false
-        var flanger = false
-        var filter = false
+        var rate: Double = 1.0       // tempo multiplier
+        var pitch: Double = 0.0      // semitones
+        var compressor = false, reverb = false, flanger = false, filter = false
+        var compStrength = 0.5, reverbStrength = 0.5, flangerStrength = 0.5, filterStrength = 0.5
 
         func isEnabled(_ e: Effect) -> Bool {
             switch e {
@@ -138,242 +128,368 @@ final class MixEngine {
             case .filter:     filter = on
             }
         }
+        func strength(_ e: Effect) -> Double {
+            switch e {
+            case .compressor: return compStrength
+            case .reverb:     return reverbStrength
+            case .flanger:    return flangerStrength
+            case .filter:     return filterStrength
+            }
+        }
+        mutating func setStrength(_ e: Effect, _ v: Double) {
+            let c = min(max(v, 0), 1)
+            switch e {
+            case .compressor: compStrength = c
+            case .reverb:     reverbStrength = c
+            case .flanger:    flangerStrength = c
+            case .filter:     filterStrength = c
+            }
+        }
     }
 
     private var deckA = DeckState()
     private var deckB = DeckState()
-    /// The bottom transport state (true iff EITHER deck is playing) — mirrors the reference's
-    /// single `isPlaying` that `startPlayback`/`pausePlayback` toggled for both decks.
+    /// True iff EITHER deck is playing — drives the bottom transport.
     private(set) var isRunning = false
-    /// 0 = full A, 1 = full B. Centered by default so both loaded decks are audible at equal power.
+    /// 0 = full A, 1 = full B. Equal-power; centered so both loaded decks are audible.
     private(set) var crossfader: Double = 0.5
-    /// True once the Switchboard graph exists. The view can gate controls on it.
-    var isReady: Bool { engineID != nil }
+    /// The designated LEAD deck for beat-matching (nil = none). The follower's Sync matches it.
+    private(set) var leadDeck: Deck?
+    /// True once the AVAudioEngine graph is built + running.
+    var isReady: Bool { built }
+
+    /// Per-deck playhead (source seconds) + length — SEPARATE stored properties (not in `DeckState`)
+    /// so the ~10 Hz position updates invalidate ONLY the seek slider subview, not the whole deck.
+    private(set) var positionA: Double = 0
+    private(set) var positionB: Double = 0
+    private(set) var durationA: Double = 0
+    private(set) var durationB: Double = 0
 
     // MARK: Auto-Mix (auto-DJ) — observable
 
-    /// Auto vs Manual. When Auto, the toolbar exposes a collection + Play/Shuffle that drive
-    /// `startAutoMix`. Manual leaves the decks under direct user control. Persists across tab
-    /// switches (the engine is app-scoped).
     private(set) var autoEnabled = false
-    /// True while an auto-mix queue is actively playing through (set by `startAutoMix`, cleared
-    /// when the queue ends or `stopAutoMix`). Drives the toolbar's Stop button + status banner.
     private(set) var autoMixing = false
-    /// One-line status for the UI, e.g. "3 / 12 · Deck B" or "3 / 12 · fading". nil when idle.
     private(set) var autoStatus: String?
 
-    // MARK: Private
+    // MARK: Private — graph
 
-    /// The burn store — resolves a songId → on-disk burned file + its (held) security scope.
     @ObservationIgnored private let burns: BurnStore
-    /// nil until `ensureEngine` builds the graph; the engine OBJECT then persists for the app's
-    /// life (teardown only `stop`s it). Returned by `Switchboard.createEngine`.
-    @ObservationIgnored private var engineID: String?
-    /// The held BurnStore security-scope releases — one per deck. Kept OPEN while a deck has the
-    /// file loaded; called on the next load / teardown. `@ObservationIgnored`: a closure swap
-    /// must never invalidate a SwiftUI view (and closures aren't Equatable).
-    @ObservationIgnored private var releaseA: (() -> Void)?
-    @ObservationIgnored private var releaseB: (() -> Void)?
-    /// The opened file path per deck — kept so `restart` can re-`open` (the AdvancedAudioPlayer
-    /// node has no seek/`position` key, so re-opening is how we return a deck to 0:00).
-    @ObservationIgnored private var pathA: String?
-    @ObservationIgnored private var pathB: String?
+    @ObservationIgnored private let engine = AVAudioEngine()
+    @ObservationIgnored private var built = false
+    @ObservationIgnored private var players: [Deck: AVAudioPlayerNode] = [:]
+    /// Per-deck normalizing mixer right after the player. `player → inputMixer` carries the FILE's
+    /// format (mono/stereo, any sample rate) and is the ONLY link reconnected per load; everything
+    /// downstream stays pinned at canonical stereo so the effect AUs never see a live channel/SR
+    /// reconfiguration (which AVAudioEngine asserts-and-hard-crashes on). The mixer up/down-mixes
+    /// and resamples each file into canonical.
+    @ObservationIgnored private var inputMixers: [Deck: AVAudioMixerNode] = [:]
+    @ObservationIgnored private var timePitches: [Deck: AVAudioUnitTimePitch] = [:]
+    @ObservationIgnored private var reverbs: [Deck: AVAudioUnitReverb] = [:]
+    @ObservationIgnored private var filters: [Deck: AVAudioUnitEQ] = [:]
+    @ObservationIgnored private var flangers: [Deck: AVAudioUnitDelay] = [:]
+    @ObservationIgnored private var comps: [Deck: AVAudioUnitEffect] = [:]
+    @ObservationIgnored private var files: [Deck: AVAudioFile] = [:]
+    /// The song's playback WINDOW within the file, in frames: `[startFrames, endFrames)`. For a
+    /// per-song cut this is the whole file; for an analog shared-album fallback it is the song's
+    /// `[startMs, startMs+lengthMs)` slice (so the deck stops at the song boundary, not end-of-side).
+    @ObservationIgnored private var startFrames: [Deck: AVAudioFramePosition] = [:]
+    @ObservationIgnored private var endFrames: [Deck: AVAudioFramePosition] = [:]
+    @ObservationIgnored private var sampleRates: [Deck: Double] = [:]
+    @ObservationIgnored private var releases: [Deck: () -> Void] = [:]
+    @ObservationIgnored private var paths: [Deck: String] = [:]
+    #if os(iOS)
+    @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    #endif
 
-    // Auto-Mix machine (all @ObservationIgnored — the UI only watches the published trio above).
-    /// The ordered queue (already shuffled if requested).
+    /// Single ~10 Hz driver: advances each playing deck's playhead AND steps the auto-mix crossfade.
+    @ObservationIgnored private var tickTask: Task<Void, Never>?
+    @ObservationIgnored private var lastTickAt: Date?
+
+    // Auto-Mix machine (Date/wall-clock based — unchanged from the Switchboard era; it only drives the
+    // public transport, so it works identically on the AVAudioEngine backend).
     @ObservationIgnored private var autoQueue: [AutoMixItem] = []
-    /// Queue index of the track currently LIVE (audible/playing forward).
     @ObservationIgnored private var autoLivePos = 0
-    /// Queue index of the NEXT track to preload onto the freed deck.
     @ObservationIgnored private var autoNextToLoad = 0
-    /// Which deck holds the live track.
     @ObservationIgnored private var autoLiveDeck: Deck = .a
-    /// Wall-clock instant each deck's current track will END (start + duration). Used to decide
-    /// when to begin the crossfade (player exposes no playhead).
     @ObservationIgnored private var autoDeckEndsAt: [Deck: Date] = [:]
-    /// Duration (ms) of the track currently loaded on each deck — so a deck that becomes live
-    /// can compute its own `endsAt`.
     @ObservationIgnored private var autoDeckDurationMs: [Deck: Int] = [:]
-    /// Non-nil WHILE a crossfade is animating: the instant it began.
     @ObservationIgnored private var autoFadeStartedAt: Date?
-    /// The deck we are fading FROM during the active crossfade.
     @ObservationIgnored private var autoFadeFrom: Deck = .a
     @ObservationIgnored private var autoLeadSeconds: Double = 15
     @ObservationIgnored private var autoFadeSeconds: Double = 3
-    /// The ~10 Hz driver that polls the wall clock + steps the crossfade.
-    @ObservationIgnored private var autoTickTask: Task<Void, Never>?
 
-    init(burns: BurnStore) { self.burns = burns }   // graph is built lazily in ensureEngine.
+    init(burns: BurnStore) { self.burns = burns }
 
     // MARK: - Lifecycle
 
-    /// Build the two-deck graph from the bundled MixAudioGraph.json ON FIRST USE and start
-    /// rendering. Idempotent — later calls (a slider move, a play) are no-ops once built. Safe to
-    /// call from `MixView.task`/`onAppear` (`prepare()`) so the engine warms up when the tab opens.
+    /// Build the two-deck graph ON FIRST USE and start the engine. Idempotent.
     func ensureEngine() {
-        guard engineID == nil else { return }
+        guard !built else { return }
         #if os(iOS)
-        activateAudioSession()   // genuinely iOS-only; Switchboard still owns the actual IO
+        activateAudioSession()
+        registerInterruptionHandling()
         #endif
-        guard let url = Bundle.main.url(forResource: "MixAudioGraph", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { assertionFailure("MixAudioGraph.json missing or invalid"); return }
-
-        let result = Switchboard.createEngine(withConfig: config)
-        guard let id = result.value as? String else { assertionFailure("createEngine failed"); return }
-        engineID = id
-
-        // Push whatever state the UI already set (e.g. an effect toggled before the tab built the
-        // engine) so the graph matches the observable model, then start rendering. (No looping/sync
-        // setup — `isLoopingEnabled`/`setNodeToSyncWith` aren't valid on the 3.2.3 player.)
-        pushDeckState(.a)
-        pushDeckState(.b)
+        let canonical = Self.canonicalFormat
+        for d in Deck.allCases {
+            let player = AVAudioPlayerNode()
+            let inputMixer = AVAudioMixerNode()
+            let tp = AVAudioUnitTimePitch()
+            let comp = AVAudioUnitEffect(audioComponentDescription: Self.dynamicsDesc)
+            let filter = AVAudioUnitEQ(numberOfBands: 1)
+            let reverb = AVAudioUnitReverb()
+            let flanger = AVAudioUnitDelay()
+            reverb.loadFactoryPreset(.mediumHall)
+            for n in [player, inputMixer, tp, comp, filter, reverb, flanger] as [AVAudioNode] { engine.attach(n) }
+            // `player → inputMixer` carries the file's real format (set per load); the mixer converts
+            // it into canonical stereo. The effect chain below it is pinned at canonical FOR LIFE, so
+            // loading a mono / 48 kHz / odd file never reconfigures (and crashes) a live AU.
+            engine.connect(player, to: inputMixer, format: canonical)
+            connectChain(d, nodes: (inputMixer, tp, comp, filter, reverb, flanger))
+            players[d] = player; inputMixers[d] = inputMixer; timePitches[d] = tp; comps[d] = comp
+            filters[d] = filter; reverbs[d] = reverb; flangers[d] = flanger
+        }
+        engine.prepare()
+        // Soft-fail: no audio device (e.g. a headless CI / unit-test host) leaves the graph unbuilt
+        // and `isReady` false — the app degrades to a silent Mix tab rather than crashing.
+        do { try engine.start() } catch { return }
+        built = true
+        // Push whatever the UI already set, then derive gains.
+        for d in Deck.allCases {
+            applyRate(d); applyPitch(d)
+            for e in Effect.allCases { applyEffect(e, on: d) }
+        }
         applyMixGains()
-        Switchboard.callAction(withObject: id, actionName: "start", params: nil)
     }
 
-    /// View-facing warm-up alias (call from `.task`/`.onAppear`).
     func prepare() { ensureEngine() }
 
-    /// Stop rendering and RELEASE both held BurnStore security scopes. For explicit reset / app
-    /// teardown — NOT tab switches (the engine is app-scoped; deck state + loaded files survive
-    /// navigation). The engine object itself persists; a later `ensureEngine` is a no-op and
-    /// play/start resumes it.
     func teardown() {
         endAutoLoop()
+        tickTask?.cancel(); tickTask = nil
         pauseBoth()
-        if let id = engineID { Switchboard.callAction(withObject: id, actionName: "stop", params: nil) }
-        releaseA?(); releaseA = nil
-        releaseB?(); releaseB = nil
+        if built { engine.stop() }
+        releases[.a]?(); releases[.a] = nil
+        releases[.b]?(); releases[.b] = nil
         mutate(.a) { $0.loaded = nil; $0.startMs = nil }
         mutate(.b) { $0.loaded = nil; $0.startMs = nil }
+        #if os(iOS)
+        if let o = interruptionObserver { NotificationCenter.default.removeObserver(o); interruptionObserver = nil }
+        #endif
     }
 
     // MARK: - Loading
 
-    /// Load a LOCAL (burned) track onto a deck. Resolves the on-disk file through
-    /// `BurnStore.localURLForPlayback` — which returns the url WITH its security scope already
-    /// OPEN plus a `release` closure — and HOLDS `release` until the next load / teardown so the
-    /// deck can read the file throughout playback. A non-loadable song (no burned file) is a
-    /// no-op (degrade gracefully).
     func load(songId: String, title: String, artist: String, bpm: Double?,
-              camelot: String?, key: String?, albumId: String?, on deck: Deck) {
-        guard let handle = burns.localURLForPlaybackPreferringCut(forSong: songId) else { return }   // not local → skip
-        ensureEngine()
-        let player = playerID(deck)
-        Switchboard.callAction(withObject: player, actionName: "open", params: ["path": handle.url.path])
-        // Now that the NEW file is open, release the PREVIOUS file's scope and hold the new one.
-        release(deck)?()
-        setRelease(deck, handle.release)
-        setPath(deck, handle.url.path)            // remember it so `restart` can re-open to 0:00
-
-        // A per-song CUT file (handle.isCut) already IS the song and plays from 0:00 — no offset.
-        // The shared-album fallback (an analog whole-side mp3 with NO cut exported) has no confirmed
-        // seek action in the vendored Superpowered API, so it plays from the side's start; we keep
-        // its startMs only for the UI's waveform window.
+              camelot: String?, key: String?, albumId: String?, lengthMs: Int? = nil, on deck: Deck) {
+        guard let handle = burns.localURLForPlaybackPreferringCut(forSong: songId) else { return }
+        // A per-song CUT plays its whole file from 0:00; an analog shared-album fallback SEEKS to the
+        // song's startMs AND bounds playback to the song's lengthMs window, so it stops at the song
+        // boundary instead of bleeding into the next song on the side.
         let startMs = handle.isCut ? nil : burns.startMs(forSong: songId)
-        mutate(deck) {
-            $0.loaded = LoadedTrack(songId: songId, title: title, artist: artist,
-                                    bpm: bpm, camelot: camelot, key: key, albumId: albumId)
-            $0.startMs = startMs
-        }
+        let windowMs = handle.isCut ? nil : lengthMs
+        loadFile(handle.url, release: handle.release, startMs: startMs, lengthMs: windowMs,
+                 meta: LoadedTrack(songId: songId, title: title, artist: artist,
+                                   bpm: bpm, camelot: camelot, key: key, albumId: albumId), on: deck)
     }
 
-    // MARK: - Transport (per deck + both)
+    /// Internal load seam (shared by the BurnStore path above AND the integration/stress tests):
+    /// open `url`, reconnect only the player→inputMixer link at the file's format, schedule the
+    /// `[startMs, startMs+lengthMs)` window (analog) or the whole file, and reset tempo/pitch/lead.
+    /// `release` is the held security-scope closure (nil for app-storage / test files). On any early
+    /// return it releases `release` (so a bad file never leaks a scope) and leaves the deck's current
+    /// track untouched. A zero-frame window is rejected (scheduling it would be an uncatchable crash).
+    func loadFile(_ url: URL, release: (() -> Void)?, startMs: Int?, lengthMs: Int? = nil,
+                  meta: LoadedTrack, on deck: Deck) {
+        ensureEngine()
+        guard let player = players[deck], let inputMixer = inputMixers[deck] else { release?(); return }
+        guard let file = try? AVAudioFile(forReading: url) else { release?(); return }   // unreadable / corrupt
+        let sr = file.processingFormat.sampleRate
+        let total = file.length
+        let start = min(max(0, AVAudioFramePosition((Double(startMs ?? 0) / 1000.0) * sr)), total)
+        let available = total - start
+        let windowed = lengthMs.map { AVAudioFramePosition((Double($0) / 1000.0) * sr) }
+        let count = windowed.map { min(available, max(0, $0)) } ?? available
+        guard count > 0 else { release?(); return }    // over-length startMs / empty file — keep current track
+
+        player.stop()
+        engine.connect(player, to: inputMixer, format: file.processingFormat)   // only the varying link
+        releases[deck]?()                  // release the PREVIOUS file's scope, hold the new one
+        releases[deck] = release
+        paths[deck] = url.path
+        files[deck] = file
+        sampleRates[deck] = sr
+        startFrames[deck] = start
+        endFrames[deck] = start + count
+        player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(count),
+                               at: nil, completionHandler: nil)
+        if leadDeck == deck { leadDeck = nil }   // load resets this deck's lead role + tempo/pitch
+        mutate(deck) {
+            $0.loaded = meta
+            $0.startMs = startMs
+            $0.isPlaying = false
+            $0.rate = 1.0
+            $0.pitch = 0.0
+        }
+        setDuration(deck, Double(count) / sr)
+        setPosition(deck, 0)
+        applyRate(deck); applyPitch(deck)
+    }
+
+    // MARK: - Transport
 
     func play(_ deck: Deck) {
+        guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
         ensureEngine()
-        guard let id = engineID else { return }
-        Switchboard.callAction(withObject: playerID(deck), actionName: "play", params: nil)
-        Switchboard.callAction(withObject: id, actionName: "start", params: nil)   // ensure rendering
+        guard let player = players[deck] else { return }
+        if !engine.isRunning { try? engine.start() }
+        player.play()
         mutate(deck) { $0.isPlaying = true }
         refreshTransport()
+        startTickIfNeeded()
     }
 
     func pause(_ deck: Deck) {
-        Switchboard.callAction(withObject: playerID(deck), actionName: "pause", params: nil)
-        mutate(deck) { $0.isPlaying = false }   // leave the engine running — the other deck may play
+        if autoMixing { endAutoLoop() }     // a manual pause during Auto-DJ ends it (else the wall-clock resumes)
+        silence(deck)
+    }
+
+    /// Stop a deck's player WITHOUT ending an active auto-mix — for the auto crossfade machine's own
+    /// internal "retire the outgoing deck" step (the public `pause` ends the auto-mix).
+    private func silence(_ deck: Deck) {
+        players[deck]?.pause()              // keeps the scheduled position
+        mutate(deck) { $0.isPlaying = false }
         refreshTransport()
     }
 
     func togglePlay(_ deck: Deck) { state(deck).isPlaying ? pause(deck) : play(deck) }
 
-    /// The bottom Play/Pause: start/stop BOTH decks together (mirrors the reference's
-    /// startPlayback/pausePlayback).
     func playBoth() {
         ensureEngine()
-        guard let id = engineID else { return }
-        Switchboard.callAction(withObject: playerID(.a), actionName: "play", params: nil)
-        Switchboard.callAction(withObject: playerID(.b), actionName: "play", params: nil)
-        Switchboard.callAction(withObject: id, actionName: "start", params: nil)
-        mutate(.a) { $0.isPlaying = true }
-        mutate(.b) { $0.isPlaying = true }
+        if !engine.isRunning { try? engine.start() }
+        for d in Deck.allCases where state(d).loaded != nil { players[d]?.play(); mutate(d) { $0.isPlaying = true } }
         refreshTransport()
+        startTickIfNeeded()
     }
 
     func pauseBoth() {
-        Switchboard.callAction(withObject: playerID(.a), actionName: "pause", params: nil)
-        Switchboard.callAction(withObject: playerID(.b), actionName: "pause", params: nil)
-        mutate(.a) { $0.isPlaying = false }
-        mutate(.b) { $0.isPlaying = false }
+        if autoMixing { endAutoLoop() }     // a manual master-Pause during Auto-DJ ends it
+        for d in Deck.allCases { players[d]?.pause(); mutate(d) { $0.isPlaying = false } }
         refreshTransport()
     }
 
     func toggleAll() { isRunning ? pauseBoth() : playBoth() }
 
-    /// Refresh a deck: return it to the BEGINNING. The AdvancedAudioPlayer node has no seek/`position`
-    /// key, so we re-`open` the same file (which rewinds to 0:00) and resume playing if it was. No-op
-    /// if nothing is loaded.
+    /// Return a deck to the BEGINNING (its window's start frame) and resume if it was playing.
     func restart(_ deck: Deck) {
-        guard isReady, state(deck).loaded != nil, let p = path(deck) else { return }
-        let player = playerID(deck)
-        let wasPlaying = state(deck).isPlaying
-        Switchboard.callAction(withObject: player, actionName: "open", params: ["path": p])
-        if wasPlaying { Switchboard.callAction(withObject: player, actionName: "play", params: nil) }
+        guard built, let file = files[deck], let player = players[deck],
+              let start = startFrames[deck], let end = endFrames[deck], end > start else { return }
+        let was = state(deck).isPlaying
+        player.stop()
+        player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(end - start),
+                               at: nil, completionHandler: nil)
+        setPosition(deck, 0)
+        if was {
+            if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
+            player.play(); mutate(deck) { $0.isPlaying = true }
+        }
+        refreshTransport()
+        startTickIfNeeded()
     }
 
-    // MARK: - Volume / effects / crossfader
+    /// Seek to an absolute SOURCE position (seconds from the song's start). Sample-accurate, bounded
+    /// to the song's window so an analog fallback can't scrub past its slice into the next song.
+    func seek(_ deck: Deck, toSeconds sec: Double) {
+        guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
+              let start = startFrames[deck], let end = endFrames[deck] else { return }
+        let clamped = min(max(0, sec), duration(deck))
+        let frame = min(max(start, start + AVAudioFramePosition(clamped * sr)), end)
+        let count = end - frame
+        let was = state(deck).isPlaying
+        player.stop()
+        if count > 0 {
+            player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
+                                   at: nil, completionHandler: nil)
+        }
+        setPosition(deck, clamped)
+        if was, count > 0 {
+            if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
+            player.play(); mutate(deck) { $0.isPlaying = true }
+        }
+        refreshTransport()
+        startTickIfNeeded()
+    }
+
+    // MARK: - Tempo / pitch / beat-match
+
+    func setRate(_ rate: Double, on deck: Deck) {
+        mutate(deck) { $0.rate = min(max(rate, Self.rateRange.lowerBound), Self.rateRange.upperBound) }
+        applyRate(deck)
+    }
+
+    func setPitch(_ semitones: Double, on deck: Deck) {
+        mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
+        applyPitch(deck)
+    }
+
+    /// Designate (or clear) the Lead deck for beat-matching. Tapping the current lead clears it.
+    func setLead(_ deck: Deck) { leadDeck = (leadDeck == deck) ? nil : deck }
+    func isLead(_ deck: Deck) -> Bool { leadDeck == deck }
+
+    /// Match the follower's effective BPM to the Lead (rate = leadBPM·leadRate / followerBPM,
+    /// octave-folded into range), then best-effort phase-align the downbeats. Needs both decks'
+    /// catalog BPM. No-op if there's no Lead, the follower IS the lead, or a BPM is unknown.
+    func syncToLead(_ follower: Deck) {
+        guard let lead = leadDeck, lead != follower,
+              let leadBPM = state(lead).loaded?.bpm, leadBPM > 0,
+              let folBPM = state(follower).loaded?.bpm, folBPM > 0 else { return }
+        setRate(Self.syncRate(leadBPM: leadBPM, leadRate: state(lead).rate, followerBPM: folBPM), on: follower)
+        phaseAlign(follower: follower, lead: lead)
+    }
+
+    /// Whether a follower CAN sync (there's a lead ≠ this deck, both with known BPM).
+    func canSync(_ deck: Deck) -> Bool {
+        guard let lead = leadDeck, lead != deck,
+              (state(lead).loaded?.bpm ?? 0) > 0, (state(deck).loaded?.bpm ?? 0) > 0 else { return false }
+        return true
+    }
+
+    // MARK: - Volume / crossfader / effects
 
     func setVolume(_ volume: Double, on deck: Deck) {
         mutate(deck) { $0.volume = min(max(volume, 0), 1) }
-        applyMixGains()   // volume feeds the equal-power law — re-derive both gains
+        applyMixGains()
     }
 
-    func setEffect(_ effect: Effect, enabled: Bool, on deck: Deck) {
-        mutate(deck) { $0.set(effect, enabled) }
-        if isReady {
-            Switchboard.setValue(enabled, forKey: "enabled", onObject: effectNodeID(effect, deck))
-        }
-    }
-
-    /// Equal-power crossfade. Subsumes the reference's `setCrossfader(value:volumeA:volumeB:)` —
-    /// the engine OWNS the per-deck volumes, so the view passes only the fader position.
     func setCrossfader(_ value: Double) {
         crossfader = min(max(value, 0), 1)
         applyMixGains()
     }
 
+    func setEffect(_ effect: Effect, enabled: Bool, on deck: Deck) {
+        mutate(deck) { $0.set(effect, enabled) }
+        applyEffect(effect, on: deck)
+    }
+
+    /// Per-deck per-effect STRENGTH (0…1) — the wet amount / cutoff / threshold the long-press popup
+    /// dials in. Always stored; only audible while the effect is enabled.
+    func setEffectStrength(_ effect: Effect, _ strength: Double, on deck: Deck) {
+        mutate(deck) { $0.setStrength(effect, strength) }
+        applyEffect(effect, on: deck)
+    }
+
     // MARK: - Auto-Mix (auto-DJ)
 
-    /// A song with no known length still has to advance — fall back to 3 min so the mix never
-    /// stalls on a missing duration.
     private static let autoFallbackDurationMs = 180_000
 
-    /// Toggle Auto vs Manual. Turning Auto OFF stops auto-advancing but leaves the decks playing
-    /// — the user is taking manual control, not silencing the mix.
     func setAutoEnabled(_ on: Bool) {
         autoEnabled = on
         if !on { endAutoLoop() }
     }
 
-    /// Start auto-mixing a queue: load the first track onto deck A (and the second onto deck B,
-    /// kept silent by the crossfader), play A, then drive timed crossfades A↔B until the queue is
-    /// exhausted. `lead`/`fade` come from Settings. Restarting replaces any in-progress mix.
     func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double) {
         guard !items.isEmpty else { return }
         ensureEngine()
-        endAutoLoop()                       // tear down any prior run cleanly
+        endAutoLoop()
 
         autoEnabled = true
         autoLeadSeconds = max(1, lead)
@@ -385,7 +501,7 @@ final class MixEngine {
         autoDeckEndsAt = [:]
         autoDeckDurationMs = [:]
 
-        setCrossfader(0)                    // full A — deck B is loaded but silent
+        setCrossfader(0)
         loadAuto(autoQueue[0], onto: .a)
         if autoQueue.count > 1 { loadAuto(autoQueue[1], onto: .b) }
         autoNextToLoad = min(2, autoQueue.count)
@@ -394,47 +510,28 @@ final class MixEngine {
         autoDeckEndsAt[.a] = now.addingTimeInterval(Double(autoDeckDurationMs[.a] ?? Self.autoFallbackDurationMs) / 1000)
         autoMixing = true
         play(.a)
-        startAutoTick()
+        startTickIfNeeded()
         refreshAutoStatus()
     }
 
-    /// Stop auto-mixing entirely: cancel the driver, pause both decks, clear status. Leaves
-    /// `autoEnabled` as-is (Auto mode stays selected so another queue can be started).
     func stopAutoMix() {
         endAutoLoop()
         pauseBoth()
     }
 
-    /// Cancel the tick + clear the "mixing" flags WITHOUT touching the decks (used by both stop
-    /// paths and by switching to Manual).
     private func endAutoLoop() {
-        autoTickTask?.cancel(); autoTickTask = nil
         autoFadeStartedAt = nil
         autoMixing = false
         autoStatus = nil
+        setCrossfader(0.5)      // recenter — else the next MANUAL mix starts with one deck silenced
     }
 
-    private func startAutoTick() {
-        autoTickTask?.cancel()
-        autoTickTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 100_000_000)   // ~10 Hz
-                if Task.isCancelled { break }
-                self?.autoFire()
-            }
-        }
-    }
-
-    /// One driver step: either advance the active crossfade, or check whether the live deck has
-    /// reached its lead point (and either start the next crossfade or end the mix on the last
-    /// track).
+    /// One auto-mix step (called from the unified tick while `autoMixing`).
     private func autoFire() {
         guard autoEnabled, autoMixing, isReady else { return }
         let now = Date()
         if let fadeStart = autoFadeStartedAt {
             let p = min(max(now.timeIntervalSince(fadeStart) / autoFadeSeconds, 0), 1)
-            // Crossfader sweeps full-FROM → full-TO; the engine's equal-power law turns this into
-            // the requested volume sweep (outgoing 100%→0%, incoming 0%→100%).
             setCrossfader(autoFadeFrom == .a ? p : 1 - p)
             if p >= 1 { finishAutoCrossfade() }
         } else {
@@ -443,29 +540,26 @@ final class MixEngine {
             if autoLivePos + 1 < autoQueue.count {
                 if secondsLeft <= autoLeadSeconds { beginAutoCrossfade(now: now) }
             } else if secondsLeft <= 0 {
-                stopAutoMix()                 // last track played out
+                stopAutoMix()
             }
         }
         refreshAutoStatus()
     }
 
-    /// Begin fading from the live deck to the other deck (which already holds the next track).
     private func beginAutoCrossfade(now: Date) {
         let to = other(autoLiveDeck)
         autoFadeFrom = autoLiveDeck
         autoFadeStartedAt = now
-        restart(to)                            // ensure the incoming deck is at 0:00
+        restart(to)
         play(to)
         autoDeckEndsAt[to] = now.addingTimeInterval(Double(autoDeckDurationMs[to] ?? Self.autoFallbackDurationMs) / 1000)
     }
 
-    /// The crossfade reached the far side: pin the fader, pause the outgoing deck, promote the
-    /// incoming deck to live, and preload the next queued track onto the now-free deck.
     private func finishAutoCrossfade() {
         let from = autoFadeFrom
         let to = other(from)
         setCrossfader(from == .a ? 1 : 0)
-        pause(from)
+        silence(from)           // retire the outgoing deck WITHOUT ending the auto-mix we're inside
         autoLiveDeck = to
         autoLivePos += 1
         autoFadeStartedAt = nil
@@ -475,23 +569,18 @@ final class MixEngine {
         }
     }
 
-    /// Load an item onto a deck AND remember its duration (so the deck can time its own end).
     private func loadAuto(_ item: AutoMixItem, onto deck: Deck) {
         load(item.loadable, on: deck)
         autoDeckDurationMs[deck] = item.durationMs
     }
-
-    private func other(_ d: Deck) -> Deck { d == .a ? .b : .a }
 
     private func refreshAutoStatus() {
         let s: String?
         if autoMixing {
             let detail = autoFadeStartedAt != nil ? "fading" : "Deck \(autoLiveDeck.rawValue)"
             s = "\(min(autoLivePos + 1, autoQueue.count)) / \(autoQueue.count) · \(detail)"
-        } else {
-            s = nil
-        }
-        if s != autoStatus { autoStatus = s }   // avoid 10 Hz no-op observation churn
+        } else { s = nil }
+        if s != autoStatus { autoStatus = s }
     }
 
     // MARK: - Readers (for the UI)
@@ -499,73 +588,206 @@ final class MixEngine {
     func loaded(_ deck: Deck) -> LoadedTrack? { state(deck).loaded }
     func isPlaying(_ deck: Deck) -> Bool { state(deck).isPlaying }
     func volume(_ deck: Deck) -> Double { state(deck).volume }
+    func rate(_ deck: Deck) -> Double { state(deck).rate }
+    func pitch(_ deck: Deck) -> Double { state(deck).pitch }
     func isEnabled(_ effect: Effect, on deck: Deck) -> Bool { state(deck).isEnabled(effect) }
+    func strength(_ effect: Effect, on deck: Deck) -> Double { state(deck).strength(effect) }
+    func position(_ deck: Deck) -> Double { deck == .a ? positionA : positionB }
+    func duration(_ deck: Deck) -> Double { deck == .a ? durationA : durationB }
 
     // MARK: - Internals
 
     private func state(_ deck: Deck) -> DeckState { deck == .a ? deckA : deckB }
 
-    /// Equal-power law (cosine), writing the resulting gains through the gain nodes — driven from
-    /// stored state so volume + crossfader stay consistent. (The reference's `isMaster` write is
-    /// dropped: that key isn't valid on the 3.2.3 player and only mattered for the unavailable sync.)
-    private func applyMixGains() {
-        guard isReady else { return }
-        let v = Float(crossfader)
-        let gainA = Float(deckA.volume) * cosf(.pi / 2 * v)
-        let gainB = Float(deckB.volume) * cosf(.pi / 2 * (1 - v))
-        Switchboard.setValue(gainA, forKey: "gain", onObject: gainID(.a))
-        Switchboard.setValue(gainB, forKey: "gain", onObject: gainID(.b))
+    private func mutate(_ deck: Deck, _ body: (inout DeckState) -> Void) {
+        switch deck { case .a: body(&deckA); case .b: body(&deckB) }
     }
 
-    /// Re-assert a deck's effect toggles onto the graph (used after `ensureEngine` builds it, so any
-    /// pre-build UI changes land). Gains are pushed separately by `applyMixGains`.
-    private func pushDeckState(_ deck: Deck) {
-        let s = state(deck)
-        for e in Effect.allCases {
-            Switchboard.setValue(s.isEnabled(e), forKey: "enabled", onObject: effectNodeID(e, deck))
-        }
+    private func setPosition(_ deck: Deck, _ v: Double) {
+        switch deck { case .a: positionA = v; case .b: positionB = v }
     }
+    private func setDuration(_ deck: Deck, _ v: Double) {
+        switch deck { case .a: durationA = v; case .b: durationB = v }
+    }
+
+    private func other(_ d: Deck) -> Deck { d == .a ? .b : .a }
 
     private func refreshTransport() { isRunning = deckA.isPlaying || deckB.isPlaying }
 
-    private func mutate(_ deck: Deck, _ body: (inout DeckState) -> Void) {
-        switch deck {
-        case .a: body(&deckA)
-        case .b: body(&deckB)
+    /// Equal-power crossfade written onto each deck's player volume (× the deck's own volume trim).
+    private func applyMixGains() {
+        guard built else { return }
+        let v = Float(crossfader)
+        players[.a]?.volume = Float(deckA.volume) * cosf(.pi / 2 * v)
+        players[.b]?.volume = Float(deckB.volume) * cosf(.pi / 2 * (1 - v))
+    }
+
+    private func applyRate(_ deck: Deck) { timePitches[deck]?.rate = Float(state(deck).rate) }
+    private func applyPitch(_ deck: Deck) { timePitches[deck]?.pitch = Float(state(deck).pitch * 100) } // cents
+
+    /// Realize an effect's enabled-state + strength onto its AVAudioUnit.
+    private func applyEffect(_ effect: Effect, on deck: Deck) {
+        guard built else { return }
+        let on = state(deck).isEnabled(effect)
+        let s = Float(state(deck).strength(effect))
+        switch effect {
+        case .reverb:
+            guard let n = reverbs[deck] else { return }
+            n.wetDryMix = s * 100; n.bypass = !on
+        case .filter:
+            guard let n = filters[deck], let band = n.bands.first else { return }
+            band.filterType = .resonantLowPass
+            // Strength sweeps the cutoff log-down from ~18 kHz (subtle) to ~250 Hz (heavy).
+            band.frequency = Float(18_000 * pow(250.0 / 18_000.0, Double(s)))
+            band.bandwidth = 0.5
+            band.bypass = !on
+            n.bypass = !on
+        case .flanger:
+            guard let n = flangers[deck] else { return }
+            n.delayTime = 0.004                 // ~4 ms comb (static; a true LFO flanger is future work)
+            n.feedback = s * 60                 // %
+            n.wetDryMix = s * 50                // %
+            n.lowPassCutoff = 15_000
+            n.bypass = !on
+        case .compressor:
+            guard let n = comps[deck] else { return }
+            // Threshold drops 0 → −30 dB as strength rises (heavier compression); makeup gain rises
+            // ~half that (0 → +15 dB) so engaging Comp adds density/punch instead of just dropping level.
+            AudioUnitSetParameter(n.audioUnit, kDynamicsProcessorParam_Threshold,
+                                  kAudioUnitScope_Global, 0, AudioUnitParameterValue(-30 * s), 0)
+            AudioUnitSetParameter(n.audioUnit, kDynamicsProcessorParam_OverallGain,
+                                  kAudioUnitScope_Global, 0, AudioUnitParameterValue(15 * s), 0)
+            n.bypass = !on
         }
     }
 
-    private func setRelease(_ deck: Deck, _ r: (() -> Void)?) {
-        switch deck {
-        case .a: releaseA = r
-        case .b: releaseB = r
+    /// The fixed downstream format. The effect chain (inputMixer → … → mainMixer) is wired at this
+    /// canonical stereo format ONCE and never reconnected, so no per-file load can reconfigure a live
+    /// AU's channel count / sample rate (which AVAudioEngine asserts-and-crashes on).
+    private static let canonicalFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+
+    /// Connect a deck's effect chain at the fixed canonical format (inputMixer → timePitch → comp →
+    /// filter → reverb → flanger → mainMixer). Called ONCE per deck at build; never reconnected.
+    private func connectChain(_ deck: Deck,
+                              nodes: (AVAudioMixerNode, AVAudioUnitTimePitch, AVAudioUnitEffect,
+                                      AVAudioUnitEQ, AVAudioUnitReverb, AVAudioUnitDelay)) {
+        let (inputMixer, tp, comp, filter, reverb, flanger) = nodes
+        let fmt = Self.canonicalFormat
+        engine.connect(inputMixer, to: tp, format: fmt)
+        engine.connect(tp, to: comp, format: fmt)
+        engine.connect(comp, to: filter, format: fmt)
+        engine.connect(filter, to: reverb, format: fmt)
+        engine.connect(reverb, to: flanger, format: fmt)
+        engine.connect(flanger, to: engine.mainMixerNode, format: fmt)
+    }
+
+    /// Octave-fold a tempo ratio into `rateRange` (×2 / ÷2 = half/double-time match), then clamp.
+    /// Pure + testable. A non-finite / non-positive ratio (missing BPM) folds to 1.0 (no change).
+    nonisolated static func octaveFolded(_ ratio: Double) -> Double {
+        guard ratio.isFinite, ratio > 0 else { return 1 }
+        var r = ratio
+        while r > rateRange.upperBound { r /= 2 }
+        while r < rateRange.lowerBound { r *= 2 }
+        return min(max(r, rateRange.lowerBound), rateRange.upperBound)
+    }
+
+    /// The follower tempo multiplier that matches the Lead's effective BPM (octave-folded into range).
+    /// Pure + testable.
+    nonisolated static func syncRate(leadBPM: Double, leadRate: Double, followerBPM: Double) -> Double {
+        guard followerBPM > 0 else { return 1 }
+        return octaveFolded(leadBPM * leadRate / followerBPM)
+    }
+
+    /// BEST-EFFORT downbeat phase-align: nudge the follower up to ±½ beat so its beat phase matches
+    /// the lead's, assuming beat-0 at each song's start (BPM only — no beat-grid yet). The grid
+    /// indexer (see docs/design/mix-ondevice-tempo-pitch-beatmatch-spec.md) makes this exact.
+    private func phaseAlign(follower f: Deck, lead l: Deck) {
+        guard state(f).isPlaying, state(l).isPlaying,
+              let leadBPM = state(l).loaded?.bpm, leadBPM > 0,
+              let folBPM = state(f).loaded?.bpm, folBPM > 0 else { return }
+        let leadBeat = 60.0 / leadBPM
+        let folBeat = 60.0 / folBPM
+        let leadPhase = (position(l) / leadBeat).truncatingRemainder(dividingBy: 1)
+        let folPhase = (position(f) / folBeat).truncatingRemainder(dividingBy: 1)
+        var delta = leadPhase - folPhase
+        if delta > 0.5 { delta -= 1 } else if delta < -0.5 { delta += 1 }
+        seek(f, toSeconds: max(0, position(f) + delta * folBeat))
+    }
+
+    // MARK: - Tick (playhead + auto-mix)
+
+    private func startTickIfNeeded() {
+        guard tickTask == nil else { return }
+        lastTickAt = Date()
+        tickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)   // ~10 Hz
+                if Task.isCancelled { break }
+                guard let self, self.tickFire() else { break }
+            }
         }
     }
-    private func release(_ deck: Deck) -> (() -> Void)? { deck == .a ? releaseA : releaseB }
 
-    private func setPath(_ deck: Deck, _ p: String?) {
-        switch deck {
-        case .a: pathA = p
-        case .b: pathB = p
+    /// Advance playheads + step the auto-mix; returns false (→ stop ticking) when fully idle.
+    private func tickFire() -> Bool {
+        let now = Date()
+        let dt = lastTickAt.map { now.timeIntervalSince($0) } ?? 0
+        lastTickAt = now
+        for d in Deck.allCases where state(d).isPlaying {
+            let dur = duration(d)
+            guard dur > 0 else {                 // nothing / zero-length loaded — don't run the playhead forever
+                if !autoMixing { mutate(d) { $0.isPlaying = false }; players[d]?.stop() }
+                continue
+            }
+            let pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
+            setPosition(d, pos)
+            if pos >= dur, !autoMixing { mutate(d) { $0.isPlaying = false }; players[d]?.stop() }
         }
+        refreshTransport()
+        if autoMixing { autoFire() }
+        let active = deckA.isPlaying || deckB.isPlaying || autoMixing
+        if !active { tickTask = nil; return false }
+        return true
     }
-    private func path(_ deck: Deck) -> String? { deck == .a ? pathA : pathB }
 
-    // Node-id helpers — derived from the rawValues so they always match MixAudioGraph.json.
-    private func playerID(_ d: Deck) -> String { "player\(d.rawValue)" }
-    private func gainID(_ d: Deck) -> String { "gain\(d.rawValue)" }
-    private func effectNodeID(_ e: Effect, _ d: Deck) -> String { "\(e.rawValue)\(d.rawValue)" }
+    /// The DynamicsProcessor (compressor) component description — Apple's built-in AU.
+    private static let dynamicsDesc = AudioComponentDescription(
+        componentType: kAudioUnitType_Effect,
+        componentSubType: kAudioUnitSubType_DynamicsProcessor,
+        componentManufacturer: kAudioUnitManufacturer_Apple,
+        componentFlags: 0, componentFlagsMask: 0)
 
     #if os(iOS)
-    /// iOS-only: route to `.playback` so the mix plays through the speaker / in silent mode and
-    /// keeps going in the background (the app already declares the `audio` UIBackgroundMode).
-    /// Non-fatal on failure — Switchboard still manages its own IO. Guarded `#if os(iOS)` because
-    /// `AVAudioSession` does not exist on macOS (the one platform difference the task calls out).
     private func activateAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
         } catch { /* non-fatal */ }
+    }
+
+    /// Recover from an audio-session interruption (phone call / Siri / route loss). The system stops
+    /// the engine and does NOT auto-restart it — so on `.ended` we reactivate, restart the engine, and
+    /// resume whichever decks the UI still considers playing (otherwise the Mix tab goes silently dead
+    /// and seek/transport produce no audio). Mirrors `PlayerEngine.configureInterruptionObserver`.
+    private func registerInterruptionHandling() {
+        guard interruptionObserver == nil else { return }
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, self.built,
+                      let info = note.userInfo,
+                      let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+                let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
+                    .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
+                try? AVAudioSession.sharedInstance().setActive(true)
+                if !self.engine.isRunning { try? self.engine.start() }
+                if shouldResume {
+                    for d in Deck.allCases where self.state(d).isPlaying { self.players[d]?.play() }
+                }
+            }
+        }
     }
     #endif
 }
