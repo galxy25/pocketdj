@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PocketDJ Apple-Music-sync agent — launchd timer TEMPLATE.  *** INERT — NOT INSTALLED ***
+
+  This file is a TEMPLATE. It does NOTHING until YOU copy it into ~/Library/LaunchAgents
+  and load it. Activate ONLY when you are ready:
+
+    # 1) Fill in the placeholders below (REPO path, PATH, your shell's node/aws/claude/jq).
+    # 2) Install + load (drop the .template suffix):
+    cp scripts/launchd/com.pocketdj.am-sync-agent.plist.template \
+       ~/Library/LaunchAgents/com.pocketdj.am-sync-agent.plist
+    launchctl load ~/Library/LaunchAgents/com.pocketdj.am-sync-agent.plist
+    # To stop:  launchctl unload ~/Library/LaunchAgents/com.pocketdj.am-sync-agent.plist
+
+  Runs at 04:15 local (15 min AFTER the rip server's 04:00 self-check, so the day's
+  change-set already exists) AND whenever a new file lands in ~/Downloads (WatchPaths).
+  RunAtLoad is false so loading it does not fire an immediate run. The agent is idempotent
+  (it skips already-processed change-sets), so the two triggers never double-apply.
+
+  Preview first WITHOUT installing anything:
+    POCKETDJ_AGENT_REPO=/Users/REPLACE_ME/pocketdj scripts/am-sync-agent.sh --dry-run
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.am-sync-agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <!-- REPLACE with the absolute path to am-sync-agent.sh in the agent's clone. -->
+    <string>/Users/REPLACE_ME/pocketdj/scripts/am-sync-agent.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- The agent's DEDICATED pocketdj clone, checked out on `main`. -->
+    <key>POCKETDJ_AGENT_REPO</key>
+    <string>/Users/REPLACE_ME/pocketdj</string>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <!-- launchd has a minimal PATH; include node, aws, claude, jq, git locations. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- Uncomment to also refresh the OpenSearch index after each deploy:
+    <key>POCKETDJ_AM_REINDEX_SEARCH</key>
+    <string>1</string>
+    -->
+  </dict>
+
+  <!-- 04:15 daily. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>15</integer>
+  </dict>
+
+  <!-- Also run when a change-set appears in Downloads (on-demand syncs from the app). -->
+  <key>WatchPaths</key>
+  <array>
+    <string>/Users/REPLACE_ME/Downloads</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/.pocketdj/am-sync-agent.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/.pocketdj/am-sync-agent.err.log</string>
+</dict>
+</plist>

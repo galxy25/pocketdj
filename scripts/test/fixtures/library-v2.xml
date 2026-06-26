@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Major Version</key><integer>1</integer>
+	<key>Minor Version</key><integer>1</integer>
+	<key>Music Folder</key><string>file:///Users/test/Music/Music/</string>
+	<key>Tracks</key>
+	<dict>
+		<key>101</key>
+		<dict>
+			<key>Track ID</key><integer>101</integer>
+			<key>Name</key><string>First Light</string>
+			<key>Artist</key><string>Aurora Test</string>
+			<key>Album Artist</key><string>Aurora Test</string>
+			<key>Album</key><string>Dawn Sessions</string>
+			<key>Genre</key><string>Ambient</string>
+			<key>Total Time</key><integer>240000</integer>
+			<key>Track Number</key><integer>1</integer>
+			<key>Year</key><integer>2019</integer>
+			<key>Date Added</key><date>2020-01-01T00:00:00Z</date>
+			<key>Persistent ID</key><string>AAAA000000000101</string>
+			<key>Kind</key><string>MPEG audio file</string>
+		</dict>
+		<key>102</key>
+		<dict>
+			<key>Track ID</key><integer>102</integer>
+			<key>Name</key><string>Second Wind</string>
+			<key>Artist</key><string>Aurora Test</string>
+			<key>Album Artist</key><string>Aurora Test</string>
+			<key>Album</key><string>Dawn Sessions</string>
+			<key>Genre</key><string>Ambient</string>
+			<key>Total Time</key><integer>200000</integer>
+			<key>Track Number</key><integer>2</integer>
+			<key>Year</key><integer>2019</integer>
+			<key>Date Added</key><date>2020-01-02T00:00:00Z</date>
+			<key>Persistent ID</key><string>AAAA000000000102</string>
+			<key>Kind</key><string>MPEG audio file</string>
+		</dict>
+		<key>103</key>
+		<dict>
+			<key>Track ID</key><integer>103</integer>
+			<key>Name</key><string>Third Rail</string>
+			<key>Artist</key><string>Beacon Test</string>
+			<key>Album Artist</key><string>Beacon Test</string>
+			<key>Album</key><string>City Nights</string>
+			<key>Genre</key><string>Electronic</string>
+			<key>Total Time</key><integer>300000</integer>
+			<key>Track Number</key><integer>1</integer>
+			<key>Year</key><integer>2018</integer>
+			<key>Date Added</key><date>2020-02-01T00:00:00Z</date>
+			<key>Persistent ID</key><string>BBBB000000000103</string>
+			<key>Kind</key><string>MPEG audio file</string>
+		</dict>
+		<key>201</key>
+		<dict>
+			<key>Track ID</key><integer>201</integer>
+			<key>Name</key><string>New Horizon</string>
+			<key>Artist</key><string>Comet Test</string>
+			<key>Album Artist</key><string>Comet Test</string>
+			<key>Album</key><string>Orbit</string>
+			<key>Genre</key><string>Synthwave</string>
+			<key>Total Time</key><integer>260000</integer>
+			<key>Track Number</key><integer>1</integer>
+			<key>Year</key><integer>2026</integer>
+			<key>Date Added</key><date>2026-06-01T00:00:00Z</date>
+			<key>Persistent ID</key><string>CCCC000000000201</string>
+			<key>Kind</key><string>MPEG audio file</string>
+		</dict>
+		<key>202</key>
+		<dict>
+			<key>Track ID</key><integer>202</integer>
+			<key>Name</key><string>Afterglow</string>
+			<key>Artist</key><string>Comet Test</string>
+			<key>Album Artist</key><string>Comet Test</string>
+			<key>Album</key><string>Orbit</string>
+			<key>Genre</key><string>Synthwave</string>
+			<key>Total Time</key><integer>280000</integer>
+			<key>Track Number</key><integer>2</integer>
+			<key>Year</key><integer>2026</integer>
+			<key>Date Added</key><date>2026-06-02T00:00:00Z</date>
+			<key>Persistent ID</key><string>CCCC000000000202</string>
+			<key>Kind</key><string>MPEG audio file</string>
+		</dict>
+	</dict>
+	<key>Playlists</key>
+	<array>
+		<dict>
+			<key>Name</key><string>Morning Mix</string>
+			<key>Playlist Persistent ID</key><string>PL00000000000001</string>
+			<key>Playlist Items</key>
+			<array>
+				<dict>
+					<key>Track ID</key><integer>101</integer>
+				</dict>
+				<dict>
+					<key>Track ID</key><integer>103</integer>
+				</dict>
+			</array>
+		</dict>
+		<dict>
+			<key>Name</key><string>Fresh Drops</string>
+			<key>Playlist Persistent ID</key><string>PL00000000000002</string>
+			<key>Playlist Items</key>
+			<array>
+				<dict>
+					<key>Track ID</key><integer>201</integer>
+				</dict>
+				<dict>
+					<key>Track ID</key><integer>202</integer>
+				</dict>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

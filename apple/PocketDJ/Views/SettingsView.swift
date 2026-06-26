@@ -11,9 +11,12 @@ struct SettingsView: View {
     @Environment(CollectionsStore.self) private var collections
     // Not private: read by the streamingSection in SettingsView+Streaming.swift.
     @Environment(StreamingStore.self) var streaming
+    @Environment(MusicSyncClient.self) private var musicSync
 
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
+    @State private var syncing = false
+    @State private var syncStatus: SyncStatus?
     @State private var confirmingReset = false
     @State private var showExporter = false
     @State private var showImporter = false
@@ -28,6 +31,7 @@ struct SettingsView: View {
     @State private var backupSummary: String?
 
     enum RipStatus { case ok(String), bad(String) }
+    enum SyncStatus { case ok(String), bad(String) }
 
     var body: some View {
         Form {
@@ -35,6 +39,7 @@ struct SettingsView: View {
             streamingSection
             searchSection
             ripSection
+            appleMusicSyncSection
             burnFolderSection
             editsSection
             collectionsSection
@@ -361,6 +366,83 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings-rip-status")
         case nil:
             EmptyView()
+        }
+    }
+
+    // MARK: Apple Music (Local) sync
+
+    /// "Sync Apple Music library" — kicks a library check on the rip server (POST `/am-sync`,
+    /// polls the job), then evicts the stale AM index from `URLCache.shared` and reloads the
+    /// catalog so newly-deployed tracks appear. Only meaningful once the AM source is loaded,
+    /// and it leans on the SAME rip server as the rip features — so it lives right after the
+    /// rip section and is gated on both `hasAppleMusic` (the source is present) and a server.
+    @ViewBuilder private var appleMusicSyncSection: some View {
+        if settings.hasAppleMusic {
+            Section {
+                HStack {
+                    Button {
+                        Task { await syncAppleMusic() }
+                    } label: {
+                        if syncing {
+                            ProgressView()
+                        } else {
+                            Label("Sync Apple Music library", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                    .disabled(syncing || !musicSync.hasServer)
+                    .accessibilityIdentifier("settings-am-sync")
+                    Spacer()
+                    syncStatusView
+                }
+            } header: {
+                Text("Apple Music sync")
+            } footer: {
+                Text(musicSync.hasServer
+                    ? "Checks your Mac's Apple Music library (via the rip server) for newly-added music. The library is also checked automatically every day at 04:00. Detected songs appear in the “Apple Music (Local)” source once the change is committed + deployed — not instantly; use “Reload catalog” above if a deploy is still in flight."
+                    : "Requires the rip server (configured above). Once set, this checks your Mac's Apple Music library for newly-added music; it's also checked automatically every day at 04:00.")
+            }
+        }
+    }
+
+    @ViewBuilder private var syncStatusView: some View {
+        switch syncStatus {
+        case .ok(let msg):
+            Label(msg, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+                .accessibilityIdentifier("settings-am-sync-status")
+        case .bad(let msg):
+            Label(msg, systemImage: "xmark.circle.fill").foregroundStyle(Theme.danger).font(.caption)
+                .accessibilityIdentifier("settings-am-sync-status")
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func syncAppleMusic() async {
+        syncing = true; syncStatus = nil
+        defer { syncing = false }
+        do {
+            let result = try await musicSync.sync()
+            // Evict the stale AM index so the reload re-fetches it: CatalogService uses
+            // `.returnCacheDataElseLoad` against URLCache.shared, which would otherwise serve
+            // the pre-deploy copy (the load-bearing cache gotcha — see CatalogService).
+            URLCache.shared.removeCachedResponse(for: URLRequest(url: Config.appleMusicIndexURL))
+            await app.reload()
+            let c = result.counts
+            if c.added == 0 && c.changed == 0 && c.removed == 0 {
+                syncStatus = .ok("Library up to date")
+            } else {
+                // The detected tracks are DETECTED, not yet applied in-app: the server queued a
+                // change-set for the deploy pipeline. Word it so the green check doesn't overstate
+                // (the catalog only changes once that change-set is committed + deployed). Show only
+                // the non-zero buckets (v1's Library.xml diff only ever detects `added`).
+                var parts: [String] = []
+                if c.added > 0 { parts.append("\(c.added) new") }
+                if c.changed > 0 { parts.append("\(c.changed) changed") }
+                if c.removed > 0 { parts.append("\(c.removed) removed") }
+                syncStatus = .ok("\(parts.joined(separator: " · ")) — applies after deploy")
+            }
+        } catch {
+            syncStatus = .bad(error.localizedDescription)
         }
     }
 

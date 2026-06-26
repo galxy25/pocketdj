@@ -8,6 +8,7 @@ struct RootView: View {
     @Environment(EditsStore.self) private var edits
     @Environment(CollectionsStore.self) private var collections
     @Environment(RipsStore.self) private var rips
+    @Environment(MusicSyncClient.self) private var musicSync
     @Environment(PlayerEngine.self) private var player
     @Environment(BurnStore.self) private var burns
     @Environment(PlaybackCoordinator.self) private var coordinator
@@ -63,6 +64,7 @@ struct RootView: View {
             // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
             setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
             rips.settings = settings  // rip server URL + token come from settings
+            musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
             // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum,
             // and prune any burned files iOS purged while the app was gone.
             burns.lookup = { [weak app] id in (app?.songsById[id], app?.songsById[id]?.albumId.flatMap { app?.albumsById[$0] }) }
