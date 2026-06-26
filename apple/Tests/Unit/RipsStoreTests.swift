@@ -89,6 +89,76 @@ final class RipsStoreTests: XCTestCase {
         XCTAssertNil(RipsStore.waveformURL(for: nil, ripsBase: ripsBase))
     }
 
+    // MARK: Stem (Demucs) ingestion — decode + URL resolution
+
+    func testManifestDecodesStems() throws {
+        let json = """
+        {
+          "sng_s": { "key": "rips/sng_s.mp3", "source": "digital",
+                     "stems": { "vocals": "rips/stems/sng_s/vocals.mp3", "drums": "rips/stems/sng_s/drums.mp3",
+                                "bass": "rips/stems/sng_s/bass.mp3", "other": "rips/stems/sng_s/other.mp3" },
+                     "stemModel": "htdemucs", "stemVersion": 1, "stemFormat": "mp3",
+                     "stemmedAt": 1750000000000, "stemBytes": 31000000 },
+          "sng_plain": { "key": "rips/sng_plain.mp3", "source": "digital" }
+        }
+        """
+        let m = try JSONDecoder().decode([String: RipsStore.ManifestEntry].self, from: Data(json.utf8))
+        // Stemmed entry: version stamp + the 4 typed keys present.
+        XCTAssertEqual(m["sng_s"]?.stemVersion, 1)
+        XCTAssertEqual(m["sng_s"]?.stemModel, "htdemucs")
+        XCTAssertEqual(m["sng_s"]?.stems?.vocals, "rips/stems/sng_s/vocals.mp3")
+        XCTAssertEqual(m["sng_s"]?.stems?.other, "rips/stems/sng_s/other.mp3")
+        // Plain entry: no stems ⇒ nil version (the isStemmed predicate is false).
+        XCTAssertNil(m["sng_plain"]?.stemVersion)
+        XCTAssertNil(m["sng_plain"]?.stems)
+    }
+
+    func testStemURLsResolveAgainstRipsBase() {
+        let entry = RipsStore.ManifestEntry(key: "rips/sng_s.mp3")
+        var stemmed = entry
+        stemmed.stems = .init(vocals: "rips/stems/sng_s/vocals.mp3", drums: "rips/stems/sng_s/drums.mp3",
+                              bass: "rips/stems/sng_s/bass.mp3", other: "rips/stems/sng_s/other.mp3")
+        stemmed.stemVersion = 1
+        let urls = RipsStore.stemURLs(for: stemmed, ripsBase: ripsBase)
+        XCTAssertEqual(urls?["vocals"]?.absoluteString, "https://rips.example.com/rips/stems/sng_s/vocals.mp3")
+        XCTAssertEqual(urls?["drums"]?.absoluteString, "https://rips.example.com/rips/stems/sng_s/drums.mp3")
+        XCTAssertEqual(urls?["bass"]?.absoluteString, "https://rips.example.com/rips/stems/sng_s/bass.mp3")
+        XCTAssertEqual(urls?["other"]?.absoluteString, "https://rips.example.com/rips/stems/sng_s/other.mp3")
+        XCTAssertEqual(urls?.count, 4)
+    }
+
+    func testStemURLsNilWhenNotStemmed() {
+        XCTAssertNil(RipsStore.stemURLs(for: .init(key: "rips/s.mp3"), ripsBase: ripsBase))
+        XCTAssertNil(RipsStore.stemURLs(for: nil, ripsBase: ripsBase))
+    }
+
+    func testStemJobDecodesAllPhases() throws {
+        // The server emits phases the rip Phase enum doesn't model (stemming/ineligible/ripping).
+        for raw in ["queued", "ripping", "stemming", "ready", "error", "ineligible"] {
+            let json = #"{"jobId":"j1","songId":"sng_s","phase":"\#(raw)"}"#
+            let job = try JSONDecoder().decode(RipsStore.StemJob.self, from: Data(json.utf8))
+            XCTAssertEqual(job.phase.rawValue, raw)
+        }
+        // The idempotent-skip + ineligible responses carry a null jobId.
+        let skip = try JSONDecoder().decode(RipsStore.StemJob.self,
+            from: Data(#"{"jobId":null,"songId":"sng_s","phase":"ready"}"#.utf8))
+        XCTAssertNil(skip.jobId)
+        XCTAssertEqual(skip.phase, .ready)
+    }
+
+    func testBatchStemItemDecodesStatuses() throws {
+        // A /stemify-collection results array spans the rip-first + terminal buckets.
+        let json = """
+        [ {"songId":"a","status":"ready"},
+          {"songId":"b","status":"ripping","jobId":"jb"},
+          {"songId":"c","status":"ineligible"},
+          {"songId":"d","status":"needsCut","jobId":"jd"} ]
+        """
+        let items = try JSONDecoder().decode([RipsStore.BatchStemItem].self, from: Data(json.utf8))
+        XCTAssertEqual(items.map(\.status), ["ready", "ripping", "ineligible", "needsCut"])
+        XCTAssertEqual(items[1].jobId, "jb")
+    }
+
     // MARK: Download filename slug
 
     func testDownloadFileNameSanitizes() {

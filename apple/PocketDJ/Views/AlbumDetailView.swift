@@ -5,11 +5,15 @@ import SwiftUI
 struct AlbumDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
+    @Environment(RipsStore.self) private var rips
     let album: IndexAlbum
     @Binding var path: NavigationPath
     @State private var showEdit = false
     @State private var showAdd = false
     @State private var showAudioEdit = false
+    /// Album-level "Stemify each song" — reuses the shared collection controller (progress
+    /// pill + over-cap confirm). Per-track Stemify is already free via each row's RowTransport.
+    @State private var ripBurn = CollectionRipBurnController()
     /// One-shot guard so ▶/🔀 push the reusable Now Playing setlist once per visit; cleared
     /// on reappear so a fresh Play pushes again (mirrors PlaylistDetailView).
     @State private var nowPlayingPushed = false
@@ -51,12 +55,21 @@ struct AlbumDetailView: View {
                     .disabled(tracks.isEmpty)
                     .accessibilityIdentifier("album-shuffle")
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button { ripBurn.stemify(tracks.map(\.id), rips: rips, noun: "album") } label: {
+                    Label("Stemify", systemImage: "line.3.horizontal")
+                }
+                .help("Separate every song on this album into stems")
+                .disabled(tracks.isEmpty || ripBurn.working || !rips.hasServer)
+                .accessibilityIdentifier("album-stemify")
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { showAdd = true } label: { Image(systemName: "plus.circle") }
                     .accessibilityIdentifier("add-album-to")
                 Button("Edit") { showEdit = true }.accessibilityIdentifier("edit-album")
             }
         }
+        .collectionRipBurn(ripBurn)
         .sheet(isPresented: $showEdit) { EditAlbumView(album: current) }
         .sheet(isPresented: $showAdd) { AddToCollectionView(item: .album(current.id)) }
         .sheet(isPresented: $showAudioEdit) { EditAudioAnalysisView(album: current) }

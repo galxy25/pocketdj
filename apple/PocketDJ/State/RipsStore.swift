@@ -43,6 +43,19 @@ final class RipsStore {
         var progress: Progress? = nil
     }
 
+    /// A Stemify job's phase (its own lifecycle: rip/cut first if needed, then separate).
+    /// Distinct from `Phase` because the server emits `stemming`/`ineligible`, which the rip
+    /// Phase enum doesn't model (decoding a stem response with `Phase` would fail).
+    enum StemPhase: String, Decodable { case queued, ripping, stemming, ready, error, ineligible }
+
+    /// The `/stemify` + `/jobs/<id>` response shape for a stem job (extra fields ignored).
+    struct StemJob: Decodable, Equatable {
+        var jobId: String? = nil
+        var songId: String? = nil
+        var phase: StemPhase
+        var error: String? = nil
+    }
+
     /// One public-S3 manifest entry (mirrors the PWA's `ManifestEntry`). Only the
     /// fields the native client uses are modelled; unknown fields are ignored.
     struct ManifestEntry: Decodable, Equatable {
@@ -79,6 +92,25 @@ final class RipsStore {
         var steady: Bool? = nil
         var beatgrid: String? = nil
         var analysisVersion: Int? = nil
+        // Demucs stem separation (the Stemify indexer; all optional ⇒ back-compat). Per-song S3
+        // keys under the PUBLIC rips/ prefix: rips/stems/<songId>/{vocals,drums,bass,other}.<ext>.
+        // PER-SONG always: a digital song stems its own `key`; an analog song stems its per-song
+        // CUT (`cutKey`), never the album side. Presence of `stemVersion` ⇒ stemmed.
+        var stems: Stems? = nil
+        var stemModel: String? = nil
+        var stemVersion: Int? = nil           // SINGULAR — matches the JS writer (canonical)
+        var stemFormat: String? = nil
+        var stemmedAt: Double? = nil
+        var stemBytes: Int? = nil
+    }
+
+    /// The 4 Demucs stem S3 keys (typed; matches `stemURLs`). Stored explicitly so URL
+    /// resolution is format-correct (mp3 vs flac) without client-side derivation.
+    struct Stems: Decodable, Equatable {
+        var vocals: String
+        var drums: String
+        var bass: String
+        var other: String
     }
 
     /// The "now playing" handoff to the inline player (mirrors the PWA's `NowPlaying`).
@@ -99,6 +131,8 @@ final class RipsStore {
     private(set) var manifest: [String: ManifestEntry] = [:]
     /// Active / last rip job per songId (drives the row's live phase label).
     private(set) var jobs: [String: Job] = [:]
+    /// Active / last STEM job per songId (drives the row's Stemify phase label).
+    private(set) var stemJobs: [String: StemJob] = [:]
     /// The track the inline player is currently bound to.
     private(set) var nowPlaying: NowPlaying?
 
@@ -108,6 +142,8 @@ final class RipsStore {
     /// process. The server (manifest skip + inflight join) is the cross-process backstop;
     /// this is best-effort spam reduction at the cheapest point.
     private var requesting: Set<String> = []
+    /// Same single-flight guard for fire-and-forget Stemify requests.
+    private var requestingStems: Set<String> = []
 
     // MARK: Config
 
@@ -176,6 +212,26 @@ final class RipsStore {
         guard let w = entry?.waveform, !w.isEmpty else { return nil }
         return ripsBase.appendingPathComponent(w)
     }
+
+    // MARK: Stem (Demucs) helpers — read-only ingestion (creation lives on the rip server)
+
+    /// True once a song has been separated into stems (presence of the version stamp).
+    func isStemmed(_ songId: String) -> Bool { manifest[songId]?.stemVersion != nil }
+
+    /// Public stem URLs for a song (nil when not stemmed). Built off the same ripsBase as
+    /// `cachedURL`, so they resolve server-offline (pure public-S3 reads). Keys are stored
+    /// explicitly, so the URL is correct regardless of mp3/flac format.
+    func stemURLs(forSong songId: String) -> [String: URL]? {
+        Self.stemURLs(for: manifest[songId], ripsBase: ripsBase)
+    }
+    nonisolated static func stemURLs(for entry: ManifestEntry?, ripsBase: URL) -> [String: URL]? {
+        guard let s = entry?.stems else { return nil }
+        return ["vocals": ripsBase.appendingPathComponent(s.vocals),
+                "drums":  ripsBase.appendingPathComponent(s.drums),
+                "bass":   ripsBase.appendingPathComponent(s.bass),
+                "other":  ripsBase.appendingPathComponent(s.other)]
+    }
+    func stemURL(forSong songId: String, _ stem: String) -> URL? { stemURLs(forSong: songId)?[stem] }
 
     // MARK: Errors
 
@@ -559,6 +615,202 @@ final class RipsStore {
         case .some(let p) where inFlightPhases.contains(p): return "inflight"
         default:      return "unknown"
         }
+    }
+
+    // MARK: Stemify — separate a song (or collection) into stems on the rip server
+
+    /// Phases that mean a stem job is already working (queued / ripping-first / separating).
+    nonisolated private static let stemInFlightPhases: Set<StemPhase> = [.queued, .ripping, .stemming]
+
+    /// FIRE-AND-FORGET Stemify request for ONE song. Idempotent at three layers (mirrors
+    /// `requestRipIfNeeded`): already-stemmed / in-flight job / requesting this process → no
+    /// network; the server's manifest skip + per-song single-flight is the cross-process
+    /// backstop. Stores the returned job and (if it's still working) polls to completion in a
+    /// detached task so the row flips to "stemmed" without blocking the caller. Never throws.
+    func stemify(_ songId: String) async {
+        if isStemmed(songId) { return }
+        if let p = stemJobs[songId]?.phase, Self.stemInFlightPhases.contains(p) { return }
+        if requestingStems.contains(songId) { return }
+        guard hasServer else { return }
+
+        requestingStems.insert(songId)
+        defer { requestingStems.remove(songId) }
+
+        let base = serverUrl, tok = token
+        do {
+            var post = URLRequest(url: URL(string: "\(base)/stemify")!)
+            post.httpMethod = "POST"
+            post.setValue("application/json", forHTTPHeaderField: "content-type")
+            applyAuth(&post, token: tok)
+            let body: [String: Any] = ripFromCloud ? ["songId": songId, "ripFromCloud": true] : ["songId": songId]
+            post.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await session.data(for: post)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            let view = try JSONDecoder().decode(StemJob.self, from: data)
+            stemJobs[songId] = view
+            if view.phase == .ready { await refreshManifest(); return }
+            if view.phase == .ineligible || view.phase == .error { return }
+            if let jobId = view.jobId {
+                Task { [weak self] in await self?.pollStemReady(songId, jobId: jobId) }
+            }
+        } catch { /* fire-and-forget: silent */ }
+    }
+
+    /// Poll a stem job to a terminal phase. Demucs is minutes/song (Docker-CPU can be far
+    /// longer), so the ceiling is generous; on `ready` we refresh the manifest so the row
+    /// flips to the accent-tinted "stemmed" state. Best-effort; never throws.
+    private func pollStemReady(_ songId: String, jobId: String) async {
+        guard hasServer else { return }
+        let base = serverUrl, tok = token
+        let deadline = Date().addingTimeInterval(4 * 60 * 60)   // 4 h — well past the slowest run
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            var req = URLRequest(url: URL(string: "\(base)/jobs/\(jobId)")!)
+            applyAuth(&req, token: tok)
+            guard let (data, response) = try? await session.data(for: req),
+                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let view = try? JSONDecoder().decode(StemJob.self, from: data) else { continue }
+            stemJobs[songId] = view
+            switch view.phase {
+            case .ready: await refreshManifest(); return
+            case .error, .ineligible: return
+            default: break   // queued / ripping / stemming — keep polling
+            }
+        }
+    }
+
+    /// One song's outcome from a batch Stemify (server per-song result).
+    struct BatchStemItem: Decodable, Equatable {
+        var songId: String
+        /// "ready"|"queued"|"inflight"|"ripping"|"needsCut"|"ineligible"|"unknown".
+        var status: String
+        var jobId: String?
+    }
+
+    /// Aggregate result of `stemifyCollection` — per-song outcomes + counts (with the rip-first
+    /// `ripping` and terminal `ineligible` buckets), plus the server's `needsConfirm` envelope
+    /// for an over-cap collection (the UI shows an "N songs, long job — proceed?" alert).
+    struct BatchStemResult: Equatable {
+        var results: [BatchStemItem] = []
+        var ready = 0, queued = 0, inflight = 0, ripping = 0, needsCut = 0, ineligible = 0, unknown = 0, total = 0
+        var needsConfirm = false, count = 0, cap = 0
+    }
+
+    /// The `/stemify-collection` response envelope (results+counts OR a needsConfirm gate).
+    private struct BatchStemResponse: Decodable {
+        struct Counts: Decodable { var ready = 0; var queued = 0; var inflight = 0; var ripping = 0; var needsCut = 0; var ineligible = 0; var unknown = 0; var total = 0 }
+        var results: [BatchStemItem]?
+        var counts: Counts?
+        var needsConfirm: Bool?
+        var count: Int?
+        var cap: Int?
+    }
+
+    /// Batch-Stemify a collection, reusing the server's durable queue + rip→stem chain.
+    /// Deduplicates. On an over-cap collection the server returns `needsConfirm` (re-call with
+    /// `confirmLarge: true`). An older server that 404s falls back to a per-song loop. Empty
+    /// input is a no-op.
+    func stemifyCollection(_ songIds: [String], confirmLarge: Bool = false) async -> BatchStemResult {
+        let ids = Self.orderedUnique(songIds)
+        guard !ids.isEmpty else { return BatchStemResult() }
+        guard hasServer else { return await stemifyCollectionFallback(ids) }
+
+        let base = serverUrl, tok = token
+        do {
+            var post = URLRequest(url: URL(string: "\(base)/stemify-collection")!)
+            post.httpMethod = "POST"
+            post.setValue("application/json", forHTTPHeaderField: "content-type")
+            applyAuth(&post, token: tok)
+            var body: [String: Any] = ["songIds": ids]
+            if ripFromCloud { body["ripFromCloud"] = true }
+            if confirmLarge { body["confirmLarge"] = true }
+            post.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await session.data(for: post)
+            guard let http = response as? HTTPURLResponse else { return await stemifyCollectionFallback(ids) }
+            if http.statusCode == 404 { return await stemifyCollectionFallback(ids) }
+            guard (200..<300).contains(http.statusCode) else { return BatchStemResult() }
+
+            let decoded = try JSONDecoder().decode(BatchStemResponse.self, from: data)
+            if decoded.needsConfirm == true {
+                var r = BatchStemResult()
+                r.needsConfirm = true; r.count = decoded.count ?? ids.count; r.cap = decoded.cap ?? 0
+                return r
+            }
+            for item in (decoded.results ?? []) where item.status == "queued" || item.status == "inflight" || item.status == "ripping" || item.status == "needsCut" {
+                if let jobId = item.jobId { stemJobs[item.songId] = StemJob(jobId: jobId, songId: item.songId, phase: .queued) }
+            }
+            let c = decoded.counts ?? BatchStemResponse.Counts()
+            return BatchStemResult(results: decoded.results ?? [], ready: c.ready, queued: c.queued,
+                                   inflight: c.inflight, ripping: c.ripping, needsCut: c.needsCut,
+                                   ineligible: c.ineligible, unknown: c.unknown, total: c.total)
+        } catch {
+            return await stemifyCollectionFallback(ids)
+        }
+    }
+
+    /// Per-song fallback when `/stemify-collection` is unavailable. Mirrors the rip fallback
+    /// but synthesizes counts from the STEM job phases (not the rip `jobs` dict).
+    private func stemifyCollectionFallback(_ ids: [String]) async -> BatchStemResult {
+        var result = BatchStemResult()
+        for id in ids {
+            if isStemmed(id) {
+                result.results.append(BatchStemItem(songId: id, status: "ready", jobId: nil)); result.ready += 1
+            } else if hasServer {
+                await stemify(id)
+                let status = Self.stemBatchStatus(for: stemJobs[id]?.phase)
+                result.results.append(BatchStemItem(songId: id, status: status, jobId: stemJobs[id]?.jobId))
+                switch status {
+                case "ready":      result.ready += 1
+                case "queued":     result.queued += 1
+                case "ripping":    result.ripping += 1
+                case "ineligible": result.ineligible += 1
+                default:           result.unknown += 1
+                }
+            } else {
+                result.results.append(BatchStemItem(songId: id, status: "unknown", jobId: nil)); result.unknown += 1
+            }
+            result.total += 1
+        }
+        return result
+    }
+
+    /// Map a stem job phase to the collection status vocabulary (fallback count synthesis).
+    nonisolated static func stemBatchStatus(for phase: StemPhase?) -> String {
+        switch phase {
+        case .ready:             return "ready"
+        case .stemming, .queued: return "queued"
+        case .ripping:           return "ripping"
+        case .ineligible:        return "ineligible"
+        case .error, .none:      return "unknown"
+        }
+    }
+
+    /// STOP an in-flight collection Stemify: POST `/stemify-cancel` so the server cancels the
+    /// queued/active stem jobs AND tears down any chained rip. Idempotent; older-server 404 is a
+    /// silent no-op. Clears the local stem job entries for canceled songs. Mirrors `cancelCollection`.
+    @discardableResult
+    func cancelStemCollection(_ songIds: [String]) async -> [CancelItem] {
+        let ids = Self.orderedUnique(songIds)
+        guard !ids.isEmpty, hasServer else { return [] }
+
+        let base = serverUrl, tok = token
+        var post = URLRequest(url: URL(string: "\(base)/stemify-cancel")!)
+        post.httpMethod = "POST"
+        post.setValue("application/json", forHTTPHeaderField: "content-type")
+        applyAuth(&post, token: tok)
+        post.httpBody = try? JSONSerialization.data(withJSONObject: ["songIds": ids])
+
+        guard let (data, response) = try? await session.data(for: post),
+              let http = response as? HTTPURLResponse else { return [] }
+        if http.statusCode == 404 { return [] }
+        guard (200..<300).contains(http.statusCode) else { return [] }
+
+        if let decoded = try? JSONDecoder().decode(CancelResponse.self, from: data) {
+            for item in decoded.results where item.status == "canceled" { stemJobs[item.songId] = nil }
+            return decoded.results
+        }
+        for id in ids { stemJobs[id] = nil }
+        return ids.map { CancelItem(songId: $0, status: "canceled") }
     }
 
     // MARK: Feature 2 BURN — non-blocking download primitive + managed storage

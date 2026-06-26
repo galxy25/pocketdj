@@ -43,12 +43,21 @@ struct CollectionRipBurnButtons: View {
         .disabled(ids.isEmpty || controller.working)
         .accessibilityIdentifier("collection-burn")
 
+        // STEMIFY → server-side Demucs stem separation of every song (ripping/cutting any
+        // not-yet-ready ones first). Like RIP it enqueues fast but completes over minutes/
+        // hours, so the progress pill + manifest poll track it. Needs a server.
+        Button { controller.stemify(ids, rips: rips, noun: noun) } label: {
+            Label("Stemify \(noun)", systemImage: "line.3.horizontal")
+        }
+        .disabled(ids.isEmpty || controller.working || !rips.hasServer)
+        .accessibilityIdentifier("collection-stemify")
+
         // STOP (Feature 1) — shown while a rip/burn is in flight. A burn keeps `working`
         // true for its whole Task; a collection RIP enqueues in ~1-2s but completes
         // server-side over minutes/hours, so we also keep the button while `ripInProgress`
         // (driven by the manifest poll). Idempotent + silent: routes to the right cancel
         // path (app-side burn Task vs. server `/rip-cancel`).
-        if controller.working || controller.ripInProgress {
+        if controller.working || controller.ripInProgress || controller.stemInProgress {
             Button(role: .destructive) {
                 controller.stop(rips: rips, burns: burns)
             } label: {
@@ -78,8 +87,24 @@ final class CollectionRipBurnController {
     private(set) var ripProgress: String?
 
     /// Which long-running op is in flight (so a single STOP routes to the right cancel path).
-    enum Op { case rip, burn }
+    enum Op { case rip, burn, stem }
     private(set) var inFlightOp: Op?
+
+    /// A collection STEMIFY mirrors RIP: enqueues fast, completes server-side over time. While
+    /// the enqueued songs are still being stemmed this stays true so the STOP button + a live
+    /// progress indicator remain visible. Driven by a separate manifest poll (so a simultaneous
+    /// Rip and Stemify don't fight one poll).
+    private(set) var stemInProgress = false
+    private(set) var stemProgress: String?
+    private var stemPollTask: Task<Void, Never>?
+    private var lastStemIds: [String] = []
+    /// Over-cap confirmation (the server's `needsConfirm` envelope): the UI shows an
+    /// "N songs — long job, proceed?" alert; Proceed re-calls with `confirmLarge`.
+    var showStemConfirm = false
+    private(set) var stemConfirmCount = 0
+    private(set) var stemConfirmCap = 0
+    private var pendingStemIds: [String] = []
+    private var pendingStemNoun = "collection"
     /// The burn Task, stored so STOP can cancel it (mirrors OnlineSearchModel's stored Task).
     private var burnTask: Task<Void, Never>?
     /// The manifest-poll Task that tracks how many enqueued rips have completed, stored so
@@ -187,6 +212,112 @@ final class CollectionRipBurnController {
         ripProgress = nil
     }
 
+    // MARK: Stemify (mirrors the RIP path; completion predicate is `rips.isStemmed`)
+
+    /// Kick a collection Stemify. The server rips/cuts any not-yet-ready songs first, then
+    /// separates. Over the server's cap it returns `needsConfirm` → we surface the confirm
+    /// alert instead of committing. Otherwise the manifest poll tracks completion.
+    func stemify(_ ids: [String], rips: RipsStore, noun: String) {
+        runStemify(ids, rips: rips, noun: noun, confirmLarge: false)
+    }
+
+    /// Proceed with an over-cap Stemify the user confirmed.
+    func confirmStemify(rips: RipsStore) {
+        runStemify(pendingStemIds, rips: rips, noun: pendingStemNoun, confirmLarge: true)
+        pendingStemIds = []
+    }
+
+    private func runStemify(_ ids: [String], rips: RipsStore, noun: String, confirmLarge: Bool) {
+        working = true
+        inFlightOp = .stem
+        lastStemIds = ids
+        Task {
+            let r = await rips.stemifyCollection(ids, confirmLarge: confirmLarge)
+            // Over-cap gate: don't start; ask the user to confirm the long job.
+            if r.needsConfirm {
+                working = false
+                inFlightOp = nil
+                pendingStemIds = ids
+                pendingStemNoun = noun
+                stemConfirmCount = r.count
+                stemConfirmCap = r.cap
+                showStemConfirm = true
+                return
+            }
+            let pending = r.queued + r.inflight + r.ripping + r.needsCut
+            var parts: [String] = []
+            if r.ready > 0 { parts.append("\(r.ready) already stemmed") }
+            if r.ripping > 0 { parts.append("\(r.ripping) ripping first") }
+            if pending - r.ripping > 0 { parts.append("\(pending - r.ripping) stemming — completes over time") }
+            if r.ineligible > 0 { parts.append("\(r.ineligible) can’t be stemmed") }
+            if r.unknown > 0 { parts.append("\(r.unknown) unknown") }
+            summary = parts.isEmpty ? "Nothing to stemify." : parts.joined(separator: " · ")
+            canRefresh = pending > 0 || r.ready > 0
+            working = false
+            inFlightOp = nil
+            showSummary = true
+            if pending > 0 { startStemPoll(lastStemIds, rips: rips) }
+        }
+    }
+
+    /// Poll the manifest and count how many of `ids` are now stemmed (`rips.isStemmed`).
+    /// Drives `stemInProgress` + `stemProgress`. Stem runs are minutes/song, so the cap is
+    /// generous; never polls forever, never leaks (cancellable, re-checks each tick).
+    private func startStemPoll(_ ids: [String], rips: RipsStore) {
+        stemPollTask?.cancel()
+        let total = ids.count
+        guard total > 0 else { return }
+        stemInProgress = true
+        updateStemProgress(ids, rips: rips, total: total)
+
+        stemPollTask = Task { [weak self] in
+            for _ in 0..<Self.stemPollMaxTicks {
+                if Task.isCancelled { return }
+                try? await RipsStore.sleep(ms: Self.stemPollIntervalMs)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                await rips.refreshManifest()
+                if Task.isCancelled { return }
+                let pending = self.updateStemProgress(ids, rips: rips, total: total)
+                if pending == 0 { self.finishStemPoll(total: total); return }
+            }
+            self?.clearStemProgress()
+        }
+    }
+
+    @discardableResult
+    private func updateStemProgress(_ ids: [String], rips: RipsStore, total: Int) -> Int {
+        let done = ids.reduce(into: 0) { acc, id in if rips.isStemmed(id) { acc += 1 } }
+        let pending = max(0, total - done)
+        if pending > 0 {
+            stemProgress = "stemming — \(done) of \(total) done"
+            summary = "Stemming \(done) of \(total) — completes over time"
+        } else {
+            stemProgress = nil
+            summary = "Stemmed \(total) of \(total)"
+        }
+        return pending
+    }
+
+    private func finishStemPoll(total: Int) {
+        stemPollTask = nil
+        stemInProgress = false
+        stemProgress = nil
+        summary = "Stemmed \(total) of \(total)"
+        canRefresh = true
+    }
+
+    private func clearStemProgress() {
+        stemPollTask?.cancel()
+        stemPollTask = nil
+        stemInProgress = false
+        stemProgress = nil
+    }
+
+    /// Poll cadence for the stem reconcile (a Demucs run is minutes/song; the cap is generous).
+    static var stemPollIntervalMs = 5000
+    static var stemPollMaxTicks = 2880   // ~4h at 5s/tick
+
     func burn(_ ids: [String], rips: RipsStore, burns: BurnStore, collections: CollectionsStore) {
         working = true
         inFlightOp = .burn
@@ -248,6 +379,17 @@ final class CollectionRipBurnController {
         if inFlightOp == .burn {
             burns.requestStop()
             burnTask?.cancel()
+            return
+        }
+        // Stemify (still enqueuing, or enqueued + polling). /stemify-cancel tears down BOTH the
+        // chained rips and the queued stems server-side, so the client calls only cancelStemCollection.
+        if inFlightOp == .stem || stemInProgress {
+            let ids = lastStemIds
+            inFlightOp = nil
+            working = false
+            clearStemProgress()
+            lastStemIds = []
+            if !ids.isEmpty { Task { await rips.cancelStemCollection(ids) } }
             return
         }
         // Rip (either still enqueuing, or enqueued + polling). Cancel server-side jobs,
@@ -313,6 +455,13 @@ private struct CollectionRipBurnAlert: ViewModifier {
                     // still in flight) — see `stopBurn`.
                     pill(text, stopId: "collection-burn-stop") { controller.stopBurn(burns: burns) }
                         .accessibilityIdentifier("burn-progress")
+                } else if controller.stemInProgress {
+                    // The collection STEMIFY enqueues fast but completes server-side over time —
+                    // keep a live "stemming X of N" indicator + a reachable STOP outside the Menu.
+                    pill(controller.stemProgress ?? "stemming…", stopId: "collection-stem-stop") {
+                        controller.stop(rips: rips, burns: burns)
+                    }
+                    .accessibilityIdentifier("stem-progress")
                 } else if controller.ripInProgress {
                     // The collection RIP enqueues fast but completes server-side over time —
                     // keep a live "ripping X of N" indicator + a reachable STOP OUTSIDE the
@@ -323,6 +472,13 @@ private struct CollectionRipBurnAlert: ViewModifier {
                     }
                     .accessibilityIdentifier("rip-progress")
                 }
+            }
+            // Over-cap Stemify confirmation (the server's needsConfirm gate).
+            .alert("Stemify \(controller.stemConfirmCount) songs?", isPresented: $controller.showStemConfirm) {
+                Button("Stemify", role: .destructive) { controller.confirmStemify(rips: rips) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("That's more than the \(controller.stemConfirmCap)-song limit — separating stems is a long job (minutes per song). Proceed?")
             }
     }
 

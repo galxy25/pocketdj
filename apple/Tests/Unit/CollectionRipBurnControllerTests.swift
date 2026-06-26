@@ -26,11 +26,15 @@ final class CollectionRipBurnControllerTests: XCTestCase {
         // Fast poll for tests; restored in tearDown.
         CollectionRipBurnController.ripPollIntervalMs = 10
         CollectionRipBurnController.ripPollMaxTicks = 200
+        CollectionRipBurnController.stemPollIntervalMs = 10
+        CollectionRipBurnController.stemPollMaxTicks = 200
     }
 
     override func tearDown() {
         CollectionRipBurnController.ripPollIntervalMs = 4500
         CollectionRipBurnController.ripPollMaxTicks = 1600
+        CollectionRipBurnController.stemPollIntervalMs = 5000
+        CollectionRipBurnController.stemPollMaxTicks = 2880
         super.tearDown()
     }
 
@@ -50,6 +54,14 @@ final class CollectionRipBurnControllerTests: XCTestCase {
     /// Build the public-manifest JSON body for a set of ripped song ids.
     private func manifestJSON(_ rippedIds: [String]) -> Data {
         let entries = rippedIds.map { #""\#($0)":{"key":"rips/\#($0).mp3"}"# }
+        return Data("{\(entries.joined(separator: ","))}".utf8)
+    }
+
+    /// Build the manifest body for a set of STEMMED song ids (stemVersion present ⇒ isStemmed).
+    private func stemManifestJSON(_ stemmedIds: [String]) -> Data {
+        let entries = stemmedIds.map {
+            #""\#($0)":{"key":"rips/\#($0).mp3","stemVersion":1,"stemModel":"htdemucs","stems":{"vocals":"rips/stems/\#($0)/vocals.mp3","drums":"rips/stems/\#($0)/drums.mp3","bass":"rips/stems/\#($0)/bass.mp3","other":"rips/stems/\#($0)/other.mp3"}}"#
+        }
         return Data("{\(entries.joined(separator: ","))}".utf8)
     }
 
@@ -197,6 +209,82 @@ final class CollectionRipBurnControllerTests: XCTestCase {
         XCTAssertFalse(controller.ripInProgress, "nothing pending → no in-progress poll")
         XCTAssertNil(controller.ripProgress)
         XCTAssertTrue(controller.summary?.contains("already ripped") ?? false)
+    }
+
+    // MARK: Stemify — same progress/STOP machinery, completion predicate is `isStemmed`
+
+    func testStemInProgressFlipsWhenAllStemmed() async {
+        let rips = makeRips()
+        let controller = CollectionRipBurnController()
+
+        ManifestStubURLProtocol.bodyByPath["/stemify-collection"] = Data("""
+        {"results":[{"songId":"sng_1","status":"queued","jobId":"j1"},
+                    {"songId":"sng_2","status":"queued","jobId":"j2"}],
+         "counts":{"ready":0,"queued":2,"inflight":0,"ripping":0,"needsCut":0,"ineligible":0,"unknown":0,"total":2}}
+        """.utf8)
+        ManifestStubURLProtocol.manifestBody = stemManifestJSON([])
+
+        controller.stemify(["sng_1", "sng_2"], rips: rips, noun: "playlist")
+
+        await wait(until: { controller.stemInProgress })
+        XCTAssertTrue(controller.stemInProgress, "poll keeps the stemify in progress while songs pending")
+        XCTAssertEqual(controller.stemProgress, "stemming — 0 of 2 done")
+
+        // One song finishes separating → manifest now stamps stemVersion on sng_1.
+        ManifestStubURLProtocol.manifestBody = stemManifestJSON(["sng_1"])
+        await wait(until: { controller.stemProgress == "stemming — 1 of 2 done" })
+        XCTAssertTrue(controller.stemInProgress)
+
+        // Both complete → poll sees pending == 0, flips false + finishes.
+        ManifestStubURLProtocol.manifestBody = stemManifestJSON(["sng_1", "sng_2"])
+        await wait(until: { !controller.stemInProgress })
+        XCTAssertNil(controller.stemProgress, "progress cleared when done")
+        XCTAssertEqual(controller.summary, "Stemmed 2 of 2")
+        XCTAssertTrue(controller.canRefresh)
+    }
+
+    func testStemifyOverCapShowsConfirmAndDoesNotStart() async {
+        let rips = makeRips()
+        let controller = CollectionRipBurnController()
+
+        // Server returns the needsConfirm gate (over the cap) instead of starting.
+        ManifestStubURLProtocol.bodyByPath["/stemify-collection"] = Data(#"{"needsConfirm":true,"count":80,"cap":60}"#.utf8)
+        ManifestStubURLProtocol.manifestBody = stemManifestJSON([])
+
+        controller.stemify(Array(0..<80).map { "s\($0)" }, rips: rips, noun: "playlist")
+
+        await wait(until: { controller.showStemConfirm })
+        XCTAssertTrue(controller.showStemConfirm, "over-cap → surface the confirm alert")
+        XCTAssertEqual(controller.stemConfirmCount, 80)
+        XCTAssertEqual(controller.stemConfirmCap, 60)
+        XCTAssertFalse(controller.stemInProgress, "the over-cap gate does NOT start the poll")
+        XCTAssertFalse(controller.working)
+    }
+
+    func testStopStemCancelsWithLastStemIds() async {
+        let rips = makeRips()
+        let burns = self.burns(rips)
+        let controller = CollectionRipBurnController()
+
+        ManifestStubURLProtocol.bodyByPath["/stemify-collection"] = Data("""
+        {"results":[{"songId":"sng_a","status":"queued","jobId":"ja"}],
+         "counts":{"ready":0,"queued":1,"inflight":0,"ripping":0,"needsCut":0,"ineligible":0,"unknown":0,"total":1}}
+        """.utf8)
+        ManifestStubURLProtocol.bodyByPath["/stemify-cancel"] = Data(#"{"results":[{"songId":"sng_a","status":"canceled"}]}"#.utf8)
+        ManifestStubURLProtocol.manifestBody = stemManifestJSON([])
+
+        controller.stemify(["sng_a"], rips: rips, noun: "setlist")
+        await wait(until: { controller.stemInProgress })
+
+        controller.stop(rips: rips, burns: burns)
+        XCTAssertFalse(controller.stemInProgress, "STOP clears the in-progress state")
+        XCTAssertNil(controller.stemProgress)
+
+        // The cancel POST hits /stemify-cancel (NOT /rip-cancel) with exactly lastStemIds.
+        await wait(until: { ManifestStubURLProtocol.count(path: "/stemify-cancel") == 1 })
+        let sent = ManifestStubURLProtocol.lastBodyJSON(path: "/stemify-cancel")?["songIds"] as? [String]
+        XCTAssertEqual(sent, ["sng_a"], "stem cancel targets exactly lastStemIds")
+        XCTAssertEqual(ManifestStubURLProtocol.count(path: "/rip-cancel"), 0, "STOP routed to the stem cancel path, not the rip one")
     }
 }
 

@@ -318,6 +318,22 @@ struct RowTransport: View {
     }
     private var errored: Bool { rips.jobs[song.id]?.phase == .error }
     private var cached: Bool { rips.cachedURL(song.id) != nil }
+    /// This song has been separated into stems (accent-tint the line.3.horizontal glyph).
+    private var stemmed: Bool { rips.isStemmed(song.id) }
+    /// The stem job's phase only while actively working (not ready/error/ineligible).
+    private var stemJobPhase: RipsStore.StemPhase? {
+        guard let j = rips.stemJobs[song.id], j.phase != .ready, j.phase != .error, j.phase != .ineligible else { return nil }
+        return j.phase
+    }
+    private var stemBusy: Bool { stemJobPhase != nil }
+    private var stemPhaseLabel: String {
+        switch stemJobPhase {
+        case .queued:   return "Queued…"
+        case .ripping:  return "Ripping first…"
+        case .stemming: return "Stemming…"
+        default:        return ""
+        }
+    }
     /// A burned local file exists for this song (device-mode playable with no server).
     private var hasBurnedFile: Bool { burns.localURL(forSong: song.id) != nil }
     /// Actionable when already ripped, there's a (configured) server to rip it, or a burned
@@ -360,6 +376,26 @@ struct RowTransport: View {
                     .foregroundStyle(canAct ? Theme.fgDim : Theme.fgDim.opacity(0.4))
                     .disabled(!canAct || busy != nil)
                     .accessibilityIdentifier("row-download-\(song.id)")
+
+                    // Stemify (line.3.horizontal): separate this song into stems on the server.
+                    // A busy stem job shows a distinct ProgressView + phase label (Ripping first…/
+                    // Stemming…), NOT the download ellipsis — minutes-long work warrants real
+                    // feedback. "Stemmed" is the accent tint; the glyph stays line.3.horizontal.
+                    if stemBusy {
+                        HStack(spacing: 3) {
+                            ProgressView().controlSize(.mini)
+                            Text(stemPhaseLabel).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                        }
+                        .accessibilityIdentifier("row-stemify-\(song.id)")
+                    } else {
+                        Button { doStemify() } label: {
+                            Image(systemName: "line.3.horizontal").font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(stemmed ? Theme.accent : (canAct ? Theme.fgDim : Theme.fgDim.opacity(0.4)))
+                        .disabled(!canAct || busy != nil)
+                        .accessibilityIdentifier("row-stemify-\(song.id)")
+                    }
                 }
             }
         }
@@ -466,6 +502,13 @@ struct RowTransport: View {
             catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
             busy = nil
         }
+    }
+
+    /// Fire-and-forget Stemify for THIS song. The server rips/cuts first if needed, then
+    /// separates; the row reflects the live phase off `rips.stemJobs` and flips to the
+    /// accent-tinted "stemmed" state once the manifest refresh lands.
+    private func doStemify() {
+        Task { await rips.stemify(song.id) }
     }
 }
 

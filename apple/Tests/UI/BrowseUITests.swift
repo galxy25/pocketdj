@@ -76,6 +76,10 @@ final class BrowseUITests: XCTestCase {
         app.swipeUp(); app.swipeUp()
         XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))      // bottom ▶
         XCTAssertTrue(app.el("row-download-sng_1").exists)                        // bottom ⤓
+        // The third transport button (Stemify, line.3.horizontal) renders alongside — and
+        // adding it must NOT clobber the play/download ids (the macOS container-id-propagation
+        // bug). All three resolve independently on the same row.
+        XCTAssertTrue(app.el("row-stemify-sng_1").exists)                         // bottom ☰ (Stemify)
     }
     #endif
 

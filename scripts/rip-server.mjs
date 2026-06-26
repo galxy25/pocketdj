@@ -24,6 +24,7 @@ import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeAudio, ANALYSIS_VERSION } from './lib/audio-analyze.mjs';
+import { separateStems, STEMS_VERSION, STEMS_MODEL, STEM_NAMES } from './lib/audio-stem.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 
@@ -63,6 +64,17 @@ const CFG = {
   // RIP_PUBLIC_FOLD=0. Defaults to the analog source in RIP_SOURCES (current-index.json).
   publicIndex: (process.env.RIP_PUBLIC_INDEX || `${REPO}/public/current-index.json`).replace(/^~/, homedir()),
   publicFold: process.env.RIP_PUBLIC_FOLD !== '0',
+  // ---- Stemify (Demucs stem separation) — see docs/design/stems-demucs-stemify-spec.md ----
+  // THE single model knob (must equal STEMS_MODEL in lib/audio-stem.mjs); v3 fallback:
+  // POCKETDJ_DEMUCS_MODEL=hdemucs_mmi | mdx_extra. Runtime native(MPS, fast)|docker(CPU,portable).
+  demucsModel: process.env.POCKETDJ_DEMUCS_MODEL || 'htdemucs',
+  demucsDevice: process.env.POCKETDJ_DEMUCS_DEVICE || 'mps', // forced to cpu when runtime=docker
+  demucsRuntime: process.env.POCKETDJ_DEMUCS_RUNTIME || 'native',
+  stemImage: process.env.POCKETDJ_STEM_IMAGE || 'pocketdj-stems:latest',
+  stemFormat: process.env.POCKETDJ_STEM_FORMAT || 'mp3',
+  stemBitrate: process.env.POCKETDJ_STEM_BITRATE || '256', // integer kbps
+  stemDeadlineMs: process.env.POCKETDJ_STEM_DEADLINE_MS ? parseInt(process.env.POCKETDJ_STEM_DEADLINE_MS, 10) : 30 * 60_000, // one value; watchdog = +30s
+  stemCollectionCap: process.env.POCKETDJ_STEM_COLLECTION_CAP ? parseInt(process.env.POCKETDJ_STEM_COLLECTION_CAP, 10) : 60, // guard against an accidental huge job
 };
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
@@ -374,7 +386,7 @@ function setPhase(job, phase, extra = {}) {
 function jobView(job) {
   if (!job) return null;
   const v = { jobId: job.jobId, songId: job.songId, phase: job.phase, message: job.message || null, url: job.url || null, error: job.error || null };
-  const live = job.phase === 'ripping' || job.phase === 'streaming';
+  const live = job.phase === 'ripping' || job.phase === 'streaming' || job.phase === 'stemming';
   if (live && job.realtime && job.ripStartedAt && job.totalMs) {
     const elapsedMs = Math.min(Date.now() - job.ripStartedAt, job.totalMs);
     v.progress = { elapsedMs, totalMs: job.totalMs, pct: Math.round((elapsedMs / job.totalMs) * 100) };
@@ -562,12 +574,18 @@ async function pump() {
         console.error(`  gave-up ${job.songId} after ${job.attempt || 1}/${SELFHEAL.maxAttempts} attempts (${errMsg})`);
       }
       clearQueue(job.songId); // terminal (ready or give-up) → drop the durable request
+      // rip→stem dependency: a terminal rip FAILURE (gave up / unrippable) for a song a stem
+      // is waiting on must fail the dependent stem, else its row loops ripping→fail forever.
+      if (job.phase === 'error' && !job.canceled && !manifest[job.songId] && wantStem(job.songId)) {
+        failDependentStem(job.songId, 'source unrippable');
+      }
     }
     // ALWAYS release the worker so the queue advances, even on an unexpected throw above.
     working = false;
     activeJobId = null;
     activeChild.p = null;
     pump();
+    pumpStems(); // a deferred stem may now run (the real-time capture just finished)
   }
 }
 
@@ -746,6 +764,9 @@ async function runAnalogJob(job, song) {
   setPhase(job, 'ready', { message: `album ${album.name} ready` });
   inflight.delete(job.resourceKey);
   enqueueAnalysis(song.id); // background: album waveform (per-song bpm/key kept from catalog)
+  // rip→stem chain: the cut pass above wrote each cutKey, so any song of this album that a
+  // stem is waiting on can now separate (gated on the durable wantStem set).
+  for (const s of songsByAlbum.get(album.id) || []) kickWantedStem(s.id);
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -803,6 +824,7 @@ async function backfillCuts() {
         await aws(['s3', 'cp', cutOut, `s3://${CFG.bucket}/${cutKey}`, '--content-type', 'audio/mpeg']);
         e.cutKey = cutKey; e.cutBytes = statSync(cutOut).size; e.cutRippedAt = Date.now();
         if (e.durationMs == null) e.durationMs = durMs;
+        kickWantedStem(s.id); // cut→stem chain: a stem waiting on this cut can now separate
         done++;
         if (done % 10 === 0) await saveManifest();
       } catch (err) {
@@ -916,6 +938,7 @@ async function runDigitalJob(job, song) {
     job.url = publicUrl(st.key);
     setPhase(job, 'ready', { message: `${song.name} ready` });
     enqueueAnalysis(song.id); // background: bpm/key/camelot + waveform for this song
+    kickWantedStem(song.id);  // rip→stem chain: a waiting stem can now separate this mp3
     inflight.delete(job.resourceKey);
   } else if (job.preferCloud && song.sourceType === 'analog') {
     // Tier-2 fallback: an exact-match analog cloud rip that didn't capture → vinyl. Fall
@@ -1041,6 +1064,244 @@ function resumeAnalysis() {
     seen.add(e.key); enqueueAnalysis(songId); n++;
   }
   if (n) console.error(`  queued ${n} pending analysis job(s)`);
+}
+
+// ================= Stemify: Demucs stem separation queue =================
+// On-demand, PER-SONG (analog ⇒ the per-song cut, never the album side). A SEPARATE
+// concurrency-1 queue (Demucs is minutes/song) that DEFERS while a real-time capture runs,
+// with a durable per-songId intent (user intent isn't re-derivable from the manifest), an
+// async-spawn child the watchdog/cancel can group-kill, and an attempt cap for poison inputs.
+// Mirrors the rip queue's durability + the analysis queue's off-critical-path shape.
+const stemQ = [];                     // songIds queued for separation
+let stemming = false;                 // conc-1 guard
+const stemInflight = new Map();       // songId -> stemJobId (ALWAYS per-songId)
+let activeStemJobId = null;
+const activeStemChild = { p: null };  // the live demucs child (registered by separateStems)
+const stemAttempts = new Map();       // songId -> int (max-attempt cap; poison-input guard)
+const STEM_MAX_ATTEMPTS = 3;
+
+const STEM_WANT_DIR = join(CFG.tmp, 'stem-queue'); // durable intent (mirror QUEUE_DIR)
+mkdirSync(STEM_WANT_DIR, { recursive: true });
+const stemWantFile = (songId) => join(STEM_WANT_DIR, `${songId}.json`);
+const wantStem = (songId) => existsSync(stemWantFile(songId));
+function persistStemWant(songId, job) {
+  try { writeFileSync(stemWantFile(songId), JSON.stringify(
+    { songId, jobId: job.jobId, ripFromCloud: !!job.ripFromCloud, createdAt: job.createdAt })); } catch { /* ignore */ }
+}
+function clearStemWant(songId) { try { rmSync(stemWantFile(songId)); } catch { /* not present */ } }
+function killActiveStemChild() {       // mirror killActiveChild
+  const p = activeStemChild.p; if (!p) return;
+  try { process.kill(-p.pid, 'SIGKILL'); } catch { try { p.kill('SIGKILL'); } catch { /* already gone */ } }
+}
+
+// Write the stem result onto a manifest entry (additive — only after all 4 stems uploaded).
+function applyStems(e, r) {
+  if (!r || !r.ok || !r.stems) return false;
+  e.stems = r.stems;                       // {vocals,drums,bass,other} S3 keys
+  e.stemModel = r.model || CFG.demucsModel; // == STEMS_MODEL
+  e.stemVersion = STEMS_VERSION;
+  e.stemFormat = r.format || CFG.stemFormat;
+  e.stemmedAt = Date.now();
+  if (r.stemBytes) e.stemBytes = r.stemBytes;
+  return true;
+}
+// Re-stem predicate (consumed by /backfill-stems + resumeStems). An analog song needs its
+// per-song cut first (not eligible until cutKey exists). Stale = old version OR a model swap.
+const stemEligible = (e) => (e.source === 'digital' && e.key) || (e.source === 'analog' && e.cutKey);
+const wantStems = (e) => stemEligible(e) && ((e.stemVersion ?? 0) < STEMS_VERSION || e.stemModel !== CFG.demucsModel);
+
+// Source-state classification for the rip/cut→stem dependency chain.
+function stemSourceReady(e) { return !!e && (e.source === 'analog' ? !!e.cutKey : !!e.key); }
+function hasCutBoundaries(songId, e) { // analog: a per-song cut is derivable (startMs + a duration)
+  if (!e || e.source !== 'analog') return false;
+  const s = songById.get(songId);
+  const startMs = s?.pointer?.startMs ?? e.startMs;
+  return startMs != null && cutDurationMs(s, e) != null;
+}
+function cutPending(songId, e) { return e?.source === 'analog' && !e.cutKey && hasCutBoundaries(songId, e); }
+function cutImpossible(songId, e) { return e?.source === 'analog' && !e.cutKey && !hasCutBoundaries(songId, e); }
+
+// Kick the existing per-song-cut backfill (single-flight) so a cutPending analog song gains
+// its cut; backfillCuts calls kickWantedStem per cut written, completing the cut→stem chain.
+function kickBackfillCuts() {
+  if (!backfillRunning) { backfillRunning = true; backfillCuts().finally(() => { backfillRunning = false; }); }
+}
+
+// status: 'unknown'|'ready'|'inflight'|'queued'|'ripping'|'needsCut'|'ineligible'
+function acceptStem(songId, ripFromCloud = false) {
+  const song = songId && songById.get(songId);
+  if (!song) return { job: null, status: 'unknown' };
+  const e = manifest[songId];
+  if (e && (e.stemVersion ?? 0) >= STEMS_VERSION && e.stemModel === CFG.demucsModel)
+    return { job: null, status: 'ready' };                       // idempotent skip (mandatory)
+  if (e && cutImpossible(songId, e)) { clearStemWant(songId); return { job: null, status: 'ineligible' }; }
+  const existingId = stemInflight.get(songId);
+  if (existingId && jobs.has(existingId)) return { job: jobs.get(existingId), status: 'inflight' };
+
+  const job = { jobId: randomUUID(), songId, kind: 'stem', phase: 'queued', createdAt: Date.now(), ripFromCloud: !!ripFromCloud };
+  jobs.set(job.jobId, job);
+  stemInflight.set(songId, job.jobId);
+  persistStemWant(songId, job);
+  setPhase(job, 'queued');
+
+  if (stemSourceReady(e)) { enqueueStem(songId); return { job, status: 'queued' }; }
+  if (e && cutPending(songId, e)) {                               // ripped, boundaries exist, no cut yet
+    kickBackfillCuts();                                          // auto-kick cuts; chain resumes via hook
+    setPhase(job, 'queued', { message: 'cutting before stemming' });
+    return { job, status: 'needsCut' };
+  }
+  acceptRip(songId, ripFromCloud);                               // not ripped → rip first (idempotent)
+  setPhase(job, 'ripping', { message: 'ripping before stemming' });
+  return { job, status: 'ripping' };
+}
+
+function enqueueStem(songId) {
+  if (!stemInflight.has(songId)) return;
+  if (!stemQ.includes(songId)) stemQ.push(songId);
+  pumpStems();
+}
+
+// Never start a stem while a real-time digital/cloud capture is in flight (CPU/RAM/thermal
+// contention with a latency-sensitive capture). A fast analog transcode is not gated harder
+// than the existing single rip queue already serializes. The rip pump re-pumps stems on drain.
+function realtimeCaptureActive() {
+  if (!working || !activeJobId) return false;
+  const job = jobs.get(activeJobId);
+  if (!job) return false;
+  const song = songById.get(job.songId);
+  const analog = song && song.sourceType === 'analog' && !job.preferCloud;
+  return !analog;                                                // a real-time worker capture is running
+}
+
+async function pumpStems() {
+  if (stemming) return;
+  if (realtimeCaptureActive()) return;                           // defer; rip-completion re-pumps
+  const songId = stemQ.shift();
+  if (!songId) return;
+  stemming = true;
+  activeStemJobId = stemInflight.get(songId);
+  let timer;
+  try {
+    const watchdog = new Promise((_, rej) => {
+      timer = setTimeout(() => { killActiveStemChild(); rej(new Error('stem watchdog timeout')); },
+        CFG.stemDeadlineMs + 30_000);                            // > the lib budget; never fights it
+      timer.unref?.();
+    });
+    await Promise.race([stemManifestSong(songId), watchdog]);
+  } catch (e) {
+    const n = (stemAttempts.get(songId) || 0) + 1;
+    stemAttempts.set(songId, n);
+    const job = jobs.get(activeStemJobId);
+    if (n >= STEM_MAX_ATTEMPTS) {                                // poison input: stop re-attempting
+      if (job && job.phase !== 'error') setPhase(job, 'error', { error: `failed ${n}× — giving up` });
+      clearStemWant(songId);
+    } else if (job && job.phase !== 'error') setPhase(job, 'error', { error: e.message }); // keep the want
+  } finally {
+    clearTimeout(timer);
+    stemInflight.delete(songId); activeStemChild.p = null; activeStemJobId = null; stemming = false;
+    pumpStems();
+  }
+}
+
+async function stemManifestSong(songId) {
+  const e = manifest[songId];
+  if (!e) { clearStemWant(songId); return; }
+  if ((e.stemVersion ?? 0) >= STEMS_VERSION && e.stemModel === CFG.demucsModel) {
+    clearStemWant(songId); finishStem(songId); return;           // a concurrent backfill won
+  }
+  const srcKey = e.source === 'analog' ? e.cutKey : e.key;       // mirror analyzeBeatgridForSong
+  if (!srcKey) {                                                 // analog, no cut yet
+    if (cutImpossible(songId, e)) { clearStemWant(songId); setIneligible(songId); }
+    return;                                                      // cutPending: keep want; /backfill-cuts chain re-drives
+  }
+  const job = jobs.get(stemInflight.get(songId));
+  if (job?.canceled) return;
+  if (job) setPhase(job, 'stemming', { message: 'separating stems' });
+
+  const local = join(CFG.tmp, `${songId}.stem.mp3`);            // download to CFG.tmp (no ~/Downloads TCC)
+  try { await aws(['s3', 'cp', `s3://${CFG.bucket}/${srcKey}`, local]); }
+  catch { throw new Error('source download failed'); }
+  try {
+    const r = await separateStems({                             // async spawn; registers activeStemChild
+      file: local, songId, bucket: CFG.bucket, region: CFG.region, profile: CFG.profile,
+      model: CFG.demucsModel, runtime: CFG.demucsRuntime, device: CFG.demucsDevice,
+      image: CFG.stemImage, format: CFG.stemFormat, bitrate: CFG.stemBitrate,
+      tmp: CFG.tmp, child: activeStemChild,
+    });
+    if (job?.canceled || job?.phase === 'error') return;        // orphaned-continuation guard
+    if (!r.ok) throw new Error('demucs failed');
+    applyStems(e, r);                                           // ADDITIVE write — only AFTER all 4 uploaded
+    await saveManifest();                                       // stamp = source of truth; partials orphan harmlessly
+    stemAttempts.delete(songId); clearStemWant(songId); finishStem(songId);
+    console.error(`  ✓ stemmed ${songId} (${r.model}, ${r.stemBytes || '?'} bytes)`);
+  } finally { try { rmSync(local); } catch { /* ignore */ } }
+}
+
+function finishStem(songId) {
+  const job = jobs.get(stemInflight.get(songId)); if (job) setPhase(job, 'ready', { message: 'stems ready' });
+}
+function setIneligible(songId) {
+  const job = jobs.get(stemInflight.get(songId)); if (job) setPhase(job, 'ineligible', { error: 'no per-song cut — cannot stem' });
+}
+
+// Rip→stem / cut→stem chaining: stems must NOT auto-run for every rip (Demucs is heavy), so
+// gate on the durable wantStem set. Called from the rip/cut completion hooks.
+function kickWantedStem(songId) {
+  if (!wantStem(songId)) return;
+  if (stemInflight.has(songId)) enqueueStem(songId); else acceptStem(songId);
+}
+// Terminal rip failure for a song a stem is waiting on → fail the dependent stem (don't loop).
+function failDependentStem(songId, why) {
+  if (!wantStem(songId)) return;
+  const job = jobs.get(stemInflight.get(songId));
+  if (job && job.phase !== 'error') setPhase(job, 'error', { error: why });
+  stemInflight.delete(songId); stemAttempts.delete(songId); clearStemWant(songId);
+}
+
+// Cancel one song's stem (POST /stemify-cancel): tear down the chained rip too, kill a live child.
+function cancelStemOne(songId, canceledAlbums) {
+  const song = songId && songById.get(songId); if (!song) return 'notFound';
+  const e = manifest[songId];
+  if (e && (e.stemVersion ?? 0) >= STEMS_VERSION && e.stemModel === CFG.demucsModel) return 'alreadyDone';
+  cancelOne(songId, canceledAlbums);                            // tears down a chained rip (idempotent)
+  const jobId = stemInflight.get(songId);
+  if (!jobId || !jobs.has(jobId)) { clearStemWant(songId); return 'notFound'; }
+  const job = jobs.get(jobId);
+  if (activeStemJobId === jobId) { job.canceled = true; killActiveStemChild(); } // kill the live child
+  const qi = stemQ.indexOf(songId); if (qi >= 0) stemQ.splice(qi, 1);
+  stemInflight.delete(songId); stemAttempts.delete(songId); clearStemWant(songId);
+  setPhase(job, 'error', { error: 'canceled' });
+  return 'canceled';
+}
+
+// BACKFILL: re-stem stale entries (version OR model mismatch). Seeds the durable queue (via
+// acceptStem) so each separation gets the conc-1 watchdog + durable-resume protection. Single-
+// flight via stemBackfillRunning (NOT the shared backfillRunning). Candidate-capped at the
+// router so it can never silently kick a full-corpus run.
+let stemBackfillRunning = false;
+async function backfillStems() {
+  const ids = Object.entries(manifest).filter(([, e]) => wantStems(e)).map(([id]) => id);
+  console.error(`  backfill-stems: enqueueing ${ids.length} stale song(s)`);
+  for (const id of ids) { if (wantStems(manifest[id] || {})) acceptStem(id); } // idempotent; drains via pumpStems
+}
+
+// Resume durable stem intents after a restart (read the intent dir, NOT the manifest). A fresh
+// process has an empty stemInflight, so acceptStem re-enqueues / re-rips / re-cuts as needed.
+function resumeStems() {
+  let files = [];
+  try { files = readdirSync(STEM_WANT_DIR).filter((f) => f.endsWith('.json')); } catch { return; }
+  let n = 0;
+  for (const f of files) {
+    const songId = f.replace(/\.json$/, '');
+    const e = manifest[songId];
+    if (e && (e.stemVersion ?? 0) >= STEMS_VERSION && e.stemModel === CFG.demucsModel) { clearStemWant(songId); continue; }
+    if (!songById.get(songId)) { clearStemWant(songId); continue; }
+    let ripFromCloud = false;
+    try { ripFromCloud = !!JSON.parse(readFileSync(stemWantFile(songId), 'utf8')).ripFromCloud; } catch { /* ignore */ }
+    const r = acceptStem(songId, ripFromCloud);
+    if (r.status !== 'unknown' && r.status !== 'ineligible') n++;
+  }
+  if (n) console.error(`  resumed ${n} pending stem job(s)`);
 }
 
 // ---------------- ITEM 10 (CRITIC-H): cloud-analog analysis -> public/current-index.json ----------------
@@ -1206,7 +1467,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, '');
 
   if (path === '/health') {
-    return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
+    return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, stems: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
       catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token });
   }
   // GET /hls/<songId>/<index.m3u8|seg_N.ts> — live HLS (iOS-native). Same ?token= auth.
@@ -1294,6 +1555,57 @@ const server = http.createServer(async (req, res) => {
     if (!backfillRunning) { backfillRunning = true; backfillBeatgrids().finally(() => { backfillRunning = false; }); }
     return send(res, 200, { ok: true, candidates, version: ANALYSIS_VERSION, running: backfillRunning });
   }
+  // POST /stemify {songId, ripFromCloud?} — separate ONE song into 4 stems (analog ⇒ its
+  // per-song cut). Rips/cuts first if needed (the chain is baked into acceptStem). Response is
+  // jobView-shaped so the app reuses its job decoder; idempotent (a stemmed song returns ready).
+  if (path === '/stemify' && req.method === 'POST') {
+    const { songId, ripFromCloud } = await readJson(req);
+    const r = acceptStem(songId, ripFromCloud);
+    if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
+    if (r.status === 'ineligible') return send(res, 200, { jobId: null, songId, phase: 'ineligible' });
+    if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', stems: manifest[songId].stems });
+    return send(res, 200, jobView(r.job));
+  }
+  // POST /stemify-collection {songIds:[...], ripFromCloud?, confirmLarge?} — batch Stemify,
+  // mirroring /rip-collection with the rip/cut→stem chain in acceptStem. Size-capped (a Pocket
+  // DAG or large playlist could otherwise enqueue a multi-day job); re-send with confirmLarge.
+  if (path === '/stemify-collection' && req.method === 'POST') {
+    const { songIds, ripFromCloud, confirmLarge } = await readJson(req);
+    const ids = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    if (ids.length > CFG.stemCollectionCap && !confirmLarge)
+      return send(res, 200, { needsConfirm: true, count: ids.length, cap: CFG.stemCollectionCap,
+        message: `${ids.length} songs — this is a long job; re-send with confirmLarge:true` });
+    const results = ids.map((id) => { const r = acceptStem(id, ripFromCloud);
+      return { songId: id, status: r.status, jobId: r.job ? r.job.jobId : null }; });
+    const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
+      { ready: 0, queued: 0, inflight: 0, ripping: 0, needsCut: 0, ineligible: 0, unknown: 0, total: 0 });
+    return send(res, 200, { results, counts });
+  }
+  // POST /stemify-cancel {songIds:[...]} — STOP. Cancels queued/active stem jobs AND routes the
+  // chained rip through cancelOne so a stopped Stemify never leaves a rip capturing. Same
+  // {canceled|notFound|alreadyDone} envelope as /rip-cancel.
+  if (path === '/stemify-cancel' && req.method === 'POST') {
+    const { songIds } = await readJson(req);
+    const ids = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    const canceledAlbums = new Set();
+    const results = ids.map((songId) => ({ songId, status: cancelStemOne(songId, canceledAlbums) }));
+    const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
+      { canceled: 0, notFound: 0, alreadyDone: 0, total: 0 });
+    return send(res, 200, { results, counts });
+  }
+  // POST /backfill-stems {confirmLarge?} — re-stem STALE entries only (version < STEMS_VERSION
+  // OR a model swap). Single-flight (its own stemBackfillRunning, not the cut backfill flag);
+  // candidate-capped so it can never silently kick a full-corpus run (re-send with confirmLarge
+  // to stem a whole large set — e.g. a full catalog backfill). Seeds the durable conc-1 queue.
+  if (path === '/backfill-stems' && req.method === 'POST') {
+    const { confirmLarge } = await readJson(req).catch(() => ({}));
+    const candidates = Object.values(manifest).filter((e) => wantStems(e)).length;
+    if (candidates > CFG.stemCollectionCap && !confirmLarge)
+      return send(res, 200, { ok: false, needsConfirm: true, candidates, cap: CFG.stemCollectionCap,
+        model: CFG.demucsModel, version: STEMS_VERSION });
+    if (!stemBackfillRunning) { stemBackfillRunning = true; backfillStems().finally(() => { stemBackfillRunning = false; }); }
+    return send(res, 200, { ok: true, candidates, model: CFG.demucsModel, version: STEMS_VERSION, running: stemBackfillRunning });
+  }
   // POST /rip-cancel {songIds:[...]} — Feature 1 STOP RIP. Cancels still-queued matching
   // jobs (splice queue + clear inflight + delete durable file) and KILLS the in-flight
   // capture child when a matching job is the currently-running one. Idempotent; returns a
@@ -1373,6 +1685,7 @@ warmLibIndex(); // parse the Apple Music library off the request path (cloud-rip
 await loadManifest();
 resumePending(); // re-enqueue any rip requests left pending by a previous run
 resumeAnalysis(); // analyze any ripped songs that don't have bpm/key/waveform yet
+resumeStems(); // re-drive any stem requests left pending by a previous run
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });
