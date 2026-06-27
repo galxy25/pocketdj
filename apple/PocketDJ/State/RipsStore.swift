@@ -468,6 +468,65 @@ final class RipsStore {
         }
     }
 
+    /// Outcome of an explicit, metadata-carrying rip request (`requestRip`).
+    enum RipRequestOutcome: Equatable {
+        case ready          // already in the S3 manifest — nothing to capture
+        case queued         // newly enqueued on the rip server
+        case inflight       // joined an in-progress capture for the same resource
+        case unknown        // server doesn't know this song (old server / no ad-hoc support)
+        case noServer       // no rip server configured
+        case failed         // network / decode error
+    }
+
+    /// Request a rip for a song the catalog may NOT contain yet — the recognizer "add to
+    /// Apple Music + burn" path. Unlike `requestRipIfNeeded` (which posts only `songId`,
+    /// so the server must already know the track), this carries `title`/`artist` so the
+    /// server can synthesize an ad-hoc catalog row and the digital worker (which captures
+    /// by artist+title) can find it. Returns the server's classification so the caller can
+    /// decide whether to poll for completion. Idempotent-ish: a cached song short-circuits
+    /// to `.ready`.
+    @discardableResult
+    func requestRip(songId: String, title: String, artist: String,
+                    appleMusicId: String? = nil, lengthMs: Int? = nil) async -> RipRequestOutcome {
+        if cachedURL(songId) != nil { return .ready }
+        guard hasServer else { return .noServer }
+        let base = serverUrl, tok = token
+        do {
+            var post = URLRequest(url: URL(string: "\(base)/rip")!)
+            post.httpMethod = "POST"
+            post.setValue("application/json", forHTTPHeaderField: "content-type")
+            applyAuth(&post, token: tok)
+            var body: [String: Any] = ["songId": songId, "title": title, "artist": artist]
+            if ripFromCloud { body["ripFromCloud"] = true }
+            if let appleMusicId, !appleMusicId.isEmpty { body["appleMusicId"] = appleMusicId }
+            if let lengthMs, lengthMs > 0 { body["lengthMs"] = lengthMs }
+            post.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await session.data(for: post)
+            guard let http = response as? HTTPURLResponse else { return .failed }
+            if http.statusCode == 404 { return .unknown }
+            guard (200..<300).contains(http.statusCode) else { return .failed }
+            let view = try JSONDecoder().decode(Job.self, from: data)
+            if view.phase == .ready { return .ready }
+            jobs[songId] = view
+            return view.phase == .queued ? .queued : .inflight
+        } catch {
+            return .failed
+        }
+    }
+
+    /// Refresh a single song's job from `/jobs/<id>` (used by the recognizer rip→burn poll
+    /// so a server-side capture failure short-circuits instead of waiting out the timeout).
+    /// Returns the latest phase, or the last-known phase when there's no job/the fetch fails.
+    @discardableResult
+    func refreshJob(_ songId: String) async -> Phase? {
+        guard let jobId = jobs[songId]?.jobId else { return jobs[songId]?.phase }
+        guard let v = try? await fetchJob(jobId, base: serverUrl, token: token) else {
+            return jobs[songId]?.phase
+        }
+        jobs[songId] = v
+        return v.phase
+    }
+
     // MARK: Feature 2 RIP — batch enqueue a collection to be ripped + uploaded to S3
 
     /// One song's outcome from a batch rip (mirrors the server's per-song result).

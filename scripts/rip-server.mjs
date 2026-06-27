@@ -407,8 +407,38 @@ function fail(job, error) { job.error = error; setPhase(job, 'error'); if (job.r
 // jobView/ready response so its contract stays byte-identical.
 //   status: 'unknown' (not in catalog) | 'ready' (already ripped) | 'inflight'
 //           (joined an in-progress job, no new enqueue) | 'queued' (newly enqueued)
-function acceptRip(songId, ripFromCloud = false) {
-  const song = songId && songById.get(songId);
+// AD-HOC rip ids the recognizer mints. STRICT shape (`amrec_<storeID>`) — the only ids
+// for which acceptRip will synthesize a row, so an unvalidated/hostile songId (e.g. a
+// `../../..` path-traversal attempt) can NEVER reach persistQueue/the worker through the
+// ad-hoc branch: it won't match here and won't be in the catalog, so it 404s.
+const ADHOC_ID = /^amrec_[A-Za-z0-9]+$/;
+function adhocRow(songId, adhoc) {
+  return {
+    id: songId, name: adhoc.title, artist: adhoc.artist, albumId: null,
+    sourceType: 'digital', appleMusicId: adhoc.appleMusicId || null,
+    length: Number(adhoc.lengthMs) || 0,
+  };
+}
+
+function acceptRip(songId, ripFromCloud = false, adhoc = null) {
+  let song = songId && songById.get(songId);
+  // AD-HOC rip: a freshly-recognized Apple Music track (PocketDJ recognizer "add to
+  // Apple Music + burn") that isn't in any indexed source yet. The digital worker
+  // captures by artist+title (it searches Music.app), so a synthesized digital row is
+  // all runJob/runDigitalJob need. Register it in-memory keyed by the client's id so
+  // every downstream lookup (runJob, cancel) resolves it. The `adhoc` descriptor is
+  // ALSO persisted on the job so a restart mid-capture can re-synthesize the row (see
+  // resumePending) instead of dropping the rip.
+  let adhocDesc = null;
+  if (!song && adhoc && adhoc.title && adhoc.artist && ADHOC_ID.test(songId)) {
+    // Strip control chars (newlines etc.) from the client-supplied fields at the SOURCE so
+    // they can't reach the worker args or the (RIP_AGENT) agent prompt; length-cap too.
+    const clean = (s) => String(s).replace(/[\x00-\x1f]/g, ' ').slice(0, 200);
+    adhocDesc = { title: clean(adhoc.title), artist: clean(adhoc.artist),
+                  appleMusicId: adhoc.appleMusicId || null, lengthMs: Number(adhoc.lengthMs) || 0 };
+    song = adhocRow(songId, adhocDesc);
+    songById.set(songId, song);
+  }
   if (!song) return { job: null, status: 'unknown', url: null };
   if (manifest[songId]) return { job: null, status: 'ready', url: publicUrl(manifest[songId].key) };
   // Probe the library ONCE, here. wantCloud is the RESOLVED preference (post-probe), not
@@ -424,7 +454,7 @@ function acceptRip(songId, ripFromCloud = false) {
     const job = jobs.get(existingId);
     return { job, status: 'inflight', url: job.url || null };
   }
-  const job = { jobId: randomUUID(), songId, resourceKey, preferCloud: wantCloud, phase: 'queued', createdAt: Date.now(), attempt: 1 };
+  const job = { jobId: randomUUID(), songId, resourceKey, preferCloud: wantCloud, phase: 'queued', createdAt: Date.now(), attempt: 1, adhoc: adhocDesc };
   jobs.set(job.jobId, job);
   inflight.set(resourceKey, job.jobId);
   persistQueue(job); // durable: survives a restart (retry budget included)
@@ -493,7 +523,7 @@ function cancelOne(songId, canceledAlbums) {
 // On startup any leftover files are re-enqueued (idempotent — skipped if already ripped).
 const queueFile = (songId) => join(QUEUE_DIR, `${songId}.json`);
 function persistQueue(job) {
-  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, preferCloud: !!job.preferCloud, createdAt: job.createdAt, attempt: job.attempt || 1 })); } catch { /* ignore */ }
+  try { writeFileSync(queueFile(job.songId), JSON.stringify({ songId: job.songId, jobId: job.jobId, resourceKey: job.resourceKey, preferCloud: !!job.preferCloud, createdAt: job.createdAt, attempt: job.attempt || 1, adhoc: job.adhoc || null })); } catch { /* ignore */ }
 }
 function clearQueue(songId) { try { rmSync(queueFile(songId)); } catch { /* not present */ } }
 
@@ -519,6 +549,7 @@ function scheduleRetry(job, prevMsg) {
   const retry = {
     jobId: randomUUID(), songId: job.songId, resourceKey: job.resourceKey,
     preferCloud: !!job.preferCloud, phase: 'queued', createdAt: job.createdAt || Date.now(), attempt: next,
+    adhoc: job.adhoc || null,  // carry the ad-hoc descriptor so a restart mid-retry can resume it
   };
   jobs.set(retry.jobId, retry);
   // keep single-flight: this resource stays inflight (pointing at the retry job) across the gap.
@@ -579,6 +610,10 @@ async function pump() {
       if (job.phase === 'error' && !job.canceled && !manifest[job.songId] && wantStem(job.songId)) {
         failDependentStem(job.songId, 'source unrippable');
       }
+      // Evict the synthesized ad-hoc row HERE (terminal only — never between a transient
+      // failure and its retry, which still needs the row) so a long-running server doesn't
+      // accumulate dead amrec_ entries. The manifest is authoritative for a successful rip.
+      if (ADHOC_ID.test(job.songId)) songById.delete(job.songId);
     }
     // ALWAYS release the worker so the queue advances, even on an unexpected throw above.
     working = false;
@@ -597,7 +632,14 @@ function resumePending() {
   for (const f of files) {
     let rec; try { rec = JSON.parse(readFileSync(join(QUEUE_DIR, f), 'utf8')); } catch { continue; }
     const songId = rec?.songId;
-    const song = songId && songById.get(songId);
+    let song = songId && songById.get(songId);
+    // Ad-hoc recognizer rip: the synthesized row is in-memory only and gone after a
+    // restart. Re-synthesize it from the persisted descriptor (id shape re-validated)
+    // so a rip captured/queued at crash time RESUMES instead of being dropped.
+    if (!song && songId && rec.adhoc && rec.adhoc.title && rec.adhoc.artist && ADHOC_ID.test(songId)) {
+      song = adhocRow(songId, rec.adhoc);
+      songById.set(songId, song);
+    }
     if (!song) { clearQueue(songId || f.replace('.json', '')); continue; }
     if (manifest[songId]) { clearQueue(songId); continue; } // already ripped while we were down
     // Reconstruct from the persisted RESOLVED preferCloud — do NOT re-probe the library
@@ -607,7 +649,7 @@ function resumePending() {
     const perSong = preferCloud || song.sourceType !== 'analog';
     const resourceKey = perSong ? songId : song.albumId;
     if (inflight.has(resourceKey)) continue;
-    const job = { jobId: randomUUID(), songId, resourceKey, preferCloud, phase: 'queued', createdAt: rec.createdAt || Date.now(), attempt: rec.attempt || 1 };
+    const job = { jobId: randomUUID(), songId, resourceKey, preferCloud, phase: 'queued', createdAt: rec.createdAt || Date.now(), attempt: rec.attempt || 1, adhoc: rec.adhoc || null };
     jobs.set(job.jobId, job);
     inflight.set(resourceKey, job.jobId);
     setPhase(job, 'queued');
@@ -898,10 +940,14 @@ async function runDigitalJob(job, song) {
     // (detached only makes the child a group leader) so the stderr surfacing below works.
     if (CFG.useAgent) {
       const cmd = 'node scripts/rip-one.mjs ' + args.map(shq).join(' ');
+      // Ad-hoc song fields can be client-supplied (recognizer path) — strip quotes /
+      // newlines / control chars and length-cap before embedding in the (permission-
+      // skipped) agent prompt so they can't inject instructions.
+      const safe = (s) => String(s || '').replace(/[`"'\n\r -]/g, ' ').slice(0, 120);
       const prompt =
         `Rip one Apple Music song for PocketDJ. Run this command exactly:\n\n${cmd}\n\n` +
         `When it prints a line starting with RESULT {"ok":true …} you are done — stop. ` +
-        `If it fails because the track isn't in the Apple Music library, add "${song.artist} — ${song.name}" ` +
+        `If it fails because the track isn't in the Apple Music library, add "${safe(song.artist)} — ${safe(song.name)}" ` +
         `to the library (search Music.app), then re-run the command once. Do nothing else.`;
       p = spawn('claude', ['-p', prompt, '--dangerously-skip-permissions'], { cwd: REPO, detached: true });
     } else {
@@ -1504,8 +1550,11 @@ const server = http.createServer(async (req, res) => {
   // unchanged: it goes through acceptRip() but translates the result back to the
   // exact jobView/ready/404 contract the app's RipsStore.Job decoder expects.
   if (path === '/rip' && req.method === 'POST') {
-    const { songId, ripFromCloud } = await readJson(req);
-    const r = acceptRip(songId, ripFromCloud);
+    const { songId, ripFromCloud, title, artist, appleMusicId, lengthMs } = await readJson(req);
+    // Optional ad-hoc descriptor: lets a freshly-recognized track (not in any indexed
+    // source) be captured by artist+title. Ignored when the songId is already known.
+    const adhoc = (title && artist) ? { title, artist, appleMusicId, lengthMs } : null;
+    const r = acceptRip(songId, ripFromCloud, adhoc);
     if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', url: r.url });
     return send(res, 200, jobView(r.job));

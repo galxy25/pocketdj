@@ -251,6 +251,150 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
     }
 }
 
+// ============================================================================
+// MARK: - MusicLibraryContributor (read + WRITE the user's Apple Music library)
+// ============================================================================
+//
+// The Shazam "Heard it" sheet's Apple Music section drives off this: resolve a
+// recognized track → is it already in the library? → deep-link to its album, else
+// ＋ add it (+ burn). `MusicLibrary.shared.add(_:)` and `MusicLibrarySearchRequest`
+// are iOS 16 / macOS 14+ (the app's 18 / 15 targets clear them) and need no extra
+// entitlement beyond the MusicKit consent the provider already holds.
+@available(iOS 16.0, macOS 14.0, *)
+extension AppleMusicProvider: MusicLibraryContributor {
+    /// Reading + writing the library needs the same authorized, subscription-backed
+    /// session that resolving/searching does.
+    var canContribute: Bool { canResolve }
+
+    /// `MusicLibrary.add(_:)` is unavailable on macOS → the Mac can resolve + open albums
+    /// but not add; it falls back to opening the track in Apple Music.
+    var canAddToLibrary: Bool {
+        #if os(macOS)
+        return false
+        #else
+        return canContribute
+        #endif
+    }
+
+    func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? {
+        guard canContribute else { return nil }
+        // Resolve the catalog song: by store id first (Shazam's appleMusicID), else a
+        // top-result title/artist search.
+        var song: MusicKit.Song?
+        if let storeID, !storeID.isEmpty { song = try? await Self.fetchSong(storeID: storeID) }
+        if song == nil, let term = Self.libraryTerm(title: title, artist: artist) {
+            song = try? await Self.searchSong(term: term)
+        }
+        guard let song else { return nil }
+
+        // Load the album relationship for deep-linking / index matching.
+        let detailed = (try? await song.with([.albums])) ?? song
+        let albumRef = detailed.albums?.first.map(Self.albumRef(from:))
+        let inLib = await Self.isInLibrary(title: song.title, artist: song.artistName)
+
+        return AppleMusicResolution(
+            songStoreID: song.id.rawValue,
+            title: song.title,
+            artist: song.artistName,
+            inLibrary: inLib,
+            album: albumRef,
+            songURL: song.url)
+    }
+
+    func addSongToLibrary(storeID: String) async throws {
+        #if os(macOS)
+        throw StreamingError.notConfigured   // MusicLibrary.add is unavailable on macOS
+        #else
+        guard let song = try await Self.fetchSong(storeID: storeID) else { throw StreamingError.notConfigured }
+        _ = try await MusicLibrary.shared.add(song)
+        #endif
+    }
+
+    func addAlbumToLibrary(storeID: String) async throws {
+        #if os(macOS)
+        throw StreamingError.notConfigured   // MusicLibrary.add is unavailable on macOS
+        #else
+        var req = MusicCatalogResourceRequest<MusicKit.Album>(matching: \.id, equalTo: MusicItemID(storeID))
+        req.limit = 1
+        guard let album = try await req.response().items.first else { throw StreamingError.notConfigured }
+        _ = try await MusicLibrary.shared.add(album)
+        #endif
+    }
+
+    func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] {
+        guard canContribute else { return [] }
+        do {
+            var req = MusicCatalogResourceRequest<MusicKit.Album>(matching: \.id, equalTo: MusicItemID(albumStoreID))
+            req.limit = 1
+            guard let album = try await req.response().items.first else { return [] }
+            let detailed = try await album.with([.tracks])
+            return (detailed.tracks ?? []).map(Self.row(fromTrack:))
+        } catch { return [] }
+    }
+
+    // MARK: helpers
+
+    private static func fetchSong(storeID: String) async throws -> MusicKit.Song? {
+        var req = MusicCatalogResourceRequest<MusicKit.Song>(matching: \.id, equalTo: MusicItemID(storeID))
+        req.limit = 1
+        return try await req.response().items.first
+    }
+
+    private static func searchSong(term: String) async throws -> MusicKit.Song? {
+        var req = MusicCatalogSearchRequest(term: term, types: [MusicKit.Song.self])
+        req.limit = 1
+        return try await req.response().songs.first
+    }
+
+    private static func libraryTerm(title: String?, artist: String?) -> String? {
+        let t = (title ?? "").trimmingCharacters(in: .whitespaces)
+        let a = (artist ?? "").trimmingCharacters(in: .whitespaces)
+        let term = "\(t) \(a)".trimmingCharacters(in: .whitespaces)
+        return term.isEmpty ? nil : term
+    }
+
+    /// Membership test: search the user's LIBRARY (not the catalog) and look for a
+    /// normalized title + compatible-artist hit — the same fuzzy match the crate uses.
+    private static func isInLibrary(title: String, artist: String) async -> Bool {
+        guard let term = libraryTerm(title: title, artist: artist) else { return false }
+        var req = MusicLibrarySearchRequest(term: term, types: [MusicKit.Song.self])
+        req.limit = 10
+        guard let resp = try? await req.response() else { return false }
+        let nt = ShazamCatalogMatch.norm(title)
+        let na = ShazamCatalogMatch.norm(artist)
+        return resp.songs.contains { s in
+            guard ShazamCatalogMatch.norm(s.title) == nt else { return false }
+            guard !na.isEmpty else { return true }
+            let sa = ShazamCatalogMatch.norm(s.artistName)
+            return sa == na || sa.contains(na) || na.contains(sa)
+        }
+    }
+
+    private static func albumRef(from a: MusicKit.Album) -> AppleMusicAlbumRef {
+        let year = a.releaseDate.map { Calendar(identifier: .gregorian).component(.year, from: $0) }
+        return AppleMusicAlbumRef(
+            storeID: a.id.rawValue,
+            title: a.title,
+            artist: a.artistName,
+            year: year,
+            artworkURL: a.artwork?.url(width: 512, height: 512),
+            url: a.url)
+    }
+
+    private static func row(fromTrack t: Track) -> AppleMusicSongRow {
+        AppleMusicSongRow(
+            storeID: t.id.rawValue,
+            title: t.title,
+            artist: t.artistName,
+            albumTitle: nil,
+            trackNumber: t.trackNumber,
+            year: nil,
+            durationSeconds: t.duration,
+            isExplicit: t.contentRating == .explicit,
+            artworkURL: t.artwork?.url(width: 256, height: 256))
+    }
+}
+
 #else
 // ============================================================================
 // MARK: - Stub (MusicKit unavailable — keeps the module compiling everywhere)
@@ -284,5 +428,14 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
 
     var canResolve: Bool { false }
     func resolve(_ song: IndexSong) async -> StreamingTrack? { nil }
+}
+
+extension AppleMusicProvider: MusicLibraryContributor {
+    var canContribute: Bool { false }
+    var canAddToLibrary: Bool { false }
+    func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
+    func addSongToLibrary(storeID: String) async throws { throw StreamingError.notConfigured }
+    func addAlbumToLibrary(storeID: String) async throws { throw StreamingError.notConfigured }
+    func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { [] }
 }
 #endif

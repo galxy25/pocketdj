@@ -516,6 +516,127 @@ final class BurnStore {
         if changed { save() }
     }
 
+    // MARK: Recognizer "add to Apple Music → burn to device"
+
+    /// One recognized track to rip + burn (the ＋ flow's payload).
+    struct RipBurnTrack { let id, title, artist: String; let appleMusicId: String?; let lengthMs: Int? }
+
+    /// Per-flow rip→burn lifecycles, owned by the store so they SURVIVE the Shazam result
+    /// sheet being dismissed (a view-owned `Task` would cancel on disappear). Just the
+    /// Task handles — the OBSERVED progress lives in `ripBurning`/`ripBurnError`.
+    @ObservationIgnored private var ripBurnTasks: [String: Task<Void, Never>] = [:]
+
+    /// Observed: songs with a recognizer rip→burn in flight. Drives the section's
+    /// spinner — a plain @ObservationIgnored dict would not invalidate the view when it
+    /// clears, leaving a stuck spinner on a silent failure.
+    private(set) var ripBurning: Set<String> = []
+    /// Observed: last rip→burn failure message per song (cleared on a new start / success).
+    private(set) var ripBurnError: [String: String] = [:]
+
+    /// True while a recognizer-initiated rip→burn for this song is still running.
+    func isRipBurning(_ songId: String) -> Bool { ripBurning.contains(songId) }
+    /// A surfaced rip→burn failure message for this song, if any.
+    func ripBurnErrorMessage(_ songId: String) -> String? { ripBurnError[songId] }
+    /// True while the (background) device download of an already-ripped song is in flight —
+    /// covers the window after the rip task hands off to the transfer coordinator but before
+    /// the file finalizes, so the UI doesn't briefly read as idle.
+    func isDownloadingToDevice(_ songId: String) -> Bool { items[songId]?.state == .downloading }
+
+    /// The recognizer's ＋ path AFTER the catalog add: rip the track (real-time capture on
+    /// the rip server) then burn the result into the user's burn folder so it plays/mixes
+    /// fully offline. Idempotent per song; the Task is store-owned so it outlives the sheet.
+    func startRipAndBurn(songId: String, title: String, artist: String,
+                         appleMusicId: String?, lengthMs: Int?) {
+        guard ripBurnTasks[songId] == nil, localURL(forSong: songId) == nil else { return }
+        ripBurning.insert(songId); ripBurnError[songId] = nil
+        ripBurnTasks[songId] = Task { [weak self] in
+            await self?.ripAndBurn(songId: songId, title: title, artist: artist,
+                                   appleMusicId: appleMusicId, lengthMs: lengthMs)
+            self?.ripBurning.remove(songId)
+            self?.ripBurnTasks[songId] = nil
+        }
+    }
+
+    /// Batched album variant: enqueue every track ONCE, then run a SINGLE shared poll loop
+    /// (one manifest refresh per tick) that burns each as it lands — so a 12-track album
+    /// doesn't fan out 12 independent 30-min timers + 12 simultaneous manifest GETs against
+    /// the concurrency-1 real-time ripper. Budget scales with track count (serial capture).
+    func startRipAndBurnAlbum(_ tracks: [RipBurnTrack]) {
+        let todo = tracks.filter { localURL(forSong: $0.id) == nil }
+        guard !todo.isEmpty else { return }
+        let key = "album:" + todo.map(\.id).sorted().joined(separator: ",")
+        guard ripBurnTasks[key] == nil else { return }
+        todo.forEach { ripBurning.insert($0.id); ripBurnError[$0.id] = nil }
+        ripBurnTasks[key] = Task { [weak self] in
+            await self?.ripAndBurnAlbum(todo)
+            self?.ripBurnTasks[key] = nil
+        }
+    }
+
+    private func ripAndBurn(songId: String, title: String, artist: String,
+                            appleMusicId: String?, lengthMs: Int?) async {
+        if localURL(forSong: songId) != nil { return }   // already on device
+
+        // Capture first when it isn't already in the S3 manifest.
+        if rips.cachedURL(songId) == nil {
+            switch await rips.requestRip(songId: songId, title: title, artist: artist,
+                                         appleMusicId: appleMusicId, lengthMs: lengthMs) {
+            case .ready, .queued, .inflight: break
+            case .noServer: ripBurnError[songId] = "No rip server — can’t download"; return
+            case .unknown:  ripBurnError[songId] = "Rip server can’t capture this track"; return
+            case .failed:   ripBurnError[songId] = "Couldn’t start the download"; return
+            }
+            // Real-time capture: poll the manifest AND the job until the rip lands. The job
+            // poll lets a worker error short-circuit instead of waiting out the cap.
+            let start = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if Task.isCancelled { return }
+                await rips.refreshManifest()
+                if rips.cachedURL(songId) != nil { break }
+                if await rips.refreshJob(songId) == .error {
+                    ripBurnError[songId] = "The rip failed on the server"; return
+                }
+                if Date().timeIntervalSince(start) > 30 * 60 {
+                    ripBurnError[songId] = "Download timed out"; return
+                }
+            }
+        }
+
+        guard rips.cachedURL(songId) != nil else { return }
+        _ = await burn([(id: songId, title: title, artist: artist)])
+    }
+
+    private func ripAndBurnAlbum(_ tracks: [RipBurnTrack]) async {
+        let byId = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var pending = Set<String>()
+        for t in tracks {
+            if rips.cachedURL(t.id) != nil { pending.insert(t.id); continue }
+            switch await rips.requestRip(songId: t.id, title: t.title, artist: t.artist,
+                                         appleMusicId: t.appleMusicId, lengthMs: t.lengthMs) {
+            case .ready, .queued, .inflight: pending.insert(t.id)
+            case .noServer, .unknown, .failed:
+                ripBurnError[t.id] = "Couldn’t queue the download"; ripBurning.remove(t.id)
+            }
+        }
+        // One shared loop. Budget accounts for SERIAL real-time capture (concurrency-1).
+        let start = Date()
+        let cap = TimeInterval(max(pending.count, 1)) * 15 * 60
+        while !pending.isEmpty && !Task.isCancelled {
+            let ready = pending.filter { rips.cachedURL($0) != nil }
+            for id in ready {
+                if let t = byId[id] { _ = await burn([(id: t.id, title: t.title, artist: t.artist)]) }
+                ripBurning.remove(id)
+            }
+            pending.subtract(ready)
+            if pending.isEmpty { break }
+            if Date().timeIntervalSince(start) > cap { break }
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            await rips.refreshManifest()
+        }
+        for id in pending { ripBurning.remove(id); ripBurnError[id] = "Download timed out" }
+    }
+
     // MARK: The serial download queue
 
     /// BURN a collection's songs ONE BY ONE: download each already-ripped song's durable
