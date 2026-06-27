@@ -85,6 +85,10 @@ final class MixEngine {
     /// Pitch range in semitones (frequency shift, tempo preserved). 0 = original.
     nonisolated static let pitchRange: ClosedRange<Double> = -12...12
 
+    /// The four stem parts — MATCH the burned file suffixes (`BurnStore` stem cache) so
+    /// `localStemURLs` keys line up. The Mix stem grid + per-deck stem playback key on these.
+    nonisolated static let stemNames = ["vocals", "drums", "bass", "other"]
+
     // MARK: Observable state
 
     private struct DeckState: Equatable {
@@ -96,6 +100,11 @@ final class MixEngine {
         var pitch: Double = 0.0      // semitones
         var compressor = false, reverb = false, flanger = false, filter = false
         var compStrength = 0.5, reverbStrength = 0.5, flangerStrength = 0.5, filterStrength = 0.5
+        /// Stem mode: when on (and the track has burned stems), the deck plays its 4 stems through
+        /// the SAME effect chain + crossfader, with per-stem mute + level. Reset on load.
+        var stemMode = false
+        var stemMuted: Set<String> = []
+        var stemVol: [String: Double] = [:]   // per-stem 0…1 (absent ⇒ 1.0)
 
         func isEnabled(_ e: Effect) -> Bool {
             switch e {
@@ -182,6 +191,12 @@ final class MixEngine {
     @ObservationIgnored private var sampleRates: [Deck: Double] = [:]
     @ObservationIgnored private var releases: [Deck: () -> Void] = [:]
     @ObservationIgnored private var paths: [Deck: String] = [:]
+    /// Four stem player nodes per deck, all summing into the deck's `inputMixer` (so they ride the
+    /// same tempo/pitch/effect/crossfader chain as the main file). Idle until stem mode wires real
+    /// files; their burn-folder scope is held in `stemReleases`.
+    @ObservationIgnored private var stemPlayers: [Deck: [String: AVAudioPlayerNode]] = [:]
+    @ObservationIgnored private var stemFiles: [Deck: [String: AVAudioFile]] = [:]
+    @ObservationIgnored private var stemReleases: [Deck: () -> Void] = [:]
     #if os(iOS)
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     #endif
@@ -232,6 +247,17 @@ final class MixEngine {
             connectChain(d, nodes: (inputMixer, tp, comp, filter, reverb, flanger))
             players[d] = player; inputMixers[d] = inputMixer; timePitches[d] = tp; comps[d] = comp
             filters[d] = filter; reverbs[d] = reverb; flangers[d] = flanger
+            // Four stem player nodes summing into the SAME inputMixer → they pass through the deck's
+            // tempo/pitch/effects/crossfader exactly like the main file. Idle (canonical format) until
+            // stem mode wires real files, which reconnects each at its own file format.
+            var stemNodes: [String: AVAudioPlayerNode] = [:]
+            for name in Self.stemNames {
+                let sn = AVAudioPlayerNode()
+                engine.attach(sn)
+                engine.connect(sn, to: inputMixer, format: canonical)
+                stemNodes[name] = sn
+            }
+            stemPlayers[d] = stemNodes
         }
         engine.prepare()
         // Soft-fail: no audio device (e.g. a headless CI / unit-test host) leaves the graph unbuilt
@@ -255,6 +281,9 @@ final class MixEngine {
         if built { engine.stop() }
         releases[.a]?(); releases[.a] = nil
         releases[.b]?(); releases[.b] = nil
+        stemReleases[.a]?(); stemReleases[.a] = nil
+        stemReleases[.b]?(); stemReleases[.b] = nil
+        stemFiles = [:]
         mutate(.a) { $0.loaded = nil; $0.startMs = nil }
         mutate(.b) { $0.loaded = nil; $0.startMs = nil }
         #if os(iOS)
@@ -317,7 +346,11 @@ final class MixEngine {
             $0.isPlaying = false
             $0.rate = 1.0
             $0.pitch = 0.0
+            $0.stemMode = false       // a fresh track starts in single-file mode
+            $0.stemMuted = []
+            $0.stemVol = [:]
         }
+        unwireStems(deck)             // drop the prior track's stem files + scope
         setDuration(deck, Double(count) / sr)
         setPosition(deck, 0)
         applyRate(deck); applyPitch(deck)
@@ -328,9 +361,8 @@ final class MixEngine {
     func play(_ deck: Deck) {
         guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
         ensureEngine()
-        guard let player = players[deck] else { return }
         if !engine.isRunning { try? engine.start() }
-        player.play()
+        if stemActive(deck) { startStems(deck) } else { players[deck]?.play() }
         mutate(deck) { $0.isPlaying = true }
         refreshTransport()
         startTickIfNeeded()
@@ -344,7 +376,7 @@ final class MixEngine {
     /// Stop a deck's player WITHOUT ending an active auto-mix — for the auto crossfade machine's own
     /// internal "retire the outgoing deck" step (the public `pause` ends the auto-mix).
     private func silence(_ deck: Deck) {
-        players[deck]?.pause()              // keeps the scheduled position
+        pauseActiveNodes(deck)              // keeps the scheduled position (main + any stems)
         mutate(deck) { $0.isPlaying = false }
         refreshTransport()
     }
@@ -354,14 +386,17 @@ final class MixEngine {
     func playBoth() {
         ensureEngine()
         if !engine.isRunning { try? engine.start() }
-        for d in Deck.allCases where state(d).loaded != nil { players[d]?.play(); mutate(d) { $0.isPlaying = true } }
+        for d in Deck.allCases where state(d).loaded != nil {
+            if stemActive(d) { startStems(d) } else { players[d]?.play() }
+            mutate(d) { $0.isPlaying = true }
+        }
         refreshTransport()
         startTickIfNeeded()
     }
 
     func pauseBoth() {
         if autoMixing { endAutoLoop() }     // a manual master-Pause during Auto-DJ ends it
-        for d in Deck.allCases { players[d]?.pause(); mutate(d) { $0.isPlaying = false } }
+        for d in Deck.allCases { pauseActiveNodes(d); mutate(d) { $0.isPlaying = false } }
         refreshTransport()
     }
 
@@ -369,16 +404,23 @@ final class MixEngine {
 
     /// Return a deck to the BEGINNING (its window's start frame) and resume if it was playing.
     func restart(_ deck: Deck) {
-        guard built, let file = files[deck], let player = players[deck],
-              let start = startFrames[deck], let end = endFrames[deck], end > start else { return }
         let was = state(deck).isPlaying
-        player.stop()
-        player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(end - start),
-                               at: nil, completionHandler: nil)
-        setPosition(deck, 0)
-        if was {
-            if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
-            player.play(); mutate(deck) { $0.isPlaying = true }
+        if stemActive(deck) {                              // stem mode: rewind + re-sync the 4 stems
+            stopStemNodes(deck)
+            guard scheduleStems(deck, fromSeconds: 0) else { return }
+            setPosition(deck, 0)
+            if was { startStems(deck) }
+        } else {
+            guard built, let file = files[deck], let player = players[deck],
+                  let start = startFrames[deck], let end = endFrames[deck], end > start else { return }
+            player.stop()
+            player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(end - start),
+                                   at: nil, completionHandler: nil)
+            setPosition(deck, 0)
+            if was {
+                if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
+                player.play(); mutate(deck) { $0.isPlaying = true }
+            }
         }
         refreshTransport()
         startTickIfNeeded()
@@ -395,6 +437,8 @@ final class MixEngine {
             $0.volume = 1.0
             $0.compressor = false; $0.reverb = false; $0.flanger = false; $0.filter = false
             $0.compStrength = 0.5; $0.reverbStrength = 0.5; $0.flangerStrength = 0.5; $0.filterStrength = 0.5
+            $0.stemMuted = []     // un-mute + re-level every stem (keeps stem mode itself)
+            $0.stemVol = [:]
         }
         applyRate(deck); applyPitch(deck)
         for e in Effect.allCases { applyEffect(e, on: deck) }
@@ -405,21 +449,28 @@ final class MixEngine {
     /// Seek to an absolute SOURCE position (seconds from the song's start). Sample-accurate, bounded
     /// to the song's window so an analog fallback can't scrub past its slice into the next song.
     func seek(_ deck: Deck, toSeconds sec: Double) {
-        guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
-              let start = startFrames[deck], let end = endFrames[deck] else { return }
         let clamped = min(max(0, sec), duration(deck))
-        let frame = min(max(start, start + AVAudioFramePosition(clamped * sr)), end)
-        let count = end - frame
         let was = state(deck).isPlaying
-        player.stop()
-        if count > 0 {
-            player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
-                                   at: nil, completionHandler: nil)
-        }
-        setPosition(deck, clamped)
-        if was, count > 0 {
-            if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
-            player.play(); mutate(deck) { $0.isPlaying = true }
+        if stemActive(deck) {                              // stem mode: re-seek + re-sync the 4 stems
+            stopStemNodes(deck)
+            let ok = scheduleStems(deck, fromSeconds: clamped)
+            setPosition(deck, clamped)
+            if was, ok { startStems(deck) }
+        } else {
+            guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
+                  let start = startFrames[deck], let end = endFrames[deck] else { return }
+            let frame = min(max(start, start + AVAudioFramePosition(clamped * sr)), end)
+            let count = end - frame
+            player.stop()
+            if count > 0 {
+                player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
+                                       at: nil, completionHandler: nil)
+            }
+            setPosition(deck, clamped)
+            if was, count > 0 {
+                if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
+                player.play(); mutate(deck) { $0.isPlaying = true }
+            }
         }
         refreshTransport()
         startTickIfNeeded()
@@ -598,6 +649,128 @@ final class MixEngine {
         if s != autoStatus { autoStatus = s }
     }
 
+    // MARK: - Stems (per-deck stem-mode playback + grid)
+
+    /// Stem mode is ON for this deck (the grid shows; Play drives the 4 stems).
+    func stemModeOn(_ deck: Deck) -> Bool { state(deck).stemMode }
+    /// Stem mode is on AND the 4 stem files are wired (playback actually routes to stems).
+    func stemActive(_ deck: Deck) -> Bool { state(deck).stemMode && (stemFiles[deck]?.isEmpty == false) }
+    func isStemMuted(_ name: String, on deck: Deck) -> Bool { state(deck).stemMuted.contains(name) }
+    func stemVolume(_ name: String, on deck: Deck) -> Double { state(deck).stemVol[name] ?? 1.0 }
+
+    /// Enable / disable stem mode for a deck. Enabling resolves the BURNED-local 4 stems (the caller
+    /// burns them first — see `BurnStore.burnStems`) and routes the deck through them, still THROUGH
+    /// the deck's effect chain + crossfader; disabling returns to the single mixed file. Switches live
+    /// when the deck is already playing (a brief re-schedule gap). No-op (stays off) when the track
+    /// has no locally-burned stems.
+    func setStemMode(_ on: Bool, on deck: Deck) {
+        guard state(deck).loaded != nil else { return }
+        ensureEngine()
+        let was = state(deck).isPlaying
+        let pos = position(deck)
+        if on {
+            guard wireStems(deck) else { return }    // no local stems → can't enter stem mode
+            players[deck]?.stop()                    // silence the single mixed file
+            mutate(deck) { $0.stemMode = true }
+            _ = scheduleStems(deck, fromSeconds: pos)
+            applyStemGains(deck)
+            if was { startStems(deck) }
+        } else {
+            stopStemNodes(deck)
+            mutate(deck) { $0.stemMode = false }
+            // Re-prime (and resume) the single mixed file from the same spot.
+            guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
+                  let start = startFrames[deck], let end = endFrames[deck] else { refreshTransport(); return }
+            let frame = min(max(start, start + AVAudioFramePosition(pos * sr)), end)
+            let count = end - frame
+            player.stop()
+            if count > 0 {
+                player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
+                                       at: nil, completionHandler: nil)
+                if was { if !engine.isRunning { try? engine.start() }; player.play() }
+            }
+        }
+        refreshTransport()
+    }
+
+    func toggleStemMute(_ name: String, on deck: Deck) {
+        mutate(deck) { if $0.stemMuted.contains(name) { $0.stemMuted.remove(name) } else { $0.stemMuted.insert(name) } }
+        applyStemGains(deck)
+    }
+
+    func setStemVolume(_ name: String, _ v: Double, on deck: Deck) {
+        mutate(deck) { $0.stemVol[name] = min(max(v, 0), 1) }
+        applyStemGains(deck)
+    }
+
+    /// Resolve + open the deck track's 4 burned stem files and reconnect each stem node at the file's
+    /// format (only that link; the chain stays canonical). Holds the burn-folder scope. Returns false
+    /// when the track isn't stem-burned locally / a file won't open.
+    private func wireStems(_ deck: Deck) -> Bool {
+        guard built, let songId = state(deck).loaded?.songId, let inputMixer = inputMixers[deck],
+              let resolved = burns.localStemURLs(forSong: songId) else { return false }
+        var opened: [String: AVAudioFile] = [:]
+        for (name, url) in resolved.urls {
+            if let f = try? AVAudioFile(forReading: url) { opened[name] = f }
+        }
+        guard opened.count == Self.stemNames.count else { resolved.release?(); return false }
+        for (name, file) in opened {
+            guard let node = stemPlayers[deck]?[name] else { continue }
+            node.stop()
+            engine.connect(node, to: inputMixer, format: file.processingFormat)
+        }
+        stemReleases[deck]?()              // release a prior wiring's scope, hold the new one
+        stemReleases[deck] = resolved.release
+        stemFiles[deck] = opened
+        return true
+    }
+
+    /// Tear down a deck's stem wiring (stop nodes, drop files, release the burn-folder scope).
+    private func unwireStems(_ deck: Deck) {
+        stopStemNodes(deck)
+        stemFiles[deck] = nil
+        stemReleases[deck]?(); stemReleases[deck] = nil
+    }
+
+    /// Schedule the 4 stem nodes from `posSec` (song-relative). Returns whether anything scheduled.
+    private func scheduleStems(_ deck: Deck, fromSeconds posSec: Double) -> Bool {
+        guard let files = stemFiles[deck], !files.isEmpty, let nodes = stemPlayers[deck] else { return false }
+        var any = false
+        for (name, node) in nodes {
+            node.stop()
+            guard let file = files[name] else { continue }
+            let sr = file.processingFormat.sampleRate
+            let startFrame = min(max(0, AVAudioFramePosition(max(0, posSec) * sr)), file.length)
+            let count = file.length - startFrame
+            guard count > 0 else { continue }
+            node.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(count),
+                                 at: nil, completionHandler: nil)
+            any = true
+        }
+        return any
+    }
+
+    /// Start the deck's stem nodes at ONE shared host time → sample-accurate sync.
+    private func startStems(_ deck: Deck) {
+        if !engine.isRunning { try? engine.start() }
+        let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.06))
+        for n in (stemPlayers[deck] ?? [:]).values { n.play(at: when) }
+    }
+
+    private func stopStemNodes(_ deck: Deck) { for n in (stemPlayers[deck] ?? [:]).values { n.stop() } }
+
+    /// Pause a deck's ACTIVE voices (the single file + any stems) keeping their scheduled position.
+    private func pauseActiveNodes(_ deck: Deck) {
+        players[deck]?.pause()
+        for n in (stemPlayers[deck] ?? [:]).values { n.pause() }
+    }
+
+    /// Stop a deck's ACTIVE voices (resets their scheduled position).
+    private func stopActiveNodes(_ deck: Deck) {
+        players[deck]?.stop()
+        for n in (stemPlayers[deck] ?? [:]).values { n.stop() }
+    }
+
     // MARK: - Readers (for the UI)
 
     func loaded(_ deck: Deck) -> LoadedTrack? { state(deck).loaded }
@@ -630,11 +803,32 @@ final class MixEngine {
     private func refreshTransport() { isRunning = deckA.isPlaying || deckB.isPlaying }
 
     /// Equal-power crossfade written onto each deck's player volume (× the deck's own volume trim).
+    /// Also pushes the same deck gain onto the deck's stem nodes (so the crossfader + Vol move the
+    /// whole stem mix), scaled per-stem and zeroed when muted.
     private func applyMixGains() {
         guard built else { return }
+        players[.a]?.volume = deckGain(.a)
+        players[.b]?.volume = deckGain(.b)
+        applyStemGains(.a)
+        applyStemGains(.b)
+    }
+
+    /// The deck's player gain = its own volume trim × the equal-power crossfade factor.
+    private func deckGain(_ deck: Deck) -> Float {
         let v = Float(crossfader)
-        players[.a]?.volume = Float(deckA.volume) * cosf(.pi / 2 * v)
-        players[.b]?.volume = Float(deckB.volume) * cosf(.pi / 2 * (1 - v))
+        let cf = deck == .a ? cosf(.pi / 2 * v) : cosf(.pi / 2 * (1 - v))
+        return Float(state(deck).volume) * cf
+    }
+
+    /// Push the deck gain onto each stem node, scaled by the stem's own volume and zeroed when muted.
+    /// Harmless when not in stem mode (those nodes aren't scheduled → silent regardless).
+    private func applyStemGains(_ deck: Deck) {
+        guard let nodes = stemPlayers[deck] else { return }
+        let g = deckGain(deck)
+        let st = state(deck)
+        for (name, node) in nodes {
+            node.volume = st.stemMuted.contains(name) ? 0 : g * Float(st.stemVol[name] ?? 1.0)
+        }
     }
 
     private func applyRate(_ deck: Deck) { timePitches[deck]?.rate = Float(state(deck).rate) }
@@ -755,12 +949,12 @@ final class MixEngine {
         for d in Deck.allCases where state(d).isPlaying {
             let dur = duration(d)
             guard dur > 0 else {                 // nothing / zero-length loaded — don't run the playhead forever
-                if !autoMixing { mutate(d) { $0.isPlaying = false }; players[d]?.stop() }
+                if !autoMixing { mutate(d) { $0.isPlaying = false }; stopActiveNodes(d) }
                 continue
             }
             let pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
             setPosition(d, pos)
-            if pos >= dur, !autoMixing { mutate(d) { $0.isPlaying = false }; players[d]?.stop() }
+            if pos >= dur, !autoMixing { mutate(d) { $0.isPlaying = false }; stopActiveNodes(d) }
         }
         refreshTransport()
         if autoMixing { autoFire() }

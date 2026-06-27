@@ -92,6 +92,7 @@ final class BurnStore {
         var outOfSpace = false  // disk filled — remaining items aborted
         var folderUnavailable = false // the chosen burnt-music folder couldn't be written
         var stopped = false     // the user pressed STOP — remaining items not attempted
+        var stemmedSongs = 0    // songs whose 4 stems are now fully on-disk (offline-mixable)
     }
 
     // MARK: Observed state
@@ -699,9 +700,62 @@ final class BurnStore {
             await exportAnalogCuts(unique, dir: dir)
         }
 
+        // STEM BURN: pull every server-stemmed song's 4 stems into the burn folder (idempotent), so a
+        // burned collection plays AND mixes ENTIRELY offline. Runs for both paths; a re-burn of an
+        // already-audio-burned collection picks up stems that became available since. Skipped on STOP.
+        if !result.stopped && !Task.isCancelled {
+            result.stemmedSongs = await burnCollectionStems(unique, dir: dir)
+        }
+
         save()
         progress = nil
         return result
+    }
+
+    /// Download every server-stemmed song's 4 stems (the ones missing on disk) into the burn folder,
+    /// under the deterministic `stem-<songId>-<part>.mp3` names the Mix decks + audition panel read.
+    /// Drives the single "Burning stems X of N" pill, is STOP-aware, idempotent (skips present stems),
+    /// and best-effort (a stem failure never fails the burn). Returns how many songs ended fully
+    /// stemmed on disk (so a burned collection is offline-mixable). Only songs the server has stemmed
+    /// (`manifest.stemVersion`) are considered — burning never triggers separation, only fetches it.
+    private func burnCollectionStems(_ songs: [(id: String, title: String, artist: String)], dir: URL) async -> Int {
+        let stemmed = songs.filter { rips.manifest[$0.id]?.stemVersion != nil }
+        guard !stemmed.isEmpty else { return 0 }
+        let pending = stemmed.filter { !stemFilesPresent($0.id, dir: dir) }
+        var done = 0
+        for s in pending {
+            if stopRequested || Task.isCancelled { break }
+            progress = Progress(done: done, total: pending.count, label: "Stems · \(s.artist) — \(s.title)")
+            await downloadStems(songId: s.id, dir: dir)
+            done += 1
+        }
+        // Count every stemmed song now fully present (the just-fetched ones + any already on disk).
+        return stemmed.reduce(into: 0) { acc, s in if stemFilesPresent(s.id, dir: dir) { acc += 1 } }
+    }
+
+    /// Download the 4 stems for one song into `dir` (skipping any already on disk). Best-effort.
+    private func downloadStems(songId: String, dir: URL) async {
+        guard let remote = rips.stemURLs(forSong: songId) else { return }
+        for name in Self.stemNames {
+            if stopRequested || Task.isCancelled { return }
+            guard let url = remote[name] else { return }
+            let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
+            if FileManager.default.fileExists(atPath: dest.path) { continue }   // idempotent
+            do {
+                let data = try await rips.downloadBytes(url)
+                try data.write(to: dest, options: .atomic)
+            } catch { return }   // a stem failure never fails the burn (album audio still plays)
+        }
+    }
+
+    /// All 4 stem files for a song present on disk in `dir`?
+    private func stemFilesPresent(_ songId: String, dir: URL) -> Bool {
+        for name in Self.stemNames {
+            if !FileManager.default.fileExists(atPath: dir.appendingPathComponent(Self.stemFileName(songId, name)).path) {
+                return false
+            }
+        }
+        return true
     }
 
     /// BACKGROUND-path post-pass: export EVERY analog song's cut (`cuts/<songId>.mp3`) into the

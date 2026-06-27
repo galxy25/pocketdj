@@ -204,6 +204,7 @@ private struct DeckView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(BurnStore.self) private var burns
+    @Environment(RipsStore.self) private var rips
 
     let deck: MixEngine.Deck
     let engine: MixEngine
@@ -224,6 +225,9 @@ private struct DeckView: View {
 
     private var loaded: MixEngine.LoadedTrack? { engine.loaded(deck) }
     private var a11y: String { "deck-\(deck.rawValue)" }      // "deck-A" / "deck-B"
+    /// The loaded track has server-side stems (⇒ show the stem-mode toggle; tapping it burns the
+    /// stems locally if needed, then enters stem mode).
+    private var stemmed: Bool { loaded.map { rips.isStemmed($0.songId) } ?? false }
 
     /// iPhone portrait (cramped two-deck width) → render Lead/Sync icon-only; macOS/iPad keep labels.
     private var compactControls: Bool {
@@ -250,6 +254,7 @@ private struct DeckView: View {
             tempoSlider                                  // live time-stretch (pitch preserved)
             pitchSlider                                  // live pitch shift (tempo preserved)
             effectsGrid                                  // tap = toggle · long-press / right-click = strength
+            if engine.stemActive(deck) { stemGrid }      // 2×2 stem pads — only while in stem mode
             volSlider
             playButton
         }
@@ -394,6 +399,11 @@ private struct DeckView: View {
             .disabled(!engine.canSync(deck))
             .help("Match this deck's tempo to the Lead deck (downbeat alignment is best-effort)")
             .accessibilityIdentifier("\(a11y)-sync")
+            // Stem mode (between Sync and Reset) — only for a track that HAS stems.
+            if stemmed {
+                StemModeButton(deck: deck, engine: engine, songId: loaded?.songId ?? "",
+                               compact: compactControls, a11y: "\(a11y)-stemmode")
+            }
             Spacer()
             Button { engine.resetDeck(deck) } label: {
                 Image(systemName: "arrow.counterclockwise").font(.callout)
@@ -443,6 +453,29 @@ private struct DeckView: View {
                              onToggle: { engine.setEffect(fx, enabled: !engine.isEnabled(fx, on: deck), on: deck) },
                              onStrength: { engine.setEffectStrength(fx, $0, on: deck) })
             }
+        }
+    }
+
+    // 2×2 stem grid (only shown in stem mode): TAP a pad = mute (greys out); long-press / right-click
+    // = that stem's volume. Coloured per stem (red bass · yellow drums · green other · purple vocals).
+    private var stemGrid: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)],
+                  spacing: 6) {
+            ForEach(MixEngine.stemNames, id: \.self) { name in
+                StemPad(deck: deck, engine: engine, stem: name,
+                        color: Self.stemColor(name), a11y: "\(a11y)-stem-\(name)")
+            }
+        }
+    }
+
+    /// The user-specified stem highlight colours.
+    private static func stemColor(_ name: String) -> Color {
+        switch name {
+        case "bass":   return .red
+        case "drums":  return .yellow
+        case "other":  return .green
+        case "vocals": return .purple
+        default:       return Theme.accent
         }
     }
 
@@ -507,21 +540,38 @@ private struct EffectButton: View {
     let onToggle: () -> Void
     let onStrength: (Double) -> Void
 
-    /// Showing the strength slider (vs the labelled button)?
+    /// In-place flip (landscape / iPad / macOS): showing the strength slider vs the labelled button.
     @State private var editing = false
     /// Bumped on every interaction (flip-in + each slider change) to (re)start the 3 s idle timer.
     @State private var interaction = 0
+    /// iPhone-portrait path: present the strength slider as a fixed-width POPOVER (room to drag).
+    @State private var showPopover = false
+
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
+    /// iPhone portrait — the chip is too narrow to drag an in-place slider, so use a popover there.
+    /// Landscape / iPad / macOS keep the (verified, roomy enough) in-place flip.
+    private var portraitPhone: Bool { hSize == .compact && vSize == .regular }
+    #else
+    private var portraitPhone: Bool { false }
+    #endif
 
     var body: some View {
         Group {
-            if editing { sliderFace } else { buttonFace }
+            if editing && !portraitPhone { sliderFace } else { buttonFace }
         }
         .animation(.easeInOut(duration: 0.15), value: editing)
-        // Idle auto-revert: each interaction restarts this; 3 s with no new interaction flips back.
+        // In-place flip idle auto-revert: each interaction restarts this; 3 s idle flips back.
         .task(id: interaction) {
             guard editing else { return }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled { editing = false }
+        }
+        .popover(isPresented: $showPopover, arrowEdge: .top) {
+            ChipStrengthPopover(title: effect.label, systemImage: effect.icon, tint: Theme.accent,
+                                value: strength, a11y: "\(a11y)-strength",
+                                presented: $showPopover, onChange: onStrength)
         }
     }
 
@@ -542,11 +592,11 @@ private struct EffectButton: View {
             .strokeBorder(isOn ? Theme.accent : Theme.border, lineWidth: 1))
         .foregroundStyle(isOn ? Theme.accent : Theme.fgDim)
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        // Secondary gesture flips STRAIGHT to the slider — no "Adjust strength…" menu step.
+        // Secondary gesture reveals the strength slider STRAIGHT away — no "Adjust strength…" step.
         .onTapGesture { onToggle() }
-        .onLongPressGesture(minimumDuration: 0.4) { flipToSlider() }
+        .onLongPressGesture(minimumDuration: 0.4) { reveal() }
         #if os(macOS)
-        .overlay(SecondaryClick { flipToSlider() })
+        .overlay(SecondaryClick { reveal() })
         #endif
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(effect.label)
@@ -573,10 +623,47 @@ private struct EffectButton: View {
         .foregroundStyle(Theme.accent)
     }
 
-    private func flipToSlider() {
+    private func reveal() {
         if !isOn { onToggle() }     // dialling strength should be audible → enable on reveal
-        editing = true
-        interaction += 1
+        if portraitPhone { showPopover = true }       // fixed-width popover (draggable in portrait)
+        else { editing = true; interaction += 1 }     // in-place flip (landscape / iPad / macOS)
+    }
+}
+
+/// A fixed-width popover slider — used on iPhone PORTRAIT to dial an effect's strength or a stem's
+/// volume, wide enough to actually drag (the in-place chip flip is too narrow there). Dismisses on
+/// an outside tap (native popover) OR after 3 s with no slider interaction.
+private struct ChipStrengthPopover: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let value: Double
+    let a11y: String
+    @Binding var presented: Bool
+    let onChange: (Double) -> Void
+    @State private var interaction = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold)).foregroundStyle(tint)
+            HStack(spacing: 8) {
+                Slider(value: Binding(get: { value }, set: { onChange($0); interaction += 1 }), in: 0...1)
+                    .tint(tint)
+                    .accessibilityIdentifier(a11y)
+                Text("\(Int((value * 100).rounded()))%")
+                    .font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
+                    .frame(width: 40, alignment: .trailing)
+            }
+        }
+        .padding(16)
+        .frame(width: 250)
+        .presentationCompactAdaptation(.popover)       // stay a popover on iPhone (not a sheet)
+        // Auto-dismiss after 3 s idle; each drag bumps `interaction` and restarts the timer.
+        .task(id: interaction) {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { presented = false }
+        }
     }
 }
 
@@ -602,6 +689,165 @@ private struct SecondaryClick: NSViewRepresentable {
     }
 }
 #endif
+
+/// The stem-mode toggle (between Sync and Reset, shown only for a track that HAS stems). TAP enters
+/// stem mode — burning the 4 stems locally first if they aren't already (a brief spinner) — or exits
+/// it. Accent-filled + "selected" while on.
+private struct StemModeButton: View {
+    let deck: MixEngine.Deck
+    let engine: MixEngine
+    let songId: String
+    let compact: Bool          // iPhone portrait → icon-only (cramped two-deck row)
+    let a11y: String
+    @Environment(BurnStore.self) private var burns
+    @State private var burning = false
+
+    var body: some View {
+        let on = engine.stemModeOn(deck)
+        Button { toggle() } label: {
+            label(on: on)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(on ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(on ? Theme.accent : Theme.border, lineWidth: 1))
+                .foregroundStyle(on ? Theme.accent : Theme.fgDim)
+        }
+        .buttonStyle(.plain)
+        .disabled(burning || songId.isEmpty)
+        .help(on ? "Stem mode on — tap to exit"
+                 : "Split this track into stems (vocals · drums · bass · other) for live mixing")
+        .accessibilityIdentifier(a11y)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    @ViewBuilder private func label(on: Bool) -> some View {
+        if burning {
+            HStack(spacing: 4) { ProgressView().controlSize(.mini); if !compact { Text("Stems") } }
+        } else if compact {
+            Image(systemName: "square.split.2x2")
+        } else {
+            Label("Stems", systemImage: "square.split.2x2")
+        }
+    }
+
+    private func toggle() {
+        if engine.stemModeOn(deck) { engine.setStemMode(false, on: deck); return }
+        // Stems must be BURNED locally to play (no streaming). Burn first if needed, then enter.
+        if burns.stemsBurned(forSong: songId) { engine.setStemMode(true, on: deck); return }
+        burning = true
+        Task {
+            _ = await burns.burnStems(forSong: songId)
+            burning = false
+            engine.setStemMode(true, on: deck)
+        }
+    }
+}
+
+/// One pad in a deck's 2×2 stem grid (visible only in stem mode). TAP toggles MUTE (the pad greys
+/// out); LONG-PRESS (iOS) / RIGHT-CLICK (macOS) dials that stem's VOLUME — an in-place flip on
+/// landscape / iPad / macOS, a fixed-width popover on iPhone portrait (room to drag). Highlighted in
+/// the stem's colour when audible.
+private struct StemPad: View {
+    let deck: MixEngine.Deck
+    let engine: MixEngine
+    let stem: String
+    let color: Color
+    let a11y: String
+
+    @State private var editing = false
+    @State private var interaction = 0
+    @State private var showPopover = false
+
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
+    private var portraitPhone: Bool { hSize == .compact && vSize == .regular }
+    #else
+    private var portraitPhone: Bool { false }
+    #endif
+
+    private var muted: Bool { engine.isStemMuted(stem, on: deck) }
+
+    var body: some View {
+        Group {
+            if editing && !portraitPhone { sliderFace } else { padFace }
+        }
+        .animation(.easeInOut(duration: 0.15), value: editing)
+        .task(id: interaction) {
+            guard editing else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { editing = false }
+        }
+        .popover(isPresented: $showPopover, arrowEdge: .top) {
+            ChipStrengthPopover(title: stem.capitalized, systemImage: Self.icon(stem), tint: color,
+                                value: engine.stemVolume(stem, on: deck), a11y: "\(a11y)-volume",
+                                presented: $showPopover,
+                                onChange: { engine.setStemVolume(stem, $0, on: deck) })
+        }
+    }
+
+    private var padFace: some View {
+        HStack(spacing: 4) {
+            Image(systemName: muted ? "speaker.slash.fill" : Self.icon(stem))
+            Text(stem.capitalized).lineLimit(1)
+        }
+        .font(.caption.weight(.medium))
+        .frame(maxWidth: .infinity, minHeight: 18)
+        .padding(.vertical, 7)
+        .background(muted ? Theme.bgOverlay : color.opacity(0.28),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .strokeBorder(muted ? Theme.border : color, lineWidth: 1))
+        .foregroundStyle(muted ? Theme.fgDim : color)
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .onTapGesture { engine.toggleStemMute(stem, on: deck) }
+        .onLongPressGesture(minimumDuration: 0.4) { reveal() }
+        #if os(macOS)
+        .overlay(SecondaryClick { reveal() })
+        #endif
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(stem.capitalized)
+        .accessibilityValue(muted ? "Muted" : "On")
+        .accessibilityIdentifier(a11y)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(muted ? [] : .isSelected)
+    }
+
+    private var sliderFace: some View {
+        HStack(spacing: 6) {
+            Image(systemName: Self.icon(stem))
+            Slider(value: Binding(get: { engine.stemVolume(stem, on: deck) },
+                                  set: { engine.setStemVolume(stem, $0, on: deck); interaction += 1 }),
+                   in: 0...1)
+                .controlSize(.small)
+                .accessibilityIdentifier("\(a11y)-volume")
+            Text("\(Int((engine.stemVolume(stem, on: deck) * 100).rounded()))%")
+                .monospacedDigit().frame(width: 30, alignment: .trailing)
+        }
+        .font(.caption.weight(.medium))
+        .frame(maxWidth: .infinity, minHeight: 18)
+        .padding(.vertical, 7).padding(.horizontal, 8)
+        .background(color.opacity(0.18), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(color, lineWidth: 1))
+        .foregroundStyle(color)
+    }
+
+    private func reveal() {
+        if portraitPhone { showPopover = true }            // fixed-width popover (draggable in portrait)
+        else { editing = true; interaction += 1 }          // in-place flip (landscape / iPad / macOS)
+    }
+
+    static func icon(_ stem: String) -> String {
+        switch stem {
+        case "vocals": return "music.mic"
+        case "drums":  return "metronome"
+        case "bass":   return "waveform.path"
+        default:       return "music.note"
+        }
+    }
+}
 
 /// The per-deck playback-position scrubber (under the waveform). A SEPARATE view so the ~10 Hz
 /// playhead updates re-render only this slider, not the whole deck. Drag to seek (sample-accurate).

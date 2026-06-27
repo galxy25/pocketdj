@@ -102,6 +102,65 @@ final class BurnStoreTests: XCTestCase {
         cleanBurnedFiles(["sng_1.mp3"])
     }
 
+    // MARK: Stems — a collection burn pulls every stemmed song's stems for offline mixing
+
+    func testBurnFetchesStemsForStemmedSongs() async {
+        let names = ["sng_1.mp3", "stem-sng_1-vocals.mp3", "stem-sng_1-drums.mp3",
+                     "stem-sng_1-bass.mp3", "stem-sng_1-other.mp3"]
+        cleanBurnedFiles(names)
+        let rips = makeRips(); let burns = makeBurns(rips)
+        rips.setManifest([
+            "sng_1": .init(key: "rips/sng_1.mp3", source: "digital",
+                           stems: RipsStore.Stems(vocals: "rips/stems/sng_1/vocals.mp3",
+                                                  drums: "rips/stems/sng_1/drums.mp3",
+                                                  bass: "rips/stems/sng_1/bass.mp3",
+                                                  other: "rips/stems/sng_1/other.mp3"),
+                           stemVersion: 1),
+        ])
+        let r = await burns.burn([(id: "sng_1", title: "One", artist: "A")])
+        XCTAssertEqual(r.burned, 1)
+        XCTAssertEqual(r.stemmedSongs, 1, "the stemmed song's 4 stems are pulled into the burn folder")
+        XCTAssertTrue(burns.stemsBurned(forSong: "sng_1"))
+        XCTAssertNotNil(burns.localStemURLs(forSong: "sng_1"))
+        cleanBurnedFiles(names)
+    }
+
+    /// A re-burn of an already-audio-burned collection picks up stems that became available since.
+    func testReburnPicksUpNewlyAvailableStems() async {
+        let names = ["sng_2.mp3", "stem-sng_2-vocals.mp3", "stem-sng_2-drums.mp3",
+                     "stem-sng_2-bass.mp3", "stem-sng_2-other.mp3"]
+        cleanBurnedFiles(names)
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let song = (id: "sng_2", title: "Two", artist: "A")
+        // First burn: audio only, no stems yet.
+        rips.setManifest(["sng_2": .init(key: "rips/sng_2.mp3", source: "digital")])
+        _ = await burns.burn([song])
+        XCTAssertFalse(burns.stemsBurned(forSong: "sng_2"))
+        // Stems become available server-side; a re-burn (audio fresh-skip) pulls them.
+        rips.setManifest([
+            "sng_2": .init(key: "rips/sng_2.mp3", source: "digital",
+                           stems: RipsStore.Stems(vocals: "rips/stems/sng_2/vocals.mp3",
+                                                  drums: "rips/stems/sng_2/drums.mp3",
+                                                  bass: "rips/stems/sng_2/bass.mp3",
+                                                  other: "rips/stems/sng_2/other.mp3"),
+                           stemVersion: 1),
+        ])
+        let r = await burns.burn([song])
+        XCTAssertEqual(r.stemmedSongs, 1)
+        XCTAssertTrue(burns.stemsBurned(forSong: "sng_2"))
+        cleanBurnedFiles(names)
+    }
+
+    func testBurnSkipsStemsForUnstemmedSongs() async {
+        cleanBurnedFiles(["sng_9.mp3"])
+        let rips = makeRips(); let burns = makeBurns(rips)
+        rips.setManifest(["sng_9": .init(key: "rips/sng_9.mp3", source: "digital")])   // not stemmed
+        let r = await burns.burn([(id: "sng_9", title: "Nine", artist: "A")])
+        XCTAssertEqual(r.stemmedSongs, 0)
+        XCTAssertFalse(burns.stemsBurned(forSong: "sng_9"))
+        cleanBurnedFiles(["sng_9.mp3"])
+    }
+
     // MARK: Partial success — not-ripped songs are skipped, not failed
 
     func testBurnSkipsNotRippedSongs() async {

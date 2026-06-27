@@ -284,6 +284,45 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(e.rate(.b), 1.28, accuracy: 1e-6)   // 128/100 grid, not 120/99 catalog
     }
 
+    // MARK: - Stems (per-deck stem mode / mute / volume)
+
+    func testStemNamesAreTheFourCanonical() {
+        XCTAssertEqual(MixEngine.stemNames.count, 4)
+        XCTAssertEqual(Set(MixEngine.stemNames), ["vocals", "drums", "bass", "other"])
+    }
+
+    func testStemStateDefaultsOff() {
+        let e = makeEngine()
+        XCTAssertFalse(e.stemModeOn(.a))
+        XCTAssertFalse(e.stemActive(.a))                       // no stems wired
+        XCTAssertFalse(e.isStemMuted("vocals", on: .a))
+        XCTAssertEqual(e.stemVolume("vocals", on: .a), 1.0)
+    }
+
+    func testStemMuteTogglesPerDeck() {
+        let e = makeEngine()
+        e.toggleStemMute("drums", on: .a)
+        XCTAssertTrue(e.isStemMuted("drums", on: .a))
+        XCTAssertFalse(e.isStemMuted("drums", on: .b), "mute is per-deck")
+        e.toggleStemMute("drums", on: .a)
+        XCTAssertFalse(e.isStemMuted("drums", on: .a))
+    }
+
+    func testStemVolumeClampsZeroToOne() {
+        let e = makeEngine()
+        e.setStemVolume("bass", 1.5, on: .a);  XCTAssertEqual(e.stemVolume("bass", on: .a), 1.0)
+        e.setStemVolume("bass", -0.3, on: .a); XCTAssertEqual(e.stemVolume("bass", on: .a), 0.0)
+        e.setStemVolume("bass", 0.4, on: .a);  XCTAssertEqual(e.stemVolume("bass", on: .a), 0.4, accuracy: 1e-9)
+    }
+
+    /// No loaded track (and no burned stems) → entering stem mode is a no-op (stays off).
+    func testSetStemModeWithoutTrackStaysOff() {
+        let e = makeEngine()
+        e.setStemMode(true, on: .a)
+        XCTAssertFalse(e.stemModeOn(.a))
+        XCTAssertFalse(e.stemActive(.a))
+    }
+
     // MARK: - Helpers
 
     private func makeEngine() -> MixEngine {

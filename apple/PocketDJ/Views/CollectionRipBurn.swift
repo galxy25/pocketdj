@@ -336,6 +336,7 @@ final class CollectionRipBurnController {
                 parts = ["Couldn’t write to the burnt-music folder — check Settings"]
             } else {
                 parts = ["Burned \(r.burned) of \(r.total)"]
+                if r.stemmedSongs > 0 { parts.append("\(r.stemmedSongs) with stems") }
                 if r.notRipped > 0 { parts.append("\(r.notRipped) not yet ripped") }
                 if r.failed > 0 { parts.append("\(r.failed) failed") }
                 if r.outOfSpace { parts.append("out of space — stopped early") }
