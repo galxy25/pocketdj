@@ -78,9 +78,12 @@ final class MixEngine {
     // MARK: Tunable ranges
 
     /// Tempo multiplier range (time-stretch, pitch preserved). 1.0 = original.
-    static let rateRange: ClosedRange<Double> = 0.5...2.0
+    /// `nonisolated` so the pure, `nonisolated` tempo math (`octaveFolded` / `syncRate`) can read
+    /// it without hopping the main actor — an immutable `Sendable` constant is safe from any context
+    /// (and silences the Swift 6 "main-actor-isolated static referenced from nonisolated" error).
+    nonisolated static let rateRange: ClosedRange<Double> = 0.5...2.0
     /// Pitch range in semitones (frequency shift, tempo preserved). 0 = original.
-    static let pitchRange: ClosedRange<Double> = -12...12
+    nonisolated static let pitchRange: ClosedRange<Double> = -12...12
 
     // MARK: Observable state
 
