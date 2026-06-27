@@ -302,6 +302,10 @@ struct RowTransport: View {
     @Environment(BurnStore.self) private var burns
     let song: (id: String, title: String, artist: String)
     var startMs: Int?
+    /// SongDetail-only: when set AND this song is already stemmed, tapping the stem glyph runs
+    /// THIS (slides out the audition panel) instead of kicking off Stemify. nil everywhere else
+    /// (the glyph always stemifies there), so no other surface gains the panel.
+    var onStemGlyph: (() -> Void)? = nil
 
     @State private var busy: Busy?
     @State private var alertMessage: String?
@@ -322,6 +326,10 @@ struct RowTransport: View {
     private var stemmed: Bool { rips.isStemmed(song.id) }
     /// The stem job's phase only while actively working (not ready/error/ineligible).
     private var stemJobPhase: RipsStore.StemPhase? {
+        // Already stemmed (per the manifest) ⇒ NOT busy, even if a stale collection-stemify job
+        // entry still says "queued" (the batch path seeds .queued and never per-row updates it;
+        // the manifest is the source of truth for completion).
+        if stemmed { return nil }
         guard let j = rips.stemJobs[song.id], j.phase != .ready, j.phase != .error, j.phase != .ineligible else { return nil }
         return j.phase
     }
@@ -388,12 +396,14 @@ struct RowTransport: View {
                         }
                         .accessibilityIdentifier("row-stemify-\(song.id)")
                     } else {
-                        Button { doStemify() } label: {
+                        Button { stemGlyphTapped() } label: {
                             Image(systemName: "line.3.horizontal").font(.caption)
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(stemmed ? Theme.accent : (canAct ? Theme.fgDim : Theme.fgDim.opacity(0.4)))
-                        .disabled(!canAct || busy != nil)
+                        // Toggling the SongDetail audition panel (stemmed + `onStemGlyph` set)
+                        // needs no server — only kicking off a NEW stemify requires `canAct`.
+                        .disabled((!canAct && !(stemmed && onStemGlyph != nil)) || busy != nil)
                         .accessibilityIdentifier("row-stemify-\(song.id)")
                     }
                 }
@@ -502,6 +512,12 @@ struct RowTransport: View {
             catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
             busy = nil
         }
+    }
+
+    /// Stem-glyph tap: in SongDetail a stemmed song slides out the audition panel (`onStemGlyph`);
+    /// otherwise (any other surface, or a not-yet-stemmed song) it kicks off Stemify.
+    private func stemGlyphTapped() {
+        if stemmed, let onStemGlyph { onStemGlyph() } else { doStemify() }
     }
 
     /// Fire-and-forget Stemify for THIS song. The server rips/cuts first if needed, then

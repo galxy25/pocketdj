@@ -357,6 +357,77 @@ final class BurnStore {
         return (url, releaseClosure, false)
     }
 
+    // MARK: Stem cache (SongDetail stem-audition + future Mix stem decks)
+    //
+    // Stems are BURNED to the SAME user-managed burn folder as everything else — the user-picked
+    // security-scoped folder when one is configured (so the user can define + manage where stems
+    // land, right alongside their other burns), else the app-managed Application Support `burns/`
+    // dir. Never streamed: once auditioned, a song's stems play fully offline (and the Mix tab's
+    // stem decks reuse the same local-file model). Deterministic names; existence-checked on disk.
+    // Not tracked in the BurnItem ledger (their `stem-…` names don't match the cut/audio suffixes,
+    // so they never collide with it / its dedup / its reconcile). When the burn folder is
+    // security-scoped, the read/burn calls KEEP the scope open and hand back a `release` closure
+    // the player calls on stop (mirroring `localURLForPlayback`) — AVAudioFile must read the file
+    // for the whole session.
+
+    private static let stemNames = ["vocals", "drums", "bass", "other"]
+    private static func stemFileName(_ songId: String, _ stem: String) -> String { "stem-\(songId)-\(stem).mp3" }
+
+    /// Local URLs for ALL 4 stems iff every one already exists on disk in the ACTIVE burn folder
+    /// (user-picked when set, else Application Support). Returns the urls + a scope-release closure
+    /// (nil for app storage) the caller must invoke when done reading. nil if any stem is missing
+    /// (→ the caller burns first) or the folder is unresolvable. READ path: folder need only be
+    /// readable.
+    func localStemURLs(forSong songId: String) -> (urls: [String: URL], release: (() -> Void)?)? {
+        guard let folder = resolveBurnFolder(allowRePersist: false, requireWritable: false) else { return nil }
+        let dir = folder.url
+        var urls: [String: URL] = [:]
+        for name in Self.stemNames {
+            let u = dir.appendingPathComponent(Self.stemFileName(songId, name))
+            guard FileManager.default.fileExists(atPath: u.path) else {
+                if folder.scoped { dir.stopAccessingSecurityScopedResource() }   // missing → don't leak scope
+                return nil
+            }
+            urls[name] = u
+        }
+        return (urls, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
+    }
+
+    /// Are this song's stems already burned locally (offline-ready)? Existence check only —
+    /// opens + immediately releases any scope.
+    func stemsBurned(forSong songId: String) -> Bool {
+        guard let got = localStemURLs(forSong: songId) else { return false }
+        got.release?()
+        return true
+    }
+
+    /// BURN the 4 stems into the active burn folder (download once → persists). Idempotent: returns
+    /// the existing local files (scope held) without re-downloading. Returns the local urls + a
+    /// scope-release closure (nil for app storage), or nil if the song isn't stemmed in the manifest
+    /// / the folder is unwritable / a download failed. No streaming.
+    func burnStems(forSong songId: String) async -> (urls: [String: URL], release: (() -> Void)?)? {
+        if let existing = localStemURLs(forSong: songId) { return existing }   // scope held by the read
+        guard let remote = rips.stemURLs(forSong: songId),
+              let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
+        let dir = folder.url
+        func bail() -> (urls: [String: URL], release: (() -> Void)?)? {
+            if folder.scoped { dir.stopAccessingSecurityScopedResource() }
+            return nil
+        }
+        var local: [String: URL] = [:]
+        for name in Self.stemNames {
+            guard let url = remote[name] else { return bail() }
+            let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
+            if FileManager.default.fileExists(atPath: dest.path) { local[name] = dest; continue }
+            do {
+                let data = try await rips.downloadBytes(url)
+                try data.write(to: dest, options: .atomic)
+                local[name] = dest
+            } catch { return bail() }
+        }
+        return (local, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
+    }
+
     /// The per-song cut filename for a ready item, or nil if there genuinely is no cut on disk.
     /// Prefers the recorded `cutFileName`; if that's missing or its file is gone, scans the burn
     /// dir for the cut by its deterministic `-<songId>.mp3` suffix and HEALS the record (so the

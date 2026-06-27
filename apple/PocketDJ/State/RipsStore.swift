@@ -177,7 +177,15 @@ final class RipsStore {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
             manifest = try JSONDecoder().decode([String: ManifestEntry].self, from: data)
+            pruneFinishedStemJobs()
         } catch { /* offline — keep whatever we have */ }
+    }
+
+    /// Drop stem-job entries whose song is now stemmed (the collection-stemify batch seeds
+    /// per-song `.queued` jobs but never per-row updates them; once the manifest shows the song
+    /// stemmed, the stale job must be cleared so the row stops showing "Queued…" forever).
+    private func pruneFinishedStemJobs() {
+        for id in stemJobs.keys where isStemmed(id) { stemJobs[id] = nil }
     }
 
     func setManifest(_ m: [String: ManifestEntry]) { manifest = m }   // test seam

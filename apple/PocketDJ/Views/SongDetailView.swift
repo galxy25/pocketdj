@@ -5,11 +5,16 @@ import SwiftUI
 struct SongDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(LyricsStore.self) private var lyricsStore: LyricsStore?
+    @Environment(RipsStore.self) private var rips
     let song: IndexSong
     @State private var showEdit = false
     @State private var showAdd = false
     /// Lazily-loaded, on-disk-cached lyrics (nil until loaded / when absent).
     @State private var lyrics: String?
+    /// Stem-audition panel (SongDetail-ONLY): toggled by the stem glyph, owns the synced
+    /// `StemPlayer` so playback survives the panel's internal re-renders. Stopped on disappear.
+    @State private var showStems = false
+    @State private var stemPlayer = StemPlayer()
 
     /// Always read the latest (possibly edited) version from the catalog.
     private var current: IndexSong { app.songsById[song.id] ?? song }
@@ -52,6 +57,11 @@ struct SongDetailView: View {
         .sheet(isPresented: $showAdd) { AddToCollectionView(item: .song(current.id)) }
         // Lyrics: fetch-once + on-disk cache, only when this song's `lyricsStatus == "found"`.
         .task(id: current.id) { lyrics = await lyricsStore?.lyrics(for: current) }
+        // Refresh the rips manifest so the stem glyph reflects the latest stemmed state (a job
+        // that finished while this view was elsewhere) without a manual reload.
+        .task(id: current.id) { await rips.refreshManifest() }
+        // Tear down stem playback when leaving the detail screen.
+        .onDisappear { stemPlayer.stop(); showStems = false }
     }
 
     private var header: some View {
@@ -124,12 +134,19 @@ struct SongDetailView: View {
                     .foregroundStyle(Theme.fgDim)
                 Spacer()
                 RowTransport(song: (id: current.id, title: current.name, artist: current.artist),
-                             startMs: nil)
+                             startMs: nil,
+                             // SongDetail ONLY: a stemmed song's glyph slides out the audition
+                             // panel (the e2e stem test bed) instead of re-stemifying.
+                             onStemGlyph: { withAnimation(.easeInOut(duration: 0.22)) { showStems.toggle() } })
             }
             // NOTE: no `.accessibilityIdentifier` on this container — SwiftUI propagates a
             // container id onto every descendant, clobbering RowTransport's own
             // `row-play-<id>` / `row-download-<id>` ids (same trap as InlinePlayerPanel).
             InlinePlayerSlot(songId: current.id)
+            if showStems {
+                StemAuditionPanel(song: (id: current.id, title: current.name, artist: current.artist),
+                                  player: stemPlayer)
+            }
         }
     }
 }
