@@ -1,5 +1,14 @@
 # PocketDJ Stemify — On-Demand Demucs Stem Separation (build-ready spec)
 
+> **⚠️ UPDATE (2026-06-26): SHIPPED — and stem PLAYBACK shipped too.** This spec is now a
+> historical design artifact. The indexer + durable queue + manifest fields + native creation UI
+> all shipped, and the "deferred" audition/Mix-deck consumers ALSO shipped in the same cycle:
+> a SongDetail **stem-audition panel**, **per-deck stem decks** in the Mix tab, and a
+> **collection-burn stem pull** (offline-mixable). For the as-built system see the Architecture
+> Book — [Ch. 5 §15 "Stems end-to-end"](../architecture/05-playback-and-rip-on-demand.md) and
+> [Ch. 4 §7.6 "Stem decks"](../architecture/04-performance-engine.md). The text below is preserved
+> as-designed; where it says "deferred"/"not yet", read the architecture book for current reality.
+
 > **Status: design complete, not yet built. Verdict: BUILD the indexer + durable queue + manifest fields + native creation UI, gated on a Phase-0 PoC that measures real Demucs wall-clock on this exact host (Apple M4 / macOS 26.5 / 32 GB).** Stemify separates any PocketDJ song into 4 stems (`vocals/drums/bass/other`) with Demucs v4 `htdemucs` (default; v3 `hdemucs_mmi`/`mdx_extra` as a one-env fallback), stores them at deterministic public S3 keys, and folds the result additively into the rip manifest — mirroring the existing rip / beat-grid / Rip-Burn machinery byte-for-byte so it lights up on every song/album/collection surface with one edit each. This document folds in a full review pass: every cross-section contract is now canonicalized (one model knob, one function name, one version field, one timeout, one manifest representation), the runner is async-spawn (not the event-loop-freezing `execFileSync` the draft shipped), the rip→stem chain has failure/cancel/zombie cleanup, and a **minimal in-app audition path ships in this PR** so the artifact is verifiable rather than invisible. Per-song always (analog ⇒ the per-song cut, never the album side). The full Mix-deck multi-stem consumption (solo/mute decks) remains a scoped follow-up, but is no longer the *only* consumer.
 
 ---

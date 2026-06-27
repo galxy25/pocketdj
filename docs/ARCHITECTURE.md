@@ -50,9 +50,9 @@ And the one sentence that captures the whole shape:
    "diverse sources"        "one catalog"        "produce a performance"
   ┌──────────────────┐   ┌────────────────┐   ┌────────────────────────┐
   │ Ch.2 INGEST &    │──▶│ Ch.3 CATALOG & │──▶│ Ch.4 PERFORMANCE       │
-  │ ENRICHMENT       │   │ DATA MODEL     │   │ ENGINE  (+AI seam ↗)   │
+  │ ENRICHMENT       │   │ DATA MODEL     │   │ ENGINE  (Mix · +AI ↗)  │
   │ vinyl·AppleMusic │   │ index JSON ·   │   │ pockets→playlists→     │
-  │ ·audio·art       │   │ model·collections   │ setlists · realize()   │
+  │ ·audio·grid·stems│   │ model·collections   │ setlists·realize·Mix   │
   └──────────────────┘   └───────┬────────┘   └───────────┬────────────┘
                                  │                         │ setlist (Song IDs)
         ┌────────────────────────┼─────────────────────────┘
@@ -60,22 +60,23 @@ And the one sentence that captures the whole shape:
   ┌────────────────┐   ┌──────────────────┐      ┌────────────────────────┐
   │ Ch.6 SEARCH &  │   │ Ch.5 PLAYBACK &  │      │ Ch.7 DISTRIBUTION &    │
   │ DISCOVERY      │   │ RIP-ON-DEMAND    │      │ CLIENTS                │
-  │ aoss · starmap │   │ rip server·S3 cache│    │ S3/CloudFront·PWA+     │
-  │ online/offline │   │ ·live HLS        │      │ native·edits round-trip│
+  │ aoss · starmap │   │ rip·burns·stems  │      │ S3/CloudFront·PWA+     │
+  │ online/offline │   │ ·live HLS·offline│      │ native·TestFlight·edits│
   └────────────────┘   └──────────────────┘      └────────────────────────┘
 
          everything stands on ── Ch.1 FOUNDATIONS (entities · files-as-API · ids)
 ```
 
 **Reading the map.** Across the top is the **production-to-performance spine**:
-**Ch. 2** ingests diverse sources (vinyl, Apple Music, audio analysis, art) into the
-**one catalog shape** of **Ch. 3**, which the **Ch. 4** performance engine turns into
-realized setlists (and is where **AI auto-mixing/auto-building lands next** — the ↗
+**Ch. 2** ingests diverse sources (vinyl, Apple Music, audio analysis, beat grids,
+stems, art) into the **one catalog shape** of **Ch. 3**, which the **Ch. 4**
+performance engine turns into realized setlists **and mixes live on a two-deck DJ
+board** (the Mix engine, §7) — and is where **AI auto-*building*** lands next (the ↗
 seam). The bottom row is how that catalog and those setlists reach the user:
 **Ch. 6** makes it findable (search + the spatial star map), **Ch. 5** makes it
-audible anywhere (rip-on-demand into a public S3 cache, with live HLS), and **Ch. 7**
-distributes the artifacts to thin clients and closes the **edits round-trip** back to
-the catalog. Everything rests on **Ch. 1 Foundations** — the entities, the
+audible anywhere (rip-on-demand into a public S3 cache, live HLS, and **offline burns +
+stems**), and **Ch. 7** distributes the artifacts to thin clients (the PWA + the native
+TestFlight app) and closes the **edits round-trip** back to the catalog. Everything rests on **Ch. 1 Foundations** — the entities, the
 "files-as-API" principle, and the content-derived ids that make the whole
 server-less coordination work.
 
@@ -88,10 +89,10 @@ server-less coordination work.
 | 1 | [**Foundations**](./architecture/01-foundations.md) | the whole | System entities, ownership table, the files-as-API spine, content-derived ids. **Start here.** |
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
 | 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — incl. the **`CollectionsDocument` schema versioning (v2→v3) + flat playlist `folders`** — the one shape everything speaks. Reference chapter. |
-| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **and the deferred AI auto-mixing seam**. |
-| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp, **the analog per-song CUT export + `POST /backfill-cuts` / `POST /retag-cuts`**), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView, **now with a length-aware position end-boundary + held playback security-scope**), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme + the per-song analog-cut burn + the `@Observable` background-burn progress mirror**), the **length-aware + manual-jump-adopting** `SetlistPlayer` burnt-or-stream sequencer with **persistent ⏮/⏭ transport**, **the global device/cloud `PlaybackMode` + shared `playLocalFile` (now burned-first + scope-held on EVERY song-start path) + the explicit offline catalog disk cache (`CatalogService` `catalog-cache/`)**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), and the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`).** |
+| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **the two-deck Mix engine (first-party `AVAudioEngine` — tempo/pitch/seek/crossfader/4 effects, grid-aware beat-match, Auto-Mix, and offline STEM DECKS, §7)**, **and the deferred AI auto-*building* seam**. |
+| 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp, **the analog per-song CUT export + `POST /backfill-cuts` / `POST /retag-cuts`**), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView, **now with a length-aware position end-boundary + held playback security-scope**), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme + the per-song analog-cut burn + the `@Observable` background-burn progress mirror**), the **length-aware + manual-jump-adopting** `SetlistPlayer` burnt-or-stream sequencer with **persistent ⏮/⏭ transport**, **the global device/cloud `PlaybackMode` + shared `playLocalFile` (now burned-first + scope-held on EVERY song-start path) + the explicit offline catalog disk cache (`CatalogService` `catalog-cache/`)**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`), **the measured BEAT-GRID pass (`/backfill-beatgrids` → `beatGridBpm`/`firstDownbeatMs`/`steady`)**, and **STEMS end-to-end (server Demucs `/stemify` → public `rips/stems/`; the collection-burn STEM pull; the offline `StemPlayer` audition).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, **online pagination (`from/size` + `track_total_hits`) + server-side sort + the `genreCategory` field**, **the native Browse genre + collection-membership filters**, the star map. |
-| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **and the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`).** |
+| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, **the native app as a single universal SwiftUI target (iPhone/iPad/Mac, iOS 18/macOS 15) built with XcodeGen and shipped to TestFlight (`apple-publish`/`testflight.sh`)**, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **and the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`).** |
 
 ---
 
@@ -235,11 +236,42 @@ contract**. Honest status:
   `scripts/lib/cloud-reindex-fold.mjs`; atomic, exact-match-only, idempotent, cloud
   precedence, provenance-stamped, **never auto-deploys**, guards uncommitted working-tree
   changes; Ch. 5 §13).
-- **Coming — AI-assisted auto-mixing & auto-building playlists.** The seams already
-  exist (no migration needed to light them up): `SetlistTrack.mixSuggestions` +
-  the `MixSuggestion` shape, the reserved `PocketKind:'performance'`, and the
-  `realize()` sampling/autofill boundary an AI sequencer would extend. See
-  [Ch. 4 §4](./architecture/04-performance-engine.md#4-the-ai-seam--auto-mixing--auto-building-coming).
+- **New current-state — the two-deck MIX DSP engine + STEMS end-to-end + measured BEAT
+  GRIDS (native).** The native app's **Mix tab** ships a **first-party, cross-platform
+  two-deck DJ engine** (`apple/PocketDJ/Mix/MixEngine.swift`) — one `AVAudioEngine` graph per
+  deck (`AVAudioPlayerNode → inputMixer → timePitch → compressor → filter(EQ) → reverb →
+  flanger → mainMixer`) with **TEMPO** (0.5–2.0× pitch-preserved), **PITCH** (±12 semitones
+  tempo-preserved), sample-accurate **SEEK**, an equal-power **CROSSFADER**, **4 effects**
+  with continuous strength, grid-aware **BEAT-MATCHING** (follower Sync to a lead deck,
+  octave-folded tempo + best-effort downbeat phase-align, **preferring the measured grid
+  BPM**), a timed **AUTO-MIX** auto-DJ, and offline **STEM DECKS** (4 stem nodes summed into
+  the deck chain; per-stem mute/volume) — no licensed third-party audio SDK (Ch. 4 §7). It's
+  fed by two new analysis side-channels folded into the rips manifest: a **measured beat grid**
+  (rip-server `POST /backfill-beatgrids` → librosa downbeat grid → `beatGridBpm`/
+  `firstDownbeatMs`/`steady`, Ch. 3 §4.3) and **Demucs STEMS** (rip-server `POST /stemify` /
+  `/backfill-stems` → `htdemucs` v4 on Apple-Silicon **MPS** with a Docker-CPU fallback → 4
+  stems vocals/drums/bass/other as 256k mp3 onto the **public** `rips/stems/<songId>/` prefix;
+  per-song + collection). The offline **Burn** (Ch. 5 §9) now also **pulls every stemmed song's
+  stems** so a burned collection **plays AND mixes** fully offline (re-burn picks up
+  newly-available stems), and a **SongDetail stem-audition panel** (`StemPlayer`,
+  burn-then-play-in-sync, solo/mute/play-all) lands beside the Mix decks (Ch. 5 §15). All stem
+  surfaces are **offline-only** (burned local files, never streamed).
+- **Current-state — the NATIVE app is a first-class client.** The SwiftUI app
+  (`apple/`) is a **single universal target** (one XcodeGen `project.yml` → iPhone + iPad +
+  Mac via `supportedDestinations:[iOS,macOS]` × device-family `1,2`; iOS 18 / macOS 15; bundle
+  `com.levi.pocketdj`), built with the `apple-build` skill and **shipped to TestFlight** via
+  `apple-publish` / `apple/scripts/testflight.sh` (local archive → distribution-sign → App
+  Store Connect upload; `ITSAppUsesNonExemptEncryption=false`; auto-distributes to the "Alphas"
+  internal group). It is the **primary modern client** where the DJ/mix/stem features live,
+  alongside the original offline-first PWA (Ch. 7 §2.1, §4.1).
+- **Coming — AI-assisted auto-*building* playlists.** The *mixing* half is no longer
+  hypothetical — a two-deck Mix engine with grid-aware beat-matching **and a timed
+  Auto-Mix auto-DJ now ships** (Ch. 4 §7). What's still deferred is **AI-curated
+  auto-*building*** of the set itself; the seams already exist (no migration needed to light
+  them up): `SetlistTrack.mixSuggestions` + the `MixSuggestion` shape, the reserved
+  `PocketKind:'performance'`, and the `realize()` sampling/autofill boundary an AI sequencer
+  would extend. See
+  [Ch. 4 §4](./architecture/04-performance-engine.md#4-the-ai-seam--auto-building-coming).
 - **Deferred — the iMac edits-merge tool.** The native edits round-trip is built on
   the client side and the schema is designed for it, but the iMac-side merge tool that
   folds exported edits back into `current-index.json` **does not exist yet**. See
@@ -264,9 +296,11 @@ Things found while writing that don't fully line up, gathered here so they're no
 4. **`coverArtSources.url` extension drift.** `mirror-art.sh` / `index-json.ts` show
    `/art/<id>.jpg`; the Swift `Config.artURL` docstring shows `.webp`. The mirror
    writes `.jpg` (`image/jpeg`); the `.webp` comment appears stale. (Ch. 2, 7)
-5. **`/stream/<id>.mp3` (progressive) vs `/hls/<id>/…` (HLS).** Both implemented, but
-   the client detects live via `url.includes('/hls/')` and the job's `streamUrl` is the
-   HLS playlist; iOS needs HLS, so `/stream` is a legacy/secondary route. (Ch. 5)
+5. **Live streaming is HLS-only; the legacy `/stream/<id>.mp3` route was removed.** The
+   client detects live via `url.includes('/hls/')` and the job's `streamUrl` is the
+   `/hls/<id>/index.m3u8` playlist; iOS needs HLS, and the durable public mp3 covers
+   every non-live play, so the old progressive-mp3 route is gone (a maintainer wiring a
+   client to `/stream` would 404). (Ch. 5 §2)
 6. **`TrackSource:'autofill'` in data = `↔ bridge` in the UI** — code name and product
    label differ (a grep for "bridge" in the data layer comes up empty). (Ch. 4, 5)
 7. **`POST /analysis` overloads "key".** The body uses `musicalKey` for the musical key
@@ -402,3 +436,40 @@ Things found while writing that don't fully line up, gathered here so they're no
     "burning number doesn't update" bug). The count is mirrored onto the `@Observable`
     `BurnStore.backgroundProgress` via an `onProgress` main-actor hook. A maintainer re-binding
     the overlay to the coordinator would freeze it at the enqueue total. (Ch. 5 §9)
+30. **The Mix spec is "research"; the shipped `MixEngine.swift` is authoritative — and the
+    node order differs.** `docs/design/mix-ondevice-tempo-pitch-beatmatch-spec.md` is dated
+    "not yet built" and its graph diagram (`TimePitch → EQ → Reverb → Dynamics`, no inputMixer,
+    no flanger) does **not** match the code. The live `connectChain()` order is
+    `player → inputMixer → timePitch → comp(Dynamics) → filter(EQ) → reverb → flanger(Delay) →
+    mainMixer`, and the engine adds Auto-Mix + stem decks the spec never covered. Trust the
+    code. (Ch. 4 §7)
+31. **`stemVersion` (singular) is the canonical "is stemmed" flag — there is no `stemKeys`
+    / `stemRippedAt`.** The manifest stem group is `stems:{vocals,drums,bass,other}` (the 4 S3
+    keys) + `stemModel`/`stemVersion`/`stemFormat`/`stemmedAt`/`stemBytes`; presence of
+    `stemVersion` ⇒ stemmed (`RipsStore.isStemmed`). It's **distinct from `analysisVersion`**
+    (the shared bpm/key/**beat-grid** stamp), so a Demucs model change never forces a beat-grid
+    re-run and vice-versa. A maintainer collapsing the two version stamps would couple unrelated
+    re-analysis sweeps. (Ch. 3 §4.3, Ch. 5 §15)
+32. **Stems + beat grids are PER-SONG, even for analog.** A vinyl song stems/grids its per-song
+    **cut** (`rips/<id>.cut.mp3`), never the shared album side — so a stem key is always
+    `rips/stems/<songId>/…` and a grid is keyed by `songId`. A maintainer stemming the album mp3
+    would mis-key every analog song to one blob. (Ch. 5 §14, §15)
+33. **Every stem surface is OFFLINE-ONLY (burned local files), and burning FETCHES stems — it
+    never separates them.** The Mix stem decks (`MixEngine`), the SongDetail audition
+    (`StemPlayer`), and the collection-burn pull all require the 4 stems to be **burned locally**
+    and require all four present; the "Stems" affordance only appears for a track the **server**
+    has already stemmed (`rips.isStemmed` ⇒ `stemVersion != nil`). `MixResolver` likewise drops
+    any song with no burned file, so a mix is offline-by-construction. A maintainer wiring stem
+    playback to a stream, or triggering Demucs from the burn, breaks the model. (Ch. 4 §7.6,
+    Ch. 5 §9, §15)
+34. **`/health` advertises `stems:true` as a capability flag with NO `RIP_PROTOCOL` bump.**
+    Stems and beat grids are **additive** manifest fields, so the protocol version stays `2` and
+    an older client neither sees the "outdated — restart it" banner nor breaks; it just ignores
+    the new fields. A maintainer bumping `RIP_PROTOCOL` for an additive field would needlessly
+    flag every old client as outdated. (Ch. 5 §2, §15)
+35. **The native app is ONE universal target, not three.** `apple/project.yml` declares a single
+    `application` target with `supportedDestinations:[iOS,macOS]` × `TARGETED_DEVICE_FAMILY "1,2"`
+    (iOS 18 / macOS 15); iPhone/iPad/Mac come from that one target + `#if os(...)` forks, and the
+    `.xcodeproj` is **generated** by XcodeGen (a file added via the Xcode UI is dropped on the
+    next `xcodegen generate`). A maintainer adding per-platform targets or hand-editing the
+    project would fight the generator. (Ch. 7 §2.1)

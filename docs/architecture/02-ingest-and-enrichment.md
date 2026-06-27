@@ -224,6 +224,45 @@ source, fetches it same-origin, and caches the blob in IndexedDB for offline use
 
 ---
 
+## 6. Beat-grid & stem analysis — two more rips-manifest side-channels
+
+**Why.** The Mix engine (Ch. 4 §7) needs two enrichments §5's analysis doesn't produce: a
+**measured beat grid** (a real downbeat phase + a tempo measured on the *exact* file that
+plays, for beat-matching) and **isolated stems** (vocals/drums/bass/other, for stem decks).
+Both are computed **out of band on the iMac** and folded into the **rips manifest** (not the
+catalog index), exactly like the post-rip bpm/key analysis — so they're durable, public, and
+client-readable without re-deriving anything on the phone.
+
+```
+                       ┌─────────────── BEAT GRID (librosa downbeat) ───────────────┐
+ ripped mp3 / cut ──▶ rip-server POST /backfill-beatgrids → audio-analyze.mjs        │
+                       (analyzeAudio withBeatgrid:true)  ──▶ manifest {beatGridBpm,   │
+                                                              firstDownbeatMs,steady,…}│
+                       └──────────────────────────┬─────────────────────────────────┘
+                       ┌─────────────── STEMS (Demucs htdemucs v4) ─────────────────┐
+ ripped mp3 / cut ──▶ rip-server POST /stemify (per-song) · /backfill-stems          │
+                       audio-stem.mjs → Demucs (native MPS · Docker-CPU fallback)     │
+                       → 4× mp3 256k → rips/stems/<songId>/<stem>.mp3 (PUBLIC)         │
+                       └──────────────────────────┴──▶ manifest {stems,stemVersion,…} ┘
+                                                ▼ client refreshManifest()
+                              Mix engine: Sync rides beatGridBpm ; stem decks load stems
+```
+
+**Reading the diagram.** Both passes are **rip-server endpoints** (Ch. 5 §15), not separate
+skills — the **beat-grid** stage re-runs the same librosa analyzer (`scripts/lib/audio-analyze.mjs`,
+`analyzeAudio(… withBeatgrid:true)`) to get a **downbeat grid** and writes `beatGridBpm`/
+`firstDownbeatMs`/`steady`/… onto the manifest entry; the **stem** stage shells to **Demucs**
+(`htdemucs`, v4, via `scripts/lib/audio-stem.mjs` + the Docker/Python assets under
+`.claude/skills/analog-indexer/stems/` — `Dockerfile` + `separate-one.py`, a sibling of the
+librosa `audio/` stage) to split each song into **four 256k-mp3 stems** uploaded to the
+**public** `rips/stems/<songId>/` prefix. Both source the **per-song** audio (a digital song's
+mp3, an analog song's per-song **cut** — never the shared album side) and both have **`/backfill-`**
+endpoints to sweep the whole corpus retroactively. The full pipelines (queues, runtimes,
+manifest fields, idempotency) live in [Ch. 5 §15](./05-playback-and-rip-on-demand.md#15-stems-end-to-end--server-stemify-offline-stem-store-and-stem-audition);
+the *data shape* they write is [Ch. 3 §4.3](./03-catalog-and-data-model.md#43-the-rips-manifest-beat-grid--stem-fields).
+
+---
+
 ## Where this feeds
 
 The output of this chapter is two JSON documents (`current-index.json`,

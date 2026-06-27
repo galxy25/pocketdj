@@ -1,9 +1,11 @@
-# Chapter 4 — Performance Engine: pockets → playlists → setlists (+ the AI seam)
+# Chapter 4 — Performance Engine: pockets → playlists → setlists (+ the Mix engine)
 
 > Part of the [PocketDJ Architecture Book](../ARCHITECTURE.md). Prereqs:
 > [Ch. 1 Foundations](./01-foundations.md), [Ch. 3 Catalog & Data Model](./03-catalog-and-data-model.md).
-> This is the **heart of the goal — "Performance Playlists Producer"** — and the
-> chapter where **AI-assisted auto-mixing and auto-building will land**.
+> This is the **heart of the goal — "Performance Playlists Producer"** — the engine
+> that turns reusable templates into ordered sets, **the two-deck Mix board that
+> beat-matches and mixes them live** (§7), and the chapter where **AI-assisted
+> auto-building will land** (§4).
 
 The product story for these screens is Part II of
 [`STORYBOOK.md`](../STORYBOOK.md) (§18–§26). This chapter is the systems view of the
@@ -274,11 +276,14 @@ for any referenced items). Refs to songs not in the loaded catalog are kept as c
 
 ---
 
-## 4. The AI seam — auto-mixing & auto-building (coming)
+## 4. The AI seam — auto-building (coming)
 
 > **Status: deferred, but the schema and engine seams already exist so lighting it
 > up needs no migration.** This is the next major pillar of "Performance Playlists
-> Producer."
+> Producer." Note the *mixing* half is no longer hypothetical — a first-party
+> two-deck DJ engine with beat-matching and a timed **Auto-Mix** auto-DJ now ships
+> (§7); what's still "coming" here is **AI-curated auto-*building*** of the set
+> itself (a smarter `realize()` ordering + populated `mixSuggestions`).
 
 The architecture deliberately reserves three hooks so AI features slot in without
 breaking the data contract:
@@ -407,6 +412,151 @@ immediate literal play, `list.bullet.clipboard` for rolling a saved, autofilled 
 the Playlists list, **your** editable playlists also now render **above** the read-only
 "From your sources" index playlists, organized into the optional collapsible
 folders of [Ch. 3 §3.1](./03-catalog-and-data-model.md#31-the-collectionsdocument-envelope-schema-versioning-and-folders-native).)
+
+---
+
+## 7. The Mix engine — the two-deck DJ board (native)
+
+**Why.** Realizing a set (§2) and playing it in order (§6, Ch. 5 §10) is the *playlist*
+half of the goal; the **Mix tab** is the *mix* half — where the DJ actually blends two
+tracks live: beat-matched, crossfaded, EQ'd, effected. The native app ships a
+**first-party, cross-platform two-deck DJ engine** — one `AVAudioEngine` graph, no
+third-party/licensed audio SDK — that plays **only locally-burned files** (Ch. 5 §9),
+so a mix runs **fully offline** at the venue.
+
+**Source of truth:**
+[`apple/PocketDJ/Mix/MixEngine.swift`](../../apple/PocketDJ/Mix/MixEngine.swift)
+(the engine + DSP graph + transport/tempo/pitch/seek/sync/auto-mix/stems),
+[`apple/PocketDJ/Mix/MixResolver.swift`](../../apple/PocketDJ/Mix/MixResolver.swift)
+(resolves a `MixSource` pocket/setlist → loadable songs, **keeping only those whose
+burned file exists on disk**),
+[`apple/PocketDJ/Mix/MixView.swift`](../../apple/PocketDJ/Mix/MixView.swift) (the deck
+UI, transport, effect chips, stem grid, loader sheet),
+[`apple/PocketDJ/Mix/MixWaveform.swift`](../../apple/PocketDJ/Mix/MixWaveform.swift)
+(off-main waveform peak extraction). Design rationale:
+[`docs/design/mix-ondevice-tempo-pitch-beatmatch-spec.md`](../design/mix-ondevice-tempo-pitch-beatmatch-spec.md)
+(written as "research"; the shipped code has moved past it — where they disagree, the
+code's `connectChain()` wins).
+
+### 7.1 The per-deck DSP graph
+
+```
+ Deck A · Deck B  — built identically by connectChain() on ONE shared AVAudioEngine:
+   AVAudioPlayerNode
+     → AVAudioMixerNode  (inputMixer)        ← ONLY link reconnected per load (file's real fmt)
+     → AVAudioUnitTimePitch                  ← TEMPO (.rate)  +  PITCH (.pitch)
+     → AVAudioUnitEffect(DynamicsProcessor)  "comp"   (compressor)
+     → AVAudioUnitEQ(1 band)                 "filter"
+     → AVAudioUnitReverb (.mediumHall)
+     → AVAudioUnitDelay                      "flanger"
+     → engine.mainMixerNode → output
+   everything downstream of inputMixer is PINNED for life at canonicalFormat
+   (44.1 kHz / 2ch) so a live AU channel/SR reconfig can't assert-crash AVAudioEngine
+   — only player→inputMixer is re-linked per load to carry the file's real mono/stereo+SR
+```
+
+**Reading it.** Two decks share one `AVAudioEngine` (lazy `ensureEngine()`, soft-fails
+silently with no audio device). Each deck is a fixed chain: an `AVAudioPlayerNode` feeds
+an `inputMixer` (a format-normalizing `AVAudioMixerNode`), then a single
+`AVAudioUnitTimePitch` (tempo **and** pitch), then the four effect nodes, into the engine
+main mixer. The `inputMixer` exists so that only the `player → inputMixer` link is
+reconnected per load (carrying the loaded file's real channel count / sample rate); the
+rest is **pinned at `canonicalFormat`** forever, which is what stops a live AU
+reconfiguration from crashing the graph.
+
+### 7.2 Tempo · pitch · seek
+
+- **Tempo** — `rateRange = 0.5…2.0×` (1.0 = original), a **pitch-preserved time-stretch**
+  on `AVAudioUnitTimePitch.rate`. The ~10 Hz playhead advances source position at
+  `rate × wall-time`.
+- **Pitch** — `pitchRange = −12…+12` semitones (0 = original), **tempo-preserved**, written
+  as `timePitch.pitch = semitones × 100` (the AU takes **cents**).
+- **Seek** — sample-accurate via `player.scheduleSegment(file, startingFrame:…)`, **bounded
+  to the song's `[startFrames, endFrames)` window** so an analog shared-album slice (one mp3,
+  a `startMs` offset) can never scrub past its own track. The same `scheduleSegment`
+  primitive underpins load, restart, and stem re-cue.
+
+### 7.3 Crossfader + the four effects
+
+- **Crossfader** — `0…1`, **0 = full A · 1 = full B · default 0.5** (both audible). An
+  **equal-power cosine** law (`deckGain`): A's factor = `cos(π/2 · v)`, B's = `cos(π/2 ·
+  (1−v))`. A separate per-deck **Vol** trim (`0…1`) multiplies on top; both land on the
+  players (and, in stem mode, the stem nodes) via `applyMixGains`/`applyStemGains`.
+- **Four effects** (`Effect{ compressor, reverb, flanger, filter }`) — each an enabled flag
+  plus a per-deck per-effect continuous **strength** `s ∈ 0…1` (default 0.5); disabled ⇒
+  `node.bypass`. **compressor** (DynamicsProcessor): threshold `−30·s` dB, makeup `+15·s`
+  dB. **reverb** (`.mediumHall`): `wetDryMix = s·100`. **flanger** (Delay comb approximation —
+  a true LFO flanger is noted future work): 4 ms delay, feedback `s·60%`, wet `s·50%`.
+  **filter** (EQ `.resonantLowPass`): cutoff swept log-down `18 kHz → 250 Hz` as `s` rises.
+
+### 7.4 Beat-matching — Sync to a lead deck
+
+```
+ leadDeck : Deck?   (EXCLUSIVE; setLead toggles/clears; a deck's own load clears its lead role)
+ follower Sync = syncToLead(follower):
+   matchBPM(loaded): PREFER measured grid BPM loaded.gridBpm (>0) ELSE catalog loaded.bpm
+       gridBpm / firstDownbeatMs / steady ← burns.beatGrid(forSong:) at load (Ch.3 §4.3)
+   (1) TEMPO   rate = octaveFolded( leadBPM·leadRate / followerBPM )   clamp 0.5…2.0
+              octaveFolded: ÷2 while >2, ×2 while <0.5  (half/double-time aware)
+   (2) PHASE   phaseAlign (best-effort, both playing): nudge follower ≤ ±½ beat via seek,
+              referencing each song's firstDownbeatMs (0 if no grid)
+```
+
+**Reading it.** One deck can be the **lead** (exclusive `leadDeck`); the *follower's*
+**Sync** matches it. The match is two steps: a **tempo** match sets the follower's rate so
+its effective BPM equals the lead's **effective** BPM (`leadBPM × leadRate`),
+**octave-folded** into the `0.5…2.0` window (so a 140 ↔ 70 half-time pairing matches at
+1×, not by doubling), then a **best-effort downbeat phase-align** nudges the follower up to
+±½ beat with a `seek`. Crucially the BPM source **prefers the measured beat-grid BPM**
+(`gridBpm`, computed by the beat-grid indexer on the **exact burned file** — Ch. 3 §4.3,
+Ch. 5 §15) over the looser catalog `bpm`, and uses the grid's `firstDownbeatMs` as the
+phase reference — so Sync rides the real measured grid, not an estimate.
+
+### 7.5 Auto-Mix — the timed auto-DJ
+
+`startAutoMix(items, shuffled, lead ≈ 15 s, fade ≈ 3 s)` runs both decks as a hands-free
+auto-DJ via a **wall-clock state machine** (stepped from the same ~10 Hz tick, independent
+of the audio backend). It loads `item[0] → A`, `item[1] → B`, crossfader **full-A**, and
+plays A; when the live deck's `secondsLeft ≤ lead` and a next track exists it
+**`beginAutoCrossfade`** — a timed crossfade (`p = elapsed / fade` → `setCrossfader` sweep,
+which moves the equal-power **volumes** together) — then **`finishAutoCrossfade`** snaps the
+fader to the target, **silences** the outgoing deck, advances, and loads the next queued
+track onto the freed deck. It loops across both decks until the queue ends; a manual
+pause ends the loop. (`autoStatus` shows "n / total · Deck X | fading".)
+
+### 7.6 Stem decks — mix the parts, not just the track
+
+```
+ Stems toggle (only for a SERVER-stemmed track: rips.isStemmed(songId)) →
+   burns.burnStems(forSong:) first if not local (Ch.5 §15) → setStemMode(on:) → wireStems:
+     resolve burns.localStemURLs(forSong:)  (REQUIRES all 4: vocals/drums/bass/other)
+     4 extra AVAudioPlayerNodes per deck  →  the SAME inputMixer
+        (so the stems ride the deck's identical tempo/pitch/effects/crossfader chain)
+     startStems: schedule + start all 4 at ONE shared host time → sample-accurate sync
+   per-stem MUTE (stemMuted) + per-stem VOLUME (stemVol 0…1):
+     applyStemGains → node.volume = muted ? 0 : deckGain(deck) · stemVol
+```
+
+**Reading it.** A deck can switch a stemmed track into **stem mode**: its four stem nodes
+(`vocals/drums/bass/other`) sum into the **same `inputMixer`**, so they pass through the
+deck's tempo, pitch, effects, **and** crossfader untouched — the deck behaves identically,
+it just sources four parts instead of one file. `wireStems` requires **all four** local
+stem files (else it stays off), and `startStems` launches them at a single shared
+`AVAudioTime` for sample-accurate alignment. Each stem has an instant, glitch-free
+**mute** and a continuous **volume** (applied as the node's gain). Stem decks are
+**offline-only**: the parts must be **burned locally** (no streaming), so the **"Stems"
+toggle only appears for a track the server has stemmed** (`rips.isStemmed`), and tapping it
+burns the four stems to the device first. The on-disk stem store + server stemmer are
+[Ch. 5 §15](./05-playback-and-rip-on-demand.md#15-stems-end-to-end--server-stemify-offline-stem-store-and-stem-audition).
+
+### 7.7 First-party + cross-platform
+
+The DSP graph carries **no `#if os` forks** (only `AVAudioSession` activation +
+interruption recovery is iOS-gated); the engine is **app-scoped** (`@MainActor
+@Observable`, injected into the environment) so deck state survives tab switches, and it
+owns the `BurnStore`, resolving **only** locally-burned files. The design's premise was to
+replace a vendored, licensed Switchboard SDK with a **license-free, sandbox-friendly
+first-party `AVFoundation` graph** — which is what shipped.
 
 ## Next
 

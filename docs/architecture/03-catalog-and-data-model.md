@@ -429,6 +429,42 @@ before writing the update, and keeping the existing cut offline / on a download 
 fields are optional so older burn records decode unchanged; `finalizeBurn` preserves them when
 the background album-download rebuilds the item.
 
+### 4.3 The rips manifest beat-grid + stem fields
+
+The manifest carries two more **additive** analysis groups, produced by the rip server's
+beat-grid and Stemify passes (the producers + flow are
+[Ch. 5 §15](./05-playback-and-rip-on-demand.md#15-stems-end-to-end--server-stemify-offline-stem-store-and-stem-audition));
+recorded here because they're part of the data shape the native `ManifestEntry`
+([`RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)) decodes and the Mix engine
+consumes.
+
+```
+ ManifestEntry  (+ BEAT GRID — all optional ⇒ back-compat)
+   beatGridBpm?       the tempo MEASURED on the exact ripped/cut file (Mix Sync prefers this
+                      over the catalog bpm — Ch.4 §7.4)
+   firstBeatMs?  firstDownbeatMs?   grid phase anchors (downbeat = the Sync phase reference)
+   beatsPerBar?  tempoConfidence?  tempoVar?  steady?      grid shape + a "steady tempo" flag
+   beatgrid?          S3 key of a LAZY per-beat sidecar  rips/analysis/<id>.json
+   analysisVersion?   the SHARED bpm/key/beat-grid version stamp (distinct from stemVersion)
+
+ ManifestEntry  (+ STEMS — Demucs; all optional ⇒ presence of stemVersion ⇒ "stemmed")
+   stems?:{ vocals, drums, bass, other }   the 4 PUBLIC S3 keys  rips/stems/<songId>/<stem>.mp3
+   stemModel?  "htdemucs" (Demucs v4 default)       stemVersion?  int (canonical "is stemmed")
+   stemFormat?  "mp3"|"flac"     stemmedAt?  epoch-ms     stemBytes?  total size of the 4 stems
+```
+
+**Reading it.** The **beat grid** is a *measured* tempo + downbeat phase computed on the
+**exact file** that plays (a digital song's mp3, an analog song's per-song cut) — `beatGridBpm`
+is what the Mix engine's beat-matching **prefers over the catalog `bpm`**, and `firstDownbeatMs`
+is its phase reference (Ch. 4 §7.4); `steady` flags a reliable, non-drifting grid.
+`analysisVersion` is the shared bpm/key/beat-grid stamp, **separate from `stemVersion`**, so
+re-stemming and re-gridding are independent. The **stems** group records the four public stem
+keys plus Demucs provenance; the singular **`stemVersion`** is the canonical "this song is
+stemmed" signal the client (`RipsStore.isStemmed`) and the Burn (Ch. 5 §9) both test. Both
+groups decode as optionals, so a song with neither — the common case — loads exactly as before.
+(Stems are **per-song** even for analog: a vinyl song stems its *cut*, never the shared album
+side, so a stem key is always `rips/stems/<songId>/…`.)
+
 ## Next
 
 → [Chapter 4 — Performance Engine](./04-performance-engine.md)

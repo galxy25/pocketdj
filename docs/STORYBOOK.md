@@ -6,7 +6,11 @@ personal music collection (here, a digitized **vinyl** crate of 1,361 albums /
 even with no signal. Every album and song is enriched with metadata, mood
 keywords, and **audio analysis** (BPM, musical key, and Camelot-wheel code), and
 all cover art is cached locally so the app is fully usable offline and durable
-across restarts.
+across restarts. And on the native iPhone / iPad / Mac app it goes beyond *browsing*
+to *mixing*: a two-deck **Mix** engine — live tempo, pitch, an effects grid,
+crossfader and beat-sync — plus **stems**, which split any track into vocals / drums /
+bass / other so you can mute, solo and remix live (**Part IV**). Both run on the same
+burned, offline files, so a full mix works with no signal.
 
 **The user story.** *As a DJ / crate-digger, I want to browse my whole collection
 on my phone — by genre, by tempo, or by harmonic key — find the right record
@@ -1308,3 +1312,200 @@ the freshly-tagged version.
 **User story:** "Burn me the whole record *and* every song as its own properly-tagged file, named
 with the key and BPM, so I can load the single tracks straight into my DJ software — and quietly
 keep them up to date."
+
+---
+
+# Part IV — Mix & Stems: the DJ engine
+
+Everything so far gets you to a *set* — a crate explored, a playlist shaped, a set list ripped and
+burned for offline. **Part IV is where you actually mix it.** The native iPhone / iPad / Mac app
+adds a fourth top-level tab — **Mix** (the slider icon, beside Browser · Playlists · Settings) — a
+real **two-deck DJ console**, and **stems**: a track split into four parts (**vocals · drums · bass ·
+other**) you can mute, solo and remix live. Both run on the *same* burned, on-device files
+everything else uses — nothing here streams — so a mix, stems and all, works in a basement with no
+signal. The Mix engine is **app-scoped**, so a mix keeps playing while you leave the tab and come
+back.
+
+These sections are **prose-only** (no screenshots captured yet); they describe the real Mix
+(`apple/PocketDJ/Mix/MixView.swift` + `MixEngine.swift`) and stem
+(`StemAuditionPanel.swift` · `StemPlayer.swift`) surfaces.
+
+---
+
+## 49. The Mix tab — two decks, one screen
+
+The Mix tab is a **DJ main screen**: **two decks side by side** — **Deck A** on the left, **Deck B**
+on the right, equal width — with **one crossfader** spanning both beneath them and **one big master
+Play/Pause** at the bottom. On an iPhone the whole console scrolls in portrait; on iPad and Mac it's
+roomy and centered (the controls cap at a comfortable width).
+
+**Load a track.** A deck plays a **burned / local** track — only **on-device (burned)** songs can be
+mixed (the engine never streams). Each deck header carries a **deck letter** and a quick **source
+menu** to point that deck at a **pocket** or **set list**; the two decks can share one source or each
+hold its own. **Tap the header** (or **long-press / right-click** it) to open the **track-loader
+sheet** — a searchable picker (by **artist · title · album**) of that source's burned tracks. If the
+collection isn't burned yet, the sheet says so: *only burned songs can be mixed — burn the collection
+first.*
+
+**The header reads like a deck.** Once loaded it shows a **waveform** image, the **album artwork**,
+the **title · artist**, and a **key | BPM** chip — the Camelot key when known, otherwise the BPM — so
+each deck shows at a glance what's cued and whether the two will mix.
+
+**User story:** "Give me two real decks on my phone, loaded straight from the crates I already burned
+for offline — pick a pocket per deck and drop a record on each."
+
+---
+
+## 50. Per-deck controls — seek, tempo & pitch
+
+Under each deck's header sits its control stack:
+
+- a **seek scrubber** — drag to seek (sample-accurate), with **elapsed / duration** clocks at its
+  ends,
+- the **Lead · Sync · Reset** row (beat-matching — §53; the **Stems** toggle joins it for a stemmed
+  track — §56),
+- a **Tempo** slider — live **time-stretch** from **0.5× to 2.0×** with **pitch preserved**,
+- a **Pitch** slider — **±12 semitones** with **tempo preserved** (independent of the tempo slider),
+- a **Vol** slider (0–100%),
+- a **per-deck play/pause** for cueing one side on its own.
+
+**Reset (↺)** wipes the deck back to neutral — clears tempo, pitch, every effect and the volume trim,
+then rewinds — so you can recover a deck to a clean state in one tap.
+
+**User story:** "Stretch a track to match a tempo without chipmunking it, nudge its key by a few
+semitones to mix in harmonically, scrub to the drop — and reset the deck clean when I want to start
+over."
+
+---
+
+## 51. The effects grid — tap to toggle, dial the strength
+
+Each deck has a **2×2 effects grid**: **Compressor · Reverb** on top, **Flanger · Filter** below.
+**Tap** a pad to **toggle** that effect on or off (it fills with the accent colour when on).
+**Long-press** (iOS) / **right-click** (macOS) a pad to reveal its **STRENGTH** (the wet amount)
+right there — and revealing it also **switches the effect on**, so the dial is immediately audible.
+
+How the strength control appears adapts to the screen: on **landscape / iPad / macOS** the pad
+**flips in place** to a strength slider — same footprint, no popover, no navigation — and **flips back
+after 3 s idle**. On **iPhone portrait** the pad is too narrow to drag a slider in place, so it opens
+a **fixed-width popover** instead (dismissed by an outside-tap or after 3 s idle).
+
+**User story:** "Reach an effect with one tap, and when I want to ride it, hold the pad and a real
+slider's right there — sized so I can actually drag it on a phone."
+
+---
+
+## 52. The crossfader & the master transport
+
+One **equal-power crossfader** spans both decks (**A ◀ ▶ B**). Equal-power means the **midpoint isn't
+a volume dip** — both decks stay at full perceived loudness through the blend, so a slow crossfade
+sounds smooth rather than dropping out in the middle. Each deck's effective gain is its own **Vol**
+trim **×** the crossfade factor, so the fader and the per-deck volumes compose cleanly.
+
+The **master Play/Pause** at the bottom drives **both decks at once** (disabled until at least one
+deck is loaded). Alongside it, each deck keeps its **own** play/pause, so you can start one side to
+cue it before bringing it in on the fader.
+
+**User story:** "Blend the two decks with a fader that doesn't gut the mix in the middle, and start
+or stop the whole thing with one button — or cue a single deck on its own first."
+
+---
+
+## 53. Lead & Sync — beat-matching to a reference deck
+
+Tap **Lead (★)** on a deck to make it the **tempo reference** — it's **exclusive** (tapping the
+current Lead clears it). On the *other* deck, **Sync** matches its **tempo** (playback rate) to the
+Lead's **effective BPM**, **octave-folded** into the 0.5–2.0× range — so a 70-BPM track half- or
+double-times to lock against a 140 — then **best-effort phase-aligns the downbeats**.
+
+Crucially, the match prefers each song's **MEASURED beat-grid BPM** (from the rips indexer, measured
+on the *exact* burned file) over the catalog's **rounded** BPM — so a sync doesn't slowly drift the
+way it would off a `120`-vs-`119.7` rounding error. **Sync** is only enabled when there's a Lead that
+isn't this deck and **both decks have a known BPM**.
+
+**User story:** "Pick one deck as the reference, hit Sync on the other, and have it actually lock —
+to the tempo I measured off the record, not a rounded guess — with the downbeats lined up to mix on."
+
+---
+
+## 54. Auto-Mix — the auto-DJ
+
+A **Manual / Auto** toggle sits in the Mix toolbar — one tap flips the mode. In **Auto**, pick a
+**collection** (a pocket or a set list) from the toolbar picker, then hit **▶ Play** (in listed
+order) or **🔀 Shuffle**. The engine plays the whole collection **end-to-end across the two decks** —
+**auto-loading the next track** onto the free deck and running a **timed crossfade** between them
+(the lead-in and fade lengths come from Settings).
+
+While it runs, a live **"Auto-mixing"** banner shows the running status (**N / M**) with a **Stop**.
+The banner lives in the body of the screen (not only the nav bar), so on an iPhone — where a crowded
+toolbar collapses extras into a "•••" menu — the **Stop stays reachable** the whole time.
+
+**User story:** "Point it at a pocket, hit Play or Shuffle, and let it DJ the whole crate for me —
+crossfading track to track on its own — with a Stop I can always find."
+
+---
+
+## 55. Stems I — the SongDetail stem-audition panel
+
+The simplest place to meet **stems** is a song's own detail screen. On a **stemmed** song the
+detail-view transport grows a **stem glyph (☰)**; tap it to **slide out a "Stems" panel** beneath the
+inline player.
+
+**It burns first, then plays — fully offline.** On open the panel **burns the 4 stems** to the
+offline store — *"Burning stems for offline playback…"* — because stems are **never streamed**; once
+on disk it reads **"4 · offline"** and they play with no network. The panel then shows **four rows —
+Vocals · Drums · Bass · Other** — each with a **solo ▶** ("play just this one") and a **🔊 / 🔇 mute**
+toggle, over a **shared scrubber**, with a **centered "Play All"** that starts **every stem in perfect
+sync from 0:00, all audible**, so you can then **mute and solo live**. Play All becomes **Pause /
+Resume** mid-track (keeping your mute set and position), and a **↺** restarts from the top.
+
+This panel is the **end-to-end test bed** for the stem feature — the same **synchronized multi-stem
+player** the Mix decks reuse, proven on one song before it reaches the two-deck console.
+
+**User story:** "On any stemmed song, pull out the four parts, hit Play All, and start muting the
+vocal or soloing the drums — all in sync, all working with no signal."
+
+---
+
+## 56. Stems II — the Mix stem decks (the coloured 2×2 grid)
+
+On the Mix tab, load a **stemmed + burned** track onto a deck and a **"Stems"** toggle appears
+**between Sync and Reset**. Tap it — it **burns the 4 stems first if they aren't on disk** (a brief
+spinner) — to enter **stem mode**, which reveals a **2×2 STEM GRID** under the effects:
+
+- **Vocals (purple) · Drums (yellow) · Bass (red) · Other (green).**
+
+The four stems play **in sync through the deck's effects + crossfader** — so the **tempo, pitch, the
+effects grid and the crossfade all act on the stem mix**, exactly as they do on a normal track.
+**TAP** a pad to **MUTE** that stem (it **greys out**, with a speaker-slash); tap again to unmute.
+**LONG-PRESS / RIGHT-CLICK** a pad for that stem's **VOLUME**. The grid **only shows in stem mode**,
+so a normal deck stays compact.
+
+The volume control follows the same screen-aware split as the effects (§51): **iPhone portrait** opens
+the per-stem slider as a **fixed-width popover** (the in-place flip is too narrow to drag there,
+dismissing on outside-tap or after 3 s idle), while **landscape / iPad / macOS** flip the pad **in
+place**.
+
+**User story:** "Drop a stemmed record on a deck, tap Stems, and now I'm muting the vocal and
+riding the bass right inside the mix — through the same effects and crossfader as everything else."
+
+---
+
+## 57. Stems III — burn a collection's stems · mix entirely offline
+
+Stems are only useful in the field if they're **on the device**, so **burning a collection now also
+pulls every stemmed song's 4 stems** into the burn folder — alongside the audio and sidecars (§43,
+§48). The result: a **burned collection plays *and* mixes entirely offline**, stems included.
+
+It's **idempotent and stop-aware**. Re-burning fetches **only the stems that are missing**, so it
+**picks up songs that became stemmed since** the last burn (driven by a **"Burning stems X of N"**
+pill); a stem that fails to download **never fails the burn** (the album audio still plays). And
+burning **only fetches what the server has already separated** — it **never triggers** separation
+itself.
+
+The stems are produced **server-side** by a **Stemify collection / song** action — an on-demand
+**Demucs** stem-separation indexer (**htdemucs**). So the full pipeline reads: **rip → stemify →
+burn**, and the whole crate lands on the phone as a **fully-offline, stem-mixable DJ set**.
+
+**User story:** "Stemify the records I want to take apart, burn the set once, and have every stem
+on my phone — so I can mute, solo and remix in a venue with no bars and no server."

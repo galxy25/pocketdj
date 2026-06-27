@@ -24,12 +24,18 @@ without a generate step; `build*/` and Xcode user state are gitignored.
 apple/
   project.yml                 # XcodeGen spec (one app target + 2 test bundles)
   PocketDJ/
-    PocketDJApp.swift          Support/   Models/   Services/
-    State/   Browse/   Views/   Settings/   Resources/   Assets.xcassets
+    PocketDJApp.swift          AppDelegate.swift   Support/   Models/   Services/
+    State/   Browse/   Views/   Settings/   Performance/   Resources/   Assets.xcassets
+    Mix/         # MixEngine/MixView — first-party AVAudioEngine two-deck DJ engine
+    Playback/    # SetlistPlayer, PlayerEngine, StemPlayer, rip/Apple-Music providers
+    Services/    # CatalogService, RipServerService, Streaming/, Search/, Shazam/
   Tests/
-    Unit/  (PocketDJTests — pure logic, fixture-backed)
-    UI/    (PocketDJUITests — XCUITest, app.el helper)
+    Unit/      (PocketDJTests — pure logic, fixture-backed)
+    Fixtures/  (fixture-index.json + bundle resources for both test bundles)
+    UI/        (PocketDJUITests — XCUITest, app.el helper)
   scripts/test-macos.sh        # ad-hoc-signed macOS test run
+  scripts/deploy-iphone.sh     # signed build → install → launch on the device
+  scripts/testflight.sh        # archive Release + upload to TestFlight (apple-publish)
   docs/build-and-test.md       # this file
 ```
 
@@ -87,6 +93,20 @@ bash scripts/test-macos.sh
   *or* label across element types, so toolbar buttons + the segmented picker
   resolve on macOS (where they're `.toolbars`/`.radioButtons`, not `.buttons`).
 
+### What only verifies on real hardware
+
+The simulator/fixture suite covers browse, collections, settings, and playback-mode
+toggles offline. A few capabilities can't be fully exercised there and need an
+**on-device** run (`scripts/deploy-iphone.sh` — signed build → install → launch):
+
+- **Mix decks + Stems** read **local audio files**, so a Setlist must be **burned**
+  to the on-device Burns folder first; the simulator can't stream-mix or audition
+  stems. (Stem files come from the rip server's `/stemify` endpoints; see
+  *Stem runtime* in the repo-root `Development.md`.)
+- **Background audio** (playback continuing when backgrounded — the `UIBackgroundModes`
+  `audio` mode) and **background-URLSession rips/burns** (the `fetch`/`processing`
+  BGTasks) behave differently in the simulator; confirm them on the phone.
+
 ## Signing (the saga, so nobody re-derives it)
 
 `project.yml`: **automatic** signing, team **EC27UF79GL** (Levi Schoen). That is
@@ -118,3 +138,21 @@ action that buys nothing over ad-hoc for local testing.
 `xcrun simctl io <UDID> screenshot out.png` works with no extra permissions.
 `screencapture` (for the Mac window) needs Screen Recording granted to the
 terminal/host — otherwise it errors `could not create image from display`.
+
+## Publishing (TestFlight)
+
+Distribution is the **local-archive** path (no Xcode Cloud) via the **apple-publish**
+skill → `scripts/testflight.sh`:
+
+```bash
+cd apple
+ASC_KEY_ID=… ASC_ISSUER_ID=… ./scripts/testflight.sh   # or export them once in config.fish
+```
+
+It runs `xcodegen generate` → `xcodebuild archive` (Release, iOS, **cloud-signed** via
+an App Store Connect API key — role **must be Admin**) → `-exportArchive`
+`destination=upload`. The build number defaults to a unix timestamp, so uploads never
+collide. Signing team **EC27UF79GL**; `ITSAppUsesNonExemptEncryption: false` (base
+Info.plist) makes builds land **Ready to Submit** with no per-upload export-compliance
+prompt, and the **Alphas** internal group auto-receives every build. The full
+prerequisite/troubleshooting playbook is the **apple-publish** skill.

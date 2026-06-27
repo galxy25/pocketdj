@@ -1,5 +1,14 @@
 # Mix Tab — On-Device Tempo / Pitch / Beat-Match Prototype Spec
 
+> **⚠️ UPDATE (2026-06-26): SHIPPED.** Real tempo-shift, pitch-shift, sample-accurate seek, and
+> grid-aware beat-matching now ship on the Mix tab — built on a **first-party `AVAudioEngine`
+> graph** (`apple/PocketDJ/Mix/MixEngine.swift`), NOT the vendored Switchboard SDK (which was
+> removed). The beat-grid indexer this spec calls for also shipped. Per-deck **stem decks** were
+> added on top. For the as-built system see the Architecture Book
+> [Ch. 4 §7 "The Mix engine"](../architecture/04-performance-engine.md). The text below is
+> preserved as the original research plan; the shipped implementation differs (e.g. node order,
+> first-party vs. Switchboard) — follow the architecture book + code for current reality.
+
 > **Status: research / not yet built.** Captured 2026-06-25 from the `mix-dsp-prototype`
 > multi-agent workflow (5 agents, ~384k tokens). The Mix tab currently ships the *controllable
 > subset* only (load · play/pause · volume · crossfader · effects · rewind) because the vendored

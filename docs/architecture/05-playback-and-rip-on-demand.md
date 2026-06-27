@@ -40,23 +40,27 @@ manifest in memory.
 
 | Method · Path | Purpose | Response |
 |---|---|---|
-| `GET /health` | version handshake + stats | `{ ok, host, version, hls, bucket, catalog:{songs,albums}, cached, auth }` |
+| `GET /health` | version handshake + stats | `{ ok, host, version, hls, stems, analogBase, bucket, catalog:{songs,albums}, cached, auth }` |
 | `GET /status/:songId` | is it ripped? | `{ ready:true, url, entry }` or `{ ready:false, job }` |
 | `POST /rip` `{songId}` | start/join a rip | `JobView` |
 | `POST /rip-collection` `{songIds[]}` | batch-enqueue a whole collection (reuses the durable queue) | `{ results:[{songId,status,jobId,url}], counts }` |
 | `POST /rip-cancel` `{songIds[]}` | cancel queued matching jobs + kill the in-flight capture child (§2.1) | `{ results:[{songId,status}], counts }` (`status ∈ canceled\|notFound\|alreadyDone`) |
 | `GET /jobs/:id` | poll a job | `JobView` |
 | `GET /hls/<songId>/index.m3u8` · `…/seg_N.ts` | live HLS (iOS-native) | playlist / TS segment |
-| `GET /stream/<songId>.mp3` | live progressive mp3 (tail) | chunked `audio/mpeg` |
 | `POST /analysis` `{songId,bpm,…}` | external analysis submit | `{ ok, songId }` |
+| `POST /backfill-cuts` · `POST /retag-cuts` | analog per-song CUT export / re-tag (§14) | `{ ok, candidates }` |
+| `POST /backfill-beatgrids` | compute measured beat grids over the corpus (§15.1) | `{ ok, candidates }` |
+| `POST /stemify` `{songId}` · `/stemify-collection` `{songIds[]}` · `/stemify-cancel` `{songIds[]}` · `/backfill-stems` | Demucs 4-stem separation (§15) | `StemJobView` / counts |
 
 Auth is an **optional** bearer token (`RIP_TOKEN`): all gated routes go through one
 shared `authed()` check that is **permissive (public) when no token is configured** — so
 during development the server runs **tokenless / public** for frictionless integration
 testing. `/rip` and `/rip-collection` sit below the *same* gate, so they are public (or
-gated) **identically**; there is no `/rip-collection`-specific fail-closed branch. Media
-paths (`/hls`, `/stream`) also accept `?token=` because a native `<audio>` can't set an
-Authorization header. `version` is `RIP_PROTOCOL = 2`; the client
+gated) **identically**; there is no `/rip-collection`-specific fail-closed branch. The HLS
+media path (`/hls`) also accepts `?token=` because a native player can't set an
+Authorization header. (The legacy progressive-mp3 `/stream/<id>.mp3` route has been
+**removed** — iOS needs HLS, and the durable public mp3 covers every non-live play.)
+`version` is `RIP_PROTOCOL = 2`; the client
 (`EXPECTED_RIP_VERSION = 2`, `RipServerService.expectedVersion = 2`) shows an
 "outdated — restart it" banner if a reachable server reports `< 2`.
 
@@ -316,7 +320,11 @@ off.
    ManifestEntry { key:"rips/<id>.mp3", ext, bytes, source:'analog'|'digital',
                    albumId?, startMs?, durationMs?, rippedAt,
                    bpm?, musicalKey?, camelot?, waveform?, analyzed?,
-                   cutKey?, cutBytes?, cutRippedAt? }   // analog per-song CUT (§14)
+                   cutKey?, cutBytes?, cutRippedAt?,                    // analog per-song CUT (§14)
+                   firstBeatMs?, firstDownbeatMs?, beatGridBpm?, beatsPerBar?,   // BEAT GRID (§15.1)
+                   tempoConfidence?, tempoVar?, steady?, beatgrid?, analysisVersion?,
+                   stems?:{vocals,drums,bass,other}, stemModel?, stemVersion?,    // STEMS (§15)
+                   stemFormat?, stemmedAt?, stemBytes? }
 
  JobView { jobId, songId, phase:RipPhase, message?, url?, error?,
            streamUrl?(/hls/<id>/index.m3u8), progress?{elapsedMs,totalMs,pct,indeterminate} }
@@ -329,10 +337,14 @@ where the audio lives (`key`), how it was made (`source`), the auto-seek
 analysis (`bpm`/`musicalKey`/`camelot`/`waveform`/`analyzed`). For an **analog** entry it
 may also carry the per-song **CUT** triple (`cutKey`/`cutBytes`/`cutRippedAt`) — the
 individual track sliced out of the album for the Burn's single-file export, §14;
-playback is unchanged (album `key` + `startMs` seek). `JobView` is the client-facing job
-projection: `phase` (the `RipPhase` enum), an optional `streamUrl` once live HLS is
-ready, and `progress` (definite for a real-time digital capture, `indeterminate`
-otherwise).
+playback is unchanged (album `key` + `startMs` seek). Two further analysis groups attach
+**additively** (every field optional, so older entries decode unchanged): the **beat grid**
+(`beatGridBpm`/`firstDownbeatMs`/`steady` + the rest, the measured downbeat grid the Mix
+engine's Sync rides — §15.1) and the **stem** keys (`stems:{vocals,drums,bass,other}` + the
+Demucs provenance — §15). `JobView` is the client-facing job projection: `phase` (the
+`RipPhase` enum), an optional `streamUrl` once live HLS is ready, and `progress` (definite
+for a real-time digital capture, `indeterminate` otherwise). Stem jobs poll their own
+`StemJobView` off a dedicated stem queue (§15).
 
 **`rippedAt` — the freshness stamp for offline burns.** The server writes `rippedAt =
 Date.now()` into the manifest entry whenever a rip completes and uploads (analog album
@@ -723,6 +735,21 @@ make the layout eviction-ready. Offline playback and live mixing themselves are
 `PlayerEngine.load(url:live:startMs:title:artist:…)` (§7), which already accepts any local
 URL + `startMs`. The human-readable `<songId>.txt` sidecar mirrors the `burn-setlist`
 skill's format (§6) as a companion; the JSON index, not the prose, is the source of truth.
+
+**Burning the stems too (so a burn *mixes* offline, not just plays).** After the audio +
+sidecar pass, `burn(...)` runs **`burnCollectionStems(songs, dir:)`** so a burned collection
+can drive the Mix tab's **stem decks** (Ch. 4 §7.6) and the **stem-audition panel** (§15)
+with **no network**. It considers only songs the **server has already stemmed**
+(`rips.manifest[id]?.stemVersion != nil` — burning **fetches** stems, it never triggers
+separation), **skips** any whose four stems are already on disk (`stemFilesPresent`), is
+**STOP-aware** (between songs) and **best-effort** (a stem failure never fails the burn), and
+drives its own "Stems · …" progress pill. `downloadStems(songId:dir:)` writes the four parts
+under deterministic `stem-<songId>-<part>.mp3` names (`stemNames =
+[vocals,drums,bass,other]`) — these are **not** tracked in the `BurnItem` ledger (their names
+can't collide with the audio/cut suffixes). Because the pass runs on **every** `burn(...)`
+and is idempotent, **re-burning a collection picks up stems that became available since** the
+last burn; the count lands in `BurnResult.stemmedSongs`. (A per-song `burnStems(forSong:) →
+(urls, release)` does the same for the SongDetail audition, §15.)
 
 **`localURLForPlayback` — the scope-held playback resolver.** `localURL(forSong:)` is the
 **existence-check** path: it opens the user-folder scope, stats the file, and **stops the
@@ -1321,6 +1348,124 @@ download, writes atomically, and records `cutFileName`/`cutDownloadedAt`. A cut 
 optional for back-compat decode), and `finalizeBurn` **preserves** them when the later
 background album-download finalizes the item (otherwise rebuilding the item would drop the cut
 fields written during the in-process cut pass).
+
+---
+
+## 15. Stems end-to-end — server Stemify, offline stem store, and stem audition
+
+**Why.** Mixing the *parts* of a track — drop the vocal, ride the drums — is the marquee
+DJ move the Mix engine's **stem decks** (Ch. 4 §7.6) want. That needs four isolated stems
+per song, computed once on the iMac and carried to the phone like any other rip. So
+**Stemify** is a third capture pipeline beside analog-rip and digital-rip: the rip server
+runs **Demucs** to separate a song into four stems, uploads them to the **public** rips
+cache, and stamps the manifest — and the Burn (§9) pulls them so a burned collection
+**mixes** fully offline.
+
+**Source of truth:** the rip server's stem pipeline + endpoints in
+[`scripts/rip-server.mjs`](../../scripts/rip-server.mjs) (`stemQ`, `applyStems`,
+`/stemify*`, `/backfill-stems`) and the separator
+[`scripts/lib/audio-stem.mjs`](../../scripts/lib/audio-stem.mjs) +
+[`scripts/stems-index.sh`](../../scripts/stems-index.sh); the Docker/Python assets under
+[`.claude/skills/analog-indexer/stems/`](../../.claude/skills/analog-indexer/stems/)
+(`Dockerfile`, `separate-one.py` — a sub-asset of the analog-indexer, sibling to the
+librosa `audio/` stage); the device side in
+[`apple/PocketDJ/Playback/StemPlayer.swift`](../../apple/PocketDJ/Playback/StemPlayer.swift)
++ [`apple/PocketDJ/Views/StemAuditionPanel.swift`](../../apple/PocketDJ/Views/StemAuditionPanel.swift)
+(audition) and the manifest reader in
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
+(`stems`/`stemVersion`/`isStemmed`/`stemURLs`). Design:
+[`docs/design/stems-demucs-stemify-spec.md`](../design/stems-demucs-stemify-spec.md).
+
+```
+ SERVER — POST /stemify {songId}  (or /stemify-collection, /backfill-stems[stale-only])
+   source-select (mirrors beatgrid): digital → its rips/<id>.mp3 ; analog → its CUT rips/<id>.cut.mp3
+        (stems are PER-SONG, keyed by songId — an analog song stems its cut, NEVER the album side)
+   dedicated concurrency-1 stemQ  (durable intent <tmp>/stem-queue/<songId>.json,
+        watchdog ~30min, STEM_MAX_ATTEMPTS=3 poison cap, DEFERS while a real-time capture runs)
+   Demucs htdemucs (v4 default; POCKETDJ_DEMUCS_MODEL) → 4 stems vocals/drums/bass/other, mp3 256k
+        runtime: native MPS on Apple Silicon (default) · Docker-CPU pocketdj-stems (fallback)
+   aws s3 cp → rips/stems/<songId>/<stem>.mp3   (PUBLIC rips/ prefix)
+   applyStems(entry): stems{vocals,drums,bass,other}=keys · stemModel · stemVersion(=1) ·
+                      stemFormat · stemmedAt · stemBytes      (additive; presence ⇒ stemmed)
+        │
+        ▼  GET /health → { …, stems:true }   (capability flag — NO protocol bump)
+ DEVICE — burn pulls them (§9 burnCollectionStems) → stem-<songId>-<part>.mp3 in the burn folder
+   Mix stem decks (Ch.4 §7.6)  ·  SongDetail stem-audition panel (§15.2)
+```
+
+**Reading it — the server.** `/stemify` (per-song), `/stemify-collection` (batch, capped),
+`/stemify-cancel` (Stop), and `/backfill-stems` (re-stem only stale/missing) all feed a
+**dedicated concurrency-1 `stemQ`** that is separate from the rip queue, with its own
+durable per-`songId` intent dir, a ~30-min watchdog, a `STEM_MAX_ATTEMPTS = 3` poison-input
+cap, and a gate that **defers stemming while a real-time rip capture is running** (CPU/GPU
+contention). The source is **per-song**: a digital song stems its own mp3, an analog song
+stems its **per-song cut** (§14) — never the shared album side — so stems are always keyed by
+`songId`. Separation runs **Demucs `htdemucs`** (v4, the one `POCKETDJ_DEMUCS_MODEL` knob;
+4-stem only) producing **`vocals`/`drums`/`bass`/`other` as 256 kbps mp3**, preferring the
+**native MPS** runtime on the Apple-Silicon iMac and falling back to a **Docker-CPU**
+(`pocketdj-stems`) image. The four files upload to the **public** `rips/stems/<songId>/`
+prefix and `applyStems` folds the additive `stems`/`stemModel`/`stemVersion`/`stemFormat`/
+`stemmedAt`/`stemBytes` fields onto the manifest entry (§5) **only after all four upload**.
+`GET /health` advertises the capability as a plain **`stems: true`** flag — no `RIP_PROTOCOL`
+bump, since the fields are additive and old clients simply ignore them. Stemming is
+**idempotent** (already-stemmed at the current version+model ⇒ skip).
+
+### 15.1 The beat-grid indexer — a measured downbeat grid for Sync
+
+**Why.** The catalog `bpm` and the per-rip analysis `bpm` are single numbers; **beat-matching**
+(Ch. 4 §7.4) wants a *grid* — a real downbeat phase and a tempo measured on the **exact file**
+that will play — so two decks can phase-align, not just tempo-match. So a separate analysis
+pass computes a **librosa downbeat grid** and folds it into the manifest.
+
+**`POST /backfill-beatgrids`** (background, idempotent, single-flight, resumable) walks the
+corpus and runs `analyzeBeatgridForSong(songId)` — sourcing the **same per-song audio the
+stemmer does** (digital → its mp3, analog → its cut) and calling the librosa analyzer
+(`scripts/lib/audio-analyze.mjs`, `analyzeAudio(… withBeatgrid:true)`). `applyBeatgrid` writes
+**`firstBeatMs`, `firstDownbeatMs`, `beatGridBpm`, `beatsPerBar`, `tempoConfidence`,
+`tempoVar`, `steady`**, plus a **`beatgrid`** S3 key (a lazy per-beat sidecar
+`rips/analysis/<id>.json`) and an **`analysisVersion`** stamp. That version is the **shared
+bpm/key/beat-grid `ANALYSIS_VERSION`** (distinct from the stems' own `stemVersion`), so a
+Demucs model change never forces a beat-grid re-run and vice-versa. The Mix engine reads the
+grid at load via `BurnStore.beatGrid(forSong:)` → `manifest[id]`'s `beatGridBpm`/
+`firstDownbeatMs`/`steady`, and **prefers `beatGridBpm` over the catalog `bpm`** when syncing
+(Ch. 4 §7.4). The native `ManifestEntry` decodes all of these as optionals (Ch. 3 §4.3), so an
+un-gridded song just falls back to the catalog tempo.
+
+### 15.2 The SongDetail stem-audition panel — burn-then-play-in-sync
+
+**Why.** Before committing stems to a live mix, the DJ wants to *hear* the isolated parts —
+solo the vocal, mute the drums — right on the song's detail screen. The
+**`StemAuditionPanel`** is that: a SongDetail-only panel that **burns the four stems locally
+then plays them back perfectly in sync**, fully offline.
+
+**Source of truth:**
+[`apple/PocketDJ/Playback/StemPlayer.swift`](../../apple/PocketDJ/Playback/StemPlayer.swift)
+(the 4-node sync engine),
+[`apple/PocketDJ/Views/StemAuditionPanel.swift`](../../apple/PocketDJ/Views/StemAuditionPanel.swift)
+(the panel; the `StemPlayer` is owned by `SongDetailView` so it survives panel re-renders).
+
+```
+ StemAuditionPanel.task(id: song.id):  phase=.burning → burns.burnStems(forSong:) → (urls, release)
+   → player.load(songId:, localURLs:, release:) → phase=.ready          (LOCAL FILES ONLY — no stream)
+
+ StemPlayer (@MainActor @Observable):  4× AVAudioPlayerNode → engine.mainMixerNode → output
+   startSynced(from:): scheduleSegment each stem, start ALL at ONE shared AVAudioTime → sample-accurate
+   lead node (prefers vocals) owns the end signal ; a generation counter voids stale completions
+   solo/mute = node.volume 0|1 (glitch-free) ; per-stem rows + shared TimelineView scrubber + "Play All"
+```
+
+**Reading it.** On appear the panel sets `phase = .burning`, calls
+**`BurnStore.burnStems(forSong:)`** (idempotent — returns existing local files, or burns the
+four and returns them, **with the security scope held** via a `release` closure), then
+`StemPlayer.load(songId:localURLs:release:)` and `phase = .ready`. **`StemPlayer`** runs four
+`AVAudioPlayerNode`s into the engine main mixer; `startSynced` schedules every stem and starts
+**all of them at one shared `AVAudioTime`**, so they're **sample-accurate**; a **lead node**
+(preferring `vocals`) owns the end-of-track signal and a **generation counter** invalidates
+stale schedule-completions after a seek/stop. **Solo/mute** is an instant, glitch-free
+`node.volume` toggle (0/1). The panel renders per-stem solo/mute rows, a shared
+`TimelineView` scrubber, and a centered **Play-All** master. Like the Mix stem decks it is
+**offline-only** — it plays **local burned files**, never a stream — and `.onDisappear`
+releases the held folder scope.
 
 ## Next
 

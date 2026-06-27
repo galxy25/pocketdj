@@ -86,7 +86,7 @@ catalog from CloudFront, play from the rips bucket, and search the `aoss` collec
 |---|---|---|---|
 | **iMac (central server)** | `levis-imac` | All production: source media, indexers, rip server, the `levi` AWS creds, the deployer | this chapter + 2, 5 |
 | **S3 web bucket + CloudFront** | AWS us-west-2 | Public-read serving of catalog/art/app-shell/search-proxy | 7 |
-| **S3 rips bucket** | AWS us-west-2 | Public-read audio cache (`rips/<id>.mp3` + manifest) | 5 |
+| **S3 rips bucket** | AWS us-west-2 | Public-read audio cache (`rips/<id>.mp3` + per-song cuts + `rips/stems/<id>/*` + manifest) | 5 |
 | **Web PWA** | browser (installable) | A device-local IndexedDB copy of the catalog + collections | 7 |
 | **SwiftUI apps** | iPhone/iPad/Mac | A device-local catalog + a versioned edits overlay | 7 |
 | **Rip server API** | iMac, exposed via Tailscale | Creating rips on demand; the job state machine | 5 |
@@ -119,8 +119,9 @@ coordination.
   into one shape.
 - **Personal catalog** → Chapter 3 is the data model that one shape becomes.
 - **Playlists you produce** → Chapter 4 is pockets → playlists → setlists, and the
-  realize engine (where **AI auto-mixing/auto-building lands next**).
-- **Play & mix** → Chapter 5 makes the catalog audible anywhere (rip-on-demand).
+  realize engine, **and the two-deck Mix engine** (where **AI auto-*building* lands next**).
+- **Play & mix** → Chapter 5 makes the catalog audible anywhere (rip-on-demand,
+  offline burns, stems); Chapter 4 §7 is the two-deck Mix engine that beat-matches it.
 - **Find the right record** → Chapter 6 is discovery + online search.
 - **Portable, anywhere** → Chapter 7 is distribution + the thin clients + the edits
   round-trip.

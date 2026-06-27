@@ -113,6 +113,42 @@ converging on the shared backends.
 - rips `https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com`
 - rip server `https://levis-imac.tail2e2bdf.ts.net` (Tailnet-only)
 
+### 2.1 The native target — one universal SwiftUI app (XcodeGen)
+
+**Why.** The native client must feel native on iPhone, iPad, **and** Mac without
+maintaining three codebases. So `apple/` is **one universal SwiftUI app target** —
+not per-platform targets — driven by **XcodeGen** so the project file is generated,
+reviewable, and never hand-edited.
+
+**Source of truth:** [`apple/project.yml`](../../apple/project.yml) (the XcodeGen spec)
++ the `apple-build` / `apple-publish` / `apple-test` skills.
+
+```
+ apple/project.yml  →  xcodegen generate  →  PocketDJ.xcodeproj (never committed-by-hand)
+   ONE app target  PocketDJ  (type: application)
+     supportedDestinations: [iOS, macOS]      ← multiplatform target, NOT destination:auto
+     TARGETED_DEVICE_FAMILY = "1,2"            ← iPhone (1) + iPad (2)
+     deploymentTarget: iOS 18.0 · macOS 15.0
+     PRODUCT_BUNDLE_IDENTIFIER com.levi.pocketdj   DEVELOPMENT_TEAM EC27UF79GL (Automatic)
+     SPM: ZIPFoundation (+ commented-out opt-in SpotifyiOS / YouTubeiOSPlayerHelper, §5.3)
+   + two test targets  PocketDJTests / PocketDJUITests  (.tests / .uitests)
+```
+
+**Reading it.** One `application` target with **`supportedDestinations: [iOS, macOS]`**
+(XcodeGen's multiplatform form) times **`TARGETED_DEVICE_FAMILY "1,2"`** yields all three
+runtime shapes — iPhone, iPad, Mac — from a single build; platform forks in code are
+`#if os(iOS)` / `#if os(macOS)` (the toolbar transport §5.4 is the canonical example).
+The Mix DSP engine (Ch. 4 §7) is **first-party AVAudioEngine**, so the target links **no
+third-party audio SDK**; the only default SPM dependency is `ZIPFoundation` (the
+interchange zips, §3.5). Generated artifacts (`Generated/Info.plist`, the `.xcodeproj`)
+come from `project.yml`, so a file added through the Xcode UI is **dropped on the next
+`xcodegen generate`** — edits go in `project.yml`. The `apple-build` skill drives the
+local/simulator/Mac builds: `xcodegen generate`, then `xcodebuild -scheme PocketDJ`
+against `generic/platform=iOS Simulator` (with `CODE_SIGNING_ALLOWED=NO`) or
+`platform=macOS` (built unsigned, then **ad-hoc** `codesign --sign -` + de-quarantine so
+the Mac `.app` opens) — automatic signing against team `EC27UF79GL` for device/archive
+builds.
+
 ---
 
 ## 3. The edits database & the round-trip
@@ -330,6 +366,44 @@ The [`backfill-rip` skill](../../.claude/skills/backfill-rip/SKILL.md) turns tha
 S3 manifest up front (reporting already-ripped vs to-rip) and is **idempotent** (the server
 skips songs already in the manifest), so re-running is safe; ripping is real-time at
 concurrency-1, so it's a long unattended job (`scripts/rip-server.mjs` must be running).
+
+### 4.1 Native release — TestFlight (the `apple-publish` loop)
+
+**Why.** The PWA ships by syncing static files to S3 (§4); the native app ships through
+**App Store Connect / TestFlight**. It's a **local-archive** path — no Xcode Cloud — so a
+single command on the iMac builds, signs for distribution, and uploads a build that
+auto-shares to the beta testers.
+
+**Source of truth:** the `apple-publish` skill + [`apple/scripts/testflight.sh`](../../apple/scripts/testflight.sh)
+(sibling of the `apple-build` skill §2.1, which makes local/simulator/Mac builds).
+
+```
+ cd apple ; ASC_KEY_ID=… ASC_ISSUER_ID=… ./scripts/testflight.sh
+   xcodegen generate
+   xcodebuild -scheme PocketDJ -configuration Release -destination 'generic/platform=iOS'
+       -authenticationKeyPath/ID/IssuerID  -allowProvisioningUpdates   clean archive
+       (BUILD_NUMBER = $(date +%s) → CURRENT_PROJECT_VERSION, so uploads never collide)
+   write ExportOptions.plist { method:app-store-connect, destination:upload,
+                               teamID:EC27UF79GL, signingStyle:automatic, uploadSymbols }
+   xcodebuild -exportArchive  → upload to App Store Connect (App ID 6784031333,
+                                "Pocket DJ - Rip, Burn, Mix")
+   → "Alphas" internal group set "Automatic for Xcode Builds" → over-the-air to testers
+```
+
+**Reading it.** `testflight.sh` regenerates the project (§2.1), **archives** a **Release**
+build signed for distribution via an **App Store Connect API key** (`.p8` under
+`~/.appstoreconnect/private_keys/`, an **Admin**-role key — passed to the archive +
+`-allowProvisioningUpdates` so signing is hands-off), stamps a **unix-timestamp build
+number** so successive uploads never clash, then `-exportArchive`s with an
+**`app-store-connect` / `upload`** `ExportOptions.plist` to push the build to App Store
+Connect. Because **`ITSAppUsesNonExemptEncryption: false`** is baked into the Info.plist
+(§5.3), the build lands **"Ready to Submit"** with no per-build export-compliance prompt, and
+the **"Alphas"** internal testing group (set "Automatic for Xcode Builds") distributes every
+upload **over the air**. A one-time GUI archive bootstraps the Apple Distribution cert +
+grants the key headless keychain access; the App ID still needs its **MusicKit App Service**
+enabled (§5.3). For tight on-device iteration *without* the Connect round-trip, the dev-device
+helper `apple/scripts/deploy-iphone.sh` (§6.1) builds → installs → launches straight onto a
+tethered iPhone.
 
 ---
 

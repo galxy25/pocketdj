@@ -20,15 +20,19 @@ from `project.yml` — a single multiplatform app target (iPhone + iPad + Mac).
 
 ```
 apple/
-  project.yml                 # XcodeGen spec → PocketDJ.xcodeproj
+  project.yml                 # XcodeGen spec → PocketDJ.xcodeproj (1 app + 2 test bundles)
   PocketDJ/
-    PocketDJApp.swift         # @main App
+    PocketDJApp.swift         # @main App   AppDelegate.swift   Generated/Info.plist
     Support/                  # Config, Theme, Format, Camelot
     Models/IndexModels.swift  # Codable for current-index.json
-    Services/CatalogService.swift
+    Services/                 # CatalogService, RipServerService, Streaming/, Search/, Shazam/
     State/AppModel.swift
-    Views/                    # RootView, BrowseView, AlbumDetailView, CoverImage
-    Assets.xcassets
+    Browse/  Views/  Settings/ Performance/        # browse grid, star map, collections engine
+    Mix/                      # MixEngine/MixView — first-party AVAudioEngine two-deck DJ engine
+    Playback/                 # SetlistPlayer, PlayerEngine, StemPlayer, rip/Apple-Music providers
+    Resources/  Assets.xcassets
+  Tests/{Unit,UI,Fixtures}    # PocketDJTests (pure logic) + PocketDJUITests (XCUITest)
+  scripts/                    # test-macos.sh, deploy-iphone.sh, testflight.sh
 ```
 
 ## Build / regenerate
@@ -44,16 +48,47 @@ open PocketDJ.xcodeproj       # then build/run for My Mac / an iPhone / an iPad
 
 ### Command line
 
+For scripted / CI-style builds pass `CODE_SIGNING_ALLOWED=NO` (simulators need no
+signing; for macOS, build unsigned then ad-hoc sign so Gatekeeper allows launch):
+
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-# Mac
-xcodebuild -project PocketDJ.xcodeproj -scheme PocketDJ -destination 'platform=macOS' build
-# iPhone / iPad simulators
-xcodebuild -project PocketDJ.xcodeproj -scheme PocketDJ -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+# iPhone / iPad simulators (no signing)
+xcodebuild -project PocketDJ.xcodeproj -scheme PocketDJ \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+  CODE_SIGNING_ALLOWED=NO build
+# Mac (build unsigned, then ad-hoc sign the .app)
+xcodebuild -project PocketDJ.xcodeproj -scheme PocketDJ -destination 'platform=macOS' \
+  -derivedDataPath build-mac CODE_SIGNING_ALLOWED=NO build
+codesign --force --deep --sign - build-mac/Build/Products/Debug/PocketDJ.app
 ```
+
+The **apple-build** / **apple-test** skills wrap these (generate → build → install
+→ launch → screenshot, and the per-device test matrix). Tests run against a bundled
+fixture (`PDJ_USE_FIXTURE=1`); the macOS UI suite must go through
+`scripts/test-macos.sh` (ad-hoc signs the runner). Full reference:
+[`docs/build-and-test.md`](docs/build-and-test.md).
+
+### Ship to TestFlight
+
+The **apple-publish** skill runs `scripts/testflight.sh` (xcodegen → archive Release
+for iOS → cloud-signed export → upload to App Store Connect). Signing team
+**EC27UF79GL**; `ITSAppUsesNonExemptEncryption: false` (in the base Info.plist) means
+builds land "Ready to Submit" with no per-upload export-compliance prompt, and the
+"Alphas" internal group auto-receives every build. On-device install for manual
+testing: `scripts/deploy-iphone.sh` (signed build → install → launch on the iPhone).
 
 ## Status
 
-v1 vertical slice: remote catalog load → **Browser** grid → **Album** track
-table with BPM / key / Camelot. Star Map, Pockets, Playlists, Setlists, and the
-rip/stream player are stubbed and on the roadmap.
+Shipped and universal across iPhone / iPad / Mac: remote catalog load → **Browser**
+grid + **Star Map** → **Album** track table (BPM / key / Camelot), **Pockets /
+Playlists / Setlists** with the realize/performance engine, **rip-on-demand + live
+streaming** (rip server + public S3 rips), **Apple Music** streaming, offline
+**Burns**, the **Mix** two-deck DJ engine (first-party AVAudioEngine: tempo / pitch /
+seek / effects / crossfader / beat-match / auto-mix), and **Stems** (Demucs separation
++ SongDetail audition panel + Mix stem decks + collection burn-stems).
+
+> **On-device testing note.** Stem playback and the Mix decks read **local files**, so
+> testing them needs a Setlist **burned** to the on-device Burns folder first (the
+> simulator/fixture path can't stream-mix). Background audio + background URLSession
+> rips also only fully exercise **on real hardware** — use `scripts/deploy-iphone.sh`.
