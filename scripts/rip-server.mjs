@@ -53,6 +53,13 @@ const CFG = {
     || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
   amSyncStateDir: (process.env.POCKETDJ_AM_STATE_DIR
     || join(homedir(), '.pocketdj', 'am-sync')).replace(/^~/, homedir()),
+  // FALLBACK source when amLibraryXml (Share Library XML) is absent: self-export the library
+  // headlessly via this worker into amExportDir (incremental after the first seed). Prevents the
+  // "no fresh source → silently use a stale ~/Downloads/Library.xml" bug (new albums never synced).
+  amDumpWorker: (process.env.POCKETDJ_AM_DUMP_WORKER
+    || join(REPO, 'scripts', 'dump-apple-music-library.mjs')).replace(/^~/, homedir()),
+  amExportDir: (process.env.POCKETDJ_AM_EXPORT_DIR
+    || join(homedir(), '.pocketdj', 'am-export')).replace(/^~/, homedir()),
   ahRecDir: (process.env.POCKETDJ_AH_REC_DIR || join(homedir(), 'Music', 'Audio Hijack')).replace(/^~/, homedir()),
   useAgent: process.env.RIP_AGENT === '1', // Phase 2: run the rip skill via a headless Claude agent (adaptive)
   worker: process.env.RIP_WORKER || join(REPO, 'scripts/rip-one.mjs'), // digital capture worker (swappable for tests)
@@ -311,10 +318,33 @@ async function runAmCheck(job) {
   amCheckRunning = true;
   try {
     setSyncPhase(job, 'scanning');
-    const haveShared = existsSync(CFG.amLibraryXml);
-    const xml = haveShared ? CFG.amLibraryXml : CFG.libraryXml;
-    if (!haveShared) console.error(`  am-sync: ${CFG.amLibraryXml} not found — falling back to ${CFG.libraryXml}`);
-    if (!existsSync(xml)) throw new Error(`no Library.xml to read (looked at ${CFG.amLibraryXml} and ${CFG.libraryXml})`);
+    // Source priority:
+    //   (A) the auto-maintained shared Library.xml (Music ▸ Settings ▸ Advanced ▸ "Share Library
+    //       XML" — Music keeps it fresh as the library changes). Primary.
+    //   (B) FALLBACK when (A) is absent: self-export headlessly via dump-apple-music-library.mjs
+    //       (drives Music over AppleScript → a fresh full apple-music-library.xml, incremental
+    //       after the first seed). The rip server already controls Music for rips.
+    //   (C) last resort: the static ~/Downloads/Library.xml (may be stale).
+    // (A)-absent used to fall straight to a STALE (C), so newly-added albums never synced.
+    let xml;
+    if (existsSync(CFG.amLibraryXml)) {
+      xml = CFG.amLibraryXml;
+    } else {
+      try {
+        mkdirSync(CFG.amExportDir, { recursive: true });
+        console.error(`  am-sync: ${CFG.amLibraryXml} not found — self-exporting via ${CFG.amDumpWorker}`);
+        // Generous timeout: the FIRST (full) export of a ~93k-track library over AppleScript is
+        // ~1.7h; later runs are incremental (seconds). 4h leaves margin on a slow/large library.
+        await spawnNode([CFG.amDumpWorker, '--out-dir', CFG.amExportDir, '--timeout', '14400']);
+        const fresh = join(CFG.amExportDir, 'apple-music-library.xml');
+        if (!existsSync(fresh)) throw new Error('dump produced no apple-music-library.xml');
+        xml = fresh;
+      } catch (e) {
+        console.error(`  am-sync: self-export failed (${e.message}) — last resort ${CFG.libraryXml}`);
+        xml = CFG.libraryXml;
+      }
+    }
+    if (!existsSync(xml)) throw new Error(`no Library.xml to read (looked at ${CFG.amLibraryXml}, self-export, and ${CFG.libraryXml})`);
     mkdirSync(CFG.amSyncStateDir, { recursive: true });
     mkdirSync(CFG.downloadsDir, { recursive: true });
     const stateFile = join(CFG.amSyncStateDir, 'state.json');
