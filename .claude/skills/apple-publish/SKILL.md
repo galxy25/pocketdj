@@ -23,6 +23,24 @@ iOS, distribution-signed via cloud signing) → `xcodebuild -exportArchive` with
 `destination=upload` to deliver to App Store Connect using the API key. Build number
 defaults to a unix timestamp (`CURRENT_PROJECT_VERSION`), so uploads never collide.
 
+### Also ship the native macOS build
+
+PocketDJ also ships a **native sandboxed macOS** app (a separate App Store Connect
+platform from iOS). Its sibling script mirrors this one for the macOS SDK:
+
+```bash
+cd apple
+ASC_KEY_ID=C2G2V625FZ ASC_ISSUER_ID=69a6de86-a921-47e3-e053-5b8c7c11a4d1 \
+  ./scripts/testflight-macos.sh
+```
+
+It archives `-destination 'generic/platform=macOS'` with the macOS App Sandbox
+entitlements (`PocketDJ/PocketDJ-macOS.entitlements`). **Caveat:** macOS codesign needs
+the login keychain unlocked, which a non-interactive/detached shell can't do
+(`errSecInternalComponent`) — run it from an interactive Terminal, or use Xcode ▸ Archive ▸
+Distribute App. The first run mints the Apple Distribution cert via `-allowProvisioningUpdates`.
+A full release ships **both** iOS and macOS (see the `create-pr` skill's step 6).
+
 ## Prerequisites (one-time)
 
 1. **Full Xcode**, not just Command Line Tools. The script checks `xcodebuild -version`
