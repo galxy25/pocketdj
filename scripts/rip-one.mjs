@@ -115,6 +115,9 @@ async function main() {
       join(REPO, '.claude/skills/rip/rip.mjs'),
       '--setlist', csvFile, '--index', idxFile, '--library-xml', LIBRARY_XML,
       '--out-base', outBase, '--limit', '1', '--ah-recordings-dir', AH_REC_DIR,
+      // single-track digital capture: if the song isn't in the frozen library export yet
+      // (freshly added on another device, still iCloud-syncing), play it via a live search.
+      '--search-fallback',
     ], { cwd: REPO });
     let err = '';
     p.stderr.on('data', (d) => { err += d; });

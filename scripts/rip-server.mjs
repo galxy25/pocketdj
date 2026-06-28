@@ -101,11 +101,14 @@ const SELFHEAL = {
   // analog ffmpeg transcode of a whole album + per-song cuts: a generous fixed cap (transcode
   // is fast; the cut pass adds a few ffmpeg+upload passes per song).
   analogCapMs: numEnv('RIP_TEST_ANALOG_CAP_MS', 20 * 60_000),
-  // capped exponential backoff requeue for TRANSIENT failures.
-  maxAttempts: numEnv('RIP_TEST_MAX_ATTEMPTS', 5), // total tries (attempt 1 = the original run)
+  // capped exponential backoff requeue for TRANSIENT failures. The longer tail is the
+  // eventual-consistency window for the recognizer add-to-library flow: a just-added track
+  // reaches the Mac's Music library via iCloud sync minutes later, so we keep retrying the
+  // live-search capture (rip.mjs --search-fallback) until it lands. ~30s,2m,5m,10m,15m ≈ 32m.
+  maxAttempts: numEnv('RIP_TEST_MAX_ATTEMPTS', 6), // total tries (attempt 1 = the original run)
   backoffMs: process.env.RIP_TEST_BACKOFF_MS
     ? process.env.RIP_TEST_BACKOFF_MS.split(',').map((s) => parseInt(s, 10))
-    : [30_000, 120_000, 480_000, 480_000], // ~30s, 2m, 8m, 8m between retries (index by attempt-1)
+    : [30_000, 120_000, 300_000, 600_000, 900_000], // index by attempt-1
 };
 function jobDeadlineMs(job, song) {
   const analog = song && song.sourceType === 'analog' && !job.preferCloud;
@@ -943,7 +946,7 @@ async function runDigitalJob(job, song) {
       // Ad-hoc song fields can be client-supplied (recognizer path) — strip quotes /
       // newlines / control chars and length-cap before embedding in the (permission-
       // skipped) agent prompt so they can't inject instructions.
-      const safe = (s) => String(s || '').replace(/[`"'\n\r -]/g, ' ').slice(0, 120);
+      const safe = (s) => String(s || '').replace(/[`"'\n\r\x00-\x1f]/g, ' ').slice(0, 120);
       const prompt =
         `Rip one Apple Music song for PocketDJ. Run this command exactly:\n\n${cmd}\n\n` +
         `When it prints a line starting with RESULT {"ok":true …} you are done — stop. ` +

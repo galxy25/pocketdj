@@ -40,7 +40,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]; if (!a.startsWith('--')) continue;
     const key = a.slice(2);
-    if (['dry-run', 'probe'].includes(key)) { out[key] = true; continue; }
+    if (['dry-run', 'probe', 'search-fallback'].includes(key)) { out[key] = true; continue; }
     out[key] = argv[++i];
   }
   return out;
@@ -59,6 +59,10 @@ const AH_START_SHORTCUT = args['ah-start-shortcut'] || 'Rip Start';
 const AH_STOP_SHORTCUT = args['ah-stop-shortcut'] || 'Rip Stop';
 const AH_REC_DIR = args['ah-recordings-dir'] || path.join(HOME, 'Music', 'Audio Hijack');
 const SETTLE_MS = parseInt(args['settle-ms'] || '1500', 10); // pause between start-rec and play / after stop
+// Include tracks absent from the STATIC library export and play them via a LIVE Music.app
+// search instead. Used by ad-hoc / freshly-added rips (e.g. recognizer add-to-library), where
+// the song reaches the live library via iCloud sync but isn't in the frozen XML yet.
+const SEARCH_FALLBACK = !!args['search-fallback'];
 const TAIL_MS = parseInt(args['tail-ms'] || '1200', 10);     // record a moment past track end
 const MAX_SECONDS = args['max-seconds'] ? parseInt(args['max-seconds'], 10) : 0; // cap per-song record (0 = full track; for quick test samples)
 const LIMIT = args.limit ? parseInt(args.limit, 10) : Infinity;
@@ -187,8 +191,10 @@ data.forEach((r, i) => {
     base: safeName(`${String(pos).padStart(pad, '0')} - ${artist} - ${title}`) });
 });
 
-const inLib = plan.filter(p => p.match !== 'none');
-const skipped = plan.filter(p => p.match === 'none');
+// With --search-fallback, keep not-in-static-XML tracks in the plan and play them via a
+// live Music.app search (their p.hit is null → ripOne goes straight to searchAndPlay).
+const inLib = plan.filter(p => p.match !== 'none' || SEARCH_FALLBACK);
+const skipped = plan.filter(p => p.match === 'none' && !SEARCH_FALLBACK);
 
 // output folder: <unixSeconds>_<setlist name>_ripped
 const setName = safeName(path.basename(SETLIST).replace(/\.[^.]+$/, '')) || 'setlist';
@@ -275,13 +281,16 @@ function finalize(srcPath, base, tags) {
 async function ripOne(p) {
   const startMs = Date.now();
   const before = new Set(fs.readdirSync(AH_REC_DIR));
-  const tags = { artist: p.artist, title: p.title, album: p.hit.album || '', track: String(p.pos), comment: `PocketDJ rip · ${p.songId}` };
+  const tags = { artist: p.artist, title: p.title, album: p.hit?.album || '', track: String(p.pos), comment: `PocketDJ rip · ${p.songId}` };
   // 1) start recording (AH records to its Recorder folder)
   let r = AH.start();
   if (!r.ok) return { ...p, status: 'ah-start-failed', err: r.err };
   await sleep(SETTLE_MS);
-  // 2) play
-  let pr = playByPersistentID(p.hit.persistentID);
+  // 2) play — by Persistent ID when the track is in the static export, else (ad-hoc /
+  // freshly-added, p.hit === null) straight to a live Music.app search.
+  let pr = p.hit?.persistentID
+    ? playByPersistentID(p.hit.persistentID)
+    : { ok: false, durationSec: 0, err: 'not in static library export — trying live search' };
   if (!pr.ok || pr.durationSec === 0) {
     const alt = searchAndPlay(p.artist, p.title); // fallback: drive search
     if (alt.ok && alt.durationSec > 0) pr = alt;
