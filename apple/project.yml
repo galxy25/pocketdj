@@ -159,6 +159,10 @@ targets:
         # see docs/streaming-integration.md). Simulator builds (CODE_SIGNING_
         # ALLOWED=NO) ignore them, so the default build stays green.
         CODE_SIGN_ENTITLEMENTS: PocketDJ/PocketDJ.entitlements
+        # macOS (Mac App Store / TestFlight) REQUIRES the App Sandbox + explicit
+        # capability entitlements. Override only for the macOS SDK so iOS keeps the
+        # empty file above (iOS's sandbox is implicit).
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": PocketDJ/PocketDJ-macOS.entitlements
         # --- Apple Music build-time opt-in -------------------------------------
         # The flag lives in the base Info.plist (info: properties above) as
         # PocketDJAppleMusicEnabled — INFOPLIST_KEY_* can't inject custom keys.

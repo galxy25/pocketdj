@@ -212,6 +212,7 @@
 		338DDCC0F5CB04A1293AE22D /* PlaylistZipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistZipTests.swift; sourceTree = "<group>"; };
 		34AC0175EB6BDE4AF72724A8 /* EditSchemaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditSchemaTests.swift; sourceTree = "<group>"; };
 		3935954919B57E952BF1C431 /* SetlistPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetlistPlayer.swift; sourceTree = "<group>"; };
+		396D0E3B872A51238A5C7A86 /* PocketDJ-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "PocketDJ-macOS.entitlements"; sourceTree = "<group>"; };
 		3B5EC722B1324CED81EF2E8E /* BrowseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseView.swift; sourceTree = "<group>"; };
 		3B9D7CDA002BEBB724B528AC /* StemAuditionPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemAuditionPanel.swift; sourceTree = "<group>"; };
 		3C0A1CAE3F24CDA07C4E9662 /* ShazamCatalogMatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShazamCatalogMatch.swift; sourceTree = "<group>"; };
@@ -616,6 +617,7 @@
 				8F34356FC979C4210E90737C /* Views */,
 				9FA29E203999316BAEC9F0CF /* AppDelegate.swift */,
 				EF4F97865D8CB8E96122151D /* Assets.xcassets */,
+				396D0E3B872A51238A5C7A86 /* PocketDJ-macOS.entitlements */,
 				E88C0F36DDCC615207DFA199 /* PocketDJ.entitlements */,
 				BE90C1896C86E7B65A2D0B03 /* PocketDJApp.swift */,
 			);
@@ -1009,6 +1011,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = PocketDJ/PocketDJ.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "PocketDJ/PocketDJ-macOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1066,6 +1069,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = PocketDJ/PocketDJ.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "PocketDJ/PocketDJ-macOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;

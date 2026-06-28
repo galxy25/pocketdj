@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS App Sandbox entitlements — REQUIRED for Mac App Store / TestFlight.
+
+  The iOS build keeps the (empty) PocketDJ.entitlements; this file is wired ONLY for
+  the macOS SDK via `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]` in project.yml.
+
+  Only the capabilities PocketDJ actually exercises on the Mac:
+  • network.client            — HTTPS to the rip server, S3 rips bucket, CloudFront,
+                                OpenSearch, MusicKit/iTunes. (Outgoing only; the app
+                                runs no local server — that's the separate rip server.)
+  • files.user-selected.read-write — the user-picked burn/download folder (security-
+                                scoped bookmark). The analog source on /Volumes/RipBurnMix
+                                is a rip-SERVER concern, not the app, so no removable
+                                volume entitlement is needed here.
+  • device.audio-input        — the "?♪?" ShazamKit recognizer's mic capture
+                                (paired with INFOPLIST_KEY_NSMicrophoneUsageDescription).
+
+  MusicKit/ShazamKit need NO entitlement KEY here — the MusicKit App Service lives on the
+  App ID (com.levi.pocketdj). If MusicKit playback misbehaves under the sandbox, revisit.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>
