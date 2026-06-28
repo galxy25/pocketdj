@@ -3,7 +3,7 @@ name: create-pr
 description: "PocketDJ's local 'PR' flow — NOT a GitHub PR. Push the current branch, ask the user if it's OK to merge, then merge into main locally and push. Use when the user says 'create a pr', 'open a pr', 'pr this branch', 'push and merge', or runs /create-pr."
 ---
 
-# create-pr (local push → update docs → test → ask → merge)
+# create-pr (local push → update docs → test → ask → merge → ship TestFlight)
 
 For this repo, "PR" means a **local** review-and-merge flow, **not** a GitHub pull
 request (the GitHub API isn't reliably reachable here; SSH push works). The flow:
@@ -16,6 +16,8 @@ request (the GitHub API isn't reliably reachable here; SSH push works). The flow
    to escalate to the full matrix for broad/risky changes (CI always runs all).
 4. **Ask** the user if it's OK to merge.
 5. On yes, **merge into `main`** and push `main`. On no, stop (branch stays pushed).
+6. **Ship the TestFlight builds — BOTH iOS and macOS** (when the change touches the app),
+   so device and Mac testers stay on the same code.
 
 PocketDJ keeps two living docs that MUST stay current on `main`:
 - **`docs/STORYBOOK.md`** — the outside-in product/customer view (screens, user
@@ -117,6 +119,33 @@ echo "✓ merged $BRANCH into main and pushed"
 - `--no-ff` keeps a merge commit so the branch's history is visible.
 - If the merge conflicts, stop and surface the conflict to the user (don't force).
 - If the main worktree has uncommitted changes, stop and ask the user to resolve first.
+
+### 6. Ship the TestFlight builds (iOS + macOS)
+After `main` has the merge, push a fresh TestFlight build for **both** Apple platforms so
+device and Mac testers run the same code — PocketDJ ships a native iOS app **and** a native
+sandboxed macOS app (two separate platforms / build-number sequences in App Store Connect):
+
+```bash
+cd apple
+# iOS:
+ASC_KEY_ID=C2G2V625FZ ASC_ISSUER_ID=69a6de86-a921-47e3-e053-5b8c7c11a4d1 ./scripts/testflight.sh
+# macOS (native, sandboxed):
+ASC_KEY_ID=C2G2V625FZ ASC_ISSUER_ID=69a6de86-a921-47e3-e053-5b8c7c11a4d1 ./scripts/testflight-macos.sh
+```
+
+- **These require an INTERACTIVE session.** Both uploads codesign with the login keychain's
+  distribution key, which Claude's automated/detached shell **cannot** unlock (`codesign` →
+  `errSecInternalComponent`; `security show-keychain-info` → "passphrase not correct"). So
+  **prompt Levi to run both** (his Terminal, or the `!`-prefixed in-session command), or — most
+  reliable for macOS — Xcode ▸ Archive ▸ Distribute App ▸ App Store Connect. Don't claim a
+  build shipped that you couldn't actually sign.
+- **Scope:** ship both only when the change touches the **app** (`apple/…`). Skip for pure
+  server (`scripts/`), web (`src/`), or docs/tooling changes — same judgment as the test step.
+- Build numbers default to a unix timestamp (`CURRENT_PROJECT_VERSION`), so uploads never
+  collide; iOS and macOS sequence independently. See the `apple-publish` skill for prerequisites.
+- The native macOS build is why we **disable "iPhone/iPad apps on Mac"** for the iOS app in
+  App Store Connect — Mac users get the real sandboxed app, not the iOS-on-Mac variant (which
+  can't `MusicLibrary.add` and crashed on it).
 
 ### Notes
 - The **docs gate (Step 2) runs before every merge** — both books are kept current on
