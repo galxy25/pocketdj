@@ -300,6 +300,69 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(e.rate(.b), 1.28, accuracy: 1e-6)   // 128/100 grid, not 120/99 catalog
     }
 
+    // MARK: - Now Playing (lock-screen) deck selection
+
+    /// `nowPlayingDeck`: exactly one deck PLAYING → that deck ("the only active track"); zero or both
+    /// playing → Deck A regardless of its play state; only B loaded → B; nothing loaded → nil.
+    func testNowPlayingDeckPrefersThePlayingDeckElseDeckA() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        XCTAssertNil(e.nowPlayingDeck)                       // nothing loaded
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2)
+        defer { [a, b].forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 120), on: .b)
+        XCTAssertEqual(e.nowPlayingDeck, .b)                 // only B loaded → B
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        XCTAssertEqual(e.nowPlayingDeck, .a)                 // both loaded, none playing → Deck A
+        e.play(.b)
+        XCTAssertEqual(e.nowPlayingDeck, .b)                 // only B playing → the only active track
+        XCTAssertEqual(e.nowPlaying?.songId, "b")
+        e.play(.a)
+        XCTAssertEqual(e.nowPlayingDeck, .a)                 // both playing → fall back to Deck A
+        e.pause(.a)
+        XCTAssertEqual(e.nowPlayingDeck, .b)                 // only B playing again
+        e.teardown()
+    }
+
+    // MARK: - Auto-Mix manual skip
+
+    /// A manual Skip kicks off a crossfade to the next track immediately (status → "fading") and stays
+    /// in the mix.
+    func testSkipToNextStartsAFadeAndStaysInTheMix() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        XCTAssertTrue(e.autoMixing)
+        e.skipToNext(fadeSeconds: 5)
+        XCTAssertTrue(e.autoMixing, "skip keeps the mix running")
+        XCTAssertEqual(e.autoStatus?.contains("fading"), true, "a manual skip starts a crossfade now")
+        e.teardown()
+    }
+
+    /// Skip on the LAST queued track ends the mix (and recenters the fader) — mirrors the natural end.
+    func testSkipToNextOnLastTrackEndsTheMix() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("only", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        e.skipToNext(fadeSeconds: 5)
+        XCTAssertFalse(e.autoMixing, "no next track → the skip ends the mix")
+        XCTAssertEqual(e.crossfader, 0.5, accuracy: 1e-9)
+        e.teardown()
+    }
+
+    /// Skip outside an auto-mix is an inert no-op (guarded), never a crash.
+    func testSkipToNextIsANoOpWhenNotAutoMixing() {
+        let e = makeEngine()
+        e.skipToNext(fadeSeconds: 5)
+        XCTAssertFalse(e.autoMixing)
+        e.teardown()
+    }
+
     // MARK: - Stems (per-deck stem mode / mute / volume)
 
     func testStemNamesAreTheFourCanonical() {

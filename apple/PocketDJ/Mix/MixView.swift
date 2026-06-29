@@ -67,6 +67,7 @@ struct MixView: View {
                 }
                 CrossfaderView(engine: engine)         // one crossfader spanning both decks
                 masterTransport                        // one big Play/Pause for both decks
+                if engine.autoMixing { skipButton }    // Auto-DJ only: advance to the next track
             }
             .padding(16)
             .frame(maxWidth: 900)                       // keep controls a comfortable width on Mac/iPad
@@ -84,6 +85,10 @@ struct MixView: View {
         .toolbar { autoMixToolbar }                    // Auto/Manual + collection Play/Shuffle
         .toolbar { sessionLeadingToolbar }             // Sessions (history) + Reset (X)
         .task { engine.prepare() }                     // warm the AVAudioEngine graph when the tab opens
+        // DELIBERATELY no `.onDisappear { engine.pauseBoth()/stopAutoMix()/teardown() }`: the engine is
+        // app-scoped and its tick + audio graph must keep running when you leave the Mix tab, so a mix
+        // (and an Auto-DJ) keeps playing and the lock-screen card stays live. Sibling views do pause on
+        // disappear; this one must NOT (pause/pauseBoth end the auto-mix). Load-bearing omission.
         // Track loader: long-press (iOS) / right-click (macOS) on a deck, or tap its header.
         .sheet(item: $loaderDeck) { deck in
             TrackLoaderSheet(deck: deck, engine: engine,
@@ -183,7 +188,10 @@ struct MixView: View {
                 Menu {
                     autoSourceMenuItems
                 } label: {
-                    Label(autoSourceName ?? "Collection", systemImage: "rectangle.stack")
+                    // After a tab switch the view-local `autoSource` picker is forgotten, but a mix
+                    // may still be running — fall back to the engine's remembered source label so the
+                    // toolbar doesn't blank back to "Collection" mid-mix.
+                    Label(autoSourceName ?? engine.autoSourceLabel ?? "Collection", systemImage: "rectangle.stack")
                 }
                 .accessibilityIdentifier("mix-auto-source")
 
@@ -262,7 +270,8 @@ struct MixView: View {
             MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
         }
         engine.startAutoMix(items, shuffled: shuffled,
-                            lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds)
+                            lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
+                            label: autoSourceName)
     }
 
     /// The single bottom Play/Pause — starts/stops BOTH decks (and the engine). Mirrors the
@@ -280,6 +289,32 @@ struct MixView: View {
         // Nothing loaded ⇒ no audio to drive; keep the transport from reporting "playing" silence.
         .disabled(engine.loaded(.a) == nil && engine.loaded(.b) == nil)
         .accessibilityIdentifier("mix-play")
+    }
+
+    /// Auto-Mix only: advance to the next queued track. SINGLE tap = crossfade over the configured
+    /// Skip-fade (Settings ▸ Mix, default 15 s); DOUBLE tap = a fast 5 s sweep. It is a plain tappable
+    /// view (NOT a `Button`) so a double tap doesn't ALSO fire the single-tap action — a Button's
+    /// primary action fires on the first tap. `count: 2` is declared first so SwiftUI disambiguates a
+    /// double tap to the fast path; a lone tap fires after the short disambiguation delay.
+    private var skipButton: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "forward.fill")
+            Text("Skip to next")
+            Text("· double-tap = fast").font(.caption).foregroundStyle(Theme.fgDim)
+        }
+        .font(.headline)
+        .foregroundStyle(Theme.accent)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 11)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .onTapGesture(count: 2) { engine.skipToNext(fadeSeconds: 5) }                       // fast sweep
+        .onTapGesture(count: 1) { engine.skipToNext(fadeSeconds: settings.skipFadeSeconds) } // configurable
+        .accessibilityIdentifier("mix-auto-skip")
+        .accessibilityLabel("Skip to next track")
+        .accessibilityHint("Double-tap for a fast five second sweep")
     }
 }
 
@@ -1018,23 +1053,31 @@ private struct StemPad: View {
 private struct DeckSeekSlider: View {
     let engine: MixEngine
     let deck: MixEngine.Deck
-    @State private var scrubbing: Double?
+    /// The in-flight drag value, shown ONLY while `editing`. It is never read outside an active drag,
+    /// so a stray `set(_:)` SwiftUI can deliver AFTER `onEditingChanged(false)` can't strand the slider
+    /// on a frozen value. (The old `scrubbing ?? engine.position(deck)` short-circuited the observed
+    /// `position` read whenever a scrub value was held, dropping the Observation dependency on the
+    /// playhead until the view was destroyed/rebuilt — which is exactly why switching tabs "fixed" it.)
+    @State private var scrub = 0.0
+    @State private var editing = false
 
     var body: some View {
         let dur = engine.duration(deck)
-        let pos = scrubbing ?? engine.position(deck)
+        let live = engine.position(deck)        // ALWAYS read → the Observation dependency never drops
+        let shown = editing ? scrub : live
         VStack(spacing: 1) {
-            Slider(value: Binding(get: { dur > 0 ? min(max(pos, 0), dur) : 0 },
-                                  set: { scrubbing = $0 }),
+            Slider(value: Binding(get: { dur > 0 ? min(max(shown, 0), dur) : 0 },
+                                  set: { scrub = $0 }),
                    in: 0...max(dur, 0.001),
-                   onEditingChanged: { editing in
-                       if !editing, let s = scrubbing { engine.seek(deck, toSeconds: s); scrubbing = nil }
+                   onEditingChanged: { began in
+                       if began { editing = true; scrub = live }
+                       else { editing = false; engine.seek(deck, toSeconds: scrub) }
                    })
                 .tint(Theme.accent2)
                 .disabled(dur <= 0)
                 .accessibilityIdentifier("deck-\(deck.rawValue)-seek")
             HStack {
-                Text(Self.clock(pos)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                Text(Self.clock(shown)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 Spacer()
                 Text(Self.clock(dur)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }

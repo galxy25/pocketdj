@@ -585,6 +585,29 @@ off-main. The corpus is designed to later **train an auto-mix model** (replay is
 re-driving the decks is the follow-up). Full spec:
 [Mix sessions, steppers & gain](../design/mix-sessions-and-controls-spec.md).
 
+### 7.9 Lock-screen Now Playing · Auto-Mix Skip · slider-freeze & stem-silence fixes
+
+```
+ MixEngine.nowPlayingDeck:  exactly one deck PLAYING → that deck; else Deck A (even paused); else B; else nil
+   updateSystemNowPlaying() → MPNowPlayingInfoCenter (title/artist/dur/elapsed/rate=tempo) on each transport change
+ NowPlayingArbiter (single owner, last-to-PLAY wins): PlayerEngine ⇄ MixEngine share the one card +
+   one MPRemoteCommandCenter; every write / command guarded by isActive(self) → no stomping
+ skipToNext(fadeSeconds): reuse beginAutoCrossfade; pendingFadeRestore puts the auto fade back after a one-off skip
+   Skip button (Auto only): single = settings.skipFadeSeconds (def 15) · double = 5 s  (two .onTapGesture(count:))
+ DeckSeekSlider: ALWAYS read engine.position(deck) (never `scrub ?? pos`) + explicit `editing` flag → no freeze
+ setStemMode(on): schedule BEFORE muting main, bail if 0 frames (clamp to maxStemSeconds) → never silent
+```
+
+**Reading it.** The Mix now feeds the **iOS/macOS lock-screen Now Playing** card — the actively-playing
+deck (else Deck A) — arbitrated against the standalone `PlayerEngine` by a tiny single-owner
+`NowPlayingArbiter` so the two never fight over the one system card / command center. An Auto-Mix
+**Skip** button advances the queue immediately (single tap = a configurable fade, double tap = a fast
+5 s sweep) by reusing the timed crossfade machine. A long-standing **slider freeze** (the seek
+scrubber stopped following playback until you switched tabs) is fixed by never short-circuiting the
+observed `position` read. And toggling **stem mode** after interrupting an auto-mix no longer goes
+silent — the ON path schedules the stems before muting the main file and bails if nothing scheduled.
+Full spec: [Lock-screen Now Playing, Skip, slider & stem fixes](../design/mix-tab-nowplaying-skip-slider-stems.md).
+
 ## Next
 
 → [Chapter 5 — Playback & Rip-on-Demand](./05-playback-and-rip-on-demand.md)

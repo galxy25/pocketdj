@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import AVFoundation        // AVAudioEngine + nodes (iOS · iPad · Mac); AVAudioSession is iOS-only (guarded below)
 import AudioToolbox        // DynamicsProcessor AU parameter ids + AudioUnitSetParameter
+import MediaPlayer         // MPNowPlayingInfoCenter + MPRemoteCommandCenter (lock-screen Now Playing)
 
 /// Cross-platform DJ mix engine — a first-party two-deck `AVAudioEngine` graph. Each deck is
 ///
@@ -167,6 +168,10 @@ final class MixEngine {
     private(set) var autoEnabled = false
     private(set) var autoMixing = false
     private(set) var autoStatus: String?
+    /// The collection name an auto-mix is running over (e.g. a pocket / set list). Lives on the
+    /// app-scoped engine so the source label survives a Mix-tab teardown (the view-local `autoSource`
+    /// picker is forgotten on tab switch, but the running mix — and this label — are not).
+    private(set) var autoSourceLabel: String?
 
     // MARK: Private — graph
 
@@ -223,6 +228,19 @@ final class MixEngine {
     @ObservationIgnored private var autoFadeFrom: Deck = .a
     @ObservationIgnored private var autoLeadSeconds: Double = 15
     @ObservationIgnored private var autoFadeSeconds: Double = 3
+    /// When a one-off manual Skip sets a custom fade length, the baseline `autoFadeSeconds` to put
+    /// back once that crossfade finishes — so a fast 5 s skip never shortens the NEXT automatic
+    /// crossfade. nil when no restore is pending.
+    @ObservationIgnored private var pendingFadeRestore: Double?
+
+    /// Per-deck flag: do the 4 stem nodes currently hold a live scheduled segment? Set by
+    /// `scheduleStems` (true when anything scheduled), cleared by `stopStemNodes`/`stopActiveNodes`
+    /// (which `stop()` the nodes, discarding the schedule). A `pause()` keeps the schedule, so this
+    /// stays true across a pause — letting `play()` resume vs. reschedule correctly.
+    @ObservationIgnored private var stemsScheduled: [Deck: Bool] = [:]
+
+    /// One-time guard so the shared remote-command center is wired exactly once per engine.
+    @ObservationIgnored private var remoteCommandsConfigured = false
 
     init(burns: BurnStore) { self.burns = burns }
 
@@ -253,11 +271,13 @@ final class MixEngine {
         mutate(deck) { $0.isPlaying = playing }
         guard playing != was else { return }
         if playing {
+            NowPlayingArbiter.shared.claim(self)   // a Mix deck started → own the lock-screen card
             rec(.play, deck)
             if let id = state(deck).loaded?.songId { recorder?.notePlayed(songId: id) }
         } else {
             rec(.pause, deck)
         }
+        updateSystemNowPlaying()                    // reflect the new play state / now-playing deck
     }
 
     // MARK: - Lifecycle
@@ -312,6 +332,7 @@ final class MixEngine {
         // and `isReady` false — the app degrades to a silent Mix tab rather than crashing.
         do { try engine.start() } catch { return }
         built = true
+        configureMixRemoteCommands()    // wire lock-screen transport once the graph is live
         // Push whatever the UI already set, then derive gains.
         for d in Deck.allCases {
             applyRate(d); applyPitch(d)
@@ -410,6 +431,7 @@ final class MixEngine {
                               artist: l.artist, bpm: l.bpm, camelot: l.camelot, param: nil,
                               value: nil, flag: nil, posMs: 0)
         }
+        updateSystemNowPlaying()      // a new track on the now-playing deck → refresh the card
     }
 
     // MARK: - Transport
@@ -418,7 +440,7 @@ final class MixEngine {
         guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
         ensureEngine()
         if !engine.isRunning { try? engine.start() }
-        if stemActive(deck) { startStems(deck) } else { players[deck]?.play() }
+        if stemActive(deck) { ensureStemsScheduled(deck); startStems(deck) } else { players[deck]?.play() }
         setPlaying(deck, true)
         refreshTransport()
         startTickIfNeeded()
@@ -443,7 +465,7 @@ final class MixEngine {
         ensureEngine()
         if !engine.isRunning { try? engine.start() }
         for d in Deck.allCases where state(d).loaded != nil {
-            if stemActive(d) { startStems(d) } else { players[d]?.play() }
+            if stemActive(d) { ensureStemsScheduled(d); startStems(d) } else { players[d]?.play() }
             setPlaying(d, true)
         }
         refreshTransport()
@@ -533,6 +555,7 @@ final class MixEngine {
         refreshTransport()
         startTickIfNeeded()
         rec(.seek, deck, value: clamped)
+        updateSystemNowPlaying()      // new elapsed on the lock-screen scrubber
     }
 
     // MARK: - Tempo / pitch / beat-match
@@ -628,14 +651,17 @@ final class MixEngine {
         if !on { endAutoLoop() }
     }
 
-    func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double) {
+    func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double,
+                      label: String? = nil) {
         guard !items.isEmpty else { return }
         ensureEngine()
         endAutoLoop()
 
         autoEnabled = true
+        autoSourceLabel = label
         autoLeadSeconds = max(1, lead)
         autoFadeSeconds = max(0.2, fade)
+        pendingFadeRestore = nil
         autoQueue = shuffled ? items.shuffled() : items
         autoLivePos = 0
         autoLiveDeck = .a
@@ -664,8 +690,10 @@ final class MixEngine {
     private func endAutoLoop() {
         let wasMixing = autoMixing
         autoFadeStartedAt = nil
+        pendingFadeRestore = nil
         autoMixing = false
         autoStatus = nil
+        autoSourceLabel = nil
         // Recenter ONLY after a real auto-mix (it swept the fader to an extreme) — and non-recording,
         // so ending an auto-mix never injects a user `.crossfader` event. A bare Manual→Auto→Manual
         // toggle (wasMixing == false) leaves the fader where the user left it.
@@ -692,6 +720,21 @@ final class MixEngine {
         refreshAutoStatus()
     }
 
+    /// Manual SKIP: immediately advance to the next queued track, crossfading over `fadeSeconds`.
+    /// Reuses the automatic fade machine (`beginAutoCrossfade` + the tick's fade ramp), so the only
+    /// extra work is choosing the fade length. Ignored mid-fade (so a double-advance can't jump the
+    /// fader); on the LAST track it ends the mix, mirroring the natural end. The custom fade length is
+    /// restored to the configured baseline once the crossfade finishes (see `finishAutoCrossfade`), so
+    /// a one-off fast skip never shortens the next AUTOMATIC crossfade.
+    func skipToNext(fadeSeconds: Double) {
+        guard autoEnabled, autoMixing, isReady, autoFadeStartedAt == nil else { return }
+        guard autoLivePos + 1 < autoQueue.count else { stopAutoMix(); return }   // last track → end
+        pendingFadeRestore = autoFadeSeconds
+        autoFadeSeconds = max(0.2, fadeSeconds)
+        beginAutoCrossfade(now: Date())
+        refreshAutoStatus()
+    }
+
     private func beginAutoCrossfade(now: Date) {
         let to = other(autoLiveDeck)
         autoFadeFrom = autoLiveDeck
@@ -709,10 +752,12 @@ final class MixEngine {
         autoLiveDeck = to
         autoLivePos += 1
         autoFadeStartedAt = nil
+        if let restore = pendingFadeRestore { autoFadeSeconds = restore; pendingFadeRestore = nil }
         if autoNextToLoad < autoQueue.count {
             loadAuto(autoQueue[autoNextToLoad], onto: from)
             autoNextToLoad += 1
         }
+        updateSystemNowPlaying()      // the now-playing deck just switched → refresh the card
     }
 
     private func loadAuto(_ item: AutoMixItem, onto deck: Deck) {
@@ -750,10 +795,16 @@ final class MixEngine {
         let pos = position(deck)
         if on {
             guard wireStems(deck) else { return }    // no local stems → can't enter stem mode
-            players[deck]?.stop()                    // silence the single mixed file
+            // Schedule the stems BEFORE muting the main file, and ONLY commit to stem mode if they
+            // actually scheduled. Clamp `pos` to just inside the shortest stem so an end-of-track
+            // playhead (the auto-mix tick pins it at `duration`, e.g. right after interrupting a mix)
+            // still lands on real audio instead of zero frames. Without this guard, the old code muted
+            // the main file, set stemMode=true, then discarded a failed `scheduleStems` → the deck went
+            // SILENT (both main stopped AND stems unscheduled) until you toggled stem mode back off.
+            guard scheduleStems(deck, fromSeconds: min(pos, maxStemSeconds(deck))) else { return }
+            players[deck]?.stop()                    // only NOW silence the single mixed file
             mutate(deck) { $0.stemMode = true }
             rec(.stemMode, deck, flag: true)
-            _ = scheduleStems(deck, fromSeconds: pos)
             applyStemGains(deck)
             if was { startStems(deck) }
         } else {
@@ -816,6 +867,22 @@ final class MixEngine {
         stemReleases[deck]?(); stemReleases[deck] = nil
     }
 
+    /// The longest position (seconds) at which `scheduleStems` still gets real audio — just inside the
+    /// SHORTEST wired stem so a request never rounds up to zero frames. 0 when no stems are wired.
+    private func maxStemSeconds(_ deck: Deck) -> Double {
+        guard let files = stemFiles[deck], !files.isEmpty else { return 0 }
+        let secs = files.values.map { Double($0.length) / $0.processingFormat.sampleRate }
+        return max(0, (secs.min() ?? 0) - 0.05)
+    }
+
+    /// Re-schedule the stems from the current playhead IF they hold no live schedule (e.g. a prior
+    /// `stop()` cleared it at end-of-track / after an auto-mix retired the deck). A no-op when already
+    /// scheduled, so resuming a paused deck keeps its position instead of rewinding.
+    private func ensureStemsScheduled(_ deck: Deck) {
+        guard stemsScheduled[deck] != true else { return }
+        _ = scheduleStems(deck, fromSeconds: min(position(deck), maxStemSeconds(deck)))
+    }
+
     /// Schedule the 4 stem nodes from `posSec` (song-relative). Returns whether anything scheduled.
     private func scheduleStems(_ deck: Deck, fromSeconds posSec: Double) -> Bool {
         guard let files = stemFiles[deck], !files.isEmpty, let nodes = stemPlayers[deck] else { return false }
@@ -831,6 +898,7 @@ final class MixEngine {
                                  at: nil, completionHandler: nil)
             any = true
         }
+        stemsScheduled[deck] = any
         return any
     }
 
@@ -841,7 +909,10 @@ final class MixEngine {
         for n in (stemPlayers[deck] ?? [:]).values { n.play(at: when) }
     }
 
-    private func stopStemNodes(_ deck: Deck) { for n in (stemPlayers[deck] ?? [:]).values { n.stop() } }
+    private func stopStemNodes(_ deck: Deck) {
+        for n in (stemPlayers[deck] ?? [:]).values { n.stop() }
+        stemsScheduled[deck] = false       // stop() discards the scheduled segment
+    }
 
     /// Pause a deck's ACTIVE voices (the single file + any stems) keeping their scheduled position.
     private func pauseActiveNodes(_ deck: Deck) {
@@ -853,6 +924,7 @@ final class MixEngine {
     private func stopActiveNodes(_ deck: Deck) {
         players[deck]?.stop()
         for n in (stemPlayers[deck] ?? [:]).values { n.stop() }
+        stemsScheduled[deck] = false
     }
 
     // MARK: - Readers (for the UI)
@@ -866,6 +938,69 @@ final class MixEngine {
     func strength(_ effect: Effect, on deck: Deck) -> Double { state(deck).strength(effect) }
     func position(_ deck: Deck) -> Double { deck == .a ? positionA : positionB }
     func duration(_ deck: Deck) -> Double { deck == .a ? durationA : durationB }
+
+    /// The deck whose track is the Mix's "Now Playing" — what the lock-screen card shows. Rule: if
+    /// exactly ONE deck is actively playing, that's the one ("the only active track"); otherwise
+    /// (zero or both playing) fall back to Deck A regardless of its play state — and to Deck B only
+    /// when A is empty. nil only when neither deck has a track loaded.
+    var nowPlayingDeck: Deck? {
+        let aLoaded = loaded(.a) != nil, bLoaded = loaded(.b) != nil
+        let aPlaying = aLoaded && isPlaying(.a), bPlaying = bLoaded && isPlaying(.b)
+        if aPlaying != bPlaying { return aPlaying ? .a : .b }   // exactly one playing → that deck
+        if aLoaded { return .a }                                 // else prefer Deck A (even if paused)
+        return bLoaded ? .b : nil
+    }
+
+    /// The track behind `nowPlayingDeck` (the in-app + lock-screen "Now Playing").
+    var nowPlaying: LoadedTrack? { nowPlayingDeck.flatMap { loaded($0) } }
+
+    // MARK: - System Now Playing (lock screen / Control Center)
+
+    /// Push the now-playing track to the system lock-screen / Control Center card — but only while
+    /// THIS engine owns the card (a Mix deck started most recently; see `NowPlayingArbiter`). When the
+    /// standalone player is the active source instead, this no-ops so the two never stomp each other.
+    /// Elapsed/rate are set on each transport change and the system interpolates between; the rate is
+    /// the deck's tempo so the scrubber moves at the audible speed.
+    private func updateSystemNowPlaying() {
+        guard NowPlayingArbiter.shared.isActive(self) else { return }
+        guard let deck = nowPlayingDeck, let track = loaded(deck) else { return }
+        let playing = isPlaying(deck)
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: track.title,
+            MPMediaItemPropertyArtist: track.artist,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: position(deck),
+            MPNowPlayingInfoPropertyPlaybackRate: playing ? state(deck).rate : 0.0,
+        ]
+        let dur = duration(deck)
+        if dur > 0 { info[MPMediaItemPropertyPlaybackDuration] = dur }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    /// Register the shared remote-command handlers ONCE. Each is guarded by `NowPlayingArbiter` so it
+    /// only acts while the Mix owns the lock screen — the standalone `PlayerEngine` registers the same
+    /// commands and yields when the Mix is active (and vice-versa), so the lock-screen transport always
+    /// drives the audio source you're actually hearing.
+    private func configureMixRemoteCommands() {
+        guard !remoteCommandsConfigured else { return }
+        remoteCommandsConfigured = true
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
+            self.playBoth(); return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
+            self.pauseBoth(); return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
+            self.toggleAll(); return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self, NowPlayingArbiter.shared.isActive(self), self.autoMixing else { return .commandFailed }
+            self.skipToNext(fadeSeconds: 5); return .success   // lock-screen ⏭ → quick auto-mix skip
+        }
+    }
 
     // MARK: - Internals
 

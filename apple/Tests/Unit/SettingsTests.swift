@@ -105,6 +105,7 @@ final class SettingsStoreTests: XCTestCase {
         let s = SettingsStore(defaults: freshDefaults())
         XCTAssertEqual(s.autoMixLeadSeconds, 15)
         XCTAssertEqual(s.autoMixFadeSeconds, 3)
+        XCTAssertEqual(s.skipFadeSeconds, 15)            // manual-skip fade default
     }
 
     func testAutoMixPersistsAndReloads() {
@@ -112,11 +113,13 @@ final class SettingsStoreTests: XCTestCase {
         let s = SettingsStore(defaults: defaults)
         s.autoMixLeadSeconds = 20
         s.autoMixFadeSeconds = 5
+        s.skipFadeSeconds = 25
         s.persist()
 
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.autoMixLeadSeconds, 20)
         XCTAssertEqual(reloaded.autoMixFadeSeconds, 5)
+        XCTAssertEqual(reloaded.skipFadeSeconds, 25)
     }
 
     /// REGRESSION (Codable back-compat): a legacy blob predating the auto-mix keys must still
@@ -139,15 +142,17 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(s.ripServerURL, "https://legacy.test", "legacy settings must survive")
         XCTAssertEqual(s.autoMixLeadSeconds, 15, "missing key coalesces to default")
         XCTAssertEqual(s.autoMixFadeSeconds, 3)
+        XCTAssertEqual(s.skipFadeSeconds, 15, "missing skip-fade key coalesces to default")
     }
 
     func testResetRestoresAutoMixDefaults() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)
-        s.autoMixLeadSeconds = 30; s.autoMixFadeSeconds = 8; s.persist()
+        s.autoMixLeadSeconds = 30; s.autoMixFadeSeconds = 8; s.skipFadeSeconds = 40; s.persist()
         s.resetEverything()
         XCTAssertEqual(s.autoMixLeadSeconds, 15)
         XCTAssertEqual(s.autoMixFadeSeconds, 3)
+        XCTAssertEqual(s.skipFadeSeconds, 15)
     }
 }
 
