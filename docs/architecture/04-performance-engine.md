@@ -558,6 +558,33 @@ owns the `BurnStore`, resolving **only** locally-burned files. The design's prem
 replace a vendored, licensed Switchboard SDK with a **license-free, sandbox-friendly
 first-party `AVFoundation` graph** — which is what shipped.
 
+### 7.8 Sessions, fine-adjust steppers & gain boost
+
+```
+ every Mix slider:  [−] slider [+]   (StepButton; fine step per control)
+ deck volume 0…2.0: player/stems = min(v,1)·crossfade   +   filter-EQ globalGain = 20·log10(max(v,1)) dB
+                    + master PeakLimiter (mainMixer → limiter → output)
+ MixEngine.recorder (weak MixSessionRecorder = MixSessionStore):
+   every setter → rec(kind, deck, …);  setPlaying() funnel → .play(+notePlayed)/.pause on transition
+ MixSessionStore (@Observable, persisted JSON):
+   hot buffer (@ObservationIgnored) → coalesce continuous to ≤1/120ms → debounced+off-main versioned write
+   reset(X) finalizes + starts "Session N+1";  played-set → loader ✓ / auto-hide
+ MixSessionsView:  list → replay timeline (vertical iPhone · horizontal iPad/macOS), wall-clock replay clock
+```
+
+**Reading it.** Three additions sit on top of the engine above. **Steppers** give finer-than-drag
+control on every slider. **Gain** now reaches **200%**: the 0…1 part stays on the source nodes'
+documented `volume`, the >unity boost rides the deck filter EQ's `globalGain` (so it lifts the main
+file *and* all four stems), and a **master peak limiter** guards the output. **Mix sessions** record
+every deck action — load/play/pause/seek/tempo/pitch/volume/crossfader/effects/stems/lead/sync/reset —
+into a time-stamped, persisted, replayable log that lasts until **Reset**, with played-track
+checkmarks/auto-hide in the loader and a Sessions screen that replays the timeline in real time. The
+recorder is a weak seam on the engine; the store keeps the high-frequency event buffer **off** the
+observed surface so a live mix never redraws the UI, coalesces continuous gestures, and persists
+off-main. The corpus is designed to later **train an auto-mix model** (replay is visual for now;
+re-driving the decks is the follow-up). Full spec:
+[Mix sessions, steppers & gain](../design/mix-sessions-and-controls-spec.md).
+
 ## Next
 
 → [Chapter 5 — Playback & Rip-on-Demand](./05-playback-and-rip-on-demand.md)

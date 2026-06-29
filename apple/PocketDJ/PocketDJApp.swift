@@ -43,6 +43,9 @@ struct PocketDJApp: App {
     /// from the SAME BurnStore so each deck loads ONLY locally-burned files (`localURLForPlayback`).
     /// Lazily builds its audio graph on first Mix-tab use (so launch never spins up audio).
     @State private var mix: MixEngine
+    /// App-side recorder for mix SESSIONS (played tracks + the full time-stamped action log, kept
+    /// until Reset). Wired as `mix.recorder` so every deck action is logged; persists its own JSON.
+    @State private var mixSessions: MixSessionStore
     @Environment(\.scenePhase) private var scenePhase
 
     // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
@@ -88,8 +91,13 @@ struct PocketDJApp: App {
             resolve: { song in await amProvider.resolve(song)?.artworkURL }))
         _lyrics = State(initialValue: LyricsStore())
         // App-scoped two-deck AVAudioEngine mix engine. Shares `burns` so a deck resolves the on-disk
-        // burned file (+ holds its security scope) for the song it loads.
-        _mix = State(initialValue: MixEngine(burns: burns))
+        // burned file (+ holds its security scope) for the song it loads. Its `recorder` is the
+        // app-side session store, wired here so every deck action is logged into the current session.
+        let mixSessions = MixSessionStore(fileURL: MixSessionStore.launchURL())
+        let mix = MixEngine(burns: burns)
+        mix.recorder = mixSessions
+        _mix = State(initialValue: mix)
+        _mixSessions = State(initialValue: mixSessions)
     }
 
     var body: some Scene {
@@ -109,6 +117,7 @@ struct PocketDJApp: App {
                 .environment(albumArt)
                 .environment(lyrics)
                 .environment(mix)
+                .environment(mixSessions)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // Streaming OAuth redirect (e.g. pocketdj://spotify-login-callback)
@@ -122,6 +131,7 @@ struct PocketDJApp: App {
                         TransferCoordinator.shared.reconcileOnLaunch()
                     case .background:
                         streaming.onScenePhaseBackground()
+                        mixSessions.flush()    // persist the latest session state before suspension
                         // Submit/re-submit the BGTasks (burn-drain + rip-reconcile) so a
                         // backgrounded burn/rip keeps advancing/reconciling. iOS-only.
                         #if os(iOS)

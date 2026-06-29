@@ -349,10 +349,14 @@ struct SettingsView: View {
             }
             .accessibilityIdentifier("settings-automix-fade")
             .onChange(of: settings.autoMixFadeSeconds) { settings.persist() }
+
+            Toggle("Auto-hide played tracks", isOn: $settings.mixAutoHidePlayed)
+                .accessibilityIdentifier("settings-mix-autohide")
+                .onChange(of: settings.mixAutoHidePlayed) { settings.persist() }
         } header: {
-            Text("Auto-Mix")
+            Text("Mix")
         } footer: {
-            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length.")
+            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length.\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.")
         }
     }
 
