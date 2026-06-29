@@ -266,6 +266,22 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    /// Toggling Auto ON→OFF without an actual auto-mix must NOT move or record the crossfader: a bare
+    /// Manual→Auto→Manual flip otherwise injects a phantom `.crossfader` event (auto internals used to
+    /// share the recording setter) that would materialize a junk session on Reset.
+    func testAutoToggleWithoutMixingRecordsNoCrossfader() {
+        let e = makeEngine()
+        let rec = MockRecorder()
+        e.recorder = rec
+        let before = e.crossfader
+        e.setAutoEnabled(true)
+        e.setAutoEnabled(false)               // endAutoLoop with autoMixing == false → no recenter
+        XCTAssertEqual(e.crossfader, before, accuracy: 1e-9, "no forced recenter without a real auto-mix")
+        XCTAssertTrue(rec.events.allSatisfy { $0.kind != .crossfader },
+                      "auto-internal fader moves must not be recorded as user gestures")
+        e.teardown()
+    }
+
     /// Beat-grid ingestion (#5): a deck's MEASURED grid BPM is preferred over the catalog BPM for
     /// sync. Lead grid 128 (catalog 120) over follower grid 100 ⇒ rate 1.28, not the catalog 1.2x.
     func testSyncPrefersMeasuredGridBpmOverCatalog() throws {
@@ -323,7 +339,99 @@ final class MixEngineTests: XCTestCase {
         XCTAssertFalse(e.stemActive(.a))
     }
 
+    // MARK: - Gain boost (>unity volume) — math + clamps
+
+    /// Volume clamps to the 0…2 (0%…200%) boost range.
+    func testVolumeClampsZeroToTwo() {
+        let e = makeEngine()
+        e.setVolume(3.0, on: .a);  XCTAssertEqual(e.volume(.a), 2.0)
+        e.setVolume(-1, on: .a);   XCTAssertEqual(e.volume(.a), 0.0)
+        e.setVolume(1.5, on: .b);  XCTAssertEqual(e.volume(.b), 1.5, accuracy: 1e-9)
+        XCTAssertEqual(MixEngine.volumeRange, 0...2.0)
+    }
+
+    /// The gain SPLIT identity: source-node gain `min(v,1)` × the EQ boost `10^(20·log10(max(v,1))/20)`
+    /// multiplies back to the intended `v`, and the source-node factor never exceeds 1.0 (the
+    /// documented player/stem `volume` range). This is the invariant the >unity boost relies on.
+    func testGainSplitIdentity() {
+        for v in [0.0, 0.25, 0.5, 1.0, 1.25, 1.5, 2.0] {
+            let source = min(v, 1.0)
+            XCTAssertLessThanOrEqual(source, 1.0)
+            let boost = pow(10.0, (20 * log10(max(v, 1.0))) / 20)
+            XCTAssertEqual(source * boost, v, accuracy: 1e-9, "gain identity broke at v=\(v)")
+        }
+        // 200% is +6.02 dB on the EQ; unity is 0 dB.
+        XCTAssertEqual(20 * log10(2.0), 6.0206, accuracy: 1e-3)
+        XCTAssertEqual(20 * log10(1.0), 0.0, accuracy: 1e-12)
+    }
+
+    // MARK: - Session recording (the engine emits into a MixSessionRecorder)
+
+    /// Every deck-parameter setter emits its session event into the wired recorder.
+    func testSettersEmitSessionEvents() {
+        let e = makeEngine()
+        let rec = MockRecorder()
+        e.recorder = rec
+        e.setRate(1.2, on: .a)
+        e.setPitch(3, on: .a)
+        e.setVolume(1.5, on: .a)
+        e.setCrossfader(0.7)
+        e.setEffect(.reverb, enabled: true, on: .a)
+        e.setEffectStrength(.reverb, 0.8, on: .a)
+        e.toggleStemMute("vocals", on: .a)
+        e.setStemVolume("bass", 0.5, on: .a)
+        e.setLead(.a)
+        e.resetDeck(.a)
+        let kinds = Set(rec.events.map { $0.kind })
+        for expected: MixEventKind in [.tempo, .pitch, .volume, .crossfader, .effectToggle,
+                                       .effectStrength, .stemMute, .stemVolume, .lead, .resetDeck] {
+            XCTAssertTrue(kinds.contains(expected), "missing \(expected) event")
+        }
+        // Crossfader is a GLOBAL event (no deck); tempo is deck-scoped.
+        XCTAssertNil(rec.events.first { $0.kind == .crossfader }?.deck)
+        XCTAssertEqual(rec.events.first { $0.kind == .tempo }?.deck, "A")
+    }
+
+    /// A real load → play records `.load` + `.play` and marks the song played exactly once.
+    func testLoadAndPlayRecordsAndMarksPlayed() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let rec = MockRecorder()
+        e.recorder = rec
+        let url = try makeSineWAV(seconds: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        e.loadFile(url, release: nil, startMs: nil, meta: meta("song-x", bpm: 120), on: .a)
+        e.play(.a)
+        e.play(.a)        // idempotent re-issue → NO second .play
+        XCTAssertEqual(rec.events.filter { $0.kind == .load }.count, 1)
+        XCTAssertEqual(rec.events.filter { $0.kind == .play }.count, 1)
+        XCTAssertEqual(rec.played, ["song-x"])
+        e.pause(.a)
+        XCTAssertEqual(rec.events.filter { $0.kind == .pause }.count, 1)
+        e.teardown()
+    }
+
+    /// No recorder wired ⇒ recording is a silent no-op (the engine still works).
+    func testNoRecorderIsNoOp() {
+        let e = makeEngine()
+        e.setRate(1.3, on: .a)        // must not crash with recorder == nil
+        XCTAssertEqual(e.rate(.a), 1.3, accuracy: 1e-9)
+    }
+
     // MARK: - Helpers
+
+    /// Captures the engine's emitted session events without any persistence (test double).
+    private final class MockRecorder: MixSessionRecorder {
+        var events: [(kind: MixEventKind, deck: String?, value: Double?)] = []
+        var played: [String] = []
+        func logEvent(_ kind: MixEventKind, deck: String?, songId: String?, title: String?,
+                      artist: String?, bpm: Double?, camelot: String?, param: String?,
+                      value: Double?, flag: Bool?, posMs: Int?) {
+            events.append((kind, deck, value))
+        }
+        func notePlayed(songId: String) { played.append(songId) }
+    }
 
     private func makeEngine() -> MixEngine {
         let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: .shared)

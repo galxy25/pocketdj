@@ -50,6 +50,9 @@ final class SettingsStore {
     /// Auto-Mix (Mix tab): duration in seconds of the crossfade (volume sweep) between decks.
     /// Default 3.
     var autoMixFadeSeconds: Double
+    /// Mix sessions: when on (default), the track loader HIDES songs already played in the current
+    /// session; when off, they still show but with a ✓ checkmark. See `MixSessionStore`.
+    var mixAutoHidePlayed: Bool
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -68,6 +71,7 @@ final class SettingsStore {
         self.burnFolderBookmark = data.burnFolderBookmark
         self.autoMixLeadSeconds = data.autoMixLeadSeconds ?? 15
         self.autoMixFadeSeconds = data.autoMixFadeSeconds ?? 3
+        self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -128,7 +132,8 @@ final class SettingsStore {
             ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
-            autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds)
+            autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds,
+            mixAutoHidePlayed: mixAutoHidePlayed)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -148,6 +153,7 @@ final class SettingsStore {
         burnFolderBookmark = d.burnFolderBookmark
         autoMixLeadSeconds = d.autoMixLeadSeconds ?? 15
         autoMixFadeSeconds = d.autoMixFadeSeconds ?? 3
+        mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -180,6 +186,8 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced to 15 / 3 at the read sites).
     var autoMixLeadSeconds: Double?
     var autoMixFadeSeconds: Double?
+    /// Optional so older blobs still decode (coalesced to true at the read sites).
+    var mixAutoHidePlayed: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -192,5 +200,6 @@ struct SettingsData: Codable {
         searchEndpoint: "",
         burnFolderBookmark: nil,
         autoMixLeadSeconds: 15,
-        autoMixFadeSeconds: 3)
+        autoMixFadeSeconds: 3,
+        mixAutoHidePlayed: true)
 }

@@ -84,6 +84,9 @@ final class MixEngine {
     nonisolated static let rateRange: ClosedRange<Double> = 0.5...2.0
     /// Pitch range in semitones (frequency shift, tempo preserved). 0 = original.
     nonisolated static let pitchRange: ClosedRange<Double> = -12...12
+    /// Deck volume range. 0…1 is attenuation; 1…2 is a **gain boost** to +6 dB (200%) applied on the
+    /// deck's always-active filter EQ `globalGain`. A master peak limiter catches the resulting peaks.
+    nonisolated static let volumeRange: ClosedRange<Double> = 0...2.0
 
     /// The four stem parts — MATCH the burned file suffixes (`BurnStore` stem cache) so
     /// `localStemURLs` keys line up. The Mix stem grid + per-deck stem playback key on these.
@@ -182,6 +185,9 @@ final class MixEngine {
     @ObservationIgnored private var filters: [Deck: AVAudioUnitEQ] = [:]
     @ObservationIgnored private var flangers: [Deck: AVAudioUnitDelay] = [:]
     @ObservationIgnored private var comps: [Deck: AVAudioUnitEffect] = [:]
+    /// Master peak limiter on the output bus (built in `ensureEngine`) — the safety net for the
+    /// >unity volume boost so two loud decks can't clip the device.
+    @ObservationIgnored private var masterLimiter: AVAudioUnitEffect?
     @ObservationIgnored private var files: [Deck: AVAudioFile] = [:]
     /// The song's playback WINDOW within the file, in frames: `[startFrames, endFrames)`. For a
     /// per-song cut this is the whole file; for an analog shared-album fallback it is the song's
@@ -219,6 +225,40 @@ final class MixEngine {
     @ObservationIgnored private var autoFadeSeconds: Double = 3
 
     init(burns: BurnStore) { self.burns = burns }
+
+    // MARK: - Session recording
+
+    /// The mix-session log sink (the app's `MixSessionStore`). Weak so the engine never retains the
+    /// app graph; nil ⇒ recording is a no-op (tests, before wiring).
+    @ObservationIgnored weak var recorder: MixSessionRecorder?
+
+    /// Emit one session event for a deck (or global) action, stamping the deck's loaded song + its
+    /// current playhead. The store owns the timeline (t0/tMs), coalescing, and persistence.
+    private func rec(_ kind: MixEventKind, _ deck: Deck? = nil, param: String? = nil,
+                     value: Double? = nil, flag: Bool? = nil) {
+        guard let recorder else { return }
+        let l = deck.flatMap { state($0).loaded }
+        let posMs = deck.map { Int(position($0) * 1000) }
+        recorder.logEvent(kind, deck: deck?.rawValue, songId: l?.songId, title: l?.title,
+                          artist: l?.artist, bpm: nil, camelot: nil, param: param,
+                          value: value, flag: flag, posMs: posMs)
+    }
+
+    /// The SINGLE transport funnel — set a deck's playing flag, recording `.play` (+ marking the
+    /// song played) / `.pause` ONLY on an actual transition. Routing every start/stop (manual,
+    /// master, auto-DJ, natural track-end) through here logs each exactly once; an idempotent
+    /// re-issue (e.g. seek/restart while already playing) records nothing.
+    private func setPlaying(_ deck: Deck, _ playing: Bool) {
+        let was = state(deck).isPlaying
+        mutate(deck) { $0.isPlaying = playing }
+        guard playing != was else { return }
+        if playing {
+            rec(.play, deck)
+            if let id = state(deck).loaded?.songId { recorder?.notePlayed(songId: id) }
+        } else {
+            rec(.pause, deck)
+        }
+    }
 
     // MARK: - Lifecycle
 
@@ -259,6 +299,14 @@ final class MixEngine {
             }
             stemPlayers[d] = stemNodes
         }
+        // Master PEAK LIMITER between mainMixer and the device: two decks at up to 200% (+6 dB each)
+        // plus the compressor's makeup gain can sum past 0 dBFS — the limiter catches those peaks so
+        // the boost feature can't hard-clip the output. Transparent below threshold.
+        let limiter = AVAudioUnitEffect(audioComponentDescription: Self.limiterDesc)
+        engine.attach(limiter)
+        engine.connect(engine.mainMixerNode, to: limiter, format: canonical)
+        engine.connect(limiter, to: engine.outputNode, format: canonical)
+        masterLimiter = limiter
         engine.prepare()
         // Soft-fail: no audio device (e.g. a headless CI / unit-test host) leaves the graph unbuilt
         // and `isReady` false — the app degrades to a silent Mix tab rather than crashing.
@@ -270,6 +318,7 @@ final class MixEngine {
             for e in Effect.allCases { applyEffect(e, on: d) }
         }
         applyMixGains()
+        for d in Deck.allCases { applyBoost(d) }   // >unity boost (globalGain) AFTER effects set the filter EQ
     }
 
     func prepare() { ensureEngine() }
@@ -354,6 +403,13 @@ final class MixEngine {
         setDuration(deck, Double(count) / sr)
         setPosition(deck, 0)
         applyRate(deck); applyPitch(deck)
+        // Record the load with the track's musical attributes (bpm/camelot) so the corpus is
+        // self-describing without a catalog join. tempo/pitch reset to default are implied by .load.
+        if let recorder, let l = state(deck).loaded {
+            recorder.logEvent(.load, deck: deck.rawValue, songId: l.songId, title: l.title,
+                              artist: l.artist, bpm: l.bpm, camelot: l.camelot, param: nil,
+                              value: nil, flag: nil, posMs: 0)
+        }
     }
 
     // MARK: - Transport
@@ -363,7 +419,7 @@ final class MixEngine {
         ensureEngine()
         if !engine.isRunning { try? engine.start() }
         if stemActive(deck) { startStems(deck) } else { players[deck]?.play() }
-        mutate(deck) { $0.isPlaying = true }
+        setPlaying(deck, true)
         refreshTransport()
         startTickIfNeeded()
     }
@@ -377,7 +433,7 @@ final class MixEngine {
     /// internal "retire the outgoing deck" step (the public `pause` ends the auto-mix).
     private func silence(_ deck: Deck) {
         pauseActiveNodes(deck)              // keeps the scheduled position (main + any stems)
-        mutate(deck) { $0.isPlaying = false }
+        setPlaying(deck, false)
         refreshTransport()
     }
 
@@ -388,7 +444,7 @@ final class MixEngine {
         if !engine.isRunning { try? engine.start() }
         for d in Deck.allCases where state(d).loaded != nil {
             if stemActive(d) { startStems(d) } else { players[d]?.play() }
-            mutate(d) { $0.isPlaying = true }
+            setPlaying(d, true)
         }
         refreshTransport()
         startTickIfNeeded()
@@ -396,7 +452,7 @@ final class MixEngine {
 
     func pauseBoth() {
         if autoMixing { endAutoLoop() }     // a manual master-Pause during Auto-DJ ends it
-        for d in Deck.allCases { pauseActiveNodes(d); mutate(d) { $0.isPlaying = false } }
+        for d in Deck.allCases { pauseActiveNodes(d); setPlaying(d, false) }
         refreshTransport()
     }
 
@@ -419,7 +475,7 @@ final class MixEngine {
             setPosition(deck, 0)
             if was {
                 if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
-                player.play(); mutate(deck) { $0.isPlaying = true }
+                player.play(); setPlaying(deck, true)           // was already playing → no spurious event
             }
         }
         refreshTransport()
@@ -443,7 +499,9 @@ final class MixEngine {
         applyRate(deck); applyPitch(deck)
         for e in Effect.allCases { applyEffect(e, on: deck) }
         applyMixGains()
+        applyBoost(deck)         // volume back to 100% → globalGain back to 0 dB
         restart(deck)            // rewind to the start (no-op if nothing is loaded)
+        rec(.resetDeck, deck)    // ONE semantic event (not a burst of per-parameter resets)
     }
 
     /// Seek to an absolute SOURCE position (seconds from the song's start). Sample-accurate, bounded
@@ -469,11 +527,12 @@ final class MixEngine {
             setPosition(deck, clamped)
             if was, count > 0 {
                 if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
-                player.play(); mutate(deck) { $0.isPlaying = true }
+                player.play(); setPlaying(deck, true)           // was already playing → no spurious event
             }
         }
         refreshTransport()
         startTickIfNeeded()
+        rec(.seek, deck, value: clamped)
     }
 
     // MARK: - Tempo / pitch / beat-match
@@ -481,15 +540,17 @@ final class MixEngine {
     func setRate(_ rate: Double, on deck: Deck) {
         mutate(deck) { $0.rate = min(max(rate, Self.rateRange.lowerBound), Self.rateRange.upperBound) }
         applyRate(deck)
+        rec(.tempo, deck, value: state(deck).rate)
     }
 
     func setPitch(_ semitones: Double, on deck: Deck) {
         mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
         applyPitch(deck)
+        rec(.pitch, deck, value: state(deck).pitch)
     }
 
     /// Designate (or clear) the Lead deck for beat-matching. Tapping the current lead clears it.
-    func setLead(_ deck: Deck) { leadDeck = (leadDeck == deck) ? nil : deck }
+    func setLead(_ deck: Deck) { leadDeck = (leadDeck == deck) ? nil : deck; rec(.lead, deck, flag: isLead(deck)) }
     func isLead(_ deck: Deck) -> Bool { leadDeck == deck }
 
     /// Match the follower's effective BPM to the Lead (rate = leadBPM·leadRate / followerBPM,
@@ -501,6 +562,9 @@ final class MixEngine {
               let leadBPM = matchBPM(lead), let folBPM = matchBPM(follower) else { return }
         setRate(Self.syncRate(leadBPM: leadBPM, leadRate: state(lead).rate, followerBPM: folBPM), on: follower)
         phaseAlign(follower: follower, lead: lead)
+        // A `.sync` marker rides alongside the real `.tempo` (and the phase-align `.seek`) it caused —
+        // replay applies all; consumers counting gestures dedupe on `.sync`. value = the matched rate.
+        rec(.sync, follower, value: state(follower).rate)
     }
 
     /// Whether a follower CAN sync (there's a lead ≠ this deck, both with a known BPM).
@@ -522,18 +586,29 @@ final class MixEngine {
     // MARK: - Volume / crossfader / effects
 
     func setVolume(_ volume: Double, on deck: Deck) {
-        mutate(deck) { $0.volume = min(max(volume, 0), 1) }
-        applyMixGains()
+        mutate(deck) { $0.volume = min(max(volume, Self.volumeRange.lowerBound), Self.volumeRange.upperBound) }
+        applyMixGains()       // 0…1 portion (+ equal-power crossfade) on the source nodes
+        applyBoost(deck)      // >unity portion on the deck's EQ globalGain (volume-change only)
+        rec(.volume, deck, value: state(deck).volume)
     }
 
     func setCrossfader(_ value: Double) {
+        applyCrossfader(value)
+        rec(.crossfader, nil, value: crossfader)
+    }
+
+    /// Non-recording crossfade apply. The auto-DJ internals use THIS so machine moves aren't logged as
+    /// user `.crossfader` gestures (and a Manual→Auto→Manual toggle on an idle session stays empty —
+    /// no phantom event that would materialize a junk "Session N" on Reset).
+    private func applyCrossfader(_ value: Double) {
         crossfader = min(max(value, 0), 1)
-        applyMixGains()
+        applyMixGains()       // crossfade only — NOT applyBoost (keeps globalGain off the fade path)
     }
 
     func setEffect(_ effect: Effect, enabled: Bool, on deck: Deck) {
         mutate(deck) { $0.set(effect, enabled) }
         applyEffect(effect, on: deck)
+        rec(.effectToggle, deck, param: effect.rawValue, flag: enabled)
     }
 
     /// Per-deck per-effect STRENGTH (0…1) — the wet amount / cutoff / threshold the long-press popup
@@ -541,6 +616,7 @@ final class MixEngine {
     func setEffectStrength(_ effect: Effect, _ strength: Double, on deck: Deck) {
         mutate(deck) { $0.setStrength(effect, strength) }
         applyEffect(effect, on: deck)
+        rec(.effectStrength, deck, param: effect.rawValue, value: state(deck).strength(effect))
     }
 
     // MARK: - Auto-Mix (auto-DJ)
@@ -567,7 +643,7 @@ final class MixEngine {
         autoDeckEndsAt = [:]
         autoDeckDurationMs = [:]
 
-        setCrossfader(0)
+        applyCrossfader(0)
         loadAuto(autoQueue[0], onto: .a)
         if autoQueue.count > 1 { loadAuto(autoQueue[1], onto: .b) }
         autoNextToLoad = min(2, autoQueue.count)
@@ -586,10 +662,14 @@ final class MixEngine {
     }
 
     private func endAutoLoop() {
+        let wasMixing = autoMixing
         autoFadeStartedAt = nil
         autoMixing = false
         autoStatus = nil
-        setCrossfader(0.5)      // recenter — else the next MANUAL mix starts with one deck silenced
+        // Recenter ONLY after a real auto-mix (it swept the fader to an extreme) — and non-recording,
+        // so ending an auto-mix never injects a user `.crossfader` event. A bare Manual→Auto→Manual
+        // toggle (wasMixing == false) leaves the fader where the user left it.
+        if wasMixing { applyCrossfader(0.5) }
     }
 
     /// One auto-mix step (called from the unified tick while `autoMixing`).
@@ -598,7 +678,7 @@ final class MixEngine {
         let now = Date()
         if let fadeStart = autoFadeStartedAt {
             let p = min(max(now.timeIntervalSince(fadeStart) / autoFadeSeconds, 0), 1)
-            setCrossfader(autoFadeFrom == .a ? p : 1 - p)
+            applyCrossfader(autoFadeFrom == .a ? p : 1 - p)
             if p >= 1 { finishAutoCrossfade() }
         } else {
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
@@ -624,7 +704,7 @@ final class MixEngine {
     private func finishAutoCrossfade() {
         let from = autoFadeFrom
         let to = other(from)
-        setCrossfader(from == .a ? 1 : 0)
+        applyCrossfader(from == .a ? 1 : 0)
         silence(from)           // retire the outgoing deck WITHOUT ending the auto-mix we're inside
         autoLiveDeck = to
         autoLivePos += 1
@@ -672,12 +752,14 @@ final class MixEngine {
             guard wireStems(deck) else { return }    // no local stems → can't enter stem mode
             players[deck]?.stop()                    // silence the single mixed file
             mutate(deck) { $0.stemMode = true }
+            rec(.stemMode, deck, flag: true)
             _ = scheduleStems(deck, fromSeconds: pos)
             applyStemGains(deck)
             if was { startStems(deck) }
         } else {
             stopStemNodes(deck)
             mutate(deck) { $0.stemMode = false }
+            rec(.stemMode, deck, flag: false)
             // Re-prime (and resume) the single mixed file from the same spot.
             guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
                   let start = startFrames[deck], let end = endFrames[deck] else { refreshTransport(); return }
@@ -696,11 +778,13 @@ final class MixEngine {
     func toggleStemMute(_ name: String, on deck: Deck) {
         mutate(deck) { if $0.stemMuted.contains(name) { $0.stemMuted.remove(name) } else { $0.stemMuted.insert(name) } }
         applyStemGains(deck)
+        rec(.stemMute, deck, param: name, flag: isStemMuted(name, on: deck))
     }
 
     func setStemVolume(_ name: String, _ v: Double, on deck: Deck) {
         mutate(deck) { $0.stemVol[name] = min(max(v, 0), 1) }
         applyStemGains(deck)
+        rec(.stemVolume, deck, param: name, value: stemVolume(name, on: deck))
     }
 
     /// Resolve + open the deck track's 4 burned stem files and reconnect each stem node at the file's
@@ -813,11 +897,23 @@ final class MixEngine {
         applyStemGains(.b)
     }
 
-    /// The deck's player gain = its own volume trim × the equal-power crossfade factor.
+    /// The deck's player gain = its own volume trim × the equal-power crossfade factor. The volume is
+    /// CLAMPED to ≤1.0 here (the shared source for the player AND every stem node, both of whose
+    /// `volume` is the documented 0…1) — the >unity boost (100%…200%) is added separately and only on
+    /// the deck's filter EQ `globalGain` (see `applyBoost`), so it can't double-gain the stems.
     private func deckGain(_ deck: Deck) -> Float {
         let v = Float(crossfader)
         let cf = deck == .a ? cosf(.pi / 2 * v) : cosf(.pi / 2 * (1 - v))
-        return Float(state(deck).volume) * cf
+        return Float(min(state(deck).volume, 1.0)) * cf
+    }
+
+    /// Apply the deck's >unity volume boost as the filter EQ's `globalGain`: 0 dB at ≤100%, up to
+    /// +6 dB at 200%. The EQ sits downstream of the deck's `inputMixer`, so the boost lifts the main
+    /// file AND the 4 stems uniformly. Driven ONLY by a volume change (build / `setVolume` /
+    /// `resetDeck`) — never the crossfader path — so an equal-power fade doesn't re-write it.
+    private func applyBoost(_ deck: Deck) {
+        guard built else { return }
+        filters[deck]?.globalGain = Float(20 * log10(max(state(deck).volume, 1.0)))
     }
 
     /// Push the deck gain onto each stem node, scaled by the stem's own volume and zeroed when muted.
@@ -850,7 +946,10 @@ final class MixEngine {
             band.frequency = Float(18_000 * pow(250.0 / 18_000.0, Double(s)))
             band.bandwidth = 0.5
             band.bypass = !on
-            n.bypass = !on
+            // The EQ NODE stays active (band-bypass alone gates the filter EFFECT) so its
+            // `globalGain` — which carries the deck's >unity volume boost (`applyBoost`) — keeps
+            // applying even when the filter is off. At unity + filter-off it's a transparent passthrough.
+            n.bypass = false
         case .flanger:
             guard let n = flangers[deck] else { return }
             n.delayTime = 0.004                 // ~4 ms comb (static; a true LFO flanger is future work)
@@ -949,12 +1048,12 @@ final class MixEngine {
         for d in Deck.allCases where state(d).isPlaying {
             let dur = duration(d)
             guard dur > 0 else {                 // nothing / zero-length loaded — don't run the playhead forever
-                if !autoMixing { mutate(d) { $0.isPlaying = false }; stopActiveNodes(d) }
+                if !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
                 continue
             }
             let pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
             setPosition(d, pos)
-            if pos >= dur, !autoMixing { mutate(d) { $0.isPlaying = false }; stopActiveNodes(d) }
+            if pos >= dur, !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
         }
         refreshTransport()
         if autoMixing { autoFire() }
@@ -967,6 +1066,13 @@ final class MixEngine {
     private static let dynamicsDesc = AudioComponentDescription(
         componentType: kAudioUnitType_Effect,
         componentSubType: kAudioUnitSubType_DynamicsProcessor,
+        componentManufacturer: kAudioUnitManufacturer_Apple,
+        componentFlags: 0, componentFlagsMask: 0)
+
+    /// The PeakLimiter (master safety net) component description — Apple's built-in AU.
+    private static let limiterDesc = AudioComponentDescription(
+        componentType: kAudioUnitType_Effect,
+        componentSubType: kAudioUnitSubType_PeakLimiter,
         componentManufacturer: kAudioUnitManufacturer_Apple,
         componentFlags: 0, componentFlagsMask: 0)
 

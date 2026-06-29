@@ -38,6 +38,10 @@ struct MixView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(BurnStore.self) private var burns
     @Environment(SettingsStore.self) private var settings
+    @Environment(MixSessionStore.self) private var mixSessions
+
+    /// The detail NavigationStack's path (owned by RootView) — so the Sessions button can push.
+    @Binding var path: NavigationPath
 
     /// Per-deck source (nil ⇒ none picked yet). Two vars so each deck can hold its own.
     @State private var sourceA: MixSource?
@@ -46,6 +50,10 @@ struct MixView: View {
     @State private var loaderDeck: MixEngine.Deck?
     /// The GLOBAL collection Auto mode plays end-to-end (distinct from the per-deck sources).
     @State private var autoSource: MixSource?
+    /// Session rename alert + reset confirmation.
+    @State private var renaming = false
+    @State private var nameDraft = ""
+    @State private var confirmingReset = false
 
     var body: some View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
@@ -64,15 +72,74 @@ struct MixView: View {
             .frame(maxWidth: .infinity)                 // ...centered in a wide window
         }
         .background(Theme.bg)
-        .navigationTitle("Mix")
+        // The centered nav title shows the CURRENT session's name; tapping it opens the title menu
+        // (Rename / New session / All sessions) — the reliable, system-centered cross-platform way to
+        // make the session name interactive (vs. an unreliable .principal + .contextMenu).
+        .navigationTitle(mixSessions.currentName)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbarTitleMenu { sessionTitleMenu }
         .accessibilityIdentifier("mix-tab")
         .toolbar { autoMixToolbar }                    // Auto/Manual + collection Play/Shuffle
+        .toolbar { sessionLeadingToolbar }             // Sessions (history) + Reset (X)
         .task { engine.prepare() }                     // warm the AVAudioEngine graph when the tab opens
         // Track loader: long-press (iOS) / right-click (macOS) on a deck, or tap its header.
         .sheet(item: $loaderDeck) { deck in
             TrackLoaderSheet(deck: deck, engine: engine,
                              source: deck == .a ? $sourceA : $sourceB)
         }
+        .alert("Rename session", isPresented: $renaming) {
+            TextField("Name", text: $nameDraft).accessibilityIdentifier("mix-rename-field")
+            Button("Save") { mixSessions.rename(mixSessions.currentId, nameDraft) }
+                .accessibilityIdentifier("mix-rename-confirm")
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Start a new session?", isPresented: $confirmingReset, titleVisibility: .visible) {
+            Button("New session") { mixSessions.reset() }.accessibilityIdentifier("mix-reset-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The current session is saved to Sessions. The fresh session starts with no played tracks.")
+        }
+    }
+
+    // MARK: Sessions (name menu · history · reset)
+
+    /// The nav-title tap menu: rename the current session, start a new one (reset), or jump to the
+    /// full Sessions list. Mirrors the discrete Sessions/Reset toolbar buttons for discoverability.
+    @ViewBuilder private var sessionTitleMenu: some View {
+        Button { nameDraft = mixSessions.currentName; renaming = true } label: {
+            Label("Rename Session…", systemImage: "pencil")
+        }
+        Button { confirmingReset = true } label: { Label("New Session", systemImage: "xmark") }
+        Divider()
+        Button { path.append(MixSessionsRoute()) } label: {
+            Label("All Sessions…", systemImage: "clock.arrow.circlepath")
+        }
+    }
+
+    /// Leading toolbar: the discrete Sessions (history) + Reset (X) buttons. Leading keeps them off
+    /// the already-crowded trailing auto-mix group (which collapses to overflow on iPhone).
+    @ToolbarContentBuilder private var sessionLeadingToolbar: some ToolbarContent {
+        #if os(iOS)
+        ToolbarItem(placement: .topBarLeading) { sessionsButton }
+        ToolbarItem(placement: .topBarLeading) { resetButton }
+        #else
+        ToolbarItem(placement: .navigation) { sessionsButton }
+        ToolbarItem(placement: .navigation) { resetButton }
+        #endif
+    }
+
+    private var sessionsButton: some View {
+        Button { path.append(MixSessionsRoute()) } label: { Image(systemName: "clock.arrow.circlepath") }
+            .help("Mix sessions — replay & history")
+            .accessibilityIdentifier("mix-sessions")
+    }
+
+    private var resetButton: some View {
+        Button { confirmingReset = true } label: { Image(systemName: "xmark") }
+            .help("Start a new session (the current one is saved to Sessions)")
+            .accessibilityIdentifier("mix-reset")
     }
 
     // MARK: Auto-Mix (auto-DJ)
@@ -420,7 +487,7 @@ private struct DeckView: View {
         DeckSlider(title: "Tempo",
                    display: String(format: "%.2f×", engine.rate(deck)),
                    value: engine.rate(deck),
-                   range: MixEngine.rateRange,
+                   range: MixEngine.rateRange, step: 0.01,
                    a11y: "\(a11y)-tempo") { engine.setRate($0, on: deck) }
     }
 
@@ -429,16 +496,28 @@ private struct DeckView: View {
         return DeckSlider(title: "Pitch",
                           display: p == 0 ? "0" : String(format: "%+.1f", p),
                           value: p,
-                          range: MixEngine.pitchRange,
+                          range: MixEngine.pitchRange, step: 0.1,
                           a11y: "\(a11y)-pitch") { engine.setPitch($0, on: deck) }
     }
 
+    // Gain to 200%. >100% is a boost (gold value + "+N dB" suffix, not color-only) backed by the
+    // deck EQ globalGain + a master limiter. A drag snaps to unity (0 dB) within a small epsilon.
     private var volSlider: some View {
-        DeckSlider(title: "Vol",
-                   display: "\(Int((engine.volume(deck) * 100).rounded()))%",
-                   value: engine.volume(deck),
-                   range: 0...1,
-                   a11y: "\(a11y)-vol") { engine.setVolume($0, on: deck) }
+        let v = engine.volume(deck)
+        let pct = Int((v * 100).rounded())
+        let boosted = v > 1.0001
+        let dB = 20 * log10(max(v, 0.0001))
+        let dBStr = String(format: "%.1f", dB)
+        return DeckSlider(title: "Vol",
+                          display: boosted ? "\(pct)% · +\(dBStr)dB" : "\(pct)%",
+                          value: v,
+                          range: MixEngine.volumeRange, step: 0.05,
+                          a11y: "\(a11y)-vol",
+                          tint: boosted ? Theme.accent2 : Theme.accent,
+                          valueColor: boosted ? Theme.accent2 : Theme.fg,
+                          accessibilityValueText: boosted ? "\(pct) percent, plus \(dBStr) decibels" : "\(pct) percent") {
+            engine.setVolume(abs($0 - 1.0) < 0.03 ? 1.0 : $0, on: deck)   // snap to unity by drag
+        }
     }
 
     // 2×2 grid: Compressor · Reverb (top), Flanger · Filter (bottom).
@@ -503,14 +582,55 @@ private struct DeckView: View {
 
 // MARK: - Small controls
 
-/// A labelled slider (title + live value over a full-width Slider) — a manual `Binding` so a
-/// drag pushes straight into the engine.
+/// One −/＋ fine-adjust button, flanking a slider, that nudges `value` by `step` (clamped to
+/// `range`). Disabled at the relevant bound. `onInteract` lets a host with an idle-revert timer
+/// (the chip flip / popover) reset it on each tap so careful stepping doesn't dismiss mid-adjust.
+private struct StepButton: View {
+    enum Dir { case dec, inc }
+    let dir: Dir
+    let value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    var tint: Color = Theme.accent
+    let a11y: String
+    let onChange: (Double) -> Void
+    var onInteract: () -> Void = {}
+
+    private var target: Double {
+        dir == .dec ? max(range.lowerBound, value - step) : min(range.upperBound, value + step)
+    }
+    private var enabled: Bool {
+        dir == .dec ? value > range.lowerBound + 1e-9 : value < range.upperBound - 1e-9
+    }
+
+    var body: some View {
+        Button { onChange(target); onInteract() } label: {
+            Image(systemName: dir == .dec ? "minus" : "plus")
+                .font(.caption2.weight(.bold))
+                .frame(width: 24, height: 24)
+                .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(enabled ? tint : Theme.fgDim)
+        .disabled(!enabled)
+        .accessibilityIdentifier("\(a11y)-\(dir == .dec ? "dec" : "inc")")
+        .accessibilityLabel(dir == .dec ? "Decrease" : "Increase")
+    }
+}
+
+/// A labelled slider (title + live value) FLANKED by −/＋ steppers for finer-grain adjustment than a
+/// drag. A manual `Binding` pushes straight into the engine. `tint`/`valueColor`/`accessibilityValueText`
+/// let the Vol slider signal a >100% boost without being color-only.
 private struct DeckSlider: View {
     let title: String
     let display: String
     let value: Double
     let range: ClosedRange<Double>
+    let step: Double
     let a11y: String
+    var tint: Color = Theme.accent
+    var valueColor: Color = Theme.fg
+    var accessibilityValueText: String? = nil
     let onChange: (Double) -> Void
 
     var body: some View {
@@ -518,11 +638,17 @@ private struct DeckSlider: View {
             HStack {
                 Text(title).font(.caption).foregroundStyle(Theme.fgDim)
                 Spacer()
-                Text(display).font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
+                Text(display).font(.caption.monospacedDigit()).foregroundStyle(valueColor)
+                    .lineLimit(1).minimumScaleFactor(0.7)
             }
-            Slider(value: Binding(get: { value }, set: onChange), in: range)
-                .tint(Theme.accent)
-                .accessibilityIdentifier(a11y)
+            HStack(spacing: 6) {
+                StepButton(dir: .dec, value: value, range: range, step: step, tint: tint, a11y: a11y, onChange: onChange)
+                Slider(value: Binding(get: { value }, set: onChange), in: range)
+                    .tint(tint)
+                    .accessibilityIdentifier(a11y)
+                    .accessibilityValue(accessibilityValueText ?? display)
+                StepButton(dir: .inc, value: value, range: range, step: step, tint: tint, a11y: a11y, onChange: onChange)
+            }
         }
     }
 }
@@ -549,17 +675,17 @@ private struct EffectButton: View {
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
-    @Environment(\.verticalSizeClass) private var vSize
-    /// iPhone portrait — the chip is too narrow to drag an in-place slider, so use a popover there.
-    /// Landscape / iPad / macOS keep the (verified, roomy enough) in-place flip.
-    private var portraitPhone: Bool { hSize == .compact && vSize == .regular }
+    /// Use the fixed-width POPOVER on ALL compact widths (iPhone portrait AND landscape) — the chip is
+    /// too narrow there for an in-place slider, let alone steppers. iPad/macOS (regular width) keep
+    /// the roomy in-place flip, which now also carries the −/＋ steppers.
+    private var useChipPopover: Bool { hSize == .compact }
     #else
-    private var portraitPhone: Bool { false }
+    private var useChipPopover: Bool { false }
     #endif
 
     var body: some View {
         Group {
-            if editing && !portraitPhone { sliderFace } else { buttonFace }
+            if editing && !useChipPopover { sliderFace } else { buttonFace }
         }
         .animation(.easeInOut(duration: 0.15), value: editing)
         // In-place flip idle auto-revert: each interaction restarts this; 3 s idle flips back.
@@ -570,7 +696,7 @@ private struct EffectButton: View {
         }
         .popover(isPresented: $showPopover, arrowEdge: .top) {
             ChipStrengthPopover(title: effect.label, systemImage: effect.icon, tint: Theme.accent,
-                                value: strength, a11y: "\(a11y)-strength",
+                                value: strength, step: 0.05, a11y: "\(a11y)-strength",
                                 presented: $showPopover, onChange: onStrength)
         }
     }
@@ -605,13 +731,18 @@ private struct EffectButton: View {
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 
-    // The flipped-in strength slider — same chip footprint. Each change restarts the idle timer.
+    // The flipped-in strength slider (iPad / macOS — roomy) with −/＋ steppers. Each change (drag OR
+    // step) restarts the idle timer so careful stepping doesn't auto-revert mid-adjust.
     private var sliderFace: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Image(systemName: effect.icon)
+            StepButton(dir: .dec, value: strength, range: 0...1, step: 0.05, a11y: "\(a11y)-strength",
+                       onChange: onStrength, onInteract: { interaction += 1 })
             Slider(value: Binding(get: { strength }, set: { onStrength($0); interaction += 1 }), in: 0...1)
                 .controlSize(.small)
                 .accessibilityIdentifier("\(a11y)-strength")
+            StepButton(dir: .inc, value: strength, range: 0...1, step: 0.05, a11y: "\(a11y)-strength",
+                       onChange: onStrength, onInteract: { interaction += 1 })
             Text("\(Int((strength * 100).rounded()))%")
                 .monospacedDigit().frame(width: 30, alignment: .trailing)
         }
@@ -625,8 +756,8 @@ private struct EffectButton: View {
 
     private func reveal() {
         if !isOn { onToggle() }     // dialling strength should be audible → enable on reveal
-        if portraitPhone { showPopover = true }       // fixed-width popover (draggable in portrait)
-        else { editing = true; interaction += 1 }     // in-place flip (landscape / iPad / macOS)
+        if useChipPopover { showPopover = true }       // fixed-width popover (compact iPhone)
+        else { editing = true; interaction += 1 }      // in-place flip (iPad / macOS)
     }
 }
 
@@ -638,6 +769,7 @@ private struct ChipStrengthPopover: View {
     let systemImage: String
     let tint: Color
     let value: Double
+    let step: Double
     let a11y: String
     @Binding var presented: Bool
     let onChange: (Double) -> Void
@@ -648,18 +780,22 @@ private struct ChipStrengthPopover: View {
             Label(title, systemImage: systemImage)
                 .font(.caption.weight(.semibold)).foregroundStyle(tint)
             HStack(spacing: 8) {
+                StepButton(dir: .dec, value: value, range: 0...1, step: step, tint: tint, a11y: a11y,
+                           onChange: onChange, onInteract: { interaction += 1 })
                 Slider(value: Binding(get: { value }, set: { onChange($0); interaction += 1 }), in: 0...1)
                     .tint(tint)
                     .accessibilityIdentifier(a11y)
+                StepButton(dir: .inc, value: value, range: 0...1, step: step, tint: tint, a11y: a11y,
+                           onChange: onChange, onInteract: { interaction += 1 })
                 Text("\(Int((value * 100).rounded()))%")
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
                     .frame(width: 40, alignment: .trailing)
             }
         }
         .padding(16)
-        .frame(width: 250)
+        .frame(width: 290)
         .presentationCompactAdaptation(.popover)       // stay a popover on iPhone (not a sheet)
-        // Auto-dismiss after 3 s idle; each drag bumps `interaction` and restarts the timer.
+        // Auto-dismiss after 3 s idle; each drag OR step bumps `interaction` and restarts the timer.
         .task(id: interaction) {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled { presented = false }
@@ -762,17 +898,17 @@ private struct StemPad: View {
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
-    @Environment(\.verticalSizeClass) private var vSize
-    private var portraitPhone: Bool { hSize == .compact && vSize == .regular }
+    /// Compact iPhone (portrait + landscape) → popover; iPad/macOS → in-place flip (with steppers).
+    private var useChipPopover: Bool { hSize == .compact }
     #else
-    private var portraitPhone: Bool { false }
+    private var useChipPopover: Bool { false }
     #endif
 
     private var muted: Bool { engine.isStemMuted(stem, on: deck) }
 
     var body: some View {
         Group {
-            if editing && !portraitPhone { sliderFace } else { padFace }
+            if editing && !useChipPopover { sliderFace } else { padFace }
         }
         .animation(.easeInOut(duration: 0.15), value: editing)
         .task(id: interaction) {
@@ -782,7 +918,7 @@ private struct StemPad: View {
         }
         .popover(isPresented: $showPopover, arrowEdge: .top) {
             ChipStrengthPopover(title: stem.capitalized, systemImage: Self.icon(stem), tint: color,
-                                value: engine.stemVolume(stem, on: deck), a11y: "\(a11y)-volume",
+                                value: engine.stemVolume(stem, on: deck), step: 0.05, a11y: "\(a11y)-volume",
                                 presented: $showPopover,
                                 onChange: { engine.setStemVolume(stem, $0, on: deck) })
         }
@@ -816,13 +952,19 @@ private struct StemPad: View {
     }
 
     private var sliderFace: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Image(systemName: Self.icon(stem))
+            StepButton(dir: .dec, value: engine.stemVolume(stem, on: deck), range: 0...1, step: 0.05,
+                       tint: color, a11y: "\(a11y)-volume",
+                       onChange: { engine.setStemVolume(stem, $0, on: deck) }, onInteract: { interaction += 1 })
             Slider(value: Binding(get: { engine.stemVolume(stem, on: deck) },
                                   set: { engine.setStemVolume(stem, $0, on: deck); interaction += 1 }),
                    in: 0...1)
                 .controlSize(.small)
                 .accessibilityIdentifier("\(a11y)-volume")
+            StepButton(dir: .inc, value: engine.stemVolume(stem, on: deck), range: 0...1, step: 0.05,
+                       tint: color, a11y: "\(a11y)-volume",
+                       onChange: { engine.setStemVolume(stem, $0, on: deck) }, onInteract: { interaction += 1 })
             Text("\(Int((engine.stemVolume(stem, on: deck) * 100).rounded()))%")
                 .monospacedDigit().frame(width: 30, alignment: .trailing)
         }
@@ -835,8 +977,8 @@ private struct StemPad: View {
     }
 
     private func reveal() {
-        if portraitPhone { showPopover = true }            // fixed-width popover (draggable in portrait)
-        else { editing = true; interaction += 1 }          // in-place flip (landscape / iPad / macOS)
+        if useChipPopover { showPopover = true }           // fixed-width popover (compact iPhone)
+        else { editing = true; interaction += 1 }          // in-place flip (iPad / macOS)
     }
 
     static func icon(_ stem: String) -> String {
@@ -916,17 +1058,27 @@ private struct TrackLoaderSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(BurnStore.self) private var burns
+    @Environment(MixSessionStore.self) private var mixSessions
+    @Environment(SettingsStore.self) private var settings
 
     let deck: MixEngine.Deck
     let engine: MixEngine
     @Binding var source: MixSource?
 
     @State private var searchText = ""
+    /// Local override to reveal already-played tracks (with their ✓) even when auto-hide is on.
+    @State private var showPlayed = false
 
-    /// Resolve the deck's source to its loadable (local) tracks, then filter by the query.
-    private var items: [MixLoadable] {
+    /// Resolve the deck's source to its loadable (local) tracks ONCE per render. `loadables(for:)`
+    /// stats each candidate file on the main actor; resolving it 3-4× per body pass (the old `items`
+    /// was read twice + `hiddenPlayedCount` once) re-walked the whole pocket on every keystroke.
+    private func resolvedSource() -> [MixLoadable] {
         guard let source else { return [] }
-        let all = MixResolver(app: app, collections: collections, burns: burns).loadables(for: source)
+        return MixResolver(app: app, collections: collections, burns: burns).loadables(for: source)
+    }
+
+    /// Apply the search query to an already-resolved list (post-search, pre-played-drop).
+    private func queried(_ all: [MixLoadable]) -> [MixLoadable] {
         let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return all }
         return all.filter { item in
@@ -936,14 +1088,40 @@ private struct TrackLoaderSheet: View {
         }
     }
 
+    /// The rows to show: the query-filtered set minus already-played tracks (unless auto-hide is off
+    /// or the local reveal is on — then all queried rows, the played ones marked with a ✓).
+    private func visibleItems(_ queried: [MixLoadable]) -> [MixLoadable] {
+        guard settings.mixAutoHidePlayed, !showPlayed else { return queried }
+        return queried.filter { !mixSessions.hasPlayed($0.songId) }
+    }
+
+    /// How many of the CURRENTLY-QUERIED tracks auto-hide is hiding — counted from the same
+    /// search-filtered set as the list, so the toggle's count matches what flipping it reveals.
+    private func hiddenPlayedCount(_ queried: [MixLoadable]) -> Int {
+        guard settings.mixAutoHidePlayed else { return 0 }
+        return queried.filter { mixSessions.hasPlayed($0.songId) }.count
+    }
+
     var body: some View {
-        NavigationStack {
+        _ = mixSessions.playedRevision   // observe so the list refreshes when a track becomes played
+        let queriedItems = queried(resolvedSource())
+        let visible = visibleItems(queriedItems)
+        let hidden = hiddenPlayedCount(queriedItems)
+        return NavigationStack {
             VStack(spacing: 8) {
                 sourceMenu
                 TextField("Search artist, title, album", text: $searchText)
                     .pocketField()
                     .accessibilityIdentifier("mix-loader-search")
-                content
+                if hidden > 0 || showPlayed {
+                    Toggle(isOn: $showPlayed) {
+                        Text(showPlayed ? "Showing played" : "Show \(hidden) played")
+                            .font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                    .toggleStyle(.switch).tint(Theme.accent2).controlSize(.mini)
+                    .accessibilityIdentifier("mix-loader-show-played")
+                }
+                content(visible)
             }
             .padding(12)
             .background(Theme.bg)
@@ -963,7 +1141,7 @@ private struct TrackLoaderSheet: View {
         #endif
     }
 
-    @ViewBuilder private var content: some View {
+    @ViewBuilder private func content(_ items: [MixLoadable]) -> some View {
         if source == nil {
             ContentUnavailableView("Pick a source", systemImage: "rectangle.stack",
                                    description: Text("Choose a pocket or set list to load tracks from."))
@@ -994,6 +1172,11 @@ private struct TrackLoaderSheet: View {
                 Text(item.artist).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
             }
             Spacer()
+            if mixSessions.hasPlayed(item.songId) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Theme.accent2)
+                    .accessibilityLabel("Played")
+            }
             if let cam = item.camelot, !cam.isEmpty {
                 KeyChip(key: item.key, camelot: cam)
             } else if let bpm = item.bpm {
@@ -1001,6 +1184,7 @@ private struct TrackLoaderSheet: View {
             }
         }
         .contentShape(Rectangle())
+        .accessibilityValue(mixSessions.hasPlayed(item.songId) ? "Played" : "")
     }
 
     private var sourceMenu: some View {

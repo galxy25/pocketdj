@@ -53,6 +53,8 @@ struct RootView: View {
                     .navigationDestination(for: SourcePlaylist.self) { IndexPlaylistDetailView(source: $0, path: $path) }
                     .navigationDestination(for: Setlist.self) { SetlistDetailView(setlistId: $0.id, path: $path) }
                     .navigationDestination(for: SetlistLaunch.self) { SetlistDetailView(setlistId: $0.setlistId, autoplay: $0.autoplay, path: $path) }
+                    .navigationDestination(for: MixSessionsRoute.self) { _ in MixSessionsView() }
+                    .navigationDestination(for: MixSessionRoute.self) { MixSessionDetailView(sessionId: $0.sessionId) }
             }
         }
         .background { navigationShortcuts }
@@ -160,7 +162,7 @@ struct RootView: View {
         switch section ?? .browse {
         case .browse:    BrowseView(path: $path)
         case .playlists: PlaylistsView(path: $path)
-        case .mix:       MixView()
+        case .mix:       MixView(path: $path)
         case .settings:  SettingsView(settings: settings)
         }
     }
