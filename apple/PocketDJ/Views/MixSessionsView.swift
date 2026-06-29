@@ -7,6 +7,8 @@ import SwiftUI
 /// Sessions button / title menu.
 struct MixSessionsView: View {
     @Environment(MixSessionStore.self) private var store
+    @State private var renamingId: String?
+    @State private var nameDraft = ""
 
     var body: some View {
         Group {
@@ -25,11 +27,17 @@ struct MixSessionsView: View {
                                        actions: store.events(forSession: s.id).count)
                         }
                         .accessibilityIdentifier("mix-session-row-\(s.id)")
+                        .swipeActions(edge: .leading) {
+                            Button { beginRename(s.id, s.name) } label: { Label("Rename", systemImage: "pencil") }
+                                .tint(Theme.accent2)
+                                .accessibilityIdentifier("mix-session-rename-\(s.id)")
+                        }
                         .swipeActions {
                             Button(role: .destructive) { store.delete(s.id) } label: { Label("Delete", systemImage: "trash") }
                                 .accessibilityIdentifier("mix-session-delete-\(s.id)")
                         }
-                        .contextMenu {
+                        .contextMenu {       // right-click (macOS) / long-press (iOS)
+                            Button { beginRename(s.id, s.name) } label: { Label("Rename…", systemImage: "pencil") }
                             Button(role: .destructive) { store.delete(s.id) } label: { Label("Delete session", systemImage: "trash") }
                         }
                     }
@@ -43,6 +51,18 @@ struct MixSessionsView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .alert("Rename session", isPresented: Binding(get: { renamingId != nil },
+                                                      set: { if !$0 { renamingId = nil } })) {
+            TextField("Name", text: $nameDraft).accessibilityIdentifier("mix-session-rename-field")
+            Button("Save") { if let id = renamingId { store.rename(id, nameDraft) }; renamingId = nil }
+                .accessibilityIdentifier("mix-session-rename-confirm")
+            Button("Cancel", role: .cancel) { renamingId = nil }
+        }
+    }
+
+    private func beginRename(_ id: String, _ current: String) {
+        nameDraft = current
+        renamingId = id
     }
 }
 

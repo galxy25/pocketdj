@@ -106,15 +106,18 @@ tracks carry a ✓; the **Settings ▸ Mix ▸ Auto-hide played tracks** toggle 
 instead, with an in-loader "Show N played" reveal. Auto-DJ-played tracks count too.
 
 ### Toolbar
-The nav title shows the current session **name** (centered on all three platforms), and tapping it
-opens a title menu (Rename… / New Session / All Sessions…) — the reliable cross-platform way to make
-the name interactive. Discrete **Sessions** (history) and **Reset (X)** buttons sit on the leading
-edge (off the already-crowded trailing auto-mix group).
+The centered session **name** is interactive. On **iOS** it's a principal toolbar button — **tap**
+renames, **long-press** opens the session menu (Rename / New / All Sessions) via `.contextMenu`. On
+**macOS** it's a `.toolbarTitleMenu` — **click** the centered title for the same menu (a principal item
+is flaky in the macOS title bar). You can also **right-click / long-press a Sessions-list row →
+Rename** (works on both platforms). Discrete **Sessions** (history) and **Reset (X)** buttons sit on
+the leading edge (off the already-crowded trailing auto-mix group).
 
 ## 4. Replay (`Views/MixSessionsView.swift`)
 
 The Sessions screen lists every session (name, date, duration, track/action counts, a "Current"
-badge, swipe-to-delete). Opening one shows a **replayable timeline**: actions laid out **vertically**
+badge, swipe-to-delete, and **swipe / context-menu Rename**). Opening one shows a **replayable
+timeline**: actions laid out **vertically**
 (top→bottom) on iPhone and **horizontally** (left→right) on iPad/macOS, each a color-coded card (deck
 A/B chip, kind icon, human sentence, relative `m:ss.S` stamp). A real-time replay clock (play/pause,
 0.5–4× speed, scrub) advances a wall-clock-driven `replayMs`, highlights the current event (found by
