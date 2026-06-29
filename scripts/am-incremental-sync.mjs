@@ -148,6 +148,12 @@ if (playlistRows) {
 
 // 6d. assemble (preserve key order: manifest, albums, playlists, songs) + refresh counts
 const out = { ...idx, albums: finalAlbums, playlists: finalPlaylists, songs: finalSongs };
+// "changed" gates the generatedAt bump so a genuine no-op run produces a BYTE-IDENTICAL file —
+// the nightly job's `cmp` then skips the commit/deploy entirely. (A pure playlist reorder still
+// ships: the playlists array itself differs, which cmp catches regardless of generatedAt.)
+const addedSongs = (partial.songs || []).length;
+const changed = addedSongs > 0 || removed.size > 0 ||
+  JSON.stringify(finalPlaylists) !== JSON.stringify(idx.playlists || []);
 if (out.manifest) {
   out.manifest.counts = {
     ...(out.manifest.counts || {}),
@@ -155,13 +161,12 @@ if (out.manifest) {
     songsWithAppleMusicId: finalSongs.filter((s) => s.appleMusicId).length,
   };
   out.manifest.playlistsCount = finalPlaylists.length;
-  out.manifest.generatedAt = new Date().toISOString();
+  if (changed) out.manifest.generatedAt = new Date().toISOString();
 }
 fs.writeFileSync(OUT, JSON.stringify(out));
 cleanup();
 
-const addedSongs = (partial.songs || []).length;
-console.error(`✓ am-incremental-sync → ${OUT}`);
+console.error(`✓ am-incremental-sync → ${OUT}${changed ? '' : ' (no change)'}`);
 console.error(`  songs ${oldSongs.length} → ${finalSongs.length} (+${addedSongs} added, -${removed.size} removed)`);
 console.error(`  albums ${(idx.albums || []).length} → ${finalAlbums.length} | playlists ${(idx.playlists || []).length} → ${finalPlaylists.length}`);
 console.error(`  explicit ${finalSongs.filter((s) => s.explicit).length} | appleMusicId ${finalSongs.filter((s) => s.appleMusicId).length} (existing tracks keep theirs)`);
