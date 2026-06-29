@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PocketDJ Apple-Music nightly sync — launchd timer TEMPLATE.  *** INERT — NOT INSTALLED ***
+
+  Runs scripts/am-sync-nightly.sh at 04:00 local: diff the live Music library against the
+  committed index (am-incremental-sync), and if anything changed, commit + push + deploy.
+  It is SAFE-BY-GUARD (skips unless the repo is on `main` and clean) and a no-change night is
+  a true no-op, so RunAtLoad is harmless — but it's left false so loading doesn't fire a run.
+
+  This REPLACES the rip server's in-process 04:00 am-check (now disabled) and the old
+  change-set → full-rebuild am-sync-agent. Do NOT run both: this owns 04:00 now.
+
+  Activate (drop the .template suffix):
+    # 1) Fill the REPLACE_ME placeholders (REPO path; PATH incl. node/aws/git).
+    cp scripts/launchd/com.pocketdj.am-sync-nightly.plist.template \
+       ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+    launchctl load ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+    # stop:  launchctl unload ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+
+  Preview WITHOUT installing:
+    POCKETDJ_NIGHTLY_REPO=/Users/REPLACE_ME/pocketdj scripts/am-sync-nightly.sh --dry-run
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.am-sync-nightly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <!-- REPLACE with the absolute path to am-sync-nightly.sh. -->
+    <string>/Users/REPLACE_ME/pocketdj/scripts/am-sync-nightly.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- The repo to sync from (on `main`). The job pulls/commits/ships only when it's clean. -->
+    <key>POCKETDJ_NIGHTLY_REPO</key>
+    <string>/Users/REPLACE_ME/pocketdj</string>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <!-- launchd has a minimal PATH; include node, aws, git, osascript locations. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- 04:00 daily. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/.pocketdj/am-sync-nightly.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/.pocketdj/am-sync-nightly.err.log</string>
+</dict>
+</plist>

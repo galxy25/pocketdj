@@ -97,6 +97,19 @@ PocketDJ song to its Persistent ID and `play` the exact track.
 advances the state, conforms to `src/types/index-json.ts`, then `cp →
 public/apple-music-index.json` + `deploy.sh`.
 
+**Now: nightly incremental-append, no full export.** The above full-rebuild path is the
+**reconcile** tool. The day-to-day sync is `scripts/am-incremental-sync.mjs` (run by the
+`am-sync-nightly.sh` launchd job): it bulk-reads every current Persistent ID (~0.6s), diffs
+them against the committed index by song id, enriched-fetches **only the new tracks** by
+library position (~seconds), indexes those, re-dumps playlists, and merges into
+`public/apple-music-index.json` — keeping existing songs verbatim (so `appleMusicId` /
+`explicit` survive). Producer B (`dump-apple-music-library.mjs`) was enriched to native
+fidelity (album-artist, genre, year, track/disc#, duration, Date Added, Location, kind, and
+a Playlists pass) so a full reconcile matches a native export; shared id/AppleScript logic
+lives in `scripts/lib/am-ids.mjs` + `scripts/lib/am-music.mjs`. `explicit` is the one field
+Music won't expose over AppleScript — `am-merge-catalog-ids.mjs` carries it forward with the
+storeIds. Full design: **`docs/apple-music-sync.md`**.
+
 ---
 
 ## 3. AppleScript / Shortcuts "API" — capturing what can't be copied

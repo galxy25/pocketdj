@@ -311,9 +311,15 @@ async function runAmCheck(job) {
   amCheckRunning = true;
   try {
     setSyncPhase(job, 'scanning');
+    // SUPERSEDED PATH — the nightly catalog sync now runs scripts/am-sync-nightly.sh (launchd),
+    // which diffs the LIVE Music library directly via scripts/am-incremental-sync.mjs (no
+    // Library.xml needed) and ships in seconds. This change-set/full-XML detection remains only
+    // for the manual POST /am-sync trigger; the 04:00 in-process scheduler is disabled (see
+    // scheduleDailyAmCheck). It reads Music's shared Library.xml when present, else the static
+    // ~/Downloads/Library.xml (which may be stale — the nightly job is the source of truth).
     const haveShared = existsSync(CFG.amLibraryXml);
     const xml = haveShared ? CFG.amLibraryXml : CFG.libraryXml;
-    if (!haveShared) console.error(`  am-sync: ${CFG.amLibraryXml} not found — falling back to ${CFG.libraryXml}`);
+    if (!haveShared) console.error(`  am-sync: ${CFG.amLibraryXml} not found — falling back to ${CFG.libraryXml} (stale; nightly job is authoritative)`);
     if (!existsSync(xml)) throw new Error(`no Library.xml to read (looked at ${CFG.amLibraryXml} and ${CFG.libraryXml})`);
     mkdirSync(CFG.amSyncStateDir, { recursive: true });
     mkdirSync(CFG.downloadsDir, { recursive: true });
@@ -1769,6 +1775,8 @@ function scheduleDailyAmCheck() {
   }, msUntilNext(4));
   t.unref?.();
 }
-// INERT GATE: never arm under tests/offline dry-runs (POCKETDJ_DISABLE_SCHEDULER=1). The user
-// activates the daily check simply by NOT setting that env var on the running server.
-if (process.env.POCKETDJ_DISABLE_SCHEDULER !== '1') scheduleDailyAmCheck();
+// DISABLED: the nightly Apple Music catalog sync now runs scripts/am-sync-nightly.sh (launchd
+// timer at 04:00) via the fast incremental am-incremental-sync.mjs — see that script. The old
+// in-process 04:00 scheduler would double-run (and the change-set/full-rebuild path it drove is
+// retired). Opt back in for the legacy change-set flow only by setting POCKETDJ_ENABLE_LEGACY_AMCHECK=1.
+if (process.env.POCKETDJ_ENABLE_LEGACY_AMCHECK === '1' && process.env.POCKETDJ_DISABLE_SCHEDULER !== '1') scheduleDailyAmCheck();

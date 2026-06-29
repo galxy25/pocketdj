@@ -1,144 +1,99 @@
-# Apple Music (Local) sync — daily + on-demand
+# Apple Music (Local) sync — nightly incremental
 
-Keeps the app's **Apple Music (Local)** data source in step with the Mac's real local
-Apple Music library. Two halves:
+Keeps the app's **Apple Music (Local)** data source in step with the Mac's real Apple Music
+library. As of the incremental pivot it is **one fast step**, not a change-set pipeline.
 
-1. **rip server** (`scripts/rip-server.mjs`, the always-up iMac server): a 04:00 self-check
-   + an on-demand `POST /am-sync` endpoint. Reads the library, diffs it with the existing
-   incremental indexer, and — when it finds new music — writes a **change-set** to `~/Downloads`.
-2. **cron Claude-agent** (`scripts/am-sync-agent.sh` + launchd): watches `~/Downloads`, and for
-   each change-set rebuilds the index → commits → pushes to GitHub → deploys to S3.
-
-The native app's **Settings ▸ "Sync Apple Music library"** button drives the same `POST /am-sync`
-and shows what was detected instantly.
+`scripts/am-sync-nightly.sh` (a launchd timer at 04:00) runs `scripts/am-incremental-sync.mjs`
+against the **live** Music library and, when anything changed, commits → pushes to GitHub →
+deploys to S3. No `Library.xml`, no 6-hour export, no change-sets, no second agent.
 
 ```
-Music.app  ──"Share Library XML"──►  ~/Music/Music/Library.xml
-                                          │
-rip-server.mjs ──04:00 timer──┐           │ (read + diff via index-apple-music.mjs)
-   POST /am-sync → jobId       │           ▼
-   GET  /am-sync/<id> → result │   ~/Downloads/pocketdj-am-changeset-<ms>.json  (+ -library-<ms>.xml)
-                               │           │
-   App (Settings button) ◄─────┘           ├──► cron agent: rebuild → git commit → push → merge → deploy.sh → processed
+Music.app (live, via AppleScript)
+      │  bulk persistent-IDs (~0.6s) ─► diff vs committed index by song id
+      ▼
+am-incremental-sync.mjs ── enriched-fetch ONLY the new tracks (~seconds, position-indexed)
+      │                    ── index those → new songs + albums
+      │                    ── re-dump playlists → remap membership by song-id hash
+      │                    ── merge into public/apple-music-index.json (existing songs verbatim)
+      ▼
+am-sync-nightly.sh (04:00 launchd) ── if changed: git commit → push → deploy.sh dev+prod
 ```
 
-> **Nothing here is live until you activate it** (below). The 04:00 scheduler is gated, the
-> launchd job is a `.template`, and the agent is inert scaffolding.
+## Why incremental (the pivot)
 
-## One-time prerequisites
+The committed `public/apple-music-index.json` **already holds every existing track at full
+fidelity**, so the only new information each night is the handful of tracks you added or removed.
+The old design did a *full* rebuild from a fresh full `Library.xml` — cheap when Music's native
+"Share Library XML" provides that file instantly, but on Macs where that setting is gone the only
+headless source is a per-track AppleScript export that takes **~6 hours** for ~93k tracks. Re-deriving
+92k unchanged tracks nightly to catch ~700 new ones is pure waste.
 
-### 1. Enable the shared Library XML (the freshness requirement)
+Incremental sync instead:
+1. **Bulk-fetches every current persistent ID** — one AppleScript event, ~0.6s for 92k tracks.
+2. **Diffs against the committed index by song id** (`sng_ = sha1(ns|persistentID)`, shared via
+   `scripts/lib/am-ids.mjs`) → the set of *new* pids and *removed* song ids.
+3. **Enriched-fetches only the new tracks** by their library position (`item N of every track`),
+   ~seconds for hundreds of tracks, via the shared AppleScript in `scripts/lib/am-music.mjs`.
+4. **Indexes just those** (`index-apple-music.mjs` on a small Library.xml) → new songs + albums.
+5. **Re-dumps playlists** (fast) and remaps membership straight to song ids by hash — no need to
+   re-read all 92k tracks for playlist resolution.
+6. **Merges** into the committed index: drop removed, add new, rebuild only the *touched* albums'
+   track order, replace playlists. **Existing songs are preserved verbatim**, so their
+   `appleMusicId` / `explicit` / `length` survive with no rebuild and no re-merge.
 
-The server reads `~/Music/Music/Library.xml`, which Music auto-maintains **only when** you turn on:
+A no-change night is a true no-op: `am-incremental-sync` only bumps `manifest.generatedAt` when
+something actually changed, so the file is byte-identical and `am-sync-nightly.sh`'s `cmp`
+short-circuits before any git/deploy.
 
-> **Music ▸ Settings ▸ Advanced ▸ "Share Library XML with other applications"** ✔
+### The one field AppleScript can't read
 
-With it on, Music rewrites that file as the library changes — fresh enough for a once-daily 04:00
-check and the on-demand button. This is a plain file on the boot volume → **no Automation / Full
-Disk Access prompt, no removable-volume TCC**. (If the file is absent, the server falls back to
-`CFG.libraryXml` = `~/Downloads/Library.xml` and logs a warning.)
+Music does **not** expose the `explicit` flag over AppleScript ("descriptor type mismatch"). The
+enriched dump captures everything else the indexer reads (album-artist, genre, year, track/disc#,
+duration, Date Added, Location for local files, kind). For `explicit`, existing tracks keep their
+flag automatically (they're preserved verbatim); genuinely-new tracks land `explicit=false` until
+backfilled out-of-band. (The full-reconcile path — `scripts/dump-apple-music-library.mjs` — and
+`scripts/am-merge-catalog-ids.mjs` carry it forward when a native `Library.xml` rebuild is used.)
 
-### 2. (Agent) a dedicated clone on `main`
+## Trade-off (and the reconcile escape hatch)
 
-The cron agent commits + pushes, so give it its own clone checked out on `main` (NOT a worktree):
-
-```bash
-git clone git@levi.github.com:galxy25/pocketdj.git ~/pocketdj-am-agent
-( cd ~/pocketdj-am-agent && git checkout main )
-```
-
-`jq` is required by the agent: `brew install jq`.
+Incremental catches **additions and removals** — the common case. It does **not** catch in-place
+metadata *edits* to existing tracks (rare). For those, do an occasional **full reconcile**:
+`scripts/dump-apple-music-library.mjs` exports the whole library (fast from Music's native
+"Share Library XML" if available; the slow per-track AppleScript otherwise) → rebuild with
+`index-apple-music.mjs` → `am-merge-catalog-ids.mjs` to carry `appleMusicId` + `explicit` forward.
 
 ## Activate
 
-### Scheduler (04:00 daily check, in the rip server)
-
-The in-server timer is ON by default — you only need to make sure the server is **not** started
-with `POCKETDJ_DISABLE_SCHEDULER=1` (that flag is for tests/dry-runs). Optionally set, when
-launching `rip-server.mjs`:
-
-- `POCKETDJ_AM_LIBRARY_XML` — override the library path (default `~/Music/Music/Library.xml`).
-- `POCKETDJ_DOWNLOADS_DIR` — where change-sets are written (default `~/Downloads`).
-- `POCKETDJ_AM_STATE_DIR` — the machine-local detection cursor (default `~/.pocketdj/am-sync`).
-
-The **first** run seeds the detection cursor to "now" so it does NOT emit the whole ~93k-track
-library as "added"; only tracks added after that first run are detected.
-
-### Cron agent (launchd)
+The nightly job runs from the working repo by default and is **SAFE-BY-GUARD**: it pulls, commits,
+and ships only when the repo is on `main` and clean, so it never disrupts in-progress dev (it skips
+that night and recovers the next).
 
 ```bash
-cd ~/pocketdj-am-agent
-# Preview first — SAFE: rebuilds into a temp dir to show what WOULD ship, but writes nothing to the
-# repo working tree and runs no git commit/push/deploy (every mutating step is echoed, not executed):
-POCKETDJ_AGENT_REPO=$PWD scripts/am-sync-agent.sh --dry-run
+# Preview WITHOUT installing (no pull/commit/deploy — every mutating step is echoed):
+scripts/am-sync-nightly.sh --dry-run
 
-# Then install the timer (edit the placeholders in the template first):
-cp scripts/launchd/com.pocketdj.am-sync-agent.plist.template \
-   ~/Library/LaunchAgents/com.pocketdj.am-sync-agent.plist
-#   …replace every /Users/REPLACE_ME and confirm PATH has node/aws/claude/jq…
-launchctl load ~/Library/LaunchAgents/com.pocketdj.am-sync-agent.plist
-# Stop:  launchctl unload ~/Library/LaunchAgents/com.pocketdj.am-sync-agent.plist
+# Install the 04:00 timer (edit the REPLACE_ME placeholders first):
+cp scripts/launchd/com.pocketdj.am-sync-nightly.plist.template \
+   ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+launchctl load ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+# Stop:  launchctl unload ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
 ```
 
-The agent runs at **04:15** (after the server's 04:00 check) and on any `~/Downloads` change. It
-is idempotent: already-processed change-sets (moved to `~/Downloads/pocketdj-am-processed/`) are
-skipped, and an empty rebuild diff archives without committing.
+Overridable env: `POCKETDJ_NIGHTLY_REPO` (repo to sync from), `POCKETDJ_NODE_CMD`,
+`POCKETDJ_GIT_CMD`, `POCKETDJ_DEPLOY_CMD`, `POCKETDJ_NIGHTLY_LOG`.
 
-## Endpoint + file contracts
+## Retired (legacy)
 
-**POST `/am-sync`** → `200 { "jobId": "<uuid>", "phase": "queued" }` (returns immediately).
+The previous **change-set → full-rebuild** pipeline is retired:
 
-**GET `/am-sync/<id>`**:
-```jsonc
-{ "jobId":"…","phase":"queued|scanning|diffing|ready|error","message":null,"error":null,
-  "result": {                          // null until phase=ready
-    "counts": { "added": 12, "changed": 0, "removed": 0 },
-    "added":   [ { "songId":"…","albumId":"…","title":"…","artist":"…","change":"added" } ],
-    "changed": [], "removed": [],
-    "changeSetPath": "/Users/…/Downloads/pocketdj-am-changeset-1750000000000.json"  // null if 0 added
-  } }
-```
-
-**Change-set** `~/Downloads/pocketdj-am-changeset-<unixms>.json` (schema `pocketdj-am-changeset/1`)
-+ sibling snapshot `pocketdj-am-library-<unixms>.xml`. See the `am-sync-deploy` skill for the full
-schema. Written only when `added > 0`.
-
-## The detection cursor + the agent's full rebuild (the key decoupling)
-
-- **Detection cursor** — `~/.pocketdj/am-sync/state.json` (machine-local, NOT in the repo). Owned
-  by the rip server; advances atomically only after the change-set is durably written. It decides
-  *what the server reports as added* and *when to write a change-set*.
-- **The agent does a FULL rebuild — no ship cursor.** For each change-set it rebuilds the WHOLE
-  index from the change-set's library snapshot (`index-apple-music.mjs --xml <snap> --out <scratch>`,
-  **without `--state`** — `--state` would turn the rebuild into a delta and publish a handful of
-  tracks over the full catalog). Whether to ship is decided by `git diff`, never a cursor.
-- **Catalog-id preservation.** A raw rebuild does not know the ~76k `appleMusicId` storeIds that the
-  multi-day resolver crawl (`scripts/resolve-apple-music-catalog.mjs`) bakes into the *committed*
-  `public/apple-music-index.json` (its cache ndjson is gitignored + absent in the agent's clone). So
-  the agent runs `scripts/am-merge-catalog-ids.mjs --old public/apple-music-index.json --new <scratch>`
-  to carry those ids forward before publishing — otherwise every ship would strip streaming
-  resolution and fall the whole source back to local-ripping.
-- **Deploy-after-push recovery.** If a prior run committed + pushed a change-set but the S3 deploy
-  failed, the next rebuild's diff is empty (the index is already committed). The empty-diff guard
-  does NOT just archive: it checks `git log --grep="apply changeset <ts>"`, and if that commit
-  exists it **re-deploys** from the committed file before consuming, so S3 never lags GitHub. A
-  machine-local receipt (`~/.pocketdj/am-last-deployed-blob`, override with `POCKETDJ_AM_AGENT_STATE`)
-  records the last confirmed-deployed blob.
-
-The change-set is the audit handoff: the server detects + snapshots, the agent rebuilds + ships.
-
-## Scope / known gaps (v1)
-
-- **`added` only.** The Library.xml diff brain detects new tracks (`Date Added ≥ cursor`); it does
-  not itemize `changed`/`removed` (those arrays exist but stay empty). The agent's **full rebuild**
-  still reconciles edits/removals into the live catalog on the next run — the catalog converges even
-  though the change-set won't list a removal.
-- **Future (v2):** a small signed `ITLibrary` Swift helper would give true real-time reads + a real
-  `removed` set, at the cost of a bundled signed binary + a media-library permission prompt. Out of
-  scope for v1 (kept additive + reversible).
-
-## Dry-run / offline verification
-
-`node scripts/test/am-sync-dryrun.mjs` exercises the whole feature offline (synthetic Library.xml,
-a temp Downloads, fake git/deploy/claude) — no live library, no real `~/Downloads`, no GitHub/S3,
-and it never touches the running server.
+- The rip server's in-process **04:00 scheduler is disabled** — the launchd job owns 04:00 now
+  (running both would double-run). Re-enable the legacy flow only with
+  `POCKETDJ_ENABLE_LEGACY_AMCHECK=1`.
+- `runAmCheck` (the rip server's `POST /am-sync` handler) still does the old `Library.xml` diff for
+  the native app's **Settings ▸ "Sync Apple Music library"** button, but is **superseded** — the
+  nightly incremental job is authoritative. It reads Music's shared `Library.xml` when present, else
+  the static `~/Downloads/Library.xml` (which may be stale).
+- `scripts/am-sync-agent.sh` + `com.pocketdj.am-sync-agent.plist.template` (the change-set-consuming
+  cron agent) and the per-change-set library snapshots are no longer part of the live path.
+- Music's **"Share Library XML"** setting is **no longer required** — incremental reads the live
+  library directly. It's still the fastest source for a full reconcile when present.
