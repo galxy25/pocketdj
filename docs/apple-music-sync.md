@@ -17,7 +17,17 @@ am-incremental-sync.mjs ── enriched-fetch ONLY the new tracks (~seconds, pos
       │                    ── merge into public/apple-music-index.json (existing songs verbatim)
       ▼
 am-sync-nightly.sh (04:00 launchd) ── if changed: git commit → push → deploy.sh dev+prod
+                                                   └─► es-index.mjs (refresh OpenSearch)
 ```
+
+**Online search stays in step.** After a changed index ships, the nightly job also refreshes the
+**OpenSearch** collection (`scripts/es-index.mjs`, full reset ~40s) so a newly-added track is
+findable in the app's online-search mode the same night — not just after a manual reindex. It's
+**non-fatal** (the catalog is already committed + on S3; a search hiccup just retries next run) and
+runs only when the catalog actually changed. Skip with `POCKETDJ_SKIP_ES=1`; endpoint/sources
+override via `POCKETDJ_ES_ENDPOINT` / `POCKETDJ_ES_SOURCES`; optional lyrics via
+`POCKETDJ_ES_LYRICS_BASE`. (Verified: after a sync adding Ibeyi's "Offering", `/pocketdj/_search`
+for "Olokun" returns the new song.)
 
 ## Why incremental (the pivot)
 

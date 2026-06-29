@@ -27,6 +27,10 @@ GIT="${POCKETDJ_GIT_CMD:-git}"
 DEPLOY="${POCKETDJ_DEPLOY_CMD:-$REPO/scripts/deploy.sh}"
 LOG="${POCKETDJ_NIGHTLY_LOG:-$HOME/.pocketdj/am-sync-nightly.log}"
 INDEX="public/apple-music-index.json"
+# OpenSearch (online search) refresh after a successful ship. Default ON — the whole point is
+# that a newly-added track shows up in online search the same night. Skip with POCKETDJ_SKIP_ES=1.
+ES_ENDPOINT="${POCKETDJ_ES_ENDPOINT:-https://zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com}"
+ES_SOURCES="${POCKETDJ_ES_SOURCES:-public/current-index.json,public/apple-music-index.json}"
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -61,4 +65,20 @@ run "$GIT" commit -m "Apple Music sync: incremental $(date -u +%FT%TZ)"
 run "$GIT" push origin main
 run "$DEPLOY" dev
 run "$DEPLOY" prod
+
+# Refresh OpenSearch so the added/removed tracks show up in the app's ONLINE search. NON-FATAL:
+# the catalog is already committed + on S3, so a search hiccup just retries next run. es-index
+# does a FULL reset (delete → recreate → bulk-load, ~40s); `_id` is the item id, so it's an
+# idempotent upsert of the whole corpus from the now-updated public/*.json. Optional lyrics via
+# POCKETDJ_ES_LYRICS_BASE (default off — fast; new digital tracks rarely carry lyrics anyway).
+if [ "${POCKETDJ_SKIP_ES:-0}" != "1" ]; then
+  log "refreshing OpenSearch (online search) index…"
+  LYRICS_ARG=()
+  [ -n "${POCKETDJ_ES_LYRICS_BASE:-}" ] && LYRICS_ARG=(--lyrics-base "$POCKETDJ_ES_LYRICS_BASE")
+  run "$NODE" "$REPO/scripts/es-index.mjs" \
+    --endpoint "$ES_ENDPOINT" --index pocketdj \
+    --profile "${AWS_PROFILE:-levi}" --region "${AWS_REGION:-us-west-2}" \
+    --sources "$ES_SOURCES" ${LYRICS_ARG[@]+"${LYRICS_ARG[@]}"} \
+    || log "⚠ OpenSearch reindex failed (non-fatal) — online search may lag until the next run"
+fi
 log "shipped."
