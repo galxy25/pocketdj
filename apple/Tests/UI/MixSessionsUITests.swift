@@ -16,10 +16,8 @@ final class MixSessionsUITests: XCTestCase {
         // --- Mix tab: decks, steppers, gain, session toolbar ---
         XCTAssertTrue(app.buttons["mix-sessions"].firstMatch.waitForExistence(timeout: 20),
                       "Mix tab session toolbar button should exist")
-        #if !os(macOS)   // macOS uses .toolbarTitleMenu (no a11y id); iOS uses a principal button
         XCTAssertTrue(firstWith("mix-session-title").waitForExistence(timeout: 5),
-                      "centered session name (principal toolbar item) should render")
-        #endif
+                      "in-content session name header (renamable) should render")
         XCTAssertTrue(firstWith("deck-A-vol").waitForExistence(timeout: 5), "Vol slider should exist")
         XCTAssertTrue(app.buttons["deck-A-tempo-inc"].firstMatch.exists, "Tempo + stepper should exist")
         XCTAssertTrue(app.buttons["deck-A-vol-inc"].firstMatch.exists, "Vol + stepper should exist")

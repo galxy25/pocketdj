@@ -58,6 +58,7 @@ struct MixView: View {
     var body: some View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
             VStack(spacing: 18) {
+                sessionHeader                           // the renamable session name (in-content)
                 if engine.autoMixing { autoMixBanner }  // Auto-DJ status + Stop (visible on every size)
                 // Two decks side-by-side (A left, B right), equal width.
                 HStack(alignment: .top, spacing: 12) {
@@ -72,17 +73,12 @@ struct MixView: View {
             .frame(maxWidth: .infinity)                 // ...centered in a wide window
         }
         .background(Theme.bg)
-        // The centered session name is interactive. iOS: a principal toolbar button — TAP renames,
-        // LONG-PRESS opens the full menu via `.contextMenu`. macOS: `.toolbarTitleMenu` (CLICK the
-        // centered title → Rename / New / All) — the reliable system-centered control there, since a
-        // principal item is flaky in the macOS title bar. Right-click → Rename is also available on a
-        // Sessions-list row (works on both platforms).
-        .navigationTitle(mixSessions.currentName)
+        // The renamable session name lives in the CONTENT (`sessionHeader`), not the toolbar: macOS
+        // reserves a toolbar item's right-click for its own "Icon Only / Icon & Text" menu, so a
+        // toolbar title can never host a right-click → Rename. The nav bar just shows the screen name.
+        .navigationTitle("Mix")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { sessionTitleToolbar }
-        #else
-        .toolbarTitleMenu { sessionTitleMenu }
         #endif
         .accessibilityIdentifier("mix-tab")
         .toolbar { autoMixToolbar }                    // Auto/Manual + collection Play/Shuffle
@@ -109,27 +105,30 @@ struct MixView: View {
 
     // MARK: Sessions (name menu · history · reset)
 
-    #if os(iOS)
-    /// iOS centered session name (principal toolbar button). TAP → rename directly; LONG-PRESS → the
-    /// full session menu via `.contextMenu`.
-    @ToolbarContentBuilder private var sessionTitleToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Button { nameDraft = mixSessions.currentName; renaming = true } label: {
-                HStack(spacing: 3) {
-                    Text(mixSessions.currentName).font(.headline).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
+    /// The current session's name, centered at the top of the Mix content. CLICK/TAP → rename;
+    /// RIGHT-CLICK (macOS) / LONG-PRESS (iOS) → the full session menu via `.contextMenu`. It lives in
+    /// the content (not the toolbar) so the right-click gesture isn't stolen by the macOS toolbar menu.
+    private var sessionHeader: some View {
+        Button { nameDraft = mixSessions.currentName; renaming = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "waveform").font(.subheadline).foregroundStyle(Theme.accent)
+                Text(mixSessions.currentName).font(.title3.weight(.semibold))
+                    .foregroundStyle(Theme.fg).lineLimit(1)
+                Image(systemName: "pencil").font(.caption).foregroundStyle(Theme.fgDim)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("mix-session-title")
-            .contextMenu { sessionTitleMenu }      // long-press
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .background(Theme.bgRaised, in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+            .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .help("Click to rename · right-click for more")
+        .accessibilityIdentifier("mix-session-title")
+        .contextMenu { sessionTitleMenu }          // right-click (macOS) / long-press (iOS)
     }
-    #endif
 
     /// The session menu (rename the current session, start a new one, or jump to the full Sessions
-    /// list). On iOS it's the title's long-press menu; on macOS it's the `.toolbarTitleMenu`.
+    /// list) — shown from the session header's context menu.
     @ViewBuilder private var sessionTitleMenu: some View {
         Button { nameDraft = mixSessions.currentName; renaming = true } label: {
             Label("Rename Session…", systemImage: "pencil")

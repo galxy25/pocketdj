@@ -105,13 +105,14 @@ A song is marked **played** when its playback starts on a deck. In the deck's tr
 tracks carry a ✓; the **Settings ▸ Mix ▸ Auto-hide played tracks** toggle (default on) hides them
 instead, with an in-loader "Show N played" reveal. Auto-DJ-played tracks count too.
 
-### Toolbar
-The centered session **name** is interactive. On **iOS** it's a principal toolbar button — **tap**
-renames, **long-press** opens the session menu (Rename / New / All Sessions) via `.contextMenu`. On
-**macOS** it's a `.toolbarTitleMenu` — **click** the centered title for the same menu (a principal item
-is flaky in the macOS title bar). You can also **right-click / long-press a Sessions-list row →
-Rename** (works on both platforms). Discrete **Sessions** (history) and **Reset (X)** buttons sit on
-the leading edge (off the already-crowded trailing auto-mix group).
+### Session name & rename
+The session **name** is a pill **in the Mix content** (centered, just under the nav bar), NOT a toolbar
+item — **tap/click** renames, **right-click (macOS) / long-press (iOS)** opens the session menu
+(Rename / New / All Sessions) via `.contextMenu`. It deliberately lives in the content because macOS
+reserves a *toolbar* item's right-click for its own "Icon Only / Icon & Text" menu, so a toolbar title
+can never host a right-click → Rename. The same right-click / long-press → **Rename** is also on every
+**Sessions-list row** (swipe or context menu). The nav bar just shows the screen name ("Mix"); the
+discrete **Sessions** (history) and **Reset (X)** buttons sit on the leading edge.
 
 ## 4. Replay (`Views/MixSessionsView.swift`)
 
