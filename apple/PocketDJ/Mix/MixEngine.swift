@@ -554,8 +554,19 @@ final class MixEngine {
         }
         refreshTransport()
         startTickIfNeeded()
+        refreshAutoDeckEndIfLive(deck)   // auto-mix: re-time the crossfade to the NEW position
         rec(.seek, deck, value: clamped)
         updateSystemNowPlaying()      // new elapsed on the lock-screen scrubber
+    }
+
+    /// After a manual SEEK of the auto-mix live deck, re-stamp when it will end (wall-clock, allowing
+    /// for tempo) so the crossfade fires relative to the NEW position. Sliding a song near its end now
+    /// auto-mixes on time (capped by the crossfade lead/length) instead of playing silently past it.
+    private func refreshAutoDeckEndIfLive(_ deck: Deck) {
+        guard autoMixing, deck == autoLiveDeck, autoFadeStartedAt == nil else { return }
+        let durMs = autoDeckDurationMs[deck] ?? Self.autoFallbackDurationMs
+        let remaining = max(0, Double(durMs) / 1000 - position(deck)) / max(0.05, state(deck).rate)
+        autoDeckEndsAt[deck] = Date().addingTimeInterval(remaining)
     }
 
     // MARK: - Tempo / pitch / beat-match
@@ -712,7 +723,15 @@ final class MixEngine {
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
             let secondsLeft = endsAt.timeIntervalSince(now)
             if autoLivePos + 1 < autoQueue.count {
-                if secondsLeft <= autoLeadSeconds { beginAutoCrossfade(now: now) }
+                if secondsLeft <= autoLeadSeconds {
+                    // Cap the fade to the runway left: if you slid a track to (say) 2 s from its end,
+                    // crossfade over ~2 s instead of the full length so it completes before it runs out.
+                    if secondsLeft < autoFadeSeconds, pendingFadeRestore == nil {
+                        pendingFadeRestore = autoFadeSeconds
+                        autoFadeSeconds = max(0.5, secondsLeft)
+                    }
+                    beginAutoCrossfade(now: now)
+                }
             } else if secondsLeft <= 0 {
                 stopAutoMix()
             }

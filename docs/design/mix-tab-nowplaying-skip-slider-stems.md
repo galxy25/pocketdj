@@ -14,21 +14,25 @@
 **short-circuits**, whenever a scrub value was held the observed `engine.position(deck)` was never
 read during `body` evaluation — so SwiftUI **Observation dropped the dependency** on `positionA/B`
 and the slider stopped following playback. It only recovered when the view was destroyed/rebuilt —
-which is exactly why *switching tabs "fixed" it*. The inline `scrubbing = nil` on drag-end was also
-unreliable: SwiftUI can deliver one more binding `set(_:)` **after** `onEditingChanged(false)`,
-re-stamping the sentinel and freezing it permanently.
+which is exactly why *switching tabs "fixed" it*. A first pass (always read the playhead + an
+explicit `editing` flag on a stock `Slider`) still relied on `onEditingChanged(false)` to clear the
+flag, and the timestamp could still strand after a release.
 
-**Fix:** always read the playhead, and gate the drag value behind an explicit `editing` flag:
+**Fix (shipped):** drop the stock `Slider` for a hand-rolled track+thumb whose drag offset lives in a
+**`@GestureState`** — which SwiftUI *guarantees* to reset to `nil` the instant the drag gesture ends.
+There is no `@State`/`onEditingChanged` flag that can get stuck, so the moment you lift your finger
+the display reverts to the always-read `engine.position(deck)` and resumes following playback.
 
 ```swift
-let live = engine.position(deck)        // ALWAYS read → the Observation dependency never drops
-let shown = editing ? scrub : live
-Slider(value: Binding(get: { … shown … }, set: { scrub = $0 }),
-       onEditingChanged: { began in
-           if began { editing = true; scrub = live }
-           else { editing = false; engine.seek(deck, toSeconds: scrub) }   // a late set() lands in
-       })                                                                   // scrub, ignored (!editing)
+@GestureState private var dragFraction: Double?               // 0…1 while dragging; auto-nil on end
+let live = engine.position(deck)                              // ALWAYS read → dependency holds
+let shownFraction = dragFraction ?? (live / dur)             // dragging → finger; else → live playhead
+DragGesture(minimumDistance: 0)
+    .updating($dragFraction) { v, frac, _ in frac = v.location.x / w }
+    .onEnded { v in engine.seek(deck, toSeconds: v.location.x / w * dur) }
 ```
+
+It keeps the `deck-<X>-seek` identifier and is `accessibilityAdjustableAction`-seekable for VoiceOver.
 
 ## 2. Lock-screen Now Playing (`MPNowPlayingInfoCenter`)
 
@@ -97,6 +101,28 @@ inside the shortest stem (`maxStemSeconds`), and **bail (keep the main playing) 
 scheduled**. Plus a `stemsScheduled` flag so `play()`/`playBoth()` re-schedule stems that a prior
 `stop()` cleared (end-of-track / auto-mix retirement) instead of starting silent nodes, while a
 `pause()`-kept schedule still resumes from position.
+
+## 6. Auto-Mix: seeking near a track's end (bug)
+
+The auto-DJ stamps `autoDeckEndsAt[deck]` (wall-clock) when a deck starts, and crossfades when
+`secondsLeft <= autoLeadSeconds`. **Seeking** the live deck didn't update that stamp, so sliding a
+song toward its end made it play silently past the real end while the crossfade waited for the
+original time. **Fix:** `seek` calls `refreshAutoDeckEndIfLive` — it re-stamps the end from the new
+position (allowing for tempo: `remaining = (durMs/1000 − position) / rate`). And when the runway left
+is shorter than the fade, `autoFire` **caps the fade to what's left** (`autoFadeSeconds =
+max(0.5, secondsLeft)`, restored after via `pendingFadeRestore`) so a slide to ~2 s from the end
+crossfades over ~2 s instead of running out. The lead/length act as a *maximum*.
+
+## 7. iPhone-portrait Auto controls buried in the toolbar overflow (bug)
+
+In Auto mode the collection picker + ▶ Play / 🔀 Shuffle lived in the trailing toolbar, which on
+iPhone **portrait** collapses into a "•••" overflow that nested them out of reach (you had to rotate
+to landscape). **Fix:** they moved into an always-visible in-content **`autoSetupBar`** (shown while
+`autoEnabled && !autoMixing`); the toolbar keeps only the single Auto/Manual toggle (which never
+collapses on its own). Stop + Skip already live in the in-content banner. Note: the bar's HStack
+carries **no** `accessibilityIdentifier` — an id on a button *container* merges the children into one
+a11y element and hides `mix-auto-play` / `mix-auto-shuffle` (the native-playlist-toolbar-overflow
+lesson).
 
 ## Tests
 
