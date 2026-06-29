@@ -40,6 +40,11 @@ To update what's searchable, regenerate the source `index.json`(s) first (see th
 `analog-indexer` / `apple-music-indexer` skills), then re-run the command above.
 The app's online mode picks up changes immediately (collection is shared).
 
+> **Automated nightly.** The Apple Music sync job (`scripts/am-sync-nightly.sh`, launchd @ 04:00)
+> runs this exact reindex automatically whenever it ships a changed catalog — so a newly-added
+> track is in online search the same night, no manual run needed. It's non-fatal there and
+> skippable with `POCKETDJ_SKIP_ES=1`. See `docs/apple-music-sync.md`.
+
 ### Include lyrics (optional)
 Lyrics are not in the lean index.json (they live as per-song `.txt` on the CDN).
 Pass `--lyrics-base <cdn>` to fetch `/lyrics/<songId>.txt` for each song and index
