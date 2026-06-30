@@ -14,24 +14,45 @@ import CryptoKit
 struct CatalogService: Sendable {
     var url: URL = Config.indexURL
 
+    /// The HTTP validators for a cached index, stored alongside it so a refresh can ask the
+    /// origin "only send a body if it changed" (`If-Modified-Since` / `If-None-Match`).
+    struct Validator: Codable, Sendable { var lastModified: String?; var etag: String? }
+
+    /// CONDITIONAL refresh. Sends the stored validators so an UNCHANGED index returns **304 No
+    /// Body** (we keep the cache); a CHANGED index returns 200 (we decode + re-cache). On ANY
+    /// network/server failure we return the last-good disk cache instead of throwing — the caller
+    /// (AppModel) renders from the disk cache instantly anyway, so a refresh can never blank it.
     func loadIndex() async throws -> IndexJSON {
         do {
             var request = URLRequest(url: url)
-            request.cachePolicy = .returnCacheDataElseLoad
+            // Drive caching ourselves (conditional GET) rather than leaning on URLCache, whose
+            // tiny capacity + relaunch-non-persistence + the SPA-HTML-200 gotcha all bit us before.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
             request.timeoutInterval = 30
+            if let v = Self.loadValidator(for: url) {
+                if let lm = v.lastModified { request.setValue(lm, forHTTPHeaderField: "If-Modified-Since") }
+                if let et = v.etag { request.setValue(et, forHTTPHeaderField: "If-None-Match") }
+            }
 
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
+            }
+            // 304 Not Modified → the cache is current; serve it (must exist, since we only sent a
+            // validator we stored next to a cached body).
+            if http.statusCode == 304, let cached = Self.loadCachedIndex(for: url) {
+                return cached
             }
             guard (200..<300).contains(http.statusCode) else {
                 throw URLError(.init(rawValue: http.statusCode == 404 ? URLError.fileDoesNotExist.rawValue
                                                                        : URLError.badServerResponse.rawValue))
             }
             let index = try JSONDecoder().decode(IndexJSON.self, from: data)
-            // Persist the raw bytes for an OFFLINE relaunch (only after a valid decode, so we
-            // never cache a garbage/partial response).
-            Self.writeCache(data, for: url)
+            // Persist the raw bytes + validators for an OFFLINE relaunch + the next conditional GET
+            // (only after a valid decode, so we never cache a garbage/partial response).
+            Self.writeCache(data, for: url,
+                            validator: Validator(lastModified: http.value(forHTTPHeaderField: "Last-Modified"),
+                                                 etag: http.value(forHTTPHeaderField: "ETag")))
             return index
         } catch {
             // OFFLINE / server-down FALLBACK: serve the last good index for this source from
@@ -68,10 +89,26 @@ struct CatalogService: Sendable {
     }
 
     /// Persist the raw index bytes for `url` (atomic). Best-effort — a cache-write failure
-    /// never fails the load.
-    static func writeCache(_ data: Data, for url: URL, in dir: URL? = nil) {
+    /// never fails the load. Optionally persists the HTTP `validator` (Last-Modified / ETag)
+    /// in a sibling `.meta.json` for the next conditional GET.
+    static func writeCache(_ data: Data, for url: URL, in dir: URL? = nil, validator: Validator? = nil) {
         guard let dest = cacheFileURL(for: url, in: dir) else { return }
         try? data.write(to: dest, options: .atomic)
+        guard let validator, let meta = metaFileURL(for: url, in: dir),
+              let encoded = try? JSONEncoder().encode(validator) else { return }
+        try? encoded.write(to: meta, options: .atomic)
+    }
+
+    /// Sibling validator file for a cached source URL (`<sha256>.meta.json`).
+    static func metaFileURL(for url: URL, in dir: URL? = nil) -> URL? {
+        cacheFileURL(for: url, in: dir)?.deletingPathExtension().appendingPathExtension("meta.json")
+    }
+
+    /// The stored HTTP validators for `url`'s cache, or nil when absent (so the first refresh
+    /// after this ships is an unconditional GET that then records them).
+    static func loadValidator(for url: URL, in dir: URL? = nil) -> Validator? {
+        guard let meta = metaFileURL(for: url, in: dir), let data = try? Data(contentsOf: meta) else { return nil }
+        return try? JSONDecoder().decode(Validator.self, from: data)
     }
 
     /// Load + decode the cached index for `url`, or nil when there's no (valid) cache.
