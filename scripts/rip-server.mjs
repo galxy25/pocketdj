@@ -56,7 +56,7 @@ const CFG = {
   ahRecDir: (process.env.POCKETDJ_AH_REC_DIR || join(homedir(), 'Music', 'Audio Hijack')).replace(/^~/, homedir()),
   useAgent: process.env.RIP_AGENT === '1', // Phase 2: run the rip skill via a headless Claude agent (adaptive)
   worker: process.env.RIP_WORKER || join(REPO, 'scripts/rip-one.mjs'), // digital capture worker (swappable for tests)
-  sources: (process.env.RIP_SOURCES || `${REPO}/public/current-index.json,${REPO}/public/apple-music-index.json`)
+  sources: (process.env.RIP_SOURCES || `${REPO}/public/current-index.json,${REPO}/public/apple-music-index.json,${REPO}/public/digital-index.json`)
     .split(',').map((s) => s.trim()).filter(Boolean),
   tmp: join(homedir(), '.pocketdj', 'rips'),
   // ITEM 10 (CRITIC-H): in-process cloud-analog -> public/current-index.json fold. The
@@ -208,10 +208,18 @@ async function loadManifest() {
   } catch { manifest = {}; }
   console.error(`  manifest: ${Object.keys(manifest).length} songs cached`);
 }
-async function saveManifest() {
-  const tmp = join(CFG.tmp, 'manifest.json');
-  writeFileSync(tmp, JSON.stringify(manifest));
-  await aws(['s3', 'cp', tmp, `s3://${CFG.bucket}/rips/manifest.json`, '--content-type', 'application/json']);
+// Serialized so concurrent callers (a rip finishing while /ingest-digital or a backfill saves)
+// can't interleave: two writers sharing the one temp file + out-of-order S3 uploads would drop
+// updates. Each queued save re-serializes the LATEST in-memory manifest when it runs, so a save
+// queued behind another still captures every mutation made meanwhile.
+let saveChain = Promise.resolve();
+function saveManifest() {
+  saveChain = saveChain.then(async () => {
+    const tmp = join(CFG.tmp, 'manifest.json');
+    writeFileSync(tmp, JSON.stringify(manifest));
+    await aws(['s3', 'cp', tmp, `s3://${CFG.bucket}/rips/manifest.json`, '--content-type', 'application/json']);
+  }).catch((e) => { console.error('  saveManifest failed:', e.message); });
+  return saveChain;
 }
 
 // ---------------- jobs ----------------
@@ -1711,6 +1719,58 @@ const server = http.createServer(async (req, res) => {
     // ITEM 10: external analysis of a cloud (digital) rip → fold into the public catalog.
     if (isCloudAnalogEntry(a.songId)) requestPublicFold();
     return send(res, 200, { ok: true, songId: a.songId });
+  }
+  // POST /ingest-digital {entries:[{songId, key, source:'digital', albumId?, ext?, durationMs?,
+  //   bytes?, rippedAt?, bpm?, musicalKey?, camelot?, waveform?, beatgrid?, beatgridKey?,
+  //   name?, artist?}]} — the digital-files indexer's batch seed for PRE-RIPPED songs whose audio
+  // is already uploaded to rips/<songId>.mp3. Upserts every entry into the live manifest (so the
+  // app streams/burns them with zero rip step), stamps analysis fields, saves ONCE, and registers
+  // a minimal songById/songsByAlbum record per song so /backfill-stems (acceptStem) can enqueue
+  // WITHOUT a restart. Digital songs carry their OWN catalog (digital-index.json) so this never
+  // triggers the cloud-analog public fold. This is the same endpoint the future in-app
+  // "add digital source" trigger will call (see docs/design/digital-files-source.md §9).
+  if (path === '/ingest-digital' && req.method === 'POST') {
+    const body = await readJson(req);
+    const entries = Array.isArray(body.entries) ? body.entries : [];
+    let added = 0, updated = 0, skipped = 0;
+    for (const a of entries) {
+      if (!a.songId || !a.key) { skipped++; continue; }
+      const existed = !!manifest[a.songId];
+      const e = manifest[a.songId] || {};
+      e.key = a.key;
+      e.ext = a.ext || 'mp3';
+      e.source = 'digital';
+      e.startMs = null;                       // per-song file, not a windowed album cut
+      if (a.albumId != null) e.albumId = a.albumId;
+      if (a.durationMs != null) e.durationMs = a.durationMs;
+      if (a.bytes != null) e.bytes = a.bytes;
+      e.rippedAt = a.rippedAt || e.rippedAt || Date.now();
+      if (a.bpm != null) e.bpm = a.bpm;
+      if (a.musicalKey != null) e.musicalKey = a.musicalKey;
+      if (a.camelot != null) e.camelot = a.camelot;
+      if (a.waveform) e.waveform = a.waveform;
+      if (a.beatgrid && typeof a.beatgrid === 'object') applyBeatgrid(e, { beatgrid: a.beatgrid, beatgridKey: a.beatgridKey });
+      if (a.bpm != null || a.musicalKey != null || a.beatgrid) e.analyzed = true;
+      manifest[a.songId] = e;
+      existed ? updated++ : added++;
+      // Register/refresh a minimal catalog record so acceptStem (consumed by /backfill-stems) finds
+      // the song this process lifetime; public/digital-index.json in RIP_SOURCES makes it durable
+      // across restarts (loadCatalog). Refresh on EVERY ingest (not just first) so a re-ingest with
+      // corrected metadata doesn't leave a stale in-memory record.
+      const prev = songById.get(a.songId);
+      const rec = { id: a.songId, albumId: a.albumId ?? prev?.albumId ?? null,
+        name: a.name || prev?.name || '', artist: a.artist || prev?.artist || '',
+        length: a.durationMs ?? prev?.length ?? null, sourceType: 'digital', sourceName: 'My Digital' };
+      songById.set(a.songId, rec);
+      if (rec.albumId) {
+        if (!songsByAlbum.has(rec.albumId)) songsByAlbum.set(rec.albumId, []);
+        const arr = songsByAlbum.get(rec.albumId);
+        const i = arr.findIndex((x) => x.id === a.songId);
+        if (i >= 0) arr[i] = rec; else arr.push(rec);   // replace in place — never duplicate
+      }
+    }
+    if (added || updated) await saveManifest();
+    return send(res, 200, { ok: true, added, updated, skipped, total: entries.length, cached: Object.keys(manifest).length });
   }
   // POST /am-sync — kick an Apple Music (Local) library check and return IMMEDIATELY with a
   // jobId (mirrors POST /rip's accept-and-poll shape). The check runs fire-and-forget; the

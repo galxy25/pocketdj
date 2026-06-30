@@ -269,8 +269,25 @@ struct SettingsView: View {
                 } label: { Label("Load Apple Music (Local) library", systemImage: "music.note.house") }
                     .accessibilityIdentifier("settings-load-apple-music")
             }
+            if !settings.hasMyDigital {
+                Button {
+                    settings.loadMyDigital()
+                    // First fetch must be fresh — see the Reload-catalog note re: the URLCache gotcha.
+                    URLCache.shared.removeCachedResponse(for: URLRequest(url: Config.digitalIndexURL))
+                    Task { await app.reload() }
+                } label: { Label("Load My Digital library", systemImage: "externaldrive.badge.icloud") }
+                    .accessibilityIdentifier("settings-load-my-digital")
+            }
             Button {
                 settings.persist()
+                // Evict cached responses for the enabled sources so the reload re-fetches them:
+                // CatalogService uses `.returnCacheDataElseLoad` against URLCache.shared, which
+                // would otherwise pin a pre-deploy copy (e.g. a freshly-added source whose index
+                // briefly 404'd to the SPA HTML) — the load-bearing cache gotcha (see CatalogService
+                // + the Apple Music sync path). An explicit "Reload catalog" must mean fresh.
+                for url in settings.enabledSourceURLs {
+                    URLCache.shared.removeCachedResponse(for: URLRequest(url: url))
+                }
                 Task { await app.reload() }
             } label: { Label("Reload catalog", systemImage: "arrow.clockwise") }
                 .accessibilityIdentifier("settings-reload")
