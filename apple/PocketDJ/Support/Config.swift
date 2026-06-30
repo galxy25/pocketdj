@@ -30,6 +30,12 @@ enum Config {
     static var appleMusicIndexURL: URL { catalogBase.appendingPathComponent("apple-music-index.json") }
     static let appleMusicSourceName = "Apple Music (Local)"
 
+    /// Opt-in "My Digital" source — raw on-disk/S3 audio files indexed + transcoded by
+    /// `scripts/index-digital-files.mjs` (pre-ripped to the rips bucket, so they stream/burn
+    /// with no rip step). Published alongside the other catalogs on CloudFront.
+    static var digitalIndexURL: URL { catalogBase.appendingPathComponent("digital-index.json") }
+    static let digitalSourceName = "My Digital"
+
     /// Resolve an art URL that may be root-relative (`/art/<albumId>.jpg`, the
     /// mirrored thumbnail served by the same CloudFront) or already absolute
     /// (e.g. an iTunes `mzstatic` cover).

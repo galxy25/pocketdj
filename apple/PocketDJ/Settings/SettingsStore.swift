@@ -129,6 +129,23 @@ final class SettingsStore {
                                     enabled: true))
         persist()
     }
+    /// Match by name OR url so a renamed "My Digital" source still suppresses the one-tap
+    /// loader (and can't be double-added with the same index URL).
+    var hasMyDigital: Bool {
+        let url = Config.digitalIndexURL.absoluteString
+        let name = Config.digitalSourceName
+        return sources.contains { $0.name == name || $0.urlString == url }
+    }
+
+    /// Opt-in: add the "My Digital" source (raw digital audio files indexed + uploaded to
+    /// the rips bucket; pre-ripped, so they stream/burn with no rip step). One tap adds it.
+    func loadMyDigital() {
+        guard !hasMyDigital else { return }
+        sources.append(SourceConfig(name: Config.digitalSourceName,
+                                    urlString: Config.digitalIndexURL.absoluteString,
+                                    enabled: true))
+        persist()
+    }
     func removeSource(_ id: UUID) {
         sources.removeAll { $0.id == id }
         persist()
@@ -164,10 +181,14 @@ final class SettingsStore {
         }
     }
 
-    /// Wipe ALL on-device state: settings, the URL cache (covers + index), back to defaults.
+    /// Wipe ALL on-device state: settings, the URL cache (covers + index), the per-source
+    /// catalog disk cache, back to defaults.
     func resetEverything() {
         defaults.removeObject(forKey: SettingsStore.key)
         URLCache.shared.removeAllCachedResponses()
+        // Also drop CatalogService's persistent offline cache — otherwise a "reset" still
+        // serves the last-good index for each source on the next failed fetch.
+        if let dir = CatalogService.cacheDirectory() { try? FileManager.default.removeItem(at: dir) }
         let d = SettingsData.default
         sources = d.sources
         ripServerURL = d.ripServerURL; ripToken = d.ripToken

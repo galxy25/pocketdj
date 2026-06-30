@@ -65,6 +65,19 @@ final class SettingsUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: "settings-source-remove").count, before + 1)
     }
 
+    func testLoadMyDigitalAddsSourceAndHidesButton() {
+        let app = launch()
+        let load = app.buttons["settings-load-my-digital"]
+        XCTAssertTrue(reveal(app, load))
+        let before = app.buttons.matching(identifier: "settings-source-remove").count
+        load.tap()
+        // Opt-in: the button disappears once My Digital is loaded…
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: load)
+        wait(for: [gone], timeout: 5)
+        // …and a source row was appended.
+        XCTAssertEqual(app.buttons.matching(identifier: "settings-source-remove").count, before + 1)
+    }
+
     func testRipFromCloudTogglePresent() {
         let app = launch()
         XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))

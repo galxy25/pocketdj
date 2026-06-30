@@ -87,6 +87,18 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(s.sources.count, 2)
     }
 
+    func testLoadMyDigitalAddsSourceOnce() {
+        let s = SettingsStore(defaults: freshDefaults())
+        XCTAssertFalse(s.hasMyDigital)
+        s.loadMyDigital()
+        XCTAssertTrue(s.hasMyDigital)
+        XCTAssertEqual(s.sources.count, 2)
+        XCTAssertEqual(s.sources.last?.name, "My Digital")
+        XCTAssertEqual(s.sources.last?.urlString, Config.digitalIndexURL.absoluteString)
+        s.loadMyDigital()  // idempotent — no duplicate
+        XCTAssertEqual(s.sources.count, 2)
+    }
+
     func testResetRestoresDefaults() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)
