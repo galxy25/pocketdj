@@ -29,7 +29,7 @@ final class AppleMusicCatalogTests: XCTestCase {
         XCTAssertEqual(AppleMusicCatalog.storeID(fromSongID: "am:123"), "123")
         // Album ids and foreign ids don't resolve back to a song store id.
         XCTAssertNil(AppleMusicCatalog.storeID(fromSongID: "am:album:123"))
-        XCTAssertNil(AppleMusicCatalog.storeID(fromSongID: "youtube:abc"))
+        XCTAssertNil(AppleMusicCatalog.storeID(fromSongID: "other:abc"))
         XCTAssertNil(AppleMusicCatalog.storeID(fromSongID: "sng_1"))
     }
 

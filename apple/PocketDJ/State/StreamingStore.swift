@@ -1,11 +1,11 @@
 import Foundation
 import Observation
 
-/// Owns the app's streaming-account providers (currently just Spotify) and routes
-/// OAuth redirects + scene-phase lifecycle to them. Injected into the SwiftUI
+/// Owns the app's streaming-account providers (currently Apple Music) and routes
+/// scene-phase lifecycle (and any OAuth redirects) to them. Injected into the SwiftUI
 /// environment like the other stores. This is purely additive — it does NOT touch
-/// the URL catalog `SourceConfig`s nor the in-flight native rip playback; a linked
-/// streaming account is a SEPARATE kind of source the user opts into in Settings.
+/// the URL catalog `SourceConfig`s nor the native rip playback; a linked streaming
+/// account is a SEPARATE kind of source the user opts into in Settings.
 @MainActor
 @Observable
 final class StreamingStore {
@@ -18,7 +18,7 @@ final class StreamingStore {
     /// nonisolated default-argument expression — we build them in the body, which
     /// is main-actor-isolated.
     init(providers: [any StreamingProvider]? = nil) {
-        self.providers = providers ?? [AppleMusicProvider(), SpotifyProvider(), YouTubeProvider()]
+        self.providers = providers ?? [AppleMusicProvider()]
     }
 
     func provider(_ kind: StreamingProviderKind) -> (any StreamingProvider)? {
@@ -43,8 +43,8 @@ final class StreamingStore {
         return false
     }
 
-    /// Call on `scenePhase` transitions so App Remote connections track app state
-    /// (Spotify requires disconnecting when backgrounded, reconnecting on active).
+    /// Call on `scenePhase` transitions so a provider's remote connection can track app
+    /// state (reconnect on active, disconnect on background) where it needs to.
     func onScenePhaseActive() { providers.forEach { $0.reconnectIfNeeded() } }
     func onScenePhaseBackground() { providers.forEach { $0.disconnect() } }
 }

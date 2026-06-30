@@ -298,7 +298,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Streaming accounts (Spotify, …) — defined in SettingsView+Streaming.swift
+    // MARK: Streaming accounts (Apple Music) — defined in SettingsView+Streaming.swift
 
     // MARK: Online search
 

@@ -3,15 +3,15 @@ import Observation
 
 // MARK: - Configuration
 
-/// Apple Music differs from Spotify/YouTube in that there is **no client secret /
-/// API key on device** — MusicKit mints a developer token automatically once the
+/// Apple Music needs **no client secret / API key on device** — MusicKit mints a
+/// developer token automatically once the
 /// app's bundle id has the *MusicKit App Service* enabled in the Apple Developer
 /// portal and the target carries the `com.apple.developer.musickit` entitlement.
 ///
 /// There is therefore nothing credential-shaped to read at runtime. What we DO
 /// gate on is a build-time opt-in flag so the provider stays dormant (`.unavailable`)
-/// in the default build — exactly like an absent Spotify client id — until the
-/// portal toggle + entitlement actually exist. Set this in project.yml:
+/// in the default build — until the portal toggle + entitlement actually exist.
+/// Set this in project.yml:
 ///
 ///   INFOPLIST_KEY_PocketDJAppleMusicEnabled: YES   (commented until provisioned)
 ///
@@ -34,8 +34,8 @@ enum AppleMusicCredentials {
 // ============================================================================
 //
 // MusicKit ships with the SDK, so `canImport(MusicKit)` is essentially always
-// true on Apple platforms — unlike Spotify/YouTube there is no third-party pod to
-// be absent. The guard is kept anyway for symmetry and so the file is portable to
+// true on Apple platforms — there is no third-party pod to be absent. The guard is
+// kept anyway for symmetry and so the file is portable to
 // any tooling where the framework is genuinely unavailable. The *dormancy* that
 // keeps the default build inert comes from `AppleMusicCredentials.isEnabled`, not
 // from the import.
@@ -43,7 +43,7 @@ enum AppleMusicCredentials {
 import MusicKit
 
 /// Apple Music as an account-linked streaming source + searchable catalog +
-/// `SongRecognizer`, conforming to the shared seams alongside Spotify/YouTube.
+/// `SongRecognizer`, conforming to the shared streaming seams.
 ///
 /// Three capabilities, all behind the one `MusicAuthorization` consent:
 ///   • ACCOUNT-LINK / PLAYBACK (`StreamingProvider`) — `MusicAuthorization.request()`

@@ -10,8 +10,8 @@ import Observation
 /// (Local)" catalog, put the Apple Music STREAMING provider FIRST when it `isReady`
 /// (enabled + authorized) — so tapping ▶ plays it via Apple Music. The rip server is
 /// ALWAYS appended as the terminal fallback (rip-on-demand), so any song still plays even
-/// when Apple Music can't resolve/play it. Spotify / YouTube slot into the same ordered
-/// list later.
+/// when Apple Music can't resolve/play it. Other streaming backends could slot into the
+/// same ordered list later.
 ///
 /// The UI reads one unified, observable surface off this coordinator: `activeBackend`,
 /// `isPlaying`, and the per-backend now-playing handoffs — plus `togglePlayPause()` /
@@ -65,7 +65,7 @@ final class PlaybackCoordinator {
     ///   • Apple Music FIRST when the song came from the Apple Music (Local) source AND
     ///     the Apple Music provider is ready (enabled + authorized),
     ///   • the rip server ALWAYS last (the universal fallback).
-    /// (Spotify / YouTube would insert ahead of the rip server here in later milestones.)
+    /// (Another streaming backend would insert ahead of the rip server here later.)
     func providers(for song: IndexSong) -> [any TrackPlaybackProvider] {
         var ordered: [any TrackPlaybackProvider] = []
         if sourceOfSong(song.id) == Config.appleMusicSourceName, appleMusic.isReady {
