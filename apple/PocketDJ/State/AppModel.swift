@@ -63,23 +63,58 @@ final class AppModel {
         case .loaded, .loading: return
         default: break
         }
-        state = .loading
+        // OFFLINE-FIRST: render the last-good catalog from the on-disk cache SYNCHRONOUSLY (no
+        // `.loading` blank, no waiting on the network) — fixes the cold/iOS-kill relaunch showing
+        // an empty UI while it re-downloads a catalog it already had. Only show `.loading` when
+        // there is genuinely nothing cached (true first launch).
+        let seeded = seedFromCache()
+        if !seeded { state = .loading }
+        await performRefresh(hadData: seeded)
+    }
+
+    /// Populate the catalog from each enabled source's CatalogService disk cache, WITHOUT touching
+    /// the network. Returns whether anything was seeded. No-op for the fixture/test loader (no
+    /// per-URL cache) and on a true first launch (no cache yet).
+    @discardableResult
+    private func seedFromCache() -> Bool {
+        guard loader == nil else { return false }
+        let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
+        let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
+        guard !cached.isEmpty else { return false }
+        apply(cached)
+        return true
+    }
+
+    /// Conditionally refresh from the network. A 304/offline/failed refresh is NON-DESTRUCTIVE:
+    /// CatalogService returns each source's disk cache on failure, so a previously-loaded source
+    /// is never dropped, and we only surface `.failed` when there was nothing to show.
+    private func performRefresh(hadData: Bool) async {
         do {
-            let (index, sourcePlaylists, sources) = try await fetchIndex()
-            manifest = index.manifest
-            indexPlaylists = sourcePlaylists
-            albumSourceById = sources.albums
-            songSourceById = sources.songs
-            availableSources = sources.names
-            rawAlbums = index.albums
-            rawSongs = index.songs
-            rawAlbumsById = Dictionary(rawAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            rawSongsById = Dictionary(rawSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            applyEdits()
-            state = .loaded
+            apply(try await fetchIndexes())
         } catch {
-            state = .failed(error.localizedDescription)
+            // Refresh failed (e.g. true first launch + offline). Keep whatever is already on
+            // screen; only blank to an error when we have nothing seeded/loaded.
+            if !hadData && albums.isEmpty { state = .failed(error.localizedDescription) }
         }
+    }
+
+    /// Assign the merged catalog + per-source tags + index playlists from a set of source indexes,
+    /// overlay edits, and mark `.loaded`. Shared by the instant cache seed and the network refresh
+    /// so both paths populate state identically (and atomically — never a half-applied catalog).
+    private func apply(_ indexes: [IndexJSON]) {
+        let index = AppModel.merge(indexes)
+        let sources = AppModel.sourceTags(indexes)
+        manifest = index.manifest
+        indexPlaylists = AppModel.sourcePlaylists(indexes)
+        albumSourceById = sources.albums
+        songSourceById = sources.songs
+        availableSources = sources.names
+        rawAlbums = index.albums
+        rawSongs = index.songs
+        rawAlbumsById = Dictionary(rawAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        rawSongsById = Dictionary(rawSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        applyEdits()
+        state = .loaded
     }
 
     /// Rebuild the effective catalog by overlaying local edits onto the raw index.
@@ -101,26 +136,28 @@ final class AppModel {
     func rawAlbum(_ id: String) -> IndexAlbum? { rawAlbumsById[id] }
     func rawSong(_ id: String) -> IndexSong? { rawSongsById[id] }
 
+    /// Manual refresh (Settings "Reload catalog" / Browse "Retry"). Keeps the current catalog on
+    /// screen and refreshes in place — never resets to `.idle`/`.loading`, so it can't blank the
+    /// catalog. On a cold model with nothing loaded yet it seeds from cache first.
     func reload() async {
-        state = .idle
-        await loadIfNeeded()
+        let hadData = !albums.isEmpty
+        if !hadData { _ = seedFromCache() }
+        await performRefresh(hadData: hadData || !albums.isEmpty)
     }
 
     /// Per-source tagging derived alongside the merge: id→source maps + the
     /// distinct source names (first-seen order).
     typealias SourceTags = (albums: [String: String], songs: [String: String], names: [String])
 
-    private func fetchIndex() async throws -> (IndexJSON, [SourcePlaylist], SourceTags) {
-        if let loader {
-            let index = try await loader.loadIndex()
-            return (index, AppModel.sourcePlaylists([index]), AppModel.sourceTags([index]))
-        }
+    private func fetchIndexes() async throws -> [IndexJSON] {
+        if let loader { return [try await loader.loadIndex()] }
         let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
         var indexes: [IndexJSON] = []
         var firstError: Error?
         for url in urls {
             do {
-                // CatalogService falls back to ITS OWN per-URL disk cache when offline.
+                // CatalogService does a CONDITIONAL GET and falls back to ITS OWN per-URL disk
+                // cache when offline/unchanged — so a previously-loaded source never throws here.
                 indexes.append(try await CatalogService(url: url).loadIndex())
             } catch {
                 // OFFLINE GRACEFUL DEGRADATION: a source with no cache (never loaded online) +
@@ -131,7 +168,7 @@ final class AppModel {
             }
         }
         guard !indexes.isEmpty else { throw firstError ?? URLError(.cannotLoadFromNetwork) }
-        return (AppModel.merge(indexes), AppModel.sourcePlaylists(indexes), AppModel.sourceTags(indexes))
+        return indexes
     }
 
     /// Tag each album/song id with the name of the FIRST source that carries it —

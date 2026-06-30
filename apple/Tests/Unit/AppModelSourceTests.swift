@@ -91,4 +91,64 @@ final class CatalogServiceCacheTests: XCTestCase {
                        CatalogService.cacheFileURL(for: url, in: dir))
         XCTAssertNotNil(CatalogService.cacheFileURL(for: url, in: dir))
     }
+
+    func testWriteCachePersistsAndLoadsValidator() {
+        let dir = tempDir()
+        let url = URL(string: "https://cdn.test/current-index.json")!
+        XCTAssertNil(CatalogService.loadValidator(for: url, in: dir), "no validator before first cache")
+        CatalogService.writeCache(Data(TestData.json.utf8), for: url, in: dir,
+                                  validator: .init(lastModified: "Wed, 30 Jun 2026 11:00:22 GMT", etag: "\"abc\""))
+        let v = CatalogService.loadValidator(for: url, in: dir)
+        XCTAssertEqual(v?.lastModified, "Wed, 30 Jun 2026 11:00:22 GMT")
+        XCTAssertEqual(v?.etag, "\"abc\"")
+        // The validator sidecar is a SEPARATE file beside the cached body (both still load).
+        XCTAssertNotEqual(CatalogService.metaFileURL(for: url, in: dir), CatalogService.cacheFileURL(for: url, in: dir))
+        XCTAssertNotNil(CatalogService.loadCachedIndex(for: url, in: dir))
+    }
+
+    func testWriteCacheWithoutValidatorLeavesNone() {
+        let dir = tempDir()
+        let url = URL(string: "https://cdn.test/x.json")!
+        // No validator ⇒ the first refresh after this is an UNCONDITIONAL GET (then it records one).
+        CatalogService.writeCache(Data(TestData.json.utf8), for: url, in: dir)
+        XCTAssertNil(CatalogService.loadValidator(for: url, in: dir))
+    }
+}
+
+/// Offline-first AppModel: a FAILED refresh must never blank an already-loaded catalog (the
+/// disappearing-index-playlists fix). Driven via a flaky loader (the multi-source disk-cache
+/// seed path is exercised on-device).
+@MainActor
+final class AppModelOfflineFirstTests: XCTestCase {
+    private final class FlakyLoader: CatalogLoading, @unchecked Sendable {
+        var fail = false
+        func loadIndex() async throws -> IndexJSON {
+            if fail { throw URLError(.notConnectedToInternet) }
+            return try TestData.index()
+        }
+    }
+
+    func testReloadKeepsCatalogWhenRefreshFails() async throws {
+        let loader = FlakyLoader()
+        let app = AppModel(loader: loader)
+        await app.loadIfNeeded()
+        XCTAssertEqual(app.state, .loaded)
+        let before = app.songs.count
+        XCTAssertGreaterThan(before, 0)
+
+        // Network drops → an explicit reload must keep the loaded catalog, not blank it.
+        loader.fail = true
+        await app.reload()
+        XCTAssertEqual(app.songs.count, before, "a failed refresh preserves the loaded catalog")
+        XCTAssertEqual(app.state, .loaded, "a failed refresh must NOT fall back to .failed when data is on screen")
+    }
+
+    func testFirstLoadOfflineWithNoCacheReportsFailure() async {
+        // Genuinely-empty first launch (loader throws, nothing seeded) DOES surface the error.
+        let loader = FlakyLoader(); loader.fail = true
+        let app = AppModel(loader: loader)
+        await app.loadIfNeeded()
+        if case .failed = app.state {} else { XCTFail("expected .failed on first-load offline with no cache") }
+        XCTAssertTrue(app.songs.isEmpty)
+    }
 }
