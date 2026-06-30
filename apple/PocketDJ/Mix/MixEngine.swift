@@ -68,6 +68,12 @@ final class MixEngine {
         var gridBpm: Double? = nil
         var firstDownbeatMs: Int? = nil
         var steady: Bool? = nil
+        /// The full per-beat grid (ms from the song's 0:00) from the analysis sidecar, when it's been
+        /// burned/fetched locally. Drives the phase-locked beat pulse on the EXACT measured beats
+        /// (handles tempo-drifting tracks); nil ⇒ the pulse synthesizes beats from `gridBpm` +
+        /// `firstDownbeatMs`. `downbeatsMs` ⊆ `beatsMs` marks the bar starts (brighter pulse).
+        var beatsMs: [Int]? = nil
+        var downbeatsMs: [Int]? = nil
     }
 
     /// One entry in an Auto-Mix queue: a loadable track plus its known length (ms).
@@ -222,6 +228,13 @@ final class MixEngine {
     @ObservationIgnored private var startFrames: [Deck: AVAudioFramePosition] = [:]
     @ObservationIgnored private var endFrames: [Deck: AVAudioFramePosition] = [:]
     @ObservationIgnored private var sampleRates: [Deck: Double] = [:]
+    /// The SOURCE-seconds offset at which the player's CURRENT scheduled segment begins (0 on load /
+    /// restart, the seek target on seek). `player.playerTime.sampleTime` resets to 0 on every
+    /// `scheduleSegment`, so `truePlayhead` adds this back to recover absolute source position.
+    @ObservationIgnored private var segmentStartSeconds: [Deck: Double] = [:]
+    /// Mirrors the Mix beat-pulse setting (pushed from the view). Gates the on-load DOWNLOAD of a
+    /// track's per-beat sidecar — when the pulse is off we never fetch a grid a track lacks.
+    @ObservationIgnored private var beatPulseEnabled = false
     @ObservationIgnored private var releases: [Deck: () -> Void] = [:]
     @ObservationIgnored private var paths: [Deck: String] = [:]
     /// Four stem player nodes per deck, all summing into the deck's `inputMixer` (so they ride the
@@ -407,11 +420,15 @@ final class MixEngine {
         let startMs = handle.isCut ? nil : burns.startMs(forSong: songId)
         let windowMs = handle.isCut ? nil : lengthMs
         let grid = burns.beatGrid(forSong: songId)
+        let localBeats = burns.localBeatGrid(forSong: songId)   // offline per-beat grid, if burned
         loadFile(handle.url, release: handle.release, startMs: startMs, lengthMs: windowMs,
                  meta: LoadedTrack(songId: songId, title: title, artist: artist,
                                    bpm: bpm, camelot: camelot, key: key, albumId: albumId,
                                    gridBpm: grid?.bpm, firstDownbeatMs: grid?.firstDownbeatMs,
-                                   steady: grid?.steady), on: deck)
+                                   steady: grid?.steady,
+                                   beatsMs: localBeats?.beatsMs, downbeatsMs: localBeats?.downbeatsMs),
+                 on: deck)
+        if localBeats == nil { hydrateBeatGrid(deck, songId: songId) }   // fetch on load iff pulse on
     }
 
     /// Internal load seam (shared by the BurnStore path above AND the integration/stress tests):
@@ -442,6 +459,7 @@ final class MixEngine {
         sampleRates[deck] = sr
         startFrames[deck] = start
         endFrames[deck] = start + count
+        segmentStartSeconds[deck] = 0          // segment begins at source 0:00 (true-playhead base)
         player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(count),
                                at: nil, completionHandler: nil)
         if leadDeck == deck { leadDeck = nil }   // load resets this deck's lead role + tempo/pitch
@@ -529,6 +547,7 @@ final class MixEngine {
             player.stop()
             player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(end - start),
                                    at: nil, completionHandler: nil)
+            segmentStartSeconds[deck] = 0       // rewound to source 0:00
             setPosition(deck, 0)
             if was {
                 if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
@@ -581,6 +600,7 @@ final class MixEngine {
                 player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
                                        at: nil, completionHandler: nil)
             }
+            segmentStartSeconds[deck] = clamped   // the new segment begins `clamped` s into the source
             setPosition(deck, clamped)
             if was, count > 0 {
                 if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
@@ -693,6 +713,35 @@ final class MixEngine {
     func setCueOnRight(_ right: Bool) {
         cueOnRight = right
         applyCueRouting()
+    }
+
+    // MARK: - Beat grid (pulse data)
+
+    /// Mirror the Mix beat-pulse setting (pushed from the view). When turned ON, hydrate the per-beat
+    /// grid for whatever's already loaded so an enabled pulse is precise immediately; when OFF we
+    /// simply stop fetching grids on load.
+    func setBeatPulseEnabled(_ on: Bool) {
+        beatPulseEnabled = on
+        guard on else { return }
+        for d in Deck.allCases { if let id = state(d).loaded?.songId { hydrateBeatGrid(d, songId: id) } }
+    }
+
+    /// Attach the song's full per-beat grid to the deck's `LoadedTrack` so the pulse can phase-lock to
+    /// the real beats. Uses the LOCAL sidecar synchronously if it's already burned; otherwise — only
+    /// when the pulse is enabled — downloads it in the background and patches the deck if it's still
+    /// showing this song. A no-op when the song has no sidecar (the pulse falls back to synthesis).
+    private func hydrateBeatGrid(_ deck: Deck, songId: String) {
+        if state(deck).loaded?.beatsMs != nil { return }                 // already hydrated
+        if let local = burns.localBeatGrid(forSong: songId), !local.beatsMs.isEmpty {
+            mutate(deck) { $0.loaded?.beatsMs = local.beatsMs; $0.loaded?.downbeatsMs = local.downbeatsMs }
+            return
+        }
+        guard beatPulseEnabled else { return }                           // OFF ⇒ never download on load
+        Task { [weak self] in
+            guard let self, let sc = await self.burns.burnBeatGrid(forSong: songId), !sc.beatsMs.isEmpty else { return }
+            guard self.state(deck).loaded?.songId == songId else { return }   // deck moved on → drop it
+            self.mutate(deck) { $0.loaded?.beatsMs = sc.beatsMs; $0.loaded?.downbeatsMs = sc.downbeatsMs }
+        }
     }
 
     /// Diagnostics / tests: the live send levels + pans on a deck's main + cue buses (nil until the
@@ -912,6 +961,7 @@ final class MixEngine {
             let frame = min(max(start, start + AVAudioFramePosition(pos * sr)), end)
             let count = end - frame
             player.stop()
+            segmentStartSeconds[deck] = pos    // the single file resumes `pos` s in (true-playhead base)
             if count > 0 {
                 player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
                                        at: nil, completionHandler: nil)
@@ -1033,6 +1083,21 @@ final class MixEngine {
     func strength(_ effect: Effect, on deck: Deck) -> Double { state(deck).strength(effect) }
     func position(_ deck: Deck) -> Double { deck == .a ? positionA : positionB }
     func duration(_ deck: Deck) -> Double { deck == .a ? durationA : durationB }
+
+    /// The TRUE audio playhead in source seconds, read from the deck's player render clock (NOT the
+    /// ~10 Hz wall-clock accumulator), so a visual that wants sample-accuracy — the beat pulse — can
+    /// phase-lock to what you actually hear. `playerTime.sampleTime` is in the file's own sample rate
+    /// and resets to 0 each `scheduleSegment`, so add back `segmentStartSeconds`; the time-stretch
+    /// rate is already baked into how fast it advances, so dividing by the file rate gives source
+    /// seconds at any tempo. nil while not rendering (just-loaded / paused-after-seek / stem mode) →
+    /// callers fall back to `position`.
+    func truePlayhead(_ deck: Deck) -> Double? {
+        guard !stemActive(deck),
+              let player = players[deck], let nodeTime = player.lastRenderTime,
+              let pt = player.playerTime(forNodeTime: nodeTime),
+              let sr = sampleRates[deck], sr > 0 else { return nil }
+        return (segmentStartSeconds[deck] ?? 0) + Double(pt.sampleTime) / sr
+    }
 
     /// The deck whose track is the Mix's "Now Playing" — what the lock-screen card shows. Rule: if
     /// exactly ONE deck is actively playing, that's the one ("the only active track"); otherwise

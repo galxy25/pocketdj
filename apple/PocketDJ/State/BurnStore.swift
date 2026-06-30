@@ -93,6 +93,7 @@ final class BurnStore {
         var folderUnavailable = false // the chosen burnt-music folder couldn't be written
         var stopped = false     // the user pressed STOP — remaining items not attempted
         var stemmedSongs = 0    // songs whose 4 stems are now fully on-disk (offline-mixable)
+        var beatGridded = 0     // songs whose per-beat grid sidecar is now on-disk (offline beat pulse)
     }
 
     // MARK: Observed state
@@ -427,6 +428,57 @@ final class BurnStore {
             } catch { return bail() }
         }
         return (local, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
+    }
+
+    // MARK: Beat grid (per-beat analysis sidecar) — burned + dynamically fetched like stems
+
+    private static func beatgridFileName(_ songId: String) -> String { "analysis-\(songId).json" }
+
+    /// Local per-beat sidecar URL iff already on disk in the ACTIVE burn folder (READ path). Returns
+    /// the url + scope-release closure; nil if absent / folder unresolvable.
+    func localBeatgridURL(forSong songId: String) -> (url: URL, release: (() -> Void)?)? {
+        guard let folder = resolveBurnFolder(allowRePersist: false, requireWritable: false) else { return nil }
+        let dir = folder.url
+        let u = dir.appendingPathComponent(Self.beatgridFileName(songId))
+        guard FileManager.default.fileExists(atPath: u.path) else {
+            if folder.scoped { dir.stopAccessingSecurityScopedResource() }   // missing → don't leak scope
+            return nil
+        }
+        return (u, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
+    }
+
+    /// Is this song's per-beat grid already burned locally? Existence check only.
+    func beatgridBurned(forSong songId: String) -> Bool {
+        guard let got = localBeatgridURL(forSong: songId) else { return false }
+        got.release?()
+        return true
+    }
+
+    /// Parse the LOCAL per-beat sidecar (no network). nil if not burned / unreadable / malformed.
+    func localBeatGrid(forSong songId: String) -> RipsStore.BeatGridSidecar? {
+        guard let got = localBeatgridURL(forSong: songId) else { return nil }
+        defer { got.release?() }
+        guard let data = try? Data(contentsOf: got.url),
+              let sidecar = try? JSONDecoder().decode(RipsStore.BeatGridSidecar.self, from: data) else { return nil }
+        return sidecar
+    }
+
+    /// BURN (download once → persist) the per-beat sidecar, then parse it. Idempotent: returns the
+    /// local parse without re-downloading. nil if the song has no sidecar server-side / the folder is
+    /// unwritable / the download or parse failed. The JSON is validated BEFORE it's cached, so a
+    /// truncated/garbage body is never written.
+    func burnBeatGrid(forSong songId: String) async -> RipsStore.BeatGridSidecar? {
+        if let local = localBeatGrid(forSong: songId) { return local }
+        guard let url = rips.beatgridSidecarURL(forSong: songId),
+              let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
+        let dir = folder.url
+        defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try await rips.downloadBytes(url)
+            let sidecar = try JSONDecoder().decode(RipsStore.BeatGridSidecar.self, from: data)   // validate first
+            try data.write(to: dir.appendingPathComponent(Self.beatgridFileName(songId)), options: .atomic)
+            return sidecar
+        } catch { return nil }
     }
 
     /// The per-song cut filename for a ready item, or nil if there genuinely is no cut on disk.
@@ -828,6 +880,12 @@ final class BurnStore {
             result.stemmedSongs = await burnCollectionStems(unique, dir: dir)
         }
 
+        // BEAT-GRID BURN: pull every analyzed song's per-beat sidecar (idempotent), so a burned
+        // collection's beat pulse works fully offline. Same shape as stems; skipped on STOP.
+        if !result.stopped && !Task.isCancelled {
+            result.beatGridded = await burnCollectionBeatgrids(unique, dir: dir)
+        }
+
         save()
         progress = nil
         return result
@@ -877,6 +935,43 @@ final class BurnStore {
             }
         }
         return true
+    }
+
+    /// Download every analyzed song's per-beat sidecar (the ones missing on disk) into the burn
+    /// folder as `analysis-<songId>.json`, so a burned collection's beat pulse works fully offline.
+    /// STOP-aware, idempotent (skips present), best-effort (a sidecar failure never fails the burn).
+    /// Returns how many songs ended with a sidecar on disk. Only songs the indexer has analyzed
+    /// (`manifest.beatgrid`) are considered — burning fetches an existing grid, never triggers analysis.
+    private func burnCollectionBeatgrids(_ songs: [(id: String, title: String, artist: String)], dir: URL) async -> Int {
+        let analyzed = songs.filter { rips.hasBeatgridSidecar($0.id) }
+        guard !analyzed.isEmpty else { return 0 }
+        let pending = analyzed.filter { !beatgridFilePresent($0.id, dir: dir) }
+        var done = 0
+        for s in pending {
+            if stopRequested || Task.isCancelled { break }
+            progress = Progress(done: done, total: pending.count, label: "Beat grid · \(s.artist) — \(s.title)")
+            await downloadBeatgrid(songId: s.id, dir: dir)
+            done += 1
+        }
+        return analyzed.reduce(into: 0) { acc, s in if beatgridFilePresent(s.id, dir: dir) { acc += 1 } }
+    }
+
+    /// Download one song's per-beat sidecar into `dir` (skip if present). Validates the JSON before
+    /// caching so a truncated/garbage body is never written. Best-effort.
+    private func downloadBeatgrid(songId: String, dir: URL) async {
+        let dest = dir.appendingPathComponent(Self.beatgridFileName(songId))
+        if FileManager.default.fileExists(atPath: dest.path) { return }   // idempotent
+        guard let url = rips.beatgridSidecarURL(forSong: songId) else { return }
+        do {
+            let data = try await rips.downloadBytes(url)
+            _ = try JSONDecoder().decode(RipsStore.BeatGridSidecar.self, from: data)   // validate before caching
+            try data.write(to: dest, options: .atomic)
+        } catch { return }   // a sidecar failure never fails the burn
+    }
+
+    /// Is the per-beat sidecar present on disk in `dir`?
+    private func beatgridFilePresent(_ songId: String, dir: URL) -> Bool {
+        FileManager.default.fileExists(atPath: dir.appendingPathComponent(Self.beatgridFileName(songId)).path)
     }
 
     /// BACKGROUND-path post-pass: export EVERY analog song's cut (`cuts/<songId>.mp3`) into the

@@ -60,20 +60,53 @@ engine beat-matches on (`gridBpm`, one decimal), falling back to the rounded cat
 `BurnStore.beatGrid(forSong:)` → `LoadedTrack`, which the engine already loads — so this is a pure UI
 read (`keyOrBpm`), no new data plumbing.
 
-## 3. Beat pulse
+## 3. Beat pulse — phase-locked to the audio, on the real grid
 
-**Opt-in** (Settings ▸ Mix, **default off**): `BeatPulseView` overlays a glowing ring on each deck
-container that **flashes on every beat** — downbeats (every 4th beat, 4/4) brighter and longer, in a
-different colour (downbeat = `Theme.accent`, off-beats = `Theme.accent2`) — so you can *feel* the
-groove and visually **eyeball-align the two decks** while beat-matching. When the setting is off the
-overlay isn't created at all (zero cost). Beats are **synthesized** from
-`gridBpm (or catalog bpm)` + `firstDownbeatMs` + the playhead: `beat = floor((position − downbeatSec) /
-(60/bpm))`. Because `position` is already source/song time, `60/bpm` is the beat period directly (the
-deck's tempo `rate` must **not** be applied again). Detection runs off the ~10 Hz playhead; the flash
-itself is a smooth SwiftUI animation, so up-to-100 ms detection latency is invisible. No track grid (no
-`bpm`) ⇒ `currentBeat()` returns `.min` and the ring stays dark. It's its **own** struct so these
-frequent `position` reads re-render only the overlay, never the whole deck (same isolation as
-`DeckSeekSlider`).
+**Opt-in** (Settings ▸ Mix, **default off**): `BeatPulseView` overlays a glowing ring on each deck that
+**flashes on every beat** — downbeats (bar starts) brighter and longer, in a different colour (downbeat
+= `Theme.accent`, off-beats = `Theme.accent2`) — so you can *feel* the groove and **eyeball-align the
+two decks**. Off ⇒ the overlay isn't created at all (zero cost).
+
+Two things make it tight rather than theoretical:
+
+- **Phase-locked to the true audio clock.** It's driven by a 60 fps `TimelineView(.animation)` reading
+  **`MixEngine.truePlayhead(deck)`** — the deck's `AVAudioPlayerNode.playerTime`, not the ~10 Hz
+  wall-clock accumulator. `playerTime.sampleTime` is in the file's sample rate and **resets to 0 on
+  every `scheduleSegment`**, so `truePlayhead` adds back **`segmentStartSeconds`** (0 on load/restart,
+  the seek target on seek, the resume point on stem-mode exit) to recover absolute source position. The
+  time-stretch rate is already baked into how fast `sampleTime` advances, so the pulse **speeds up with
+  the tempo** automatically; the flash decay is in wall-clock (`(playhead − lastBeatSec) / rate`) so it
+  *looks* the same at any tempo. `truePlayhead` returns nil before the first render / in stem mode /
+  just after a seek → the view falls back to `position`.
+- **On the real measured grid.** When the per-beat sidecar is present (`LoadedTrack.beatsMs` /
+  `downbeatsMs`, §4), the pulse binary-searches the actual beat timestamps — so a **tempo-drifting**
+  track pulses on its real beats, and downbeats are the analyzer's real bar starts (near-membership in
+  `downbeatsMs`). Absent a sidecar it **synthesizes** a constant grid from `gridBpm` (or catalog `bpm`)
+  + `firstDownbeatMs`, downbeat every 4th beat (4/4). No grid at all ⇒ the ring stays dark.
+
+Computing intensity directly each frame (no peak/decay state) means the pulse can never get "stuck". The
+view is its own struct so the 60 fps reads never re-render the rest of the deck.
+
+## 4. Beat grid as a burnable artifact (offline) + dynamic fetch
+
+The analyzer already ships a per-beat **sidecar** to S3 (`rips/analysis/<songId>.json` with `beatsMs[]`
+/ `downbeatsMs[]`), and the manifest carries its key (`beatgrid`) — but nothing fetched it. Now it's a
+first-class burnable artifact that **mirrors stems exactly**:
+
+- **Burn.** A collection/setlist burn runs `burnCollectionBeatgrids` right after the stem pass: for each
+  song the indexer has analyzed (`rips.hasBeatgridSidecar` = `manifest.beatgrid != nil`), it downloads
+  `analysis-<id>.json` into the burn folder if absent — **idempotent** (skips present), **STOP-aware**,
+  **best-effort** (a sidecar failure never fails the burn), and the JSON is **validated before it's
+  cached**. Re-burning a setlist only pulls grids that became available since (`BurnResult.beatGridded`,
+  surfaced as "N with beat grids"). Like stems, burning *fetches* an existing grid — it never triggers
+  analysis.
+- **Dynamic fetch on load, gated on the pulse.** `MixEngine.load` attaches the **local** sidecar
+  synchronously (offline, no network). If it's absent **and the beat pulse is enabled**,
+  `hydrateBeatGrid` downloads it in the background (`BurnStore.burnBeatGrid`) and patches the deck's
+  `LoadedTrack` (guarded by `songId`, so a deck that moved on is left alone) — the pulse upgrades from
+  synthesized to real grid in place. **Pulse off ⇒ no download** for a track that lacks a grid. Toggling
+  the pulse on re-hydrates whatever's already loaded. The engine mirrors the setting via
+  `setBeatPulseEnabled`, pushed from `MixView`.
 
 ## Settings
 
@@ -90,10 +123,26 @@ Two new Mix settings, both following the backward-compatible pattern of `skipFad
   pref) and `testCueRoutingIsPreFaderPFLAndPansToTheCueChannel` (real graph: cueing sends a deck to the
   cue channel at full *despite the crossfader on the other deck*, leaves its main send untouched, pans
   main/cue to opposite sides, reverts on un-cue, and flips with the channel preference).
-- **SettingsTests** — `cueOutputChannel` defaults / persist-reload / legacy-blob / reset, mirroring the
-  auto-mix settings.
+- **MixEngineTests (beat grid)** — `testTruePlayheadReadsAudioClockAndHonorsSeekOffset` (real graph: the
+  playhead reads the audio clock and, after a seek to 2 s, reports ~2 s rather than the segment-relative
+  0 — proving the `segmentStartSeconds` add-back) and `testEnablingPulseHydratesLocalBeatGrid` (enabling
+  the pulse attaches a burned local sidecar's `beatsMs`/`downbeatsMs`, no network).
+- **BurnStoreTests (beat grid)** — fetch on burn (`beatGridded`), re-burn picks up newly-available grids,
+  skip un-analyzed songs, the dynamic `burnBeatGrid` parses + caches + is idempotent, and returns nil
+  (no network) when there's no sidecar — mirroring the stem-burn tests.
+- **SettingsTests** — `cueOutputChannel` and `beatPulseEnabled` defaults / persist-reload / legacy-blob /
+  reset, mirroring the auto-mix settings.
 - **UI** — `MixSessionsUITests.testCueButtonsRenderOnBothDecks` (cue buttons render in content beside
-  Reset); `SettingsUITests` asserts the `settings-mix-cue-channel` picker renders.
+  Reset); `SettingsUITests` asserts the `settings-mix-cue-channel` picker + `settings-mix-beat-pulse`
+  toggle render.
+
+## On-device
+
+The unit tests assert the engine sets the right node levels/pans/playhead and that grids burn + parse;
+the **felt** behaviour — cue truly on the chosen output channel of a real interface, and the pulse
+phase-locked to real grid-analyzed tracks (and speeding up with the tempo fader) — is best confirmed on
+device. A track only pulses on its *real* grid once its sidecar exists server-side (`/backfill-beatgrids`)
+and has been burned or dynamically fetched; otherwise it falls back to the synthesized grid.
 
 The **actual audio routing** (cue truly emerging on the chosen output channel of a real interface) is
 only fully verifiable on hardware — the unit test asserts the engine sets the correct node levels/pans;

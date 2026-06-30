@@ -161,6 +161,82 @@ final class BurnStoreTests: XCTestCase {
         cleanBurnedFiles(["sng_9.mp3"])
     }
 
+    // MARK: Beat grid — a collection burn pulls every analyzed song's per-beat sidecar offline
+
+    private static let beatgridJSON =
+        #"{"version":1,"beatGridBpm":120.0,"firstDownbeatMs":250,"steady":true,"beatsMs":[250,750,1250,1750],"downbeatsMs":[250,1750]}"#
+
+    func testBurnFetchesBeatgridsForAnalyzedSongs() async {
+        let names = ["sng_bg1.mp3", "analysis-sng_bg1.json"]
+        cleanBurnedFiles(names)
+        BurnStubURLProtocol.body = Data(Self.beatgridJSON.utf8)
+        let rips = makeRips(); let burns = makeBurns(rips)
+        rips.setManifest([
+            "sng_bg1": .init(key: "rips/sng_bg1.mp3", source: "digital",
+                             beatgrid: "rips/analysis/sng_bg1.json", analysisVersion: 1),
+        ])
+        let r = await burns.burn([(id: "sng_bg1", title: "One", artist: "A")])
+        XCTAssertEqual(r.burned, 1)
+        XCTAssertEqual(r.beatGridded, 1, "the analyzed song's per-beat sidecar is pulled into the burn folder")
+        XCTAssertTrue(burns.beatgridBurned(forSong: "sng_bg1"))
+        XCTAssertEqual(burns.localBeatGrid(forSong: "sng_bg1")?.beatsMs, [250, 750, 1250, 1750])
+        cleanBurnedFiles(names)
+    }
+
+    /// A re-burn of an already-audio-burned collection picks up beat grids that became available since.
+    func testReburnPicksUpNewlyAvailableBeatgrids() async {
+        let names = ["sng_bg2.mp3", "analysis-sng_bg2.json"]
+        cleanBurnedFiles(names)
+        BurnStubURLProtocol.body = Data(Self.beatgridJSON.utf8)
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let song = (id: "sng_bg2", title: "Two", artist: "A")
+        rips.setManifest(["sng_bg2": .init(key: "rips/sng_bg2.mp3", source: "digital")])   // no grid yet
+        _ = await burns.burn([song])
+        XCTAssertFalse(burns.beatgridBurned(forSong: "sng_bg2"))
+        rips.setManifest([
+            "sng_bg2": .init(key: "rips/sng_bg2.mp3", source: "digital",
+                             beatgrid: "rips/analysis/sng_bg2.json", analysisVersion: 1),
+        ])
+        let r = await burns.burn([song])                       // audio fresh-skips; the grid is pulled
+        XCTAssertEqual(r.beatGridded, 1)
+        XCTAssertTrue(burns.beatgridBurned(forSong: "sng_bg2"))
+        cleanBurnedFiles(names)
+    }
+
+    func testBurnSkipsBeatgridForUnanalyzedSongs() async {
+        cleanBurnedFiles(["sng_bg3.mp3"])
+        let rips = makeRips(); let burns = makeBurns(rips)
+        rips.setManifest(["sng_bg3": .init(key: "rips/sng_bg3.mp3", source: "digital")])   // no beatgrid key
+        let r = await burns.burn([(id: "sng_bg3", title: "Three", artist: "A")])
+        XCTAssertEqual(r.beatGridded, 0)
+        XCTAssertFalse(burns.beatgridBurned(forSong: "sng_bg3"))
+        cleanBurnedFiles(["sng_bg3.mp3"])
+    }
+
+    /// Dynamic (on-load) fetch parses the sidecar, caches it offline, and is idempotent.
+    func testBurnBeatGridDynamicallyParsesAndCaches() async {
+        let names = ["analysis-sng_bg4.json"]
+        cleanBurnedFiles(names)
+        BurnStubURLProtocol.body = Data(Self.beatgridJSON.utf8)
+        let rips = makeRips(); let burns = makeBurns(rips)
+        rips.setManifest(["sng_bg4": .init(key: "rips/sng_bg4.mp3", source: "digital",
+                                           beatgrid: "rips/analysis/sng_bg4.json", analysisVersion: 1)])
+        let sc = await burns.burnBeatGrid(forSong: "sng_bg4")
+        XCTAssertEqual(sc?.beatsMs, [250, 750, 1250, 1750])
+        XCTAssertEqual(sc?.downbeatsMs, [250, 1750])
+        XCTAssertTrue(burns.beatgridBurned(forSong: "sng_bg4"), "cached on disk for offline")
+        let again = await burns.burnBeatGrid(forSong: "sng_bg4")   // idempotent — local parse, no re-download
+        XCTAssertEqual(again?.beatsMs, [250, 750, 1250, 1750])
+        cleanBurnedFiles(names)
+    }
+
+    func testBurnBeatGridReturnsNilForUnanalyzedSong() async {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        rips.setManifest(["sng_bg5": .init(key: "rips/sng_bg5.mp3", source: "digital")])   // no sidecar
+        let sc = await burns.burnBeatGrid(forSong: "sng_bg5")
+        XCTAssertNil(sc, "no sidecar server-side ⇒ nothing to fetch (no network attempt)")
+    }
+
     // MARK: Partial success — not-ripped songs are skipped, not failed
 
     func testBurnSkipsNotRippedSongs() async {

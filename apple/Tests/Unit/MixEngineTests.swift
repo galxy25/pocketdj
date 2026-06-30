@@ -402,6 +402,50 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    // MARK: - Beat grid (true playhead + per-beat hydration)
+
+    /// `truePlayhead` reads the real audio render clock (not the wall-clock accumulator) and — the
+    /// load-bearing bit — adds back the seek offset, so after seeking to 2 s it reports ~2 s, not the
+    /// segment-relative 0 that `playerTime.sampleTime` resets to.
+    func testTruePlayheadReadsAudioClockAndHonorsSeekOffset() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let url = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        e.loadFile(url, release: nil, startMs: nil, meta: meta("x", bpm: 120), on: .a)
+        XCTAssertNil(e.truePlayhead(.a), "no render yet → nil (callers fall back to position)")
+        e.play(.a)
+        try await Task.sleep(nanoseconds: 250_000_000)        // let the engine render a little
+        let p1 = try XCTUnwrap(e.truePlayhead(.a))
+        XCTAssertGreaterThan(p1, 0); XCTAssertLessThan(p1, 3)
+        e.seek(.a, toSeconds: 2.0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let p2 = try XCTUnwrap(e.truePlayhead(.a))
+        XCTAssertGreaterThan(p2, 1.9, "true playhead honors the seek offset, not segment-relative 0")
+        e.teardown()
+    }
+
+    /// Enabling the pulse hydrates the loaded deck's per-beat grid from a LOCAL (burned) sidecar —
+    /// no network — so the pulse can phase-lock to the real beats.
+    func testEnablingPulseHydratesLocalBeatGrid() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let dir = try RipsStore.burnsDirectory()
+        let sidecar = dir.appendingPathComponent("analysis-bg.json")
+        try Data(#"{"beatsMs":[100,600,1100],"downbeatsMs":[100]}"#.utf8).write(to: sidecar)
+        defer { try? FileManager.default.removeItem(at: sidecar) }
+        let url = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: url) }
+        e.loadFile(url, release: nil, startMs: nil, meta: meta("bg", bpm: 120), on: .a)
+        XCTAssertNil(e.loaded(.a)?.beatsMs, "loadFile alone doesn't hydrate")
+        e.setBeatPulseEnabled(true)                           // hydrates the loaded deck from the local sidecar
+        XCTAssertEqual(e.loaded(.a)?.beatsMs, [100, 600, 1100])
+        XCTAssertEqual(e.loaded(.a)?.downbeatsMs, [100])
+        e.teardown()
+    }
+
     // MARK: - Auto-Mix manual skip
 
     /// A manual Skip kicks off a crossfade to the next track immediately (status → "fading") and stays

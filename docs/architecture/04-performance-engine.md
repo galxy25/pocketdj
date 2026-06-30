@@ -621,8 +621,11 @@ Full spec: [Lock-screen Now Playing, Skip, slider & stem fixes](../design/mix-ta
  Cue button (left of Reset): tap = toggleCue · long-press/right-click = cue-VOLUME popover (independent level)
    CueChannel (which side is cue) lives in Settings → pushed via engine.setCueOnRight()
  Beat-grid BPM on the deck: gridBpm (measured, the value Sync uses) ?? catalog bpm, beside the KeyChip
- BeatPulseView (opt-in, Settings ▸ Mix, default OFF): synth beats from gridBpm(or bpm) + firstDownbeatMs +
-   the ~10 Hz playhead → flash on each beat (downbeats every 4th, brighter); isolated subview, no re-render of the deck
+ BeatPulseView (opt-in, Settings ▸ Mix, default OFF): 60fps TimelineView phase-locked to truePlayhead
+   (player.playerTime + segmentStartSeconds, NOT the 10 Hz accumulator) → flash on each beat (downbeats brighter).
+   Real grid `beatsMs[]` when burned (tempo-drift accurate); else synth from gridBpm + firstDownbeatMs.
+ Beat grid = burnable artifact (mirrors stems): analysis-<id>.json sidecar; burnCollectionBeatgrids on burn
+   (idempotent · STOP-aware · best-effort · validate-before-cache); dynamic hydrate on load GATED on the pulse setting
 ```
 
 **Reading it.** Cueing is a textbook **pre-fade listen (PFL)**: rather than a special case, each deck now

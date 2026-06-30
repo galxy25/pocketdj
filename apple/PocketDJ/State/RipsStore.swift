@@ -241,6 +241,43 @@ final class RipsStore {
     }
     func stemURL(forSong songId: String, _ stem: String) -> URL? { stemURLs(forSong: songId)?[stem] }
 
+    /// True once the indexer has produced a per-beat analysis SIDECAR for the song (the burnable
+    /// beat-grid artifact, distinct from the scalar summary mirrored into the manifest entry).
+    func hasBeatgridSidecar(_ songId: String) -> Bool { !((manifest[songId]?.beatgrid ?? "").isEmpty) }
+
+    /// Public URL of the per-beat analysis sidecar (`rips/analysis/<songId>.json`), nil when none.
+    /// Built off the same public ripsBase as stems/cuts, so it resolves server-offline.
+    func beatgridSidecarURL(forSong songId: String) -> URL? {
+        guard let key = manifest[songId]?.beatgrid, !key.isEmpty else { return nil }
+        return ripsBase.appendingPathComponent(key)
+    }
+
+    /// The per-beat analysis sidecar (`rips/analysis/<songId>.json`) the indexer ships to S3 — the
+    /// full beat grid beyond the scalar summary in the manifest entry. All fields optional/defaulted
+    /// so a partial/older sidecar still decodes. `beatsMs` are ms from the song's 0:00 (the cut for
+    /// analog); `downbeatsMs` ⊆ `beatsMs` are the bar starts.
+    struct BeatGridSidecar: Decodable, Equatable {
+        var beatGridBpm: Double?
+        var firstDownbeatMs: Int?
+        var steady: Bool?
+        var beatsMs: [Int]
+        var downbeatsMs: [Int]
+        private enum CodingKeys: String, CodingKey { case beatGridBpm, firstDownbeatMs, steady, beatsMs, downbeatsMs }
+        init(beatGridBpm: Double? = nil, firstDownbeatMs: Int? = nil, steady: Bool? = nil,
+             beatsMs: [Int] = [], downbeatsMs: [Int] = []) {
+            self.beatGridBpm = beatGridBpm; self.firstDownbeatMs = firstDownbeatMs; self.steady = steady
+            self.beatsMs = beatsMs; self.downbeatsMs = downbeatsMs
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            beatGridBpm = try c.decodeIfPresent(Double.self, forKey: .beatGridBpm)
+            firstDownbeatMs = try c.decodeIfPresent(Int.self, forKey: .firstDownbeatMs)
+            steady = try c.decodeIfPresent(Bool.self, forKey: .steady)
+            beatsMs = try c.decodeIfPresent([Int].self, forKey: .beatsMs) ?? []
+            downbeatsMs = try c.decodeIfPresent([Int].self, forKey: .downbeatsMs) ?? []
+        }
+    }
+
     // MARK: Errors
 
     enum RipError: LocalizedError {
