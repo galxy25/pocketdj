@@ -350,13 +350,24 @@ struct SettingsView: View {
             .accessibilityIdentifier("settings-automix-fade")
             .onChange(of: settings.autoMixFadeSeconds) { settings.persist() }
 
+            Stepper(value: $settings.skipFadeSeconds, in: 1...60, step: 1) {
+                HStack {
+                    Text("Skip fade")
+                    Spacer()
+                    Text("\(Int(settings.skipFadeSeconds)) s")
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("settings-automix-skip-fade")
+            .onChange(of: settings.skipFadeSeconds) { settings.persist() }
+
             Toggle("Auto-hide played tracks", isOn: $settings.mixAutoHidePlayed)
                 .accessibilityIdentifier("settings-mix-autohide")
                 .onChange(of: settings.mixAutoHidePlayed) { settings.persist() }
         } header: {
             Text("Mix")
         } footer: {
-            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length.\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.")
+            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length. Skip fade is how long the crossfade lasts when you tap the Skip button (double-tap always uses a fast 5 s sweep).\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.")
         }
     }
 

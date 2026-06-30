@@ -48,6 +48,29 @@ final class MixSessionsUITests: XCTestCase {
         }
     }
 
+    /// Regression for the iPhone-portrait overflow bug: in Auto mode the collection picker + Play +
+    /// Shuffle must render in the in-CONTENT setup bar, NOT in a trailing toolbar that collapses into
+    /// a "•••" overflow (where you had to rotate to landscape to reach them). A collapsed toolbar item
+    /// is absent from the tree until the overflow is opened, so asserting these exist directly proves
+    /// they're in content.
+    func testAutoModePlayShuffleReachableInContent() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_START_SECTION"] = "Mix"
+        app.launch()
+
+        let auto = app.buttons["mix-auto-mode"].firstMatch
+        XCTAssertTrue(auto.waitForExistence(timeout: 20), "Auto/Manual toggle should exist")
+        auto.tap()                                          // → Auto mode
+
+        XCTAssertTrue(app.buttons["mix-auto-play"].firstMatch.waitForExistence(timeout: 5),
+                      "Play must be reachable in content (not in a collapsed toolbar overflow)")
+        XCTAssertTrue(app.buttons["mix-auto-shuffle"].firstMatch.exists,
+                      "Shuffle must be reachable in content (not in a collapsed toolbar overflow)")
+        XCTAssertTrue(firstWith("mix-auto-source").exists, "collection picker should be in content")
+        save(app, "05-auto-setup-bar")
+    }
+
     // MARK: - Helpers
 
     private var app: XCUIApplication { XCUIApplication() }

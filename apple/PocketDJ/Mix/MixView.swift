@@ -59,6 +59,7 @@ struct MixView: View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
             VStack(spacing: 18) {
                 sessionHeader                           // the renamable session name (in-content)
+                if engine.autoEnabled && !engine.autoMixing { autoSetupBar }  // pick + Play/Shuffle
                 if engine.autoMixing { autoMixBanner }  // Auto-DJ status + Stop (visible on every size)
                 // Two decks side-by-side (A left, B right), equal width.
                 HStack(alignment: .top, spacing: 12) {
@@ -67,6 +68,7 @@ struct MixView: View {
                 }
                 CrossfaderView(engine: engine)         // one crossfader spanning both decks
                 masterTransport                        // one big Play/Pause for both decks
+                if engine.autoMixing { skipButton }    // Auto-DJ only: advance to the next track
             }
             .padding(16)
             .frame(maxWidth: 900)                       // keep controls a comfortable width on Mac/iPad
@@ -84,6 +86,10 @@ struct MixView: View {
         .toolbar { autoMixToolbar }                    // Auto/Manual + collection Play/Shuffle
         .toolbar { sessionLeadingToolbar }             // Sessions (history) + Reset (X)
         .task { engine.prepare() }                     // warm the AVAudioEngine graph when the tab opens
+        // DELIBERATELY no `.onDisappear { engine.pauseBoth()/stopAutoMix()/teardown() }`: the engine is
+        // app-scoped and its tick + audio graph must keep running when you leave the Mix tab, so a mix
+        // (and an Auto-DJ) keeps playing and the lock-screen card stays live. Sibling views do pause on
+        // disappear; this one must NOT (pause/pauseBoth end the auto-mix). Load-bearing omission.
         // Track loader: long-press (iOS) / right-click (macOS) on a deck, or tap its header.
         .sheet(item: $loaderDeck) { deck in
             TrackLoaderSheet(deck: deck, engine: engine,
@@ -179,26 +185,10 @@ struct MixView: View {
                                      : "Manual mode — tap to switch to Auto")
             .accessibilityIdentifier("mix-auto-mode")
 
-            if engine.autoEnabled {
-                Menu {
-                    autoSourceMenuItems
-                } label: {
-                    Label(autoSourceName ?? "Collection", systemImage: "rectangle.stack")
-                }
-                .accessibilityIdentifier("mix-auto-source")
-
-                Button { startAuto(shuffled: false) } label: { Image(systemName: "play.fill") }
-                    .disabled(autoSource == nil)
-                    .help("Auto-mix this collection in order")
-                    .accessibilityIdentifier("mix-auto-play")
-
-                Button { startAuto(shuffled: true) } label: { Image(systemName: "shuffle") }
-                    .disabled(autoSource == nil)
-                    .help("Auto-mix this collection shuffled")
-                    .accessibilityIdentifier("mix-auto-shuffle")
-                // Stop lives in the always-visible in-body banner (`autoMixBanner`) so it stays
-                // reachable on iPhone, where a crowded nav bar collapses extra items into "•••".
-            }
+            // The collection picker + ▶ Play / 🔀 Shuffle do NOT live here: in iPhone portrait the
+            // trailing toolbar collapses into a "•••" overflow that buries them behind a nested
+            // submenu (you had to rotate to landscape to reach them). They're in the always-visible
+            // in-content `autoSetupBar` instead. Stop + Skip likewise live in the in-body banner.
         }
     }
 
@@ -224,6 +214,43 @@ struct MixView: View {
         case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
         case nil:              return nil
         }
+    }
+
+    /// In-CONTENT Auto-mode setup row (shown in Auto mode before a mix starts): the collection
+    /// picker + ▶ Play / 🔀 Shuffle. Lives in the body — NOT the toolbar — so it's always reachable on
+    /// iPhone portrait, where the trailing toolbar collapses these into a nested "•••" overflow.
+    private var autoSetupBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
+            Menu {
+                autoSourceMenuItems
+            } label: {
+                Label(autoSourceName ?? engine.autoSourceLabel ?? "Pick a collection",
+                      systemImage: "rectangle.stack")
+                    .lineLimit(1)
+            }
+            .accessibilityIdentifier("mix-auto-source")
+            Spacer(minLength: 8)
+            Button { startAuto(shuffled: false) } label: { Label("Play", systemImage: "play.fill") }
+                .disabled(autoSource == nil)
+                .help("Auto-mix this collection in order")
+                .accessibilityIdentifier("mix-auto-play")
+            Button { startAuto(shuffled: true) } label: {
+                Label("Shuffle", systemImage: "shuffle").labelStyle(.iconOnly)
+            }
+            .disabled(autoSource == nil)
+            .help("Auto-mix this collection shuffled")
+            .accessibilityIdentifier("mix-auto-shuffle")
+        }
+        .buttonStyle(.bordered)
+        .tint(Theme.accent)
+        .padding(12)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1))
+        // NO accessibilityIdentifier on this HStack: an id on a button *container* merges the children
+        // into one element, hiding mix-auto-play / mix-auto-shuffle from the a11y tree (and UI tests).
+        // See the native-playlist-toolbar-overflow lesson.
     }
 
     /// In-body banner so the Stop control + progress are reachable on iPhone (where a crowded
@@ -262,7 +289,8 @@ struct MixView: View {
             MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
         }
         engine.startAutoMix(items, shuffled: shuffled,
-                            lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds)
+                            lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
+                            label: autoSourceName)
     }
 
     /// The single bottom Play/Pause — starts/stops BOTH decks (and the engine). Mirrors the
@@ -280,6 +308,32 @@ struct MixView: View {
         // Nothing loaded ⇒ no audio to drive; keep the transport from reporting "playing" silence.
         .disabled(engine.loaded(.a) == nil && engine.loaded(.b) == nil)
         .accessibilityIdentifier("mix-play")
+    }
+
+    /// Auto-Mix only: advance to the next queued track. SINGLE tap = crossfade over the configured
+    /// Skip-fade (Settings ▸ Mix, default 15 s); DOUBLE tap = a fast 5 s sweep. It is a plain tappable
+    /// view (NOT a `Button`) so a double tap doesn't ALSO fire the single-tap action — a Button's
+    /// primary action fires on the first tap. `count: 2` is declared first so SwiftUI disambiguates a
+    /// double tap to the fast path; a lone tap fires after the short disambiguation delay.
+    private var skipButton: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "forward.fill")
+            Text("Skip to next")
+            Text("· double-tap = fast").font(.caption).foregroundStyle(Theme.fgDim)
+        }
+        .font(.headline)
+        .foregroundStyle(Theme.accent)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 11)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .onTapGesture(count: 2) { engine.skipToNext(fadeSeconds: 5) }                       // fast sweep
+        .onTapGesture(count: 1) { engine.skipToNext(fadeSeconds: settings.skipFadeSeconds) } // configurable
+        .accessibilityIdentifier("mix-auto-skip")
+        .accessibilityLabel("Skip to next track")
+        .accessibilityHint("Double-tap for a fast five second sweep")
     }
 }
 
@@ -1014,27 +1068,63 @@ private struct StemPad: View {
 }
 
 /// The per-deck playback-position scrubber (under the waveform). A SEPARATE view so the ~10 Hz
-/// playhead updates re-render only this slider, not the whole deck. Drag to seek (sample-accurate).
+/// playhead updates re-render only this slider, not the whole deck. Drag anywhere on the track to
+/// seek (sample-accurate); the displayed position ALWAYS follows the engine when you're not dragging.
+///
+/// This is a hand-rolled track+thumb rather than a `Slider`: the drag offset lives in a
+/// **`@GestureState`**, which SwiftUI *guarantees* to reset to `nil` the instant the gesture ends.
+/// So the moment you lift your finger the display reverts to `engine.position(deck)` and resumes
+/// following playback — there is no `@State`/`onEditingChanged` flag that can get stranded (the bug
+/// where the timestamp froze after a release until you switched tabs).
 private struct DeckSeekSlider: View {
     let engine: MixEngine
     let deck: MixEngine.Deck
-    @State private var scrubbing: Double?
+    /// 0…1 position within the track WHILE dragging; auto-resets to nil when the drag ends.
+    @GestureState private var dragFraction: Double?
 
     var body: some View {
         let dur = engine.duration(deck)
-        let pos = scrubbing ?? engine.position(deck)
+        let live = engine.position(deck)                 // ALWAYS read → Observation dependency holds
+        let liveFraction = dur > 0 ? min(max(live / dur, 0), 1) : 0
+        let shownFraction = dragFraction ?? liveFraction // dragging → finger; else → live playhead
+        let shownSeconds = shownFraction * dur
         VStack(spacing: 1) {
-            Slider(value: Binding(get: { dur > 0 ? min(max(pos, 0), dur) : 0 },
-                                  set: { scrubbing = $0 }),
-                   in: 0...max(dur, 0.001),
-                   onEditingChanged: { editing in
-                       if !editing, let s = scrubbing { engine.seek(deck, toSeconds: s); scrubbing = nil }
-                   })
-                .tint(Theme.accent2)
-                .disabled(dur <= 0)
-                .accessibilityIdentifier("deck-\(deck.rawValue)-seek")
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.border).frame(height: 4)
+                    Capsule().fill(Theme.accent2).frame(width: max(0, w * shownFraction), height: 4)
+                    Circle().fill(Theme.accent2)
+                        .frame(width: 16, height: 16)
+                        .offset(x: min(max(0, w * shownFraction - 8), w - 16))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .updating($dragFraction) { value, frac, _ in
+                            frac = w > 0 ? min(max(value.location.x / w, 0), 1) : 0
+                        }
+                        .onEnded { value in
+                            guard dur > 0, w > 0 else { return }
+                            engine.seek(deck, toSeconds: min(max(value.location.x / w, 0), 1) * dur)
+                        }
+                )
+            }
+            .frame(height: 20)
+            .opacity(dur > 0 ? 1 : 0.4)
+            .allowsHitTesting(dur > 0)
+            .accessibilityElement()
+            .accessibilityIdentifier("deck-\(deck.rawValue)-seek")
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(Self.clock(shownSeconds))
+            .accessibilityAdjustableAction { dir in
+                guard dur > 0 else { return }
+                let step = max(1, dur / 20)
+                engine.seek(deck, toSeconds: min(max(0, live + (dir == .increment ? step : -step)), dur))
+            }
             HStack {
-                Text(Self.clock(pos)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                Text(Self.clock(shownSeconds)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 Spacer()
                 Text(Self.clock(dur)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }

@@ -90,4 +90,19 @@ final class SettingsUITests: XCTestCase {
         reset.tap()
         XCTAssertTrue(app.buttons["settings-reset-confirm"].waitForExistence(timeout: 3))
     }
+
+    /// The Mix section exposes all three crossfade steppers — including the NEW manual-skip fade —
+    /// so the Skip-button feature has a configurable fade length. Asserted by accessibility id
+    /// (steppers surface differently per platform; the id matches on both).
+    func testMixSectionHasCrossfadeAndSkipFadeControls() {
+        let app = launch()
+        XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))
+        let skip = app.descendants(matching: .any)["settings-automix-skip-fade"]
+        XCTAssertTrue(reveal(app, skip), "the new Skip-fade stepper must render in the Mix section")
+        XCTAssertTrue(app.descendants(matching: .any)["settings-automix-lead"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["settings-automix-fade"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "settings-mix-section"; shot.lifetime = .keepAlways
+        add(shot)
+    }
 }

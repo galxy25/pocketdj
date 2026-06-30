@@ -167,6 +167,7 @@ final class PlayerEngine {
             MainActor.assumeIsolated { self?.signalTrackEnded() }
         }
         player.replaceCurrentItem(with: item)
+        NowPlayingArbiter.shared.claim(self)   // this engine started audio → own the lock-screen card
         player.play()
         updateNowPlayingInfo()
     }
@@ -183,7 +184,7 @@ final class PlayerEngine {
         updateNowPlayingInfo()
     }
 
-    func play() { player.play(); isPlaying = true; updateNowPlayingInfo() }
+    func play() { NowPlayingArbiter.shared.claim(self); player.play(); isPlaying = true; updateNowPlayingInfo() }
     func pause() { player.pause(); isPlaying = false; updateNowPlayingInfo() }
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
     /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
@@ -292,19 +293,19 @@ final class PlayerEngine {
         let center = MPRemoteCommandCenter.shared()
 
         center.playCommand.addTarget { [weak self] _ in
-            guard let self else { return .commandFailed }
+            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
             self.play(); return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            guard let self else { return .commandFailed }
+            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
             self.pause(); return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self else { return .commandFailed }
+            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
             self.toggle(); return .success
         }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let self, !self.isLive,
+            guard let self, NowPlayingArbiter.shared.isActive(self), !self.isLive,
                   let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self.seek(to: e.positionTime); return .success
         }
@@ -312,12 +313,12 @@ final class PlayerEngine {
         // input (and stay disabled) when no set is running (`onNext`/`onPrevious` nil).
         center.nextTrackCommand.isEnabled = false
         center.nextTrackCommand.addTarget { [weak self] _ in
-            guard let self, let onNext = self.onNext else { return .commandFailed }
+            guard let self, NowPlayingArbiter.shared.isActive(self), let onNext = self.onNext else { return .commandFailed }
             onNext(); return .success
         }
         center.previousTrackCommand.isEnabled = false
         center.previousTrackCommand.addTarget { [weak self] _ in
-            guard let self, let onPrevious = self.onPrevious else { return .commandFailed }
+            guard let self, NowPlayingArbiter.shared.isActive(self), let onPrevious = self.onPrevious else { return .commandFailed }
             onPrevious(); return .success
         }
     }
@@ -325,6 +326,7 @@ final class PlayerEngine {
     /// Push current track metadata + playback position to the Now Playing card. Skipped
     /// for a live stream's duration (it has none); the card still shows title + artist.
     private func updateNowPlayingInfo() {
+        guard NowPlayingArbiter.shared.isActive(self) else { return }   // yield while the Mix owns the card
         guard !nowPlayingTitle.isEmpty || !nowPlayingArtist.isEmpty else { clearNowPlayingInfo(); return }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: nowPlayingTitle,
@@ -338,6 +340,8 @@ final class PlayerEngine {
     }
 
     private func clearNowPlayingInfo() {
+        guard NowPlayingArbiter.shared.isActive(self) else { return }   // don't wipe the Mix's card
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        NowPlayingArbiter.shared.resign(self)                           // release so the Mix can reclaim
     }
 }

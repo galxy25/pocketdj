@@ -50,6 +50,10 @@ final class SettingsStore {
     /// Auto-Mix (Mix tab): duration in seconds of the crossfade (volume sweep) between decks.
     /// Default 3.
     var autoMixFadeSeconds: Double
+    /// Auto-Mix (Mix tab): duration in seconds of the crossfade when the user TAPS the manual Skip
+    /// button (a longer, deliberate transition than the automatic `autoMixFadeSeconds`). Default 15.
+    /// A double-tap on Skip always uses a fast 5 s sweep regardless of this value.
+    var skipFadeSeconds: Double
     /// Mix sessions: when on (default), the track loader HIDES songs already played in the current
     /// session; when off, they still show but with a ✓ checkmark. See `MixSessionStore`.
     var mixAutoHidePlayed: Bool
@@ -71,6 +75,7 @@ final class SettingsStore {
         self.burnFolderBookmark = data.burnFolderBookmark
         self.autoMixLeadSeconds = data.autoMixLeadSeconds ?? 15
         self.autoMixFadeSeconds = data.autoMixFadeSeconds ?? 3
+        self.skipFadeSeconds = data.skipFadeSeconds ?? 15
         self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
     }
 
@@ -133,7 +138,7 @@ final class SettingsStore {
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
             autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds,
-            mixAutoHidePlayed: mixAutoHidePlayed)
+            skipFadeSeconds: skipFadeSeconds, mixAutoHidePlayed: mixAutoHidePlayed)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -153,6 +158,7 @@ final class SettingsStore {
         burnFolderBookmark = d.burnFolderBookmark
         autoMixLeadSeconds = d.autoMixLeadSeconds ?? 15
         autoMixFadeSeconds = d.autoMixFadeSeconds ?? 3
+        skipFadeSeconds = d.skipFadeSeconds ?? 15
         mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
     }
 
@@ -186,6 +192,8 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced to 15 / 3 at the read sites).
     var autoMixLeadSeconds: Double?
     var autoMixFadeSeconds: Double?
+    /// Optional so older blobs still decode (coalesced to 15 at the read sites).
+    var skipFadeSeconds: Double?
     /// Optional so older blobs still decode (coalesced to true at the read sites).
     var mixAutoHidePlayed: Bool?
 
@@ -201,5 +209,6 @@ struct SettingsData: Codable {
         burnFolderBookmark: nil,
         autoMixLeadSeconds: 15,
         autoMixFadeSeconds: 3,
+        skipFadeSeconds: 15,
         mixAutoHidePlayed: true)
 }
