@@ -326,6 +326,82 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    // MARK: - Cue / PFL (pre-fade listen)
+
+    /// Cue state machine (no audio device needed): toggling per deck, `anyCued`, the 0…1 cue-volume
+    /// clamp, and the cue-channel preference.
+    func testCueToggleVolumeAndChannel() {
+        let e = makeEngine()
+        XCTAssertFalse(e.cued(.a)); XCTAssertFalse(e.cued(.b)); XCTAssertFalse(e.anyCued)
+        XCTAssertEqual(e.cueVolume(.a), 1.0)                 // default monitor level
+        e.setCued(true, on: .a)
+        XCTAssertTrue(e.cued(.a)); XCTAssertTrue(e.anyCued); XCTAssertFalse(e.cued(.b))
+        e.toggleCue(.a); XCTAssertFalse(e.cued(.a)); XCTAssertFalse(e.anyCued)
+        e.toggleCue(.b); XCTAssertTrue(e.cued(.b)); XCTAssertTrue(e.anyCued)
+        e.setCueVolume(1.5, on: .b);  XCTAssertEqual(e.cueVolume(.b), 1.0)
+        e.setCueVolume(-0.2, on: .b); XCTAssertEqual(e.cueVolume(.b), 0.0)
+        e.setCueVolume(0.4, on: .b);  XCTAssertEqual(e.cueVolume(.b), 0.4, accuracy: 1e-9)
+        XCTAssertTrue(e.cueOnRight)                          // default
+        e.setCueOnRight(false); XCTAssertFalse(e.cueOnRight)
+        e.setCueOnRight(true);  XCTAssertTrue(e.cueOnRight)
+    }
+
+    /// Real-graph PFL routing: cueing a deck sends it to the CUE channel at full (pre-fader — even
+    /// with the crossfader fully on the OTHER deck), leaves its MAIN send untouched, and pans
+    /// main/cue to opposite output channels. Un-cued ⇒ cue silent + centered (normal stereo).
+    func testCueRoutingIsPreFaderPFLAndPansToTheCueChannel() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 1), b = try makeSineWAV(seconds: 1)
+        defer { [a, b].forEach { try? FileManager.default.removeItem(at: $0) } }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 120), on: .b)
+        e.setCueOnRight(true)
+        e.setCrossfader(0.0)                                  // full A on main → B's main send is ~0
+
+        // Nothing cued: cue sends silent, both buses centered, main = equal-power crossfade.
+        let a0 = try XCTUnwrap(e.cueRoutingSnapshot(.a)); let b0 = try XCTUnwrap(e.cueRoutingSnapshot(.b))
+        XCTAssertEqual(a0.cueVol, 0, accuracy: 1e-6); XCTAssertEqual(b0.cueVol, 0, accuracy: 1e-6)
+        XCTAssertEqual(a0.mainPan, 0, accuracy: 1e-6); XCTAssertEqual(b0.mainPan, 0, accuracy: 1e-6)
+        XCTAssertEqual(a0.mainVol, 1.0, accuracy: 1e-5)       // full A
+        XCTAssertEqual(b0.mainVol, 0.0, accuracy: 1e-5)       // B faded out of main
+
+        // Cue B: monitors at FULL on the right, despite the crossfader sitting on A (pre-fader PFL);
+        // its main send is unchanged; both decks' main pan to the house (left) side.
+        e.setCued(true, on: .b)
+        let b1 = try XCTUnwrap(e.cueRoutingSnapshot(.b)); let a1 = try XCTUnwrap(e.cueRoutingSnapshot(.a))
+        XCTAssertEqual(b1.cueVol, 1.0, accuracy: 1e-6, "cue is pre-fader: full despite the crossfader on A")
+        XCTAssertEqual(b1.cuePan, 1.0, accuracy: 1e-6, "cue panned to the right channel")
+        XCTAssertEqual(b1.mainPan, -1.0, accuracy: 1e-6, "main panned to the house (left) side while cueing")
+        XCTAssertEqual(a1.mainPan, -1.0, accuracy: 1e-6, "the other deck's main also goes to the house side")
+        XCTAssertEqual(b1.mainVol, 0.0, accuracy: 1e-5, "cue did NOT push B back onto main")
+
+        // Independent cue level.
+        e.setCueVolume(0.5, on: .b)
+        XCTAssertEqual(try XCTUnwrap(e.cueRoutingSnapshot(.b)).cueVol, 0.5, accuracy: 1e-6)
+
+        // PFL is also pre-BOOST: the >unity boost lives on the shared EQ upstream of the split, so the
+        // cue send divides it back out (`cueVol / max(vol,1)`) → at 200% the send halves so the boosted
+        // signal lands at the same `cueVol` monitor level (boost-invariant).
+        e.setVolume(2.0, on: .b)
+        XCTAssertEqual(try XCTUnwrap(e.cueRoutingSnapshot(.b)).cueVol, 0.25, accuracy: 1e-6,
+                       "cue send halves at 200% so the boost cancels → monitor stays at cueVol")
+        e.setVolume(1.0, on: .b)
+        XCTAssertEqual(try XCTUnwrap(e.cueRoutingSnapshot(.b)).cueVol, 0.5, accuracy: 1e-6)
+
+        // Flip the cue channel to the left → pans invert live.
+        e.setCueOnRight(false)
+        let b2 = try XCTUnwrap(e.cueRoutingSnapshot(.b))
+        XCTAssertEqual(b2.cuePan, -1.0, accuracy: 1e-6); XCTAssertEqual(b2.mainPan, 1.0, accuracy: 1e-6)
+
+        // Un-cue: cue send silent, buses recenter → normal stereo.
+        e.setCued(false, on: .b)
+        let b3 = try XCTUnwrap(e.cueRoutingSnapshot(.b))
+        XCTAssertEqual(b3.cueVol, 0, accuracy: 1e-6); XCTAssertEqual(b3.mainPan, 0, accuracy: 1e-6)
+        e.teardown()
+    }
+
     // MARK: - Auto-Mix manual skip
 
     /// A manual Skip kicks off a crossfade to the next track immediately (status → "fading") and stays
@@ -392,6 +468,22 @@ final class MixEngineTests: XCTestCase {
         e.setStemVolume("bass", 1.5, on: .a);  XCTAssertEqual(e.stemVolume("bass", on: .a), 1.0)
         e.setStemVolume("bass", -0.3, on: .a); XCTAssertEqual(e.stemVolume("bass", on: .a), 0.0)
         e.setStemVolume("bass", 0.4, on: .a);  XCTAssertEqual(e.stemVolume("bass", on: .a), 0.4, accuracy: 1e-9)
+    }
+
+    /// Stem nodes carry ONLY their per-stem balance — NOT the deck volume (which lives downstream on
+    /// the main bus). Regression for a double-gain (g²) bug: a stem at 0.8 stays 0.8 on the node even
+    /// when the deck Vol is 0.5, so stem-mode main level isn't squared and the cue PFL stays pre-fader.
+    func testStemNodesCarryOnlyPerStemBalanceNotDeckVolume() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        e.setVolume(0.5, on: .a)
+        e.setStemVolume("bass", 0.8, on: .a)
+        XCTAssertEqual(try XCTUnwrap(e.stemNodeVolume("bass", on: .a)), 0.8, accuracy: 1e-6,
+                       "stem node volume is the per-stem balance, not deckVol×stemVol")
+        e.toggleStemMute("bass", on: .a)
+        XCTAssertEqual(try XCTUnwrap(e.stemNodeVolume("bass", on: .a)), 0.0, accuracy: 1e-6, "muted ⇒ 0")
+        e.teardown()
     }
 
     /// No loaded track (and no burned stems) → entering stem mode is a no-op (stays off).

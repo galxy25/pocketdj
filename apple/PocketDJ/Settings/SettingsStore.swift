@@ -7,6 +7,17 @@ import Observation
 ///   • `.device` — play from burned local files (fall back to cloud for a missing file).
 enum PlaybackMode: String, Codable, Hashable, Sendable { case cloud, device }
 
+/// Which output channel the Mix CUE / monitor bus is sent to (the other side carries the house mix).
+/// Used by the two-deck Mix board's pre-fade-listen: e.g. `.right` ⇒ cue on the right channel, house
+/// on the left — the standard "send main out one channel, cue out the other" booth wiring.
+enum CueChannel: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
+    case right, left
+    var id: String { rawValue }
+    var label: String { self == .right ? "Right (main on left)" : "Left (main on right)" }
+    /// True when the cue bus pans to the RIGHT — the form the engine consumes.
+    var onRight: Bool { self == .right }
+}
+
 /// A configurable catalog source (name + index URL + whether it's shown).
 struct SourceConfig: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
@@ -57,6 +68,9 @@ final class SettingsStore {
     /// Mix sessions: when on (default), the track loader HIDES songs already played in the current
     /// session; when off, they still show but with a ✓ checkmark. See `MixSessionStore`.
     var mixAutoHidePlayed: Bool
+    /// Which output channel the Mix CUE / pre-fade-listen bus is sent to (default `.right`). Pushed
+    /// into `MixEngine.setCueOnRight`. See `CueChannel`.
+    var cueOutputChannel: CueChannel
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -77,6 +91,7 @@ final class SettingsStore {
         self.autoMixFadeSeconds = data.autoMixFadeSeconds ?? 3
         self.skipFadeSeconds = data.skipFadeSeconds ?? 15
         self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
+        self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -138,7 +153,8 @@ final class SettingsStore {
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
             autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds,
-            skipFadeSeconds: skipFadeSeconds, mixAutoHidePlayed: mixAutoHidePlayed)
+            skipFadeSeconds: skipFadeSeconds, mixAutoHidePlayed: mixAutoHidePlayed,
+            cueOutputChannel: cueOutputChannel.rawValue)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -160,6 +176,7 @@ final class SettingsStore {
         autoMixFadeSeconds = d.autoMixFadeSeconds ?? 3
         skipFadeSeconds = d.skipFadeSeconds ?? 15
         mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
+        cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -196,6 +213,8 @@ struct SettingsData: Codable {
     var skipFadeSeconds: Double?
     /// Optional so older blobs still decode (coalesced to true at the read sites).
     var mixAutoHidePlayed: Bool?
+    /// Optional so older blobs still decode (coalesced to `.right` at the read sites).
+    var cueOutputChannel: String?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -210,5 +229,6 @@ struct SettingsData: Codable {
         autoMixLeadSeconds: 15,
         autoMixFadeSeconds: 3,
         skipFadeSeconds: 15,
-        mixAutoHidePlayed: true)
+        mixAutoHidePlayed: true,
+        cueOutputChannel: CueChannel.right.rawValue)
 }
