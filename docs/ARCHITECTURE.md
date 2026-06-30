@@ -27,7 +27,7 @@ Unpack that and you get the design pressures the architecture answers:
   and owned on-device, editable in place. → **Ch. 2, 3, 7**
 - **Diverse musical sources** → multiple ingest pipelines normalize into **one
   catalog shape** with stable, collision-free ids — and, on the native app,
-  **streaming-account sources** (Apple Music · Spotify · YouTube) and a **ShazamKit**
+  a **streaming-account source** (Apple Music) and a **ShazamKit**
   recognizer beside the file catalogs. → **Ch. 2, 3, 7**
 - **Performance Playlists Producer** → compose the shape of a night (pockets →
   playlists → setlists) and **realize** it into a concrete, ordered set. → **Ch. 4**
@@ -106,17 +106,16 @@ contract**. Honest status:
   live HLS (now including the **native inline player** — `PlayerEngine`/`PlayerClock`/
   TimelineView — on browser *and* album rows, Ch. 5 §7), online search, multi-client
   distribution, and the native edits overlay (export/import).
-- **New current-state — native streaming sources + ShazamKit recognition.** The
-  native app adds **streaming-account sources** (Apple Music · Spotify · YouTube) beside
-  the URL catalogs, plus the **"?♪?" ShazamKit recognizer** that maps the song in the
-  room back to the crate (Ch. 7 §5). All of it is **additive and ships inert** behind
-  `#if canImport` + feature flags. **Live vs scaffolded:** **Apple Music** is wired on
-  (`PocketDJAppleMusicEnabled = YES`; system MusicKit consent, in-process playback —
-  needs the App-ID MusicKit App Service — no entitlement — to run on device) and
-  **ShazamKit** uses the public catalog (no entitlement, no App Service; just the
-  framework + mic string); **Spotify** and **YouTube** are **scaffolded — pending an
-  SDK + credentials** a developer drops in per
-  [`docs/streaming-integration.md`](./streaming-integration.md). Bundle id is now
+- **New current-state — native streaming source + ShazamKit recognition.** The
+  native app adds an **Apple Music streaming-account source** beside the URL catalogs,
+  plus the **"?♪?" ShazamKit recognizer** that maps the song in the room back to the
+  crate (Ch. 7 §5). Both are **additive and ship inert** behind `#if canImport` +
+  feature flags. **Apple Music** is wired on (`PocketDJAppleMusicEnabled = YES`; system
+  MusicKit consent, in-process playback — needs the App-ID MusicKit App Service — no
+  entitlement — to run on device) and **ShazamKit** uses the public catalog (no
+  entitlement, no App Service; just the framework + mic string), per
+  [`docs/streaming-integration.md`](./streaming-integration.md). (Earlier Spotify +
+  YouTube provider scaffolding was removed.) Bundle id is now
   **`com.levi.pocketdj`**. **Apple Music (Local) songs now actually *stream*** rather
   than always ripping: an out-of-band catalog-id resolver mints an `appleMusicId` onto
   each song (Ch. 3 §1.1), and the native `PlaybackCoordinator` tries that verified
@@ -306,19 +305,17 @@ Things found while writing that don't fully line up, gathered here so they're no
 7. **`POST /analysis` overloads "key".** The body uses `musicalKey` for the musical key
    but `key` for the S3 object key when creating a fresh entry — same word, two
    meanings in one payload. Not a bug, but a footgun. (Ch. 5)
-8. **Streaming providers are scaffolded to different depths.** All three compile and
-   show in Settings, but only **Apple Music** (flag on) + **ShazamKit** (public catalog)
-   are wired live; **Spotify** + **YouTube** are stubs until a developer adds the SDK +
-   credentials. The Settings row reads "Not available" for an unconfigured one, so the
-   UI is honest — but "shipped" ≠ "usable" per provider. (Ch. 7 §5)
+8. **Streaming is Apple Music + ShazamKit.** **Apple Music** (flag on) + **ShazamKit**
+   (public catalog) are the wired-live streaming/recognition paths; the Settings row reads
+   "Not available" until Apple Music is provisioned, so the UI is honest. (Earlier Spotify
+   + YouTube provider scaffolding was removed.) (Ch. 7 §5)
 9. **`PlayerClock` is intentionally NOT `@Observable`.** The inline player's ~4×/s
    position lives on a plain `PlayerClock` sampled by a `TimelineView`, *by design* —
    making it `@Observable` would re-invalidate the panel and drop clicks on its control
    buttons (the documented "dead slide-out buttons" bug). A maintainer "fixing" the
    missing `@Observable` would regress it. (Ch. 5 §7)
-10. **Bundle id moved to `com.levi.pocketdj`** (was `net.pocketdj.app`). A few external
-    references (Developer-portal App ID, Spotify/YouTube OAuth redirect schemes
-    `com.levi.pocketdj.spotify` / `.youtube`) must match this exactly; the `net.pocketdj.*`
+10. **Bundle id moved to `com.levi.pocketdj`** (was `net.pocketdj.app`). External
+    references (the Developer-portal App ID) must match this exactly; the `net.pocketdj.*`
     name is fully retired in `project.yml`. (Ch. 7 §5)
 11. **`appleMusicId` is a *candidate*, not a verified catalog id.** It's an iTunes
     Search `trackId` — *empirically* the same value MusicKit plays by, but the equality

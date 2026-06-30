@@ -78,11 +78,6 @@ final class StreamingProviderTests: XCTestCase {
 
     func testProviderAvailabilityInDefaultBuild() {
         let store = StreamingStore()
-        // Spotify + YouTube need third-party SDKs/creds that aren't bundled → .unavailable.
-        for p in store.providers where p.kind != .appleMusic {
-            if case .unavailable = p.state { continue }
-            XCTFail("\(p.kind) should be .unavailable without its SDK, got \(p.state)")
-        }
         // Apple Music ships with MusicKit and is build-flag-enabled
         // (PocketDJAppleMusicEnabled), so it is AVAILABLE — state .loggedOut until the
         // user authorizes — NOT .unavailable.
@@ -94,43 +89,43 @@ final class StreamingProviderTests: XCTestCase {
         XCTAssertTrue(store.hasAnyAvailable, "Apple Music availability ⇒ hasAnyAvailable")
     }
 
-    func testDefaultProvidersIncludeAppleMusic() {
+    func testDefaultProvidersAreAppleMusicOnly() {
         let store = StreamingStore()
-        // Apple Music joins Spotify + YouTube in the default set (post-assembly).
+        // Spotify + YouTube were removed; Apple Music is the only built-in streaming provider.
         XCTAssertNotNil(store.provider(.appleMusic))
-        XCTAssertNotNil(store.provider(.spotify))
-        XCTAssertNotNil(store.provider(.youTube))
+        XCTAssertEqual(store.providers.count, 1)
+        XCTAssertTrue(store.providers.allSatisfy { $0.kind == .appleMusic })
     }
 
     // MARK: Routing
 
     func testProviderLookupByKind() {
-        let yt = StubProvider(kind: .youTube)
-        let sp = StubProvider(kind: .spotify)
-        let store = StreamingStore(providers: [yt, sp])
-        XCTAssertTrue(store.provider(.spotify) === sp)
-        XCTAssertTrue(store.provider(.youTube) === yt)
+        // `provider(_:)` returns the FIRST entry of a kind.
+        let first = StubProvider(kind: .appleMusic)
+        let second = StubProvider(kind: .appleMusic)
+        let store = StreamingStore(providers: [first, second])
+        XCTAssertTrue(store.provider(.appleMusic) === first)
     }
 
     func testHandleCallbackRoutesToClaimingProvider() {
-        let yt = StubProvider(kind: .youTube, claims: "com.googleusercontent.apps.x")
-        let sp = StubProvider(kind: .spotify, claims: "pocketdj")
-        let store = StreamingStore(providers: [yt, sp])
+        // handleCallback fans across the provider array (URL-scheme based, not kind-keyed).
+        let other = StubProvider(kind: .appleMusic, claims: "elsewhere")
+        let claimer = StubProvider(kind: .appleMusic, claims: "pocketdj")
+        let store = StreamingStore(providers: [other, claimer])
 
-        XCTAssertTrue(store.handleCallback(url: URL(string: "pocketdj://spotify-login-callback")!))
-        if case .connected = sp.state {} else { XCTFail("spotify should have claimed it") }
-        // YouTube didn't claim this scheme.
-        if case .connected = yt.state { XCTFail("youTube should not have claimed it") }
+        XCTAssertTrue(store.handleCallback(url: URL(string: "pocketdj://login-callback")!))
+        if case .connected = claimer.state {} else { XCTFail("the claiming provider should have handled it") }
+        if case .connected = other.state { XCTFail("the non-claiming provider must not handle it") }
     }
 
     func testHandleCallbackUnclaimedReturnsFalse() {
-        let store = StreamingStore(providers: [StubProvider(kind: .spotify, claims: "pocketdj")])
+        let store = StreamingStore(providers: [StubProvider(kind: .appleMusic, claims: "pocketdj")])
         XCTAssertFalse(store.handleCallback(url: URL(string: "https://example.com/x")!))
     }
 
     func testScenePhaseFansOutToAllProviders() {
-        let a = StubProvider(kind: .spotify)
-        let b = StubProvider(kind: .youTube)
+        let a = StubProvider(kind: .appleMusic)
+        let b = StubProvider(kind: .appleMusic)
         let store = StreamingStore(providers: [a, b])
         store.onScenePhaseActive()
         store.onScenePhaseBackground()
@@ -140,8 +135,8 @@ final class StreamingProviderTests: XCTestCase {
 
     func testHasAnyAvailableTrueWhenOneIsAvailable() {
         let store = StreamingStore(providers: [
-            StubProvider(kind: .spotify, available: false),
-            StubProvider(kind: .youTube, available: true),
+            StubProvider(kind: .appleMusic, available: false),
+            StubProvider(kind: .appleMusic, available: true),
         ])
         XCTAssertTrue(store.hasAnyAvailable)
     }
@@ -149,7 +144,7 @@ final class StreamingProviderTests: XCTestCase {
     // MARK: SongRecognizer extraction
 
     func testRecognizersExtractedFromProviderList() {
-        let plain = StubProvider(kind: .spotify)
+        let plain = StubProvider(kind: .appleMusic)
         let rec = StubRecognizerProvider(kind: .appleMusic, resolvesID: "sng_1")
         let providers: [any StreamingProvider] = [plain, rec]
         let recognizers = providers.recognizers

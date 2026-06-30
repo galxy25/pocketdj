@@ -7,7 +7,7 @@ import Security
 /// account label is mirrored to UserDefaults so the UI can show "Signed in as …"
 /// without a Keychain read.
 struct StreamingTokenStore {
-    let service: String   // e.g. "com.levi.pocketdj.youtube"
+    let service: String   // e.g. "com.levi.pocketdj.applemusic"
 
     private var refreshKey: String { "\(service).refresh" }
     private var accessKey: String  { "\(service).access" }

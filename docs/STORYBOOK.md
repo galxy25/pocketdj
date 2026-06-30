@@ -751,16 +751,15 @@ as *Ripping / Burning N/M*.
 Everything above is the cross-client product. This part is what the **native
 iPhone / iPad / Mac app** (under `apple/`) adds on top of the same crate: an
 **inline player** that plays and downloads right inside the list, a **"?♪?"** button
-that *listens* and identifies the song in the room, a Settings section to **link a
-streaming subscription** (Apple Music · Spotify · YouTube) beside your own catalog,
+that *listens* and identifies the song in the room, a Settings section to **link an
+Apple Music subscription** beside your own catalog,
 and full **keyboard navigation** for the desktop. The shots/copy below describe the
 native surfaces; they read the *same* catalog, rips cache, and collections as the PWA.
 
-> Some streaming sources are **scaffolded, not yet live**: the app ships and runs
-> with none configured. Apple Music is wired on and ready to enable; Spotify and
-> YouTube need a developer to drop in an SDK + credentials first (see the setup
-> guide [`streaming-integration.md`](./streaming-integration.md)). Each unconfigured
-> account simply reads **"Not available."**
+> The Apple Music streaming source ships **inert** until provisioned: the app runs
+> with it unconfigured, where the account row reads **"Not available."** Wire it on per
+> the setup guide [`streaming-integration.md`](./streaming-integration.md). (Earlier
+> Spotify + YouTube provider scaffolding was removed.)
 
 ---
 
@@ -839,21 +838,19 @@ One tap answers both.
 
 ---
 
-## 31. Settings ▸ Streaming accounts — link Apple Music, Spotify, YouTube
+## 31. Settings ▸ Streaming accounts — link Apple Music
 
-A new **"Streaming accounts"** section in native Settings sits beside your URL
-**Data sources**. It lists one row per provider — **Apple Music**, **Spotify**,
-**YouTube** — each with a status line and a **Log in / Log out** button:
+A **"Streaming accounts"** section in native Settings sits beside your URL
+**Data sources**. It lists one row per provider — currently **Apple Music** — with a
+status line and a **Log in / Log out** button:
 
 - a configured provider shows **Log in**; linking hands off to that service's sign-in
-  (Apple Music shows the system consent sheet; Spotify/YouTube run an OAuth redirect
-  back into the app), after which the row reads **Linked / Connected**, and **Log out**
-  severs it,
-- an **unconfigured** provider (no SDK/credentials in this build) reads **"Not
+  (Apple Music shows the system consent sheet), after which the row reads
+  **Linked / Connected**, and **Log out** severs it,
+- an **unconfigured** provider (not provisioned in this build) reads **"Not
   available"** with a developer note,
 - the section footer explains: *link a streaming service to play directly from your
-  subscription, beside your own catalog sources;* Spotify needs the Spotify app
-  installed and a **Premium** account for on-demand playback.
+  subscription, beside your own catalog sources.*
 
 A linked subscription is an **additional, account-based source** — orthogonal to the
 vinyl / Apple Music (Local) URL catalogs and to rip-on-demand. It also gives the "?♪?"

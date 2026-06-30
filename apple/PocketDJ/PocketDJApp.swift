@@ -120,8 +120,8 @@ struct PocketDJApp: App {
                 .environment(mixSessions)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
-                // Streaming OAuth redirect (e.g. pocketdj://spotify-login-callback)
-                // comes back through here; route it to the owning provider.
+                // A streaming provider's OAuth redirect (if any) comes back through
+                // here; route it to the owning provider.
                 .onOpenURL { streaming.handleCallback(url: $0) }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {

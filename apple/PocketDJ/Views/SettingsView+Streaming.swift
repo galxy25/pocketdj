@@ -1,10 +1,9 @@
 import SwiftUI
 
 /// The "Streaming accounts" Settings section — one account row per provider
-/// (Spotify, …), shown BESIDE the URL catalog "Data sources". Adding a streaming
-/// source is an account link: tap Log in → hand off to the provider's OAuth →
-/// connect our app to that account. Kept in its own file so it composes cleanly
-/// with the parallel native-playback / YouTube efforts.
+/// (currently Apple Music), shown BESIDE the URL catalog "Data sources". Linking a
+/// streaming source authorizes the app to play directly from the user's
+/// subscription. Kept in its own file so it composes cleanly.
 extension SettingsView {
     var streamingSection: some View {
         Section {
@@ -14,7 +13,7 @@ extension SettingsView {
         } header: {
             Text("Streaming accounts")
         } footer: {
-            Text("Link a streaming service to play directly from your subscription, beside your own catalog sources. Spotify requires the Spotify app installed and a Premium account for on-demand playback.")
+            Text("Link a streaming service to play directly from your subscription, beside your own catalog sources.")
         }
     }
 }

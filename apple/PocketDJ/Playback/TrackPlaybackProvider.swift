@@ -4,7 +4,7 @@ import Foundation
 /// `PlaybackCoordinator` (the matching engine) holds a SOURCE-AWARE ordered list
 /// of these and asks each, in turn, to `tryPlay` a song until one succeeds — the
 /// "cycle providers until one resolves the track" design that lets Apple Music,
-/// the rip server, and (later) Spotify / YouTube slot in behind one ▶ button.
+/// the rip server, and (later) other streaming backends slot in behind one ▶ button.
 ///
 /// Two responsibilities:
 ///   • RESOLVE + START (`tryPlay`) — find the song in this backend and begin
@@ -49,7 +49,6 @@ protocol TrackPlaybackProvider: AnyObject {
 enum PlaybackBackend: String, Hashable {
     case ripServer
     case appleMusic
-    // case spotify, youTube  // later
 
     /// Short "via …" label for the inline player's backend indicator.
     var viaLabel: String {
