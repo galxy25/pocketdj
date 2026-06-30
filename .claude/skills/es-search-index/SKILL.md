@@ -33,8 +33,12 @@ cd <repo>            # a worktree with public/*.json present
 node scripts/es-index.mjs \
   --endpoint https://zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com \
   --index pocketdj --profile levi --region us-west-2 \
-  --sources public/current-index.json,public/apple-music-index.json
+  --sources public/current-index.json,public/apple-music-index.json,public/digital-index.json
 ```
+
+> Include **every** `public/*-index.json` source each run — it's a FULL RESET, so any source
+> omitted from `--sources` is dropped from search. `digital-index.json` ("My Digital", 43 albums /
+> 602 songs) is part of the set; the nightly `am-sync-nightly.sh` `ES_SOURCES` default includes it.
 
 To update what's searchable, regenerate the source `index.json`(s) first (see the
 `analog-indexer` / `apple-music-indexer` skills), then re-run the command above.
