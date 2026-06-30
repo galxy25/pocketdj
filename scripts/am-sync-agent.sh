@@ -165,7 +165,7 @@ process_one() {
   # (6) OPTIONAL search refresh (non-fatal, opt-in).
   if [ "${POCKETDJ_AM_REINDEX_SEARCH:-0}" = "1" ]; then
     run "$NODE" "$REPO/scripts/es-index.mjs" \
-      --sources "$REPO/public/current-index.json,$REPO/public/apple-music-index.json" \
+      --sources "$REPO/public/current-index.json,$REPO/public/apple-music-index.json,$REPO/public/digital-index.json" \
       --profile levi --region us-west-2 || log "search reindex failed (non-fatal)"
   fi
   # (7) MARK CONSUMED — only after full success.

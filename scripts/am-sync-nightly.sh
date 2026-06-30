@@ -30,7 +30,7 @@ INDEX="public/apple-music-index.json"
 # OpenSearch (online search) refresh after a successful ship. Default ON — the whole point is
 # that a newly-added track shows up in online search the same night. Skip with POCKETDJ_SKIP_ES=1.
 ES_ENDPOINT="${POCKETDJ_ES_ENDPOINT:-https://zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com}"
-ES_SOURCES="${POCKETDJ_ES_SOURCES:-public/current-index.json,public/apple-music-index.json}"
+ES_SOURCES="${POCKETDJ_ES_SOURCES:-public/current-index.json,public/apple-music-index.json,public/digital-index.json}"
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
