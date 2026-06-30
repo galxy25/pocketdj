@@ -608,6 +608,38 @@ observed `position` read. And toggling **stem mode** after interrupting an auto-
 silent — the ON path schedules the stems before muting the main file and bails if nothing scheduled.
 Full spec: [Lock-screen Now Playing, Skip, slider & stem fixes](../design/mix-tab-nowplaying-skip-slider-stems.md).
 
+### 7.10 Cue / PFL · beat-grid BPM · beat pulse
+
+```
+ Channel-strip split (standard DJ signal flow): after the FX chain, each deck FANS OUT —
+   flanger[d] ─┬─→ mainGains[d] (AVAudioMixerNode)  outputVolume = min(vol,1) × crossfadeFactor   → mainMixerNode
+               └─→ cueGains[d]  (AVAudioMixerNode)  outputVolume = cued ? cueVol : 0  (PRE-FADER)  → mainMixerNode
+   player now runs at UNITY (volume/crossfade moved downstream); >unity boost stays on the EQ globalGain;
+   stems merge at inputMixer (upstream) so they ride BOTH sends for free.
+   anyCued ⇒ mainGains pan to the house side, cueGains to the cue side (CueChannel, default right);
+   nothing cued ⇒ both centered → bit-identical normal stereo. masterLimiter still guards the sum.
+ Cue button (left of Reset): tap = toggleCue · long-press/right-click = cue-VOLUME popover (independent level)
+   CueChannel (which side is cue) lives in Settings → pushed via engine.setCueOnRight()
+ Beat-grid BPM on the deck: gridBpm (measured, the value Sync uses) ?? catalog bpm, beside the KeyChip
+ BeatPulseView (opt-in, Settings ▸ Mix, default OFF): 60fps TimelineView phase-locked to truePlayhead
+   (player.playerTime + segmentStartSeconds, NOT the 10 Hz accumulator) → flash on each beat (downbeats brighter).
+   Real grid `beatsMs[]` when burned (tempo-drift accurate); else synth from gridBpm + firstDownbeatMs.
+ Beat grid = burnable artifact (mirrors stems): analysis-<id>.json sidecar; burnCollectionBeatgrids on burn
+   (idempotent · STOP-aware · best-effort · validate-before-cache); dynamic hydrate on load GATED on the pulse setting
+```
+
+**Reading it.** Cueing is a textbook **pre-fade listen (PFL)**: rather than a special case, each deck now
+follows a conventional channel strip — its post-FX signal splits into a **channel-fader send** to the main
+mix (`mainGains`, carrying the deck's Vol × crossfade) and a **pre-fader cue send** to the monitor bus
+(`cueGains`, at an independent per-deck cue level). The cued deck therefore keeps playing to the house at
+its fader level **and** is monitored at full on the cue channel — so you can pre-listen the next track
+before bringing it in. With a stereo interface the two sends pan to opposite channels (house one side, cue
+the other — chosen in Settings), and collapse back to centered stereo when nothing is cued. Each deck also
+shows the **measured beat-grid BPM** (the value beat-matching actually uses) beside its key, and a **beat
+pulse** ring that flashes on every beat — downbeats brighter — so you can feel the groove and eyeball-align
+the two decks while mixing. Full spec:
+[Cue/PFL, beat-grid BPM & beat pulse](../design/mix-tab-cue-beatgrid-pulse.md).
+
 ## Next
 
 → [Chapter 5 — Playback & Rip-on-Demand](./05-playback-and-rip-on-demand.md)

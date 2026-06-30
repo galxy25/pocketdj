@@ -364,10 +364,22 @@ struct SettingsView: View {
             Toggle("Auto-hide played tracks", isOn: $settings.mixAutoHidePlayed)
                 .accessibilityIdentifier("settings-mix-autohide")
                 .onChange(of: settings.mixAutoHidePlayed) { settings.persist() }
+
+            Picker(selection: $settings.cueOutputChannel) {
+                ForEach(CueChannel.allCases) { ch in Text(ch.label).tag(ch) }
+            } label: {
+                Text("Cue output channel")
+            }
+            .accessibilityIdentifier("settings-mix-cue-channel")
+            .onChange(of: settings.cueOutputChannel) { settings.persist() }
+
+            Toggle("Beat pulse", isOn: $settings.beatPulseEnabled)
+                .accessibilityIdentifier("settings-mix-beat-pulse")
+                .onChange(of: settings.beatPulseEnabled) { settings.persist() }
         } header: {
             Text("Mix")
         } footer: {
-            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length. Skip fade is how long the crossfade lasts when you tap the Skip button (double-tap always uses a fast 5 s sweep).\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.")
+            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length. Skip fade is how long the crossfade lasts when you tap the Skip button (double-tap always uses a fast 5 s sweep).\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.\n\nCue output channel routes a deck's pre-fade-listen (the headphones button on each deck) to one side of the stereo output, leaving the house mix on the other — for a booth where you monitor on a separate feed.\n\nBeat pulse flashes a ring around each deck on every beat (downbeats brighter) so you can feel the groove and eyeball-align the two decks while beat-matching.")
         }
     }
 

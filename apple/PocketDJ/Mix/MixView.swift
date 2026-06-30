@@ -85,7 +85,13 @@ struct MixView: View {
         .accessibilityIdentifier("mix-tab")
         .toolbar { autoMixToolbar }                    // Auto/Manual + collection Play/Shuffle
         .toolbar { sessionLeadingToolbar }             // Sessions (history) + Reset (X)
-        .task { engine.prepare() }                     // warm the AVAudioEngine graph when the tab opens
+        .task {
+            engine.prepare()                           // warm the AVAudioEngine graph when the tab opens
+            engine.setCueOnRight(settings.cueOutputChannel.onRight)   // push the cue-channel preference
+            engine.setBeatPulseEnabled(settings.beatPulseEnabled)     // gate the on-load beat-grid fetch
+        }
+        .onChange(of: settings.cueOutputChannel) { engine.setCueOnRight(settings.cueOutputChannel.onRight) }
+        .onChange(of: settings.beatPulseEnabled) { engine.setBeatPulseEnabled(settings.beatPulseEnabled) }
         // DELIBERATELY no `.onDisappear { engine.pauseBoth()/stopAutoMix()/teardown() }`: the engine is
         // app-scoped and its tick + audio graph must keep running when you leave the Mix tab, so a mix
         // (and an Auto-DJ) keeps playing and the lock-screen card stays live. Sibling views do pause on
@@ -348,6 +354,7 @@ private struct DeckView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(BurnStore.self) private var burns
     @Environment(RipsStore.self) private var rips
+    @Environment(SettingsStore.self) private var settings
 
     let deck: MixEngine.Deck
     let engine: MixEngine
@@ -405,6 +412,11 @@ private struct DeckView: View {
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .strokeBorder(Theme.border, lineWidth: 1))
+        // Beat pulse (opt-in, Settings ▸ Mix, default off): a glowing ring that flashes on every beat
+        // (downbeats brighter) so you can SEE each deck's groove and eyeball-align the two while
+        // beat-matching. Isolated subview so its ~10 Hz updates never re-render the rest of the deck;
+        // not created at all when disabled, so it costs nothing.
+        .overlay { if settings.beatPulseEnabled { BeatPulseView(engine: engine, deck: deck).allowsHitTesting(false) } }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(a11y)
@@ -518,15 +530,30 @@ private struct DeckView: View {
         }
     }
 
-    // Camelot chip when known; else BPM; else the KeyChip's placeholder.
+    // Camelot chip (when known) PLUS the beat-grid BPM — the measured grid BPM the engine syncs on
+    // (falls back to the catalog BPM). Placeholder chip only when neither key nor BPM is known.
     @ViewBuilder private func keyOrBpm(_ t: MixEngine.LoadedTrack) -> some View {
-        if let cam = t.camelot, !cam.isEmpty {
-            KeyChip(key: t.key, camelot: cam)
-        } else if let bpm = t.bpm {
-            Text("\(Int(bpm.rounded())) BPM").font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
-        } else {
-            KeyChip(key: nil, camelot: nil)
+        let bpm = beatGridBpmLabel(t)
+        HStack(spacing: 6) {
+            if let cam = t.camelot, !cam.isEmpty {
+                KeyChip(key: t.key, camelot: cam)
+            }
+            if let bpm {
+                Text(bpm).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("\(a11y)-gridbpm")
+            }
+            if (t.camelot?.isEmpty ?? true) && bpm == nil {
+                KeyChip(key: nil, camelot: nil)
+            }
         }
+    }
+
+    /// The BPM to show on the deck: the MEASURED beat-grid BPM (one decimal — the one beat-matching
+    /// uses) when present, else the rounded catalog BPM, else nil.
+    private func beatGridBpmLabel(_ t: MixEngine.LoadedTrack) -> String? {
+        if let g = t.gridBpm, g > 0 { return String(format: "%.1f BPM", g) }
+        if let b = t.bpm, b > 0 { return "\(Int(b.rounded())) BPM" }
+        return nil
     }
 
     // Lead · Sync · Reset. Lead (left) is the beat-match reference; Sync matches this deck's tempo
@@ -548,6 +575,9 @@ private struct DeckView: View {
                                compact: compactControls, a11y: "\(a11y)-stemmode")
             }
             Spacer()
+            // CUE / PFL — tap to monitor this deck on the cue channel (house mix untouched);
+            // long-press / right-click for its cue-volume slider. Just left of Reset.
+            CueButton(engine: engine, deck: deck, enabled: loaded != nil, a11y: "\(a11y)-cue")
             Button { engine.resetDeck(deck) } label: {
                 Image(systemName: "arrow.counterclockwise").font(.callout)
             }
@@ -653,6 +683,121 @@ private struct DeckView: View {
         case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
         case nil:              return nil
         }
+    }
+}
+
+// MARK: - Cue (PFL) button + beat pulse
+
+/// The per-deck CUE / pre-fade-listen button (left of Reset). TAP toggles the deck's cue send on the
+/// monitor channel (the house mix is untouched). LONG-PRESS (iOS) / RIGHT-CLICK (macOS) reveals a
+/// fixed-width cue-VOLUME popover (the cue level is independent of the deck's main Vol fader). A plain
+/// tappable view, NOT a Button, so the long-press isn't swallowed (same reason as `EffectButton`).
+private struct CueButton: View {
+    let engine: MixEngine
+    let deck: MixEngine.Deck
+    let enabled: Bool
+    let a11y: String
+    @State private var showPopover = false
+
+    var body: some View {
+        let on = engine.cued(deck)
+        Image(systemName: "headphones")
+            .font(.callout)
+            .frame(minHeight: 18)
+            .padding(.vertical, 6).padding(.horizontal, 9)
+            .background(on ? Theme.accent2.opacity(0.25) : Theme.bgOverlay,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(on ? Theme.accent2 : Theme.border, lineWidth: 1))
+            .foregroundStyle(!enabled ? Theme.fgDim.opacity(0.4) : (on ? Theme.accent2 : Theme.fgDim))
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .onTapGesture { if enabled { engine.toggleCue(deck) } }
+            .onLongPressGesture(minimumDuration: 0.4) { if enabled { showPopover = true } }
+            #if os(macOS)
+            .overlay { if enabled { SecondaryClick { showPopover = true } } }
+            #endif
+            .popover(isPresented: $showPopover, arrowEdge: .top) {
+                ChipStrengthPopover(title: "Cue level", systemImage: "headphones", tint: Theme.accent2,
+                                    value: engine.cueVolume(deck), step: 0.05, a11y: "\(a11y)-vol",
+                                    presented: $showPopover,
+                                    onChange: { engine.setCueVolume($0, on: deck) })
+            }
+            .help("Cue (pre-fade listen) — tap to monitor on the cue channel · long-press for cue level")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Cue")
+            .accessibilityValue(on ? "On" : "Off")
+            .accessibilityIdentifier(a11y)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// A glowing ring that flashes the deck container on each beat — downbeats brighter/longer — so you
+/// can feel the groove and visually align the two decks while beat-matching. Beats are synthesized
+/// from the measured grid BPM (or catalog BPM) + the first-downbeat phase; the ~10 Hz playhead drives
+/// detection, the flash itself is a smooth SwiftUI animation. Its own struct so these frequent
+/// updates re-render ONLY the overlay, never the whole deck (same isolation as `DeckSeekSlider`).
+private struct BeatPulseView: View {
+    let engine: MixEngine
+    let deck: MixEngine.Deck
+
+    var body: some View {
+        // Drive the flash at display rate (60 fps) so it's smooth and PHASE-LOCKED to the real audio;
+        // paused (no redraws) while the deck is stopped. Computing intensity directly each frame means
+        // the pulse can't get "stuck" — there's no peak/decay state to coalesce away.
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !engine.isPlaying(deck))) { _ in
+            let env = envelope()
+            let color = env.down ? Theme.accent : Theme.accent2
+            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                .strokeBorder(color, lineWidth: 1 + 3 * env.intensity)
+                .shadow(color: color.opacity(0.7 * env.intensity), radius: 9 * env.intensity)
+                .opacity(env.intensity)
+        }
+    }
+
+    /// The pulse intensity (0…1) + whether the current beat is a bar downbeat, from the TRUE audio
+    /// playhead (so it tracks exactly what you hear, including tempo changes). The flash decays in
+    /// WALL-CLOCK time — `elapsed source seconds since the last beat ÷ rate` — so it looks the same at
+    /// any tempo while the beat SPACING follows the playing tempo.
+    private func envelope() -> (intensity: Double, down: Bool) {
+        guard engine.isPlaying(deck), let track = engine.loaded(deck) else { return (0, false) }
+        let pos = engine.truePlayhead(deck) ?? engine.position(deck)
+        guard let (lastBeatSec, down) = lastBeat(track, at: pos) else { return (0, false) }
+        let rate = max(engine.rate(deck), 0.05)
+        let elapsedWall = max(0, pos - lastBeatSec) / rate
+        let decay = down ? 0.34 : 0.22
+        let t = max(0, 1 - elapsedWall / decay)
+        return (t * t, down)                           // quadratic ease — snappier attack/decay
+    }
+
+    /// The most recent beat at/just before `pos` (source seconds) + whether it's a bar downbeat. Uses
+    /// the REAL per-beat grid (`beatsMs`, burned/fetched) when present — so a tempo-DRIFTING track
+    /// pulses on its actual beats — otherwise synthesizes a constant grid from the measured BPM + the
+    /// first-downbeat phase. nil before the first beat / when there's no grid at all.
+    private func lastBeat(_ t: MixEngine.LoadedTrack, at pos: Double) -> (sec: Double, down: Bool)? {
+        let posMs = pos * 1000
+        if let beats = t.beatsMs, !beats.isEmpty {
+            var lo = 0, hi = beats.count                // largest beat ≤ posMs
+            while lo < hi { let mid = (lo + hi) / 2; if Double(beats[mid]) <= posMs { lo = mid + 1 } else { hi = mid } }
+            guard lo > 0 else { return nil }
+            let bms = beats[lo - 1]
+            return (Double(bms) / 1000, isDownbeat(bms, t.downbeatsMs))
+        }
+        let bpm = (t.gridBpm ?? 0) > 0 ? (t.gridBpm ?? 0) : (t.bpm ?? 0)
+        guard bpm > 0 else { return nil }
+        let downSec = Double(t.firstDownbeatMs ?? 0) / 1000
+        let secPerBeat = 60.0 / bpm
+        let idx = floor((pos - downSec) / secPerBeat)
+        guard idx >= 0 else { return nil }
+        return (downSec + idx * secPerBeat, Int(idx).isMultiple(of: 4))   // every 4th beat = downbeat (4/4)
+    }
+
+    /// A bar downbeat? Near-membership of `beatMs` in the measured `downbeatsMs` (⊆ `beatsMs`).
+    private func isDownbeat(_ beatMs: Int, _ downbeats: [Int]?) -> Bool {
+        guard let d = downbeats, !d.isEmpty else { return false }
+        var lo = 0, hi = d.count                        // nearest downbeat by binary search
+        while lo < hi { let mid = (lo + hi) / 2; if d[mid] < beatMs { lo = mid + 1 } else { hi = mid } }
+        return [lo - 1, lo].contains { $0 >= 0 && $0 < d.count && abs(d[$0] - beatMs) <= 30 }
     }
 }
 

@@ -68,6 +68,12 @@ final class MixEngine {
         var gridBpm: Double? = nil
         var firstDownbeatMs: Int? = nil
         var steady: Bool? = nil
+        /// The full per-beat grid (ms from the song's 0:00) from the analysis sidecar, when it's been
+        /// burned/fetched locally. Drives the phase-locked beat pulse on the EXACT measured beats
+        /// (handles tempo-drifting tracks); nil ⇒ the pulse synthesizes beats from `gridBpm` +
+        /// `firstDownbeatMs`. `downbeatsMs` ⊆ `beatsMs` marks the bar starts (brighter pulse).
+        var beatsMs: [Int]? = nil
+        var downbeatsMs: [Int]? = nil
     }
 
     /// One entry in an Auto-Mix queue: a loadable track plus its known length (ms).
@@ -109,6 +115,11 @@ final class MixEngine {
         var stemMode = false
         var stemMuted: Set<String> = []
         var stemVol: [String: Double] = [:]   // per-stem 0…1 (absent ⇒ 1.0)
+        /// CUE / PFL: when on, this deck is ALSO sent (pre-fader) to the cue/monitor channel so you can
+        /// pre-listen it without changing the house mix — standard pre-fade listen. `cueVol` is the
+        /// independent monitor level for that send (0…1). Both survive a deck reset.
+        var cued = false
+        var cueVol: Double = 1.0
 
         func isEnabled(_ e: Effect) -> Bool {
             switch e {
@@ -151,6 +162,10 @@ final class MixEngine {
     private(set) var isRunning = false
     /// 0 = full A, 1 = full B. Equal-power; centered so both loaded decks are audible.
     private(set) var crossfader: Double = 0.5
+    /// Which output channel the CUE monitor is panned to: true ⇒ cue on the RIGHT (main/house on the
+    /// left); false ⇒ cue on the LEFT (main on the right). Mirrors the user's `SettingsStore` choice,
+    /// pushed in from the view. Only audible while a deck is actually cued.
+    private(set) var cueOnRight = true
     /// The designated LEAD deck for beat-matching (nil = none). The follower's Sync matches it.
     private(set) var leadDeck: Deck?
     /// True once the AVAudioEngine graph is built + running.
@@ -190,6 +205,19 @@ final class MixEngine {
     @ObservationIgnored private var filters: [Deck: AVAudioUnitEQ] = [:]
     @ObservationIgnored private var flangers: [Deck: AVAudioUnitDelay] = [:]
     @ObservationIgnored private var comps: [Deck: AVAudioUnitEffect] = [:]
+    /// Per-deck output split — the standard DJ channel-strip model. After the effect chain the deck's
+    /// post-FX signal fans into two sends (so it follows conventional mixer signal flow, which keeps it
+    /// easy to extend):
+    ///   • `mainGains[d]` — the CHANNEL FADER feeding the main/house mix: `outputVolume` = the deck's
+    ///     volume × the equal-power crossfade factor. This is the only thing the audience hears.
+    ///   • `cueGains[d]` — a PRE-FADER PFL (cue) send feeding the monitor/cue bus: `outputVolume` =
+    ///     the deck's independent `cueVol` when cued, else 0. Untouched by the channel fader/crossfader,
+    ///     so you can pre-listen a deck at any level without changing the house mix.
+    /// Both sends sum at `mainMixerNode`; while any deck is cued they pan hard to opposite output
+    /// channels (main vs `cueOnRight`) so a stereo interface carries house on one side, cue on the
+    /// other. Centered when nothing is cued ⇒ an un-cued mix is bit-identical normal stereo.
+    @ObservationIgnored private var mainGains: [Deck: AVAudioMixerNode] = [:]
+    @ObservationIgnored private var cueGains: [Deck: AVAudioMixerNode] = [:]
     /// Master peak limiter on the output bus (built in `ensureEngine`) — the safety net for the
     /// >unity volume boost so two loud decks can't clip the device.
     @ObservationIgnored private var masterLimiter: AVAudioUnitEffect?
@@ -200,6 +228,13 @@ final class MixEngine {
     @ObservationIgnored private var startFrames: [Deck: AVAudioFramePosition] = [:]
     @ObservationIgnored private var endFrames: [Deck: AVAudioFramePosition] = [:]
     @ObservationIgnored private var sampleRates: [Deck: Double] = [:]
+    /// The SOURCE-seconds offset at which the player's CURRENT scheduled segment begins (0 on load /
+    /// restart, the seek target on seek). `player.playerTime.sampleTime` resets to 0 on every
+    /// `scheduleSegment`, so `truePlayhead` adds this back to recover absolute source position.
+    @ObservationIgnored private var segmentStartSeconds: [Deck: Double] = [:]
+    /// Mirrors the Mix beat-pulse setting (pushed from the view). Gates the on-load DOWNLOAD of a
+    /// track's per-beat sidecar — when the pulse is off we never fetch a grid a track lacks.
+    @ObservationIgnored private var beatPulseEnabled = false
     @ObservationIgnored private var releases: [Deck: () -> Void] = [:]
     @ObservationIgnored private var paths: [Deck: String] = [:]
     /// Four stem player nodes per deck, all summing into the deck's `inputMixer` (so they ride the
@@ -298,15 +333,28 @@ final class MixEngine {
             let filter = AVAudioUnitEQ(numberOfBands: 1)
             let reverb = AVAudioUnitReverb()
             let flanger = AVAudioUnitDelay()
+            let mainGain = AVAudioMixerNode()      // deck → main/house channel (crossfade factor)
+            let cueGain = AVAudioMixerNode()       // deck → cue channel (full, only while cued)
             reverb.loadFactoryPreset(.mediumHall)
-            for n in [player, inputMixer, tp, comp, filter, reverb, flanger] as [AVAudioNode] { engine.attach(n) }
+            for n in [player, inputMixer, tp, comp, filter, reverb, flanger, mainGain, cueGain] as [AVAudioNode] {
+                engine.attach(n)
+            }
             // `player → inputMixer` carries the file's real format (set per load); the mixer converts
             // it into canonical stereo. The effect chain below it is pinned at canonical FOR LIFE, so
             // loading a mono / 48 kHz / odd file never reconfigures (and crashes) a live AU.
             engine.connect(player, to: inputMixer, format: canonical)
             connectChain(d, nodes: (inputMixer, tp, comp, filter, reverb, flanger))
+            // Split the deck's post-FX output (flanger) into the main + cue buses, both → master. The
+            // crossfade/cue levels + pans live on these two mixers (see `applyCueRouting`); the chain
+            // above is untouched so stems (which merge at `inputMixer`) ride the split for free.
+            engine.connect(flanger, to: [AVAudioConnectionPoint(node: mainGain, bus: 0),
+                                         AVAudioConnectionPoint(node: cueGain, bus: 0)],
+                           fromBus: 0, format: canonical)
+            engine.connect(mainGain, to: engine.mainMixerNode, format: canonical)
+            engine.connect(cueGain, to: engine.mainMixerNode, format: canonical)
             players[d] = player; inputMixers[d] = inputMixer; timePitches[d] = tp; comps[d] = comp
             filters[d] = filter; reverbs[d] = reverb; flangers[d] = flanger
+            mainGains[d] = mainGain; cueGains[d] = cueGain
             // Four stem player nodes summing into the SAME inputMixer → they pass through the deck's
             // tempo/pitch/effects/crossfader exactly like the main file. Idle (canonical format) until
             // stem mode wires real files, which reconnects each at its own file format.
@@ -372,11 +420,15 @@ final class MixEngine {
         let startMs = handle.isCut ? nil : burns.startMs(forSong: songId)
         let windowMs = handle.isCut ? nil : lengthMs
         let grid = burns.beatGrid(forSong: songId)
+        let localBeats = burns.localBeatGrid(forSong: songId)   // offline per-beat grid, if burned
         loadFile(handle.url, release: handle.release, startMs: startMs, lengthMs: windowMs,
                  meta: LoadedTrack(songId: songId, title: title, artist: artist,
                                    bpm: bpm, camelot: camelot, key: key, albumId: albumId,
                                    gridBpm: grid?.bpm, firstDownbeatMs: grid?.firstDownbeatMs,
-                                   steady: grid?.steady), on: deck)
+                                   steady: grid?.steady,
+                                   beatsMs: localBeats?.beatsMs, downbeatsMs: localBeats?.downbeatsMs),
+                 on: deck)
+        if localBeats == nil { hydrateBeatGrid(deck, songId: songId) }   // fetch on load iff pulse on
     }
 
     /// Internal load seam (shared by the BurnStore path above AND the integration/stress tests):
@@ -407,6 +459,7 @@ final class MixEngine {
         sampleRates[deck] = sr
         startFrames[deck] = start
         endFrames[deck] = start + count
+        segmentStartSeconds[deck] = 0          // segment begins at source 0:00 (true-playhead base)
         player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(count),
                                at: nil, completionHandler: nil)
         if leadDeck == deck { leadDeck = nil }   // load resets this deck's lead role + tempo/pitch
@@ -494,6 +547,7 @@ final class MixEngine {
             player.stop()
             player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(end - start),
                                    at: nil, completionHandler: nil)
+            segmentStartSeconds[deck] = 0       // rewound to source 0:00
             setPosition(deck, 0)
             if was {
                 if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
@@ -546,6 +600,7 @@ final class MixEngine {
                 player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
                                        at: nil, completionHandler: nil)
             }
+            segmentStartSeconds[deck] = clamped   // the new segment begins `clamped` s into the source
             setPosition(deck, clamped)
             if was, count > 0 {
                 if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
@@ -631,12 +686,82 @@ final class MixEngine {
         rec(.crossfader, nil, value: crossfader)
     }
 
+    // MARK: - Cue / PFL (pre-fade listen)
+
+    /// Whether a deck is currently cued (its pre-fader monitor send is live).
+    func cued(_ deck: Deck) -> Bool { state(deck).cued }
+    /// The deck's independent cue/monitor level (0…1).
+    func cueVolume(_ deck: Deck) -> Double { state(deck).cueVol }
+    /// True while EITHER deck is cued — drives the main/cue hard-pan split (see `applyCueRouting`).
+    var anyCued: Bool { deckA.cued || deckB.cued }
+
+    /// Toggle a deck's pre-fade-listen send on/off (the cue button). The house mix is untouched.
+    func setCued(_ on: Bool, on deck: Deck) {
+        mutate(deck) { $0.cued = on }
+        applyCueRouting()
+    }
+    func toggleCue(_ deck: Deck) { setCued(!state(deck).cued, on: deck) }
+
+    /// Set a deck's cue/monitor level (the long-press cue-volume slider). Clamped 0…1.
+    func setCueVolume(_ value: Double, on deck: Deck) {
+        mutate(deck) { $0.cueVol = min(max(value, 0), 1) }
+        applyCueRouting()
+    }
+
+    /// Pick which output channel the cue/monitor bus pans to (true ⇒ right, main on the left). Pushed
+    /// in from the Settings tab; applies live.
+    func setCueOnRight(_ right: Bool) {
+        cueOnRight = right
+        applyCueRouting()
+    }
+
+    // MARK: - Beat grid (pulse data)
+
+    /// Mirror the Mix beat-pulse setting (pushed from the view). When turned ON, hydrate the per-beat
+    /// grid for whatever's already loaded so an enabled pulse is precise immediately; when OFF we
+    /// simply stop fetching grids on load.
+    func setBeatPulseEnabled(_ on: Bool) {
+        beatPulseEnabled = on
+        guard on else { return }
+        for d in Deck.allCases { if let id = state(d).loaded?.songId { hydrateBeatGrid(d, songId: id) } }
+    }
+
+    /// Attach the song's full per-beat grid to the deck's `LoadedTrack` so the pulse can phase-lock to
+    /// the real beats. Uses the LOCAL sidecar synchronously if it's already burned; otherwise — only
+    /// when the pulse is enabled — downloads it in the background and patches the deck if it's still
+    /// showing this song. A no-op when the song has no sidecar (the pulse falls back to synthesis).
+    private func hydrateBeatGrid(_ deck: Deck, songId: String) {
+        if state(deck).loaded?.beatsMs != nil { return }                 // already hydrated
+        if let local = burns.localBeatGrid(forSong: songId), !local.beatsMs.isEmpty {
+            mutate(deck) { $0.loaded?.beatsMs = local.beatsMs; $0.loaded?.downbeatsMs = local.downbeatsMs }
+            return
+        }
+        guard beatPulseEnabled else { return }                           // OFF ⇒ never download on load
+        Task { [weak self] in
+            guard let self, let sc = await self.burns.burnBeatGrid(forSong: songId), !sc.beatsMs.isEmpty else { return }
+            guard self.state(deck).loaded?.songId == songId else { return }   // deck moved on → drop it
+            self.mutate(deck) { $0.loaded?.beatsMs = sc.beatsMs; $0.loaded?.downbeatsMs = sc.downbeatsMs }
+        }
+    }
+
+    /// Diagnostics / tests: the live send levels + pans on a deck's main + cue buses (nil until the
+    /// graph is built). Lets a real-graph test assert the PFL routing without reaching into AVAudio.
+    func cueRoutingSnapshot(_ deck: Deck) -> (mainVol: Float, cueVol: Float, mainPan: Float, cuePan: Float)? {
+        guard let m = mainGains[deck], let c = cueGains[deck] else { return nil }
+        return (m.outputVolume, c.outputVolume, m.pan, c.pan)
+    }
+
+    /// Diagnostics / tests: a stem node's live `volume` (nil until the graph is built). Used to assert
+    /// stems carry ONLY their per-stem balance (the deck volume + crossfade live downstream, so the
+    /// deck gain isn't applied twice in stem mode).
+    func stemNodeVolume(_ name: String, on deck: Deck) -> Float? { stemPlayers[deck]?[name]?.volume }
+
     /// Non-recording crossfade apply. The auto-DJ internals use THIS so machine moves aren't logged as
     /// user `.crossfader` gestures (and a Manual→Auto→Manual toggle on an idle session stays empty —
     /// no phantom event that would materialize a junk "Session N" on Reset).
     private func applyCrossfader(_ value: Double) {
         crossfader = min(max(value, 0), 1)
-        applyMixGains()       // crossfade only — NOT applyBoost (keeps globalGain off the fade path)
+        applyCueRouting()     // crossfade lives on the main bus now — NOT applyBoost (keeps globalGain off the fade path)
     }
 
     func setEffect(_ effect: Effect, enabled: Bool, on deck: Deck) {
@@ -836,6 +961,7 @@ final class MixEngine {
             let frame = min(max(start, start + AVAudioFramePosition(pos * sr)), end)
             let count = end - frame
             player.stop()
+            segmentStartSeconds[deck] = pos    // the single file resumes `pos` s in (true-playhead base)
             if count > 0 {
                 player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
                                        at: nil, completionHandler: nil)
@@ -958,6 +1084,21 @@ final class MixEngine {
     func position(_ deck: Deck) -> Double { deck == .a ? positionA : positionB }
     func duration(_ deck: Deck) -> Double { deck == .a ? durationA : durationB }
 
+    /// The TRUE audio playhead in source seconds, read from the deck's player render clock (NOT the
+    /// ~10 Hz wall-clock accumulator), so a visual that wants sample-accuracy — the beat pulse — can
+    /// phase-lock to what you actually hear. `playerTime.sampleTime` is in the file's own sample rate
+    /// and resets to 0 each `scheduleSegment`, so add back `segmentStartSeconds`; the time-stretch
+    /// rate is already baked into how fast it advances, so dividing by the file rate gives source
+    /// seconds at any tempo. nil while not rendering (just-loaded / paused-after-seek / stem mode) →
+    /// callers fall back to `position`.
+    func truePlayhead(_ deck: Deck) -> Double? {
+        guard !stemActive(deck),
+              let player = players[deck], let nodeTime = player.lastRenderTime,
+              let pt = player.playerTime(forNodeTime: nodeTime),
+              let sr = sampleRates[deck], sr > 0 else { return nil }
+        return (segmentStartSeconds[deck] ?? 0) + Double(pt.sampleTime) / sr
+    }
+
     /// The deck whose track is the Mix's "Now Playing" — what the lock-screen card shows. Rule: if
     /// exactly ONE deck is actively playing, that's the one ("the only active track"); otherwise
     /// (zero or both playing) fall back to Deck A regardless of its play state — and to Deck B only
@@ -1040,25 +1181,51 @@ final class MixEngine {
 
     private func refreshTransport() { isRunning = deckA.isPlaying || deckB.isPlaying }
 
-    /// Equal-power crossfade written onto each deck's player volume (× the deck's own volume trim).
-    /// Also pushes the same deck gain onto the deck's stem nodes (so the crossfader + Vol move the
-    /// whole stem mix), scaled per-stem and zeroed when muted.
+    /// Push gains onto the graph. The deck's main VOLUME + equal-power crossfade live downstream on
+    /// `mainGains` (see `applyCueRouting`), NOT on the source nodes — so the post-FX CUE tap is
+    /// independent of the main fader (true PFL: a separate cue-volume slider sets the monitor level).
+    /// The player runs at unity; the stem nodes carry only their per-stem balance.
     private func applyMixGains() {
         guard built else { return }
-        players[.a]?.volume = deckGain(.a)
-        players[.b]?.volume = deckGain(.b)
+        players[.a]?.volume = 1
+        players[.b]?.volume = 1
         applyStemGains(.a)
         applyStemGains(.b)
+        applyCueRouting()
     }
 
-    /// The deck's player gain = its own volume trim × the equal-power crossfade factor. The volume is
-    /// CLAMPED to ≤1.0 here (the shared source for the player AND every stem node, both of whose
-    /// `volume` is the documented 0…1) — the >unity boost (100%…200%) is added separately and only on
-    /// the deck's filter EQ `globalGain` (see `applyBoost`), so it can't double-gain the stems.
-    private func deckGain(_ deck: Deck) -> Float {
+    /// The deck's main volume CLAMPED to ≤1.0 (the documented 0…1 mixer range). The >unity boost
+    /// (100%…200%) is added separately on the deck's filter EQ `globalGain` (see `applyBoost`). Used
+    /// only on the MAIN bus; the cue bus uses the independent `cueVol`.
+    private func userGain(_ deck: Deck) -> Float { Float(min(state(deck).volume, 1.0)) }
+
+    /// The equal-power crossfade factor for a deck (0…1): full at its own end, →0 at the other.
+    private func crossfadeFactor(_ deck: Deck) -> Float {
         let v = Float(crossfader)
-        let cf = deck == .a ? cosf(.pi / 2 * v) : cosf(.pi / 2 * (1 - v))
-        return Float(min(state(deck).volume, 1.0)) * cf
+        return deck == .a ? cosf(.pi / 2 * v) : cosf(.pi / 2 * (1 - v))
+    }
+
+    /// Route each deck onto the main + cue buses (PFL). MAIN always carries the deck at its own
+    /// volume × the equal-power crossfade (so the existing Vol slider + crossfader still drive the
+    /// house mix); CUE *additionally* monitors a cued deck at its independent `cueVol`, untouched by
+    /// the main fader or crossfader. While ANY deck is cued the two buses pan hard to opposite
+    /// channels (main vs `cueOnRight`); when nothing is cued both stay centered, so an un-cued mix is
+    /// bit-identical normal stereo (no surprise mono for casual listening).
+    private func applyCueRouting() {
+        guard built else { return }
+        let active = deckA.cued || deckB.cued
+        let cueSide: Float = cueOnRight ? 1 : -1
+        for d in Deck.allCases {
+            mainGains[d]?.outputVolume = userGain(d) * crossfadeFactor(d)
+            mainGains[d]?.pan = active ? -cueSide : 0
+            // Cue is pre-fader AND pre-boost: the >unity boost lives on the shared EQ UPSTREAM of the
+            // split (it can't sit on a mixer's 0…1 outputVolume), so it leaks into this tap. Divide it
+            // back out (`/ max(vol,1)`) so the monitor level is exactly `cueVol`, untouched by the Vol
+            // slider/crossfader. (≤100% ⇒ divide by 1, a no-op.)
+            cueGains[d]?.outputVolume = state(d).cued
+                ? Float(state(d).cueVol) / Float(max(state(d).volume, 1.0)) : 0
+            cueGains[d]?.pan = cueSide
+        }
     }
 
     /// Apply the deck's >unity volume boost as the filter EQ's `globalGain`: 0 dB at ≤100%, up to
@@ -1070,14 +1237,16 @@ final class MixEngine {
         filters[deck]?.globalGain = Float(20 * log10(max(state(deck).volume, 1.0)))
     }
 
-    /// Push the deck gain onto each stem node, scaled by the stem's own volume and zeroed when muted.
-    /// Harmless when not in stem mode (those nodes aren't scheduled → silent regardless).
+    /// Set each stem node's volume to ONLY its per-stem balance (0…1, zeroed when muted) — exactly like
+    /// the single-file player, which now runs at unity. The deck volume + crossfade live downstream on
+    /// `mainGains`, and the cue send taps upstream of them, so stems ride the main fader + cue PFL for
+    /// free without the deck gain being applied twice. Harmless when not in stem mode (those nodes
+    /// aren't scheduled → silent regardless).
     private func applyStemGains(_ deck: Deck) {
         guard let nodes = stemPlayers[deck] else { return }
-        let g = deckGain(deck)
         let st = state(deck)
         for (name, node) in nodes {
-            node.volume = st.stemMuted.contains(name) ? 0 : g * Float(st.stemVol[name] ?? 1.0)
+            node.volume = st.stemMuted.contains(name) ? 0 : Float(st.stemVol[name] ?? 1.0)
         }
     }
 
@@ -1129,7 +1298,8 @@ final class MixEngine {
     private static let canonicalFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
 
     /// Connect a deck's effect chain at the fixed canonical format (inputMixer → timePitch → comp →
-    /// filter → reverb → flanger → mainMixer). Called ONCE per deck at build; never reconnected.
+    /// filter → reverb → flanger). Called ONCE per deck at build; never reconnected. The flanger's
+    /// output is split onto the main + cue buses by the caller (see `ensureEngine`).
     private func connectChain(_ deck: Deck,
                               nodes: (AVAudioMixerNode, AVAudioUnitTimePitch, AVAudioUnitEffect,
                                       AVAudioUnitEQ, AVAudioUnitReverb, AVAudioUnitDelay)) {
@@ -1140,7 +1310,6 @@ final class MixEngine {
         engine.connect(comp, to: filter, format: fmt)
         engine.connect(filter, to: reverb, format: fmt)
         engine.connect(reverb, to: flanger, format: fmt)
-        engine.connect(flanger, to: engine.mainMixerNode, format: fmt)
     }
 
     /// Octave-fold a tempo ratio into `rateRange` (×2 / ÷2 = half/double-time match), then clamp.

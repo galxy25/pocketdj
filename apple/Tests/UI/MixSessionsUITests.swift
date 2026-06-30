@@ -71,6 +71,20 @@ final class MixSessionsUITests: XCTestCase {
         save(app, "05-auto-setup-bar")
     }
 
+    /// The per-deck CUE button (PFL) renders on each deck's transport row, just left of Reset.
+    func testCueButtonsRenderOnBothDecks() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_START_SECTION"] = "Mix"
+        app.launch()
+
+        XCTAssertTrue(firstWith("deck-A-cue").waitForExistence(timeout: 20),
+                      "Deck A cue button should render in the transport row")
+        XCTAssertTrue(firstWith("deck-B-cue").exists, "Deck B cue button should render")
+        XCTAssertTrue(firstWith("deck-A-restart").exists, "Reset still renders beside cue")
+        save(app, "06-deck-cue-buttons")
+    }
+
     // MARK: - Helpers
 
     private var app: XCUIApplication { XCUIApplication() }
