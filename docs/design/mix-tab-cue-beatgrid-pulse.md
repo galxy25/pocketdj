@@ -62,9 +62,11 @@ read (`keyOrBpm`), no new data plumbing.
 
 ## 3. Beat pulse
 
-`BeatPulseView` overlays a glowing ring on each deck container that **flashes on every beat** —
-downbeats (every 4th beat, 4/4) brighter and longer — so you can *feel* the groove and visually
-**eyeball-align the two decks** while beat-matching. Beats are **synthesized** from
+**Opt-in** (Settings ▸ Mix, **default off**): `BeatPulseView` overlays a glowing ring on each deck
+container that **flashes on every beat** — downbeats (every 4th beat, 4/4) brighter and longer, in a
+different colour (downbeat = `Theme.accent`, off-beats = `Theme.accent2`) — so you can *feel* the
+groove and visually **eyeball-align the two decks** while beat-matching. When the setting is off the
+overlay isn't created at all (zero cost). Beats are **synthesized** from
 `gridBpm (or catalog bpm)` + `firstDownbeatMs` + the playhead: `beat = floor((position − downbeatSec) /
 (60/bpm))`. Because `position` is already source/song time, `60/bpm` is the beat period directly (the
 deck's tempo `rate` must **not** be applied again). Detection runs off the ~10 Hz playhead; the flash
@@ -75,10 +77,12 @@ frequent `position` reads re-render only the overlay, never the whole deck (same
 
 ## Settings
 
-`CueChannel: String, CaseIterable { right, left }` in `SettingsStore`, with `cueOutputChannel`
-(default `.right`) following the same backward-compatible pattern as `skipFadeSeconds` (Optional
-`String?` in `SettingsData`, coalesced at the read sites so a legacy `pdj.settings.v1` blob still
-decodes). A `Picker` in the Settings ▸ Mix section (`settings-mix-cue-channel`) edits it.
+Two new Mix settings, both following the backward-compatible pattern of `skipFadeSeconds` (Optional in
+`SettingsData`, coalesced at the read sites so a legacy `pdj.settings.v1` blob still decodes):
+- **`cueOutputChannel`** (`CueChannel: String, CaseIterable { right, left }`, default `.right`) — a
+  `Picker` (`settings-mix-cue-channel`); pushed into the engine via `setCueOnRight`.
+- **`beatPulseEnabled`** (`Bool`, **default false**) — a `Toggle` (`settings-mix-beat-pulse`); gates
+  the `BeatPulseView` overlay in `DeckView` (read via `@Environment(SettingsStore.self)`).
 
 ## Tests
 

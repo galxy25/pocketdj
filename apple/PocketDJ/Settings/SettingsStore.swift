@@ -71,6 +71,8 @@ final class SettingsStore {
     /// Which output channel the Mix CUE / pre-fade-listen bus is sent to (default `.right`). Pushed
     /// into `MixEngine.setCueOnRight`. See `CueChannel`.
     var cueOutputChannel: CueChannel
+    /// Mix decks flash a ring on each beat when ON; OFF (default) ⇒ no pulse. See `BeatPulseView`.
+    var beatPulseEnabled: Bool
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -92,6 +94,7 @@ final class SettingsStore {
         self.skipFadeSeconds = data.skipFadeSeconds ?? 15
         self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
         self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
+        self.beatPulseEnabled = data.beatPulseEnabled ?? false
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -154,7 +157,8 @@ final class SettingsStore {
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
             autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds,
             skipFadeSeconds: skipFadeSeconds, mixAutoHidePlayed: mixAutoHidePlayed,
-            cueOutputChannel: cueOutputChannel.rawValue)
+            cueOutputChannel: cueOutputChannel.rawValue,
+            beatPulseEnabled: beatPulseEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -177,6 +181,7 @@ final class SettingsStore {
         skipFadeSeconds = d.skipFadeSeconds ?? 15
         mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
         cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
+        beatPulseEnabled = d.beatPulseEnabled ?? false
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -215,6 +220,8 @@ struct SettingsData: Codable {
     var mixAutoHidePlayed: Bool?
     /// Optional so older blobs still decode (coalesced to `.right` at the read sites).
     var cueOutputChannel: String?
+    /// Optional so older blobs still decode (coalesced to false at the read sites).
+    var beatPulseEnabled: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -230,5 +237,6 @@ struct SettingsData: Codable {
         autoMixFadeSeconds: 3,
         skipFadeSeconds: 15,
         mixAutoHidePlayed: true,
-        cueOutputChannel: CueChannel.right.rawValue)
+        cueOutputChannel: CueChannel.right.rawValue,
+        beatPulseEnabled: false)
 }

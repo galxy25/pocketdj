@@ -352,6 +352,7 @@ private struct DeckView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(BurnStore.self) private var burns
     @Environment(RipsStore.self) private var rips
+    @Environment(SettingsStore.self) private var settings
 
     let deck: MixEngine.Deck
     let engine: MixEngine
@@ -409,10 +410,11 @@ private struct DeckView: View {
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .strokeBorder(Theme.border, lineWidth: 1))
-        // Beat pulse: a glowing ring that flashes on every beat (downbeats brighter) so you can SEE
-        // each deck's groove and eyeball-align the two while beat-matching. Isolated subview so its
-        // ~10 Hz updates never re-render the rest of the deck.
-        .overlay(BeatPulseView(engine: engine, deck: deck).allowsHitTesting(false))
+        // Beat pulse (opt-in, Settings ▸ Mix, default off): a glowing ring that flashes on every beat
+        // (downbeats brighter) so you can SEE each deck's groove and eyeball-align the two while
+        // beat-matching. Isolated subview so its ~10 Hz updates never re-render the rest of the deck;
+        // not created at all when disabled, so it costs nothing.
+        .overlay { if settings.beatPulseEnabled { BeatPulseView(engine: engine, deck: deck).allowsHitTesting(false) } }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(a11y)

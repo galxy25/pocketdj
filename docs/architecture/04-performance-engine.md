@@ -621,8 +621,8 @@ Full spec: [Lock-screen Now Playing, Skip, slider & stem fixes](../design/mix-ta
  Cue button (left of Reset): tap = toggleCue · long-press/right-click = cue-VOLUME popover (independent level)
    CueChannel (which side is cue) lives in Settings → pushed via engine.setCueOnRight()
  Beat-grid BPM on the deck: gridBpm (measured, the value Sync uses) ?? catalog bpm, beside the KeyChip
- BeatPulseView: synth beats from gridBpm(or bpm) + firstDownbeatMs + the ~10 Hz playhead → flash on each
-   beat (downbeats every 4th, brighter); isolated subview so it never re-renders the whole deck
+ BeatPulseView (opt-in, Settings ▸ Mix, default OFF): synth beats from gridBpm(or bpm) + firstDownbeatMs +
+   the ~10 Hz playhead → flash on each beat (downbeats every 4th, brighter); isolated subview, no re-render of the deck
 ```
 
 **Reading it.** Cueing is a textbook **pre-fade listen (PFL)**: rather than a special case, each deck now
