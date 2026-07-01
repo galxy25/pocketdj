@@ -244,9 +244,13 @@ contract**. Honest status:
   with continuous strength, grid-aware **BEAT-MATCHING** (follower Sync to a lead deck,
   octave-folded tempo + best-effort downbeat phase-align, **preferring the measured grid
   BPM**), a timed **AUTO-MIX** auto-DJ (with optional **FX GLIDE** — a coherent effect sweep
-  held across a run of transitions — and **MIX GLIDE** — a Camelot-guided bpm+pitch bend with
-  beat-sync — per transition, Ch. 4 §7.11), **SESSION AUDIO RECORDING** (capture the clean stereo
-  house mix to a per-session folder, replayable from Sessions, Ch. 4 §7.12), and offline **STEM
+  held across a run of transitions — and **MIX GLIDE** — a **data-gated**
+  bend that beat-matches tempo only when both BPMs are known and bends pitch only when both Camelot
+  keys are known, else a plain volume crossfade; configurable length, Ch. 4 §7.11), **SESSION AUDIO
+  RECORDING** (capture the clean stereo house mix to a per-session folder as **crash-safe fragmented
+  AAC**, scrubbable + replayable from Sessions, Ch. 4 §7.12), a **wrapped move-by-move replay timeline**
+  (compact `.glide` nodes, tap-a-load → song metadata, Ch. 4 §7.8), **universal CSV / PocketDJ export**
+  of any collection or session tracklist (Ch. 4 §5), and offline **STEM
   DECKS** (4 stem nodes summed into the deck chain; per-stem mute/volume) — no licensed
   third-party audio SDK (Ch. 4 §7). It's
   fed by two new analysis side-channels folded into the rips manifest: a **measured beat grid**
@@ -474,3 +478,11 @@ Things found while writing that don't fully line up, gathered here so they're no
     `.xcodeproj` is **generated** by XcodeGen (a file added via the Xcode UI is dropped on the
     next `xcodegen generate`). A maintainer adding per-platform targets or hand-editing the
     project would fight the generator. (Ch. 7 §2.1)
+36. **Two different "setlist CSV"s exist — don't conflate them.** The native app exports a
+    **universal tracklist CSV** (`#, Title, Artist, Album, Year, Genre` — `TracklistCSV`, chosen via
+    the PocketDJ/CSV format picker) that deliberately carries **no** BPM/key/**Song ID**. The
+    `burn-setlist` **tooling skill** still requires a **richer** `#,Artist,Title,BPM,Key,Length,
+    Source,Sequence,Song ID` CSV (it resolves rips by the **Song ID** column) — that Song-ID export
+    is the **PWA/tooling** path, not the native app's. A maintainer feeding the native universal CSV
+    to `burn-setlist` would get "Song ID column missing"; downstream audio resolution rides the
+    **`.pocketdj.zip`** (catalog-by-id) instead. (Ch. 4 §5, Ch. 5)

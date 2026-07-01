@@ -336,12 +336,27 @@ existing setlists, exports, and the rip/burn flows (Ch. 5) break.
 
 ## 5. Export — performance leaves the app
 
-A realized setlist exports to CSV via the native OS file picker. Columns:
-`#, Artist, Title, BPM, Key, Length, Source, Sequence, Note, Song ID`. The **Song ID**
-lets any downstream process (notably the `burn-setlist` skill, Ch. 5) resolve each
-track's audio segment in O(1). Playlists also export to a tiny
-`.playlist.pocketdj.zip` that references the catalog by id (≈4 KB) or a `portable`
-bundle for a foreign/empty catalog.
+Exporting a **playlist / pocket / set list** (and a **session's tracklist**, §7.8) offers **two
+formats** via a `.confirmationDialog` picker (default **PocketDJ**):
+
+- **PocketDJ (full metadata)** — a tiny `.pocketdj.zip` (`.playlist.pocketdj.zip` /
+  `.pocket.pocketdj.zip`) that references the catalog **by id** (≈4 KB), keeps everything PocketDJ
+  knows, and is **re-importable** into the app; a `portable` bundle variant carries the songs for a
+  foreign/empty catalog.
+- **CSV (tracklist)** — a **universal** list built by
+  [`TracklistCSV`](../../apple/PocketDJ/Support/TracklistCSV.swift): header
+  `#, Title, Artist, Album, Year, Genre`, **1-indexed play position**, CRLF line endings + a trailing
+  CRLF and doubled-quote escaping (PWA parity). It is **deliberately universal-columns-only** —
+  BPM / key / segment / provenance are intentionally *left out* (that's what the PocketDJ format is
+  for), so the CSV drops cleanly into any spreadsheet, DJ app, or database. The rows come from
+  `AppModel.tracklistCSVRows(forSongIds:)` (song → album name/genre, year song-then-album);
+  `CollectionsStore.exportPlaylistCSV / exportPocketCSV / exportSetlistCSV` and
+  `MixSessionsView.exportCSV()` are the four entry points.
+
+Separately, the `burn-setlist` **tooling skill** (Ch. 5) consumes a richer
+`#,Artist,Title,BPM,Key,Length,Source,Sequence,Song ID` CSV — the **Song ID** column lets it resolve
+each track's raw-rip segment in O(1). That Song-ID export is the PWA/tooling path; the native app's
+own tracklist CSV above is the universal, portable one.
 
 ---
 
@@ -475,6 +490,13 @@ reconfiguration from crashing the graph.
   to the song's `[startFrames, endFrames)` window** so an analog shared-album slice (one mp3,
   a `startMs` offset) can never scrub past its own track. The same `scheduleSegment`
   primitive underpins load, restart, and stem re-cue.
+- **Reset (↺) vs Clear** — `resetDeck(_:)` (a **tap** on ↺) returns every per-deck parameter to
+  default (tempo 1.0×, pitch 0, volume 100%, all effects off @ 0.5) then rewinds, **keeping** the
+  loaded track. `clearDeck(_:)` (a **long-press / right-click** on ↺, via `.contextMenu` →
+  "Clear deck (eject track)") is a superset: it also **ejects the track** — stops the voices,
+  releases the file + stem security scopes, clears the frame window, gives up the **lead role** and
+  **cue**, and resets the whole `DeckState()` to the empty zero state. Both log **one** `.resetDeck`
+  session event (a clear is a reset that also ejects).
 
 ### 7.3 Crossfader + the four effects
 
@@ -571,7 +593,10 @@ first-party `AVFoundation` graph** — which is what shipped.
  MixSessionStore (@Observable, persisted JSON):
    hot buffer (@ObservationIgnored) → coalesce continuous to ≤1/120ms → debounced+off-main versioned write
    reset(X) finalizes + starts "Session N+1";  played-set → loader ✓ / auto-hide
- MixSessionsView:  list → replay timeline (vertical iPhone · horizontal iPad/macOS), wall-clock replay clock
+ MixSessionsView:  list → replay timeline, wall-clock replay clock. WRAPPED (not an infinite right-scroll):
+   verticalTimeline on iPhone; wrappedTimeline elsewhere — perRow 5 (macOS) / 3 (iPad), arrow.right along a
+   row then arrow.turn.down.left to the next → the left-to-right-then-down order is explicit. A .glide event
+   renders as ONE compact "from → to" node (not a tick burst); tap a .load node → SongMetadataItem sheet.
 ```
 
 **Reading it.** Three additions sit on top of the engine above. **Steppers** give finer-than-drag
@@ -580,7 +605,11 @@ documented `volume`, the >unity boost rides the deck filter EQ's `globalGain` (s
 file *and* all four stems), and a **master peak limiter** guards the output. **Mix sessions** record
 every deck action — load/play/pause/seek/tempo/pitch/volume/crossfader/effects/stems/lead/sync/reset —
 into a time-stamped, persisted, replayable log that lasts until **Reset**, with played-track
-checkmarks/auto-hide in the loader and a Sessions screen that replays the timeline in real time. The
+checkmarks/auto-hide in the loader and a Sessions screen that replays the timeline in real time. That
+timeline **wraps to the screen** rather than scrolling forever right (5 nodes/row on macOS, 3 on iPad,
+with `→` / `↵` arrows making the reading order explicit), collapses an auto-mix **glide into a single
+compact `from → to` node** (§7.11) instead of a burst of ticks, and lets you **tap a `.load` node to pop
+its song-metadata card** — so a set is legible move-by-move. The
 recorder is a weak seam on the engine; the store keeps the high-frequency event buffer **off** the
 observed surface so a live mix never redraws the UI, coalesces continuous gestures, and persists
 off-main. The corpus is designed to later **train an auto-mix model** (replay is visual for now;
@@ -652,8 +681,8 @@ the two decks while mixing. Full spec:
  grows PRE-ROLL → CROSSFADE → POST-ROLL around the §7.5 crossfade (extra Date? phase timers layered on
  autoFadeStartedAt): autoPrerollStartedAt · autoFadeStartedAt · autoPostrollStartedAt. autoTransitionIsGlide
  is captured at the START, so toggling mid-transition can't corrupt a transition already underway; a
- snapshot GlideContext{from,to, fx…, mix…, saved effect state} drives it. Preroll length is fit into the
- runway (÷1.12 headroom when Mix Glide, since it plays faster). autoTransitioning gates Skip + re-timing.
+ snapshot GlideContext{from,to, fx…, mix…, saved effect state} drives it. Preroll length = mixGlideSeconds
+ (Settings ▸ Mix, default 10 s; setMixGlideSeconds) fit into the runway. autoTransitioning gates Skip + re-timing.
 
  FX GLIDE — a COHERENT effect texture across a run of transitions:
    currentTexture(): reuse (effect, peak) for fxTextureRunRemaining (a run of 3…5), then re-roll via
@@ -664,16 +693,21 @@ the two decks while mixing. Full spec:
    postroll : effect ramps peak → 0 on the INCOMING deck, then RESTORE the deck's pre-glide effect state
      (saved in GlideContext — a load doesn't clear effects, so the outgoing deck is restored before reuse)
 
- MIX GLIDE — bend bpm + pitch toward a shared key, with beat sync:
-   signedCamelotSteps(a,b): shortest signed wheel-hour distance −6…+6 (Camelot.parse, Ch.3)
-   glideParams(from,to): mag = min(1, |d|/2); each deck bends TOWARD the other by ≤ 1 key (meet in middle),
-     1 key = ±10% tempo (glideRate: 1 ± 0.10·keys) AND ±10% pitch (glidePitch: keys · 12·log2(1.1) ≈ 1.65 st);
-     nil camelot ⇒ identity (beat-sync only)
+ MIX GLIDE — bend TOWARD each other, but ONLY on data each track actually has (NO default bend):
+   glideParams(fromCamelot, toCamelot, fromBPM, toBPM):
+     PITCH — only if BOTH Camelot keys known: signedCamelotSteps(a,b) [−6…+6, Camelot.parse Ch.3];
+             each deck bends ≤1 key toward the other (meet in middle), 1 key = glidePitch ≈ ±1.65 st
+     TEMPO — only if BOTH BPMs known: a real BEAT-MATCH. split = octaveFolded(ra/rb).squareRoot()  →
+             inRate = split, outRate = 1/split  (SAME octave-fold Lead/Sync use, fed grid BPM via matchBPM),
+             so the two effective tempos MEET; caller then glidePhaseAlign()s the downbeat on the grid
+     neither datum for both tracks ⇒ IDENTITY (rate 1.0 / pitch 0) → just the §7.5 volume crossfade
    preroll  : OUTGOING rate/pitch ramp → target;  crossfade begin: INCOMING starts at the OPPOSITE offset
-     + glidePhaseAlign (non-recording downbeat align, best-effort);  postroll: INCOMING eases → natural (1.0 / 0)
+     + glidePhaseAlign (grid downbeat align, best-effort);  postroll: INCOMING eases → natural (1.0 / 0)
 
- All glide moves use NON-RECORDING appliers (setGlideRate/Pitch/Effect) — mutate deck state + push to the
- graph but emit NO session event, exactly like applyCrossfader, so a ~10 Hz sweep never floods the corpus.
+ RECORDED COMPACTLY, not per-tick: the ~10 Hz sweep runs through NON-recording appliers (setGlideRate/
+   Pitch/Effect — mutate + push to the graph, no event) so it never floods the corpus, but each RAMP emits
+   ONE .glide event via recGlide(param, from, to, span) [emitOutgoing/IncomingGlideEvents] carrying from→to
+   + the AVERAGE rate of change. beginAutoCrossfade likewise logs the fader move as one .glide "crossfader".
 ```
 
 **Reading it.** The two glide toggles decorate the **same crossfade machine** rather than replacing it:
@@ -681,23 +715,35 @@ a transition gains an optional **pre-roll** (ease the glide *in* on the outgoing
 sweep) and **post-roll** (ease it *back out* on the incoming deck, after), gated by a captured
 `autoTransitionIsGlide` + a `GlideContext` snapshot so a mid-transition toggle can't corrupt work already in
 flight — and when neither is armed, both durations are zero, so the plain §7.5 path is byte-for-byte
-unchanged. **FX Glide** keeps a **coherent texture**: one effect (from a sweep-only pool — filter/reverb/
-flanger; the compressor is a dynamics tool, so it's out) held for a **deterministic run of 3–5 transitions**
-(seeded `splitmix64`, so a track set always textures the same way), ramped in on the outgoing deck, held on
-both through the fade, then ramped off the incoming deck with the deck's prior effect state **restored**.
-**Mix Glide** uses the **signed Camelot distance** to bend each deck **toward the other by up to one key** (so
-they meet in the middle of the blend), where *one key = ±10% tempo **and** ±10% pitch* — combining a little
-of each keeps the bend subtle — with a best-effort **downbeat align** for beat-sync; the incoming deck then
-settles back to its own key/tempo through the post-roll. Every glide move goes through **non-recording**
-appliers so the automated sweep never lands in the session event log.
+unchanged. The glide's length is `mixGlideSeconds` — a **Settings value (default 10 s)** so the bend can be
+made as gradual as wanted. **FX Glide** keeps a **coherent texture**: one effect (from a sweep-only pool —
+filter/reverb/flanger; the compressor is a dynamics tool, so it's out) held for a **deterministic run of 3–5
+transitions** (seeded `splitmix64`, so a track set always textures the same way), ramped in on the outgoing
+deck, held on both through the fade, then ramped off the incoming deck with the deck's prior effect state
+**restored**. **Mix Glide** is deliberately **data-gated — it never invents a value it doesn't have**: it
+bends **pitch** only when **both** tracks carry a Camelot key (each deck toward the other by ≤1 key, meeting
+in the middle, then the incoming settles back), and bends **tempo** only when **both** carry a BPM — and that
+tempo bend is a **true beat-match**, reusing the exact **octave-folded ratio the Lead/Sync buttons use**
+(`octaveFolded`, fed the measured grid BPM), *split* between the decks so their effective tempos meet, with a
+best-effort **grid downbeat align** (`glidePhaseAlign`). With neither datum present for both tracks the
+result is **identity** — just the §7.5 volume crossfade, no bend. Crucially the automated sweep is **recorded
+compactly**: the ~10 Hz per-tick moves go through **non-recording** appliers (so they never flood the log),
+but every ramp — and the crossfade itself — emits **one `.glide` event** carrying `from → to` plus the
+**average rate of change**, so the corpus captures each gesture as a single readable node instead of a burst
+of ticks (see §7.8 for how that node renders + the [sessions spec](../design/mix-sessions-and-controls-spec.md) for the `.glide` event shape).
 
 ### 7.12 Session audio recording — capture the mix
 
 ```
  CAPTURE (MixEngine): startRecording(to:release:) / stopRecording(), observable isRecording.
-   Tap houseSum (§7.10 — the CLEAN stereo house, before the cue pan) → MixTapWriter → AAC .m4a
-   MixTapWriter (@unchecked Sendable): serial DispatchQueue; the realtime tap COPIES each buffer
-     (AVAudioPCMBuffer.deepCopy) then enqueues the write off the render thread → AAC encode never stalls audio.
+   PERSISTENT tap: houseSum's tap is installed ONCE (in ensureEngine) and NEVER removed — start/stop only
+     TOGGLE isRecording. Installing/removing a tap mid-playback reconfigures the live graph and can PAUSE
+     the player nodes on-device, so the tap stays put + gating lives inside it (fixes stop→playback-stops).
+   houseSum (§7.10 — the CLEAN stereo house, BEFORE the cue pan) → MixTapSink → FRAGMENTED AAC .m4a
+   MixTapSink (@unchecked Sendable, AVAssetWriter): the realtime tap COPIES each PCM buffer → CMSampleBuffer
+     (16-byte-aligned) then enqueues the write off the render thread → AAC encode never stalls audio.
+   CRASH-SAFE: writer.movieFragmentInterval = 2 s → the file is flushed to disk ~every 2 s, so a kill /
+     disk-full / power-loss mid-set leaves a PLAYABLE partial take (not a zero-byte header).
    release = the session-folder security scope, OWNED by startRecording (dropped on stop OR on any failure).
 
  COORDINATION (MixRecorder, @Observable, APP-SCOPED — survives leaving the Mix tab, like MixEngine):
@@ -705,6 +751,9 @@ appliers so the automated sweep never lands in the session event log.
    stop():  engine.stopRecording() → sessions.addRecording(toSession: recSessionId, …)  [take captured at START,
             so a Reset mid-capture still files it]. If that session was DELETED mid-capture → recoverRecording
             revives the id (matches the on-disk folder) so the take isn't orphaned.
+   recoverOrphans() [called on launch]: scan every session folder for .m4a files NOT in recordings[] (a
+     crash files no metadata but the fragmented .m4a survives) → recoverRecording re-homes each to its
+     session (reviving a deleted one). Idempotent — skips already-recorded files, so relaunch never dupes.
 
  SESSION FOLDER (SessionFolders — mirrors BurnStore.resolveBurnFolder):
    settings.sessionFolderBookmark (security-scoped, Settings ▸ Mix sessions) ELSE Application Support/mix-sessions/
@@ -713,20 +762,31 @@ appliers so the automated sweep never lands in the session event log.
  MODEL: MixSession.recordings: [MixRecording]?  (OPTIONAL — schema v2, a v1 doc decodes unchanged)
         MixRecording{ id, fileName, startedAt, durationMs, wasUserFolder }
  UI: MixView RecordButton (toolbar, pulsing purple→red) + in-content "● Recording m:ss"; MixSessionsView
-     recordingsPanel = per-take ▶/⏹ (RecordingAudioPlayer, resolves via SessionFolders + holds the scope).
+     recordingsPanel = per-take ▶/⏹ + RecordingScrubBar (seek). RecordingAudioPlayer (AVAudioPlayerDelegate:
+     auto-reset on finish, no poll loop) resolves via SessionFolders + holds the scope.
 ```
 
-**Reading it.** Recording taps the new **clean-house sum** (`houseSum`, §7.10) — *not* the final output —
-so the take is the **audience's stereo mix even while you monitor a cue in the headphones**. The realtime
-tap can't afford to block on AAC encoding, so `MixTapWriter` **copies each buffer and writes off a serial
-queue**. The engine only knows how to capture to a URL; an **app-scoped `MixRecorder`** bridges that to the
-app graph — resolving the current session's **folder** (`SessionFolders`, the same app-storage-or-user-picked
-pattern as the burnt-music folder), driving start/stop, and filing the finished take's metadata into
-`MixSession.recordings` (an **optional** field, so older session documents decode untouched). Because the
+**Reading it.** Recording taps the **clean-house sum** (`houseSum`, §7.10) — *not* the final output — so
+the take is the **audience's stereo mix even while you monitor a cue in the headphones**. Two hard-won
+details shape the capture. First, the tap is **persistent**: it's installed **once** on `houseSum` and
+start/stop merely flip an `isRecording` flag inside it — because *installing or removing* a tap on a node in
+the live render path mid-playback reconfigures the graph and **paused the decks on-device**, so the tap
+stays put rather than being added/removed per take. Second, the writer is **crash-safe**: `MixTapSink` is an
+`AVAssetWriter` encoding **fragmented AAC** with a **2 s `movieFragmentInterval`**, so the `.m4a` is flushed
+to disk continuously — a kill, a full disk, or a dead battery mid-set leaves a **playable partial file**, not
+a corrupt header. The realtime tap can't block on encoding, so it **copies each buffer into a
+`CMSampleBuffer` and writes off-thread**. The engine only captures to a URL; an **app-scoped `MixRecorder`**
+bridges that to the app graph — resolving the current session's **folder** (`SessionFolders`, the same
+app-storage-or-user-picked pattern as the burnt-music folder), driving start/stop, and filing the finished
+take into `MixSession.recordings` (an **optional** field, so older documents decode untouched). Because the
 recorder is app-scoped, a capture keeps running when you leave the Mix tab; because the take is bound to the
-session it *began* in, a Reset — or even a delete — mid-capture still files it (a deleted session is
-**revived** rather than orphaned). Back on the **Sessions** screen, each take gets a play control, so a
-session now replays both its **actions** (§7.8) and its **audio**.
+session it *began* in, a Reset — or even a delete — mid-capture still files it. And on the **next launch**,
+`recoverOrphans()` sweeps the session folders and **re-homes any `.m4a` a crash left behind** (metadata is
+written only on a clean stop, but the fragmented file is already valid), reviving a deleted session if
+needed — idempotently, so relaunching never duplicates a take. Back on the **Sessions** screen, each take
+gets a **▶/⏹ control and a scrub bar** (`RecordingScrubBar`; `RecordingAudioPlayer` uses
+`AVAudioPlayerDelegate` to auto-reset at end-of-file, replacing an earlier poll loop that could stop
+playback on a transient state flip), so a session now replays both its **actions** (§7.8) and its **audio**.
 
 ## Next
 
