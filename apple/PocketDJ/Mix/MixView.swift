@@ -91,9 +91,11 @@ struct MixView: View {
             engine.prepare()                           // warm the AVAudioEngine graph when the tab opens
             engine.setCueOnRight(settings.cueOutputChannel.onRight)   // push the cue-channel preference
             engine.setBeatPulseEnabled(settings.beatPulseEnabled)     // gate the on-load beat-grid fetch
+            engine.setMixGlideSeconds(settings.mixGlideSeconds)       // glide ramp length
             recorder.settings = settings                              // session-folder location source
             recorder.recoverOrphans()                                 // re-file any crash-interrupted takes
         }
+        .onChange(of: settings.mixGlideSeconds) { engine.setMixGlideSeconds(settings.mixGlideSeconds) }
         .onChange(of: settings.cueOutputChannel) { engine.setCueOnRight(settings.cueOutputChannel.onRight) }
         .onChange(of: settings.beatPulseEnabled) { engine.setBeatPulseEnabled(settings.beatPulseEnabled) }
         // DELIBERATELY no `.onDisappear { engine.pauseBoth()/stopAutoMix()/teardown() }`: the engine is

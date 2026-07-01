@@ -70,6 +70,9 @@ final class SettingsStore {
     /// button (a longer, deliberate transition than the automatic `autoMixFadeSeconds`). Default 15.
     /// A double-tap on Skip always uses a fast 5 s sweep regardless of this value.
     var skipFadeSeconds: Double
+    /// Mix Glide length (Mix tab): seconds the tempo/pitch/effect eases in + back out per transition —
+    /// longer = a smoother glide. Default 10. Pushed into `MixEngine.setMixGlideSeconds`.
+    var mixGlideSeconds: Double
     /// Mix sessions: when on (default), the track loader HIDES songs already played in the current
     /// session; when off, they still show but with a ✓ checkmark. See `MixSessionStore`.
     var mixAutoHidePlayed: Bool
@@ -98,6 +101,7 @@ final class SettingsStore {
         self.autoMixLeadSeconds = data.autoMixLeadSeconds ?? 15
         self.autoMixFadeSeconds = data.autoMixFadeSeconds ?? 3
         self.skipFadeSeconds = data.skipFadeSeconds ?? 15
+        self.mixGlideSeconds = data.mixGlideSeconds ?? 10
         self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
         self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         self.beatPulseEnabled = data.beatPulseEnabled ?? false
@@ -180,7 +184,8 @@ final class SettingsStore {
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
             sessionFolderBookmark: sessionFolderBookmark,
             autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds,
-            skipFadeSeconds: skipFadeSeconds, mixAutoHidePlayed: mixAutoHidePlayed,
+            skipFadeSeconds: skipFadeSeconds, mixGlideSeconds: mixGlideSeconds,
+            mixAutoHidePlayed: mixAutoHidePlayed,
             cueOutputChannel: cueOutputChannel.rawValue,
             beatPulseEnabled: beatPulseEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
@@ -208,6 +213,7 @@ final class SettingsStore {
         autoMixLeadSeconds = d.autoMixLeadSeconds ?? 15
         autoMixFadeSeconds = d.autoMixFadeSeconds ?? 3
         skipFadeSeconds = d.skipFadeSeconds ?? 15
+        mixGlideSeconds = d.mixGlideSeconds ?? 10
         mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
         cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         beatPulseEnabled = d.beatPulseEnabled ?? false
@@ -247,6 +253,8 @@ struct SettingsData: Codable {
     var autoMixFadeSeconds: Double?
     /// Optional so older blobs still decode (coalesced to 15 at the read sites).
     var skipFadeSeconds: Double?
+    /// Optional so older blobs still decode (coalesced to 10 at the read sites).
+    var mixGlideSeconds: Double?
     /// Optional so older blobs still decode (coalesced to true at the read sites).
     var mixAutoHidePlayed: Bool?
     /// Optional so older blobs still decode (coalesced to `.right` at the read sites).
@@ -268,6 +276,7 @@ struct SettingsData: Codable {
         autoMixLeadSeconds: 15,
         autoMixFadeSeconds: 3,
         skipFadeSeconds: 15,
+        mixGlideSeconds: 10,
         mixAutoHidePlayed: true,
         cueOutputChannel: CueChannel.right.rawValue,
         beatPulseEnabled: false)

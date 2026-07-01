@@ -308,10 +308,14 @@ final class MixEngine {
     @ObservationIgnored private var fxTextureRunRemaining = 0
     @ObservationIgnored private var fxGlidePrng: UInt64 = 0x9E37_79B9_7F4A_7C15
 
-    /// Preroll / postroll durations (s) when a glide feature is on. Kept modest so a transition stays
-    /// snappy; the preroll is additionally capped to the runway left before the outgoing track ends.
-    private static let glideInSeconds: Double = 2.0
-    private static let glideOutSeconds: Double = 2.0
+    /// GLIDE LENGTH (s): how long the tempo/pitch/effect eases IN on the outgoing deck (pre-roll) and
+    /// back OUT on the incoming deck (post-roll) — a longer value = a smoother, more gradual glide.
+    /// User-configurable (Settings ▸ Mix, default 10), pushed in via `setMixGlideSeconds`. The pre-roll
+    /// is additionally capped to the runway left before the outgoing track ends.
+    @ObservationIgnored private var mixGlideSeconds: Double = 10
+
+    /// Set the glide length (Settings ▸ Mix). Clamped to a sane floor.
+    func setMixGlideSeconds(_ s: Double) { mixGlideSeconds = max(0.5, s) }
 
     /// Per-transition glide parameters, snapshotted when a glide transition begins.
     private struct GlideContext {
@@ -1020,7 +1024,7 @@ final class MixEngine {
             applyCrossfader(autoFadeFrom == .a ? p : 1 - p)
             if p >= 1 { finishAutoCrossfade() }
         } else if let postrollStart = autoPostrollStartedAt {             // POST-ROLL (glide)
-            let p = min(max(now.timeIntervalSince(postrollStart) / max(0.05, Self.glideOutSeconds), 0), 1)
+            let p = min(max(now.timeIntervalSince(postrollStart) / max(0.05, mixGlideSeconds), 0), 1)
             applyIncomingGlide(p)
             if p >= 1 { finishGlide() }
         } else {                                                          // IDLE — maybe start a transition
@@ -1040,7 +1044,7 @@ final class MixEngine {
                         // faster than wall-clock — divide the runway by that headroom so the fading deck
                         // can't reach end-of-audio before the crossfade completes.
                         let headroom = mixGlideEnabled ? 1.12 : 1.0
-                        let preroll = max(0, min(Self.glideInSeconds,
+                        let preroll = max(0, min(mixGlideSeconds,
                                                  secondsLeft / headroom - autoFadeSeconds - 0.3))
                         beginGlideTransition(now: now, preroll: preroll)
                     } else {
@@ -1111,7 +1115,7 @@ final class MixEngine {
         }
         updateSystemNowPlaying()      // the now-playing deck just switched → refresh the card
         if autoTransitionIsGlide {
-            if Self.glideOutSeconds > 0.05 {
+            if mixGlideSeconds > 0.05 {
                 autoPostrollStartedAt = Date()
                 emitIncomingGlideEvents()      // one compact .glide node per incoming settle-back ramp
             } else { finishGlide() }
@@ -1301,7 +1305,7 @@ final class MixEngine {
     /// once as the post-roll begins.
     private func emitIncomingGlideEvents() {
         guard let c = glideCtx else { return }
-        let span = max(Self.glideOutSeconds, 0.01)
+        let span = max(mixGlideSeconds, 0.01)
         if c.mixOn {
             recGlide("tempo", deck: c.to, from: c.inRate, to: 1.0, span: span)
             recGlide("pitch", deck: c.to, from: c.inPitch, to: 0.0, span: span)

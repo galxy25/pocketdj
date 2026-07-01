@@ -440,6 +440,17 @@ struct SettingsView: View {
             .accessibilityIdentifier("settings-automix-skip-fade")
             .onChange(of: settings.skipFadeSeconds) { settings.persist() }
 
+            Stepper(value: $settings.mixGlideSeconds, in: 1...30, step: 1) {
+                HStack {
+                    Text("Mix Glide length")
+                    Spacer()
+                    Text("\(Int(settings.mixGlideSeconds)) s")
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("settings-mix-glide-length")
+            .onChange(of: settings.mixGlideSeconds) { settings.persist() }
+
             Toggle("Auto-hide played tracks", isOn: $settings.mixAutoHidePlayed)
                 .accessibilityIdentifier("settings-mix-autohide")
                 .onChange(of: settings.mixAutoHidePlayed) { settings.persist() }
