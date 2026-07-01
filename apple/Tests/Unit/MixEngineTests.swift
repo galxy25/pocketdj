@@ -838,9 +838,10 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
-    /// A glide-armed manual skip keeps the mix running AND records its tempo/pitch/effect sweep into
-    /// the session timeline (so a replay shows the glide) — but the crossfade itself stays machine-only.
-    func testGlideSkipKeepsMixingAndRecordsItsSweep() throws {
+    /// A glide-armed manual skip keeps the mix running AND records the transition as compact `.glide`
+    /// nodes (from/to/rate) — including the CROSSFADER — instead of ~100 sampled points, so a replay
+    /// reconstructs it losslessly. The machine sweep never masquerades as a sampled user `.crossfader`.
+    func testGlideSkipRecordsCompactGlideNodesIncludingCrossfader() throws {
         let e = makeEngine()
         let rec = MockRecorder()
         e.recorder = rec
@@ -852,11 +853,15 @@ final class MixEngineTests: XCTestCase {
         e.skipToNext(fadeSeconds: 5)                       // glide skip → must not crash
         XCTAssertTrue(e.autoMixing, "glide skip keeps the mix running")
         XCTAssertTrue(e.autoStatus?.contains("fading") == true)
-        let kinds = Set(rec.events.map { $0.kind })
-        XCTAssertTrue(kinds.contains(.tempo) || kinds.contains(.pitch) || kinds.contains(.effectStrength),
-                      "the glide's pitch/tempo/effect sweep should be recorded into the timeline")
+        XCTAssertTrue(rec.glides.contains { $0.param == "crossfader" }, "the crossfade is captured as a .glide node")
+        // No per-tick sampled automation for the machine sweep (that's what the compact node replaces).
         XCTAssertFalse(rec.events.contains { $0.kind == .crossfader },
-                       "the auto-mix crossfade itself stays machine-only (non-recording)")
+                       "the machine crossfade is a .glide node, not a sampled .crossfader gesture")
+        // A .glide carries from/to/rate (not just a single value).
+        if let g = rec.glides.first(where: { $0.param == "crossfader" }) {
+            XCTAssertNotEqual(g.from, g.to)
+            XCTAssertNotEqual(g.rate, 0)
+        }
         e.teardown()
     }
 
@@ -878,11 +883,17 @@ final class MixEngineTests: XCTestCase {
     /// Captures the engine's emitted session events without any persistence (test double).
     private final class MockRecorder: MixSessionRecorder {
         var events: [(kind: MixEventKind, deck: String?, value: Double?)] = []
+        var glides: [(param: String, deck: String?, from: Double, to: Double, rate: Double)] = []
         var played: [String] = []
         func logEvent(_ kind: MixEventKind, deck: String?, songId: String?, title: String?,
                       artist: String?, bpm: Double?, camelot: String?, param: String?,
                       value: Double?, flag: Bool?, posMs: Int?) {
             events.append((kind, deck, value))
+        }
+        func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,
+                      from: Double, to: Double, rate: Double, posMs: Int?) {
+            glides.append((param: param, deck: deck, from: from, to: to, rate: rate))
+            events.append((.glide, deck, to))
         }
         func notePlayed(songId: String) { played.append(songId) }
     }

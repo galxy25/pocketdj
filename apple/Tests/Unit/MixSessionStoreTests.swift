@@ -152,6 +152,31 @@ final class MixSessionStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.events(forSession: reloaded.currentId).count, 1)
     }
 
+    /// A `.glide` node stores from/to/rate and survives a save + reload (the new fields are optional,
+    /// so older docs decode unchanged).
+    func testGlideEventRoundTrips() async throws {
+        let url = tempURL()
+        let s = MixSessionStore(fileURL: url)
+        s.logGlide(deck: "A", param: "tempo", songId: "s1", title: "T", artist: "A",
+                   from: 1.0, to: 1.1, rate: 0.05, posMs: 1234)
+        s.logGlide(deck: nil, param: "crossfader", songId: nil, title: nil, artist: nil,
+                   from: 0.0, to: 1.0, rate: 0.33, posMs: nil)
+        s.flush()
+        try await waitUntil {
+            guard let data = try? Data(contentsOf: url),
+                  let doc = try? JSONDecoder().decode(MixSessionsDocument.self, from: data) else { return false }
+            return doc.sessions.first?.events.contains { $0.kind == .glide } == true
+        }
+        let reloaded = MixSessionStore(fileURL: url)
+        let glides = reloaded.events(forSession: reloaded.currentId).filter { $0.kind == .glide }
+        XCTAssertEqual(glides.count, 2)
+        let tempo = try XCTUnwrap(glides.first { $0.param == "tempo" })
+        XCTAssertEqual(tempo.fromValue, 1.0); XCTAssertEqual(tempo.value, 1.1); XCTAssertEqual(tempo.rate, 0.05)
+        XCTAssertEqual(tempo.deck, "A")
+        let xf = try XCTUnwrap(glides.first { $0.param == "crossfader" })
+        XCTAssertNil(xf.deck); XCTAssertEqual(xf.fromValue, 0.0); XCTAssertEqual(xf.value, 1.0)
+    }
+
     // MARK: - Recordings (captured mix audio metadata)
 
     func testAddRecordingAttachesAndAllocatesIds() {

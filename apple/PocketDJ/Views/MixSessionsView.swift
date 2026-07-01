@@ -553,6 +553,18 @@ enum MixEventDisplay {
         case .lead:        return ("star.fill", "Lead " + ((e.flag ?? false) ? "set" : "cleared"), Theme.accent2)
         case .sync:        return ("arrow.triangle.2.circlepath", "Sync → " + String(format: "%.2f×", e.value ?? 1), Theme.accent2)
         case .resetDeck:   return ("arrow.counterclockwise", "Reset deck", Theme.accent)
+        case .glide:
+            let from = e.fromValue ?? 0, to = e.value ?? 0
+            switch e.param {
+            case "crossfader":
+                return ("arrow.left.arrow.right", "Glide · Crossfader " + String(format: "%.2f→%.2f", from, to), Theme.accent2)
+            case "tempo":
+                return ("metronome", "Glide · Tempo " + String(format: "%.2f×→%.2f×", from, to), Theme.accent)
+            case "pitch":
+                return ("tuningfork", "Glide · Pitch " + String(format: "%+.1f→%+.1f", from, to), Theme.accent)
+            default:
+                return (fxIcon(e.param), "Glide · \(cap(e.param, "FX")) \(pct(from))→\(pct(to))", Theme.accent)
+            }
         case .unknown:     return ("questionmark", "—", Theme.fgDim)
         }
     }

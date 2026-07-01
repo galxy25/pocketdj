@@ -1084,6 +1084,11 @@ final class MixEngine {
         let to = other(autoLiveDeck)
         autoFadeFrom = autoLiveDeck
         autoFadeStartedAt = now
+        // Capture the crossfade itself as a compact .glide node (from current → the target extreme over
+        // the fade) — every auto-mix transition (glide or plain, auto or Skip) so a replay/model has the
+        // fader move, not just the deck moves.
+        recGlide("crossfader", deck: nil, from: crossfader,
+                 to: autoFadeFrom == .a ? 1.0 : 0.0, span: autoFadeSeconds)
         restart(to)
         play(to)
         autoDeckEndsAt[to] = now.addingTimeInterval(Double(autoDeckDurationMs[to] ?? Self.autoFallbackDurationMs) / 1000)
@@ -1111,8 +1116,10 @@ final class MixEngine {
         }
         updateSystemNowPlaying()      // the now-playing deck just switched → refresh the card
         if autoTransitionIsGlide {
-            if Self.glideOutSeconds > 0.05 { autoPostrollStartedAt = Date() }
-            else { finishGlide() }
+            if Self.glideOutSeconds > 0.05 {
+                autoPostrollStartedAt = Date()
+                emitIncomingGlideEvents()      // one compact .glide node per incoming settle-back ramp
+            } else { finishGlide() }
         }
     }
 
@@ -1161,10 +1168,12 @@ final class MixEngine {
         if preroll > 0.05 {
             glideInSecondsActive = preroll
             autoPrerollStartedAt = now
+            emitOutgoingGlideEvents(span: preroll)     // one compact .glide node per outgoing ramp
             if fxOn { setGlideEffect(tex.effect, enabled: true, strength: 0, on: from) }  // engage at 0
             applyOutgoingGlide(0)
         } else {                                        // no runway / skip → snap + straight to fade
             glideInSecondsActive = 0
+            emitOutgoingGlideEvents(span: 0)            // near-step ramp (skip / no preroll)
             applyOutgoingGlide(1)
             beginAutoCrossfade(now: now)
             startGlideCrossfade()
@@ -1210,26 +1219,10 @@ final class MixEngine {
         let folPhase = ((position(f) - folDb) / folBeat).truncatingRemainder(dividingBy: 1)
         var delta = leadPhase - folPhase
         if delta > 0.5 { delta -= 1 } else if delta < -0.5 { delta += 1 }
-        glideSeekSilently(f, toSeconds: max(0, position(f) + delta * folBeat))
-    }
-
-    /// A non-recording seek (single-player path only) for the glide beat-align — like `seek` but with
-    /// no `.seek` event, no auto-deck re-timing, and no now-playing refresh.
-    private func glideSeekSilently(_ deck: Deck, toSeconds sec: Double) {
-        guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
-              let start = startFrames[deck], let end = endFrames[deck] else { return }
-        let clamped = min(max(0, sec), duration(deck))
-        let was = state(deck).isPlaying
-        let frame = min(max(start, start + AVAudioFramePosition(clamped * sr)), end)
-        let count = end - frame
-        player.stop()
-        if count > 0 {
-            player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
-                                   at: nil, completionHandler: nil)
-        }
-        segmentStartSeconds[deck] = clamped
-        setPosition(deck, clamped)
-        if was, count > 0 { if !engine.isRunning { try? engine.start() }; player.play() }
+        // Use the RECORDING seek so the beat-align repositioning lands in the timeline too (every
+        // action is captured for faithful replay). During a transition `refreshAutoDeckEndIfLive`
+        // no-ops (autoTransitioning is true), so this doesn't disturb the crossfade timing.
+        seek(f, toSeconds: max(0, position(f) + delta * folBeat))
     }
 
     /// POST-ROLL step (progress `p` 0→1): ease the incoming deck's effect OFF + tempo/pitch back to
@@ -1268,16 +1261,56 @@ final class MixEngine {
         return (fxTextureEffect ?? .filter, fxTexturePeak)
     }
 
-    // Glide appliers — route through the PUBLIC recording setters so a glide shows up BOTH in the deck
-    // sliders/chips (they read the same observable state) AND in the session timeline, like a manual
-    // move. The continuous kinds (.tempo/.pitch/.effectStrength) are coalesced by the store, and the
-    // effect enable/disable only records on an ACTUAL change (not every ~10 Hz tick), so the sweep
-    // shows without flooding: a run of strength points + one on + one off per transition.
-    private func setGlideRate(_ rate: Double, on deck: Deck) { setRate(rate, on: deck) }
-    private func setGlidePitch(_ semitones: Double, on deck: Deck) { setPitch(semitones, on: deck) }
+    // Glide appliers — mutate deck state + push to the graph every ~10 Hz tick WITHOUT emitting a
+    // per-tick event (that would flood the corpus). The deck sliders/chips still reflect the live
+    // values (they read the same observable state), so you SEE the glide; the trajectory is captured
+    // COMPACTLY as one `.glide` event per ramp (from/to/rate — see `recGlide`), because an auto-mix
+    // glide is a deterministic linear ramp. (Manual moves, by contrast, stay sampled per-change.)
+    private func setGlideRate(_ rate: Double, on deck: Deck) {
+        mutate(deck) { $0.rate = min(max(rate, Self.rateRange.lowerBound), Self.rateRange.upperBound) }
+        applyRate(deck)
+    }
+    private func setGlidePitch(_ semitones: Double, on deck: Deck) {
+        mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
+        applyPitch(deck)
+    }
     private func setGlideEffect(_ effect: Effect, enabled: Bool, strength: Double, on deck: Deck) {
-        if state(deck).isEnabled(effect) != enabled { setEffect(effect, enabled: enabled, on: deck) }
-        setEffectStrength(effect, strength, on: deck)
+        mutate(deck) { $0.set(effect, enabled); $0.setStrength(effect, min(max(strength, 0), 1)) }
+        applyEffect(effect, on: deck)
+    }
+
+    /// Emit ONE compact `.glide` timeline event for a ramp: `param` from→to over `span` seconds, with
+    /// the average rate of change. Skips a no-op ramp (from ≈ to), so an identical-key / no-preroll
+    /// segment doesn't log a phantom node. Deck playhead + loaded track are stamped for the corpus.
+    private func recGlide(_ param: String, deck: Deck?, from: Double, to: Double, span: Double) {
+        guard let recorder, abs(to - from) > 1e-6 else { return }
+        let l = deck.flatMap { state($0).loaded }
+        recorder.logGlide(deck: deck?.rawValue, param: param, songId: l?.songId, title: l?.title,
+                          artist: l?.artist, from: from, to: to,
+                          rate: (to - from) / max(0.05, span), posMs: deck.map { Int(position($0) * 1000) })
+    }
+
+    /// The OUTGOING deck's glide ramps (tempo/pitch bend up-toward + effect sweep-in) — logged once as
+    /// the pre-roll begins. `span` is the ramp length (≈0 on a skip ⇒ a near-step rate).
+    private func emitOutgoingGlideEvents(span: Double) {
+        guard let c = glideCtx else { return }
+        if c.mixOn {
+            recGlide("tempo", deck: c.from, from: 1.0, to: c.outRate, span: span)
+            recGlide("pitch", deck: c.from, from: 0.0, to: c.outPitch, span: span)
+        }
+        if c.fxOn { recGlide(c.fxEffect.rawValue, deck: c.from, from: 0.0, to: c.fxPeak, span: span) }
+    }
+
+    /// The INCOMING deck's glide ramps (tempo/pitch settle-to-natural + effect sweep-out) — logged
+    /// once as the post-roll begins.
+    private func emitIncomingGlideEvents() {
+        guard let c = glideCtx else { return }
+        let span = max(Self.glideOutSeconds, 0.01)
+        if c.mixOn {
+            recGlide("tempo", deck: c.to, from: c.inRate, to: 1.0, span: span)
+            recGlide("pitch", deck: c.to, from: c.inPitch, to: 0.0, span: span)
+        }
+        if c.fxOn { recGlide(c.fxEffect.rawValue, deck: c.to, from: c.fxPeak, to: 0.0, span: span) }
     }
 
     // MARK: Glide math (pure — testable)
