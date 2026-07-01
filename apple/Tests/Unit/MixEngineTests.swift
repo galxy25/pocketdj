@@ -89,6 +89,34 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(e.strength(.filter, on: .a), 0.5, accuracy: 1e-9)
     }
 
+    /// Clear (long-press ↺) is a superset of Reset: it returns every parameter to default AND
+    /// EJECTS the track — the deck goes empty (loaded == nil, duration 0) and gives up its lead role.
+    func testClearDeckEjectsTrackAndResetsParameters() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.setRate(1.6, on: .a); e.setPitch(7, on: .a); e.setVolume(0.2, on: .a)
+        e.setEffect(.reverb, enabled: true, on: .a)
+        e.setLead(.a)
+        XCTAssertNotNil(e.loaded(.a))
+        XCTAssertTrue(e.isLead(.a))
+
+        e.clearDeck(.a)
+
+        XCTAssertNil(e.loaded(.a), "the track is ejected")
+        XCTAssertEqual(e.duration(.a), 0.0, "an empty deck has no duration")
+        XCTAssertNil(e.leadDeck, "clearing the lead deck gives up the lead role")
+        XCTAssertEqual(e.rate(.a), 1.0)
+        XCTAssertEqual(e.pitch(.a), 0.0)
+        XCTAssertEqual(e.volume(.a), 1.0)
+        XCTAssertFalse(e.isEnabled(.reverb, on: .a))
+        XCTAssertFalse(e.isPlaying(.a))
+    }
+
     func testLeadToggleAndCanSync() {
         let e = makeEngine()
         XCTAssertNil(e.leadDeck)

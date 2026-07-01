@@ -645,14 +645,22 @@ private struct DeckView: View {
             // CUE / PFL — tap to monitor this deck on the cue channel (house mix untouched);
             // long-press / right-click for its cue-volume slider. Just left of Reset.
             CueButton(engine: engine, deck: deck, enabled: loaded != nil, a11y: "\(a11y)-cue")
+            // TAP ↺ resets tempo/pitch/effects/volume + rewinds (keeps the track). LONG-PRESS /
+            // RIGHT-CLICK ejects the track entirely, returning the deck to the empty zero state.
             Button { engine.resetDeck(deck) } label: {
                 Image(systemName: "arrow.counterclockwise").font(.callout)
             }
             .buttonStyle(.bordered)
             .tint(Theme.accent)
             .disabled(loaded == nil)
-            .help("Reset deck — clear tempo, pitch, effects & volume, then rewind")
+            .help("Reset deck — tap: clear tempo, pitch, effects & volume, then rewind · long-press / right-click: eject the track to an empty deck")
             .accessibilityIdentifier("\(a11y)-restart")
+            .contextMenu {
+                Button(role: .destructive) { engine.clearDeck(deck) } label: {
+                    Label("Clear deck (eject track)", systemImage: "eject")
+                }
+                .accessibilityIdentifier("\(a11y)-clear")
+            }
         }
     }
 

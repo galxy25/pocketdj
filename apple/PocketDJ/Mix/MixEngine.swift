@@ -713,6 +713,30 @@ final class MixEngine {
         rec(.resetDeck, deck)    // ONE semantic event (not a burst of per-parameter resets)
     }
 
+    /// Full deck CLEAR — the "zero state". Everything `resetDeck` returns to default (tempo, pitch,
+    /// volume, effects, stems) AND the track itself is EJECTED: the player stops, the file + its
+    /// security scope are released, any stem wiring is dropped, the lead role and cue send are
+    /// cleared, and the deck goes empty. Bound to a LONG-PRESS / RIGHT-CLICK on the ↺ Reset button —
+    /// a plain tap just resets parameters + rewinds (`resetDeck`), keeping the loaded track. One
+    /// semantic `.resetDeck` event marks it in the session log (a clear is a reset that also ejects).
+    func clearDeck(_ deck: Deck) {
+        setPlaying(deck, false)          // emit .pause if it was running (BEFORE we forget the track)
+        stopActiveNodes(deck)            // stop the single file + any stem voices
+        unwireStems(deck)                // drop stem files + their security scope
+        releases[deck]?(); releases[deck] = nil   // release the main file's scope
+        files[deck] = nil; paths[deck] = nil; sampleRates[deck] = nil
+        startFrames[deck] = nil; endFrames[deck] = nil; segmentStartSeconds[deck] = nil
+        if leadDeck == deck { leadDeck = nil }     // give up the lead role if this deck held it
+        mutate(deck) { $0 = DeckState() }          // empty track, every parameter back to default, cue off
+        setDuration(deck, 0); setPosition(deck, 0)
+        applyRate(deck); applyPitch(deck)          // push the defaults onto the graph so nothing lingers
+        for e in Effect.allCases { applyEffect(e, on: deck) }
+        applyMixGains(); applyBoost(deck); applyCueRouting()
+        updateSystemNowPlaying()                   // an empty now-playing deck → clear/refresh the card
+        refreshTransport()
+        rec(.resetDeck, deck)
+    }
+
     /// Seek to an absolute SOURCE position (seconds from the song's start). Sample-accurate, bounded
     /// to the song's window so an analog fallback can't scrub past its slice into the next song.
     func seek(_ deck: Deck, toSeconds sec: Double) {
