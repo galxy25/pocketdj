@@ -635,15 +635,44 @@ final class MixEngineTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: out) }
         XCTAssertTrue(e.startRecording(to: out, release: nil))
         XCTAssertTrue(e.isRecording)
-        try await Task.sleep(nanoseconds: 400_000_000)   // let the graph render into the tap
+        try await Task.sleep(nanoseconds: 500_000_000)   // let the graph render into the tap
         e.stopRecording()
         XCTAssertFalse(e.isRecording)
-        try await Task.sleep(nanoseconds: 400_000_000)   // let the serial writer flush + finalize
-        XCTAssertTrue(FileManager.default.fileExists(atPath: out.path), "recording file should exist")
-        let size = (try FileManager.default.attributesOfItem(atPath: out.path)[.size] as? Int) ?? 0
-        XCTAssertGreaterThan(size, 0, "recording should not be empty")
-        let f = try AVAudioFile(forReading: out)         // must be a decodable audio file
-        XCTAssertGreaterThan(f.length, 0, "recorded audio must have frames")
+        // AVAssetWriter.finishWriting is async — poll until the file finalizes to a decodable take.
+        let frames = try await Self.pollForAudioFrames(at: out)
+        XCTAssertGreaterThan(frames, 0, "recording should finalize to a decodable, non-empty file")
+        e.teardown()
+    }
+
+    /// Poll (up to ~4 s) for `url` to open as a non-empty audio file — AVAssetWriter finalizes async.
+    private static func pollForAudioFrames(at url: URL) async throws -> AVAudioFramePosition {
+        for _ in 0..<40 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if let f = try? AVAudioFile(forReading: url), f.length > 0 { return f.length }
+        }
+        return 0
+    }
+
+    /// Crash-safety: fragments flush to disk WHILE recording, so a take survives an app kill (no clean
+    /// stop / finalize). Records past the fragment interval, then — without stopping — asserts the file
+    /// on disk already holds audio.
+    func testRecordingFlushesFragmentsForCrashSafety() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 5)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x", bpm: 120), on: .a)
+        e.play(.a)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("crashrec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        try await Task.sleep(nanoseconds: 3_000_000_000)   // past the 2 s fragment interval → a fragment flushes
+        // WITHOUT stopping (simulating a crash), the on-disk file already carries data.
+        let attrs = try? FileManager.default.attributesOfItem(atPath: out.path)
+        let size = (attrs?[.size] as? Int) ?? 0
+        XCTAssertGreaterThan(size, 0, "a fragment must be flushed mid-recording so a crash keeps the audio")
+        e.stopRecording()
         e.teardown()
     }
 
@@ -721,9 +750,9 @@ final class MixEngineTests: XCTestCase {
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("cuerec-\(UUID().uuidString).m4a")
         defer { try? FileManager.default.removeItem(at: out) }
         XCTAssertTrue(e.startRecording(to: out, release: nil))
-        try await Task.sleep(nanoseconds: 350_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
         e.stopRecording()
-        try await Task.sleep(nanoseconds: 350_000_000)
+        _ = try await Self.pollForAudioFrames(at: out)     // wait for async finalize
         // …so the take stays full STEREO (not mono-collapsed) and is a valid audio file.
         let f = try AVAudioFile(forReading: out)
         XCTAssertEqual(f.processingFormat.channelCount, 2, "capture is stereo house, not cue-pan collapsed")

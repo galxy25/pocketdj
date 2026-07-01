@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AVFoundation
 
 /// App-scoped coordinator for mix AUDIO recording. Bridges the (catalog/settings-agnostic) `MixEngine`
 /// audio tap to the session store + on-disk session folder: it resolves the current session's folder,
@@ -36,6 +37,46 @@ final class MixRecorder {
 
     /// Toggle capture (what the record button calls).
     func toggle() { if isRecording { stop() } else { start() } }
+
+    @ObservationIgnored private var didScanOrphans = false
+
+    /// One-shot on launch: re-file any recording FILE on disk that isn't referenced by a session's
+    /// `recordings[]` — e.g. a take interrupted by a crash (metadata is filed only on a clean stop, but
+    /// the fragmented `.m4a` survives). Each session folder is named by its session id, so an orphan is
+    /// re-homed to its own session (revived if that session is gone). Safe + idempotent (skips files
+    /// already recorded), so repeated launches don't duplicate.
+    func recoverOrphans() {
+        guard !didScanOrphans else { return }
+        didScanOrphans = true
+        let fm = FileManager.default
+        var roots: [(url: URL, isUser: Bool, release: (() -> Void)?)] = []
+        if let app = try? SessionFolders.appRoot() { roots.append((app, false, nil)) }
+        if let user = SessionFolders.resolveRoot(bookmark: settings?.sessionFolderBookmark, requireWritable: false),
+           user.isUserFolder {
+            roots.append((user.url, true, user.scoped ? { user.url.stopAccessingSecurityScopedResource() } : nil))
+        }
+        for root in roots {
+            defer { root.release?() }
+            let dirs = (try? fm.contentsOfDirectory(at: root.url, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            for dir in dirs where (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                let sessionId = dir.lastPathComponent
+                let known = Set(sessions.recordings(forSession: sessionId).map { $0.fileName })
+                let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey])) ?? []
+                for file in files where file.pathExtension.lowercased() == "m4a" && !known.contains(file.lastPathComponent) {
+                    var durMs = 0
+                    if let af = try? AVAudioFile(forReading: file) {
+                        let sr = af.processingFormat.sampleRate
+                        if sr > 0 { durMs = Int(Double(af.length) / sr * 1000) }
+                    }
+                    let created = (try? file.resourceValues(forKeys: [.creationDateKey]))?.creationDate
+                    let started = (created?.timeIntervalSince1970 ?? 0) * 1000
+                    sessions.recoverRecording(sessionId: sessionId, name: "Recovered recording",
+                                              fileName: file.lastPathComponent, startedAt: started,
+                                              durationMs: durMs, wasUserFolder: root.isUser)
+                }
+            }
+        }
+    }
 
     /// Begin capturing the mixed output into the current session's folder. No-op (returns false) if
     /// already recording or the folder / file can't be opened.

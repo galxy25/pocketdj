@@ -404,13 +404,8 @@ final class MixEngine {
         ensureEngine()
         guard built, !isRecording, let node = houseSum else { release?(); return false }
         let format = node.outputFormat(forBus: 0)                 // canonical 44.1 kHz stereo float
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: format.channelCount,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-        ]
-        guard recordingSink.begin(url: url, settings: settings) else { release?(); return false }
+        guard recordingSink.begin(url: url, sampleRate: format.sampleRate,
+                                  channels: format.channelCount) else { release?(); return false }
         recordingRelease = release
         isRecording = true
         return true
@@ -1908,40 +1903,95 @@ final class MixEngine {
 
 // MARK: - Recording tap sink
 
-/// The PERSISTENT recording sink behind the always-installed `houseSum` tap. It owns the recording
-/// `AVAudioFile` and serializes writes onto a private queue so the realtime tap thread never blocks on
-/// file I/O / AAC encoding. Recording is toggled by `begin`/`end` (a flag) rather than installing /
-/// removing the tap — so start/stop never reconfigures the live audio graph.
+/// The PERSISTENT recording sink behind the always-installed `houseSum` tap. It encodes to a
+/// FRAGMENTED AAC `.m4a` via `AVAssetWriter` (a `moof` fragment flushed every couple of seconds), so a
+/// take is CRASH- / disk-out-SAFE — everything up to the last flushed fragment survives an app kill or
+/// a full disk, without the ~10× on-disk cost of raw PCM. Writes are serialized onto a private queue
+/// so the realtime tap thread never blocks on AAC encoding, and recording is toggled by `begin`/`end`
+/// (a flag) rather than installing/removing the tap — so start/stop never reconfigures the live graph.
 ///
-/// `@unchecked Sendable`: `file` is touched ONLY on `queue`; `isCapturing` is a plain aligned `Bool`
-/// (realtime tap reads it, main thread writes it) where the only race — a start/stop landing between
+/// `@unchecked Sendable`: the writer state is touched ONLY on `queue`; `isCapturing` is a plain aligned
+/// `Bool` (realtime tap reads it, main writes it) where the only race — a start/stop landing between
 /// two buffers — drops at most one buffer, which is harmless.
 private final class MixTapSink: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.pocketdj.mix.recording")
-    private var file: AVAudioFile?          // queue-confined
+    // Queue-confined writer state:
+    private var writer: AVAssetWriter?
+    private var input: AVAssetWriterInput?
+    private var started = false
+    private var nextPTS: CMTime = .zero
     private var isCapturing = false         // realtime-readable
 
-    /// Open a capture file. Returns false if it can't be created. The file assignment is enqueued
-    /// BEFORE `isCapturing` is set — and both the assignment and every tap write run on the SAME serial
-    /// queue — so no buffer is ever written before the file exists (no lost head).
-    func begin(url: URL, settings: [String: Any]) -> Bool {
-        guard let f = try? AVAudioFile(forWriting: url, settings: settings) else { return false }
-        queue.async { self.file = f }
+    /// Begin a fragmented-AAC capture at `url`. Returns false if the writer can't be created.
+    func begin(url: URL, sampleRate: Double, channels: AVAudioChannelCount) -> Bool {
+        try? FileManager.default.removeItem(at: url)          // AVAssetWriter refuses an existing file
+        guard let w = try? AVAssetWriter(outputURL: url, fileType: .m4a) else { return false }
+        w.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)   // crash-safe: flush ~every 2 s
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVEncoderBitRateKey: 128_000,
+        ]
+        let inp = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+        inp.expectsMediaDataInRealTime = true
+        guard w.canAdd(inp) else { return false }
+        w.add(inp)
+        queue.async { self.writer = w; self.input = inp; self.started = false; self.nextPTS = .zero }
         isCapturing = true
         return true
     }
 
-    /// Stop capturing immediately, then finalize the file once pending writes drain.
+    /// Stop capturing immediately, then finalize (fragments already make it playable pre-finish).
     func end() {
         isCapturing = false
-        queue.async { self.file = nil }
+        queue.async {
+            guard let w = self.writer, let inp = self.input else { self.reset(); return }
+            if w.status == .writing { inp.markAsFinished(); w.finishWriting { } }
+            self.reset()
+        }
     }
 
-    /// Realtime tap entry (fires continuously): copy the transient buffer + enqueue the write, but ONLY
-    /// while capturing — otherwise an immediate return, so an idle tap costs a single flag check.
+    private func reset() { writer = nil; input = nil; started = false; nextPTS = .zero }
+
+    /// Realtime tap entry (fires continuously): while capturing, copy the transient buffer + enqueue
+    /// the encode/append off the realtime thread. Otherwise an immediate return (one flag check).
     func write(_ buffer: AVAudioPCMBuffer) {
         guard isCapturing, let copy = buffer.deepCopy() else { return }
-        queue.async { if let f = self.file { try? f.write(from: copy) } }
+        queue.async {
+            guard let w = self.writer, let inp = self.input else { return }
+            if !self.started {                                // lazily start on the first buffer
+                guard w.startWriting() else { return }
+                w.startSession(atSourceTime: .zero)
+                self.started = true; self.nextPTS = .zero
+            }
+            guard w.status == .writing, inp.isReadyForMoreMediaData,
+                  let sb = Self.sampleBuffer(from: copy, pts: self.nextPTS) else { return }
+            if inp.append(sb) {
+                self.nextPTS = CMTimeAdd(self.nextPTS,
+                    CMTime(value: CMTimeValue(copy.frameLength), timescale: CMTimeScale(copy.format.sampleRate)))
+            }
+        }
+    }
+
+    /// Wrap a PCM buffer as a `CMSampleBuffer` (16-byte-aligned COPY of the audio, so it outlives the
+    /// transient tap buffer) with a monotonic presentation timestamp, for `AVAssetWriterInput.append`.
+    private static func sampleBuffer(from pcm: AVAudioPCMBuffer, pts: CMTime) -> CMSampleBuffer? {
+        let fmtDesc = pcm.format.formatDescription
+        var sb: CMSampleBuffer?
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(pcm.format.sampleRate)),
+            presentationTimeStamp: pts, decodeTimeStamp: .invalid)
+        let status = CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+            makeDataReadyCallback: nil, refcon: nil, formatDescription: fmtDesc,
+            sampleCount: CMItemCount(pcm.frameLength), sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sb)
+        guard status == noErr, let buf = sb else { return nil }
+        let set = CMSampleBufferSetDataBufferFromAudioBufferList(
+            buf, blockBufferAllocator: kCFAllocatorDefault, blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment, bufferList: pcm.audioBufferList)
+        return set == noErr ? buf : nil
     }
 }
 
