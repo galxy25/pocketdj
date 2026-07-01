@@ -522,7 +522,9 @@ plays A; when the live deck's `secondsLeft ≤ lead` and a next track exists it
 which moves the equal-power **volumes** together) — then **`finishAutoCrossfade`** snaps the
 fader to the target, **silences** the outgoing deck, advances, and loads the next queued
 track onto the freed deck. It loops across both decks until the queue ends; a manual
-pause ends the loop. (`autoStatus` shows "n / total · Deck X | fading".)
+pause ends the loop. (`autoStatus` shows "n / total · Deck X | fading".) When a **glide**
+feature is armed (§7.11) the transition grows an optional **pre-roll** and **post-roll**
+around this same crossfade; with none armed neither fires, so the plain path is unchanged.
 
 ### 7.6 Stem decks — mix the parts, not just the track
 
@@ -612,11 +614,14 @@ Full spec: [Lock-screen Now Playing, Skip, slider & stem fixes](../design/mix-ta
 
 ```
  Channel-strip split (standard DJ signal flow): after the FX chain, each deck FANS OUT —
-   flanger[d] ─┬─→ mainGains[d] (AVAudioMixerNode)  outputVolume = min(vol,1) × crossfadeFactor   → mainMixerNode
-               └─→ cueGains[d]  (AVAudioMixerNode)  outputVolume = cued ? cueVol : 0  (PRE-FADER)  → mainMixerNode
+   flanger[d] ─┬─→ mainGains[d] (AVAudioMixerNode)  outputVolume = min(vol,1) × crossfadeFactor  ──→ houseSum ─→ housePan ─→ mainMixerNode
+               └─→ cueGains[d]  (AVAudioMixerNode)  outputVolume = cued ? cueVol : 0  (PRE-FADER) ─────────────────────────→ mainMixerNode
+   houseSum (shared AVAudioMixerNode) = the CLEAN stereo HOUSE sum (both decks' mainGains merge here,
+     NO cue pan) = the RECORDING tap point (§7.12). The cue-side hard pan lives on housePan, DOWNSTREAM of
+     the tap, so a capture stays clean stereo house even while a deck is cued.
    player now runs at UNITY (volume/crossfade moved downstream); >unity boost stays on the EQ globalGain;
    stems merge at inputMixer (upstream) so they ride BOTH sends for free.
-   anyCued ⇒ mainGains pan to the house side, cueGains to the cue side (CueChannel, default right);
+   anyCued ⇒ housePan pans to the house side, cueGains to the cue side (CueChannel, default right);
    nothing cued ⇒ both centered → bit-identical normal stereo. masterLimiter still guards the sum.
  Cue button (left of Reset): tap = toggleCue · long-press/right-click = cue-VOLUME popover (independent level)
    CueChannel (which side is cue) lives in Settings → pushed via engine.setCueOnRight()
@@ -639,6 +644,89 @@ shows the **measured beat-grid BPM** (the value beat-matching actually uses) bes
 pulse** ring that flashes on every beat — downbeats brighter — so you can feel the groove and eyeball-align
 the two decks while mixing. Full spec:
 [Cue/PFL, beat-grid BPM & beat pulse](../design/mix-tab-cue-beatgrid-pulse.md).
+
+### 7.11 Auto-Mix glide — FX Glide + Mix Glide
+
+```
+ Two auto-mix pill toggles (default OFF): setFXGlide / setMixGlide. When either is armed a transition
+ grows PRE-ROLL → CROSSFADE → POST-ROLL around the §7.5 crossfade (extra Date? phase timers layered on
+ autoFadeStartedAt): autoPrerollStartedAt · autoFadeStartedAt · autoPostrollStartedAt. autoTransitionIsGlide
+ is captured at the START, so toggling mid-transition can't corrupt a transition already underway; a
+ snapshot GlideContext{from,to, fx…, mix…, saved effect state} drives it. Preroll length is fit into the
+ runway (÷1.12 headroom when Mix Glide, since it plays faster). autoTransitioning gates Skip + re-timing.
+
+ FX GLIDE — a COHERENT effect texture across a run of transitions:
+   currentTexture(): reuse (effect, peak) for fxTextureRunRemaining (a run of 3…5), then re-roll via
+     rollTexture(&fxGlidePrng) [splitmix64, seeded per-mix by fxSeed(from: queue) — deterministic, no wall-clock RNG]
+   fxGlidePool = [.filter, .reverb, .flanger]   (compressor EXCLUDED — a dynamics tool, not a sweep)
+   preroll  : effect ramps 0 → peak on the OUTGOING deck (before the volume sweep)
+   crossfade: effect held at peak on BOTH decks
+   postroll : effect ramps peak → 0 on the INCOMING deck, then RESTORE the deck's pre-glide effect state
+     (saved in GlideContext — a load doesn't clear effects, so the outgoing deck is restored before reuse)
+
+ MIX GLIDE — bend bpm + pitch toward a shared key, with beat sync:
+   signedCamelotSteps(a,b): shortest signed wheel-hour distance −6…+6 (Camelot.parse, Ch.3)
+   glideParams(from,to): mag = min(1, |d|/2); each deck bends TOWARD the other by ≤ 1 key (meet in middle),
+     1 key = ±10% tempo (glideRate: 1 ± 0.10·keys) AND ±10% pitch (glidePitch: keys · 12·log2(1.1) ≈ 1.65 st);
+     nil camelot ⇒ identity (beat-sync only)
+   preroll  : OUTGOING rate/pitch ramp → target;  crossfade begin: INCOMING starts at the OPPOSITE offset
+     + glidePhaseAlign (non-recording downbeat align, best-effort);  postroll: INCOMING eases → natural (1.0 / 0)
+
+ All glide moves use NON-RECORDING appliers (setGlideRate/Pitch/Effect) — mutate deck state + push to the
+ graph but emit NO session event, exactly like applyCrossfader, so a ~10 Hz sweep never floods the corpus.
+```
+
+**Reading it.** The two glide toggles decorate the **same crossfade machine** rather than replacing it:
+a transition gains an optional **pre-roll** (ease the glide *in* on the outgoing deck, before the volume
+sweep) and **post-roll** (ease it *back out* on the incoming deck, after), gated by a captured
+`autoTransitionIsGlide` + a `GlideContext` snapshot so a mid-transition toggle can't corrupt work already in
+flight — and when neither is armed, both durations are zero, so the plain §7.5 path is byte-for-byte
+unchanged. **FX Glide** keeps a **coherent texture**: one effect (from a sweep-only pool — filter/reverb/
+flanger; the compressor is a dynamics tool, so it's out) held for a **deterministic run of 3–5 transitions**
+(seeded `splitmix64`, so a track set always textures the same way), ramped in on the outgoing deck, held on
+both through the fade, then ramped off the incoming deck with the deck's prior effect state **restored**.
+**Mix Glide** uses the **signed Camelot distance** to bend each deck **toward the other by up to one key** (so
+they meet in the middle of the blend), where *one key = ±10% tempo **and** ±10% pitch* — combining a little
+of each keeps the bend subtle — with a best-effort **downbeat align** for beat-sync; the incoming deck then
+settles back to its own key/tempo through the post-roll. Every glide move goes through **non-recording**
+appliers so the automated sweep never lands in the session event log.
+
+### 7.12 Session audio recording — capture the mix
+
+```
+ CAPTURE (MixEngine): startRecording(to:release:) / stopRecording(), observable isRecording.
+   Tap houseSum (§7.10 — the CLEAN stereo house, before the cue pan) → MixTapWriter → AAC .m4a
+   MixTapWriter (@unchecked Sendable): serial DispatchQueue; the realtime tap COPIES each buffer
+     (AVAudioPCMBuffer.deepCopy) then enqueues the write off the render thread → AAC encode never stalls audio.
+   release = the session-folder security scope, OWNED by startRecording (dropped on stop OR on any failure).
+
+ COORDINATION (MixRecorder, @Observable, APP-SCOPED — survives leaving the Mix tab, like MixEngine):
+   start(): resolve the CURRENT session's folder → mix-sessions/<sessionId>/recording-N.m4a → engine.startRecording
+   stop():  engine.stopRecording() → sessions.addRecording(toSession: recSessionId, …)  [take captured at START,
+            so a Reset mid-capture still files it]. If that session was DELETED mid-capture → recoverRecording
+            revives the id (matches the on-disk folder) so the take isn't orphaned.
+
+ SESSION FOLDER (SessionFolders — mirrors BurnStore.resolveBurnFolder):
+   settings.sessionFolderBookmark (security-scoped, Settings ▸ Mix sessions) ELSE Application Support/mix-sessions/
+   one subfolder per session; MixRecording.wasUserFolder records which, so playback resolves from the right root.
+
+ MODEL: MixSession.recordings: [MixRecording]?  (OPTIONAL — schema v2, a v1 doc decodes unchanged)
+        MixRecording{ id, fileName, startedAt, durationMs, wasUserFolder }
+ UI: MixView RecordButton (toolbar, pulsing purple→red) + in-content "● Recording m:ss"; MixSessionsView
+     recordingsPanel = per-take ▶/⏹ (RecordingAudioPlayer, resolves via SessionFolders + holds the scope).
+```
+
+**Reading it.** Recording taps the new **clean-house sum** (`houseSum`, §7.10) — *not* the final output —
+so the take is the **audience's stereo mix even while you monitor a cue in the headphones**. The realtime
+tap can't afford to block on AAC encoding, so `MixTapWriter` **copies each buffer and writes off a serial
+queue**. The engine only knows how to capture to a URL; an **app-scoped `MixRecorder`** bridges that to the
+app graph — resolving the current session's **folder** (`SessionFolders`, the same app-storage-or-user-picked
+pattern as the burnt-music folder), driving start/stop, and filing the finished take's metadata into
+`MixSession.recordings` (an **optional** field, so older session documents decode untouched). Because the
+recorder is app-scoped, a capture keeps running when you leave the Mix tab; because the take is bound to the
+session it *began* in, a Reset — or even a delete — mid-capture still files it (a deleted session is
+**revived** rather than orphaned). Back on the **Sessions** screen, each take gets a play control, so a
+session now replays both its **actions** (§7.8) and its **audio**.
 
 ## Next
 

@@ -243,8 +243,12 @@ contract**. Honest status:
   tempo-preserved), sample-accurate **SEEK**, an equal-power **CROSSFADER**, **4 effects**
   with continuous strength, grid-aware **BEAT-MATCHING** (follower Sync to a lead deck,
   octave-folded tempo + best-effort downbeat phase-align, **preferring the measured grid
-  BPM**), a timed **AUTO-MIX** auto-DJ, and offline **STEM DECKS** (4 stem nodes summed into
-  the deck chain; per-stem mute/volume) — no licensed third-party audio SDK (Ch. 4 §7). It's
+  BPM**), a timed **AUTO-MIX** auto-DJ (with optional **FX GLIDE** — a coherent effect sweep
+  held across a run of transitions — and **MIX GLIDE** — a Camelot-guided bpm+pitch bend with
+  beat-sync — per transition, Ch. 4 §7.11), **SESSION AUDIO RECORDING** (capture the clean stereo
+  house mix to a per-session folder, replayable from Sessions, Ch. 4 §7.12), and offline **STEM
+  DECKS** (4 stem nodes summed into the deck chain; per-stem mute/volume) — no licensed
+  third-party audio SDK (Ch. 4 §7). It's
   fed by two new analysis side-channels folded into the rips manifest: a **measured beat grid**
   (rip-server `POST /backfill-beatgrids` → librosa downbeat grid → `beatGridBpm`/
   `firstDownbeatMs`/`steady`, Ch. 3 §4.3) and **Demucs STEMS** (rip-server `POST /stemify` /
