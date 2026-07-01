@@ -792,29 +792,31 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(p.inPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
     }
 
-    /// TEMPO bend comes from BPM only: two BPMs bend toward their mean, capped ±10%; no camelot ⇒ no
-    /// pitch bend. (128 & 140 → mean ≈133.8 → outRate ≈1.045, inRate ≈0.956.)
-    func testGlideParamsTempoFromBPMOnly() {
+    /// TEMPO is a beat-match SPLIT between the decks (both reach a common effective BPM → beats lock);
+    /// no camelot ⇒ no pitch bend. Incoming rate = √(fromBPM/toBPM), outgoing = 1/that.
+    func testGlideParamsTempoBeatMatchesSplit() {
         let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 140)
-        XCTAssertEqual(p.outRate, sqrt(128.0 * 140) / 128, accuracy: 1e-6)
-        XCTAssertEqual(p.inRate, sqrt(128.0 * 140) / 140, accuracy: 1e-6)
-        XCTAssertTrue((0.9...1.1).contains(p.outRate) && (0.9...1.1).contains(p.inRate))
+        let split = (128.0 / 140).squareRoot()
+        XCTAssertEqual(p.inRate, split, accuracy: 1e-6)
+        XCTAssertEqual(p.outRate, 1 / split, accuracy: 1e-6)
+        XCTAssertEqual(128 * p.outRate, 140 * p.inRate, accuracy: 1e-6, "both decks reach a common BPM → locked")
         XCTAssertEqual(p.outPitch, 0, "no camelot ⇒ no pitch bend")
         XCTAssertEqual(p.inPitch, 0)
     }
 
-    /// Far-apart BPMs clamp the tempo bend to ±10% (subtle, not a full match).
-    func testGlideParamsTempoCapsAtTenPercent() {
+    /// Far-apart BPMs still fully beat-match (no ±10% cap) — the point is a locked beat, not a nudge.
+    func testGlideParamsTempoFullyMatchesFarBPMs() {
         let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 90)
-        XCTAssertEqual(p.outRate, 0.9, accuracy: 1e-9)
-        XCTAssertEqual(p.inRate, 1.1, accuracy: 1e-9)
+        XCTAssertEqual(128 * p.outRate, 90 * p.inRate, accuracy: 1e-6, "decks meet at a common effective BPM")
     }
 
-    /// Half/double-time BPMs octave-match to ~1:1 (already aligned → little/no bend).
-    func testGlideParamsTempoOctaveMatches() {
+    /// Half/double-time BPMs octave-fold (like Sync): 128 vs 64 folds the 2× ratio and meets in the
+    /// middle rather than double-timing one deck to the other's absolute BPM.
+    func testGlideParamsTempoOctaveFolds() {
         let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 64)
-        XCTAssertEqual(p.outRate, 1.0, accuracy: 1e-6)
-        XCTAssertEqual(p.inRate, 1.0, accuracy: 1e-6)
+        let split = 2.0.squareRoot()                       // octaveFolded(128/64) = 2
+        XCTAssertEqual(p.inRate, split, accuracy: 1e-6)
+        XCTAssertEqual(p.outRate, 1 / split, accuracy: 1e-6)
     }
 
     /// NO default: with neither Camelot nor BPM known for both tracks, Mix Glide is identity — just

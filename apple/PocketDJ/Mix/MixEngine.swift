@@ -1341,10 +1341,13 @@ final class MixEngine {
     /// (no default — with neither datum it's identity, i.e. just the volume crossfade):
     ///   • PITCH — only when BOTH Camelot keys are known: harmonic bend toward each other (≤1 key each,
     ///     1 key = ~1.65 st), so the overlap meets in the middle; the incoming then settles back.
-    ///   • TEMPO — only when BOTH BPMs are known: bend each deck toward their octave-matched geometric
-    ///     mean BPM (a subtle partial beat-match), capped to ±10% so it stays gentle.
-    /// Combining a little pitch + a little tempo is the "subtle mix"; each is skipped if its datum is
-    /// missing for either track.
+    ///   • TEMPO — only when BOTH BPMs are known: a real BEAT-MATCH toward the middle. Using the SAME
+    ///     octave-folded ratio the Lead/Sync buttons use (`octaveFolded`, fed the measured grid BPM via
+    ///     the caller's `matchBPM`), the full match is SPLIT between the two decks so they meet at a
+    ///     common effective BPM — their beats lock during the overlap (the caller then downbeat-aligns
+    ///     via the grid). Similar BPMs ⇒ a tiny nudge; only far-apart tempos bend much.
+    /// Combining a little pitch + a beat-matched tempo is the "subtle mix"; each is skipped if its datum
+    /// is missing for either track.
     nonisolated static func glideParams(fromCamelot a: String?, toCamelot b: String?,
                                         fromBPM: Double?, toBPM: Double?)
         -> (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) {
@@ -1356,14 +1359,11 @@ final class MixEngine {
             outPitch = glidePitch(keys: dir * mag)        // outgoing bends toward incoming
             inPitch = glidePitch(keys: -dir * mag)        // incoming starts opposite, settles back
         }
-        // TEMPO — BPM bend toward the octave-matched mean (both BPMs known), capped ±10%.
+        // TEMPO — beat-match, split between the decks so they MEET (octave-folded like Sync).
         if let ra = fromBPM, let rb = toBPM, ra > 0, rb > 0 {
-            var folded = rb                               // octave-match the incoming BPM to the outgoing
-            while folded / ra > 1.5 { folded /= 2 }
-            while folded / ra < 0.67 { folded *= 2 }
-            let mean = (ra * folded).squareRoot()
-            outRate = min(max(mean / ra, 0.9), 1.1)       // outgoing bends toward the shared mean
-            inRate = min(max(mean / folded, 0.9), 1.1)    // incoming starts at the mean, settles to 1.0
+            let split = octaveFolded(ra / rb).squareRoot()   // incoming's full match to outgoing, halved
+            inRate = min(max(split, rateRange.lowerBound), rateRange.upperBound)   // incoming toward the match
+            outRate = min(max(1 / split, rateRange.lowerBound), rateRange.upperBound) // outgoing meets it
         }
         return (outRate, outPitch, inRate, inPitch)
     }
