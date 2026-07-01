@@ -1145,8 +1145,8 @@ final class MixEngine {
         let tex: (effect: Effect, peak: Double) = fxOn ? currentTexture() : (.filter, 0)
         let mixOn = mixGlideEnabled
         let mp: (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) =
-            mixOn ? (Self.glideParams(fromCamelot: state(from).loaded?.camelot,
-                                      toCamelot: state(to).loaded?.camelot) ?? (1, 0, 1, 0))
+            mixOn ? Self.glideParams(fromCamelot: state(from).loaded?.camelot,
+                                     toCamelot: state(to).loaded?.camelot)
                   : (1, 0, 1, 0)
         glideCtx = GlideContext(
             from: from, to: to,
@@ -1336,17 +1336,21 @@ final class MixEngine {
         min(max(keys * semitonesPerKey, pitchRange.lowerBound), pitchRange.upperBound)
     }
 
-    /// Per-deck tempo/pitch targets for a transition A(out)→B(in): each deck bends TOWARD the other by
-    /// up to 1 key (10%) so they meet in the middle during the overlap; the incoming then settles back
-    /// to natural. nil camelot ⇒ identity (no harmonic glide — the caller still beat-syncs).
+    /// Per-deck tempo/pitch targets for a transition A(out)→B(in): the outgoing deck bends UP toward the
+    /// incoming + the incoming bends DOWN toward the outgoing (they meet mid-blend; the incoming then
+    /// settles back to natural). When both Camelot keys parse AND differ, the DIRECTION + amount follow
+    /// the wheel distance (≤1 key each). Otherwise — camelot missing/unparseable OR identical keys —
+    /// fall back to the spec's literal default (outgoing up one key, incoming down one), so Mix Glide
+    /// ALWAYS produces an audible, visible bend rather than silently doing nothing on un-keyed tracks.
     nonisolated static func glideParams(fromCamelot a: String?, toCamelot b: String?)
-        -> (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double)? {
-        guard let d = signedCamelotSteps(a, b) else { return nil }
-        let mag = min(1.0, Double(abs(d)) / 2.0)      // close up to 2 keys of distance (1 each way)
-        guard mag > 0 else { return (1, 0, 1, 0) }    // identical key → beat-sync only, no pitch bend
-        let dir = d > 0 ? 1.0 : -1.0
-        let outKeys = dir * mag                         // outgoing bends toward incoming
-        let inKeys = -dir * mag                         // incoming starts opposite, ramps back to 0
+        -> (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) {
+        var outKeys = 1.0, inKeys = -1.0                 // default: full-key A-up / B-down
+        if let d = signedCamelotSteps(a, b), abs(d) >= 1 {
+            let mag = min(1.0, Double(abs(d)) / 2.0)      // close up to 2 keys of distance (1 each way)
+            let dir = d > 0 ? 1.0 : -1.0
+            outKeys = dir * mag                           // outgoing bends toward incoming
+            inKeys = -dir * mag                           // incoming starts opposite, ramps back to 0
+        }
         return (glideRate(keys: outKeys), glidePitch(keys: outKeys),
                 glideRate(keys: inKeys),  glidePitch(keys: inKeys))
     }
@@ -1947,8 +1951,11 @@ private final class MixTapSink: @unchecked Sendable {
         isCapturing = false
         queue.async {
             guard let w = self.writer, let inp = self.input else { self.reset(); return }
-            if w.status == .writing { inp.markAsFinished(); w.finishWriting { } }
             self.reset()
+            if w.status == .writing {
+                inp.markAsFinished()
+                w.finishWriting { [w] in _ = w }   // capture `w` so it lives until finalize COMPLETES
+            }
         }
     }
 

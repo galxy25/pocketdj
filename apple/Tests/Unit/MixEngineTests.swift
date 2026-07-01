@@ -778,7 +778,7 @@ final class MixEngineTests: XCTestCase {
     /// The spec example (A=5A, B=9A): the outgoing deck bends UP a full key (+10% tempo, +~1.65 st),
     /// the incoming starts a full key DOWN, and later settles back to natural (tested via inRate→1).
     func testGlideParamsBendsDecksTowardEachOther() {
-        let p = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "9A"))
+        let p = MixEngine.glideParams(fromCamelot: "5A", toCamelot: "9A")
         XCTAssertEqual(p.outRate, 1.10, accuracy: 1e-9)
         XCTAssertEqual(p.inRate, 0.90, accuracy: 1e-9)
         XCTAssertEqual(p.outPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
@@ -787,25 +787,29 @@ final class MixEngineTests: XCTestCase {
 
     /// Direction flips when the incoming key is LOWER (outgoing bends down, incoming starts up).
     func testGlideParamsFlipsWhenIncomingLower() {
-        let p = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "9A", toCamelot: "5A"))
+        let p = MixEngine.glideParams(fromCamelot: "9A", toCamelot: "5A")
         XCTAssertEqual(p.outRate, 0.90, accuracy: 1e-9)
         XCTAssertEqual(p.inRate, 1.10, accuracy: 1e-9)
     }
 
     /// Adjacent keys (distance 1) bend only HALF a key each (5%) — meet in the middle.
     func testGlideParamsAdjacentIsHalfKey() {
-        let p = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "6A"))
+        let p = MixEngine.glideParams(fromCamelot: "5A", toCamelot: "6A")
         XCTAssertEqual(p.outRate, 1.05, accuracy: 1e-9)
         XCTAssertEqual(p.inRate, 0.95, accuracy: 1e-9)
     }
 
-    /// Identical key ⇒ no harmonic bend (beat-sync only); unparseable camelot ⇒ nil (no glide).
-    func testGlideParamsIdentityAndNil() {
-        let same = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "5A"))
-        XCTAssertEqual(same.outRate, 1.0); XCTAssertEqual(same.inRate, 1.0)
-        XCTAssertEqual(same.outPitch, 0);  XCTAssertEqual(same.inPitch, 0)
-        XCTAssertNil(MixEngine.glideParams(fromCamelot: nil, toCamelot: "9A"))
-        XCTAssertNil(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "zz"))
+    /// Identical keys OR missing/unparseable camelot ⇒ the DEFAULT bend (outgoing up 1 key, incoming
+    /// down 1 key) so Mix Glide always produces a visible/audible bend on un-keyed tracks (the common
+    /// case), rather than silently doing nothing.
+    func testGlideParamsDefaultsToAFullBendWhenUnkeyed() {
+        for pair in [("5A", "5A"), (nil, "9A"), ("5A", "zz"), (nil, nil)] as [(String?, String?)] {
+            let p = MixEngine.glideParams(fromCamelot: pair.0, toCamelot: pair.1)
+            XCTAssertEqual(p.outRate, 1.10, accuracy: 1e-9, "outgoing bends up ~10% for \(pair)")
+            XCTAssertEqual(p.inRate, 0.90, accuracy: 1e-9, "incoming starts ~10% down for \(pair)")
+            XCTAssertEqual(p.outPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
+            XCTAssertEqual(p.inPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+        }
     }
 
     /// A key → tempo/pitch mapping clamps to the engine's rate/pitch ranges.

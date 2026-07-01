@@ -123,9 +123,11 @@ struct MixSessionDetailView: View {
 
     /// A STABLE snapshot for the duration of the screen (the current session keeps recording).
     @State private var events: [MixSessionEvent] = []
-    /// The session's captured audio recordings (snapshot; the current session may add more).
-    @State private var recordings: [MixRecording] = []
     @State private var recPlayer = RecordingAudioPlayer()
+
+    /// Recordings are read LIVE from the store (not snapshotted) so a take filed while this screen is
+    /// open — or one that landed just before it opened — always shows.
+    private var recordings: [MixRecording] { store.recordings(forSession: sessionId) }
     @State private var replayMs: Double = 0
     @State private var playing = false
     @State private var speed: Double = 1
@@ -172,7 +174,6 @@ struct MixSessionDetailView: View {
         .task {
             // Drop unknown (forward-compat) events from the human view.
             events = store.events(forSession: sessionId).filter { !$0.kind.isUnknown }
-            recordings = store.recordings(forSession: sessionId)
         }
         .onDisappear { pause(); recPlayer.stop() }
     }
