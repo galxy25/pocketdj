@@ -46,6 +46,10 @@ struct PocketDJApp: App {
     /// App-side recorder for mix SESSIONS (played tracks + the full time-stamped action log, kept
     /// until Reset). Wired as `mix.recorder` so every deck action is logged; persists its own JSON.
     @State private var mixSessions: MixSessionStore
+    /// APP-SCOPED audio recorder — captures the live mix's house output into the current session's
+    /// folder. Owned here (not by MixView) so a recording keeps running across Mix-tab switches, just
+    /// like `mix`. Its `settings` (session-folder location) is pushed in from the Mix tab's `.task`.
+    @State private var mixRecorder: MixRecorder
     @Environment(\.scenePhase) private var scenePhase
 
     // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
@@ -98,6 +102,10 @@ struct PocketDJApp: App {
         mix.recorder = mixSessions
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
+        // App-scoped audio recorder: captures the mix's house output into the current session's
+        // folder. Shares the app's `mix` (audio tap) + `mixSessions` (metadata); its session-folder
+        // `settings` are pushed in from the Mix tab.
+        _mixRecorder = State(initialValue: MixRecorder(engine: mix, sessions: mixSessions))
     }
 
     var body: some Scene {
@@ -118,6 +126,7 @@ struct PocketDJApp: App {
                 .environment(lyrics)
                 .environment(mix)
                 .environment(mixSessions)
+                .environment(mixRecorder)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through

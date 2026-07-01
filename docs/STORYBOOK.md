@@ -1367,11 +1367,15 @@ Under each deck's header sits its control stack:
 - a **per-deck play/pause** for cueing one side on its own.
 
 **Reset (↺)** wipes the deck back to neutral — clears tempo, pitch, every effect and the volume trim,
-then rewinds — so you can recover a deck to a clean state in one tap.
+then rewinds — so you can recover a deck to a clean state in one tap. **Long-press** (iOS) /
+**right-click** (macOS) the ↺ opens a **"Clear deck (eject track)"** action that goes one step
+further: it **ejects the loaded track entirely** — stopping playback and returning the whole deck to
+its **empty zero state** — for when you want to start the side over from nothing, not just re-neutralise
+the track that's on it.
 
 **User story:** "Stretch a track to match a tempo without chipmunking it, nudge its key by a few
-semitones to mix in harmonically, scrub to the drop — and reset the deck clean when I want to start
-over."
+semitones to mix in harmonically, scrub to the drop — reset the deck clean when I want to start over,
+or hold Reset to eject the track and clear the deck completely."
 
 ---
 
@@ -1437,8 +1441,34 @@ While it runs, a live **"Auto-mixing"** banner shows the running status (**N / M
 The banner lives in the body of the screen (not only the nav bar), so on an iPhone — where a crowded
 toolbar collapses extras into a "•••" menu — the **Stop stays reachable** the whole time.
 
+**Two "glide" toggles** ride the auto-mix pill (in both the setup row and the running banner, so you
+can arm them before Play or flip them mid-set):
+
+- **FX Glide** — every transition gets a **coherent effect sweep**: an effect (filter, reverb, or
+  flanger) eases **in** on the outgoing track *before* the volume sweep, rides **both** tracks through
+  the crossfade, then eases **off** the incoming track. It keeps the **same effect for a run of 3–5
+  songs** so a texture settles in rather than flickering track to track.
+- **Mix Glide** — the two tracks **ease toward each other** through the transition, but **only using
+  the data each track actually has** (no guessing):
+  - when **both tracks have a Camelot key**, they **bend in pitch** toward a shared key — the outgoing
+    track glides up (or down) by up to **one key** while the incoming starts the opposite way, so they
+    **meet in the middle** and the incoming then **settles back to its own key**;
+  - when **both tracks have a BPM**, they **beat-match** — the same tempo-matching maths as **Sync**
+    (§53), pulling the two tempos together on the **beat grid** with a best-effort **downbeat align**,
+    then releasing the incoming track back to its own tempo;
+  - when a track is **missing** its key or BPM, that dimension is simply **left alone** — and if *neither*
+    is known for both tracks, Mix Glide falls back to the **plain volume-fader crossfade** (no bend at
+    all). It never invents a key or tempo it doesn't have.
+
+  Its **length is a setting** (**Settings ▸ Mix**, default **10 s**) so you can make the bend as
+  gradual as you like.
+
+Both are off by default; the plain crossfade is unchanged when they're off.
+
 **User story:** "Point it at a pocket, hit Play or Shuffle, and let it DJ the whole crate for me —
-crossfading track to track on its own — with a Stop I can always find."
+crossfading track to track on its own — with a Stop I can always find. Flip on FX Glide for a sweep
+through each blend, or Mix Glide to bend the keys and tempos together where the data's there so
+nothing clashes — set how long that glide takes."
 
 ---
 
@@ -1506,3 +1536,77 @@ burn**, and the whole crate lands on the phone as a **fully-offline, stem-mixabl
 
 **User story:** "Stemify the records I want to take apart, burn the set once, and have every stem
 on my phone — so I can mute, solo and remix in a venue with no bars and no server."
+
+---
+
+## 58. Record your mix — the session recording
+
+A **record button** (the ⏺ record icon) sits in the **Mix toolbar**. Tap it and it **pulses a purple→
+red gradient** while it captures the **audio of your mix** — the house output, exactly what an audience
+would hear (your monitoring **cue** in the headphones never leaks in). A live **"● Recording m:ss"**
+strip shows the elapsed time with a **Stop**, so on an iPhone the state and the stop stay visible even
+if the toolbar tucks the button away. Tap the button again (or Stop) to end the capture.
+
+Recordings are filed **per session** into a **session folder** — one subfolder per mix session, so
+each sitting keeps its own takes (and there's room to grow other session data later). By default that
+lives in the app's private storage; in **Settings ▸ Mix sessions** you can **pick your own folder**
+(just like the burnt-music folder) to browse the `.m4a` files yourself in Finder / the Files app.
+
+**It's written to survive a crash.** The take isn't held in memory and flushed at the end — it's
+**streamed to disk continuously** (fragmented AAC), so if the app is killed, runs out of disk, or the
+phone dies mid-set, **whatever played up to that moment is already a playable file**. On the next
+launch the app **re-files any interrupted take** back onto its session automatically, so a crash never
+loses the recording.
+
+Every take shows up back on the **Sessions** screen (the same place that replays the *actions* of a
+mix): open a session and each recording gets a **▶ / ⏹ play control** **and a scrub bar** — so you can
+**hear the mix back** and **jump around inside it**, not just watch the moves. The session list marks
+how many takes a session has.
+
+**User story:** "Hit record before I start the set, let the mix run, and stop when I'm done — then
+play the whole thing back from Sessions and scrub to any moment, or grab the file from my own folder
+to share. Even if it crashes, the recording's still there."
+
+---
+
+## 59. Replay a session — the wrapped move-by-move timeline
+
+Every mix also records the **moves themselves** — each load, play/pause, seek, tempo & pitch change,
+volume, **crossfader**, effect, stem action, Lead/Sync and Reset — into a **time-stamped timeline** on
+the **Sessions** screen, so a set can be **replayed move by move** (the raw material for later training
+an auto-mix model). This batch made that timeline far easier to actually read:
+
+- **It wraps to fill the screen** instead of scrolling forever to the right — **5 moves per row on
+  Mac, 3 on iPad** — with **arrows between the nodes** (→ along a row, then ↵ down to the next) so the
+  **left-to-right-then-down** order is unmistakable.
+- **Glides are one compact node, not a blur of ticks.** An auto-mix bend (or a crossfade) that used to
+  be thousands of tiny moves now shows as a single **"glide"** node reading **from → to** with its
+  **average rate of change** — so an automated sweep reads as one gesture, while a human's subtler
+  hand-moves are still captured change by change. (The **crossfader** is captured the same way.)
+- **Tap a "load" node** (long-press isn't needed — a tap) and the track's **song-metadata card** pops
+  up, so you can see exactly *what* was dropped at that point in the set.
+
+**User story:** "Open a past session and actually read it — the moves wrap across the screen in order,
+each auto-glide is one clean from→to node instead of a thousand ticks, and I can tap any track I loaded
+to see what it was."
+
+---
+
+## 60. Export a tracklist — PocketDJ or CSV
+
+Exporting a **playlist**, **pocket**, **set list**, or a **session's tracklist** now asks **one extra
+question — the format:**
+
+- **PocketDJ (full metadata)** — the existing re-importable bundle (`.pocketdj.zip`) that keeps
+  *everything* PocketDJ knows and can be loaded straight back into the app. This is the **default**.
+- **CSV (tracklist)** — a **universal** comma-separated list any spreadsheet, DJ app, or database can
+  read, with just the columns **everyone** shares: **play track # · Title · Artist · Album · Year ·
+  Genre**. It deliberately **leaves out** PocketDJ's own metadata (BPM/key/segments/provenance) —
+  that's what the PocketDJ format is for — so the CSV stays portable.
+
+The format picker appears after you tap **Export**; pick **PocketDJ** to keep working inside the app,
+or **CSV** to hand your tracklist to the outside world.
+
+**User story:** "Export a set as PocketDJ when I'm round-tripping it in the app — or as a plain CSV
+with just the universal columns when I need to drop the tracklist into a spreadsheet or another DJ
+tool."

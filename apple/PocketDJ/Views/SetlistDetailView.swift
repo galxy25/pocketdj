@@ -38,8 +38,23 @@ struct SetlistDetailView: View {
     @State private var addingNote = false      // top-level "Add note" composer
     @State private var addNoteDraft = ""
     @State private var ripBurn = CollectionRipBurnController()
+    @State private var showCSVExporter = false
+    @State private var csvDoc = CSVFile(data: Data())
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
+
+    /// `<setlist name>.csv` for the tracklist export.
+    private var csvFilename: String {
+        let base = (setlist?.name ?? "setlist")
+            .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
+            .trimmingCharacters(in: .whitespaces)
+        return base.isEmpty ? "setlist" : base
+    }
+    private func exportCSV() {
+        if let data = collections.exportSetlistCSV(setlistId) {
+            csvDoc = CSVFile(data: data); showCSVExporter = true
+        }
+    }
 
     /// Whether THIS set is the one currently playing — source-aware, so a different set
     /// playing in the background (after the user navigated away) doesn't make this screen's
@@ -146,6 +161,8 @@ struct SetlistDetailView: View {
                 setlistToolbar(setlist)
             }
         }
+        .fileExporter(isPresented: $showCSVExporter, document: csvDoc, contentType: .commaSeparatedText,
+                      defaultFilename: csvFilename) { _ in }
         .alert("Add note", isPresented: $addingNote) {
             TextField("Note (mic break, sample, cue…)", text: $addNoteDraft)
             Button("Add") {
@@ -292,6 +309,9 @@ struct SetlistDetailView: View {
             Button { nameDraft = setlist.name ?? ""; renaming = true } label: {
                 Label("Rename", systemImage: "pencil")
             }.accessibilityIdentifier("setlist-rename")
+            Button { exportCSV() } label: {
+                Label("Export tracklist (CSV)", systemImage: "tablecells")
+            }.accessibilityIdentifier("setlist-export-csv")
             #if os(iOS)
             if isPlaying {
                 Button {} label: { Label("Edit order", systemImage: "arrow.up.arrow.down") }

@@ -22,6 +22,7 @@ struct SettingsView: View {
     @State private var showImporter = false
     @State private var showCollectionsImporter = false
     @State private var showBurnFolderPicker = false
+    @State private var showSessionFolderPicker = false
     @State private var exportDoc = EditsFile(data: Data())
 
     // Full backup (.pocketdj.zip)
@@ -42,6 +43,7 @@ struct SettingsView: View {
             mixSection
             appleMusicSyncSection
             burnFolderSection
+            sessionFolderSection
             editsSection
             collectionsSection
             backupSection
@@ -91,6 +93,66 @@ struct SettingsView: View {
                 settings.persist()
             }
         }
+        // Mix SESSION folder — same cross-platform directory picker as the burnt-music folder.
+        .fileImporter(isPresented: $showSessionFolderPicker, allowedContentTypes: [.folder]) { result in
+            guard case .success(let url) = result else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            if let data = BurnStore.makeBookmark(for: url) {
+                settings.sessionFolderBookmark = data
+                settings.persist()
+            }
+        }
+    }
+
+    // MARK: Mix session folder
+
+    /// A user-pickable folder for mix SESSION data — recorded audio (and future per-session files),
+    /// one subfolder per session — so recordings are browsable in Finder / the Files app. Stored as a
+    /// security-scoped bookmark; unset falls back to the app-managed `mix-sessions/` dir. Mirrors the
+    /// burnt-music folder above. See `SessionFolders` / `MixRecorder`.
+    private var sessionFolderSection: some View {
+        Section {
+            Button { showSessionFolderPicker = true } label: {
+                Label("Choose session folder…", systemImage: "folder.badge.plus")
+            }
+            .accessibilityIdentifier("settings-session-folder-pick")
+            if let name = sessionFolderName {
+                HStack {
+                    Label(name, systemImage: "folder")
+                        .font(.caption).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
+                        .accessibilityIdentifier("settings-session-folder-path")
+                    Spacer()
+                    Button("Use app storage", role: .destructive) {
+                        settings.sessionFolderBookmark = nil
+                        settings.persist()
+                    }
+                    .font(.caption)
+                    .accessibilityIdentifier("settings-session-folder-reset")
+                }
+            }
+        } header: {
+            Text("Mix sessions")
+        } footer: {
+            Text("Where each mix session's recorded audio is saved (one folder per session). Pick a folder to browse the recordings yourself in \(browseAppName). Leave unset to keep them in the app’s private storage.")
+        }
+    }
+
+    /// The display name of the currently-chosen session folder (resolved read-only from the
+    /// bookmark), or nil when none is set (app-storage fallback).
+    private var sessionFolderName: String? {
+        guard let data = settings.sessionFolderBookmark else { return nil }
+        var stale = false
+        #if os(macOS)
+        let opts: URL.BookmarkResolutionOptions = [.withSecurityScope]
+        #else
+        let opts: URL.BookmarkResolutionOptions = []
+        #endif
+        guard let url = try? URL(resolvingBookmarkData: data, options: opts,
+                                 relativeTo: nil, bookmarkDataIsStale: &stale) else {
+            return "Chosen folder (unavailable)"
+        }
+        return url.lastPathComponent
     }
 
     // MARK: Burnt-music folder (Feature 2)
@@ -377,6 +439,17 @@ struct SettingsView: View {
             }
             .accessibilityIdentifier("settings-automix-skip-fade")
             .onChange(of: settings.skipFadeSeconds) { settings.persist() }
+
+            Stepper(value: $settings.mixGlideSeconds, in: 1...30, step: 1) {
+                HStack {
+                    Text("Mix Glide length")
+                    Spacer()
+                    Text("\(Int(settings.mixGlideSeconds)) s")
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("settings-mix-glide-length")
+            .onChange(of: settings.mixGlideSeconds) { settings.persist() }
 
             Toggle("Auto-hide played tracks", isOn: $settings.mixAutoHidePlayed)
                 .accessibilityIdentifier("settings-mix-autohide")

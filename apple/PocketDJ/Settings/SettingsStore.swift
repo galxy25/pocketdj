@@ -55,6 +55,11 @@ final class SettingsStore {
     /// burnt audio + sidecars are written into (so the files are browsable in Finder/Files).
     /// `nil` → BurnStore falls back to the app-managed Application Support `burns/` dir.
     var burnFolderBookmark: Data?
+    /// Mix SESSION FOLDER: a SECURITY-SCOPED bookmark to the user-picked folder each mix session's
+    /// data (recorded audio, and future per-session files) is written into — one subfolder per
+    /// session. `nil` → app-managed Application Support `mix-sessions/` dir. Mirrors
+    /// `burnFolderBookmark`; see `SessionFolders`.
+    var sessionFolderBookmark: Data?
     /// Auto-Mix (Mix tab): seconds BEFORE a track ends to begin crossfading to the next deck.
     /// Default 15. Read when the user starts an auto-mix; clamped to a sane range in the UI.
     var autoMixLeadSeconds: Double
@@ -65,6 +70,9 @@ final class SettingsStore {
     /// button (a longer, deliberate transition than the automatic `autoMixFadeSeconds`). Default 15.
     /// A double-tap on Skip always uses a fast 5 s sweep regardless of this value.
     var skipFadeSeconds: Double
+    /// Mix Glide length (Mix tab): seconds the tempo/pitch/effect eases in + back out per transition —
+    /// longer = a smoother glide. Default 10. Pushed into `MixEngine.setMixGlideSeconds`.
+    var mixGlideSeconds: Double
     /// Mix sessions: when on (default), the track loader HIDES songs already played in the current
     /// session; when off, they still show but with a ✓ checkmark. See `MixSessionStore`.
     var mixAutoHidePlayed: Bool
@@ -89,9 +97,11 @@ final class SettingsStore {
         self.searchSecretKey = data.searchSecretKey
         self.searchEndpoint = data.searchEndpoint
         self.burnFolderBookmark = data.burnFolderBookmark
+        self.sessionFolderBookmark = data.sessionFolderBookmark
         self.autoMixLeadSeconds = data.autoMixLeadSeconds ?? 15
         self.autoMixFadeSeconds = data.autoMixFadeSeconds ?? 3
         self.skipFadeSeconds = data.skipFadeSeconds ?? 15
+        self.mixGlideSeconds = data.mixGlideSeconds ?? 10
         self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
         self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         self.beatPulseEnabled = data.beatPulseEnabled ?? false
@@ -172,8 +182,10 @@ final class SettingsStore {
             ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
+            sessionFolderBookmark: sessionFolderBookmark,
             autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds,
-            skipFadeSeconds: skipFadeSeconds, mixAutoHidePlayed: mixAutoHidePlayed,
+            skipFadeSeconds: skipFadeSeconds, mixGlideSeconds: mixGlideSeconds,
+            mixAutoHidePlayed: mixAutoHidePlayed,
             cueOutputChannel: cueOutputChannel.rawValue,
             beatPulseEnabled: beatPulseEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
@@ -197,9 +209,11 @@ final class SettingsStore {
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
         searchEndpoint = d.searchEndpoint
         burnFolderBookmark = d.burnFolderBookmark
+        sessionFolderBookmark = d.sessionFolderBookmark
         autoMixLeadSeconds = d.autoMixLeadSeconds ?? 15
         autoMixFadeSeconds = d.autoMixFadeSeconds ?? 3
         skipFadeSeconds = d.skipFadeSeconds ?? 15
+        mixGlideSeconds = d.mixGlideSeconds ?? 10
         mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
         cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         beatPulseEnabled = d.beatPulseEnabled ?? false
@@ -232,11 +246,15 @@ struct SettingsData: Codable {
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — same
     /// backward-compat rationale as `ripFromCloud` above.
     var burnFolderBookmark: Data?
+    /// Optional so older blobs still decode — same backward-compat rationale as `burnFolderBookmark`.
+    var sessionFolderBookmark: Data?
     /// Optional so older blobs still decode (coalesced to 15 / 3 at the read sites).
     var autoMixLeadSeconds: Double?
     var autoMixFadeSeconds: Double?
     /// Optional so older blobs still decode (coalesced to 15 at the read sites).
     var skipFadeSeconds: Double?
+    /// Optional so older blobs still decode (coalesced to 10 at the read sites).
+    var mixGlideSeconds: Double?
     /// Optional so older blobs still decode (coalesced to true at the read sites).
     var mixAutoHidePlayed: Bool?
     /// Optional so older blobs still decode (coalesced to `.right` at the read sites).
@@ -254,9 +272,11 @@ struct SettingsData: Codable {
         searchSecretKey: "",
         searchEndpoint: "",
         burnFolderBookmark: nil,
+        sessionFolderBookmark: nil,
         autoMixLeadSeconds: 15,
         autoMixFadeSeconds: 3,
         skipFadeSeconds: 15,
+        mixGlideSeconds: 10,
         mixAutoHidePlayed: true,
         cueOutputChannel: CueChannel.right.rawValue,
         beatPulseEnabled: false)

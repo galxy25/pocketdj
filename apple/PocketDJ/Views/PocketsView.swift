@@ -17,6 +17,9 @@ struct PocketDetailView: View {
     @State private var confirmingDelete = false
     @State private var showExporter = false
     @State private var exportDoc = PlaylistZipFile(data: Data())
+    @State private var showFormatDialog = false
+    @State private var showCSVExporter = false
+    @State private var csvDoc = CSVFile(data: Data())
     @State private var addingNote = false
     @State private var noteDraft = ""
     @State private var editingNoteId: String?
@@ -127,7 +130,7 @@ struct PocketDetailView: View {
                         .accessibilityIdentifier("add-pocket-note")
                     Button { nameDraft = pocket?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
                         .accessibilityIdentifier("rename-pocket")
-                    Button { export() } label: { Label("Export…", systemImage: "square.and.arrow.up") }
+                    Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                         .accessibilityIdentifier("export-pocket")
                     Divider()
                     CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPocket: pocketId) }, noun: "pocket")
@@ -182,6 +185,14 @@ struct PocketDetailView: View {
         }
         .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
                       defaultFilename: exportFilename) { _ in }
+        .fileExporter(isPresented: $showCSVExporter, document: csvDoc, contentType: .commaSeparatedText,
+                      defaultFilename: csvFilename) { _ in }
+        .confirmationDialog("Export pocket", isPresented: $showFormatDialog, titleVisibility: .visible) {
+            Button("PocketDJ (full metadata)") { exportPocketDJ() }.accessibilityIdentifier("export-format-pocketdj")
+            Button("CSV (tracklist)") { exportCSV() }.accessibilityIdentifier("export-format-csv")
+        } message: {
+            Text("PocketDJ keeps everything (re-importable). CSV is a universal tracklist (title, artist, album, year, genre).")
+        }
     }
 
     /// `<sanitized name>.pocket.pocketdj` — `.fileExporter` appends `.zip`, yielding
@@ -193,9 +204,23 @@ struct PocketDetailView: View {
         return "\(base.isEmpty ? "pocket" : base).pocket.pocketdj"
     }
 
-    private func export() {
+    /// `<sanitized name>.csv` — the universal tracklist filename.
+    private var csvFilename: String {
+        let base = (pocket?.name ?? "pocket")
+            .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
+            .trimmingCharacters(in: .whitespaces)
+        return base.isEmpty ? "pocket" : base
+    }
+
+    private func exportPocketDJ() {
         if let data = try? collections.exportPocketZip(pocketId) {
             exportDoc = PlaylistZipFile(data: data); showExporter = true
+        }
+    }
+
+    private func exportCSV() {
+        if let data = collections.exportPocketCSV(pocketId) {
+            csvDoc = CSVFile(data: data); showCSVExporter = true
         }
     }
 

@@ -424,6 +424,24 @@ final class CollectionsStore {
     /// A read-only "From your sources" playlist's song ids (already a flat list).
     func songIds(forSource source: SourcePlaylist) -> [String] { source.songIds }
 
+    // MARK: - CSV tracklist export (universal columns — see TracklistCSV)
+
+    /// Playlist → tracklist CSV (the resolved songs in order). nil if the playlist is gone / no catalog.
+    func exportPlaylistCSV(_ id: String) -> Data? {
+        guard playlist(id) != nil, let app else { return nil }
+        return TracklistCSV.data(rows: app.tracklistCSVRows(forSongIds: songIds(forPlaylist: id)))
+    }
+    /// Pocket → tracklist CSV.
+    func exportPocketCSV(_ id: String) -> Data? {
+        guard pocket(id) != nil, let app else { return nil }
+        return TracklistCSV.data(rows: app.tracklistCSVRows(forSongIds: songIds(forPocket: id)))
+    }
+    /// Setlist → tracklist CSV (audio tracks in order; text cues excluded).
+    func exportSetlistCSV(_ id: String) -> Data? {
+        guard setlist(id) != nil, let app else { return nil }
+        return TracklistCSV.data(rows: app.tracklistCSVRows(forSongIds: songIds(forSetlist: id)))
+    }
+
     /// Resolve a list of song ids to the `(id,title,artist)` tuples the BURN queue +
     /// sidecar need, using the live catalog. Ids with no catalog song are dropped (the
     /// server is the unknown-id backstop for RIP; BURN can't burn a song it can't name).

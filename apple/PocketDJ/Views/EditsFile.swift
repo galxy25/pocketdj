@@ -57,3 +57,20 @@ struct PlaylistZipFile: FileDocument {
         FileWrapper(regularFileWithContents: data)
     }
 }
+
+/// A CSV-document wrapper for `.fileExporter`, used to export a tracklist as `<name>.csv` (see
+/// `TracklistCSV`) — a plain, spreadsheet-/tool-friendly alternative to the `.pocketdj` format.
+struct CSVFile: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+
+    var data: Data
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}

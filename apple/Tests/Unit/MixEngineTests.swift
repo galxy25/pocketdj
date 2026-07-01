@@ -89,6 +89,34 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(e.strength(.filter, on: .a), 0.5, accuracy: 1e-9)
     }
 
+    /// Clear (long-press ↺) is a superset of Reset: it returns every parameter to default AND
+    /// EJECTS the track — the deck goes empty (loaded == nil, duration 0) and gives up its lead role.
+    func testClearDeckEjectsTrackAndResetsParameters() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.setRate(1.6, on: .a); e.setPitch(7, on: .a); e.setVolume(0.2, on: .a)
+        e.setEffect(.reverb, enabled: true, on: .a)
+        e.setLead(.a)
+        XCTAssertNotNil(e.loaded(.a))
+        XCTAssertTrue(e.isLead(.a))
+
+        e.clearDeck(.a)
+
+        XCTAssertNil(e.loaded(.a), "the track is ejected")
+        XCTAssertEqual(e.duration(.a), 0.0, "an empty deck has no duration")
+        XCTAssertNil(e.leadDeck, "clearing the lead deck gives up the lead role")
+        XCTAssertEqual(e.rate(.a), 1.0)
+        XCTAssertEqual(e.pitch(.a), 0.0)
+        XCTAssertEqual(e.volume(.a), 1.0)
+        XCTAssertFalse(e.isEnabled(.reverb, on: .a))
+        XCTAssertFalse(e.isPlaying(.a))
+    }
+
     func testLeadToggleAndCanSync() {
         let e = makeEngine()
         XCTAssertNil(e.leadDeck)
@@ -618,16 +646,332 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(e.rate(.a), 1.3, accuracy: 1e-9)
     }
 
+    // MARK: - Audio recording (capture the mixed house output to a file)
+
+    /// End-to-end: recording the live graph produces a NON-EMPTY, DECODABLE audio file — proves the
+    /// master-limiter tap → MixTapWriter → AAC write path actually yields valid output (the format
+    /// match between the tap buffer and the AVAudioFile write is only exercisable on a real graph).
+    func testRecordingCapturesAPlayableFile() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 1)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("rec-song", bpm: 120), on: .a)
+        e.play(.a)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("mixrec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        XCTAssertTrue(e.isRecording)
+        try await Task.sleep(nanoseconds: 500_000_000)   // let the graph render into the tap
+        e.stopRecording()
+        XCTAssertFalse(e.isRecording)
+        // AVAssetWriter.finishWriting is async — poll until the file finalizes to a decodable take.
+        let frames = try await Self.pollForAudioFrames(at: out)
+        XCTAssertGreaterThan(frames, 0, "recording should finalize to a decodable, non-empty file")
+        e.teardown()
+    }
+
+    /// Poll (up to ~4 s) for `url` to open as a non-empty audio file — AVAssetWriter finalizes async.
+    private static func pollForAudioFrames(at url: URL) async throws -> AVAudioFramePosition {
+        for _ in 0..<40 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if let f = try? AVAudioFile(forReading: url), f.length > 0 { return f.length }
+        }
+        return 0
+    }
+
+    /// Crash-safety: fragments flush to disk WHILE recording, so a take survives an app kill (no clean
+    /// stop / finalize). Records past the fragment interval, then — without stopping — asserts the file
+    /// on disk already holds audio.
+    func testRecordingFlushesFragmentsForCrashSafety() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 5)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x", bpm: 120), on: .a)
+        e.play(.a)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("crashrec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        try await Task.sleep(nanoseconds: 3_000_000_000)   // past the 2 s fragment interval → a fragment flushes
+        // WITHOUT stopping (simulating a crash), the on-disk file already carries data.
+        let attrs = try? FileManager.default.attributesOfItem(atPath: out.path)
+        let size = (attrs?[.size] as? Int) ?? 0
+        XCTAssertGreaterThan(size, 0, "a fragment must be flushed mid-recording so a crash keeps the audio")
+        e.stopRecording()
+        e.teardown()
+    }
+
+    /// Stopping a recording must NOT stop playback. Asserted at the AUDIO layer via `truePlayhead` (the
+    /// real render clock) — the persistent tap means stop never reconfigures the graph, so the deck's
+    /// clock keeps advancing. (Regression: stop used to `removeTap`, which paused the decks on-device.)
+    func testStoppingRecordingDoesNotStopPlayback() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x", bpm: 120), on: .a)
+        e.play(.a)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        e.stopRecording()
+        let before = try XCTUnwrap(e.truePlayhead(.a))
+        try await Task.sleep(nanoseconds: 300_000_000)         // let the render clock advance post-stop
+        let after = try XCTUnwrap(e.truePlayhead(.a))
+        XCTAssertTrue(e.isPlaying(.a), "the deck is still logically playing")
+        XCTAssertGreaterThan(after, before, "the audio render clock must keep advancing after stop")
+        e.teardown()
+    }
+
+    /// A second startRecording while already recording is rejected (no dangling second tap/file), and
+    /// stopRecording is idempotent.
+    func testStartRecordingTwiceRejectedAndStopIsIdempotent() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let out1 = FileManager.default.temporaryDirectory.appendingPathComponent("rec1-\(UUID().uuidString).m4a")
+        let out2 = FileManager.default.temporaryDirectory.appendingPathComponent("rec2-\(UUID().uuidString).m4a")
+        defer { [out1, out2].forEach { try? FileManager.default.removeItem(at: $0) } }
+        XCTAssertTrue(e.startRecording(to: out1, release: nil))
+        XCTAssertFalse(e.startRecording(to: out2, release: nil), "already recording → rejected")
+        e.stopRecording()
+        e.stopRecording()                                 // idempotent — no crash / no double-release
+        XCTAssertFalse(e.isRecording)
+        e.teardown()
+    }
+
+    /// The scope-release contract: on a host with NO audio device, a start fails and drops the passed
+    /// scope release rather than leaking it. (On the simulator the graph builds and the start succeeds,
+    /// so this only asserts on a headless host; the file is cleaned up either way.)
+    func testStartRecordingReleasesScopeOnFailure() {
+        let e = makeEngine()               // NOT ensureEngine'd; a headless host stays unbuilt → start fails
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("recfail-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        var released = false
+        let ok = e.startRecording(to: out, release: { released = true })
+        if !ok { XCTAssertTrue(released, "a failed start must drop the security scope, not leak it") }
+        e.teardown()                        // finalizes the capture on a host where it did start
+    }
+
+    /// Recording while a deck is CUED still captures the clean STEREO house mix (the tap is on the
+    /// pre-cue-pan house sum), not the mono-collapsed house + private cue bleed. Guards the review's
+    /// confirmed cue/recording finding.
+    func testRecordingWhileCuedCapturesCleanStereoHouse() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 1), b = try makeSineWAV(seconds: 1)
+        defer { [a, b].forEach { try? FileManager.default.removeItem(at: $0) } }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 120), on: .b)
+        e.setCueOnRight(true)
+        e.setCrossfader(0.0)                 // full A on the house
+        e.play(.a); e.play(.b)
+        e.setCued(true, on: .b)              // monitor B in the cue — must NOT pollute the recording
+        // The house is steered to the monitor's house side (pan on `housePan`, DOWNSTREAM of the tap)…
+        XCTAssertEqual(try XCTUnwrap(e.cueRoutingSnapshot(.a)).mainPan, -1, accuracy: 1e-6)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("cuerec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        try await Task.sleep(nanoseconds: 500_000_000)
+        e.stopRecording()
+        _ = try await Self.pollForAudioFrames(at: out)     // wait for async finalize
+        // …so the take stays full STEREO (not mono-collapsed) and is a valid audio file.
+        let f = try AVAudioFile(forReading: out)
+        XCTAssertEqual(f.processingFormat.channelCount, 2, "capture is stereo house, not cue-pan collapsed")
+        XCTAssertGreaterThan(f.length, 0)
+        e.teardown()
+    }
+
+    // MARK: - Mix Glide (Camelot harmonic glide math)
+
+    /// Signed Camelot-hour distance wraps to the SHORTEST way round the 12-hour wheel (−6…+6).
+    func testSignedCamelotSteps() {
+        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "9A"), 4)     // the spec example
+        XCTAssertEqual(MixEngine.signedCamelotSteps("9A", "5A"), -4)
+        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "5A"), 0)
+        XCTAssertEqual(MixEngine.signedCamelotSteps("1A", "12A"), -1)   // wrap: shortest is DOWN one
+        XCTAssertEqual(MixEngine.signedCamelotSteps("12A", "1A"), 1)
+        XCTAssertEqual(MixEngine.signedCamelotSteps("2A", "8A"), 6)     // exactly opposite → +6
+        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "12A"), -5)   // shortest is DOWN five
+        XCTAssertNil(MixEngine.signedCamelotSteps("nope", "9A"))
+        XCTAssertNil(MixEngine.signedCamelotSteps(nil, "9A"))
+    }
+
+    /// PITCH bend (A=5A, B=9A) comes from Camelot: outgoing up ~1.65 st, incoming down ~1.65 st. With
+    /// no BPM there is NO tempo bend (rate stays 1.0).
+    func testGlideParamsPitchFromCamelotOnly() {
+        let p = MixEngine.glideParams(fromCamelot: "5A", toCamelot: "9A", fromBPM: nil, toBPM: nil)
+        XCTAssertEqual(p.outPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.inPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.outRate, 1.0, accuracy: 1e-9, "no BPM ⇒ no tempo bend")
+        XCTAssertEqual(p.inRate, 1.0, accuracy: 1e-9)
+    }
+
+    /// Direction flips when the incoming key is LOWER (outgoing pitch bends down, incoming up).
+    func testGlideParamsPitchDirectionFlips() {
+        let p = MixEngine.glideParams(fromCamelot: "9A", toCamelot: "5A", fromBPM: nil, toBPM: nil)
+        XCTAssertEqual(p.outPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.inPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
+    }
+
+    /// TEMPO is a beat-match SPLIT between the decks (both reach a common effective BPM → beats lock);
+    /// no camelot ⇒ no pitch bend. Incoming rate = √(fromBPM/toBPM), outgoing = 1/that.
+    func testGlideParamsTempoBeatMatchesSplit() {
+        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 140)
+        let split = (128.0 / 140).squareRoot()
+        XCTAssertEqual(p.inRate, split, accuracy: 1e-6)
+        XCTAssertEqual(p.outRate, 1 / split, accuracy: 1e-6)
+        XCTAssertEqual(128 * p.outRate, 140 * p.inRate, accuracy: 1e-6, "both decks reach a common BPM → locked")
+        XCTAssertEqual(p.outPitch, 0, "no camelot ⇒ no pitch bend")
+        XCTAssertEqual(p.inPitch, 0)
+    }
+
+    /// Far-apart BPMs still fully beat-match (no ±10% cap) — the point is a locked beat, not a nudge.
+    func testGlideParamsTempoFullyMatchesFarBPMs() {
+        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 90)
+        XCTAssertEqual(128 * p.outRate, 90 * p.inRate, accuracy: 1e-6, "decks meet at a common effective BPM")
+    }
+
+    /// Half/double-time BPMs octave-fold (like Sync): 128 vs 64 folds the 2× ratio and meets in the
+    /// middle rather than double-timing one deck to the other's absolute BPM.
+    func testGlideParamsTempoOctaveFolds() {
+        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 64)
+        let split = 2.0.squareRoot()                       // octaveFolded(128/64) = 2
+        XCTAssertEqual(p.inRate, split, accuracy: 1e-6)
+        XCTAssertEqual(p.outRate, 1 / split, accuracy: 1e-6)
+    }
+
+    /// NO default: with neither Camelot nor BPM known for both tracks, Mix Glide is identity — just
+    /// the volume crossfade, no pitch/tempo bend.
+    func testGlideParamsIdentityWhenNoData() {
+        for c in [("5A", "5A"), (nil, "9A"), ("5A", "zz"), (nil, nil)] as [(String?, String?)] {
+            let p = MixEngine.glideParams(fromCamelot: c.0, toCamelot: c.1, fromBPM: nil, toBPM: 120)
+            XCTAssertEqual(p.outRate, 1.0); XCTAssertEqual(p.inRate, 1.0)
+            XCTAssertEqual(p.outPitch, 0); XCTAssertEqual(p.inPitch, 0)
+        }
+    }
+
+    /// A key → tempo/pitch mapping clamps to the engine's rate/pitch ranges.
+    func testGlideRateAndPitchClamp() {
+        XCTAssertEqual(MixEngine.glideRate(keys: 0), 1.0, accuracy: 1e-12)
+        XCTAssertEqual(MixEngine.glideRate(keys: 1), 1.10, accuracy: 1e-12)
+        XCTAssertEqual(MixEngine.glideRate(keys: -1), 0.90, accuracy: 1e-12)
+        XCTAssertLessThanOrEqual(MixEngine.glideRate(keys: 100), MixEngine.rateRange.upperBound)
+        XCTAssertGreaterThanOrEqual(MixEngine.glideRate(keys: -100), MixEngine.rateRange.lowerBound)
+        XCTAssertEqual(MixEngine.glidePitch(keys: 1), MixEngine.semitonesPerKey, accuracy: 1e-12)
+        XCTAssertLessThanOrEqual(MixEngine.glidePitch(keys: 100), MixEngine.pitchRange.upperBound)
+        XCTAssertGreaterThanOrEqual(MixEngine.glidePitch(keys: -100), MixEngine.pitchRange.lowerBound)
+    }
+
+    // MARK: - FX Glide (texture coherence)
+
+    /// Texture rolls are deterministic given a seed, and every roll is within the documented bounds
+    /// (effect ∈ pool, peak ∈ 0.5…0.8, run ∈ 3…5).
+    func testRollTextureIsDeterministicAndBounded() {
+        var s1: UInt64 = 0xABCDEF, s2: UInt64 = 0xABCDEF
+        for _ in 0..<32 {
+            let a = MixEngine.rollTexture(&s1)
+            let b = MixEngine.rollTexture(&s2)
+            XCTAssertEqual(a.effect.rawValue, b.effect.rawValue)         // reproducible
+            XCTAssertEqual(a.peak, b.peak, accuracy: 1e-12)
+            XCTAssertEqual(a.run, b.run)
+            XCTAssertTrue(MixEngine.fxGlidePool.contains { $0.rawValue == a.effect.rawValue })
+            XCTAssertTrue((0.5...0.8).contains(a.peak))
+            XCTAssertTrue((3...5).contains(a.run))
+        }
+    }
+
+    /// The compressor is deliberately NOT in the FX-Glide pool (it's a dynamics tool, not a sweep).
+    func testFXGlidePoolIsSweepEffectsOnly() {
+        XCTAssertEqual(MixEngine.fxGlidePool.count, 3)
+        XCTAssertFalse(MixEngine.fxGlidePool.contains { $0.rawValue == MixEngine.Effect.compressor.rawValue })
+    }
+
+    /// The per-mix texture seed is deterministic per track set (no wall-clock randomness).
+    func testFxSeedIsDeterministicPerQueue() {
+        let a = [MixEngine.AutoMixItem(loadable: loadable("song-a", bpm: 120, lengthMs: 1000), durationMs: 1000)]
+        let b = [MixEngine.AutoMixItem(loadable: loadable("song-b", bpm: 120, lengthMs: 1000), durationMs: 1000)]
+        XCTAssertEqual(MixEngine.fxSeed(from: a), MixEngine.fxSeed(from: a))
+        XCTAssertNotEqual(MixEngine.fxSeed(from: a), MixEngine.fxSeed(from: b))
+    }
+
+    // MARK: - Glide toggles + transition wiring
+
+    func testGlideTogglesDefaultOffAndSettable() {
+        let e = makeEngine()
+        XCTAssertFalse(e.fxGlideEnabled)
+        XCTAssertFalse(e.mixGlideEnabled)
+        e.setFXGlide(true); e.setMixGlide(true)
+        XCTAssertTrue(e.fxGlideEnabled)
+        XCTAssertTrue(e.mixGlideEnabled)
+        e.setFXGlide(false)
+        XCTAssertFalse(e.fxGlideEnabled)
+        XCTAssertTrue(e.mixGlideEnabled)
+        e.teardown()
+    }
+
+    /// A glide-armed manual skip keeps the mix running AND records the transition as compact `.glide`
+    /// nodes (from/to/rate) — including the CROSSFADER — instead of ~100 sampled points, so a replay
+    /// reconstructs it losslessly. The machine sweep never masquerades as a sampled user `.crossfader`.
+    func testGlideSkipRecordsCompactGlideNodesIncludingCrossfader() throws {
+        let e = makeEngine()
+        let rec = MockRecorder()
+        e.recorder = rec
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true); e.setMixGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        e.skipToNext(fadeSeconds: 5)                       // glide skip → must not crash
+        XCTAssertTrue(e.autoMixing, "glide skip keeps the mix running")
+        XCTAssertTrue(e.autoStatus?.contains("fading") == true)
+        XCTAssertTrue(rec.glides.contains { $0.param == "crossfader" }, "the crossfade is captured as a .glide node")
+        // No per-tick sampled automation for the machine sweep (that's what the compact node replaces).
+        XCTAssertFalse(rec.events.contains { $0.kind == .crossfader },
+                       "the machine crossfade is a .glide node, not a sampled .crossfader gesture")
+        // A .glide carries from/to/rate (not just a single value).
+        if let g = rec.glides.first(where: { $0.param == "crossfader" }) {
+            XCTAssertNotEqual(g.from, g.to)
+            XCTAssertNotEqual(g.rate, 0)
+        }
+        e.teardown()
+    }
+
+    /// Stopping an auto-mix restores a pristine crossfader even with the glide features armed (the
+    /// glide teardown path must not leave the engine in a partial-transition state).
+    func testStopWithGlideArmedRecentersCleanly() {
+        let e = makeEngine()
+        e.setFXGlide(true); e.setMixGlide(true)
+        let item = MixEngine.AutoMixItem(loadable: loadable("z", bpm: 120, lengthMs: 180_000), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+        e.stopAutoMix()
+        XCTAssertFalse(e.autoMixing)
+        XCTAssertEqual(e.crossfader, 0.5, accuracy: 1e-9)
+        e.teardown()
+    }
+
     // MARK: - Helpers
 
     /// Captures the engine's emitted session events without any persistence (test double).
     private final class MockRecorder: MixSessionRecorder {
         var events: [(kind: MixEventKind, deck: String?, value: Double?)] = []
+        var glides: [(param: String, deck: String?, from: Double, to: Double, rate: Double)] = []
         var played: [String] = []
         func logEvent(_ kind: MixEventKind, deck: String?, songId: String?, title: String?,
                       artist: String?, bpm: Double?, camelot: String?, param: String?,
                       value: Double?, flag: Bool?, posMs: Int?) {
             events.append((kind, deck, value))
+        }
+        func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,
+                      from: Double, to: Double, rate: Double, posMs: Int?) {
+            glides.append((param: param, deck: deck, from: from, to: to, rate: rate))
+            events.append((.glide, deck, to))
         }
         func notePlayed(songId: String) { played.append(songId) }
     }
