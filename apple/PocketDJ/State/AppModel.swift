@@ -17,6 +17,18 @@ final class AppModel {
     var songs: [IndexSong] = []
     var songsById: [String: IndexSong] = [:]
     var albumsById: [String: IndexAlbum] = [:]
+
+    /// Resolve ordered song ids to universal tracklist CSV rows (title/artist/album/year/genre) —
+    /// shared by every CSV export (playlist / pocket / setlist / session). Genre + album name live on
+    /// the album; year prefers the song's, falling back to the album's. Ids with no catalog song drop.
+    func tracklistCSVRows(forSongIds ids: [String]) -> [TracklistCSV.Row] {
+        ids.compactMap { id in
+            guard let s = songsById[id] else { return nil }
+            let album = s.albumId.flatMap { albumsById[$0] }
+            return TracklistCSV.Row(title: s.name, artist: s.artist, album: album?.name ?? "",
+                                    year: s.year ?? album?.year, genre: album?.genre ?? "")
+        }
+    }
     /// Read-only playlists carried in the enabled sources (e.g. Apple Music user
     /// playlists), merged + deduped by id, each tagged with its source's name.
     var indexPlaylists: [SourcePlaylist] = []

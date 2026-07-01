@@ -128,6 +128,8 @@ struct MixSessionDetailView: View {
     /// A tapped `.load` action's song, presented as a metadata sheet (nil ⇒ closed). Wrapped so
     /// `.sheet(item:)` has an Identifiable.
     @State private var metadataItem: SongMetadataItem?
+    @State private var showCSVExporter = false
+    @State private var csvDoc = CSVFile(data: Data())
 
     /// A STABLE snapshot for the duration of the screen (the current session keeps recording).
     @State private var events: [MixSessionEvent] = []
@@ -184,6 +186,15 @@ struct MixSessionDetailView: View {
             events = store.events(forSession: sessionId).filter { !$0.kind.isUnknown }
         }
         .onDisappear { pause(); recPlayer.stop() }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { exportCSV() } label: { Label("Export tracklist (CSV)", systemImage: "tablecells") }
+                    .disabled(store.playedSongIds(forSession: sessionId).isEmpty)
+                    .accessibilityIdentifier("mix-session-export-csv")
+            }
+        }
+        .fileExporter(isPresented: $showCSVExporter, document: csvDoc, contentType: .commaSeparatedText,
+                      defaultFilename: csvFilename) { _ in }
         .sheet(item: $metadataItem) { item in
             NavigationStack {
                 SongDetailView(song: item.song)
@@ -360,6 +371,21 @@ struct MixSessionDetailView: View {
             }
         }
         .padding(12)
+    }
+
+    /// `<session name>.csv` for the tracklist export.
+    private var csvFilename: String {
+        let base = (store.session(sessionId)?.name ?? "session")
+            .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
+            .trimmingCharacters(in: .whitespaces)
+        return base.isEmpty ? "session" : base
+    }
+
+    /// Export the session's PLAYED tracks (in order) as a universal tracklist CSV.
+    private func exportCSV() {
+        let rows = app.tracklistCSVRows(forSongIds: store.playedSongIds(forSession: sessionId))
+        csvDoc = CSVFile(data: TracklistCSV.data(rows: rows))
+        showCSVExporter = true
     }
 
     /// Tap a timeline card: a LOAD action pops up the song's metadata; any other action jumps the
