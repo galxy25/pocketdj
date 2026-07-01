@@ -1,7 +1,9 @@
 import Foundation
 
 /// On-disk schema version for the mix-sessions document (bump on a breaking change).
-let mixSessionsSchemaVersion = 1
+/// v2 adds `MixSession.recordings` (captured mix audio) — additive + optional, so a v1 doc
+/// decodes unchanged (missing key ⇒ nil).
+let mixSessionsSchemaVersion = 2
 
 // MARK: - Event model
 
@@ -80,6 +82,23 @@ enum MixEventKind: Codable, Hashable, Sendable {
     }
 }
 
+// MARK: - Recording model
+
+/// One captured audio recording of a mix session — the mixed house output written to the session's
+/// FOLDER (`mix-sessions/<sessionId>/`, or the user-picked session folder). A session can hold more
+/// than one take. The file lives on disk under the session folder; this is only its lightweight
+/// metadata (so the Sessions screen can list + play recordings without touching disk).
+struct MixRecording: Identifiable, Codable, Hashable, Sendable {
+    var id: String            // unique within its session ("rec<seq>")
+    var fileName: String      // the audio file's name WITHIN the session folder (e.g. "recording-1.m4a")
+    var startedAt: Double     // epoch ms when capture began
+    var durationMs: Int       // capture length (wall-clock)
+    /// Where the session folder lived when this was written: true ⇒ the user-picked session folder
+    /// (resolve via its security-scoped bookmark), false ⇒ app-managed Application Support storage.
+    /// Mirrors `BurnItem.wasAppStorage` so a recording resolves from the dir it was ACTUALLY written to.
+    var wasUserFolder: Bool
+}
+
 // MARK: - Session model
 
 /// A recording of one mix "session" — it lasts until the user hits Reset, which finalizes it
@@ -92,6 +111,12 @@ struct MixSession: Identifiable, Codable, Hashable, Sendable {
     var endedAt: Double?            // set when the session is finalized (a new one begins)
     var events: [MixSessionEvent]
     var playedSongIds: [String]     // ordered, unique — songs whose playback started this session
+    /// Captured mix audio for this session (0+ takes). Optional so a v1 doc (no key) decodes as nil;
+    /// treat nil as "no recordings" everywhere via the non-optional accessor below.
+    var recordings: [MixRecording]? = nil
+
+    /// The session's recordings, nil-coalesced (a v1 doc / a session with no takes ⇒ []).
+    var recordingsList: [MixRecording] { recordings ?? [] }
 
     /// Wall-clock length (ms): finalized → endedAt−startedAt; else the last event's tMs.
     var durationMs: Int {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // MARK: - Sessions list
 
@@ -24,7 +25,8 @@ struct MixSessionsView: View {
                                        startedAt: store.startedAt(forSession: s.id),
                                        durationMs: store.durationMs(forSession: s.id),
                                        tracks: store.playedSongIds(forSession: s.id).count,
-                                       actions: store.events(forSession: s.id).count)
+                                       actions: store.events(forSession: s.id).count,
+                                       recordings: store.recordings(forSession: s.id).count)
                         }
                         .accessibilityIdentifier("mix-session-row-\(s.id)")
                         .swipeActions(edge: .leading) {
@@ -74,6 +76,7 @@ private struct SessionRow: View {
     let durationMs: Int
     let tracks: Int
     let actions: Int
+    let recordings: Int
 
     var body: some View {
         HStack(spacing: 12) {
@@ -90,7 +93,7 @@ private struct SessionRow: View {
                     }
                 }
                 Text(Self.date(startedAt)).font(.caption).foregroundStyle(Theme.fgDim)
-                Text("\(Fmt.duration(durationMs)) · \(tracks) track\(tracks == 1 ? "" : "s") · \(actions) action\(actions == 1 ? "" : "s")")
+                Text("\(Fmt.duration(durationMs)) · \(tracks) track\(tracks == 1 ? "" : "s") · \(actions) action\(actions == 1 ? "" : "s")\(recordings > 0 ? " · \(recordings) rec" : "")")
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
             Spacer()
@@ -115,10 +118,14 @@ private struct SessionRow: View {
 /// corpus; this view is the human-facing read of them.
 struct MixSessionDetailView: View {
     @Environment(MixSessionStore.self) private var store
+    @Environment(SettingsStore.self) private var settings
     let sessionId: String
 
     /// A STABLE snapshot for the duration of the screen (the current session keeps recording).
     @State private var events: [MixSessionEvent] = []
+    /// The session's captured audio recordings (snapshot; the current session may add more).
+    @State private var recordings: [MixRecording] = []
+    @State private var recPlayer = RecordingAudioPlayer()
     @State private var replayMs: Double = 0
     @State private var playing = false
     @State private var speed: Double = 1
@@ -154,6 +161,7 @@ struct MixSessionDetailView: View {
     var body: some View {
         VStack(spacing: 12) {
             replayControls
+            if !recordings.isEmpty { recordingsPanel }
             timeline
         }
         .background(Theme.bg)
@@ -164,8 +172,50 @@ struct MixSessionDetailView: View {
         .task {
             // Drop unknown (forward-compat) events from the human view.
             events = store.events(forSession: sessionId).filter { !$0.kind.isUnknown }
+            recordings = store.recordings(forSession: sessionId)
         }
-        .onDisappear { pause() }
+        .onDisappear { pause(); recPlayer.stop() }
+    }
+
+    // MARK: Recordings (captured mix audio)
+
+    /// The session's captured audio takes, each with a play/stop control. Files resolve via
+    /// `SessionFolders` (app storage or the user-picked session folder).
+    private var recordingsPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Recordings", systemImage: "waveform.circle")
+                .font(.caption.weight(.semibold)).foregroundStyle(Theme.fgDim)
+            ForEach(Array(recordings.enumerated()), id: \.element.id) { idx, rec in
+                HStack(spacing: 10) {
+                    Button {
+                        recPlayer.toggle(rec, sessionId: sessionId, bookmark: settings.sessionFolderBookmark)
+                    } label: {
+                        Image(systemName: recPlayer.playingId == rec.id ? "stop.circle.fill" : "play.circle.fill")
+                            .font(.title2).foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("mix-recording-play-\(rec.id)")
+                    .accessibilityLabel(recPlayer.playingId == rec.id ? "Stop recording" : "Play recording")
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Take \(idx + 1)").font(.caption).foregroundStyle(Theme.fg)
+                        Text("\(Self.recDate(rec.startedAt)) · \(Fmt.duration(rec.durationMs))")
+                            .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+        .padding(.horizontal, 12)
+        .accessibilityIdentifier("mix-recordings-panel")
+    }
+
+    private static func recDate(_ epochMs: Double) -> String {
+        guard epochMs > 0 else { return "—" }
+        return Date(timeIntervalSince1970: epochMs / 1000).formatted(date: .omitted, time: .shortened)
     }
 
     // MARK: Replay controls
@@ -270,6 +320,64 @@ struct MixSessionDetailView: View {
     private func pause() {
         playing = false
         clock?.cancel(); clock = nil
+    }
+}
+
+// MARK: - Recording playback
+
+/// Plays a session's captured recording (a local `.m4a`) with a simple play/stop. One instance per
+/// detail screen. Resolves the file (holding its security scope for the duration of playback) via
+/// `SessionFolders`, and auto-resets when the take finishes.
+@MainActor @Observable final class RecordingAudioPlayer {
+    @ObservationIgnored private var player: AVAudioPlayer?
+    @ObservationIgnored private var release: (() -> Void)?
+    @ObservationIgnored private var endTask: Task<Void, Never>?
+    /// The recording id currently playing (nil ⇒ stopped) — drives the play/stop button state.
+    private(set) var playingId: String?
+
+    /// Toggle playback of `rec`: stop if it's the one playing, else (stop any other and) start it.
+    func toggle(_ rec: MixRecording, sessionId: String, bookmark: Data?) {
+        if playingId == rec.id { stop(); return }
+        stop()
+        guard let resolved = SessionFolders.recordingURL(sessionId: sessionId, fileName: rec.fileName,
+                                                         wasUserFolder: rec.wasUserFolder, bookmark: bookmark)
+        else { return }
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+        guard let p = try? AVAudioPlayer(contentsOf: resolved.url) else {
+            resolved.release?()
+            return
+        }
+        release = resolved.release
+        player = p
+        p.prepareToPlay()
+        p.play()
+        playingId = rec.id
+        // Auto-reset the button once playback finishes. POLL in a loop (rather than a one-shot timer at
+        // dur+ε) so a stall / under-reported duration can't leave the button stuck on "stop": we keep
+        // checking isPlaying until it's actually done. Avoids an AVAudioPlayerDelegate + its cross-thread
+        // callback. A hard cap bounds a player that never reports done.
+        endTask = Task { [weak self] in
+            let deadline = max(0.1, p.duration) + 5.0     // generous cap past the nominal duration
+            var waited = 0.0
+            while waited < deadline {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                if self.player?.isPlaying != true { self.stop(); return }
+                waited += 0.3
+            }
+            self?.stop()                                  // cap reached → reset regardless
+        }
+    }
+
+    func stop() {
+        endTask?.cancel(); endTask = nil
+        player?.stop(); player = nil
+        release?(); release = nil
+        playingId = nil
     }
 }
 

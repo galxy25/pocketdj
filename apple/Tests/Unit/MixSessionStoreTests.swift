@@ -152,6 +152,73 @@ final class MixSessionStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.events(forSession: reloaded.currentId).count, 1)
     }
 
+    // MARK: - Recordings (captured mix audio metadata)
+
+    func testAddRecordingAttachesAndAllocatesIds() {
+        let s = MixSessionStore(fileURL: tempURL())
+        let id = s.currentId
+        XCTAssertTrue(s.recordings(forSession: id).isEmpty)
+        let r1 = s.addRecording(toSession: id, fileName: "recording-1.m4a", startedAt: 1000,
+                                durationMs: 5000, wasUserFolder: false)
+        let r2 = s.addRecording(toSession: id, fileName: "recording-2.m4a", startedAt: 2000,
+                                durationMs: 6000, wasUserFolder: true)
+        XCTAssertEqual(r1, "rec1")
+        XCTAssertEqual(r2, "rec2")                              // monotonic within a session
+        let recs = s.recordings(forSession: id)
+        XCTAssertEqual(recs.map(\.fileName), ["recording-1.m4a", "recording-2.m4a"])
+        XCTAssertEqual(recs.last?.wasUserFolder, true)
+        XCTAssertEqual(recs.first?.durationMs, 5000)
+    }
+
+    /// A recording filed against a session that has since been finalized (Reset) still attaches to it
+    /// — mirrors a recording that spans a Reset, filed on Stop against the session it began in.
+    func testAddRecordingToAPreviousSession() {
+        let s = MixSessionStore(fileURL: tempURL())
+        let first = s.currentId
+        log(s, .play, deck: "A")                                // give the session activity so Reset takes
+        s.reset()
+        XCTAssertNotEqual(s.currentId, first)
+        s.addRecording(toSession: first, fileName: "recording-1.m4a", startedAt: 10, durationMs: 100, wasUserFolder: false)
+        XCTAssertEqual(s.recordings(forSession: first).count, 1)
+        XCTAssertTrue(s.recordings(forSession: s.currentId).isEmpty)   // not the current one
+    }
+
+    func testRecordingsPersistAcrossReload() async throws {
+        let url = tempURL()
+        let s = MixSessionStore(fileURL: url)
+        let id = s.currentId
+        s.addRecording(toSession: id, fileName: "recording-1.m4a", startedAt: 1, durationMs: 42, wasUserFolder: true)
+        s.flush()
+        try await waitUntil {
+            guard let data = try? Data(contentsOf: url),
+                  let doc = try? JSONDecoder().decode(MixSessionsDocument.self, from: data) else { return false }
+            return doc.sessions.first?.recordings?.first?.fileName == "recording-1.m4a"
+        }
+        let reloaded = MixSessionStore(fileURL: url)
+        let recs = reloaded.recordings(forSession: reloaded.currentId)
+        XCTAssertEqual(recs.count, 1)
+        XCTAssertEqual(recs.first?.durationMs, 42)
+        XCTAssertEqual(recs.first?.wasUserFolder, true)
+    }
+
+    /// A recording whose session was DELETED mid-capture is recovered (not lost): the original session
+    /// id — which matches the on-disk folder — is revived as a finalized session holding the take.
+    func testRecoverRecordingRevivesDeletedSession() {
+        let s = MixSessionStore(fileURL: tempURL())
+        let orphanId = "mses_orphan"
+        s.recoverRecording(sessionId: orphanId, name: "Recovered recording", fileName: "recording-1.m4a",
+                           startedAt: 1000, durationMs: 5000, wasUserFolder: false)
+        XCTAssertNotNil(s.session(orphanId))
+        XCTAssertEqual(s.session(orphanId)?.name, "Recovered recording")
+        XCTAssertNotNil(s.session(orphanId)?.endedAt)                 // finalized
+        XCTAssertEqual(s.recordings(forSession: orphanId).map(\.fileName), ["recording-1.m4a"])
+        // A second recovered take for the same id appends rather than duplicating the session.
+        s.recoverRecording(sessionId: orphanId, name: "Recovered recording", fileName: "recording-2.m4a",
+                           startedAt: 2000, durationMs: 3000, wasUserFolder: false)
+        XCTAssertEqual(s.sessions.filter { $0.id == orphanId }.count, 1)
+        XCTAssertEqual(s.recordings(forSession: orphanId).count, 2)
+    }
+
     // MARK: - Helpers
 
     private func tempURL() -> URL {

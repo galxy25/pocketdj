@@ -55,6 +55,11 @@ final class SettingsStore {
     /// burnt audio + sidecars are written into (so the files are browsable in Finder/Files).
     /// `nil` → BurnStore falls back to the app-managed Application Support `burns/` dir.
     var burnFolderBookmark: Data?
+    /// Mix SESSION FOLDER: a SECURITY-SCOPED bookmark to the user-picked folder each mix session's
+    /// data (recorded audio, and future per-session files) is written into — one subfolder per
+    /// session. `nil` → app-managed Application Support `mix-sessions/` dir. Mirrors
+    /// `burnFolderBookmark`; see `SessionFolders`.
+    var sessionFolderBookmark: Data?
     /// Auto-Mix (Mix tab): seconds BEFORE a track ends to begin crossfading to the next deck.
     /// Default 15. Read when the user starts an auto-mix; clamped to a sane range in the UI.
     var autoMixLeadSeconds: Double
@@ -89,6 +94,7 @@ final class SettingsStore {
         self.searchSecretKey = data.searchSecretKey
         self.searchEndpoint = data.searchEndpoint
         self.burnFolderBookmark = data.burnFolderBookmark
+        self.sessionFolderBookmark = data.sessionFolderBookmark
         self.autoMixLeadSeconds = data.autoMixLeadSeconds ?? 15
         self.autoMixFadeSeconds = data.autoMixFadeSeconds ?? 3
         self.skipFadeSeconds = data.skipFadeSeconds ?? 15
@@ -172,6 +178,7 @@ final class SettingsStore {
             ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
+            sessionFolderBookmark: sessionFolderBookmark,
             autoMixLeadSeconds: autoMixLeadSeconds, autoMixFadeSeconds: autoMixFadeSeconds,
             skipFadeSeconds: skipFadeSeconds, mixAutoHidePlayed: mixAutoHidePlayed,
             cueOutputChannel: cueOutputChannel.rawValue,
@@ -197,6 +204,7 @@ final class SettingsStore {
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
         searchEndpoint = d.searchEndpoint
         burnFolderBookmark = d.burnFolderBookmark
+        sessionFolderBookmark = d.sessionFolderBookmark
         autoMixLeadSeconds = d.autoMixLeadSeconds ?? 15
         autoMixFadeSeconds = d.autoMixFadeSeconds ?? 3
         skipFadeSeconds = d.skipFadeSeconds ?? 15
@@ -232,6 +240,8 @@ struct SettingsData: Codable {
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — same
     /// backward-compat rationale as `ripFromCloud` above.
     var burnFolderBookmark: Data?
+    /// Optional so older blobs still decode — same backward-compat rationale as `burnFolderBookmark`.
+    var sessionFolderBookmark: Data?
     /// Optional so older blobs still decode (coalesced to 15 / 3 at the read sites).
     var autoMixLeadSeconds: Double?
     var autoMixFadeSeconds: Double?
@@ -254,6 +264,7 @@ struct SettingsData: Codable {
         searchSecretKey: "",
         searchEndpoint: "",
         burnFolderBookmark: nil,
+        sessionFolderBookmark: nil,
         autoMixLeadSeconds: 15,
         autoMixFadeSeconds: 3,
         skipFadeSeconds: 15,

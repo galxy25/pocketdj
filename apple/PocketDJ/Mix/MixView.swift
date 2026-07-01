@@ -39,6 +39,7 @@ struct MixView: View {
     @Environment(BurnStore.self) private var burns
     @Environment(SettingsStore.self) private var settings
     @Environment(MixSessionStore.self) private var mixSessions
+    @Environment(MixRecorder.self) private var recorder
 
     /// The detail NavigationStack's path (owned by RootView) — so the Sessions button can push.
     @Binding var path: NavigationPath
@@ -59,6 +60,7 @@ struct MixView: View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
             VStack(spacing: 18) {
                 sessionHeader                           // the renamable session name (in-content)
+                if recorder.isRecording { recordingIndicator }  // ● Recording m:ss + Stop (reachable on iPhone)
                 if engine.autoEnabled && !engine.autoMixing { autoSetupBar }  // pick + Play/Shuffle
                 if engine.autoMixing { autoMixBanner }  // Auto-DJ status + Stop (visible on every size)
                 // Two decks side-by-side (A left, B right), equal width.
@@ -89,6 +91,7 @@ struct MixView: View {
             engine.prepare()                           // warm the AVAudioEngine graph when the tab opens
             engine.setCueOnRight(settings.cueOutputChannel.onRight)   // push the cue-channel preference
             engine.setBeatPulseEnabled(settings.beatPulseEnabled)     // gate the on-load beat-grid fetch
+            recorder.settings = settings                              // session-folder location source
         }
         .onChange(of: settings.cueOutputChannel) { engine.setCueOnRight(settings.cueOutputChannel.onRight) }
         .onChange(of: settings.beatPulseEnabled) { engine.setBeatPulseEnabled(settings.beatPulseEnabled) }
@@ -182,6 +185,8 @@ struct MixView: View {
     /// 🔀 Shuffle / ⏹ Stop — mirroring the Playlists tab's menu-bar play/shuffle.
     @ToolbarContentBuilder private var autoMixToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            // Record the mix audio into the current session's folder — pulses purple→red while live.
+            RecordButton(recorder: recorder)
             // ONE-TAP mode toggle: shows the current mode and flips to the other on tap (no dropdown).
             Button { engine.setAutoEnabled(!engine.autoEnabled) } label: {
                 Label(engine.autoEnabled ? "Auto" : "Manual",
@@ -226,30 +231,33 @@ struct MixView: View {
     /// picker + ▶ Play / 🔀 Shuffle. Lives in the body — NOT the toolbar — so it's always reachable on
     /// iPhone portrait, where the trailing toolbar collapses these into a nested "•••" overflow.
     private var autoSetupBar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
-            Menu {
-                autoSourceMenuItems
-            } label: {
-                Label(autoSourceName ?? engine.autoSourceLabel ?? "Pick a collection",
-                      systemImage: "rectangle.stack")
-                    .lineLimit(1)
-            }
-            .accessibilityIdentifier("mix-auto-source")
-            Spacer(minLength: 8)
-            Button { startAuto(shuffled: false) } label: { Label("Play", systemImage: "play.fill") }
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
+                Menu {
+                    autoSourceMenuItems
+                } label: {
+                    Label(autoSourceName ?? engine.autoSourceLabel ?? "Pick a collection",
+                          systemImage: "rectangle.stack")
+                        .lineLimit(1)
+                }
+                .accessibilityIdentifier("mix-auto-source")
+                Spacer(minLength: 8)
+                Button { startAuto(shuffled: false) } label: { Label("Play", systemImage: "play.fill") }
+                    .disabled(autoSource == nil)
+                    .help("Auto-mix this collection in order")
+                    .accessibilityIdentifier("mix-auto-play")
+                Button { startAuto(shuffled: true) } label: {
+                    Label("Shuffle", systemImage: "shuffle").labelStyle(.iconOnly)
+                }
                 .disabled(autoSource == nil)
-                .help("Auto-mix this collection in order")
-                .accessibilityIdentifier("mix-auto-play")
-            Button { startAuto(shuffled: true) } label: {
-                Label("Shuffle", systemImage: "shuffle").labelStyle(.iconOnly)
+                .help("Auto-mix this collection shuffled")
+                .accessibilityIdentifier("mix-auto-shuffle")
             }
-            .disabled(autoSource == nil)
-            .help("Auto-mix this collection shuffled")
-            .accessibilityIdentifier("mix-auto-shuffle")
+            .buttonStyle(.bordered)
+            .tint(Theme.accent)
+            glideToggles                                  // FX Glide · Mix Glide (arm before Play)
         }
-        .buttonStyle(.bordered)
-        .tint(Theme.accent)
         .padding(12)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
@@ -262,27 +270,83 @@ struct MixView: View {
     /// In-body banner so the Stop control + progress are reachable on iPhone (where a crowded
     /// nav bar can hide toolbar items).
     private var autoMixBanner: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Auto-mixing").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
-                if let status = engine.autoStatus {
-                    Text(status).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Auto-mixing").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                    if let status = engine.autoStatus {
+                        Text(status).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    }
                 }
+                Spacer()
+                Button(role: .destructive) { engine.stopAutoMix() } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+                .tint(Theme.accent)
+                .accessibilityIdentifier("mix-auto-stop-banner")
             }
-            Spacer()
-            Button(role: .destructive) { engine.stopAutoMix() } label: {
-                Label("Stop", systemImage: "stop.fill")
-            }
-            .buttonStyle(.bordered)
-            .tint(Theme.accent)
-            .accessibilityIdentifier("mix-auto-stop-banner")
+            glideToggles                                  // FX Glide · Mix Glide (toggle mid-mix too)
         }
         .padding(12)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1))
-        .accessibilityIdentifier("mix-auto-banner")
+        // NO accessibilityIdentifier on this container: a button-container id merges the children into
+        // one a11y element, hiding mix-auto-stop-banner / mix-fx-glide / mix-mix-glide (which must stay
+        // reachable to flip mid-mix). Same lesson as autoSetupBar + the native-playlist-toolbar-overflow note.
+    }
+
+    /// The two auto-mix transition toggles that ride the auto-mix pill (both the pre-mix setup bar and
+    /// the during-mix banner, so they're reachable to arm before Play AND to flip mid-mix). FX Glide
+    /// sweeps a coherent effect across each transition; Mix Glide bends bpm+pitch with beat sync.
+    private var glideToggles: some View {
+        HStack(spacing: 8) {
+            GlidePillToggle(title: "FX Glide", systemImage: "slider.horizontal.2.gobackward",
+                            isOn: engine.fxGlideEnabled, a11y: "mix-fx-glide") {
+                engine.setFXGlide(!engine.fxGlideEnabled)
+            }
+            .help("Sweep a coherent effect through each auto-mix transition")
+            GlidePillToggle(title: "Mix Glide", systemImage: "dial.medium",
+                            isOn: engine.mixGlideEnabled, a11y: "mix-mix-glide") {
+                engine.setMixGlide(!engine.mixGlideEnabled)
+            }
+            .help("Glide bpm + pitch (Camelot ±1 key) with beat sync through each transition")
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// In-content recording status (● Recording m:ss + Stop) — shown while a capture runs. Keeps the
+    /// record state + a Stop control visible even if the toolbar button overflows on iPhone; the
+    /// pulsing dot mirrors the toolbar button's purple→red pulse.
+    private var recordingIndicator: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "record.circle.fill").font(.title3).modifier(RecordPulse(active: true))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Recording").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(Self.elapsedClock(sinceMs: recorder.startedAtMs))
+                        .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                }
+            }
+            Spacer()
+            Button(role: .destructive) { recorder.stop() } label: { Label("Stop", systemImage: "stop.fill") }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .accessibilityIdentifier("mix-record-stop")
+        }
+        .padding(12)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Color.red.opacity(0.5), lineWidth: 1))
+        .accessibilityIdentifier("mix-record-indicator")
+    }
+
+    /// Elapsed capture clock (m:ss) from the recorder's start epoch-ms.
+    private static func elapsedClock(sinceMs startMs: Double) -> String {
+        let s = Int(max(0, Date().timeIntervalSince1970 * 1000 - startMs) / 1000)
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     /// Build the queue from the chosen collection (resolver order) + each song's catalog length,
@@ -682,6 +746,77 @@ private struct DeckView: View {
         case .pocket(let id):  return collections.pocket(id)?.name
         case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
         case nil:              return nil
+        }
+    }
+}
+
+// MARK: - Auto-mix pill toggles
+
+/// One capsule toggle chip on the auto-mix pill (FX Glide / Mix Glide). Accent-filled + "selected"
+/// when on. A plain `Button` (these aren't long-pressable, unlike the deck effect chips).
+private struct GlidePillToggle: View {
+    let title: String
+    let systemImage: String
+    let isOn: Bool
+    let a11y: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(isOn ? Theme.accent2.opacity(0.25) : Theme.bgOverlay, in: Capsule())
+                .overlay(Capsule().strokeBorder(isOn ? Theme.accent2 : Theme.border, lineWidth: 1))
+                .foregroundStyle(isOn ? Theme.accent2 : Theme.fgDim)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(a11y)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+// MARK: - Record button
+
+/// The top-level Mix toolbar RECORD button. Idle = a dim record ring; recording = a purple→red
+/// gradient record icon that PULSES (breathes). Tapping toggles capture of the mix's house output
+/// into the current session's folder. App-scoped recorder, so the capture survives leaving the tab.
+private struct RecordButton: View {
+    let recorder: MixRecorder
+    var body: some View {
+        Button { recorder.toggle() } label: {
+            Image(systemName: recorder.isRecording ? "record.circle.fill" : "record.circle")
+                .modifier(RecordPulse(active: recorder.isRecording))
+        }
+        .help(recorder.isRecording ? "Stop recording the mix"
+                                   : "Record the mix audio into this session")
+        .accessibilityIdentifier("mix-record")
+        .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Record mix")
+        .accessibilityValue(recorder.isRecording ? "Recording" : "Off")
+        .accessibilityAddTraits(recorder.isRecording ? .isSelected : [])
+    }
+}
+
+/// Purple→red gradient fill + a breathing pulse while `active`; a plain dim tint when idle. Isolated
+/// modifier so the repeating animation lives with the icon (the toolbar button + the in-content dot
+/// share it). The pulse is a single value flip driven into a `repeatForever` animation on appear.
+private struct RecordPulse: ViewModifier {
+    let active: Bool
+    @State private var pulse = false
+    func body(content: Content) -> some View {
+        if active {
+            content
+                .foregroundStyle(LinearGradient(colors: [.purple, .red],
+                                                startPoint: .topLeading, endPoint: .bottomTrailing))
+                .scaleEffect(pulse ? 1.12 : 0.94)
+                .opacity(pulse ? 1 : 0.65)
+                .shadow(color: .red.opacity(pulse ? 0.6 : 0), radius: pulse ? 5 : 0)
+                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
+                .onAppear { pulse = true }
+                .onDisappear { pulse = false }
+        } else {
+            content.foregroundStyle(Theme.fgDim)
         }
     }
 }

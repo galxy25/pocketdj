@@ -618,6 +618,235 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(e.rate(.a), 1.3, accuracy: 1e-9)
     }
 
+    // MARK: - Audio recording (capture the mixed house output to a file)
+
+    /// End-to-end: recording the live graph produces a NON-EMPTY, DECODABLE audio file — proves the
+    /// master-limiter tap → MixTapWriter → AAC write path actually yields valid output (the format
+    /// match between the tap buffer and the AVAudioFile write is only exercisable on a real graph).
+    func testRecordingCapturesAPlayableFile() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 1)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("rec-song", bpm: 120), on: .a)
+        e.play(.a)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("mixrec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        XCTAssertTrue(e.isRecording)
+        try await Task.sleep(nanoseconds: 400_000_000)   // let the graph render into the tap
+        e.stopRecording()
+        XCTAssertFalse(e.isRecording)
+        try await Task.sleep(nanoseconds: 400_000_000)   // let the serial writer flush + finalize
+        XCTAssertTrue(FileManager.default.fileExists(atPath: out.path), "recording file should exist")
+        let size = (try FileManager.default.attributesOfItem(atPath: out.path)[.size] as? Int) ?? 0
+        XCTAssertGreaterThan(size, 0, "recording should not be empty")
+        let f = try AVAudioFile(forReading: out)         // must be a decodable audio file
+        XCTAssertGreaterThan(f.length, 0, "recorded audio must have frames")
+        e.teardown()
+    }
+
+    /// A second startRecording while already recording is rejected (no dangling second tap/file), and
+    /// stopRecording is idempotent.
+    func testStartRecordingTwiceRejectedAndStopIsIdempotent() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let out1 = FileManager.default.temporaryDirectory.appendingPathComponent("rec1-\(UUID().uuidString).m4a")
+        let out2 = FileManager.default.temporaryDirectory.appendingPathComponent("rec2-\(UUID().uuidString).m4a")
+        defer { [out1, out2].forEach { try? FileManager.default.removeItem(at: $0) } }
+        XCTAssertTrue(e.startRecording(to: out1, release: nil))
+        XCTAssertFalse(e.startRecording(to: out2, release: nil), "already recording → rejected")
+        e.stopRecording()
+        e.stopRecording()                                 // idempotent — no crash / no double-release
+        XCTAssertFalse(e.isRecording)
+        e.teardown()
+    }
+
+    /// The scope-release contract: on a host with NO audio device, a start fails and drops the passed
+    /// scope release rather than leaking it. (On the simulator the graph builds and the start succeeds,
+    /// so this only asserts on a headless host; the file is cleaned up either way.)
+    func testStartRecordingReleasesScopeOnFailure() {
+        let e = makeEngine()               // NOT ensureEngine'd; a headless host stays unbuilt → start fails
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("recfail-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        var released = false
+        let ok = e.startRecording(to: out, release: { released = true })
+        if !ok { XCTAssertTrue(released, "a failed start must drop the security scope, not leak it") }
+        e.teardown()                        // finalizes the capture on a host where it did start
+    }
+
+    /// Recording while a deck is CUED still captures the clean STEREO house mix (the tap is on the
+    /// pre-cue-pan house sum), not the mono-collapsed house + private cue bleed. Guards the review's
+    /// confirmed cue/recording finding.
+    func testRecordingWhileCuedCapturesCleanStereoHouse() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 1), b = try makeSineWAV(seconds: 1)
+        defer { [a, b].forEach { try? FileManager.default.removeItem(at: $0) } }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 120), on: .b)
+        e.setCueOnRight(true)
+        e.setCrossfader(0.0)                 // full A on the house
+        e.play(.a); e.play(.b)
+        e.setCued(true, on: .b)              // monitor B in the cue — must NOT pollute the recording
+        // The house is steered to the monitor's house side (pan on `housePan`, DOWNSTREAM of the tap)…
+        XCTAssertEqual(try XCTUnwrap(e.cueRoutingSnapshot(.a)).mainPan, -1, accuracy: 1e-6)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("cuerec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        try await Task.sleep(nanoseconds: 350_000_000)
+        e.stopRecording()
+        try await Task.sleep(nanoseconds: 350_000_000)
+        // …so the take stays full STEREO (not mono-collapsed) and is a valid audio file.
+        let f = try AVAudioFile(forReading: out)
+        XCTAssertEqual(f.processingFormat.channelCount, 2, "capture is stereo house, not cue-pan collapsed")
+        XCTAssertGreaterThan(f.length, 0)
+        e.teardown()
+    }
+
+    // MARK: - Mix Glide (Camelot harmonic glide math)
+
+    /// Signed Camelot-hour distance wraps to the SHORTEST way round the 12-hour wheel (−6…+6).
+    func testSignedCamelotSteps() {
+        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "9A"), 4)     // the spec example
+        XCTAssertEqual(MixEngine.signedCamelotSteps("9A", "5A"), -4)
+        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "5A"), 0)
+        XCTAssertEqual(MixEngine.signedCamelotSteps("1A", "12A"), -1)   // wrap: shortest is DOWN one
+        XCTAssertEqual(MixEngine.signedCamelotSteps("12A", "1A"), 1)
+        XCTAssertEqual(MixEngine.signedCamelotSteps("2A", "8A"), 6)     // exactly opposite → +6
+        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "12A"), -5)   // shortest is DOWN five
+        XCTAssertNil(MixEngine.signedCamelotSteps("nope", "9A"))
+        XCTAssertNil(MixEngine.signedCamelotSteps(nil, "9A"))
+    }
+
+    /// The spec example (A=5A, B=9A): the outgoing deck bends UP a full key (+10% tempo, +~1.65 st),
+    /// the incoming starts a full key DOWN, and later settles back to natural (tested via inRate→1).
+    func testGlideParamsBendsDecksTowardEachOther() {
+        let p = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "9A"))
+        XCTAssertEqual(p.outRate, 1.10, accuracy: 1e-9)
+        XCTAssertEqual(p.inRate, 0.90, accuracy: 1e-9)
+        XCTAssertEqual(p.outPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.inPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+    }
+
+    /// Direction flips when the incoming key is LOWER (outgoing bends down, incoming starts up).
+    func testGlideParamsFlipsWhenIncomingLower() {
+        let p = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "9A", toCamelot: "5A"))
+        XCTAssertEqual(p.outRate, 0.90, accuracy: 1e-9)
+        XCTAssertEqual(p.inRate, 1.10, accuracy: 1e-9)
+    }
+
+    /// Adjacent keys (distance 1) bend only HALF a key each (5%) — meet in the middle.
+    func testGlideParamsAdjacentIsHalfKey() {
+        let p = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "6A"))
+        XCTAssertEqual(p.outRate, 1.05, accuracy: 1e-9)
+        XCTAssertEqual(p.inRate, 0.95, accuracy: 1e-9)
+    }
+
+    /// Identical key ⇒ no harmonic bend (beat-sync only); unparseable camelot ⇒ nil (no glide).
+    func testGlideParamsIdentityAndNil() {
+        let same = try! XCTUnwrap(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "5A"))
+        XCTAssertEqual(same.outRate, 1.0); XCTAssertEqual(same.inRate, 1.0)
+        XCTAssertEqual(same.outPitch, 0);  XCTAssertEqual(same.inPitch, 0)
+        XCTAssertNil(MixEngine.glideParams(fromCamelot: nil, toCamelot: "9A"))
+        XCTAssertNil(MixEngine.glideParams(fromCamelot: "5A", toCamelot: "zz"))
+    }
+
+    /// A key → tempo/pitch mapping clamps to the engine's rate/pitch ranges.
+    func testGlideRateAndPitchClamp() {
+        XCTAssertEqual(MixEngine.glideRate(keys: 0), 1.0, accuracy: 1e-12)
+        XCTAssertEqual(MixEngine.glideRate(keys: 1), 1.10, accuracy: 1e-12)
+        XCTAssertEqual(MixEngine.glideRate(keys: -1), 0.90, accuracy: 1e-12)
+        XCTAssertLessThanOrEqual(MixEngine.glideRate(keys: 100), MixEngine.rateRange.upperBound)
+        XCTAssertGreaterThanOrEqual(MixEngine.glideRate(keys: -100), MixEngine.rateRange.lowerBound)
+        XCTAssertEqual(MixEngine.glidePitch(keys: 1), MixEngine.semitonesPerKey, accuracy: 1e-12)
+        XCTAssertLessThanOrEqual(MixEngine.glidePitch(keys: 100), MixEngine.pitchRange.upperBound)
+        XCTAssertGreaterThanOrEqual(MixEngine.glidePitch(keys: -100), MixEngine.pitchRange.lowerBound)
+    }
+
+    // MARK: - FX Glide (texture coherence)
+
+    /// Texture rolls are deterministic given a seed, and every roll is within the documented bounds
+    /// (effect ∈ pool, peak ∈ 0.5…0.8, run ∈ 3…5).
+    func testRollTextureIsDeterministicAndBounded() {
+        var s1: UInt64 = 0xABCDEF, s2: UInt64 = 0xABCDEF
+        for _ in 0..<32 {
+            let a = MixEngine.rollTexture(&s1)
+            let b = MixEngine.rollTexture(&s2)
+            XCTAssertEqual(a.effect.rawValue, b.effect.rawValue)         // reproducible
+            XCTAssertEqual(a.peak, b.peak, accuracy: 1e-12)
+            XCTAssertEqual(a.run, b.run)
+            XCTAssertTrue(MixEngine.fxGlidePool.contains { $0.rawValue == a.effect.rawValue })
+            XCTAssertTrue((0.5...0.8).contains(a.peak))
+            XCTAssertTrue((3...5).contains(a.run))
+        }
+    }
+
+    /// The compressor is deliberately NOT in the FX-Glide pool (it's a dynamics tool, not a sweep).
+    func testFXGlidePoolIsSweepEffectsOnly() {
+        XCTAssertEqual(MixEngine.fxGlidePool.count, 3)
+        XCTAssertFalse(MixEngine.fxGlidePool.contains { $0.rawValue == MixEngine.Effect.compressor.rawValue })
+    }
+
+    /// The per-mix texture seed is deterministic per track set (no wall-clock randomness).
+    func testFxSeedIsDeterministicPerQueue() {
+        let a = [MixEngine.AutoMixItem(loadable: loadable("song-a", bpm: 120, lengthMs: 1000), durationMs: 1000)]
+        let b = [MixEngine.AutoMixItem(loadable: loadable("song-b", bpm: 120, lengthMs: 1000), durationMs: 1000)]
+        XCTAssertEqual(MixEngine.fxSeed(from: a), MixEngine.fxSeed(from: a))
+        XCTAssertNotEqual(MixEngine.fxSeed(from: a), MixEngine.fxSeed(from: b))
+    }
+
+    // MARK: - Glide toggles + transition wiring
+
+    func testGlideTogglesDefaultOffAndSettable() {
+        let e = makeEngine()
+        XCTAssertFalse(e.fxGlideEnabled)
+        XCTAssertFalse(e.mixGlideEnabled)
+        e.setFXGlide(true); e.setMixGlide(true)
+        XCTAssertTrue(e.fxGlideEnabled)
+        XCTAssertTrue(e.mixGlideEnabled)
+        e.setFXGlide(false)
+        XCTAssertFalse(e.fxGlideEnabled)
+        XCTAssertTrue(e.mixGlideEnabled)
+        e.teardown()
+    }
+
+    /// A glide-armed manual skip keeps the mix running and — like the crossfader — its automated
+    /// tempo/pitch/effect sweep must NOT be recorded as user gestures into the session corpus.
+    func testGlideSkipKeepsMixingAndDoesNotRecordAutomation() throws {
+        let e = makeEngine()
+        let rec = MockRecorder()
+        e.recorder = rec
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true); e.setMixGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        e.skipToNext(fadeSeconds: 5)                       // glide skip → must not crash
+        XCTAssertTrue(e.autoMixing, "glide skip keeps the mix running")
+        let automation: Set<MixEventKind> = [.tempo, .pitch, .effectStrength, .effectToggle, .crossfader]
+        XCTAssertTrue(e.autoStatus?.contains("fading") == true)
+        XCTAssertTrue(rec.events.allSatisfy { !automation.contains($0.kind) },
+                      "glide automation must not be recorded as user gestures")
+        e.teardown()
+    }
+
+    /// Stopping an auto-mix restores a pristine crossfader even with the glide features armed (the
+    /// glide teardown path must not leave the engine in a partial-transition state).
+    func testStopWithGlideArmedRecentersCleanly() {
+        let e = makeEngine()
+        e.setFXGlide(true); e.setMixGlide(true)
+        let item = MixEngine.AutoMixItem(loadable: loadable("z", bpm: 120, lengthMs: 180_000), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+        e.stopAutoMix()
+        XCTAssertFalse(e.autoMixing)
+        XCTAssertEqual(e.crossfader, 0.5, accuracy: 1e-9)
+        e.teardown()
+    }
+
     // MARK: - Helpers
 
     /// Captures the engine's emitted session events without any persistence (test double).

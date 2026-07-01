@@ -161,6 +161,44 @@ final class MixSessionStore: MixSessionRecorder {
     /// Whether `songId` has been played in the CURRENT session (drives loader checkmark + auto-hide).
     func hasPlayed(_ songId: String) -> Bool { recPlayed.contains(songId) }
 
+    // MARK: - Recordings (captured mix audio)
+
+    /// Attach a finished audio recording's metadata to a session (the one that was current when
+    /// capture began — passed explicitly so a Reset mid-recording still files the take correctly).
+    /// The audio file itself already lives in the session folder; this just records where + how long.
+    /// Returns the allocated recording id (nil if the session no longer exists).
+    @discardableResult
+    func addRecording(toSession id: String, fileName: String, startedAt: Double,
+                      durationMs: Int, wasUserFolder: Bool) -> String? {
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return nil }
+        let seq = (sessions[i].recordings?.count ?? 0) + 1
+        let rec = MixRecording(id: "rec\(seq)", fileName: fileName, startedAt: startedAt,
+                               durationMs: durationMs, wasUserFolder: wasUserFolder)
+        sessions[i].recordings = (sessions[i].recordings ?? []) + [rec]
+        saveNow()
+        return rec.id
+    }
+
+    /// The recordings attached to a session (newest last), for the Sessions detail screen.
+    func recordings(forSession id: String) -> [MixRecording] { session(id)?.recordingsList ?? [] }
+
+    /// Re-file a recording whose originating session was DELETED mid-capture, so the finished take
+    /// isn't lost. Reuses the ORIGINAL session id — which still matches the on-disk folder the audio
+    /// was written into — reviving it as a minimal finalized session if it's gone, then attaching the
+    /// recording. No file move (the audio already lives in `mix-sessions/<sessionId>/`).
+    func recoverRecording(sessionId: String, name: String, fileName: String, startedAt: Double,
+                          durationMs: Int, wasUserFolder: Bool) {
+        guard !sessionId.isEmpty else { return }
+        if sessions.firstIndex(where: { $0.id == sessionId }) == nil {
+            var s = MixSession(id: sessionId, name: name, startedAt: startedAt,
+                               endedAt: startedAt + Double(durationMs), events: [], playedSongIds: [])
+            s.recordings = []
+            sessions.append(s)
+        }
+        addRecording(toSession: sessionId, fileName: fileName, startedAt: startedAt,
+                     durationMs: durationMs, wasUserFolder: wasUserFolder)
+    }
+
     // MARK: - Readers (Sessions screen)
 
     func session(_ id: String) -> MixSession? { sessions.first { $0.id == id } }

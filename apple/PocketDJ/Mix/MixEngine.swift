@@ -183,6 +183,15 @@ final class MixEngine {
     private(set) var autoEnabled = false
     private(set) var autoMixing = false
     private(set) var autoStatus: String?
+    /// FX GLIDE (auto-mix pill): when on, each auto-mix transition sweeps a coherent effect (held for a
+    /// run of 3–5 transitions) IN on the outgoing deck, holds it across the crossfade on both decks,
+    /// then sweeps it back OFF on the incoming deck. Read per-transition (a mid-mix toggle takes effect
+    /// on the NEXT transition; an in-flight one finishes in the mode it began).
+    private(set) var fxGlideEnabled = false
+    /// MIX GLIDE (auto-mix pill): when on, each transition glides bpm+pitch (1 Camelot key = ±10% each,
+    /// capped ±1 key) so the outgoing + incoming decks bend toward a shared key, with a best-effort
+    /// downbeat align (beat sync), then the incoming settles back to its natural tempo/pitch.
+    private(set) var mixGlideEnabled = false
     /// The collection name an auto-mix is running over (e.g. a pocket / set list). Lives on the
     /// app-scoped engine so the source label survives a Mix-tab teardown (the view-local `autoSource`
     /// picker is forgotten on tab switch, but the running mix — and this label — are not).
@@ -218,6 +227,13 @@ final class MixEngine {
     /// other. Centered when nothing is cued ⇒ an un-cued mix is bit-identical normal stereo.
     @ObservationIgnored private var mainGains: [Deck: AVAudioMixerNode] = [:]
     @ObservationIgnored private var cueGains: [Deck: AVAudioMixerNode] = [:]
+    /// The clean HOUSE SUM — both decks' `mainGains` merge here in NORMAL stereo (no cue pan), and
+    /// this is where an audio RECORDING taps. `houseSum → housePan → mainMixerNode`: the cue-side hard
+    /// pan (that collapses the house to one output channel while monitoring) lives on `housePan`,
+    /// DOWNSTREAM of the tap — so a recording made while a deck is cued still captures the clean stereo
+    /// house mix (the audience's mix) instead of the mono-collapsed house + private cue bleed.
+    @ObservationIgnored private var houseSum: AVAudioMixerNode?
+    @ObservationIgnored private var housePan: AVAudioMixerNode?
     /// Master peak limiter on the output bus (built in `ensureEngine`) — the safety net for the
     /// >unity volume boost so two loud decks can't clip the device.
     @ObservationIgnored private var masterLimiter: AVAudioUnitEffect?
@@ -268,6 +284,50 @@ final class MixEngine {
     /// crossfade. nil when no restore is pending.
     @ObservationIgnored private var pendingFadeRestore: Double?
 
+    // MARK: Auto-Mix — glide transition phases (FX Glide + Mix Glide)
+
+    /// A transition layers optional PRE-ROLL (ramp glide in on the outgoing deck, before the volume
+    /// sweep) and POST-ROLL (ramp glide back off on the incoming deck, after the sweep) around the
+    /// existing crossfade. Non-nil ⇒ that phase is active; the crossfade proper still uses
+    /// `autoFadeStartedAt`. With no glide feature on, neither is ever set (⇒ behavior is unchanged).
+    @ObservationIgnored private var autoPrerollStartedAt: Date?
+    @ObservationIgnored private var autoPostrollStartedAt: Date?
+    /// This transition's preroll length (s) — capped so preroll + fade fit the outgoing runway.
+    @ObservationIgnored private var glideInSecondsActive: Double = 0
+    /// True while the IN-FLIGHT transition is a glide (captured at its start, so a mid-transition toggle
+    /// of FX/Mix Glide can't corrupt a transition that already began).
+    @ObservationIgnored private var autoTransitionIsGlide = false
+    /// The in-flight transition's glide parameters (effect + peak, per-deck tempo/pitch targets, and
+    /// the effect state to restore afterward). nil between transitions.
+    @ObservationIgnored private var glideCtx: GlideContext?
+
+    /// FX Glide texture coherence: the current effect + peak strength held for `fxTextureRunRemaining`
+    /// more transitions (a run of 3–5), then re-rolled. Seeded per auto-mix so it's deterministic.
+    @ObservationIgnored private var fxTextureEffect: Effect?
+    @ObservationIgnored private var fxTexturePeak: Double = 0.6
+    @ObservationIgnored private var fxTextureRunRemaining = 0
+    @ObservationIgnored private var fxGlidePrng: UInt64 = 0x9E37_79B9_7F4A_7C15
+
+    /// Preroll / postroll durations (s) when a glide feature is on. Kept modest so a transition stays
+    /// snappy; the preroll is additionally capped to the runway left before the outgoing track ends.
+    private static let glideInSeconds: Double = 2.0
+    private static let glideOutSeconds: Double = 2.0
+
+    /// Per-transition glide parameters, snapshotted when a glide transition begins.
+    private struct GlideContext {
+        let from: Deck, to: Deck
+        // FX Glide
+        let fxOn: Bool
+        let fxEffect: Effect
+        let fxPeak: Double
+        let savedFrom: (on: Bool, strength: Double)   // outgoing deck's pre-glide state for fxEffect
+        let savedTo: (on: Bool, strength: Double)      // incoming deck's pre-glide state for fxEffect
+        // Mix Glide (1.0 rate / 0 pitch ⇒ no harmonic glide on that deck)
+        let mixOn: Bool
+        let outRate: Double, outPitch: Double          // outgoing target (held across the crossfade)
+        let inRate: Double, inPitch: Double            // incoming start (ramps → natural in the postroll)
+    }
+
     /// Per-deck flag: do the 4 stem nodes currently hold a live scheduled segment? Set by
     /// `scheduleStems` (true when anything scheduled), cleared by `stopStemNodes`/`stopActiveNodes`
     /// (which `stop()` the nodes, discarding the schedule). A `pause()` keeps the schedule, so this
@@ -315,6 +375,60 @@ final class MixEngine {
         updateSystemNowPlaying()                    // reflect the new play state / now-playing deck
     }
 
+    // MARK: - Audio recording (capture the mixed house output)
+
+    /// True while a live audio capture is running (drives the pulsing record button). App-scoped like
+    /// the engine, so it survives a Mix-tab teardown — a recording keeps running when you leave the tab.
+    private(set) var isRecording = false
+    /// Owns the recording file + its serial writer queue (nil ⇒ not recording).
+    @ObservationIgnored private var recordingWriter: MixTapWriter?
+    /// The session-folder security-scope release held for the WHOLE capture (nil ⇒ app storage).
+    @ObservationIgnored private var recordingRelease: (() -> Void)?
+
+    /// Begin capturing the fully-mixed HOUSE output — post master-limiter, exactly what the audience
+    /// hears — to `url` as AAC (`.m4a`). Installs a tap on the master limiter; buffers are copied and
+    /// written OFF the realtime thread (a serial queue) so AAC encoding never stalls audio. `release`
+    /// is the session-folder security scope, which this method OWNS: it's held for the whole capture
+    /// and dropped on `stopRecording()`; on ANY failure here it's dropped immediately. Returns false if
+    /// the graph isn't built, a capture is already running, or the file can't be opened.
+    ///
+    /// Taps `houseSum` (the clean stereo house mix, BEFORE the cue-side pan + the cue send), so a
+    /// capture is the audience's mix even while you monitor a deck in the cue/headphones. It is
+    /// pre-master-limiter, so a two-deck >unity boost could in theory clip the take (a rare edge; the
+    /// output itself is still limiter-protected).
+    @discardableResult
+    func startRecording(to url: URL, release: (() -> Void)?) -> Bool {
+        ensureEngine()
+        guard built, !isRecording, let node = houseSum else { release?(); return false }
+        let format = node.outputFormat(forBus: 0)                 // canonical 44.1 kHz stereo float
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: format.sampleRate,
+            AVNumberOfChannelsKey: format.channelCount,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+        ]
+        guard let writer = MixTapWriter(url: url, settings: settings) else { release?(); return false }
+        recordingWriter = writer
+        recordingRelease = release
+        node.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
+            writer.append(buffer)                                 // realtime thread → copy + enqueue
+        }
+        isRecording = true
+        return true
+    }
+
+    /// Stop an in-progress capture: remove the tap, finalize the file (flushing pending writes), and
+    /// drop the session-folder scope. No-op if not recording.
+    func stopRecording() {
+        guard isRecording else { return }
+        houseSum?.removeTap(onBus: 0)
+        recordingWriter?.close()
+        recordingWriter = nil
+        recordingRelease?()
+        recordingRelease = nil
+        isRecording = false
+    }
+
     // MARK: - Lifecycle
 
     /// Build the two-deck graph ON FIRST USE and start the engine. Idempotent.
@@ -325,6 +439,10 @@ final class MixEngine {
         registerInterruptionHandling()
         #endif
         let canonical = Self.canonicalFormat
+        // The shared clean house-sum + its downstream cue-pan node (see the `houseSum` doc). Built once.
+        let hSum = AVAudioMixerNode(); let hPan = AVAudioMixerNode()
+        engine.attach(hSum); engine.attach(hPan)
+        houseSum = hSum; housePan = hPan
         for d in Deck.allCases {
             let player = AVAudioPlayerNode()
             let inputMixer = AVAudioMixerNode()
@@ -350,7 +468,9 @@ final class MixEngine {
             engine.connect(flanger, to: [AVAudioConnectionPoint(node: mainGain, bus: 0),
                                          AVAudioConnectionPoint(node: cueGain, bus: 0)],
                            fromBus: 0, format: canonical)
-            engine.connect(mainGain, to: engine.mainMixerNode, format: canonical)
+            // House send: `mainGain → houseSum` (clean stereo, tapped for recording); the cue-pan is
+            // applied downstream on `housePan`. The cue send goes straight to the master mix.
+            engine.connect(mainGain, to: hSum, format: canonical)
             engine.connect(cueGain, to: engine.mainMixerNode, format: canonical)
             players[d] = player; inputMixers[d] = inputMixer; timePitches[d] = tp; comps[d] = comp
             filters[d] = filter; reverbs[d] = reverb; flangers[d] = flanger
@@ -367,6 +487,11 @@ final class MixEngine {
             }
             stemPlayers[d] = stemNodes
         }
+        // Clean house sum → cue-side pan → master. The tap point (`hSum`) is BEFORE the pan, so a
+        // recording is always normal stereo house even while a deck is cued (the pan only steers the
+        // physical monitor split). Cue sends already merge directly at `mainMixerNode`.
+        engine.connect(hSum, to: hPan, format: canonical)
+        engine.connect(hPan, to: engine.mainMixerNode, format: canonical)
         // Master PEAK LIMITER between mainMixer and the device: two decks at up to 200% (+6 dB each)
         // plus the compressor's makeup gain can sum past 0 dBFS — the limiter catches those peaks so
         // the boost feature can't hard-clip the output. Transparent below threshold.
@@ -394,6 +519,7 @@ final class MixEngine {
 
     func teardown() {
         endAutoLoop()
+        stopRecording()                 // finalize any in-progress capture (the file stays on disk)
         tickTask?.cancel(); tickTask = nil
         pauseBoth()
         if built { engine.stop() }
@@ -618,7 +744,7 @@ final class MixEngine {
     /// for tempo) so the crossfade fires relative to the NEW position. Sliding a song near its end now
     /// auto-mixes on time (capped by the crossfade lead/length) instead of playing silently past it.
     private func refreshAutoDeckEndIfLive(_ deck: Deck) {
-        guard autoMixing, deck == autoLiveDeck, autoFadeStartedAt == nil else { return }
+        guard autoMixing, deck == autoLiveDeck, !autoTransitioning else { return }
         let durMs = autoDeckDurationMs[deck] ?? Self.autoFallbackDurationMs
         let remaining = max(0, Double(durMs) / 1000 - position(deck)) / max(0.05, state(deck).rate)
         autoDeckEndsAt[deck] = Date().addingTimeInterval(remaining)
@@ -748,7 +874,8 @@ final class MixEngine {
     /// graph is built). Lets a real-graph test assert the PFL routing without reaching into AVAudio.
     func cueRoutingSnapshot(_ deck: Deck) -> (mainVol: Float, cueVol: Float, mainPan: Float, cuePan: Float)? {
         guard let m = mainGains[deck], let c = cueGains[deck] else { return nil }
-        return (m.outputVolume, c.outputVolume, m.pan, c.pan)
+        // The house pan now lives on the shared `housePan` (post-tap) rather than per-deck `mainGains`.
+        return (m.outputVolume, c.outputVolume, housePan?.pan ?? 0, c.pan)
     }
 
     /// Diagnostics / tests: a stem node's live `volume` (nil until the graph is built). Used to assert
@@ -787,6 +914,18 @@ final class MixEngine {
         if !on { endAutoLoop() }
     }
 
+    /// Toggle FX Glide / Mix Glide (the auto-mix pill). Safe to flip mid-mix: an in-flight transition
+    /// finishes in the mode it began; the change applies to the NEXT transition.
+    func setFXGlide(_ on: Bool) { fxGlideEnabled = on }
+    func setMixGlide(_ on: Bool) { mixGlideEnabled = on }
+
+    /// Whether either glide feature is armed (⇒ a transition uses the pre/post-roll machine).
+    private var anyGlide: Bool { fxGlideEnabled || mixGlideEnabled }
+    /// A transition (preroll, crossfade, or postroll) is in progress.
+    private var autoTransitioning: Bool {
+        autoPrerollStartedAt != nil || autoFadeStartedAt != nil || autoPostrollStartedAt != nil
+    }
+
     func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double,
                       label: String? = nil) {
         guard !items.isEmpty else { return }
@@ -804,6 +943,11 @@ final class MixEngine {
         autoFadeStartedAt = nil
         autoDeckEndsAt = [:]
         autoDeckDurationMs = [:]
+        // Reset the glide machine + seed the (deterministic) FX texture PRNG for this mix.
+        autoPrerollStartedAt = nil; autoPostrollStartedAt = nil
+        autoTransitionIsGlide = false; glideCtx = nil
+        fxTextureEffect = nil; fxTextureRunRemaining = 0
+        fxGlidePrng = Self.fxSeed(from: autoQueue)
 
         applyCrossfader(0)
         loadAuto(autoQueue[0], onto: .a)
@@ -825,7 +969,13 @@ final class MixEngine {
 
     private func endAutoLoop() {
         let wasMixing = autoMixing
+        // Abort any in-flight glide: restore both decks' forced effect + natural tempo/pitch, so a
+        // Stop mid-transition never leaves an effect on / a deck pitched.
+        abortGlide()
         autoFadeStartedAt = nil
+        autoPrerollStartedAt = nil
+        autoPostrollStartedAt = nil
+        autoTransitionIsGlide = false
         pendingFadeRestore = nil
         autoMixing = false
         autoStatus = nil
@@ -836,15 +986,41 @@ final class MixEngine {
         if wasMixing { applyCrossfader(0.5) }
     }
 
-    /// One auto-mix step (called from the unified tick while `autoMixing`).
+    /// Restore both decks from an interrupted glide (used by `endAutoLoop`): put each deck's forced
+    /// effect back to its pre-glide state + tempo/pitch to natural. No-op when no glide is in flight.
+    private func abortGlide() {
+        guard let c = glideCtx else { return }
+        setGlideEffect(c.fxEffect, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: c.from)
+        setGlideEffect(c.fxEffect, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
+        setGlideRate(1.0, on: c.from); setGlidePitch(0.0, on: c.from)
+        setGlideRate(1.0, on: c.to);   setGlidePitch(0.0, on: c.to)
+        glideCtx = nil
+    }
+
+    /// One auto-mix step (called from the unified tick while `autoMixing`). A transition runs, in
+    /// order: PRE-ROLL (glide only — ramp the effect/pitch in on the outgoing deck) → CROSSFADE (the
+    /// volume sweep) → POST-ROLL (glide only — ramp the incoming deck back to natural). With no glide
+    /// feature on, only the crossfade phase is ever entered, so the behavior is unchanged.
     private func autoFire() {
         guard autoEnabled, autoMixing, isReady else { return }
         let now = Date()
-        if let fadeStart = autoFadeStartedAt {
+        if let prerollStart = autoPrerollStartedAt {                       // PRE-ROLL (glide)
+            let p = min(max(now.timeIntervalSince(prerollStart) / max(0.05, glideInSecondsActive), 0), 1)
+            applyOutgoingGlide(p)
+            if p >= 1 {
+                autoPrerollStartedAt = nil
+                beginAutoCrossfade(now: now)     // start the incoming deck + the volume sweep
+                startGlideCrossfade()            // snap outgoing to target, offset incoming, beat-sync
+            }
+        } else if let fadeStart = autoFadeStartedAt {                      // CROSSFADE (volume sweep)
             let p = min(max(now.timeIntervalSince(fadeStart) / autoFadeSeconds, 0), 1)
             applyCrossfader(autoFadeFrom == .a ? p : 1 - p)
             if p >= 1 { finishAutoCrossfade() }
-        } else {
+        } else if let postrollStart = autoPostrollStartedAt {             // POST-ROLL (glide)
+            let p = min(max(now.timeIntervalSince(postrollStart) / max(0.05, Self.glideOutSeconds), 0), 1)
+            applyIncomingGlide(p)
+            if p >= 1 { finishGlide() }
+        } else {                                                          // IDLE — maybe start a transition
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
             let secondsLeft = endsAt.timeIntervalSince(now)
             if autoLivePos + 1 < autoQueue.count {
@@ -855,7 +1031,18 @@ final class MixEngine {
                         pendingFadeRestore = autoFadeSeconds
                         autoFadeSeconds = max(0.5, secondsLeft)
                     }
-                    beginAutoCrossfade(now: now)
+                    if anyGlide {
+                        // Fit the preroll into what's left after the (possibly capped) fade + a margin.
+                        // Mix Glide bends the OUTGOING deck's tempo up to +10%, so it consumes audio
+                        // faster than wall-clock — divide the runway by that headroom so the fading deck
+                        // can't reach end-of-audio before the crossfade completes.
+                        let headroom = mixGlideEnabled ? 1.12 : 1.0
+                        let preroll = max(0, min(Self.glideInSeconds,
+                                                 secondsLeft / headroom - autoFadeSeconds - 0.3))
+                        beginGlideTransition(now: now, preroll: preroll)
+                    } else {
+                        beginAutoCrossfade(now: now)
+                    }
                 }
             } else if secondsLeft <= 0 {
                 stopAutoMix()
@@ -871,11 +1058,17 @@ final class MixEngine {
     /// restored to the configured baseline once the crossfade finishes (see `finishAutoCrossfade`), so
     /// a one-off fast skip never shortens the next AUTOMATIC crossfade.
     func skipToNext(fadeSeconds: Double) {
-        guard autoEnabled, autoMixing, isReady, autoFadeStartedAt == nil else { return }
+        guard autoEnabled, autoMixing, isReady, !autoTransitioning else { return }
         guard autoLivePos + 1 < autoQueue.count else { stopAutoMix(); return }   // last track → end
-        pendingFadeRestore = autoFadeSeconds
-        autoFadeSeconds = max(0.2, fadeSeconds)
-        beginAutoCrossfade(now: Date())
+        if anyGlide {
+            // A manual skip glides too, but with NO preroll (skip = advance now); it still applies the
+            // effect / pitch offset on the incoming deck + rolls it back off in the postroll.
+            beginGlideTransition(now: Date(), preroll: 0, fade: fadeSeconds)
+        } else {
+            pendingFadeRestore = autoFadeSeconds
+            autoFadeSeconds = max(0.2, fadeSeconds)
+            beginAutoCrossfade(now: Date())
+        }
         refreshAutoStatus()
     }
 
@@ -897,11 +1090,22 @@ final class MixEngine {
         autoLivePos += 1
         autoFadeStartedAt = nil
         if let restore = pendingFadeRestore { autoFadeSeconds = restore; pendingFadeRestore = nil }
+        // Glide: the OUTGOING deck is retired + about to be reused for the next queued track — restore
+        // its forced effect (a load doesn't clear effects) + natural tempo/pitch BEFORE the load, then
+        // hand off to the postroll that eases the now-live INCOMING deck back to natural.
+        if autoTransitionIsGlide, let c = glideCtx {
+            setGlideEffect(c.fxEffect, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: from)
+            setGlideRate(1.0, on: from); setGlidePitch(0.0, on: from)
+        }
         if autoNextToLoad < autoQueue.count {
             loadAuto(autoQueue[autoNextToLoad], onto: from)
             autoNextToLoad += 1
         }
         updateSystemNowPlaying()      // the now-playing deck just switched → refresh the card
+        if autoTransitionIsGlide {
+            if Self.glideOutSeconds > 0.05 { autoPostrollStartedAt = Date() }
+            else { finishGlide() }
+        }
     }
 
     private func loadAuto(_ item: AutoMixItem, onto deck: Deck) {
@@ -912,10 +1116,237 @@ final class MixEngine {
     private func refreshAutoStatus() {
         let s: String?
         if autoMixing {
-            let detail = autoFadeStartedAt != nil ? "fading" : "Deck \(autoLiveDeck.rawValue)"
+            let detail = autoTransitioning ? "fading" : "Deck \(autoLiveDeck.rawValue)"
             s = "\(min(autoLivePos + 1, autoQueue.count)) / \(autoQueue.count) · \(detail)"
         } else { s = nil }
         if s != autoStatus { autoStatus = s }
+    }
+
+    // MARK: - Auto-Mix glide (FX Glide + Mix Glide)
+
+    /// Begin a GLIDE transition. Snapshots the FX texture + Mix-Glide tempo/pitch targets, then either
+    /// starts a PRE-ROLL (ramp the glide in on the outgoing deck before the volume sweep) or — when
+    /// there's no room / a manual skip — snaps the outgoing glide and goes straight to the crossfade.
+    /// `fade` (manual skip) overrides the crossfade length for this one transition.
+    private func beginGlideTransition(now: Date, preroll: Double, fade: Double? = nil) {
+        let from = autoLiveDeck
+        let to = other(from)
+        let fxOn = fxGlideEnabled
+        let tex: (effect: Effect, peak: Double) = fxOn ? currentTexture() : (.filter, 0)
+        let mixOn = mixGlideEnabled
+        let mp: (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) =
+            mixOn ? (Self.glideParams(fromCamelot: state(from).loaded?.camelot,
+                                      toCamelot: state(to).loaded?.camelot) ?? (1, 0, 1, 0))
+                  : (1, 0, 1, 0)
+        glideCtx = GlideContext(
+            from: from, to: to,
+            fxOn: fxOn, fxEffect: tex.effect, fxPeak: tex.peak,
+            savedFrom: (state(from).isEnabled(tex.effect), state(from).strength(tex.effect)),
+            savedTo: (state(to).isEnabled(tex.effect), state(to).strength(tex.effect)),
+            mixOn: mixOn,
+            outRate: mp.outRate, outPitch: mp.outPitch, inRate: mp.inRate, inPitch: mp.inPitch)
+        autoTransitionIsGlide = true
+        if let fade {                                   // manual skip: custom fade, restore after
+            if pendingFadeRestore == nil { pendingFadeRestore = autoFadeSeconds }
+            autoFadeSeconds = max(0.2, fade)
+        }
+        if preroll > 0.05 {
+            glideInSecondsActive = preroll
+            autoPrerollStartedAt = now
+            if fxOn { setGlideEffect(tex.effect, enabled: true, strength: 0, on: from) }  // engage at 0
+            applyOutgoingGlide(0)
+        } else {                                        // no runway / skip → snap + straight to fade
+            glideInSecondsActive = 0
+            applyOutgoingGlide(1)
+            beginAutoCrossfade(now: now)
+            startGlideCrossfade()
+        }
+    }
+
+    /// PRE-ROLL step (progress `p` 0→1): ramp the texture effect + tempo/pitch IN on the outgoing deck.
+    private func applyOutgoingGlide(_ p: Double) {
+        guard let c = glideCtx else { return }
+        if c.fxOn { setGlideEffect(c.fxEffect, enabled: true, strength: p * c.fxPeak, on: c.from) }
+        if c.mixOn {
+            setGlideRate(1 + (c.outRate - 1) * p, on: c.from)
+            setGlidePitch(c.outPitch * p, on: c.from)
+        }
+    }
+
+    /// CROSSFADE begin: pin the outgoing deck at its glide target + the effect at peak on BOTH decks,
+    /// start the incoming deck at its opposite offset, and best-effort downbeat-align it (beat sync).
+    private func startGlideCrossfade() {
+        guard let c = glideCtx else { return }
+        if c.fxOn {
+            setGlideEffect(c.fxEffect, enabled: true, strength: c.fxPeak, on: c.from)
+            setGlideEffect(c.fxEffect, enabled: true, strength: c.fxPeak, on: c.to)
+        }
+        if c.mixOn {
+            setGlideRate(c.outRate, on: c.from); setGlidePitch(c.outPitch, on: c.from)
+            setGlideRate(c.inRate, on: c.to);    setGlidePitch(c.inPitch, on: c.to)
+            glidePhaseAlign(incoming: c.to, outgoing: c.from)   // align the incoming downbeat (beat sync)
+        }
+    }
+
+    /// Best-effort downbeat align for the glide's incoming deck — same phase math as `phaseAlign`, but
+    /// applied via a NON-recording reschedule (auto-mix internals must not emit user `.seek` events,
+    /// mirroring the non-recording `applyCrossfader`). The incoming deck is always a freshly-loaded
+    /// single file (auto-mix never enters stem mode), so only the single-player path is needed.
+    private func glidePhaseAlign(incoming f: Deck, outgoing l: Deck) {
+        guard state(f).isPlaying, state(l).isPlaying,
+              let leadBPM = matchBPM(l), let folBPM = matchBPM(f) else { return }
+        let leadBeat = 60.0 / leadBPM, folBeat = 60.0 / folBPM
+        let leadDb = Double(state(l).loaded?.firstDownbeatMs ?? 0) / 1000.0
+        let folDb = Double(state(f).loaded?.firstDownbeatMs ?? 0) / 1000.0
+        let leadPhase = ((position(l) - leadDb) / leadBeat).truncatingRemainder(dividingBy: 1)
+        let folPhase = ((position(f) - folDb) / folBeat).truncatingRemainder(dividingBy: 1)
+        var delta = leadPhase - folPhase
+        if delta > 0.5 { delta -= 1 } else if delta < -0.5 { delta += 1 }
+        glideSeekSilently(f, toSeconds: max(0, position(f) + delta * folBeat))
+    }
+
+    /// A non-recording seek (single-player path only) for the glide beat-align — like `seek` but with
+    /// no `.seek` event, no auto-deck re-timing, and no now-playing refresh.
+    private func glideSeekSilently(_ deck: Deck, toSeconds sec: Double) {
+        guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
+              let start = startFrames[deck], let end = endFrames[deck] else { return }
+        let clamped = min(max(0, sec), duration(deck))
+        let was = state(deck).isPlaying
+        let frame = min(max(start, start + AVAudioFramePosition(clamped * sr)), end)
+        let count = end - frame
+        player.stop()
+        if count > 0 {
+            player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
+                                   at: nil, completionHandler: nil)
+        }
+        segmentStartSeconds[deck] = clamped
+        setPosition(deck, clamped)
+        if was, count > 0 { if !engine.isRunning { try? engine.start() }; player.play() }
+    }
+
+    /// POST-ROLL step (progress `p` 0→1): ease the incoming deck's effect OFF + tempo/pitch back to
+    /// natural (the crossfade already fully favours it).
+    private func applyIncomingGlide(_ p: Double) {
+        guard let c = glideCtx else { return }
+        if c.fxOn { setGlideEffect(c.fxEffect, enabled: true, strength: (1 - p) * c.fxPeak, on: c.to) }
+        if c.mixOn {
+            setGlideRate(c.inRate + (1 - c.inRate) * p, on: c.to)
+            setGlidePitch(c.inPitch * (1 - p), on: c.to)
+        }
+    }
+
+    /// Transition complete: restore the incoming deck's pre-glide effect state + natural tempo/pitch,
+    /// and clear the glide context.
+    private func finishGlide() {
+        autoPostrollStartedAt = nil
+        if let c = glideCtx {
+            setGlideEffect(c.fxEffect, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
+            if c.mixOn { setGlideRate(1.0, on: c.to); setGlidePitch(0.0, on: c.to) }
+        }
+        glideCtx = nil
+        autoTransitionIsGlide = false
+    }
+
+    /// The FX texture for this transition — reuse the current one across a run of 3–5 transitions
+    /// (coherent texture), then re-roll. Deterministic (seeded in `startAutoMix`).
+    private func currentTexture() -> (effect: Effect, peak: Double) {
+        if fxTextureRunRemaining <= 0 || fxTextureEffect == nil {
+            let t = Self.rollTexture(&fxGlidePrng)
+            fxTextureEffect = t.effect
+            fxTexturePeak = t.peak
+            fxTextureRunRemaining = t.run
+        }
+        fxTextureRunRemaining -= 1
+        return (fxTextureEffect ?? .filter, fxTexturePeak)
+    }
+
+    // Non-recording glide appliers — mutate deck state + push to the graph WITHOUT emitting session
+    // events (the ~10 Hz sweep must not flood the corpus, mirroring `applyCrossfader`). The deck
+    // sliders/chips still reflect the live values (they read the same state), so you SEE the glide.
+    private func setGlideRate(_ rate: Double, on deck: Deck) {
+        mutate(deck) { $0.rate = min(max(rate, Self.rateRange.lowerBound), Self.rateRange.upperBound) }
+        applyRate(deck)
+    }
+    private func setGlidePitch(_ semitones: Double, on deck: Deck) {
+        mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
+        applyPitch(deck)
+    }
+    private func setGlideEffect(_ effect: Effect, enabled: Bool, strength: Double, on deck: Deck) {
+        mutate(deck) { $0.set(effect, enabled); $0.setStrength(effect, min(max(strength, 0), 1)) }
+        applyEffect(effect, on: deck)
+    }
+
+    // MARK: Glide math (pure — testable)
+
+    /// The FX-Glide effect pool: sweepy effects that read as a texture across a transition (the
+    /// compressor is excluded — it's a dynamics tool, not a sweep).
+    nonisolated static let fxGlidePool: [Effect] = [.filter, .reverb, .flanger]
+
+    /// 1 Camelot "key" (wheel hour) as a pitch shift in SEMITONES, at the user's 10%-per-key
+    /// convention: a +10% frequency ratio is `12·log2(1.1)` ≈ 1.65 semitones.
+    nonisolated static let semitonesPerKey: Double = 12 * log2(1.1)
+
+    /// Signed Camelot-hour distance a→b, wrapped to the shortest way round the 12-hour wheel (−6…+6).
+    /// nil if either code is unparseable. Positive ⇒ b is "higher" (glide the outgoing deck up to it).
+    nonisolated static func signedCamelotSteps(_ a: String?, _ b: String?) -> Int? {
+        guard let pa = Camelot.parse(a), let pb = Camelot.parse(b) else { return nil }
+        var d = pb.num - pa.num
+        if d > 6 { d -= 12 } else if d < -6 { d += 12 }
+        return d
+    }
+
+    /// Tempo multiplier for a glide of `keys` (Camelot hours; 1 key = ±10%), clamped to `rateRange`.
+    nonisolated static func glideRate(keys: Double) -> Double {
+        min(max(1 + 0.10 * keys, rateRange.lowerBound), rateRange.upperBound)
+    }
+    /// Pitch shift (semitones) for a glide of `keys`, clamped to `pitchRange`.
+    nonisolated static func glidePitch(keys: Double) -> Double {
+        min(max(keys * semitonesPerKey, pitchRange.lowerBound), pitchRange.upperBound)
+    }
+
+    /// Per-deck tempo/pitch targets for a transition A(out)→B(in): each deck bends TOWARD the other by
+    /// up to 1 key (10%) so they meet in the middle during the overlap; the incoming then settles back
+    /// to natural. nil camelot ⇒ identity (no harmonic glide — the caller still beat-syncs).
+    nonisolated static func glideParams(fromCamelot a: String?, toCamelot b: String?)
+        -> (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double)? {
+        guard let d = signedCamelotSteps(a, b) else { return nil }
+        let mag = min(1.0, Double(abs(d)) / 2.0)      // close up to 2 keys of distance (1 each way)
+        guard mag > 0 else { return (1, 0, 1, 0) }    // identical key → beat-sync only, no pitch bend
+        let dir = d > 0 ? 1.0 : -1.0
+        let outKeys = dir * mag                         // outgoing bends toward incoming
+        let inKeys = -dir * mag                         // incoming starts opposite, ramps back to 0
+        return (glideRate(keys: outKeys), glidePitch(keys: outKeys),
+                glideRate(keys: inKeys),  glidePitch(keys: inKeys))
+    }
+
+    /// splitmix64 — a tiny deterministic PRNG so texture selection is reproducible + unit-testable.
+    nonisolated static func splitmix64(_ state: inout UInt64) -> UInt64 {
+        state = state &+ 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+
+    /// Roll the next FX-Glide texture: an effect from the pool, a peak strength (0.5…0.8), and a run
+    /// length (3…5 transitions to keep it). Pure + deterministic given `state`.
+    nonisolated static func rollTexture(_ state: inout UInt64) -> (effect: Effect, peak: Double, run: Int) {
+        let a = splitmix64(&state), b = splitmix64(&state), c = splitmix64(&state)
+        let effect = fxGlidePool[Int(a % UInt64(fxGlidePool.count))]
+        let peak = 0.5 + Double(b % 1000) / 1000.0 * 0.3
+        let run = 3 + Int(c % 3)
+        return (effect, peak, run)
+    }
+
+    /// A stable per-mix seed from the queue (FNV-1a over the first song id ⊕ count) — deterministic, so
+    /// a given track set always textures the same way, without wall-clock randomness (which the app
+    /// avoids for reproducibility).
+    nonisolated static func fxSeed(from items: [AutoMixItem]) -> UInt64 {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in (items.first?.loadable.songId ?? "seed").utf8 {
+            h = (h ^ UInt64(byte)) &* 0x0000_0100_0000_01B3
+        }
+        return h ^ UInt64(items.count)
     }
 
     // MARK: - Stems (per-deck stem-mode playback + grid)
@@ -1215,9 +1646,13 @@ final class MixEngine {
         guard built else { return }
         let active = deckA.cued || deckB.cued
         let cueSide: Float = cueOnRight ? 1 : -1
+        // The house pan lives on the shared `housePan` node — DOWNSTREAM of the recording tap
+        // (`houseSum`) — so a capture stays clean stereo house even while a deck is cued. The per-deck
+        // `mainGains` stay centered (they only carry the deck's volume × crossfade now).
+        housePan?.pan = active ? -cueSide : 0
         for d in Deck.allCases {
             mainGains[d]?.outputVolume = userGain(d) * crossfadeFactor(d)
-            mainGains[d]?.pan = active ? -cueSide : 0
+            mainGains[d]?.pan = 0
             // Cue is pre-fader AND pre-boost: the >unity boost lives on the shared EQ UPSTREAM of the
             // split (it can't sit on a mixer's 0…1 outputVolume), so it leaks into this tap. Divide it
             // back out (`/ max(vol,1)`) so the monitor level is exactly `cueVol`, untouched by the Vol
@@ -1432,4 +1867,52 @@ final class MixEngine {
         }
     }
     #endif
+}
+
+// MARK: - Recording tap writer
+
+/// Owns the recording `AVAudioFile` and serializes writes onto a private queue so the realtime tap
+/// thread never blocks on file I/O / AAC encoding. `@unchecked Sendable`: the `file` is created in
+/// `init` (before the first async use) and thereafter touched ONLY on `queue`, so there is no
+/// concurrent access despite the compiler being unable to prove it.
+private final class MixTapWriter: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.pocketdj.mix.recording")
+    private var file: AVAudioFile?
+
+    init?(url: URL, settings: [String: Any]) {
+        guard let f = try? AVAudioFile(forWriting: url, settings: settings) else { return nil }
+        file = f
+    }
+
+    /// Called from the realtime tap thread: copy the (transient) tap buffer and hand it to the writer
+    /// queue. Strong `self` capture keeps the writer alive until every enqueued buffer is flushed.
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let copy = buffer.deepCopy() else { return }
+        queue.async { try? self.file?.write(from: copy) }
+    }
+
+    /// Finalize: after all pending writes drain, release the file (which finalizes the container).
+    func close() { queue.async { self.file = nil } }
+}
+
+private extension AVAudioPCMBuffer {
+    /// A standalone copy of this buffer's frames — the tap buffer is only valid during the callback, so
+    /// deferring the write to another queue needs an owned copy. Handles the canonical float format
+    /// (and int16/int32 defensively); nil if the buffer can't be allocated / has no channel data.
+    func deepCopy() -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else { return nil }
+        copy.frameLength = frameLength
+        let channels = Int(format.channelCount)
+        let frames = Int(frameLength)
+        if let src = floatChannelData, let dst = copy.floatChannelData {
+            for ch in 0..<channels { memcpy(dst[ch], src[ch], frames * MemoryLayout<Float>.size) }
+        } else if let src = int16ChannelData, let dst = copy.int16ChannelData {
+            for ch in 0..<channels { memcpy(dst[ch], src[ch], frames * MemoryLayout<Int16>.size) }
+        } else if let src = int32ChannelData, let dst = copy.int32ChannelData {
+            for ch in 0..<channels { memcpy(dst[ch], src[ch], frames * MemoryLayout<Int32>.size) }
+        } else {
+            return nil
+        }
+        return copy
+    }
 }
