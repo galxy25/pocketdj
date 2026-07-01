@@ -818,6 +818,10 @@ async function runAnalogJob(job, song) {
     }
   }
   await saveManifest();
+  // Scratch GC: the whole-album transcode (`out`) is done — the durable copy is on S3
+  // (`key`) and re-cuts read the original from analogBase, so nothing re-reads it. Drop it
+  // now (the periodic sweep is the backstop for a watchdog-killed rip that skips this).
+  try { rmSync(out, { force: true }); } catch { /* best-effort */ }
 
   job.url = publicUrl(key);
   setPhase(job, 'ready', { message: `album ${album.name} ready` });
@@ -1807,6 +1811,46 @@ resumeStems(); // re-drive any stem requests left pending by a previous run
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });
+
+// ---------------- scratch GC (reclaim leftover working files) ----------------
+// The capture/transcode paths write scratch into CFG.tmp — whole-album transcodes
+// (`<albumId>.mp3`), digital-capture dirs (`out-<songId>/`), HLS live segments
+// (`live/<songId>/`), and analysis/stem work dirs (`ana-*` / `stem-*`). Nothing re-reads them
+// once a rip completes (re-cuts read the original from analogBase; durable outputs live on S3),
+// and a watchdog-killed rip leaks them entirely — so left unmanaged they pile up (this hit
+// ~4 GB before the first manual sweep). Periodically delete scratch whose mtime is older than
+// the TTL: a FRESH mtime means an in-flight rip/stream (skipped), as is the currently-active
+// job's scratch. Durable state (queue/stem-queue/jobs/sync-jobs, manifest.json) is never touched.
+const SCRATCH_TTL_MS = Math.max(5, parseInt(process.env.POCKETDJ_SCRATCH_TTL_MIN || '60', 10)) * 60_000;
+const GC_KEEP_DIRS = new Set(['queue', 'stem-queue', 'jobs', 'sync-jobs', 'live']);
+function sweepScratch() {
+  const now = Date.now();
+  const activeSong = (activeJobId && jobs.get(activeJobId)?.songId) || null;
+  const stale = (p) => { try { return now - statSync(p).mtimeMs > SCRATCH_TTL_MS; } catch { return false; } };
+  let n = 0;
+  const drop = (p) => { try { rmSync(p, { recursive: true, force: true }); n++; } catch { /* best-effort */ } };
+  let entries = [];
+  try { entries = readdirSync(CFG.tmp, { withFileTypes: true }); } catch { return; }
+  for (const d of entries) {
+    const name = d.name, full = join(CFG.tmp, name);
+    if (activeSong && name.includes(activeSong)) continue;                 // never the active job's scratch
+    if (d.isDirectory()) {
+      if (GC_KEEP_DIRS.has(name)) continue;                               // durable state / the live root
+      if (/^(out-|ana-|stem-)/.test(name) && stale(full)) drop(full);     // capture + analysis/stem work dirs
+    } else if (name !== 'manifest.json'
+               && (name.endsWith('.mp3') || name.endsWith('.csv') || name.endsWith('.index.json'))
+               && stale(full)) {
+      drop(full);                                                         // album/cut/grid transcodes + worker scratch
+    }
+  }
+  try {                                                                    // stale HLS live/<songId> dirs (keep the `live` root)
+    for (const d of readdirSync(HLS_DIR, { withFileTypes: true }))
+      if (d.isDirectory() && d.name !== activeSong && stale(join(HLS_DIR, d.name))) drop(join(HLS_DIR, d.name));
+  } catch { /* no live dir yet */ }
+  if (n) console.error(`  scratch-gc: removed ${n} stale item(s) (older than ${Math.round(SCRATCH_TTL_MS / 60000)}min)`);
+}
+sweepScratch();                                        // reclaim leftovers from the previous run at startup
+setInterval(sweepScratch, 30 * 60_000).unref();        // + steady-state sweep every 30 min (unref: never blocks exit)
 
 // ---------------- daily 04:00 AM-sync scheduler (self-rearming setTimeout) ----------------
 // The server is always up (Tailscale-exposed, externally supervised), so an in-process timer
