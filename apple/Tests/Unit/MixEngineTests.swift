@@ -619,6 +619,48 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(rec.events.first { $0.kind == .tempo }?.deck, "A")
     }
 
+    /// Auto-mix PAUSE keeps the mix alive (it doesn't Stop) and only suspends the transition machine; a
+    /// per-deck pause during the interlude no longer kills auto; RESUME re-arms it. Both emit markers.
+    /// Runs headless — `startAutoMix` flips `autoMixing` true even with no audio device (decks stay silent).
+    func testAutoPauseResumeKeepMixAliveAndEmitMarkers() {
+        let e = makeEngine()
+        let rec = MockRecorder()
+        e.recorder = rec
+
+        // No-op before a mix is running.
+        e.pauseAuto();  XCTAssertFalse(e.autoPaused)
+        e.resumeAuto(); XCTAssertFalse(e.autoPaused)
+        XCTAssertFalse(rec.events.contains { $0.kind == .autoPause || $0.kind == .autoResume })
+
+        let items = ["s1", "s2", "s3"].map { MixEngine.AutoMixItem(loadable: loadable($0), durationMs: 1000) }
+        e.startAutoMix(items, shuffled: false, lead: 15, fade: 3)
+        XCTAssertTrue(e.autoMixing); XCTAssertFalse(e.autoPaused)
+
+        e.pauseAuto()
+        XCTAssertTrue(e.autoPaused)
+        XCTAssertTrue(e.autoMixing, "pause suspends the machine but keeps the mix alive")
+        XCTAssertTrue(rec.events.contains { $0.kind == .autoPause })
+
+        // Hand-mixing during the pause: a per-deck pause must NOT end the auto-mix.
+        e.pause(.a)
+        XCTAssertTrue(e.autoMixing, "a manual pause during an auto-pause doesn't kill the mix")
+        XCTAssertTrue(e.autoPaused)
+
+        e.resumeAuto()
+        XCTAssertFalse(e.autoPaused)
+        XCTAssertTrue(rec.events.contains { $0.kind == .autoResume })
+
+        // Baseline preserved: a manual pause during a RUNNING (unpaused) mix still ends it.
+        e.pause(.a)
+        XCTAssertFalse(e.autoMixing)
+        e.teardown()
+    }
+
+    private func loadable(_ id: String) -> MixLoadable {
+        MixLoadable(songId: id, title: "T-\(id)", artist: "A", bpm: 120,
+                    camelot: "8A", key: nil, albumId: nil, lengthMs: 1000)
+    }
+
     /// A real load → play records `.load` + `.play` and marks the song played exactly once.
     func testLoadAndPlayRecordsAndMarksPlayed() throws {
         let e = makeEngine()
@@ -974,6 +1016,7 @@ final class MixEngineTests: XCTestCase {
             events.append((.glide, deck, to))
         }
         func notePlayed(songId: String) { played.append(songId) }
+        func hasPlayed(_ songId: String) -> Bool { played.contains(songId) }
     }
 
     private func makeEngine() -> MixEngine {

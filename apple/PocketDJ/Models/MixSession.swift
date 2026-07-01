@@ -42,6 +42,9 @@ enum MixEventKind: Codable, Hashable, Sendable {
     case effectToggle, effectStrength
     case stemMode, stemMute, stemVolume
     case lead, sync, resetDeck
+    /// Auto-mix PAUSE / RESUME (the DJ steps away, takes over the decks by hand, then hands control
+    /// back). No deck/param payload — a bare marker on the timeline delimiting a manual interlude.
+    case autoPause, autoResume
     /// A machine (auto-mix) parametric RAMP compactly captured as from→to + average rate of change
     /// (`fromValue`/`value`/`rate`) — a lossless stand-in for a linear sweep that would otherwise be
     /// ~100 sampled points. `param` names what ramped: "tempo"/"pitch"/"crossfader"/an effect name.
@@ -55,6 +58,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         "effectToggle": .effectToggle, "effectStrength": .effectStrength,
         "stemMode": .stemMode, "stemMute": .stemMute, "stemVolume": .stemVolume,
         "lead": .lead, "sync": .sync, "resetDeck": .resetDeck, "glide": .glide,
+        "autoPause": .autoPause, "autoResume": .autoResume,
     ]
 
     var rawValue: String {
@@ -67,6 +71,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         case .stemMode: return "stemMode";    case .stemMute: return "stemMute"
         case .stemVolume: return "stemVolume"; case .lead: return "lead"
         case .sync: return "sync";            case .resetDeck: return "resetDeck"
+        case .autoPause: return "autoPause";  case .autoResume: return "autoResume"
         case .glide: return "glide"
         case .unknown(let raw): return raw
         }
@@ -159,6 +164,9 @@ protocol MixSessionRecorder: AnyObject {
     func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,
                   from: Double, to: Double, rate: Double, posMs: Int?)
     func notePlayed(songId: String)
+    /// Whether `songId` has already started playing this session — lets the auto-mix machine pick the
+    /// next UNPLAYED collection track when resuming after a manual interlude.
+    func hasPlayed(_ songId: String) -> Bool
 }
 
 // MARK: - Navigation routes (shared by RootView, MixView, MixSessionsView)
