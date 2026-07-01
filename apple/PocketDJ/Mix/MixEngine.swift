@@ -380,20 +380,23 @@ final class MixEngine {
     /// True while a live audio capture is running (drives the pulsing record button). App-scoped like
     /// the engine, so it survives a Mix-tab teardown — a recording keeps running when you leave the tab.
     private(set) var isRecording = false
-    /// Owns the recording file + its serial writer queue (nil ⇒ not recording).
-    @ObservationIgnored private var recordingWriter: MixTapWriter?
+    /// The PERSISTENT recording sink: its tap is installed ONCE on `houseSum` (in `ensureEngine`) and
+    /// never removed — start/stop just toggle a capture flag. Installing/removing a tap on a node in the
+    /// live render path mid-playback reconfigures the graph and can pause the player nodes on-device, so
+    /// the tap stays put and recording is gated inside it instead.
+    @ObservationIgnored private let recordingSink = MixTapSink()
     /// The session-folder security-scope release held for the WHOLE capture (nil ⇒ app storage).
     @ObservationIgnored private var recordingRelease: (() -> Void)?
 
-    /// Begin capturing the fully-mixed HOUSE output — post master-limiter, exactly what the audience
-    /// hears — to `url` as AAC (`.m4a`). Installs a tap on the master limiter; buffers are copied and
-    /// written OFF the realtime thread (a serial queue) so AAC encoding never stalls audio. `release`
-    /// is the session-folder security scope, which this method OWNS: it's held for the whole capture
-    /// and dropped on `stopRecording()`; on ANY failure here it's dropped immediately. Returns false if
-    /// the graph isn't built, a capture is already running, or the file can't be opened.
+    /// Begin capturing the fully-mixed HOUSE output to `url` as AAC (`.m4a`) — just toggles the
+    /// already-installed `houseSum` tap's capture flag (no graph change → playback is untouched).
+    /// Buffers are copied + written OFF the realtime thread so AAC encoding never stalls audio.
+    /// `release` is the session-folder security scope, which this method OWNS: held for the whole
+    /// capture, dropped on `stopRecording()`; on failure it's dropped immediately. Returns false if the
+    /// graph isn't built, a capture is already running, or the file can't be opened.
     ///
-    /// Taps `houseSum` (the clean stereo house mix, BEFORE the cue-side pan + the cue send), so a
-    /// capture is the audience's mix even while you monitor a deck in the cue/headphones. It is
+    /// The tap sits on `houseSum` (the clean stereo house mix, BEFORE the cue-side pan + the cue send),
+    /// so a capture is the audience's mix even while you monitor a deck in the cue/headphones. It is
     /// pre-master-limiter, so a two-deck >unity boost could in theory clip the take (a rare edge; the
     /// output itself is still limiter-protected).
     @discardableResult
@@ -407,23 +410,18 @@ final class MixEngine {
             AVNumberOfChannelsKey: format.channelCount,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
-        guard let writer = MixTapWriter(url: url, settings: settings) else { release?(); return false }
-        recordingWriter = writer
+        guard recordingSink.begin(url: url, settings: settings) else { release?(); return false }
         recordingRelease = release
-        node.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
-            writer.append(buffer)                                 // realtime thread → copy + enqueue
-        }
         isRecording = true
         return true
     }
 
-    /// Stop an in-progress capture: remove the tap, finalize the file (flushing pending writes), and
-    /// drop the session-folder scope. No-op if not recording.
+    /// Stop an in-progress capture: flip off the sink's flag (the tap stays installed → no graph
+    /// reconfiguration, so playback keeps running), finalize the file, and drop the session-folder
+    /// scope. No-op if not recording.
     func stopRecording() {
         guard isRecording else { return }
-        houseSum?.removeTap(onBus: 0)
-        recordingWriter?.close()
-        recordingWriter = nil
+        recordingSink.end()
         recordingRelease?()
         recordingRelease = nil
         isRecording = false
@@ -513,6 +511,16 @@ final class MixEngine {
         }
         applyMixGains()
         for d in Deck.allCases { applyBoost(d) }   // >unity boost (globalGain) AFTER effects set the filter EQ
+        // Install the recording tap ONCE, here — never per-recording — on the clean house sum. It fires
+        // continuously but only copies/writes while capturing (see `MixTapSink`); keeping it installed
+        // means starting/stopping a recording never reconfigures the live graph (which would pause the
+        // decks on-device).
+        if let hs = houseSum {
+            let sink = recordingSink
+            hs.installTap(onBus: 0, bufferSize: 4096, format: hs.outputFormat(forBus: 0)) { buffer, _ in
+                sink.write(buffer)
+            }
+        }
     }
 
     func prepare() { ensureEngine() }
@@ -1260,20 +1268,16 @@ final class MixEngine {
         return (fxTextureEffect ?? .filter, fxTexturePeak)
     }
 
-    // Non-recording glide appliers — mutate deck state + push to the graph WITHOUT emitting session
-    // events (the ~10 Hz sweep must not flood the corpus, mirroring `applyCrossfader`). The deck
-    // sliders/chips still reflect the live values (they read the same state), so you SEE the glide.
-    private func setGlideRate(_ rate: Double, on deck: Deck) {
-        mutate(deck) { $0.rate = min(max(rate, Self.rateRange.lowerBound), Self.rateRange.upperBound) }
-        applyRate(deck)
-    }
-    private func setGlidePitch(_ semitones: Double, on deck: Deck) {
-        mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
-        applyPitch(deck)
-    }
+    // Glide appliers — route through the PUBLIC recording setters so a glide shows up BOTH in the deck
+    // sliders/chips (they read the same observable state) AND in the session timeline, like a manual
+    // move. The continuous kinds (.tempo/.pitch/.effectStrength) are coalesced by the store, and the
+    // effect enable/disable only records on an ACTUAL change (not every ~10 Hz tick), so the sweep
+    // shows without flooding: a run of strength points + one on + one off per transition.
+    private func setGlideRate(_ rate: Double, on deck: Deck) { setRate(rate, on: deck) }
+    private func setGlidePitch(_ semitones: Double, on deck: Deck) { setPitch(semitones, on: deck) }
     private func setGlideEffect(_ effect: Effect, enabled: Bool, strength: Double, on deck: Deck) {
-        mutate(deck) { $0.set(effect, enabled); $0.setStrength(effect, min(max(strength, 0), 1)) }
-        applyEffect(effect, on: deck)
+        if state(deck).isEnabled(effect) != enabled { setEffect(effect, enabled: enabled, on: deck) }
+        setEffectStrength(effect, strength, on: deck)
     }
 
     // MARK: Glide math (pure — testable)
@@ -1869,30 +1873,43 @@ final class MixEngine {
     #endif
 }
 
-// MARK: - Recording tap writer
+// MARK: - Recording tap sink
 
-/// Owns the recording `AVAudioFile` and serializes writes onto a private queue so the realtime tap
-/// thread never blocks on file I/O / AAC encoding. `@unchecked Sendable`: the `file` is created in
-/// `init` (before the first async use) and thereafter touched ONLY on `queue`, so there is no
-/// concurrent access despite the compiler being unable to prove it.
-private final class MixTapWriter: @unchecked Sendable {
+/// The PERSISTENT recording sink behind the always-installed `houseSum` tap. It owns the recording
+/// `AVAudioFile` and serializes writes onto a private queue so the realtime tap thread never blocks on
+/// file I/O / AAC encoding. Recording is toggled by `begin`/`end` (a flag) rather than installing /
+/// removing the tap — so start/stop never reconfigures the live audio graph.
+///
+/// `@unchecked Sendable`: `file` is touched ONLY on `queue`; `isCapturing` is a plain aligned `Bool`
+/// (realtime tap reads it, main thread writes it) where the only race — a start/stop landing between
+/// two buffers — drops at most one buffer, which is harmless.
+private final class MixTapSink: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.pocketdj.mix.recording")
-    private var file: AVAudioFile?
+    private var file: AVAudioFile?          // queue-confined
+    private var isCapturing = false         // realtime-readable
 
-    init?(url: URL, settings: [String: Any]) {
-        guard let f = try? AVAudioFile(forWriting: url, settings: settings) else { return nil }
-        file = f
+    /// Open a capture file. Returns false if it can't be created. The file assignment is enqueued
+    /// BEFORE `isCapturing` is set — and both the assignment and every tap write run on the SAME serial
+    /// queue — so no buffer is ever written before the file exists (no lost head).
+    func begin(url: URL, settings: [String: Any]) -> Bool {
+        guard let f = try? AVAudioFile(forWriting: url, settings: settings) else { return false }
+        queue.async { self.file = f }
+        isCapturing = true
+        return true
     }
 
-    /// Called from the realtime tap thread: copy the (transient) tap buffer and hand it to the writer
-    /// queue. Strong `self` capture keeps the writer alive until every enqueued buffer is flushed.
-    func append(_ buffer: AVAudioPCMBuffer) {
-        guard let copy = buffer.deepCopy() else { return }
-        queue.async { try? self.file?.write(from: copy) }
+    /// Stop capturing immediately, then finalize the file once pending writes drain.
+    func end() {
+        isCapturing = false
+        queue.async { self.file = nil }
     }
 
-    /// Finalize: after all pending writes drain, release the file (which finalizes the container).
-    func close() { queue.async { self.file = nil } }
+    /// Realtime tap entry (fires continuously): copy the transient buffer + enqueue the write, but ONLY
+    /// while capturing — otherwise an immediate return, so an idle tap costs a single flag check.
+    func write(_ buffer: AVAudioPCMBuffer) {
+        guard isCapturing, let copy = buffer.deepCopy() else { return }
+        queue.async { if let f = self.file { try? f.write(from: copy) } }
+    }
 }
 
 private extension AVAudioPCMBuffer {

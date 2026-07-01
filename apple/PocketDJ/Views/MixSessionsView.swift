@@ -186,22 +186,28 @@ struct MixSessionDetailView: View {
             Label("Recordings", systemImage: "waveform.circle")
                 .font(.caption.weight(.semibold)).foregroundStyle(Theme.fgDim)
             ForEach(Array(recordings.enumerated()), id: \.element.id) { idx, rec in
-                HStack(spacing: 10) {
-                    Button {
-                        recPlayer.toggle(rec, sessionId: sessionId, bookmark: settings.sessionFolderBookmark)
-                    } label: {
-                        Image(systemName: recPlayer.playingId == rec.id ? "stop.circle.fill" : "play.circle.fill")
-                            .font(.title2).foregroundStyle(Theme.accent)
+                VStack(spacing: 6) {
+                    HStack(spacing: 10) {
+                        Button {
+                            recPlayer.toggle(rec, sessionId: sessionId, bookmark: settings.sessionFolderBookmark)
+                        } label: {
+                            Image(systemName: recPlayer.playingId == rec.id ? "stop.circle.fill" : "play.circle.fill")
+                                .font(.title2).foregroundStyle(Theme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("mix-recording-play-\(rec.id)")
+                        .accessibilityLabel(recPlayer.playingId == rec.id ? "Stop recording" : "Play recording")
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Take \(idx + 1)").font(.caption).foregroundStyle(Theme.fg)
+                            Text("\(Self.recDate(rec.startedAt)) · \(Fmt.duration(rec.durationMs))")
+                                .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                        }
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("mix-recording-play-\(rec.id)")
-                    .accessibilityLabel(recPlayer.playingId == rec.id ? "Stop recording" : "Play recording")
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Take \(idx + 1)").font(.caption).foregroundStyle(Theme.fg)
-                        Text("\(Self.recDate(rec.startedAt)) · \(Fmt.duration(rec.durationMs))")
-                            .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    // Scrub bar — only for the take that's currently playing.
+                    if recPlayer.playingId == rec.id {
+                        RecordingScrubBar(player: recPlayer)
                     }
-                    Spacer()
                 }
             }
         }
@@ -266,24 +272,22 @@ struct MixSessionDetailView: View {
 
     // MARK: Timeline
 
+    /// How many cards fill one row before wrapping (Mac roomier than iPad). iPhone uses a 1-per-row
+    /// vertical list instead (the `horizontal == false` path), so this isn't consulted there.
+    #if os(macOS)
+    private var perRow: Int { 5 }
+    #else
+    private var perRow: Int { 3 }
+    #endif
+
     @ViewBuilder private var timeline: some View {
         if events.isEmpty {
             ContentUnavailableView("No actions recorded", systemImage: "waveform",
                 description: Text("This session has no recorded mix activity yet."))
         } else {
             ScrollViewReader { proxy in
-                ScrollView(horizontal ? .horizontal : .vertical) {
-                    let cards = ForEach(events) { e in
-                        TimelineCard(event: e, active: e.id == currentId, horizontal: horizontal) {
-                            replayMs = Double(e.tMs)     // tap to jump
-                        }
-                        .id(e.id)
-                    }
-                    if horizontal {
-                        LazyHStack(alignment: .top, spacing: 8) { cards }.padding(12)
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 8) { cards }.padding(12)
-                    }
+                ScrollView(.vertical) {                 // always vertical now — rows WRAP horizontally
+                    if horizontal { wrappedTimeline } else { verticalTimeline }
                 }
                 .accessibilityIdentifier("mix-replay-timeline")
                 // Auto-scroll to the current event only while playing and not scrubbing (don't fight
@@ -294,6 +298,49 @@ struct MixSessionDetailView: View {
                 }
             }
         }
+    }
+
+    /// iPhone: one card per row, top→bottom.
+    private var verticalTimeline: some View {
+        LazyVStack(alignment: .leading, spacing: 8) {
+            ForEach(events) { e in
+                TimelineCard(event: e, active: e.id == currentId, horizontal: true) { replayMs = Double(e.tMs) }
+                    .id(e.id)
+            }
+        }
+        .padding(12)
+    }
+
+    /// Mac / iPad: cards WRAP every `perRow`, filling the width — `→` between cards in a row, and a
+    /// wrap arrow between rows, so the order reads left-to-right then down (no infinite side-scroll).
+    private var wrappedTimeline: some View {
+        let rows = stride(from: 0, to: events.count, by: perRow).map { start in
+            Array(events[start..<min(start + perRow, events.count)])
+        }
+        return LazyVStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
+                HStack(alignment: .top, spacing: 6) {
+                    ForEach(Array(row.enumerated()), id: \.element.id) { i, e in
+                        TimelineCard(event: e, active: e.id == currentId, horizontal: false) {
+                            replayMs = Double(e.tMs)                 // horizontal:false → card fills its column
+                        }
+                        .id(e.id)
+                        if i < row.count - 1 {
+                            Image(systemName: "arrow.right")
+                                .font(.caption2).foregroundStyle(Theme.fgDim)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
+                if rowIdx < rows.count - 1 {                          // wrap indicator: down + back to the left
+                    Image(systemName: "arrow.turn.down.left")
+                        .font(.caption).foregroundStyle(Theme.accent2)
+                        .padding(.leading, 6)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .padding(12)
     }
 
     // MARK: Replay clock (wall-clock driven, ~30 Hz)
@@ -334,6 +381,18 @@ struct MixSessionDetailView: View {
     @ObservationIgnored private var endTask: Task<Void, Never>?
     /// The recording id currently playing (nil ⇒ stopped) — drives the play/stop button state.
     private(set) var playingId: String?
+    /// The playing take's length (seconds), for the scrub slider's range. 0 when stopped.
+    private(set) var duration: Double = 0
+
+    /// The live playhead (seconds) — polled by the scrub bar's TimelineView (AVAudioPlayer doesn't
+    /// publish it). 0 when stopped.
+    func currentTime() -> Double { player?.currentTime ?? 0 }
+
+    /// Scrub the playing take to `seconds` (clamped). No-op when nothing is playing.
+    func seek(to seconds: Double) {
+        guard let p = player else { return }
+        p.currentTime = min(max(0, seconds), p.duration)
+    }
 
     /// Toggle playback of `rec`: stop if it's the one playing, else (stop any other and) start it.
     func toggle(_ rec: MixRecording, sessionId: String, bookmark: Data?) {
@@ -355,6 +414,7 @@ struct MixSessionDetailView: View {
         p.prepareToPlay()
         p.play()
         playingId = rec.id
+        duration = p.duration
         // Auto-reset the button once playback finishes. POLL in a loop (rather than a one-shot timer at
         // dur+ε) so a stall / under-reported duration can't leave the button stuck on "stop": we keep
         // checking isPlaying until it's actually done. Avoids an AVAudioPlayerDelegate + its cross-thread
@@ -378,6 +438,44 @@ struct MixSessionDetailView: View {
         player?.stop(); player = nil
         release?(); release = nil
         playingId = nil
+        duration = 0
+    }
+}
+
+/// A scrub slider + time readout for the currently-playing recording. Its own view so the ~10 Hz
+/// playhead poll (AVAudioPlayer doesn't publish position) re-renders only the bar. Dragging seeks the
+/// take on release; while dragging it shows the finger position (an `onEditingChanged` scrub flag, like
+/// the replay clock's slider).
+private struct RecordingScrubBar: View {
+    let player: RecordingAudioPlayer
+    @State private var scrubbing = false
+    @State private var scrubValue: Double = 0
+
+    var body: some View {
+        let dur = max(player.duration, 0.01)
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            let pos = scrubbing ? scrubValue : min(player.currentTime(), dur)
+            VStack(spacing: 1) {
+                Slider(value: Binding(get: { pos }, set: { scrubValue = $0 }), in: 0...dur,
+                       onEditingChanged: { editing in
+                           scrubbing = editing
+                           if !editing { player.seek(to: scrubValue) }   // commit the scrub on release
+                       })
+                    .controlSize(.small)
+                    .tint(Theme.accent2)
+                    .accessibilityIdentifier("mix-recording-scrub")
+                HStack {
+                    Text(Self.clock(pos)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    Spacer()
+                    Text(Self.clock(dur)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                }
+            }
+        }
+    }
+
+    private static func clock(_ s: Double) -> String {
+        guard s.isFinite, s >= 0 else { return "0:00" }
+        let t = Int(s.rounded()); return String(format: "%d:%02d", t / 60, t % 60)
     }
 }
 

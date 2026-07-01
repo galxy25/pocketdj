@@ -647,6 +647,30 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    /// Stopping a recording must NOT stop playback. Asserted at the AUDIO layer via `truePlayhead` (the
+    /// real render clock) — the persistent tap means stop never reconfigures the graph, so the deck's
+    /// clock keeps advancing. (Regression: stop used to `removeTap`, which paused the decks on-device.)
+    func testStoppingRecordingDoesNotStopPlayback() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x", bpm: 120), on: .a)
+        e.play(.a)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertTrue(e.startRecording(to: out, release: nil))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        e.stopRecording()
+        let before = try XCTUnwrap(e.truePlayhead(.a))
+        try await Task.sleep(nanoseconds: 300_000_000)         // let the render clock advance post-stop
+        let after = try XCTUnwrap(e.truePlayhead(.a))
+        XCTAssertTrue(e.isPlaying(.a), "the deck is still logically playing")
+        XCTAssertGreaterThan(after, before, "the audio render clock must keep advancing after stop")
+        e.teardown()
+    }
+
     /// A second startRecording while already recording is rejected (no dangling second tap/file), and
     /// stopRecording is idempotent.
     func testStartRecordingTwiceRejectedAndStopIsIdempotent() throws {
@@ -814,9 +838,9 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
-    /// A glide-armed manual skip keeps the mix running and — like the crossfader — its automated
-    /// tempo/pitch/effect sweep must NOT be recorded as user gestures into the session corpus.
-    func testGlideSkipKeepsMixingAndDoesNotRecordAutomation() throws {
+    /// A glide-armed manual skip keeps the mix running AND records its tempo/pitch/effect sweep into
+    /// the session timeline (so a replay shows the glide) — but the crossfade itself stays machine-only.
+    func testGlideSkipKeepsMixingAndRecordsItsSweep() throws {
         let e = makeEngine()
         let rec = MockRecorder()
         e.recorder = rec
@@ -827,10 +851,12 @@ final class MixEngineTests: XCTestCase {
         try XCTSkipUnless(e.isReady, "no audio device on this test host")
         e.skipToNext(fadeSeconds: 5)                       // glide skip → must not crash
         XCTAssertTrue(e.autoMixing, "glide skip keeps the mix running")
-        let automation: Set<MixEventKind> = [.tempo, .pitch, .effectStrength, .effectToggle, .crossfader]
         XCTAssertTrue(e.autoStatus?.contains("fading") == true)
-        XCTAssertTrue(rec.events.allSatisfy { !automation.contains($0.kind) },
-                      "glide automation must not be recorded as user gestures")
+        let kinds = Set(rec.events.map { $0.kind })
+        XCTAssertTrue(kinds.contains(.tempo) || kinds.contains(.pitch) || kinds.contains(.effectStrength),
+                      "the glide's pitch/tempo/effect sweep should be recorded into the timeline")
+        XCTAssertFalse(rec.events.contains { $0.kind == .crossfader },
+                       "the auto-mix crossfade itself stays machine-only (non-recording)")
         e.teardown()
     }
 
