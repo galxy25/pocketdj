@@ -1146,7 +1146,8 @@ final class MixEngine {
         let mixOn = mixGlideEnabled
         let mp: (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) =
             mixOn ? Self.glideParams(fromCamelot: state(from).loaded?.camelot,
-                                     toCamelot: state(to).loaded?.camelot)
+                                     toCamelot: state(to).loaded?.camelot,
+                                     fromBPM: matchBPM(from), toBPM: matchBPM(to))
                   : (1, 0, 1, 0)
         glideCtx = GlideContext(
             from: from, to: to,
@@ -1336,23 +1337,35 @@ final class MixEngine {
         min(max(keys * semitonesPerKey, pitchRange.lowerBound), pitchRange.upperBound)
     }
 
-    /// Per-deck tempo/pitch targets for a transition A(out)→B(in): the outgoing deck bends UP toward the
-    /// incoming + the incoming bends DOWN toward the outgoing (they meet mid-blend; the incoming then
-    /// settles back to natural). When both Camelot keys parse AND differ, the DIRECTION + amount follow
-    /// the wheel distance (≤1 key each). Otherwise — camelot missing/unparseable OR identical keys —
-    /// fall back to the spec's literal default (outgoing up one key, incoming down one), so Mix Glide
-    /// ALWAYS produces an audible, visible bend rather than silently doing nothing on un-keyed tracks.
-    nonisolated static func glideParams(fromCamelot a: String?, toCamelot b: String?)
+    /// Per-deck tempo/pitch targets for a transition A(out)→B(in). Two INDEPENDENT, data-gated bends
+    /// (no default — with neither datum it's identity, i.e. just the volume crossfade):
+    ///   • PITCH — only when BOTH Camelot keys are known: harmonic bend toward each other (≤1 key each,
+    ///     1 key = ~1.65 st), so the overlap meets in the middle; the incoming then settles back.
+    ///   • TEMPO — only when BOTH BPMs are known: bend each deck toward their octave-matched geometric
+    ///     mean BPM (a subtle partial beat-match), capped to ±10% so it stays gentle.
+    /// Combining a little pitch + a little tempo is the "subtle mix"; each is skipped if its datum is
+    /// missing for either track.
+    nonisolated static func glideParams(fromCamelot a: String?, toCamelot b: String?,
+                                        fromBPM: Double?, toBPM: Double?)
         -> (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) {
-        var outKeys = 1.0, inKeys = -1.0                 // default: full-key A-up / B-down
+        var outPitch = 0.0, inPitch = 0.0, outRate = 1.0, inRate = 1.0
+        // PITCH — Camelot harmonic bend (both keys known + not identical).
         if let d = signedCamelotSteps(a, b), abs(d) >= 1 {
-            let mag = min(1.0, Double(abs(d)) / 2.0)      // close up to 2 keys of distance (1 each way)
+            let mag = min(1.0, Double(abs(d)) / 2.0)
             let dir = d > 0 ? 1.0 : -1.0
-            outKeys = dir * mag                           // outgoing bends toward incoming
-            inKeys = -dir * mag                           // incoming starts opposite, ramps back to 0
+            outPitch = glidePitch(keys: dir * mag)        // outgoing bends toward incoming
+            inPitch = glidePitch(keys: -dir * mag)        // incoming starts opposite, settles back
         }
-        return (glideRate(keys: outKeys), glidePitch(keys: outKeys),
-                glideRate(keys: inKeys),  glidePitch(keys: inKeys))
+        // TEMPO — BPM bend toward the octave-matched mean (both BPMs known), capped ±10%.
+        if let ra = fromBPM, let rb = toBPM, ra > 0, rb > 0 {
+            var folded = rb                               // octave-match the incoming BPM to the outgoing
+            while folded / ra > 1.5 { folded /= 2 }
+            while folded / ra < 0.67 { folded *= 2 }
+            let mean = (ra * folded).squareRoot()
+            outRate = min(max(mean / ra, 0.9), 1.1)       // outgoing bends toward the shared mean
+            inRate = min(max(mean / folded, 0.9), 1.1)    // incoming starts at the mean, settles to 1.0
+        }
+        return (outRate, outPitch, inRate, inPitch)
     }
 
     /// splitmix64 — a tiny deterministic PRNG so texture selection is reproducible + unit-testable.

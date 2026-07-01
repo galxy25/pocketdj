@@ -375,15 +375,17 @@ struct MixSessionDetailView: View {
 
 /// Plays a session's captured recording (a local `.m4a`) with a simple play/stop. One instance per
 /// detail screen. Resolves the file (holding its security scope for the duration of playback) via
-/// `SessionFolders`, and auto-resets when the take finishes.
-@MainActor @Observable final class RecordingAudioPlayer {
+/// `SessionFolders`, and auto-resets when the take finishes via `AVAudioPlayerDelegate` — NOT a poll
+/// loop, which risked stopping playback early on a transient `isPlaying == false`.
+@MainActor @Observable final class RecordingAudioPlayer: NSObject, AVAudioPlayerDelegate {
     @ObservationIgnored private var player: AVAudioPlayer?
     @ObservationIgnored private var release: (() -> Void)?
-    @ObservationIgnored private var endTask: Task<Void, Never>?
     /// The recording id currently playing (nil ⇒ stopped) — drives the play/stop button state.
     private(set) var playingId: String?
     /// The playing take's length (seconds), for the scrub slider's range. 0 when stopped.
     private(set) var duration: Double = 0
+
+    override init() { super.init() }
 
     /// The live playhead (seconds) — polled by the scrub bar's TimelineView (AVAudioPlayer doesn't
     /// publish it). 0 when stopped.
@@ -411,35 +413,24 @@ struct MixSessionDetailView: View {
             return
         }
         release = resolved.release
+        p.delegate = self
         player = p
         p.prepareToPlay()
         p.play()
         playingId = rec.id
         duration = p.duration
-        // Auto-reset the button once playback finishes. POLL in a loop (rather than a one-shot timer at
-        // dur+ε) so a stall / under-reported duration can't leave the button stuck on "stop": we keep
-        // checking isPlaying until it's actually done. Avoids an AVAudioPlayerDelegate + its cross-thread
-        // callback. A hard cap bounds a player that never reports done.
-        endTask = Task { [weak self] in
-            let deadline = max(0.1, p.duration) + 5.0     // generous cap past the nominal duration
-            var waited = 0.0
-            while waited < deadline {
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                if Task.isCancelled { return }
-                guard let self else { return }
-                if self.player?.isPlaying != true { self.stop(); return }
-                waited += 0.3
-            }
-            self?.stop()                                  // cap reached → reset regardless
-        }
     }
 
     func stop() {
-        endTask?.cancel(); endTask = nil
-        player?.stop(); player = nil
+        player?.stop(); player?.delegate = nil; player = nil
         release?(); release = nil
         playingId = nil
         duration = 0
+    }
+
+    /// Reset when the take finishes (or errors) — the callback may arrive off the main actor, so hop.
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in self.stop() }
     }
 }
 

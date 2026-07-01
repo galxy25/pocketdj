@@ -775,40 +775,55 @@ final class MixEngineTests: XCTestCase {
         XCTAssertNil(MixEngine.signedCamelotSteps(nil, "9A"))
     }
 
-    /// The spec example (A=5A, B=9A): the outgoing deck bends UP a full key (+10% tempo, +~1.65 st),
-    /// the incoming starts a full key DOWN, and later settles back to natural (tested via inRate→1).
-    func testGlideParamsBendsDecksTowardEachOther() {
-        let p = MixEngine.glideParams(fromCamelot: "5A", toCamelot: "9A")
-        XCTAssertEqual(p.outRate, 1.10, accuracy: 1e-9)
-        XCTAssertEqual(p.inRate, 0.90, accuracy: 1e-9)
+    /// PITCH bend (A=5A, B=9A) comes from Camelot: outgoing up ~1.65 st, incoming down ~1.65 st. With
+    /// no BPM there is NO tempo bend (rate stays 1.0).
+    func testGlideParamsPitchFromCamelotOnly() {
+        let p = MixEngine.glideParams(fromCamelot: "5A", toCamelot: "9A", fromBPM: nil, toBPM: nil)
         XCTAssertEqual(p.outPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
         XCTAssertEqual(p.inPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.outRate, 1.0, accuracy: 1e-9, "no BPM ⇒ no tempo bend")
+        XCTAssertEqual(p.inRate, 1.0, accuracy: 1e-9)
     }
 
-    /// Direction flips when the incoming key is LOWER (outgoing bends down, incoming starts up).
-    func testGlideParamsFlipsWhenIncomingLower() {
-        let p = MixEngine.glideParams(fromCamelot: "9A", toCamelot: "5A")
-        XCTAssertEqual(p.outRate, 0.90, accuracy: 1e-9)
-        XCTAssertEqual(p.inRate, 1.10, accuracy: 1e-9)
+    /// Direction flips when the incoming key is LOWER (outgoing pitch bends down, incoming up).
+    func testGlideParamsPitchDirectionFlips() {
+        let p = MixEngine.glideParams(fromCamelot: "9A", toCamelot: "5A", fromBPM: nil, toBPM: nil)
+        XCTAssertEqual(p.outPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.inPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
     }
 
-    /// Adjacent keys (distance 1) bend only HALF a key each (5%) — meet in the middle.
-    func testGlideParamsAdjacentIsHalfKey() {
-        let p = MixEngine.glideParams(fromCamelot: "5A", toCamelot: "6A")
-        XCTAssertEqual(p.outRate, 1.05, accuracy: 1e-9)
-        XCTAssertEqual(p.inRate, 0.95, accuracy: 1e-9)
+    /// TEMPO bend comes from BPM only: two BPMs bend toward their mean, capped ±10%; no camelot ⇒ no
+    /// pitch bend. (128 & 140 → mean ≈133.8 → outRate ≈1.045, inRate ≈0.956.)
+    func testGlideParamsTempoFromBPMOnly() {
+        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 140)
+        XCTAssertEqual(p.outRate, sqrt(128.0 * 140) / 128, accuracy: 1e-6)
+        XCTAssertEqual(p.inRate, sqrt(128.0 * 140) / 140, accuracy: 1e-6)
+        XCTAssertTrue((0.9...1.1).contains(p.outRate) && (0.9...1.1).contains(p.inRate))
+        XCTAssertEqual(p.outPitch, 0, "no camelot ⇒ no pitch bend")
+        XCTAssertEqual(p.inPitch, 0)
     }
 
-    /// Identical keys OR missing/unparseable camelot ⇒ the DEFAULT bend (outgoing up 1 key, incoming
-    /// down 1 key) so Mix Glide always produces a visible/audible bend on un-keyed tracks (the common
-    /// case), rather than silently doing nothing.
-    func testGlideParamsDefaultsToAFullBendWhenUnkeyed() {
-        for pair in [("5A", "5A"), (nil, "9A"), ("5A", "zz"), (nil, nil)] as [(String?, String?)] {
-            let p = MixEngine.glideParams(fromCamelot: pair.0, toCamelot: pair.1)
-            XCTAssertEqual(p.outRate, 1.10, accuracy: 1e-9, "outgoing bends up ~10% for \(pair)")
-            XCTAssertEqual(p.inRate, 0.90, accuracy: 1e-9, "incoming starts ~10% down for \(pair)")
-            XCTAssertEqual(p.outPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
-            XCTAssertEqual(p.inPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+    /// Far-apart BPMs clamp the tempo bend to ±10% (subtle, not a full match).
+    func testGlideParamsTempoCapsAtTenPercent() {
+        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 90)
+        XCTAssertEqual(p.outRate, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(p.inRate, 1.1, accuracy: 1e-9)
+    }
+
+    /// Half/double-time BPMs octave-match to ~1:1 (already aligned → little/no bend).
+    func testGlideParamsTempoOctaveMatches() {
+        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 64)
+        XCTAssertEqual(p.outRate, 1.0, accuracy: 1e-6)
+        XCTAssertEqual(p.inRate, 1.0, accuracy: 1e-6)
+    }
+
+    /// NO default: with neither Camelot nor BPM known for both tracks, Mix Glide is identity — just
+    /// the volume crossfade, no pitch/tempo bend.
+    func testGlideParamsIdentityWhenNoData() {
+        for c in [("5A", "5A"), (nil, "9A"), ("5A", "zz"), (nil, nil)] as [(String?, String?)] {
+            let p = MixEngine.glideParams(fromCamelot: c.0, toCamelot: c.1, fromBPM: nil, toBPM: 120)
+            XCTAssertEqual(p.outRate, 1.0); XCTAssertEqual(p.inRate, 1.0)
+            XCTAssertEqual(p.outPitch, 0); XCTAssertEqual(p.inPitch, 0)
         }
     }
 
