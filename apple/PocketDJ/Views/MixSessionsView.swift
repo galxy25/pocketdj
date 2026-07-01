@@ -109,6 +109,9 @@ private struct SessionRow: View {
     }
 }
 
+/// `.sheet(item:)` wrapper for the tapped `.load` action's song (`IndexSong` isn't Identifiable).
+private struct SongMetadataItem: Identifiable { let song: IndexSong; var id: String { song.id } }
+
 // MARK: - Session replay (timeline)
 
 /// One session's **replayable timeline**: every recorded action laid out vertically (top→bottom on
@@ -119,7 +122,12 @@ private struct SessionRow: View {
 struct MixSessionDetailView: View {
     @Environment(MixSessionStore.self) private var store
     @Environment(SettingsStore.self) private var settings
+    @Environment(AppModel.self) private var app
     let sessionId: String
+
+    /// A tapped `.load` action's song, presented as a metadata sheet (nil ⇒ closed). Wrapped so
+    /// `.sheet(item:)` has an Identifiable.
+    @State private var metadataItem: SongMetadataItem?
 
     /// A STABLE snapshot for the duration of the screen (the current session keeps recording).
     @State private var events: [MixSessionEvent] = []
@@ -176,6 +184,16 @@ struct MixSessionDetailView: View {
             events = store.events(forSession: sessionId).filter { !$0.kind.isUnknown }
         }
         .onDisappear { pause(); recPlayer.stop() }
+        .sheet(item: $metadataItem) { item in
+            NavigationStack {
+                SongDetailView(song: item.song)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { metadataItem = nil }.accessibilityIdentifier("mix-replay-song-done")
+                        }
+                    }
+            }
+        }
     }
 
     // MARK: Recordings (captured mix audio)
@@ -305,7 +323,7 @@ struct MixSessionDetailView: View {
     private var verticalTimeline: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
             ForEach(events) { e in
-                TimelineCard(event: e, active: e.id == currentId, horizontal: true) { replayMs = Double(e.tMs) }
+                TimelineCard(event: e, active: e.id == currentId, horizontal: true) { handleTap(e) }
                     .id(e.id)
             }
         }
@@ -323,7 +341,7 @@ struct MixSessionDetailView: View {
                 HStack(alignment: .top, spacing: 6) {
                     ForEach(Array(row.enumerated()), id: \.element.id) { i, e in
                         TimelineCard(event: e, active: e.id == currentId, horizontal: false) {
-                            replayMs = Double(e.tMs)                 // horizontal:false → card fills its column
+                            handleTap(e)                                 // load → metadata sheet; else jump replay
                         }
                         .id(e.id)
                         if i < row.count - 1 {
@@ -342,6 +360,16 @@ struct MixSessionDetailView: View {
             }
         }
         .padding(12)
+    }
+
+    /// Tap a timeline card: a LOAD action pops up the song's metadata; any other action jumps the
+    /// replay playhead to that moment. A load whose song is no longer in the catalog falls back to a jump.
+    private func handleTap(_ e: MixSessionEvent) {
+        if e.kind == .load, let id = e.songId, let song = app.songsById[id] {
+            metadataItem = SongMetadataItem(song: song)
+        } else {
+            replayMs = Double(e.tMs)
+        }
     }
 
     // MARK: Replay clock (wall-clock driven, ~30 Hz)
@@ -489,7 +517,12 @@ private struct TimelineCard: View {
                     Text(MixEventDisplay.clock(event.tMs))
                         .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 }
-                if !horizontal { Spacer(minLength: 0) }
+                if event.kind == .load {                 // hint: a load card opens the song's metadata
+                    Spacer(minLength: 4)
+                    Image(systemName: "info.circle").font(.caption2).foregroundStyle(Theme.fgDim)
+                } else if !horizontal {
+                    Spacer(minLength: 0)
+                }
             }
             .padding(8)
             .frame(width: horizontal ? 210 : nil, alignment: .leading)
