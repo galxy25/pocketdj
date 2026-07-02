@@ -756,6 +756,13 @@ Apple Music subscription** beside your own catalog,
 and full **keyboard navigation** for the desktop. The shots/copy below describe the
 native surfaces; they read the *same* catalog, rips cache, and collections as the PWA.
 
+**The app icon.** The Home Screen / Dock / Finder icon is the **stick-figure DJ in a
+denim pocket** — headphones on, hands on a two-deck controller — as clean dark line
+art on a solid **PDX-carpet turquoise** field (`#00A99D`, a nod to the classic
+Portland airport carpet). One full-bleed source renders every iOS, iPadOS and macOS
+size; the three smallest macOS sizes (16/32/64 px) use a stroke-emboldened cut of the
+same line art so the silhouette stays legible at menu-bar scale.
+
 > The Apple Music streaming source ships **inert** until provisioned: the app runs
 > with it unconfigured, where the account row reads **"Not available."** Wire it on per
 > the setup guide [`streaming-integration.md`](./streaming-integration.md). (Earlier
@@ -805,8 +812,9 @@ mode on iOS/iPadOS), pre-filled with an `Artist - Title.mp3` name. The OS writes
 mp3 to the spot you pick; cancel or an error just resets the button.
 
 **Lock screen & Control Center.** Native playback registers with the OS, so the
-current track shows on the **lock screen / Control Center** with working play / pause /
-scrub (AirPods and CarPlay drive it too); audio keeps playing in the background.
+current track shows on the **lock screen / Control Center** — **with its album cover**
+when the track's album is in the catalog — and working play / pause / scrub (AirPods
+and CarPlay drive it too); audio keeps playing in the background.
 
 **User story:** "I found the record — now let me actually hear it, right here, without
 leaving the list — and scrub to the drop."
@@ -1055,9 +1063,10 @@ rather than losing them.
 **Setlist playback plays on past the lock screen.** Hit **▶ Play** on a setlist (§35), lock the
 phone or switch apps, and the set keeps playing — **auto-advancing from track to track** on its
 own. The currently-playing song shows on the **lock screen / Control Center** (and on AirPods,
-CarPlay, or a watch) with working **play / pause / next / previous** — so you can run the set, or
-skip ahead, without ever unlocking. This is the whole set sequencing in the background, not just
-a single track: each track ends, the next begins, hands-free.
+CarPlay, or a watch) with its **album cover** and working **play / pause / next / previous** —
+⏮ goes to the previous track, ⏭ to the next, play/pause touches only the current track — so you
+can run the set, or skip ahead, without ever unlocking. This is the whole set sequencing in the
+background, not just a single track: each track ends, the next begins, hands-free.
 
 **User story:** "Start a big rip or burn, lock my phone, and trust it'll be finished when I pull
 it back out — and once a set is playing, run the whole thing from the lock screen, skipping tracks
@@ -1485,6 +1494,20 @@ Pause for a bathroom break's worth of hand-mixing → Resume → repeat until su
 **Auto mode points both decks at the collection.** The moment you're in Auto with a collection chosen,
 **both decks' load-source is set to that collection** — so when you Pause and want to hand-load more
 tracks, the track browser is already scoped to the right crate on each deck, no re-picking.
+
+**Run it from your pocket — the lock-screen card is mix-native.** While the Mix is what's playing,
+the **lock screen / Control Center card** shows the live deck's track **with its album cover** — and
+the card **stays on the deck you paused** (it never flips to the other deck's title and art just
+because the music stopped). The buttons map to what a DJ actually means by them: **⏸ suspends** the
+auto-DJ exactly like the in-app Pause (the session, queue and recording stay alive — it never
+silently drops you back to manual mode), **▶ resumes only what the pause silenced** — one deck
+paused, one deck comes back, never both blasting — and picks the auto-mix back up where it left off
+(a half-finished crossfade resumes mid-sweep, not jumped to the end). **⏭ is the fast track-switch**
+(the same 5 s sweep as double-tapping Skip in the app) and **⏮ is the slow one** (your Settings
+skip-fade, same as a single tap) — and pressed while paused they mean *"resume the mix on the next
+track."* All from the pocket, AirPods, or the car — and when a **setlist** (not the Mix) is what's
+playing, the very same buttons keep their normal meaning: ⏮ previous track, ⏭ next track,
+play/pause the current track.
 
 **User story:** "Point it at a pocket, hit Play or Shuffle, and let it DJ the whole crate for me —
 crossfading track to track on its own — with a Stop I can always find. Flip on FX Glide for a sweep

@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import MediaPlayer
 @testable import PocketDJ
 
 /// MixEngine — the first-party AVAudioEngine DSP backend (tempo / pitch / seek / beat-match +
@@ -124,6 +125,371 @@ final class MixEngineTests: XCTestCase {
         e.setLead(.a); XCTAssertNil(e.leadDeck)              // tapping the lead clears it
         e.setLead(.b); XCTAssertTrue(e.isLead(.b))
         XCTAssertFalse(e.canSync(.a))                        // nothing loaded → can't sync
+    }
+
+    // MARK: - Lock-screen transport (resume exactly what the pause silenced)
+
+    /// Lock-screen ⏸ then ▶ with ONE deck playing: the pause records what it silenced, and
+    /// `resumeMasterPaused` resumes ONLY that deck — the other loaded deck must not surprise-start
+    /// (the in-app master transport's playBoth is deliberately NOT what the lock screen maps to).
+    func testResumeMasterPausedResumesOnlyWhatPauseSilenced() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.a)                                    // one deck live, the other loaded but silent
+        XCTAssertTrue(e.isPlaying(.a)); XCTAssertFalse(e.isPlaying(.b))
+
+        e.pauseBoth()                                 // lock-screen ⏸
+        XCTAssertFalse(e.isPlaying(.a)); XCTAssertFalse(e.isPlaying(.b))
+
+        e.resumeMasterPaused()                        // lock-screen ▶
+        XCTAssertTrue(e.isPlaying(.a), "the deck the pause silenced resumes")
+        XCTAssertFalse(e.isPlaying(.b), "the other loaded deck must NOT start")
+    }
+
+    /// Both decks blended → ⏸ → ▶ brings BOTH back: resume exactly what was silenced, no less.
+    func testResumeMasterPausedResumesBothWhenBothWerePlaying() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.a); e.play(.b)
+        e.pauseBoth()
+        e.resumeMasterPaused()
+        XCTAssertTrue(e.isPlaying(.a)); XCTAssertTrue(e.isPlaying(.b))
+    }
+
+    /// No pause memory (the deck was paused INDIVIDUALLY in-app, so `pauseBoth` never recorded) →
+    /// lock-screen ▶ falls back to the card's now-playing deck — play the track the card shows,
+    /// never both decks.
+    func testResumeMasterPausedFallsBackToNowPlayingDeck() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.a)
+        e.pause(.a)                                   // in-app per-deck pause — no master memory
+        XCTAssertFalse(e.isPlaying(.a)); XCTAssertFalse(e.isPlaying(.b))
+
+        e.resumeMasterPaused()                        // lock-screen ▶ with empty memory
+        XCTAssertTrue(e.isPlaying(.a), "falls back to the card's now-playing deck (A preferred)")
+        XCTAssertFalse(e.isPlaying(.b), "the fallback is ONE deck, never both")
+    }
+
+    /// STALE-MEMORY regression: manual transport work AFTER a master pause invalidates the pause
+    /// memory. Blend both → master pause ({A,B} remembered) → hand-play deck A → hand-pause it →
+    /// lock-screen ▶ must NOT resurrect the stale {A,B} and blast both decks — it falls back to the
+    /// card's single now-playing deck.
+    func testResumeMasterPausedMemoryInvalidatedByManualPlay() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.a); e.play(.b)                        // a live two-deck blend
+        e.pauseBoth()                                 // master pause — memory {A, B}
+        e.play(.a)                                    // hand-mixing resumes JUST deck A…
+        e.pause(.a)                                   // …then pauses it (per-deck, no master memory)
+
+        e.resumeMasterPaused()                        // lock-screen ▶
+        XCTAssertTrue(e.isPlaying(.a), "falls back to the card's now-playing deck")
+        XCTAssertFalse(e.isPlaying(.b), "the STALE pause memory must not blast deck B")
+    }
+
+    /// RELOADED-DECK regression: a track loaded AFTER the pause was never silenced by it. Master
+    /// pause of a blend, then loading a fresh track onto deck B, then lock-screen ▶ resumes deck A
+    /// only — the just-prepared deck B track must not blast unbidden.
+    func testResumeMasterPausedIgnoresDeckReloadedAfterPause() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2), c = try makeSineWAV(seconds: 2)
+        defer {
+            try? FileManager.default.removeItem(at: a)
+            try? FileManager.default.removeItem(at: b)
+            try? FileManager.default.removeItem(at: c)
+        }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.a); e.play(.b)
+        e.pauseBoth()                                 // memory {A, B}
+        e.loadFile(c, release: nil, startMs: nil, meta: meta("c", bpm: 110), on: .b)   // prep next track
+
+        e.resumeMasterPaused()                        // lock-screen ▶
+        XCTAssertTrue(e.isPlaying(.a), "the paused deck resumes")
+        XCTAssertFalse(e.isPlaying(.b), "a deck RELOADED after the pause must not auto-start")
+    }
+
+    /// CARD-FLIP regression: the Now Playing card (title + art) must stay on the deck you paused —
+    /// pausing deck B with deck A also loaded used to flip the card to deck A ("prefer A when
+    /// nothing plays"), then flip back on resume. `nowPlayingDeck` is sticky now.
+    func testNowPlayingCardStaysOnPausedDeck() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.b)                                    // deck B is the live track (A loaded, silent)
+        XCTAssertEqual(e.nowPlayingDeck, .b)
+
+        e.pause(.b)                                   // pause — zero decks playing
+        XCTAssertEqual(e.nowPlayingDeck, .b, "the card must STAY on the paused deck, not flip to A")
+
+        e.play(.b)                                    // resume
+        XCTAssertEqual(e.nowPlayingDeck, .b)
+    }
+
+    /// LOCK-SCREEN ⏸ during a RUNNING Auto-DJ suspends it (pauseAuto) instead of ending it — and the
+    /// matching ▶ resumes both the audio and the Auto-DJ. A pocket pause must never silently kick
+    /// the mix back to manual mode.
+    func testRemotePauseSuspendsAutoMixAndRemotePlayResumesIt() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        let item = MixEngine.AutoMixItem(loadable: loadable("x", bpm: 120, lengthMs: 180_000), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+        XCTAssertTrue(e.autoMixing); XCTAssertFalse(e.autoPaused); XCTAssertTrue(e.isPlaying(.a))
+
+        e.remotePause()                               // lock-screen ⏸
+        XCTAssertTrue(e.autoMixing, "the Auto-DJ session survives a lock-screen pause")
+        XCTAssertTrue(e.autoPaused, "…suspended via pauseAuto, not ended")
+        XCTAssertFalse(e.isPlaying(.a), "…and the audio is actually paused")
+
+        e.remotePlay()                                // lock-screen ▶
+        XCTAssertTrue(e.isPlaying(.a), "the paused deck resumes")
+        XCTAssertTrue(e.autoMixing)
+        XCTAssertFalse(e.autoPaused, "the Auto-DJ resumes with the audio")
+        e.teardown()
+    }
+
+    /// An Auto-DJ the user paused IN-APP (hand-mixing) stays paused across a lock-screen ⏸/▶ —
+    /// the lock screen only undoes its OWN suspension, never a deliberate in-app one.
+    func testRemotePlayLeavesInAppAutoPauseAlone() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        let item = MixEngine.AutoMixItem(loadable: loadable("x", bpm: 120, lengthMs: 180_000), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+
+        e.pauseAuto()                                 // deliberate in-app hand-mix pause
+        XCTAssertTrue(e.autoPaused); XCTAssertTrue(e.isPlaying(.a), "pauseAuto keeps audio running")
+
+        e.remotePause()                               // lock-screen ⏸ silences the audio
+        XCTAssertFalse(e.isPlaying(.a))
+        e.remotePlay()                                // lock-screen ▶ brings the audio back…
+        XCTAssertTrue(e.isPlaying(.a))
+        XCTAssertTrue(e.autoPaused, "…but the deliberate in-app auto-pause stays paused")
+        XCTAssertTrue(e.autoMixing)
+        e.teardown()
+    }
+
+    /// LOCK-SCREEN ⏸ mid-crossfade FREEZES the machine's wall clock: the fade must not complete into
+    /// silent decks (which would audibly restart playback on a paused phone), and ▶ resumes the SAME
+    /// fade where it stopped — resumeAuto must not re-arm a blend handoff against the in-flight fade
+    /// (that would double-skip the track the mix was fading into).
+    func testRemotePauseMidFadeFreezesAndResumesTheSameFade() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        let q = [MixEngine.AutoMixItem(loadable: loadable("x", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("y", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        e.skipToNext(fadeSeconds: 5)                  // a crossfade is now in flight
+        XCTAssertEqual(e.autoStatus?.contains("fading"), true)
+
+        e.remotePause()                               // lock ⏸ mid-fade
+        XCTAssertTrue(e.autoMixing); XCTAssertTrue(e.autoPaused)
+        XCTAssertFalse(e.isPlaying(.a), "audio is silenced")
+
+        e.remotePlay()                                // lock ▶
+        XCTAssertTrue(e.autoMixing)
+        XCTAssertFalse(e.autoPaused, "the Auto-DJ resumes")
+        XCTAssertEqual(e.autoStatus?.contains("fading"), true,
+                       "the SAME fade continues — no second transition armed against it")
+        e.teardown()
+    }
+
+    /// A duplicate discrete PAUSE (flaky Bluetooth/AVRCP heads re-send) while already remote-paused
+    /// must be a no-op — it must not clobber the pause memory or the Auto-DJ resume intent.
+    func testDuplicateRemotePauseKeepsResumeIntent() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        let item = MixEngine.AutoMixItem(loadable: loadable("x", bpm: 120, lengthMs: 180_000), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+
+        e.remotePause()
+        e.remotePause()                               // duplicate — must not reset anything
+        e.remotePlay()
+        XCTAssertTrue(e.isPlaying(.a), "the paused deck still resumes")
+        XCTAssertFalse(e.autoPaused, "the duplicate ⏸ must not clobber the Auto-DJ resume intent")
+        e.teardown()
+    }
+
+    /// A stray remote PLAY (Siri "play" / CarPlay reconnect) must never resurrect an Auto-DJ the
+    /// user deliberately paused IN-APP — even after an earlier lock-screen ⏸/Resume cycle left its
+    /// mark. `resumeAuto` consumes the remote-restore intent.
+    func testStrayRemotePlayNeverResurrectsDeliberateInAppPause() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        let item = MixEngine.AutoMixItem(loadable: loadable("x", bpm: 120, lengthMs: 180_000), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+
+        e.remotePause()                               // lock ⏸ (intent recorded)
+        e.resumeAuto()                                // …but the user resumes IN-APP (consumes intent)
+        XCTAssertTrue(e.isPlaying(.a), "in-app Resume restarts the audio")
+        XCTAssertFalse(e.autoPaused)
+
+        e.pauseAuto()                                 // deliberate hand-mix pause (audio keeps playing)
+        e.remotePlay()                                // stray remote play
+        XCTAssertTrue(e.autoPaused, "a stray remote ▶ must not resurrect a deliberate in-app pause")
+        XCTAssertTrue(e.autoMixing)
+        e.teardown()
+    }
+
+    /// LOCK-SCREEN ⏭ while remote-suspended = "resume the mix on the next track": the Auto-DJ
+    /// un-pauses and the transition fires — never one track into a dead machine that stalls at its end.
+    func testRemoteSkipWhileSuspendedResumesTheMixOnNextTrack() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        let q = [MixEngine.AutoMixItem(loadable: loadable("x", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("y", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+
+        e.remotePause()                               // suspended, silent
+        e.remoteSkip(fadeSeconds: 5)                  // lock ⏭
+        XCTAssertFalse(e.autoPaused, "skip while suspended resumes the Auto-DJ")
+        XCTAssertTrue(e.autoMixing)
+        XCTAssertEqual(e.autoStatus?.contains("fading"), true, "…and fires the transition")
+        e.teardown()
+    }
+
+    /// BATCH transport must not rewrite the sticky card subject: pauseBoth/resumeMasterPaused walk
+    /// the decks one at a time, and their intermediate one-playing states are artifacts. A blend whose
+    /// card is on deck B keeps deck B across lock ⏸ → ▶.
+    func testCardStaysStickyThroughBatchPauseAndResume() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.b)                                    // B first → the card's subject
+        e.play(.a)                                    // blend A in — sticky stays B
+        XCTAssertEqual(e.nowPlayingDeck, .b)
+
+        e.pauseBoth()                                 // lock ⏸ (A silenced first, B momentarily solo)
+        XCTAssertEqual(e.nowPlayingDeck, .b, "batch pause must not rewrite the card subject")
+
+        e.resumeMasterPaused()                        // lock ▶ (A started first, momentarily solo)
+        XCTAssertEqual(e.nowPlayingDeck, .b, "batch resume must not rewrite it either")
+        e.teardown()
+    }
+
+    /// Queuing a new track onto the silent side of a blend (a normal DJ move) must not leave the
+    /// card pointing at that never-played track after a pause — loadFile stops the deck outside
+    /// setPlaying, so it mirrors the sticky update.
+    func testCardDoesNotFallBackToTrackQueuedMidBlend() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2), b = try makeSineWAV(seconds: 2), c = try makeSineWAV(seconds: 2)
+        defer {
+            try? FileManager.default.removeItem(at: a)
+            try? FileManager.default.removeItem(at: b)
+            try? FileManager.default.removeItem(at: c)
+        }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 100), on: .b)
+
+        e.play(.b); e.play(.a)                        // blend, card subject = B
+        e.loadFile(c, release: nil, startMs: nil, meta: meta("c", bpm: 110), on: .b)   // queue next on B
+        XCTAssertEqual(e.nowPlayingDeck, .a, "A is the only audible deck now")
+
+        e.pause(.a)                                   // pause the audible deck
+        XCTAssertEqual(e.nowPlayingDeck, .a,
+                       "the card stays on the just-paused A — never B's never-played queued track")
+        e.teardown()
+    }
+
+    /// Lock-screen ⏭/⏮ enablement follows the Auto-DJ lifecycle: enabled by startAutoMix, disabled
+    /// when the mix ends (while the Mix owns the card). They only advance the auto-mix queue.
+    func testLockScreenSkipCommandsFollowAutoMixLifecycle() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.play(.a)                                    // the Mix claims the Now Playing card
+
+        let item = MixEngine.AutoMixItem(loadable: loadable("x", bpm: 120, lengthMs: 180_000), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+        let center = MPRemoteCommandCenter.shared()
+        XCTAssertTrue(center.nextTrackCommand.isEnabled, "⏭ live during auto-mix (fast skip)")
+        XCTAssertTrue(center.previousTrackCommand.isEnabled, "⏮ live during auto-mix (slow skip)")
+
+        e.stopAutoMix()
+        XCTAssertFalse(center.nextTrackCommand.isEnabled, "⏭ retires with the auto-mix")
+        XCTAssertFalse(center.previousTrackCommand.isEnabled, "⏮ retires with the auto-mix")
+        e.teardown()
     }
 
     // MARK: - Real-graph stress test
@@ -330,9 +696,11 @@ final class MixEngineTests: XCTestCase {
 
     // MARK: - Now Playing (lock-screen) deck selection
 
-    /// `nowPlayingDeck`: exactly one deck PLAYING → that deck ("the only active track"); zero or both
-    /// playing → Deck A regardless of its play state; only B loaded → B; nothing loaded → nil.
-    func testNowPlayingDeckPrefersThePlayingDeckElseDeckA() throws {
+    /// `nowPlayingDeck`: exactly one deck PLAYING → that deck ("the only active track"). Ambiguous
+    /// states (zero or both playing) are STICKY on the last unambiguous subject — pausing must not
+    /// flip the card to the other deck, and blending a second deck in keeps the card on the deck you
+    /// were already hearing. Cold start (no history): Deck A when loaded, else B, else nil.
+    func testNowPlayingDeckFollowsThePlayingDeckAndSticksThroughBlends() throws {
         let e = makeEngine()
         e.ensureEngine()
         try XCTSkipUnless(e.isReady, "no audio device on this test host")
@@ -343,14 +711,16 @@ final class MixEngineTests: XCTestCase {
         e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 120), on: .b)
         XCTAssertEqual(e.nowPlayingDeck, .b)                 // only B loaded → B
         e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
-        XCTAssertEqual(e.nowPlayingDeck, .a)                 // both loaded, none playing → Deck A
+        XCTAssertEqual(e.nowPlayingDeck, .a)                 // both loaded, no history → Deck A
         e.play(.b)
         XCTAssertEqual(e.nowPlayingDeck, .b)                 // only B playing → the only active track
         XCTAssertEqual(e.nowPlaying?.songId, "b")
         e.play(.a)
-        XCTAssertEqual(e.nowPlayingDeck, .a)                 // both playing → fall back to Deck A
+        XCTAssertEqual(e.nowPlayingDeck, .b)                 // blend: STICKY on B (the deck you heard first)
         e.pause(.a)
         XCTAssertEqual(e.nowPlayingDeck, .b)                 // only B playing again
+        e.pause(.b)
+        XCTAssertEqual(e.nowPlayingDeck, .b)                 // zero playing: STICKY on B (no flip on pause)
         e.teardown()
     }
 

@@ -131,7 +131,7 @@ struct BrowseView: View {
         Task {
             if let now = try? await rips.play((id: song.id, title: song.name, artist: song.artist)) {
                 player.load(url: now.url, live: now.live, startMs: now.startMs,
-                            title: now.title, artist: now.artist)
+                            title: now.title, artist: now.artist, songId: now.songId)
             }
         }
     }

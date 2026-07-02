@@ -92,10 +92,12 @@ struct MixView: View {
             engine.setCueOnRight(settings.cueOutputChannel.onRight)   // push the cue-channel preference
             engine.setBeatPulseEnabled(settings.beatPulseEnabled)     // gate the on-load beat-grid fetch
             engine.setMixGlideSeconds(settings.mixGlideSeconds)       // glide ramp length
+            engine.setSkipFadeSeconds(settings.skipFadeSeconds)       // lock-screen ⏮ slow-skip length
             recorder.settings = settings                              // session-folder location source
             recorder.recoverOrphans()                                 // re-file any crash-interrupted takes
         }
         .onChange(of: settings.mixGlideSeconds) { engine.setMixGlideSeconds(settings.mixGlideSeconds) }
+        .onChange(of: settings.skipFadeSeconds) { engine.setSkipFadeSeconds(settings.skipFadeSeconds) }
         .onChange(of: settings.cueOutputChannel) { engine.setCueOnRight(settings.cueOutputChannel.onRight) }
         .onChange(of: settings.beatPulseEnabled) { engine.setBeatPulseEnabled(settings.beatPulseEnabled) }
         // Auto mode pins BOTH decks' load source to the auto-mix collection (so a Pause → hand-load-more

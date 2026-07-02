@@ -18,6 +18,14 @@ final class AppModel {
     var songsById: [String: IndexSong] = [:]
     var albumsById: [String: IndexAlbum] = [:]
 
+    /// The catalog album for a song id (via the song's `albumId`), when both the song and its
+    /// album are indexed. Backs the lock-screen / Control Center Now Playing card's cover art —
+    /// nil for a track that isn't in the catalog (e.g. an ad-hoc rip), so the card shows title +
+    /// artist only.
+    func album(forSongId id: String) -> IndexAlbum? {
+        songsById[id]?.albumId.flatMap { albumsById[$0] }
+    }
+
     /// Resolve ordered song ids to universal tracklist CSV rows (title/artist/album/year/genre) —
     /// shared by every CSV export (playlist / pocket / setlist / session). Genre + album name live on
     /// the album; year prefers the song's, falling back to the album's. Ids with no catalog song drop.

@@ -11,7 +11,7 @@ import SwiftUI
 /// state and live locally on-device.
 @main
 struct PocketDJApp: App {
-    @State private var app = AppModel()
+    @State private var app: AppModel
     @State private var settings = SettingsStore(defaults: SettingsStore.launchDefaults())
     @State private var edits = EditsStore(fileURL: EditsStore.launchURL())
     @State private var collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
@@ -63,8 +63,18 @@ struct PocketDJApp: App {
     #endif
 
     init() {
+        let app = AppModel()
         let rips = RipsStore()
         let player = PlayerEngine()
+        // Lock-screen / Control Center Now Playing artwork: resolve the now-playing song id to its
+        // album's cover-art candidate URLs from the loaded catalog. Whichever engine currently owns
+        // the card (PlayerEngine for normal playback, MixEngine while a Mix deck is playing — see
+        // NowPlayingArbiter) fetches the first candidate that decodes and attaches it to the card
+        // (title/artist-only when the track has no art).
+        let artworkURLsProvider: @MainActor (String) -> [URL] = { [weak app] songId in
+            app?.album(forSongId: songId)?.artCandidates ?? []
+        }
+        player.artworkURLsProvider = artworkURLsProvider
         let streaming = StreamingStore()
         let amProvider = streaming.appleMusicProvider ?? AppleMusicProvider()
         // Inject the shared background-transfer coordinator so Burn hands each song to a
@@ -80,6 +90,7 @@ struct PocketDJApp: App {
         let coordinator = PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: amProvider))
+        _app = State(initialValue: app)
         _rips = State(initialValue: rips)
         _player = State(initialValue: player)
         _streaming = State(initialValue: streaming)
@@ -100,6 +111,7 @@ struct PocketDJApp: App {
         let mixSessions = MixSessionStore(fileURL: MixSessionStore.launchURL())
         let mix = MixEngine(burns: burns)
         mix.recorder = mixSessions
+        mix.artworkURLsProvider = artworkURLsProvider
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
         // App-scoped audio recorder: captures the mix's house output into the current session's

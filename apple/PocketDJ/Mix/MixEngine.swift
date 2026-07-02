@@ -327,6 +327,9 @@ final class MixEngine {
     /// Set the glide length (Settings ▸ Mix). Clamped to a sane floor.
     func setMixGlideSeconds(_ s: Double) { mixGlideSeconds = max(0.5, s) }
 
+    /// Mirror of Settings ▸ Mix "Skip fade" (pushed in by MixView) — the lock-screen ⏮ slow-skip length.
+    func setSkipFadeSeconds(_ s: Double) { skipFadeSeconds = max(1, s) }
+
     /// Per-transition glide parameters, snapshotted when a glide transition begins.
     private struct GlideContext {
         let from: Deck, to: Deck
@@ -350,6 +353,38 @@ final class MixEngine {
 
     /// One-time guard so the shared remote-command center is wired exactly once per engine.
     @ObservationIgnored private var remoteCommandsConfigured = false
+
+    /// Resolves a song id to its cover-art candidate URLs — same seam `PlayerEngine` uses,
+    /// injected once at launch from the catalog. Lets the Mix's lock-screen card show art too.
+    @ObservationIgnored var artworkURLsProvider: (@MainActor (String) -> [URL])?
+    /// The now-playing card's fetched artwork + which song it belongs to. `updateSystemNowPlaying`
+    /// fires on every position tick, so the fetch must be gated on the song id actually CHANGING —
+    /// unlike `PlayerEngine.load`, there's no natural "track changed" call site to hook here.
+    @ObservationIgnored private var nowPlayingArtworkSongId: String?
+    @ObservationIgnored private var nowPlayingArtwork: MPMediaItemArtwork?
+    @ObservationIgnored private var artworkToken = 0
+
+    /// The deck(s) the last master pause (`pauseBoth`) actually silenced. The LOCK-SCREEN ▶ resumes
+    /// exactly these — pausing a one-deck mix from the lock screen and hitting play again must bring
+    /// back just that deck, never surprise-start the other loaded deck. In-app behavior is untouched:
+    /// the master transport button keeps its explicit "Play both decks" semantics (`playBoth`).
+    @ObservationIgnored private var masterPausedDecks: Set<Deck> = []
+    /// The user's Settings ▸ Mix "Skip fade" length (seconds) — mirrored in by MixView so the
+    /// lock-screen ⏮ (slow skip) matches the in-app single-tap Skip exactly. Default mirrors
+    /// SettingsStore's own default.
+    @ObservationIgnored private var skipFadeSeconds: Double = 15
+    /// Non-nil ⟺ the auto machine's WALL CLOCK is frozen by a remote pause. The in-app `pauseAuto`
+    /// keeps audio playing, so letting an in-flight pre-roll/fade complete there is correct — but the
+    /// remote pause SILENCES the decks, and an unfrozen transition timer would fire `beginAutoCrossfade`
+    /// seconds into the pause and audibly un-pause the locked phone. While set, `autoFire` is a no-op;
+    /// `remotePlay`/`remoteSkip` shift every armed timestamp forward by the frozen interval so the
+    /// machine resumes exactly where it stopped (a half-swept fade stays half-swept).
+    @ObservationIgnored private var remotePausedAt: Date?
+    /// Gates the sticky `lastNowPlayingDeck` update during BATCH transport (pauseBoth / playBoth /
+    /// resumeMasterPaused): those silence/start the decks one at a time, and the intermediate
+    /// "exactly one playing" states would rewrite the card's subject mid-batch — the exact
+    /// pause-flips-the-card bug the sticky memory exists to prevent.
+    @ObservationIgnored private var suppressStickyUpdates = false
 
     init(burns: BurnStore) { self.burns = burns }
 
@@ -386,6 +421,12 @@ final class MixEngine {
         } else {
             rec(.pause, deck)
         }
+        // Track the last UNAMBIGUOUS card subject (exactly one deck playing) so `nowPlayingDeck`
+        // stays sticky across pauses/blends — the card must not flip decks just because you paused.
+        // Suppressed during batch transport: pauseBoth/playBoth walk the decks sequentially and their
+        // INTERMEDIATE one-playing states are artifacts, not the user's card subject.
+        let aOn = state(.a).isPlaying, bOn = state(.b).isPlaying
+        if aOn != bOn, !suppressStickyUpdates { lastNowPlayingDeck = aOn ? .a : .b }
         updateSystemNowPlaying()                    // reflect the new play state / now-playing deck
     }
 
@@ -585,6 +626,7 @@ final class MixEngine {
         ensureEngine()
         guard let player = players[deck], let inputMixer = inputMixers[deck] else { release?(); return }
         guard let file = try? AVAudioFile(forReading: url) else { release?(); return }   // unreadable / corrupt
+        masterPausedDecks.remove(deck)   // a NEW track was never silenced by the pause — lock ▶ must not blast it
         let sr = file.processingFormat.sampleRate
         let total = file.length
         let start = min(max(0, AVAudioFramePosition((Double(startMs ?? 0) / 1000.0) * sr)), total)
@@ -617,6 +659,11 @@ final class MixEngine {
             $0.stemVol = [:]
         }
         unwireStems(deck)             // drop the prior track's stem files + scope
+        // Loading stopped this deck OUTSIDE setPlaying (direct isPlaying=false above) — mirror the
+        // sticky-card update so the card can't later fall back to this deck's never-played new track
+        // (e.g. blend on A+B, queue a new song onto B, pause A → the card must stay on A).
+        let aOn = state(.a).isPlaying, bOn = state(.b).isPlaying
+        if aOn != bOn { lastNowPlayingDeck = aOn ? .a : .b }
         setDuration(deck, Double(count) / sr)
         setPosition(deck, 0)
         applyRate(deck); applyPitch(deck)
@@ -634,6 +681,7 @@ final class MixEngine {
 
     func play(_ deck: Deck) {
         guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
+        masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
         ensureEngine()
         if !engine.isRunning { try? engine.start() }
         if stemActive(deck) { ensureStemsScheduled(deck); startStems(deck) } else { players[deck]?.play() }
@@ -660,8 +708,11 @@ final class MixEngine {
     func togglePlay(_ deck: Deck) { state(deck).isPlaying ? pause(deck) : play(deck) }
 
     func playBoth() {
+        masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
+        unfreezeAutoClock()      // master play un-silences everything — unpark any remote-frozen fade
         ensureEngine()
         if !engine.isRunning { try? engine.start() }
+        suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
         for d in Deck.allCases where state(d).loaded != nil {
             if stemActive(d) { ensureStemsScheduled(d); startStems(d) } else { players[d]?.play() }
             setPlaying(d, true)
@@ -671,12 +722,90 @@ final class MixEngine {
     }
 
     func pauseBoth() {
+        masterPausedDecks = Set(Deck.allCases.filter { state($0).isPlaying })   // what the lock-screen ▶ resumes
         if autoMixing && !autoPaused { endAutoLoop() }     // a manual master-Pause during a RUNNING Auto-DJ ends it
+        suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
         for d in Deck.allCases { pauseActiveNodes(d); setPlaying(d, false) }
         refreshTransport()
     }
 
     func toggleAll() { isRunning ? pauseBoth() : playBoth() }
+
+    /// LOCK-SCREEN ▶ only — resume exactly what the last master pause silenced (`masterPausedDecks`),
+    /// NOT both decks: with one deck playing, lock-screen ⏸ then ▶ must bring back just that deck.
+    /// No pause memory (e.g. the decks were paused individually in-app, or nothing was playing when
+    /// paused) falls back to the card's now-playing deck — play the track the card is showing.
+    /// The in-app master transport deliberately keeps `playBoth()`; this never replaces it.
+    func resumeMasterPaused() {
+        let remembered = masterPausedDecks.filter { state($0).loaded != nil }
+        masterPausedDecks = []
+        guard !remembered.isEmpty else {
+            if let d = nowPlayingDeck { play(d) }
+            return
+        }
+        suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
+        for d in Deck.allCases where remembered.contains(d) { play(d) }
+    }
+
+    /// Set by `remotePause` when it suspended a RUNNING Auto-DJ, so the matching `remotePlay`
+    /// resumes the Auto-DJ too — but never resurrects one the user deliberately paused in-app.
+    @ObservationIgnored private var resumeAutoOnRemotePlay = false
+
+    /// LOCK-SCREEN ⏸ — unlike the in-app master pause (which deliberately ENDS a running Auto-DJ
+    /// and drops you to manual), the lock-screen pause SUSPENDS it: `pauseAuto()` first (machine
+    /// paused, session + queue alive), then freeze the machine's wall clock (`remotePausedAt` —
+    /// an in-flight pre-roll/fade must not complete into silent decks), then silence the decks.
+    /// The matching lock-screen ▶ resumes both the audio and the Auto-DJ, so a pocket pause never
+    /// kicks the mix back to manual mode. IDEMPOTENT: Bluetooth/AVRCP heads re-send discrete PAUSE —
+    /// a duplicate while already paused must not clobber the pause memory or the resume intent.
+    func remotePause() {
+        guard isRunning || (remotePausedAt == nil && masterPausedDecks.isEmpty) else { return }
+        let autoWasRunning = autoMixing && !autoPaused
+        if autoWasRunning {
+            pauseAuto()                      // BEFORE pauseBoth — a running auto-loop would be ended by it
+            resumeAutoOnRemotePlay = true    // set-only: never clobber an earlier ⏸'s intent
+        }
+        if autoMixing { remotePausedAt = Date() }   // freeze transition timers while the decks are silent
+        pauseBoth()                          // records masterPausedDecks; autoPaused=true keeps the loop
+    }
+
+    /// LOCK-SCREEN ▶ — un-freeze the machine's wall clock (shift every armed timestamp forward by the
+    /// frozen interval so an in-flight transition resumes exactly where it stopped), resume the paused
+    /// deck(s) (`resumeMasterPaused`), then, if the matching lock-screen ⏸ was what suspended the
+    /// Auto-DJ, resume it too. An Auto-DJ the user paused IN-APP (hand-mixing) stays paused — the
+    /// lock screen only undoes its own suspension.
+    func remotePlay() {
+        unfreezeAutoClock()
+        resumeMasterPaused()
+        if resumeAutoOnRemotePlay, autoMixing, autoPaused { resumeAuto() }
+        resumeAutoOnRemotePlay = false
+    }
+
+    /// LOCK-SCREEN ⏭/⏮ — a skip while the Auto-DJ is suspended means "resume the mix on the next
+    /// track": un-freeze, bring the audio back, lift the machine's pause, THEN fire the transition.
+    /// Skipping into a suspended machine would play one track and stall in silence at its end.
+    func remoteSkip(fadeSeconds: Double) {
+        if autoPaused {
+            unfreezeAutoClock()
+            resumeMasterPaused()
+            resumeAuto()                     // consumes resumeAutoOnRemotePlay; no-ops the re-arm mid-fade
+        }
+        skipToNext(fadeSeconds: fadeSeconds)
+    }
+
+    /// Shift every armed auto-machine timestamp forward by the interval spent remote-frozen, so the
+    /// machine resumes exactly where the pause stopped it (a half-swept fade stays half-swept, the
+    /// live deck's end-at moves out by the pause length). No-op when not frozen.
+    private func unfreezeAutoClock() {
+        guard let frozeAt = remotePausedAt else { return }
+        remotePausedAt = nil
+        let delta = Date().timeIntervalSince(frozeAt)
+        guard delta > 0 else { return }
+        autoPrerollStartedAt = autoPrerollStartedAt?.addingTimeInterval(delta)
+        autoFadeStartedAt = autoFadeStartedAt?.addingTimeInterval(delta)
+        autoPostrollStartedAt = autoPostrollStartedAt?.addingTimeInterval(delta)
+        for (d, t) in autoDeckEndsAt { autoDeckEndsAt[d] = t.addingTimeInterval(delta) }
+    }
 
     /// Return a deck to the BEGINNING (its window's start frame) and resume if it was playing.
     func restart(_ deck: Deck) {
@@ -985,6 +1114,8 @@ final class MixEngine {
         autoLiveDeck = .a
         autoPaused = false
         autoResumeEndDeck = nil
+        resumeAutoOnRemotePlay = false
+        remotePausedAt = nil
         autoFadeStartedAt = nil
         autoDeckEndsAt = [:]
         autoDeckDurationMs = [:]
@@ -1002,6 +1133,7 @@ final class MixEngine {
         let now = Date()
         autoDeckEndsAt[.a] = now.addingTimeInterval(Double(autoDeckDurationMs[.a] ?? Self.autoFallbackDurationMs) / 1000)
         autoMixing = true
+        setLockScreenSkipCommandsEnabled(true)   // lock-screen ⏭/⏮ = fast/slow auto-mix skip
         play(.a)
         startTickIfNeeded()
         refreshAutoStatus()
@@ -1035,8 +1167,18 @@ final class MixEngine {
     /// Recorded as one `.autoResume` marker. No-op unless a mix is paused.
     func resumeAuto() {
         guard autoMixing, autoPaused else { return }
+        unfreezeAutoClock()              // an IN-APP Resume after a lock-screen ⏸ must also unpark the
+                                         // machine's frozen wall clock, or autoFire stays gated forever
         autoPaused = false
+        resumeAutoOnRemotePlay = false   // ANY resume consumes the remote-restore intent — a later
+                                         // deliberate in-app pause must not be resurrected by a stray
+                                         // remote play (Siri / CarPlay reconnect re-sends).
         rec(.autoResume)
+        // Mid-transition: the (possibly just-unfrozen) pre-roll/fade owns both decks — lifting the
+        // pause gate is all that's needed. The blend re-arm below would fight it: it watches the
+        // OUTGOING deck and would fire a second, immediate handoff the moment the fade retires it,
+        // double-skipping the track the mix was fading INTO.
+        if autoTransitioning { refreshAutoStatus(); startTickIfNeeded(); return }
         let now = Date()
         let aOn = state(.a).isPlaying, bOn = state(.b).isPlaying
 
@@ -1098,6 +1240,10 @@ final class MixEngine {
     }
 
     private func endAutoLoop() {
+        // ⏭/⏮ only drive the auto-mix queue — but the commands are process-global, so only flip them
+        // off while WE own the card. A setlist that owns the card mid-auto-mix-teardown (e.g. the auto
+        // queue exhausted while a set plays) keeps its own ⏮ previous / ⏭ next untouched.
+        if NowPlayingArbiter.shared.isActive(self) { setLockScreenSkipCommandsEnabled(false) }
         let wasMixing = autoMixing
         // Abort any in-flight glide: restore both decks' forced effect + natural tempo/pitch, so a
         // Stop mid-transition never leaves an effect on / a deck pitched.
@@ -1109,6 +1255,8 @@ final class MixEngine {
         pendingFadeRestore = nil
         autoPaused = false
         autoResumeEndDeck = nil
+        resumeAutoOnRemotePlay = false
+        remotePausedAt = nil
         autoMixing = false
         autoStatus = nil
         autoSourceLabel = nil
@@ -1135,6 +1283,10 @@ final class MixEngine {
     /// feature on, only the crossfade phase is ever entered, so the behavior is unchanged.
     private func autoFire() {
         guard autoEnabled, autoMixing, isReady else { return }
+        // REMOTE-FROZEN: the decks are silent and every armed timestamp is parked (remotePlay shifts
+        // them forward by the frozen interval). Without this gate a wall-clock pre-roll/fade would
+        // hit p ≥ 1 during the pause and audibly restart playback on a locked, paused phone.
+        guard remotePausedAt == nil else { return }
         let now = Date()
         if let prerollStart = autoPrerollStartedAt {                       // PRE-ROLL (glide)
             let p = min(max(now.timeIntervalSince(prerollStart) / max(0.05, glideInSecondsActive), 0), 1)
@@ -1732,9 +1884,16 @@ final class MixEngine {
         let aLoaded = loaded(.a) != nil, bLoaded = loaded(.b) != nil
         let aPlaying = aLoaded && isPlaying(.a), bPlaying = bLoaded && isPlaying(.b)
         if aPlaying != bPlaying { return aPlaying ? .a : .b }   // exactly one playing → that deck
-        if aLoaded { return .a }                                 // else prefer Deck A (even if paused)
+        // Ambiguous (zero or both playing): STAY with the last unambiguous subject — pausing deck B
+        // must not flip the card (title + art) over to deck A, only to flip back on resume. The
+        // A-then-B preference is just the cold-start fallback when there's no history for a loaded deck.
+        if let last = lastNowPlayingDeck, state(last).loaded != nil { return last }
+        if aLoaded { return .a }                                 // cold start: prefer Deck A
         return bLoaded ? .b : nil
     }
+    /// The deck the card last showed while playback was unambiguous (exactly one deck playing).
+    /// Keeps the card sticky across pause (zero playing) and blends (both playing).
+    @ObservationIgnored private var lastNowPlayingDeck: Deck?
 
     /// The track behind `nowPlayingDeck` (the in-app + lock-screen "Now Playing").
     var nowPlaying: LoadedTrack? { nowPlayingDeck.flatMap { loaded($0) } }
@@ -1749,6 +1908,11 @@ final class MixEngine {
     private func updateSystemNowPlaying() {
         guard NowPlayingArbiter.shared.isActive(self) else { return }
         guard let deck = nowPlayingDeck, let track = loaded(deck) else { return }
+        // Re-assert ⏭/⏮ enablement on EVERY card write, not just at startAutoMix: a standalone-player
+        // interlude (song audition / setlist) flips the same shared commands off via its own lifecycle,
+        // and without this the skips would stay dead for the remainder of a running auto-mix.
+        setLockScreenSkipCommandsEnabled(autoMixing)
+        refreshArtworkIfNeeded(for: track.songId)
         let playing = isPlaying(deck)
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title,
@@ -1758,7 +1922,29 @@ final class MixEngine {
         ]
         let dur = duration(deck)
         if dur > 0 { info[MPMediaItemPropertyPlaybackDuration] = dur }
+        if let nowPlayingArtwork, nowPlayingArtworkSongId == track.songId {
+            info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    /// Fetch cover art for the now-playing card ONLY when the song id actually changed since the
+    /// last fetch — `updateSystemNowPlaying` fires on every position tick, so this must not re-fetch
+    /// every call. `artworkToken` supersedes an in-flight fetch when the song changes again before
+    /// it resolves, so a slow image never lands on the wrong track.
+    private func refreshArtworkIfNeeded(for songId: String) {
+        guard songId != nowPlayingArtworkSongId else { return }
+        nowPlayingArtworkSongId = songId
+        nowPlayingArtwork = nil
+        artworkToken += 1
+        let token = artworkToken
+        guard let urls = artworkURLsProvider?(songId), !urls.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            guard let image = await PlayerEngine.loadFirstImage(urls) else { return }
+            guard let self, self.artworkToken == token else { return }   // song changed again → drop
+            self.nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            self.updateSystemNowPlaying()
+        }
     }
 
     /// Register the shared remote-command handlers ONCE. Each is guarded by `NowPlayingArbiter` so it
@@ -1769,22 +1955,48 @@ final class MixEngine {
         guard !remoteCommandsConfigured else { return }
         remoteCommandsConfigured = true
         let center = MPRemoteCommandCenter.shared()
+        // ⏸/▶ are the REMOTE pair: pause suspends a running Auto-DJ (never ends it — no silent drop
+        // to manual mode), play resumes ONLY what the pause silenced and un-suspends the Auto-DJ.
         center.playCommand.addTarget { [weak self] _ in
             guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.playBoth(); return .success
+            self.remotePlay(); return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
             guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.pauseBoth(); return .success
+            self.remotePause(); return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.toggleAll(); return .success
+            if self.isRunning { self.remotePause() } else { self.remotePlay() }
+            return .success
         }
+        // Auto-mix only: ⏭ = the FAST switch (5 s sweep — in-app double-tap Skip); ⏮ = the SLOW
+        // switch (the Settings ▸ Mix skip-fade — in-app single-tap Skip). Both advance the queue;
+        // there is no "previous track" in a live mix, so ⏮ maps to the gentler transition instead.
         center.nextTrackCommand.addTarget { [weak self] _ in
             guard let self, NowPlayingArbiter.shared.isActive(self), self.autoMixing else { return .commandFailed }
-            self.skipToNext(fadeSeconds: 5); return .success   // lock-screen ⏭ → quick auto-mix skip
+            self.remoteSkip(fadeSeconds: 5); return .success
         }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self, NowPlayingArbiter.shared.isActive(self), self.autoMixing else { return .commandFailed }
+            self.remoteSkip(fadeSeconds: self.skipFadeSeconds); return .success
+        }
+    }
+
+    /// Enable/disable the shared lock-screen ⏭/⏮ with the Auto-DJ's lifecycle — they only advance the
+    /// auto-mix queue, so outside auto-mix the Mix card offers play/pause only. The commands are
+    /// PROCESS-GLOBAL (`MPRemoteCommandCenter`), shared with `PlayerEngine`'s setlist ⏮/⏭, so three
+    /// rules keep the two engines from stranding each other:
+    ///  • `updateSystemNowPlaying` re-asserts this on every card write while the Mix owns the card
+    ///    (heals after a standalone-player interlude flipped the commands off mid-auto-mix),
+    ///  • `endAutoLoop` flips them off ONLY while the Mix owns the card (a set that owns it keeps its
+    ///    own enablement),
+    ///  • `PlayerEngine` re-asserts its setlist-driven enablement whenever IT reclaims the card.
+    /// Writes are diffed — this runs per card write, and same-value sets shouldn't churn the card.
+    private func setLockScreenSkipCommandsEnabled(_ on: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        if center.nextTrackCommand.isEnabled != on { center.nextTrackCommand.isEnabled = on }
+        if center.previousTrackCommand.isEnabled != on { center.previousTrackCommand.isEnabled = on }
     }
 
     // MARK: - Internals
