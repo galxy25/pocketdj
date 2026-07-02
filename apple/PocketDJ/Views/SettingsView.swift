@@ -18,6 +18,8 @@ struct SettingsView: View {
     @State private var syncing = false
     @State private var syncStatus: SyncStatus?
     @State private var confirmingReset = false
+    /// Easter egg: the mushroom-cloud overlay playing after a confirmed reset.
+    @State private var nuking = false
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var showCollectionsImporter = false
@@ -56,6 +58,9 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Settings")
         .scrollContentBackground(.hidden).background(Theme.bg)
+        // Easter egg: confirming the nuclear reset detonates a mushroom cloud over
+        // the screen (decoration only — it never intercepts touches; ~2.5 s).
+        .overlay { if nuking { MushroomCloudView { nuking = false } } }
         .onDisappear { settings.persist() }
         .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .json,
                       defaultFilename: "pocketdj-edits") { _ in }
@@ -643,6 +648,7 @@ struct SettingsView: View {
                 Button("Reset everything", role: .destructive) {
                     settings.resetEverything()
                     Task { await app.reload() }
+                    nuking = true   // the nuclear option gets a nuclear send-off
                 }
                 .accessibilityIdentifier("settings-reset-confirm")
                 Button("Cancel", role: .cancel) {}

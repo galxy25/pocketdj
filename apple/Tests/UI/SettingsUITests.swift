@@ -104,6 +104,32 @@ final class SettingsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings-reset-confirm"].waitForExistence(timeout: 3))
     }
 
+    /// Easter egg: CONFIRMING the nuclear reset detonates the mushroom-cloud
+    /// overlay (decoration only), which removes itself within a few seconds.
+    /// iOS-only drive: confirmationDialog buttons aren't reliably tappable via
+    /// XCUITest on macOS.
+    func testResetConfirmDetonatesMushroomCloud() throws {
+        #if os(macOS)
+        throw XCTSkip("confirmation-dialog taps are iOS-only in this harness")
+        #else
+        let app = launch()
+        XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))
+        let reset = app.buttons["settings-reset"]
+        XCTAssertTrue(reveal(app, reset))
+        reset.tap()
+        XCTAssertTrue(app.buttons["settings-reset-confirm"].waitForExistence(timeout: 3))
+        // confirmationDialog exposes the destructive action twice in the a11y tree.
+        app.buttons["settings-reset-confirm"].firstMatch.tap()
+        let cloud = app.descendants(matching: .any)["nuke-cloud"]
+        XCTAssertTrue(cloud.waitForExistence(timeout: 3), "the mushroom cloud should rise")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "mushroom-cloud"; shot.lifetime = .keepAlways; add(shot)
+        // And it cleans up after itself (~2.5 s animation).
+        for _ in 0..<20 where cloud.exists { usleep(300_000) }
+        XCTAssertFalse(cloud.exists, "the cloud should fade away on its own")
+        #endif
+    }
+
     /// The Mix section exposes all three crossfade steppers — including the NEW manual-skip fade —
     /// so the Skip-button feature has a configurable fade length. Asserted by accessibility id
     /// (steppers surface differently per platform; the id matches on both).

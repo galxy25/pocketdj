@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Adaptive shell: a sidebar split view that collapses to a stack on iPhone and
 /// becomes a true two-column layout on iPad and Mac.
@@ -9,9 +12,18 @@ struct RootView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
     @Environment(BurnStore.self) private var burns
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(MixEngine.self) private var mix
     @Environment(IntentServices.self) private var intents
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
-    @State private var section: Section? = .browse
+    // Launch default: macOS lands on the MIX tab; iOS lands on the HOME menu (nil —
+    // the collapsed split view rests on the sidebar) unless a previously-persisted
+    // section is restored in `.task` ("open to wherever you last left off").
+    #if os(macOS)
+    @State private var section: Section? = .mix
+    #else
+    @State private var section: Section?
+    #endif
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
@@ -30,12 +42,35 @@ struct RootView: View {
         }
     }
 
+    /// The home Now Playing element shows for collection playback (the app-scoped
+    /// sequencer) in every mode EXCEPT Mix — a running/suspended Auto-DJ or live
+    /// deck owns the audio, so the panel yields.
+    private var nowPlayingVisible: Bool {
+        NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix)
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(Section.allCases, selection: $section) { item in
-                Label(item.rawValue, systemImage: item.icon).tag(item)
+            // Sidebar = the iPhone HOME menu screen / the iPad+macOS left column.
+            // The Now Playing element rides UNDER the menu items in both shapes;
+            // while it's up, the menu list keeps just its rows' height and the
+            // panel (record player + queue + add-search) gets the rest.
+            VStack(spacing: 0) {
+                List(Section.allCases, selection: $section) { item in
+                    rowLabel(item).tag(item)
+                }
+                .frame(maxHeight: nowPlayingVisible ? 236 : .infinity)
+                if nowPlayingVisible {
+                    Divider().overlay(Theme.border)
+                    NowPlayingPanel()
+                }
             }
+            // iOS drops the ✦ AI sparkle from the home title; macOS keeps it.
+            #if os(iOS)
+            .navigationTitle("PocketDJ")
+            #else
             .navigationTitle("✦ PocketDJ")
+            #endif
             .toolbar(removing: .sidebarToggle)
             #if os(macOS)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
@@ -76,6 +111,20 @@ struct RootView: View {
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
                let s = Section(rawValue: raw) {
                 section = s
+            } else {
+                #if os(iOS)
+                // Restore the last-visited section ("open to wherever you last left
+                // off"); "" or nothing persisted ⇒ stay on the HOME menu. macOS
+                // deliberately skips this — it always lands on Mix.
+                if let raw = settings.lastSection, let s = Section(rawValue: raw) {
+                    section = s
+                } else if UIDevice.current.userInterfaceIdiom == .pad {
+                    // iPad's split view always shows a detail column — with nothing to
+                    // restore it opens on MIX (like the Mac: the DJ surface), with the
+                    // sidebar row selected to match.
+                    section = .mix
+                }
+                #endif
             }
             await app.loadIfNeeded()
             // Testing seam: `PDJ_OPEN_FIRST_ALBUM=1` deep-links into an album so the
@@ -85,6 +134,30 @@ struct RootView: View {
                 path.append(first)
             }
             consumeIntentRoute(intents.pendingRoute)   // route parked by a cold intent launch
+        }
+        // Remember where the user is so the next iOS launch reopens there (nil —
+        // the home menu — persists as "" and restores as home).
+        .onChange(of: section) {
+            settings.lastSection = section?.rawValue ?? ""
+            settings.persist()
+        }
+    }
+
+    /// Menu row: every section uses its SF Symbol except MIX, which wears Apple
+    /// Music's AutoMix mark (two overlapping records — one solid, one open ring).
+    /// No public SF Symbol exists for it, so it's drawn as a tiny vector that
+    /// follows `.tint` exactly like the surrounding symbol icons.
+    @ViewBuilder private func rowLabel(_ item: Section) -> some View {
+        if item == .mix {
+            // No explicit foreground style: the Canvas inherits the Label icon
+            // slot's, so it colors exactly like the sibling SF Symbol icons on
+            // every platform (white here, accent when the platform tints them).
+            Label { Text(item.rawValue) } icon: {
+                AutoMixIcon()
+                    .frame(width: 25, height: 15)
+            }
+        } else {
+            Label(item.rawValue, systemImage: item.icon)
         }
     }
 
@@ -190,5 +263,42 @@ struct ComingSoon: View {
         .navigationTitle(title)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
+    }
+}
+
+/// Apple Music's AUTOMIX glyph, redrawn: two same-size overlapping records — the
+/// left one solid, the right one an open ring sitting ON TOP with a small cut gap
+/// where it crosses the solid disc (matching Apple's mark). Drawn with the current
+/// foreground style, so `.foregroundStyle(.tint)` renders it in the same accent as
+/// the neighboring SF Symbol tab icons.
+struct AutoMixIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let h = size.height
+            let r = h / 2                       // both records span the full height
+            let stroke = h * 0.22               // the open record's ring thickness
+            let gap = h * 0.10                  // cut gap where the ring crosses the disc
+            let leftCenter = CGPoint(x: r, y: r)
+            let rightCenter = CGPoint(x: size.width - r, y: r)
+
+            func circle(_ center: CGPoint, _ radius: CGFloat) -> Path {
+                Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius,
+                                       width: radius * 2, height: radius * 2))
+            }
+
+            // Solid left record, with the ring's footprint (plus the gap) knocked out.
+            var disc = context
+            disc.clip(to: circle(rightCenter, r + gap), options: .inverse)
+            disc.fill(circle(leftCenter, r), with: .style(.foreground))
+            var punch = context
+            punch.clip(to: circle(rightCenter, r - stroke - gap))
+            punch.fill(circle(leftCenter, r), with: .style(.foreground))
+
+            // Open right record: a ring (outer circle minus its hole).
+            var ring = circle(rightCenter, r)
+            ring.addPath(circle(rightCenter, r - stroke))
+            context.fill(ring, with: .style(.foreground), style: FillStyle(eoFill: true))
+        }
+        .accessibilityHidden(true)   // decorative — the Label's text names the tab
     }
 }

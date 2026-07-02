@@ -13,6 +13,8 @@ struct BrowseView: View {
     @Environment(BurnStore.self) private var burns
     @Environment(CollectionsStore.self) private var collections
     @Environment(IntentServices.self) private var intents
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(MixEngine.self) private var mix
     /// Shared navigation path (owned by RootView) — lets keyboard "open" push an
     /// album/song detail programmatically, alongside the row-tap NavigationLinks.
     @Binding var path: NavigationPath
@@ -287,7 +289,13 @@ struct BrowseView: View {
             Button("Layout-shadow") {
                 if browse.kind == .album { browse.layout = browse.layout == .grid ? .list : .grid }
             }.keyboardShortcut("v", modifiers: .command)
-            Button("Search-shadow") { searchFocused = true }.keyboardShortcut("l", modifiers: .command)
+            // ⌘L YIELDS to the home Now Playing panel while it's up (both register
+            // "l"+⌘; two live registrations are ambiguous) — the panel's add-search
+            // takes the shortcut so a set stays fully keyboard-drivable; the browser
+            // search field gets it back the moment the panel is gone.
+            if !NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix) {
+                Button("Search-shadow") { searchFocused = true }.keyboardShortcut("l", modifiers: .command)
+            }
             // List keyboard navigation: ↑/↓ move the focus cursor over the visible song
             // OR album list, ⌘P plays/pauses the focused song, Return / ⌘O opens the
             // focused item (album → AlbumDetailView, song → SongDetailView). Left LIVE

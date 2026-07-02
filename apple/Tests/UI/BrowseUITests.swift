@@ -15,6 +15,9 @@ final class BrowseUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        // These tests assert Browser content right after launch. The app no longer
+        // lands there by default (iOS → home menu, macOS → Mix), so pin the section.
+        app.launchEnvironment["PDJ_START_SECTION"] = "Browser"
     }
 
     // Terminate between tests so each gets a clean, focused instance — on macOS a

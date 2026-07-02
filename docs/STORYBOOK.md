@@ -1698,3 +1698,76 @@ new name automatically.
 **User story:** "Hands on the decks — or walking out the door — I say *'Shuffle Crate Warmers in
 PocketDJ'* and it's playing; and when I only know the vibe I want, I ask Siri to *create a pocket*
 and find ninety minutes of it waiting in the app."
+
+---
+
+## 62. The home Now Playing deck — a spinning gold record on the menu screen
+
+Start any collection playing — a playlist, a pocket, an album, a Siri request — and the
+app's **home menu screen** (iPhone) or the space **under the sidebar menu** (iPad, Mac)
+becomes a little record deck. It appears whenever music is playing in any mode **except
+Mix** (the Mix tab has its own two-deck board; while a mix or Auto-DJ owns the audio, the
+home deck yields).
+
+Top to bottom:
+
+- **The track name and artist**, right above the player.
+- **A gold vinyl record spinning inside a blue record-player chassis** (the same blue as
+  the app's icons), the current album's cover as its center label, a fixed tonearm on the
+  right. The record **spins at a rate that reflects the track's tempo** — one revolution
+  per 4-beat bar of the measured **beat-grid BPM** (catalog BPM as fallback), so a ~133 BPM
+  banger turns like real 33 RPM vinyl and faster tracks visibly spin faster. Pause and the
+  platter **freezes in place** (no rewind-to-twelve-o'clock); resume and it picks up from
+  the same groove. Unknown tempo ⇒ classic 33⅓.
+- **⏮ ⏯ ⏭ transport** — the same prev/play-pause/next that works from the lock screen.
+- **Up next** — the not-yet-played queue of the playing collection. **Drag to reorder**
+  (Reorder button on iPhone) or **✕ / swipe to remove**; edits touch only what hasn't
+  played yet, so the current track never skips or restarts.
+- **Add-search — the same native search control as the Browser tab** (user-tested: a
+  bottom text field hid under the keyboard). On iPhone the field rides the bar at the
+  top; on **iPad and Mac it sits on the LEFT, at the top of the sidebar** (this also
+  fixed a Mac crash — two search fields were fighting over the window toolbar). **⌘L
+  jumps the cursor straight into it**, so a set is fully drivable from the keyboard;
+  type
+  anything ("optimistic", "cobalt", a title) and matching **albums appear above songs**,
+  each in a **collapsible** section (fold the albums away to scroll just songs). **＋
+  appends** a song — or an album's whole tracklist — to the end of the queue, live, without
+  interrupting playback. Exact-title matches rank first even in a ~100k-song catalog, and
+  the search runs debounced off the main thread so typing stays smooth.
+
+The whole deck **scrolls** (user-tested): pull the list up and the record player and its
+controls slide out of view so **Up next can take over the panel** — the menu/tab links
+above stay pinned. The **tonearm plays the record**: it rests on the outer edge at
+0:00 and sweeps toward the center label in proportion to the play position, like a real
+stylus crossing the grooves. **Right-click or long-press** is everywhere: a **queue row**
+offers *Move to top · Move to bottom · Remove*, a **search result song OR album** offers
+*Add next · Add to end* (＋ still appends; an album lands its whole tracklist, in album
+order, wherever you chose), and **the record itself** opens the current track's full
+**song detail metadata** — closed with a Back button top-left on iPhone, or an
+always-visible **✕** on iPad and Mac (Esc still works for the keyboard-inclined).
+
+And the **Mix tab now wears Apple Music's AutoMix mark** — the two overlapping records
+(one solid, one open) from Apple's own symbol sheet, redrawn to color exactly like the
+neighboring tab icons.
+
+**Getting there is also nicer now:** on iOS the app opens on the **home menu** ("PocketDJ" —
+the ✦ sparkle is gone) unless you'd navigated somewhere before — then it **reopens wherever
+you last left off**. On the Mac it always opens on the **Mix** tab, ready to DJ.
+
+**User story:** "I start a pocket from the couch, glance at my phone's home screen and see
+the gold record turning at the track's tempo with what's coming next — I drag tomorrow's
+opener up the queue, type 'slow burn', add it straight into the set, and the music never
+hiccups."
+
+
+---
+
+## 63. The nuclear option — a mushroom cloud easter egg
+
+Settings ▸ **Reset all app state** is PocketDJ's nuclear option — so confirming it now
+detonates one. A stylized **mushroom cloud** blooms up from the bottom of the screen
+(white-hot flash, fireball cap rising on its stem, glowing ground ring) and drifts away
+about two and a half seconds later. Pure decoration: it never blocks a tap, and the reset
+itself runs exactly as before.
+
+**User story:** "If I'm going to erase everything, at least let me enjoy the blast."

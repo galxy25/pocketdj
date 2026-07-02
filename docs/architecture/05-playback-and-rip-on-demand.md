@@ -982,6 +982,76 @@ button's trailing slot** (`startStopButton` — not a menu item), and the second
 sequencer's queue index). **macOS** keeps the flat trailing toolbar (no `.principal` nav bar)
 with prev/next inline while running.
 
+### 10.1 The home Now Playing deck — live queue edits + the spinning record
+
+`NowPlayingPanel` (`apple/PocketDJ/Views/NowPlayingPanel.swift`) rides the shell's
+sidebar (RootView) — the iPhone home menu / the iPad+macOS left column — whenever
+`sequencer.isRunning && !(mix.isRunning || mix.autoMixing)` (collection playback in
+any mode EXCEPT Mix; the Mix engines own their audio). The panel is ONE scrollable
+`List` (user-tested): the deck — title/artist · `RecordPlayerView` · ⏮ ⏯ ⏭ (the §10
+cross-backend toggle) — is a scrolling row ABOVE the **Up Next** section, so pulling
+up scrolls the deck away and the queue takes the whole panel (the menu list above
+stays pinned); search is the NATIVE `.searchable` control (same UI as the Browser —
+a bottom text field hid under the keyboard): `navigationBarDrawer(.always)` on
+iPhone, **`.sidebar` placement on iPad/macOS** — LOAD-BEARING, not just the user's
+left-side preference: automatic placement put the field in the macOS unified
+NSToolbar, and switching to the Browser tab (its own `.searchable`) made SwiftUI
+insert a SECOND toolbar search item — AppKit threw from
+`NSToolbar _insertNewItemWithItemIdentifier:` → `_crashOnException` (the macOS 27
+crash report; iOS was immune, each nav bar hosts its own field). ⌘L focuses the
+panel's field (a hidden shortcut button registered only while the panel exists;
+BrowseView's own ⌘L yields via `NowPlayingPanel.isVisible`). Context menus:
+queue rows get **Move to top / Move to bottom / Remove** (`moveUpcomingNext`/
+`moveUpcomingToEnd`, uid-verified), search song AND album rows get **Add next / Add
+to end** (`insertNextInQueue` at `index+1` / `appendToQueue`; albums expand via
+`app.tracks(for:)` in album order); long-pressing (iOS) or right-clicking (macOS)
+the RECORD opens the current song's `SongDetailView` in a sheet — dismissed by a
+top-left Back button on iPhone, or an always-visible ✕ overlay on iPad/macOS
+(`NowPlayingPanel.detailUsesCloseOverlay`; the sheet's toolbar isn't a reliable
+close surface there and Esc alone is power-user-only). The Mix tab's menu icon is
+`AutoMixIcon` (RootView) — Apple Music's AutoMix mark (two overlapping records)
+redrawn as a Canvas that inherits the Label icon slot's foreground style (no
+public SF Symbol exists).
+
+- **`RecordPlayerView`** — gold disc (`Theme.accent2`) with grooves and the album's
+  `CoverImage` as center label, inside a `Theme.accent` (blue) chassis + fixed
+  tonearm. Spin rate = **one revolution per 4-beat bar**: `burns.beatGrid(forSong:)`'s
+  measured `beatGridBpm` first, catalog `bpm` fallback, 33⅓ RPM unknown. Rendering is
+  a **paused `TimelineView`** (zero redraws while paused — the Mix beat-pulse
+  discipline); pause FREEZES the angle (accumulated into `baseAngle`) and resume
+  continues from it. The TONEARM tracks the play position — resting on the outer
+  edge at 0:00 and sweeping linearly to the center label at track end (elapsed from
+  `player.currentTime` / `appleMusic.positionSeconds`, length from the item's
+  `lengthMs` else `player.duration`), sampled at 1 Hz on its own paused-with-playback
+  timeline. iPhone landscape (`verticalSizeClass == .compact`) drops the
+  record and keeps the functional rows.
+- **Live queue edits — the `SetlistPlayer` seam** (§10's queue is otherwise
+  immutable): `upcoming` (= `queue[(index+1)...]`), `moveUpcoming(fromOffsets:toOffset:)`
+  (offsets CLAMPED to the live tail — a track ending mid-drag must not trap),
+  `removeUpcoming(uids:)` (removal by per-row `Item.uid` IDENTITY, so a ✕ tap that
+  races an auto-advance still removes exactly the tapped song, never whatever
+  shifted into the slot), and `appendToQueue(_:)` (picked up by the next `advance()`;
+  no-op when idle). All three touch ONLY positions `> index` — `handleEnded`'s
+  ownership guard and jump-adoption key off `queue[index]`, so the current track
+  never restarts and `nowPlayingRevision` never bumps (no SetlistDetailView restart).
+  Note the panel renders the EPHEMERAL run — edits don't write back to the frozen
+  `set_now_playing` snapshot (same contract as §10's disabled mid-set Edit).
+- **Add-search** — `NowPlayingSearch`: pure tokenized all-tokens-match over
+  name+artist, ranked exact-name > name-prefix > catalog order, capped (10 albums /
+  25 songs). The panel runs it **debounced (200 ms) on a detached task over value
+  snapshots** (`.task(id: query)` cancels stale runs) — never a full-catalog scan on
+  the main actor. Albums render above songs, both sections collapsible; ＋ appends a
+  song or the album's `app.tracks(for:)` expansion.
+- **Testing seams**: `PDJ_HOLD_PLAYBACK` freezes `playCurrent` (running state, no
+  audio) so UI tests can drive running-state surfaces on the fixture;
+  `NowPlayingUITests` + `NowPlayingQueueTests`/`NowPlayingSearchTests` cover the
+  panel, the race clamps, and the launch defaults (below).
+- **Launch defaults** (RootView): iOS lands on the home menu unless
+  `settings.lastSection` restores the last-visited section (persisted on every
+  section change; `""` = home; a fresh iPad picks MIX — like the Mac — with the
+  sidebar row selected to match); macOS always lands on Mix. The iOS home title is plain "PocketDJ"
+  (macOS keeps "✦ PocketDJ").
+
 ---
 
 ## 11. Background processing — transfers + audio survive suspend/lock (native)
