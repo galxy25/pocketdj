@@ -69,3 +69,10 @@ dev-dist/
 
 # Xcode code-coverage scratch (written when running tests from the repo root)
 *.profraw
+
+# scale-to-zero A/B runtime artifacts
+.aoss-sz-endpoint.txt
+.aoss-sz-watch.log
+.aoss-prod-endpoint.txt
+.aoss-proxy-url.txt
+.aoss-proxy-api.txt

@@ -17,9 +17,9 @@ explicit, type (album/song), sourceType (analog/digital), source (name).
 sources) — delete + recreate + bulk load in **~40s**.
 
 ## Backend (already provisioned, profile `levi`, us-west-2)
-- Collection: `pocketdj-search` (id `zxvkpgoc5ivtrbqp37s5`), type SEARCH, NextGen, standby DISABLED → **scales to zero** when idle.
-- Endpoint: `https://zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com`
-- SigV4 **service = `aoss`** (not `es`).
+- Collection: `pocketdj-search` (id `mii9dwge3uiee2tvivt5`), type SEARCH, **NextGen** in collection group `pocketdj-search-grp` (min-OCU **0**, standby ENABLED) → **truly scales to $0 when idle** (~10 min idle → 0 OCU; ~16 s cold-start on the first query after idle). Rebuilt from the classic 1.0-OCU-floor collection on 2026-07-02.
+- Endpoint: `https://mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws` — but **clients read the host from `public/search-config.json`** (native `SearchConfig` actor + PWA `loadSearchConfig`), so a future collection swap changes the host WITHOUT a client rebuild. A swap also writes `.aoss-prod-endpoint.txt`.
+- SigV4 **service = `aoss`** (not `es`). To reindex after a swap, read the endpoint from `public/search-config.json` (host field) rather than hardcoding.
 - Policies: network `pocketdj-net` (public), data `pocketdj-data` (Developer = full, djpocketsearch = read-only).
 - Read-only app user: **djpocketsearch** (`aoss:ReadDocument`/`DescribeIndex`); creds in `~/Downloads/djpocketsearch-credentials.json`. The app uses these; they CANNOT write (verified: DELETE → 403).
 
@@ -30,8 +30,10 @@ the data access policy).
 
 ```bash
 cd <repo>            # a worktree with public/*.json present
+# endpoint from the single source of truth (survives collection swaps):
+EP="https://$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('public/search-config.json','utf8')).host)")"
 node scripts/es-index.mjs \
-  --endpoint https://zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com \
+  --endpoint "$EP" \
   --index pocketdj --profile levi --region us-west-2 \
   --sources public/current-index.json,public/apple-music-index.json,public/digital-index.json
 ```
@@ -85,5 +87,5 @@ only appears once those creds are set. See `src/search/esClient.ts` +
 ## Teardown / cost
 Collection scales to **$0 compute at idle** (NextGen); you pay only managed storage
 (~pennies for this corpus). To remove entirely:
-`aws opensearchserverless delete-collection --id zxvkpgoc5ivtrbqp37s5 --profile levi --region us-west-2`
-(then delete the `pocketdj-net` / `pocketdj-data` policies and the djpocketsearch user).
+`aws opensearchserverless delete-collection --id mii9dwge3uiee2tvivt5 --profile levi --region us-west-2`
+(then delete the collection group `pocketdj-search-grp`, the `pocketdj-net` / `pocketdj-data` policies, and the djpocketsearch user). The id changes on each rebuild — read the current one from `.aoss-prod-endpoint.txt` / `public/search-config.json` (the host prefix IS the id).

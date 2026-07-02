@@ -33,10 +33,14 @@ queries the full corpus over five fields including lyrics and sentiment.
 **Source of truth:** the `es-search-index` skill (builder) + `src/search/esClient.ts`
 / `src/search/sigv4.ts` (web client) + `SearchService.swift` / `SigV4.swift` (native).
 
-- **Collection** `pocketdj-search` (id `zxvkpgoc5ivtrbqp37s5`, type SEARCH, NextGen,
-  standby disabled → **scales to zero** when idle).
-- **Index** `pocketdj`, endpoint
-  `https://zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com`, SigV4 **service `aoss`**.
+- **Collection** `pocketdj-search` (id `mii9dwge3uiee2tvivt5`, type SEARCH, **NextGen**
+  in collection group `pocketdj-search-grp` with min-OCU **0**, standby ENABLED →
+  **truly scales to $0 when idle**: ~10 min idle → 0 OCU, ~16 s cold-start on the first
+  query after idle). Rebuilt 2026-07-02 from the classic 1.0-OCU-floor collection.
+- **Index** `pocketdj`, endpoint `https://mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws`,
+  SigV4 **service `aoss`**. The host is **published in `public/search-config.json`** and
+  read at launch by both clients (native `SearchConfig` actor + PWA `loadSearchConfig`),
+  so a collection swap changes the host **without a client rebuild**.
 - **Builder** `node scripts/es-index.mjs … --profile levi`: `DELETE /pocketdj` →
   `PUT` mapping → `POST /pocketdj/_bulk` (1,500-doc batches) → `_refresh`. **Full reset
   each run** (corpus small → ~40s); `_id = item id` so re-runs upsert. The mapping adds a
@@ -82,6 +86,17 @@ authoritative** for the id; the existing grid renders the results.
 **Hard coupling:** the index name `pocketdj` **must equal** the proxy path prefix
 `/pocketdj`, because the signed path the browser sends must be byte-identical to what
 aoss receives behind CloudFront.
+
+**NextGen update (2026-07-02).** After the scale-to-zero rebuild ([[aoss-scale-to-zero]]),
+CloudFront can **no longer** forward straight to the aoss origin: the NextGen endpoint rejects
+CloudFront's injected `x-amz-cf-id` header ("must be signed in SigV4"), and public Lambda Function
+URLs are blocked in this account. So the **browser** path is now
+`/pocketdj/*` → **API Gateway HTTP API `pocketdj-search`** → **Lambda `pocketdj-search-proxy`**
+(`scripts/lambda/search-proxy/index.mjs`) which makes a CLEAN outbound request to aoss forwarding
+ONLY the browser's SigV4 headers (`authorization`, `x-amz-date`, `x-amz-content-sha256`) — so aoss
+sees exactly what the browser signed, and the djpocketsearch signature still does the auth (~$0.001/mo,
+no idle cost). The **native app is unchanged** — it still fetches aoss directly (no CORS, no
+`x-amz-cf-id`). Both clients read the aoss host from `public/search-config.json`.
 
 ---
 

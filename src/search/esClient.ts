@@ -6,9 +6,13 @@
 import { signRequest, type SigV4Creds } from './sigv4';
 import type { MusicItem, AlbumItem, SongItem } from '../types/model';
 
-/** Fixed (non-secret) backend config. The user only supplies the key/secret. */
+/** Backend config (non-secret; the user only supplies the key/secret). The `host`
+ *  is a DEFAULT — it's overridden at launch by `/search-config.json` (see
+ *  `loadSearchConfig`) so the aoss collection can be swapped (e.g. a scale-to-zero
+ *  rebuild) WITHOUT shipping a new client. The baked value is the current prod host
+ *  so search still works if the config fetch fails. */
 export const SEARCH_CFG = {
-  host: 'zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com',
+  host: 'mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws',
   region: 'us-west-2',
   service: 'aoss',
   index: 'pocketdj',
@@ -16,6 +20,38 @@ export const SEARCH_CFG = {
    *  equal `/<index>` so the signed path matches what aoss receives. */
   proxyBase: '/pocketdj',
 };
+
+/** Fetch `/search-config.json` (served by the app's CloudFront) once and overlay it
+ *  onto SEARCH_CFG. Memoized so concurrent searches share one fetch. On any failure
+ *  the baked defaults stand. Called at app launch AND awaited before each search, so
+ *  the first query can't race ahead of the config. */
+let searchConfigPromise: Promise<void> | null = null;
+export function loadSearchConfig(): Promise<void> {
+  if (!searchConfigPromise) {
+    const url = `${import.meta.env.BASE_URL}search-config.json`;
+    searchConfigPromise = fetch(url, { cache: 'no-cache' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        if (cfg && typeof cfg.host === 'string' && cfg.host) SEARCH_CFG.host = cfg.host;
+        if (cfg && typeof cfg.region === 'string' && cfg.region) SEARCH_CFG.region = cfg.region;
+        if (cfg && typeof cfg.index === 'string' && cfg.index) SEARCH_CFG.index = cfg.index;
+      })
+      .catch(() => { /* keep baked defaults */ });
+  }
+  return searchConfigPromise;
+}
+
+/** Per-user host override (set from Settings via useSearchStore). When present it wins
+ *  over the global SEARCH_CFG.host for BOTH signing and routing — a no-app-update
+ *  migration path and the seam for a private search host. Null → global host. */
+let hostOverride: string | null = null;
+export function setSearchHostOverride(h: string | null): void {
+  hostOverride = h && h.trim() ? h.trim() : null;
+}
+/** The host the next search signs for: user override → global config → baked default. */
+export function effectiveSearchHost(): string {
+  return hostOverride ?? SEARCH_CFG.host;
+}
 
 export interface SearchParams {
   q: string;
@@ -100,11 +136,13 @@ export interface SearchResult {
 
 /** Run a signed search. Throws on auth/transport errors (caller surfaces it). */
 export async function esSearch(params: SearchParams, creds: SigV4Creds): Promise<SearchResult> {
+  await loadSearchConfig(); // ensure SEARCH_CFG.host reflects /search-config.json before signing
+  const host = effectiveSearchHost(); // user override → global config → baked
   const path = `${SEARCH_CFG.proxyBase}/_search`; // e.g. /pocketdj/_search
   const body = JSON.stringify(buildQuery(params));
   const headers = await signRequest({
     method: 'POST',
-    host: SEARCH_CFG.host,
+    host,
     path,
     body,
     region: SEARCH_CFG.region,
@@ -112,8 +150,12 @@ export async function esSearch(params: SearchParams, creds: SigV4Creds): Promise
     creds,
   });
   headers['Content-Type'] = 'application/json';
+  // Global host → same-origin CloudFront proxy (aoss has no CORS of its own). A user
+  // override is a private host the user configured → fetch it directly (it must serve
+  // CORS headers, e.g. a private collection fronted for the browser).
+  const url = hostOverride ? `https://${host}${path}` : path;
   const t0 = performance.now();
-  const res = await fetch(path, { method: 'POST', headers, body });
+  const res = await fetch(url, { method: 'POST', headers, body });
   const text = await res.text();
   if (!res.ok) throw new Error(`Search failed (${res.status}): ${text.slice(0, 200)}`);
   const json = JSON.parse(text);

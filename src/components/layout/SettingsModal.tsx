@@ -9,6 +9,7 @@ import { importFile } from '../../storage/importZip';
 import { countItems } from '../../storage/repo';
 import { useAppStore } from '../../store/useAppStore';
 import { useSearchStore } from '../../store/useSearchStore';
+import { effectiveSearchHost } from '../../search/esClient';
 import { useRipsStore } from '../../store/useRipsStore';
 import { CURRENT_DATA_VERSION, getDataVersion, runMigrations } from '../../storage/migrations';
 
@@ -37,8 +38,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const searchCreds = useSearchStore((s) => s.creds);
   const setSearchCreds = useSearchStore((s) => s.setCreds);
   const clearSearchCreds = useSearchStore((s) => s.clearCreds);
+  const searchHostOverride = useSearchStore((s) => s.hostOverride);
+  const setSearchHost = useSearchStore((s) => s.setHostOverride);
   const [akid, setAkid] = useState('');
   const [secret, setSecret] = useState('');
+  const [hostInput, setHostInput] = useState(searchHostOverride ?? '');
 
   // Rip server (stream/download via the iMac rip-on-demand API).
   const ripUrl = useRipsStore((s) => s.serverUrl);
@@ -277,6 +281,41 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               </button>
             </>
           )}
+          <p className="pdj-settings__hint" style={{ marginTop: 12, marginBottom: 4 }}>
+            <strong>Search host</strong> (advanced): currently <code>{effectiveSearchHost()}</code>
+            {searchHostOverride ? ' — your override.' : ' — shared default.'} Leave blank to follow
+            the shared host (updates automatically); set one to point at a private/migrated host.
+          </p>
+          <div className="pdj-settings__row">
+            <input
+              className="pdj-input"
+              placeholder={effectiveSearchHost()}
+              autoComplete="off"
+              spellCheck={false}
+              data-testid="settings-search-host"
+              value={hostInput}
+              onChange={(e) => setHostInput(e.target.value)}
+              style={{ flex: '1 1 auto' }}
+            />
+            <button
+              type="button"
+              className="pdj-btn pdj-btn--ghost"
+              data-testid="settings-search-host-save"
+              onClick={() => setSearchHost(hostInput)}
+            >
+              Save host
+            </button>
+            {searchHostOverride && (
+              <button
+                type="button"
+                className="pdj-btn pdj-btn--ghost"
+                data-testid="settings-search-host-reset"
+                onClick={() => { setSearchHost(null); setHostInput(''); }}
+              >
+                Use default
+              </button>
+            )}
+          </div>
         </div>
 
         <hr className="pdj-settings__rule" />

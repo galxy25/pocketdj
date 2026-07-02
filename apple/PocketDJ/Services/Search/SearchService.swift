@@ -38,14 +38,77 @@ protocol Searching: Sendable {
                 from: Int, size: Int) async throws -> SearchResults
 }
 
+/// Concurrency-safe holder for the online-search endpoint config. Loaded ONCE from
+/// `search-config.json` (falling back to the baked defaults) and served to every
+/// search, so the aoss collection can be swapped (e.g. a scale-to-zero rebuild → new
+/// host) WITHOUT shipping a new app build. Actor isolation makes the load race-free —
+/// no shared mutable global state.
+actor SearchConfig {
+    static let shared = SearchConfig()
+
+    /// The resolved endpoint values a search needs. `Sendable` so it crosses actors.
+    struct Resolved: Sendable {
+        var host = "mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws"
+        var region = "us-west-2"
+        var index = "pocketdj"
+    }
+
+    /// `search-config.json` shape — all optional; only non-empty fields overlay.
+    private struct Remote: Decodable { let host: String?; let region: String?; let index: String? }
+
+    /// Per-user host override (from Settings ▸ `searchEndpoint`). Wins over the global
+    /// host — a no-app-update migration path and the seam for a private search host.
+    private var userHost: String?
+
+    /// Memoized load: the first caller starts the fetch, concurrent callers await the
+    /// SAME Task, later callers get the cached result. Failures keep the baked defaults.
+    private lazy var loadTask = Task<Resolved, Never> { await SearchConfig.load() }
+
+    /// host resolution: user override → global search-config.json → baked default.
+    func resolved() async -> Resolved {
+        var r = await loadTask.value
+        if let u = userHost { r.host = u }
+        return r
+    }
+
+    /// Set (or clear) the per-user override. Accepts a bare host or a full URL; stores
+    /// the bare host (SigV4 signs the Host header). Empty → cleared (use global host).
+    func setUserHost(_ raw: String?) { userHost = Self.normalizeHost(raw) }
+
+    private static func normalizeHost(_ raw: String?) -> String? {
+        guard var s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        if let r = s.range(of: "://") { s = String(s[r.upperBound...]) }
+        if let slash = s.firstIndex(of: "/") { s = String(s[..<slash]) }
+        return s.isEmpty ? nil : s
+    }
+
+    private static func load() async -> Resolved {
+        var r = Resolved()
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: Config.searchConfigURL)
+            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return r }
+            let c = try JSONDecoder().decode(Remote.self, from: data)
+            if let h = c.host, !h.isEmpty { r.host = h }
+            if let rg = c.region, !rg.isEmpty { r.region = rg }
+            if let i = c.index, !i.isEmpty { r.index = i }
+        } catch { /* keep defaults */ }
+        return r
+    }
+}
+
 /// Online search against the `pocketdj` OpenSearch Serverless collection — same
 /// query the PWA issues (multi_match across title/artist/album/lyrics/sentiment),
 /// signed with the user's read-only key/secret. No CORS proxy needed natively.
 enum SearchService {
-    static let host = "zxvkpgoc5ivtrbqp37s5.us-west-2.aoss.amazonaws.com"
-    static let region = "us-west-2"
+    // host/region/index are DEFAULTS — overridden at launch by `search-config.json`
+    // (see `ensureConfigLoaded`) so the aoss collection can be swapped (e.g. a
+    // scale-to-zero rebuild → new host) WITHOUT a new app build. The baked value is
+    // the current prod host so search still works if the config fetch fails.
     static let service = "aoss"
-    static let index = "pocketdj"
+
+    /// Resolve (host/region/index) from `search-config.json`, concurrency-safely, via
+    /// the `SearchConfig` actor. Pre-warm at launch; `search(...)` awaits it too.
+    static func ensureConfigLoaded() async { _ = await SearchConfig.shared.resolved() }
 
     /// OpenSearch's default `index.max_result_window`: `from + size` may not exceed
     /// this, so callers cap paging here (offset pagination stops at 10k results).
@@ -54,7 +117,8 @@ enum SearchService {
     static func search(_ query: String, kind: ItemKind?, clauses: [Clause] = [],
                        sortKeys: [SortKey] = [], creds: SigV4Creds,
                        from: Int = 0, size: Int = 50) async throws -> SearchResults {
-        let path = "/\(index)/_search"
+        let cfg = await SearchConfig.shared.resolved()   // host/region/index (concurrency-safe, from search-config.json)
+        let path = "/\(cfg.index)/_search"
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let must: [[String: Any]] = trimmed.isEmpty
             ? [["match_all": [:]]]
@@ -88,12 +152,12 @@ enum SearchService {
         bodyObj["sort"] = sortBody(sortKeys, hasQuery: !trimmed.isEmpty)
         let body = try JSONSerialization.data(withJSONObject: bodyObj)
 
-        var request = URLRequest(url: URL(string: "https://\(host)\(path)")!)
+        var request = URLRequest(url: URL(string: "https://\(cfg.host)\(path)")!)
         request.httpMethod = "POST"
         request.httpBody = body
         request.timeoutInterval = 15
-        for (k, v) in SigV4.sign(method: "POST", host: host, path: path, body: body,
-                                 region: region, service: service, creds: creds) {
+        for (k, v) in SigV4.sign(method: "POST", host: cfg.host, path: path, body: body,
+                                 region: cfg.region, service: service, creds: creds) {
             request.setValue(v, forHTTPHeaderField: k)
         }
 

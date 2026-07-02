@@ -36,6 +36,11 @@ enum Config {
     static var digitalIndexURL: URL { catalogBase.appendingPathComponent("digital-index.json") }
     static let digitalSourceName = "My Digital"
 
+    /// ONLINE-search host config (`{ host, region, index }`), served by the same
+    /// CloudFront. Read at launch so the aoss collection can be swapped (e.g. a
+    /// scale-to-zero rebuild → new host) WITHOUT shipping a new client build.
+    static var searchConfigURL: URL { catalogBase.appendingPathComponent("search-config.json") }
+
     /// Resolve an art URL that may be root-relative (`/art/<albumId>.jpg`, the
     /// mirrored thumbnail served by the same CloudFront) or already absolute
     /// (e.g. an iTunes `mzstatic` cover).
