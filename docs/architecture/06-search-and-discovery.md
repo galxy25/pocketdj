@@ -240,6 +240,66 @@ the `results()` pipeline. Finally, every filter clause gains a **per-clause remo
 button + swipe in `FilterSheet`, calling `BrowseState.removeClause(id:)`) alongside the
 existing **Clear All**, so one stray clause can be dropped without resetting the whole filter.
 
+## 7. On-device Browse paging + results memo (large catalogs)
+
+**Why.** The merged on-device catalog is large — a real device carries **~12.7k albums /
+~105k songs** (My Vinyl + Apple Music (Local)). The native Browser used to rebuild the
+whole `[BrowseItem]` array, re-run the full filter+**sort**, and hand *every* row to
+SwiftUI's `ForEach` on **every body evaluation** — a tab switch, an Albums↔Songs toggle,
+even a keystroke. At that scale each of those cost **1–2 s**. This is the on-device analog
+of the online pager (§4): online is **server-paged** and already snappy, so this work is
+**on-device only**. Search itself may still block briefly — the fix targets **browsing** and
+**tab/kind switching**, which must be instant.
+
+**Source of truth:**
+[`apple/PocketDJ/State/AppModel.swift`](../../apple/PocketDJ/State/AppModel.swift)
+(pre-built rows + `catalogRevision` + `cachedBrowseResults`),
+[`apple/PocketDJ/Browse/BrowseState.swift`](../../apple/PocketDJ/Browse/BrowseState.swift)
+(`resultsKey`, `results()`/`computeSorted`, `BrowsePaging`),
+[`apple/PocketDJ/Views/BrowseView.swift`](../../apple/PocketDJ/Views/BrowseView.swift)
+(the growing-prefix render).
+
+```
+ (1) PRE-BUILD ONCE — AppModel.applyEdits() → rebuildBrowseItems()
+       albums/songs → albumBrowseItems / songBrowseItems  (name·source·genreCategory resolved)
+       bumps catalogRevision ; clears the results memo
+       ⇒ BrowseState.baseItems(app) is now an O(1) hand-off, NOT a per-render catalog map
+
+ (2) MEMOIZE THE SORT — BrowseState.results(app):
+       sorted = app.cachedBrowseResults( resultsKey ) { computeSorted(app) }   // base→query→clauses→SORT
+       resultsKey = JSONEncoder(.sortedKeys) over {catalogRevision, kind, query, clauses, sortKeys}
+       song-mode MEMBERSHIP filter applied FRESH on top of `sorted` (cheap O(n), never re-sorts)
+       memo lives on AppModel (survives BrowseView re-creation on tab switch), @ObservationIgnored, cap 6
+
+ (3) RENDER A GROWING PREFIX — BrowseView:
+       page      = BrowsePaging.page(results, visible: liveVisible)     // first 120, then +120…
+       liveVisible = (visibleKey == pagingKey) ? visibleCount : pageSize  // derived → resets SYNCHRONOUSLY
+       onRowAppear(last) → grow ; focusReveal bounds keyboard-driven growth (no full-catalog blow-up)
+```
+
+**Reading the diagram.** Three independent moves make on-device browse cost **independent of
+catalog size**. **(1)** The costly per-item derivation — building a `BrowseItem` for every
+album/song with its album name, origin **source**, and top-tier **genre category** resolved —
+now happens **once** in `AppModel.rebuildBrowseItems()` (called from `applyEdits()`, the single
+catalog/edit rebuild point), stored on `albumBrowseItems`/`songBrowseItems`. `BrowseState.baseItems`
+became an O(1) array hand-off instead of a full-catalog `map` on each render. **(2)** The
+expensive base→text→clause→**sort** pass is **memoized** on `AppModel` (long-lived, so it
+survives the `BrowseView` SwiftUI re-creates every time the Browser tab is re-entered), keyed by
+`resultsKey` — a **JSON-encoded** signature (`.sortedKeys` for determinism; JSON string-escaping
+makes it collision-proof where a delimiter-joined key wasn't) over the catalog revision, kind,
+query, complete clauses, and sort keys. The song-mode **membership** filter (§6) is layered on
+top of that cached sorted array as a cheap `O(n)` filter, computed **fresh** each call (its
+inputs — the selected collections' contents — live outside the key), so it's never stale *and*
+never triggers a re-sort. **(3)** `BrowseView` hands `ForEach` only a **growing prefix**
+(`liveVisible`, 120 per page) — the render-side cost that scaled with catalog size. `liveVisible`
+is **derived** from a committed `visibleKey`, so a kind/filter switch collapses the budget to one
+page **synchronously in the same render** (never a stale large prefix for a frame); the prefix
+grows when the last rendered row appears (mirroring the online pager's `pageInIfLast`), and
+`BrowsePaging.focusReveal` bounds keyboard-cursor growth so ↑-from-nothing (which seeds focus to
+the last of ~105k rows) can't drag the budget out to the whole catalog. Measured at **100k songs**:
+the default kind switch is **0.06 ms** and a warm memo hit **0.035 ms**, versus a **520 ms** cold
+sort and the **~15 ms/render** full-catalog map that was removed from the render path.
+
 ## Next
 
 → [Chapter 7 — Distribution, Clients & the Edits Round-Trip](./07-distribution-and-clients.md)

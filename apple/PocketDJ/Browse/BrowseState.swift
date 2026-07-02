@@ -61,31 +61,71 @@ final class BrowseState {
 
     var activeFilterCount: Int { clauses.filter { !$0.isIncomplete }.count }
 
-    /// All rows for the current kind (unfiltered), with album names attached to songs.
-    func baseItems(_ app: AppModel) -> [BrowseItem] {
-        switch kind {
-        case .album:
-            return app.albums.map { .album($0, source: app.source(ofAlbum: $0.id)) }
-        case .song:
-            return app.songs.map { song in
-                // Resolve the song's top-tier genre category from its owning album, so
-                // the genre filter/sort reads it like the PWA reads SongItem.genre.
-                let albumGenre = song.albumId.flatMap { app.albumsById[$0]?.genre }
-                return .song(song, albumName: app.albumName(forSong: song),
-                             source: app.source(ofSong: song.id),
-                             genre: Genre.category(albumGenre))
-            }
+    /// All rows for the current kind (unfiltered), with album names / source / genre
+    /// already attached. Pre-built once by `AppModel.applyEdits` (see `browseItems`), so
+    /// this is an O(1) array hand-off rather than a per-render map over the whole catalog.
+    func baseItems(_ app: AppModel) -> [BrowseItem] { app.browseItems(kind) }
+
+    /// A stable signature of everything `results` depends on EXCEPT membership — the
+    /// browse results memo key. Built from field VALUES (never a Clause's UUID `id`), so
+    /// two logically-identical filter sets share a cache entry; includes the catalog
+    /// revision so an edit/reload can never serve a stale memo. Only complete clauses
+    /// count (incomplete ones are no-ops in FilterEngine).
+    ///
+    /// JSON-ENCODED rather than delimiter-joined: a filter `value` or `query` can contain
+    /// any character (a title with a comma, a `|`, etc.), so hand-rolled separators could
+    /// let two DIFFERENT queries collide onto one key and serve wrong cached rows. JSON's
+    /// string escaping + explicit structure makes the encoding unambiguous. `.sortedKeys`
+    /// makes it DETERMINISTIC — JSONEncoder does not otherwise emit object keys in a
+    /// stable order, which would give the same input a different key each call (a memo
+    /// that never hits). Arrays keep their order; `values` is pre-sorted for set stability.
+    func resultsKey(_ app: AppModel) -> String {
+        struct ClauseSig: Encodable { let f: String; let o: String; let v: String; let vs: [String]; let mn: Double?; let mx: Double? }
+        struct SortSig: Encodable { let f: String; let d: String }
+        struct KeySig: Encodable { let rev: Int; let k: String; let q: String; let c: [ClauseSig]; let s: [SortSig] }
+        let sig = KeySig(
+            rev: app.catalogRevision, k: kind.rawValue, q: query,
+            c: clauses.filter { !$0.isIncomplete }.map {
+                ClauseSig(f: $0.field, o: $0.op.rawValue, v: $0.value, vs: $0.values.sorted(), mn: $0.min, mx: $0.max)
+            },
+            s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) })
+        let enc = JSONEncoder()
+        enc.outputFormatting = .sortedKeys
+        // Encoding a plain Encodable of scalars/arrays cannot fail; fall back to a coarse
+        // (never-cache-friendly but correct) key on the impossible error path.
+        guard let data = try? enc.encode(sig) else {
+            return "rev\(app.catalogRevision)-\(kind.rawValue)-\(query)-\(clauses.count)-\(sortKeys.count)"
         }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Query → filter clauses → multi-key sort → collection membership. The pipeline
     /// the PWA browser uses (membership applied last, song mode only).
+    ///
+    /// The EXPENSIVE part — build base rows, text-filter, clause-filter, and the multi-key
+    /// SORT over the whole catalog — is ALWAYS memoized on `AppModel` (keyed by
+    /// `resultsKey`, which captures every input to it). So re-entering the Browser tab and
+    /// the frequent body re-evals paging causes (each scroll grows a `@State`) return the
+    /// already-sorted set instantly instead of re-sorting ~90k rows.
+    ///
+    /// Collection membership (song mode) is layered on top as a CHEAP O(n) filter of that
+    /// cached sorted array — never memoized, because its inputs (the selected collections'
+    /// contents) live outside the key and can change independently, so it always reflects
+    /// the current collections. Crucially it does NOT trigger a re-sort: the costly work
+    /// stays behind the memo even on the membership path.
     func results(_ app: AppModel, collections: CollectionsStore? = nil) -> [BrowseItem] {
+        let sorted = app.cachedBrowseResults(resultsKey(app)) { computeSorted(app) }
+        if kind == .song, membershipActive, let collections {
+            return applyMembership(sorted, collections)
+        }
+        return sorted
+    }
+
+    /// The memoized portion: base rows → text query → clause filter → multi-key sort.
+    private func computeSorted(_ app: AppModel) -> [BrowseItem] {
         var base = baseItems(app)
         if !query.isEmpty { base = base.filter { textMatch($0, query) } }
-        let sorted = SortEngine.apply(FilterEngine.apply(base, clauses), sortKeys)
-        guard let collections else { return sorted }
-        return applyMembership(sorted, collections)
+        return SortEngine.apply(FilterEngine.apply(base, clauses), sortKeys)
     }
 
     /// Resolve the union of song ids placed in the selected collection ids (mixed
@@ -167,5 +207,42 @@ final class BrowseState {
         default:        arr.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         }
         return arr
+    }
+}
+
+// MARK: - On-device paging
+
+/// Incremental rendering for the on-device browser: the full filtered+sorted result
+/// set is derived once (and memoized), but only a growing PREFIX is handed to SwiftUI's
+/// ForEach. Building the ForEach identity over ~90k rows is the render-side cost that
+/// made switching kinds / re-entering the tab stutter; rendering ~a page at a time and
+/// growing as the last visible row appears keeps every interaction snappy. This mirrors
+/// the online pager (OnlineSearchModel), which is server-paged. Pure so it's unit-tested.
+enum BrowsePaging {
+    /// Rows in one page. Big enough to fill any screen on the first render (so the grow
+    /// trigger doesn't fire repeatedly to catch up), small enough that the ForEach diff
+    /// stays cheap regardless of catalog size.
+    static let pageSize = 120
+
+    /// The visible prefix for the current `visible` budget (the whole set once it fits).
+    static func page(_ items: [BrowseItem], visible: Int) -> [BrowseItem] {
+        items.count > visible ? Array(items.prefix(visible)) : items
+    }
+
+    /// Next budget after the last visible row appears, clamped to the total. Returns the
+    /// unchanged budget once everything is shown (so the trailing row's onAppear no-ops).
+    static func grow(_ visible: Int, upTo total: Int, by step: Int = pageSize) -> Int {
+        min(total, max(visible, visible + step))
+    }
+
+    /// Budget needed to reveal a keyboard-focused row at `index` (0-based) in a set of
+    /// `total` rows, given the current budget. Grows to include the row ONLY when it sits
+    /// within one page of the loaded edge (incremental stepping); a FAR jump — e.g. ↑ from
+    /// nothing seeding focus to the last of ~90k rows — returns the budget UNCHANGED, so
+    /// focus can move without materializing the whole catalog. Never shrinks.
+    static func focusReveal(_ visible: Int, toIndex index: Int, total: Int, step: Int = pageSize) -> Int {
+        let need = index + 1
+        guard need > visible, need <= visible + step else { return visible }
+        return min(total, need)
     }
 }

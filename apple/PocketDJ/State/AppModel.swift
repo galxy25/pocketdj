@@ -18,6 +18,18 @@ final class AppModel {
     var songsById: [String: IndexSong] = [:]
     var albumsById: [String: IndexAlbum] = [:]
 
+    /// Pre-built browse rows for each kind, with album name / origin source / top-tier
+    /// genre already resolved per item — the exact shape BrowseState used to derive on
+    /// EVERY render. Building these ~90k `BrowseItem`s is the bulk of on-device browse
+    /// cost, so we do it ONCE here (rebuilt only in `applyEdits`, i.e. on catalog load
+    /// or an edit save) instead of re-mapping the whole catalog each body evaluation.
+    /// Observed, so a view reading them re-renders when the catalog changes.
+    private(set) var albumBrowseItems: [BrowseItem] = []
+    private(set) var songBrowseItems: [BrowseItem] = []
+    /// Bumped whenever the effective catalog changes (load / edit). Part of the browse
+    /// results cache key, so a stale memo can never survive a catalog change.
+    private(set) var catalogRevision = 0
+
     /// The catalog album for a song id (via the song's `albumId`), when both the song and its
     /// album are indexed. Backs the lock-screen / Control Center Now Playing card's cover art —
     /// nil for a track that isn't in the catalog (e.g. an ad-hoc rip), so the card shows title +
@@ -56,6 +68,17 @@ final class AppModel {
     private var rawSongs: [IndexSong] = []
     var rawAlbumsById: [String: IndexAlbum] = [:]
     var rawSongsById: [String: IndexSong] = [:]
+
+    // Small LRU-ish memo of fully-derived browse results (query→filter→sort), keyed by
+    // BrowseState.resultsKey. Lives HERE (long-lived @Observable) — not on BrowseState,
+    // which SwiftUI recreates every time the Browser tab is re-entered — so returning to
+    // the tab with the same filters/sort is instant instead of re-sorting the catalog.
+    // @ObservationIgnored: mutating the cache while READING results inside a view's body
+    // must NOT invalidate that view (that would loop). Bounded so it can't grow unbounded
+    // as the user tweaks filters; fully cleared whenever the catalog changes.
+    @ObservationIgnored private var browseResultsCache: [String: [BrowseItem]] = [:]
+    @ObservationIgnored private var browseResultsOrder: [String] = []
+    private static let browseResultsCacheCap = 6
 
     /// Optional fixed loader (tests / fixtures). When nil, sources come from `settings`.
     private let loader: CatalogLoading?
@@ -151,6 +174,44 @@ final class AppModel {
         songs = rawSongs.map { $0.applying(songEdits[$0.id]) }
         songsById = Dictionary(songs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         albumsById = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        rebuildBrowseItems()
+    }
+
+    /// Rebuild the pre-derived browse rows (and invalidate the results memo) after the
+    /// effective catalog changes. Resolves each song's album name / origin source / top-
+    /// tier genre category up front — the same per-item derivation BrowseState.baseItems
+    /// used to do on every render. Called only from `applyEdits`.
+    private func rebuildBrowseItems() {
+        albumBrowseItems = albums.map { .album($0, source: albumSourceById[$0.id]) }
+        songBrowseItems = songs.map { song in
+            let album = song.albumId.flatMap { albumsById[$0] }
+            return .song(song, albumName: album?.name ?? "",
+                         source: songSourceById[song.id],
+                         genre: Genre.category(album?.genre))
+        }
+        catalogRevision &+= 1
+        browseResultsCache.removeAll(keepingCapacity: true)
+        browseResultsOrder.removeAll(keepingCapacity: true)
+    }
+
+    /// The pre-built, unfiltered browse rows for a kind (album name / source / genre
+    /// already resolved). O(1) — the array is built once in `applyEdits`.
+    func browseItems(_ kind: ItemKind) -> [BrowseItem] {
+        kind == .album ? albumBrowseItems : songBrowseItems
+    }
+
+    /// Return the memoized browse results for `key`, computing + caching on a miss. The
+    /// caller (BrowseState) owns the derivation; this only decides whether to reuse it.
+    func cachedBrowseResults(_ key: String, compute: () -> [BrowseItem]) -> [BrowseItem] {
+        if let hit = browseResultsCache[key] { return hit }
+        let value = compute()
+        browseResultsCache[key] = value
+        browseResultsOrder.append(key)
+        if browseResultsOrder.count > Self.browseResultsCacheCap {
+            let evict = browseResultsOrder.removeFirst()
+            browseResultsCache.removeValue(forKey: evict)
+        }
+        return value
     }
 
     func rawAlbum(_ id: String) -> IndexAlbum? { rawAlbumsById[id] }
