@@ -89,15 +89,17 @@ final class NowPlayingUITests: XCTestCase {
         XCTAssertTrue(app.el("np-previous").exists)
         XCTAssertTrue(app.el("np-next").exists)
 
-        // Add via search: songs section lists matches; ＋ appends to the queue.
-        let field = app.any("np-search")
-        XCTAssertTrue(field.exists)
+        // Add via the NATIVE search control (same UI as the Browser tab) — the
+        // field rides the bar at the top, so the keyboard never covers it and the
+        // results list stays visible while typing.
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 8), "native search field should be in the bar")
         field.tap()
         field.typeText("aria")
         let addPulse = app.el("np-add-song-sng_2")   // "Pulse" by Aria
         XCTAssertTrue(addPulse.waitForExistence(timeout: 8))
         addPulse.tap()
-        app.el("np-search-clear").tap()
+        field.buttons["Clear text"].tap()            // empty query → back to Up next
 
         // The appended track shows as the first upcoming row; ✕ removes it.
         let queued = app.any("np-queue-0")
@@ -108,7 +110,7 @@ final class NowPlayingUITests: XCTestCase {
 
         // Albums rank above songs and the album section collapses.
         field.tap()
-        field.typeText("night\n")   // \n dismisses the keyboard so the header is hittable
+        field.typeText("night\n")   // Search key dismisses the keyboard, keeps the query
         XCTAssertTrue(app.el("np-add-album-alb_1").waitForExistence(timeout: 8))
         app.el("np-albums-header").tap()             // collapse
         XCTAssertFalse(app.el("np-add-album-alb_1").exists)

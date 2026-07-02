@@ -102,6 +102,7 @@
 		8FC5A86C80D291913B77709A /* FilterSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40BAE935519168E903EE8ACD /* FilterSheet.swift */; };
 		90BCD1BC6CBAB5CA623C2397 /* NowPlayingArbiter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A90AB83D9B1C5A88939E3F /* NowPlayingArbiter.swift */; };
 		9158E860DF05E6C75CB9188D /* AlbumArtworkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F27659E00D06A1DA932E81 /* AlbumArtworkStoreTests.swift */; };
+		932BFB3E2F789C39750B8052 /* MushroomCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3EAF9917E426DEDE1C3173 /* MushroomCloud.swift */; };
 		97C2966BC8AAD0CBA67A0FD8 /* SongRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9196723C9E4ADE86ECB6058D /* SongRecognizer.swift */; };
 		99FBB8168E7DAC61664A3320 /* AppleMusicCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A481831CB941A46AA464A00D /* AppleMusicCatalogTests.swift */; };
 		9A027912BB55B0E4E24857FF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FA29E203999316BAEC9F0CF /* AppDelegate.swift */; };
@@ -315,6 +316,7 @@
 		A693332318F7E6B5BB345407 /* fixture-index.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "fixture-index.json"; sourceTree = "<group>"; };
 		A787F4A7AB15B9FB5C47A65A /* CatalogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogService.swift; sourceTree = "<group>"; };
 		A963FCF5CBA64C18F7B02061 /* BackupZip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupZip.swift; sourceTree = "<group>"; };
+		AA3EAF9917E426DEDE1C3173 /* MushroomCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MushroomCloud.swift; sourceTree = "<group>"; };
 		ABB46E91695FD287931A0856 /* MixSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixSessionStore.swift; sourceTree = "<group>"; };
 		AEEFD87FD22C4BE97452EE05 /* TransferCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferCoordinatorTests.swift; sourceTree = "<group>"; };
 		B035DC97A86BFB0627971DD2 /* BrowseState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseState.swift; sourceTree = "<group>"; };
@@ -540,6 +542,7 @@
 				40BAE935519168E903EE8ACD /* FilterSheet.swift */,
 				25741D198A372D9021096109 /* KeyChip.swift */,
 				02AE25A0F889C29EFF74A434 /* MixSessionsView.swift */,
+				AA3EAF9917E426DEDE1C3173 /* MushroomCloud.swift */,
 				E25D713FBC2A03072C29BC50 /* NowPlayingPanel.swift */,
 				22C3C362B77FD21D87261938 /* PlaybackModeToggle.swift */,
 				EE97BCE395E79206B4AF1156 /* PlaylistsView.swift */,
@@ -1002,6 +1005,7 @@
 				072DF60027DB8A2415DCA943 /* MixSessionsView.swift in Sources */,
 				3BE492D24FA01032F072EFEE /* MixView.swift in Sources */,
 				F2576B00562AD3267F9326DC /* MixWaveform.swift in Sources */,
+				932BFB3E2F789C39750B8052 /* MushroomCloud.swift in Sources */,
 				8C8C7189D46D9E5852920B66 /* MusicLibraryContributor.swift in Sources */,
 				3CD4922BC584DAF75D116864 /* MusicSyncClient.swift in Sources */,
 				90BCD1BC6CBAB5CA623C2397 /* NowPlayingArbiter.swift in Sources */,

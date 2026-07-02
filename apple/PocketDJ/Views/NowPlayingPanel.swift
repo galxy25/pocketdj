@@ -56,18 +56,32 @@ struct NowPlayingPanel: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            header
-            if !compactHeight {
-                RecordPlayerView(album: currentAlbum, bpm: currentBpm, spinning: isPlayingNow)
-                    .frame(width: recordSize, height: recordSize * 0.82)
+        // ONE scrollable List (user-tested): the deck — header, record player,
+        // transport — is a scrolling ROW above the queue, so pulling up scrolls it
+        // out of view and Up Next can take the whole panel (the menu/tab links
+        // above stay pinned; RootView owns that split). Search is the NATIVE
+        // `.searchable` control (same UI as the Browser tab): the field rides the
+        // bar at the top — never buried under the keyboard like a bottom text
+        // field — and the results list keyboard-avoids like any List.
+        List {
+            if searching {
+                searchResults
+            } else {
+                deckSection
+                upNextSection
             }
-            transport
-            listArea
-            searchField
         }
-        .padding(.top, 10)
-        .padding(.bottom, 8)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 30)
+        #if os(iOS)
+        .environment(\.editMode, $editMode)
+        .searchable(text: $query,
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Add songs or albums")
+        #else
+        .searchable(text: $query, prompt: "Add songs or albums")
+        #endif
         .background(Theme.bg)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("now-playing-panel")
@@ -115,6 +129,21 @@ struct NowPlayingPanel: View {
     }
     private var isPlayingNow: Bool {
         isAppleMusicCurrent ? coordinator.isPlaying : player.isPlaying
+    }
+
+    /// Play-position fraction (0…1) for the tonearm sweep — sampled by the record
+    /// view on its own throttled timeline (the clocks are deliberately
+    /// non-observable; see PlayerClock). Elapsed comes from whichever engine owns
+    /// the track; length prefers the catalog snapshot (Apple Music publishes no
+    /// duration), falling back to PlayerEngine's decoded duration.
+    private func playProgress() -> Double {
+        guard let item = currentItem else { return 0 }
+        let elapsed = coordinator.isAppleMusicNowPlaying(item.id)
+            ? coordinator.appleMusic.positionSeconds
+            : player.currentTime
+        let length = item.lengthMs.map { Double($0) / 1000 } ?? player.duration
+        guard length > 0 else { return 0 }
+        return min(1, max(0, elapsed / length))
     }
 
     private var recordSize: CGFloat {
@@ -165,27 +194,30 @@ struct NowPlayingPanel: View {
         if isAppleMusicCurrent { coordinator.togglePlayPause() } else { player.toggle() }
     }
 
+    // MARK: - The deck row (scrolls away so Up Next can take the whole panel)
+
+    @ViewBuilder private var deckSection: some View {
+        Section {
+            VStack(spacing: 8) {
+                header
+                if !compactHeight {
+                    RecordPlayerView(album: currentAlbum, bpm: currentBpm,
+                                     spinning: isPlayingNow, progress: playProgress)
+                        .frame(width: recordSize, height: recordSize * 0.82)
+                }
+                transport
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .listRowBackground(Theme.bg)
+            .listRowSeparator(.hidden)
+        }
+    }
+
     // MARK: - Queue / search results
 
     private var searching: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    @ViewBuilder private var listArea: some View {
-        List {
-            if searching {
-                searchResults
-            } else {
-                upNextSection
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 30)
-        .frame(minHeight: 64)   // the queue/results never collapse to nothing
-        #if os(iOS)
-        .environment(\.editMode, $editMode)
-        #endif
     }
 
     @ViewBuilder private var upNextSection: some View {
@@ -318,24 +350,6 @@ struct NowPlayingPanel: View {
         sequencer.appendToQueue(items)
     }
 
-    // MARK: - Search field (bottom)
-
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(Theme.fgDim).font(.caption)
-            TextField("Add songs or albums…", text: $query)
-                .pocketField()
-                .accessibilityIdentifier("np-search")
-            if searching {
-                Button { query = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.fgDim)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("np-search-clear")
-            }
-        }
-        .padding(.horizontal, 12)
-    }
 }
 
 // MARK: - The record player
@@ -352,6 +366,11 @@ struct RecordPlayerView: View {
     let album: IndexAlbum?
     let bpm: Double?
     let spinning: Bool
+    /// Play-position fraction 0…1 — the tonearm starts at the record's OUTER edge
+    /// and tracks toward the center label in proportion to elapsed/length, like a
+    /// real stylus. A closure (not a value) so the panel body doesn't re-render per
+    /// tick: the arm samples it on its own throttled timeline below.
+    var progress: () -> Double = { 0 }
 
     /// Rotation accumulated up to the last pause (degrees).
     @State private var baseAngle: Double = 0
@@ -388,7 +407,12 @@ struct RecordPlayerView: View {
                 .frame(width: disc, height: disc)
                 .position(x: w * 0.44, y: h / 2)
 
-                tonearm(w: w, h: h)
+                // The tonearm sweeps with the play position — sampled at 1 Hz on its
+                // own timeline (the position clocks are non-observable by design),
+                // paused with playback so a frozen deck costs zero redraws.
+                TimelineView(.animation(minimumInterval: 1.0, paused: !spinning)) { _ in
+                    tonearm(w: w, h: h, progress: progress())
+                }
             }
         }
         .onAppear { if spinning { spinStart = Date() } }
@@ -435,9 +459,13 @@ struct RecordPlayerView: View {
         }
     }
 
-    /// Fixed tonearm on the right, in the chassis blue.
-    private func tonearm(w: CGFloat, h: CGFloat) -> some View {
-        ZStack {
+    /// The tonearm, in the chassis blue: pivoted top-right, its stylus resting on
+    /// the record's OUTER edge at 0:00 and sweeping toward the center label as the
+    /// track plays (like a real stylus crossing the grooves). ~14° puts the tip on
+    /// the outer edge; ~40° reaches the label; linear in `progress`.
+    private func tonearm(w: CGFloat, h: CGFloat, progress: Double) -> some View {
+        let sweep = 14.0 + 26.0 * min(1, max(0, progress))
+        return ZStack {
             Circle()
                 .fill(Theme.accent)
                 .frame(width: 10, height: 10)
@@ -445,8 +473,9 @@ struct RecordPlayerView: View {
             Capsule()
                 .fill(Theme.accent)
                 .frame(width: 3, height: h * 0.46)
-                .rotationEffect(.degrees(24), anchor: .top)
+                .rotationEffect(.degrees(sweep), anchor: .top)
                 .position(x: w * 0.855, y: h * 0.40)
+                .animation(.linear(duration: 1), value: sweep)
         }
     }
 }

@@ -987,9 +987,13 @@ with prev/next inline while running.
 `NowPlayingPanel` (`apple/PocketDJ/Views/NowPlayingPanel.swift`) rides the shell's
 sidebar (RootView) — the iPhone home menu / the iPad+macOS left column — whenever
 `sequencer.isRunning && !(mix.isRunning || mix.autoMixing)` (collection playback in
-any mode EXCEPT Mix; the Mix engines own their audio). Contents, top-down: current
-`queue[index]`'s title/artist · `RecordPlayerView` · ⏮ ⏯ ⏭ (the §10 cross-backend
-toggle) · the **Up Next** list · a debounced add-search.
+any mode EXCEPT Mix; the Mix engines own their audio). The panel is ONE scrollable
+`List` (user-tested): the deck — title/artist · `RecordPlayerView` · ⏮ ⏯ ⏭ (the §10
+cross-backend toggle) — is a scrolling row ABOVE the **Up Next** section, so pulling
+up scrolls the deck away and the queue takes the whole panel (the menu list above
+stays pinned); search is the NATIVE `.searchable` control in the bar (same UI as the
+Browser — a bottom text field hid under the keyboard), `navigationBarDrawer(.always)`
+on iOS.
 
 - **`RecordPlayerView`** — gold disc (`Theme.accent2`) with grooves and the album's
   `CoverImage` as center label, inside a `Theme.accent` (blue) chassis + fixed
@@ -997,7 +1001,11 @@ toggle) · the **Up Next** list · a debounced add-search.
   measured `beatGridBpm` first, catalog `bpm` fallback, 33⅓ RPM unknown. Rendering is
   a **paused `TimelineView`** (zero redraws while paused — the Mix beat-pulse
   discipline); pause FREEZES the angle (accumulated into `baseAngle`) and resume
-  continues from it. iPhone landscape (`verticalSizeClass == .compact`) drops the
+  continues from it. The TONEARM tracks the play position — resting on the outer
+  edge at 0:00 and sweeping linearly to the center label at track end (elapsed from
+  `player.currentTime` / `appleMusic.positionSeconds`, length from the item's
+  `lengthMs` else `player.duration`), sampled at 1 Hz on its own paused-with-playback
+  timeline. iPhone landscape (`verticalSizeClass == .compact`) drops the
   record and keeps the functional rows.
 - **Live queue edits — the `SetlistPlayer` seam** (§10's queue is otherwise
   immutable): `upcoming` (= `queue[(index+1)...]`), `moveUpcoming(fromOffsets:toOffset:)`
