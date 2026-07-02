@@ -24,8 +24,31 @@ struct BrowseView: View {
     /// a SONG id in song mode, an ALBUM id in album mode. ↑/↓ move it; ⌘P plays the
     /// focused song; Return/⌘O opens the focused item. Nil until the first arrow press.
     @State private var focusedRowId: String?
+    /// On-device incremental rendering budget: how many of the (memoized) full result rows
+    /// are handed to ForEach. Grows as the last visible row appears. Paired with the
+    /// `pagingKey` it was grown against (`visibleKey`) so a result-set change collapses it
+    /// back to one page SYNCHRONOUSLY in the same render (see `liveVisible`) — never a
+    /// stale large prefix rendered for a frame on a kind/filter switch. The online path is
+    /// server-paged (OnlineSearchModel) and ignores this.
+    @State private var visibleCount = BrowsePaging.pageSize
+    @State private var visibleKey = ""
 
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)] }
+
+    /// Signature of everything the on-device result set depends on: the results memo key
+    /// plus the song-mode membership selections (which live outside that key). Recomputed
+    /// per body eval; cheap. A change means a DIFFERENT set, so paging restarts at the top.
+    private var pagingKey: String {
+        browse.resultsKey(app)
+            + "|m:\(browse.includeAny),\(browse.includeIds.sorted().joined(separator: "+"))"
+            + ",\(browse.excludeAny),\(browse.excludeIds.sorted().joined(separator: "+"))"
+    }
+
+    /// The render budget for the CURRENT result set: the grown `visibleCount` only while it
+    /// still refers to the current `pagingKey`; otherwise one page. Deriving it (rather than
+    /// resetting `visibleCount` in an after-the-fact onChange) guarantees a kind/filter
+    /// switch never renders the previous set's large prefix, even for one frame.
+    private var liveVisible: Int { visibleKey == pagingKey ? visibleCount : BrowsePaging.pageSize }
 
     var body: some View {
         @Bindable var browse = browse
@@ -68,6 +91,9 @@ struct BrowseView: View {
         .onChange(of: browse.sortKeys) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         .onChange(of: browse.searchOnline) {
             browse.persist()
+            // Coming back to on-device: restart its paging (the pre-online budget may be
+            // huge). Invalidating the committed key makes `liveVisible` fall back to a page.
+            visibleKey = ""
             if browse.searchOnline { triggerOnline() } else { online.cancel() }
         }
         .onChange(of: browse.query) { if browse.searchOnline { triggerOnline() } }
@@ -109,6 +135,15 @@ struct BrowseView: View {
         }
         let next = min(max(idx + delta, 0), ids.count - 1)
         focusedRowId = ids[next]
+        // Reveal the newly-focused row by growing the render budget to include it — but only
+        // for incremental stepping near the loaded edge. A FAR jump (e.g. ↑ from nothing
+        // seeds focus to the LAST of ~90k rows) leaves the budget untouched rather than
+        // materializing the whole catalog — the exact stutter paging exists to prevent
+        // (its highlight just waits until the user scrolls there). Device only.
+        if !browse.searchOnline {
+            let grown = BrowsePaging.focusReveal(liveVisible, toIndex: next, total: ids.count)
+            if grown != liveVisible { visibleCount = grown; visibleKey = pagingKey }
+        }
     }
 
     /// ⌘P: play (or pause/resume) the keyboard-focused song row. Song mode only; in
@@ -262,9 +297,13 @@ struct BrowseView: View {
             if browse.searchOnline {
                 onlineContent
             } else {
+                // Full ordered set is memoized (cheap); render only a growing prefix so the
+                // ForEach stays small no matter how large the catalog is.
                 let items = browse.results(app, collections: collections)
+                let page = BrowsePaging.page(items, visible: liveVisible)
                 resultsHeader(items.count)
-                if browse.kind == .album { albumResults(items) } else { songResults(items) }
+                if browse.kind == .album { albumResults(page, fullCount: items.count) }
+                else { songResults(page, fullCount: items.count) }
             }
         }
     }
@@ -283,7 +322,8 @@ struct BrowseView: View {
             // Header shows the FULL match count (online.total), not just the rows
             // loaded so far — the pager appends more as you scroll.
             resultsHeader(online.total)
-            if browse.kind == .album { albumResults(online.items) } else { songResults(online.items) }
+            if browse.kind == .album { albumResults(online.items, fullCount: online.total) }
+            else { songResults(online.items, fullCount: online.total) }
         }
     }
 
@@ -307,7 +347,7 @@ struct BrowseView: View {
         browse.sortKeys.compactMap { Fields.byID[$0.field]?.label }.joined(separator: " › ")
     }
 
-    private func albumResults(_ items: [BrowseItem]) -> some View {
+    private func albumResults(_ items: [BrowseItem], fullCount: Int) -> some View {
         ScrollView {
             if browse.layout == .grid {
                 LazyVGrid(columns: gridColumns, spacing: 18) {
@@ -322,7 +362,7 @@ struct BrowseView: View {
                                             ? Theme.accent.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("album-\(album.id)")
-                                .onAppear { pageInIfLast(item, in: items) }
+                                .onAppear { onRowAppear(item, rendered: items, fullCount: fullCount) }
                         }
                     }
                 }
@@ -339,7 +379,7 @@ struct BrowseView: View {
                                             ? Theme.accent.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 6))
                                 .accessibilityIdentifier("album-\(album.id)")
-                                .onAppear { pageInIfLast(item, in: items) }
+                                .onAppear { onRowAppear(item, rendered: items, fullCount: fullCount) }
                             Divider().overlay(Theme.border)
                         }
                     }
@@ -351,12 +391,19 @@ struct BrowseView: View {
         .background(Theme.bg)
     }
 
-    /// When the LAST loaded row scrolls into view during ONLINE search, pull the
-    /// next page. `loadMore()` self-guards on `hasMore && !isLoadingPage`, so this
-    /// is a no-op on-device or once everything's loaded.
-    private func pageInIfLast(_ item: BrowseItem, in items: [BrowseItem]) {
-        guard browse.searchOnline, item.id == items.last?.id else { return }
-        Task { await online.loadMore() }
+    /// The last RENDERED row scrolled into view — page in more. Online: pull the next
+    /// server page (`loadMore` self-guards on `hasMore && !isLoadingPage`). On-device:
+    /// grow the local render budget toward the full result count (no-op once it's all
+    /// shown). Wiring both through one place keeps the two lists' behavior identical.
+    private func onRowAppear(_ item: BrowseItem, rendered: [BrowseItem], fullCount: Int) {
+        guard item.id == rendered.last?.id else { return }
+        if browse.searchOnline {
+            Task { await online.loadMore() }
+        } else if liveVisible < fullCount {
+            // Commit the grown budget against the CURRENT key so `liveVisible` keeps it.
+            visibleCount = BrowsePaging.grow(liveVisible, upTo: fullCount)
+            visibleKey = pagingKey
+        }
     }
 
     /// Bottom-of-list spinner shown while a NEXT page is paging in (online only).
@@ -372,7 +419,7 @@ struct BrowseView: View {
         }
     }
 
-    private func songResults(_ items: [BrowseItem]) -> some View {
+    private func songResults(_ items: [BrowseItem], fullCount: Int) -> some View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(items) { item in
@@ -401,7 +448,7 @@ struct BrowseView: View {
                                         ? Theme.accent.opacity(0.16) : .clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                         InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)
-                            .onAppear { pageInIfLast(item, in: items) }
+                            .onAppear { onRowAppear(item, rendered: items, fullCount: fullCount) }
                         Divider().overlay(Theme.border)
                     }
                 }
