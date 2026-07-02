@@ -648,24 +648,49 @@ re-driving the decks is the follow-up). Full spec:
 ### 7.9 Lock-screen Now Playing · Auto-Mix Skip · slider-freeze & stem-silence fixes
 
 ```
- MixEngine.nowPlayingDeck:  exactly one deck PLAYING → that deck; else Deck A (even paused); else B; else nil
-   updateSystemNowPlaying() → MPNowPlayingInfoCenter (title/artist/dur/elapsed/rate=tempo) on each transport change
+ MixEngine.nowPlayingDeck:  exactly one deck PLAYING → that deck; ambiguous (zero/both) → STICKY on the
+   last unambiguous subject (lastNowPlayingDeck; batch transport + loadFile keep it honest); cold → A, else B
+   updateSystemNowPlaying() → MPNowPlayingInfoCenter (title/artist/dur/elapsed/rate=tempo + ARTWORK) per edge
+   refreshArtworkIfNeeded(songId): fetch gated on song-id CHANGE (card writes tick ~10 Hz); stale-token guard;
+     resolver = shared artworkURLsProvider (AppModel.album(forSongId:).artCandidates — wired in PocketDJApp)
  NowPlayingArbiter (single owner, last-to-PLAY wins): PlayerEngine ⇄ MixEngine share the one card +
    one MPRemoteCommandCenter; every write / command guarded by isActive(self) → no stomping
+ REMOTE transport (lock screen / AirPods / CarPlay) — its own entry points; in-app buttons unchanged:
+   remotePause(): pauseAuto() first (RUNNING auto-mix → SUSPENDED, never ended) + FREEZE the machine's
+     wall clock (remotePausedAt gates autoFire — a silent pre-roll/fade must never complete and audibly
+     un-pause the phone) + pauseBoth() (masterPausedDecks = exactly what it silenced). Duplicate-pause safe.
+   remotePlay(): unfreeze (shift armed timestamps by the frozen interval — a half-swept fade resumes where
+     it stopped) + resumeMasterPaused() (ONLY the silenced decks) + resumeAuto() iff the matching remote ⏸
+     suspended it (intent flag; ANY resume consumes it — a stray Siri play can't resurrect an in-app pause)
+   remoteSkip(fade): suspended → resume-on-next-track (unfreeze+resume+resumeAuto), then skipToNext
+   ⏭ = 5 s fast skip (in-app double-tap parity) · ⏮ = settings.skipFadeSeconds slow (single-tap parity)
+   isEnabled follows autoMixing (re-asserted per card write; disable gated on ownership); PlayerEngine
+     re-asserts its setlist ⏭/⏮ (onNext != nil) on every claim → the engines can't strand each other
  skipToNext(fadeSeconds): reuse beginAutoCrossfade; pendingFadeRestore puts the auto fade back after a one-off skip
    Skip button (Auto only): single = settings.skipFadeSeconds (def 15) · double = 5 s  (two .onTapGesture(count:))
  DeckSeekSlider: ALWAYS read engine.position(deck) (never `scrub ?? pos`) + explicit `editing` flag → no freeze
  setStemMode(on): schedule BEFORE muting main, bail if 0 frames (clamp to maxStemSeconds) → never silent
 ```
 
-**Reading it.** The Mix now feeds the **iOS/macOS lock-screen Now Playing** card — the actively-playing
-deck (else Deck A) — arbitrated against the standalone `PlayerEngine` by a tiny single-owner
-`NowPlayingArbiter` so the two never fight over the one system card / command center. An Auto-Mix
-**Skip** button advances the queue immediately (single tap = a configurable fade, double tap = a fast
-5 s sweep) by reusing the timed crossfade machine. A long-standing **slider freeze** (the seek
-scrubber stopped following playback until you switched tabs) is fixed by never short-circuiting the
-observed `position` read. And toggling **stem mode** after interrupting an auto-mix no longer goes
-silent — the ON path schedules the stems before muting the main file and bails if nothing scheduled.
+**Reading it.** The Mix feeds the **iOS/macOS lock-screen Now Playing** card — including the
+now-playing deck's **album art** (the same resolver ladder the in-app `CoverImage` uses, fetched once
+per track) — arbitrated against the standalone `PlayerEngine` by a tiny single-owner
+`NowPlayingArbiter` so the two never fight over the one system card / command center. The card's deck
+is **sticky**: pausing deck B keeps the card (title + art) on deck B instead of snapping to deck A,
+through batch pause/resume and mid-blend track loads alike. The **remote transport maps to mix-native
+concepts** without changing any in-app button: ⏸ *suspends* a running Auto-DJ (`pauseAuto` — session
+and queue stay alive, and the machine's wall clock is frozen so an in-flight glide/fade can't complete
+into silent decks), ▶ resumes exactly the deck(s) that pause silenced and un-suspends the Auto-DJ, and
+⏭/⏮ are the fast (5 s) and slow (Settings skip-fade) queue skips — pressed while suspended they mean
+"resume on the next track". When a **pocket / playlist / setlist** plays via the standalone player
+instead, the same physical buttons keep their collection semantics (⏮ previous · ⏭ next · play/pause
+the current track): the arbiter routes commands to whichever engine is audible and each engine
+re-asserts its own ⏭/⏮ enablement when it reclaims the card. An Auto-Mix **Skip** button advances the
+queue immediately (single tap = a configurable fade, double tap = a fast 5 s sweep) by reusing the
+timed crossfade machine. A long-standing **slider freeze** (the seek scrubber stopped following
+playback until you switched tabs) is fixed by never short-circuiting the observed `position` read. And
+toggling **stem mode** after interrupting an auto-mix no longer goes silent — the ON path schedules
+the stems before muting the main file and bails if nothing scheduled.
 Full spec: [Lock-screen Now Playing, Skip, slider & stem fixes](../design/mix-tab-nowplaying-skip-slider-stems.md).
 
 ### 7.10 Cue / PFL · beat-grid BPM · beat pulse

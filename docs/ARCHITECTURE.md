@@ -248,7 +248,10 @@ contract**. Honest status:
   bend that beat-matches tempo only when both BPMs are known and bends pitch only when both Camelot
   keys are known, else a plain volume crossfade; configurable length, Ch. 4 §7.11; plus **PAUSE/RESUME**
   — hand off to manual mixing mid-set and take it back with a musically-timed handoff, and an
-  **Auto-mode deck-source lock**, Ch. 4 §7.5), **SESSION AUDIO
+  **Auto-mode deck-source lock**, Ch. 4 §7.5), a **mix-native lock-screen card** (album **artwork**,
+  a sticky now-playing deck, remote ⏸/▶ = suspend/resume the Auto-DJ — its wall clock frozen across
+  the pause so a silent in-flight fade can't self-resume — and ⏭/⏮ = the fast/slow queue skips;
+  collection playback keeps ⏮ prev · ⏭ next via the `NowPlayingArbiter`, Ch. 4 §7.9), **SESSION AUDIO
   RECORDING** (capture the clean stereo house mix to a per-session folder as **crash-safe fragmented
   AAC**, scrubbable + replayable from Sessions, Ch. 4 §7.12), a **wrapped move-by-move replay timeline**
   (compact `.glide` nodes, tap-a-load → song metadata, Ch. 4 §7.8), **universal CSV / PocketDJ export**
