@@ -113,6 +113,28 @@ final class BrowseUITests: XCTestCase {
         XCTAssertTrue(app.el("row-play-sng_7").exists)                         // Slow Burn
     }
 
+    /// REGRESSION — the "songs stuck on page 1" bug: the on-device paging trigger must
+    /// ride the always-rendered SongRow, NOT the InlinePlayerSlot that follows it. The
+    /// slot renders nothing unless its song is now-playing, and SwiftUI never fires
+    /// `.onAppear` on a no-content view — so the song list never grew past page 1
+    /// (albums paged fine; their trigger sits on the always-rendered NavigationLink).
+    /// With `PDJ_PAGE_SIZE=3` the 7-song fixture overflows page 1 while still fitting
+    /// on one screen, so a WORKING trigger chain-grows the render budget (3 → 6 → 7)
+    /// with no scrolling needed: every fixture song's row must eventually render.
+    func testSongListGrowsPastFirstPage() {
+        app.launchEnvironment["PDJ_PAGE_SIZE"] = "3"
+        let app = launch()
+        XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))
+        app.selectKind(songs: true)
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))
+        // At most 3 of the 7 songs sit in page 1 — the rest render only if the last
+        // rendered row's appearance grew the budget. Assert every row shows up.
+        for id in ["sng_2", "sng_3", "sng_4", "sng_5", "sng_6", "sng_7"] {
+            XCTAssertTrue(app.el("row-play-\(id)").waitForExistence(timeout: 10),
+                          "row \(id) never rendered — song paging didn't grow past page 1")
+        }
+    }
+
     func testTappingSongRowOpensDetail() {
         // Real tap-to-navigate: tapping a song ROW's content (the title, NOT a
         // transport button) must open the SongDetailView. Guards the regression where

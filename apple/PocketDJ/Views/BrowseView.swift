@@ -447,8 +447,14 @@ struct BrowseView: View {
                             .background(focusedRowId == song.id
                                         ? Theme.accent.opacity(0.16) : .clear,
                                         in: RoundedRectangle(cornerRadius: 6))
-                        InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)
+                            // The paging trigger MUST sit on the SongRow — the row that
+                            // always renders. InlinePlayerSlot renders NOTHING unless its
+                            // song is now-playing, and SwiftUI never fires .onAppear on a
+                            // no-content view, so a trigger there leaves the song list
+                            // stuck on page 1 (albums page from their always-rendered
+                            // NavigationLink — same trigger, working placement).
                             .onAppear { onRowAppear(item, rendered: items, fullCount: fullCount) }
+                        InlinePlayerSlot(songId: song.id).padding(.horizontal, 2)
                         Divider().overlay(Theme.border)
                     }
                 }
