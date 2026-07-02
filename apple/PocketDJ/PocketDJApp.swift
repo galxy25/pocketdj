@@ -67,11 +67,14 @@ struct PocketDJApp: App {
         let rips = RipsStore()
         let player = PlayerEngine()
         // Lock-screen / Control Center Now Playing artwork: resolve the now-playing song id to its
-        // album's cover-art candidate URLs from the loaded catalog. PlayerEngine fetches the first
-        // that decodes and attaches it to the card (title/artist-only when the track has no art).
-        player.artworkURLsProvider = { [weak app] songId in
+        // album's cover-art candidate URLs from the loaded catalog. Whichever engine currently owns
+        // the card (PlayerEngine for normal playback, MixEngine while a Mix deck is playing — see
+        // NowPlayingArbiter) fetches the first candidate that decodes and attaches it to the card
+        // (title/artist-only when the track has no art).
+        let artworkURLsProvider: @MainActor (String) -> [URL] = { [weak app] songId in
             app?.album(forSongId: songId)?.artCandidates ?? []
         }
+        player.artworkURLsProvider = artworkURLsProvider
         let streaming = StreamingStore()
         let amProvider = streaming.appleMusicProvider ?? AppleMusicProvider()
         // Inject the shared background-transfer coordinator so Burn hands each song to a
@@ -108,6 +111,7 @@ struct PocketDJApp: App {
         let mixSessions = MixSessionStore(fileURL: MixSessionStore.launchURL())
         let mix = MixEngine(burns: burns)
         mix.recorder = mixSessions
+        mix.artworkURLsProvider = artworkURLsProvider
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
         // App-scoped audio recorder: captures the mix's house output into the current session's

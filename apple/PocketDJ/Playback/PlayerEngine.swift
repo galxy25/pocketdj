@@ -183,6 +183,10 @@ final class PlayerEngine {
         }
         player.replaceCurrentItem(with: item)
         NowPlayingArbiter.shared.claim(self)   // this engine started audio → own the lock-screen card
+        // Re-assert the setlist-driven ⏭/⏮ enablement on every claim: the Mix engine flips the SAME
+        // shared commands for its auto-mix skip mapping, so reclaiming the card must restore the
+        // collection semantics (⏮ previous / ⏭ next while a set runs, disabled otherwise).
+        setNextPreviousEnabled(onNext != nil)
         player.play()
         updateNowPlayingInfo()
     }
@@ -199,7 +203,11 @@ final class PlayerEngine {
         updateNowPlayingInfo()
     }
 
-    func play() { NowPlayingArbiter.shared.claim(self); player.play(); isPlaying = true; updateNowPlayingInfo() }
+    func play() {
+        NowPlayingArbiter.shared.claim(self)
+        setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
+        player.play(); isPlaying = true; updateNowPlayingInfo()
+    }
     func pause() { player.pause(); isPlaying = false; updateNowPlayingInfo() }
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
     /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
@@ -374,8 +382,10 @@ final class PlayerEngine {
     }
 
     /// Try each candidate URL in order; return the first that decodes to an image (mirrors
-    /// `CoverImage`'s fallback ladder). The network I/O happens off the main actor.
-    private static func loadFirstImage(_ urls: [URL]) async -> PlatformImage? {
+    /// `CoverImage`'s fallback ladder). The network I/O happens off the main actor. Shared with
+    /// `MixEngine`, which owns the lock-screen card while a Mix deck is playing — hence internal,
+    /// not private.
+    static func loadFirstImage(_ urls: [URL]) async -> PlatformImage? {
         for url in urls {
             do {
                 let (data, response) = try await URLSession.shared.data(from: url)
