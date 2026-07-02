@@ -70,6 +70,26 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertEqual(services.setlistPlayer.queue.map(\.id), ["sng_2", "sng_1"])
     }
 
+    /// The iOS 27 playAudio schema's song case rides this seam: one catalog song
+    /// becomes a one-track Now Playing set on the shared sequencer.
+    func testPlaySongBuildsOneTrackNowPlaying() async throws {
+        let (services, collections, _) = await makeServices()
+
+        let name = try await services.playSong(id: "sng_3")
+
+        XCTAssertEqual(name, "Drift")
+        XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_3"])
+        XCTAssertEqual(services.setlistPlayer.queue.map(\.id), ["sng_3"])
+        XCTAssertTrue(services.setlistPlayer.isRunning)
+
+        do {
+            _ = try await services.playSong(id: "sng_missing")
+            XCTFail("expected songNotFound")
+        } catch let e as PocketDJIntentError {
+            XCTAssertEqual("\(e)", "\(PocketDJIntentError.songNotFound)")
+        } catch { XCTFail("unexpected \(error)") }
+    }
+
     func testPlayUnknownIdsThrowSpeakableErrors() async {
         let (services, _, _) = await makeServices()
         do {

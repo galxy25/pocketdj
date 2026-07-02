@@ -88,19 +88,23 @@ struct RootView: View {
         }
     }
 
-    /// Consume a pending intent route: switch to Playlists and open the item's detail
-    /// on a FRESH stack (Spotlight opened *this* item — whatever was pushed before
-    /// doesn't belong underneath it; mirrors the ⌘B Browser shortcut's reset).
+    /// Consume a pending intent route on a FRESH stack (Spotlight/Siri asked for
+    /// *this* destination — whatever was pushed before doesn't belong underneath it;
+    /// mirrors the ⌘B Browser shortcut's reset).
     private func consumeIntentRoute(_ route: IntentRoute?) {
         guard let route else { return }
         intents.pendingRoute = nil
-        section = .playlists
         path = NavigationPath()
         switch route {
         case .playlist(let id):
+            section = .playlists
             if let pl = collections.playlist(id) { path.append(pl) }
         case .pocket(let id):
+            section = .playlists
             if let p = collections.pocket(id) { path.append(p) }
+        case .browseSearch:
+            // The search term itself rides `pendingBrowseQuery`, consumed by BrowseView.
+            section = .browse
         }
     }
 

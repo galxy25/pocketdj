@@ -27,6 +27,11 @@ enum CollectionsSpotlight {
     /// each await re-checks it's still the newest before touching the index.
     private static var generation = 0
 
+    /// The iOS 27 audio-schema layer's reindex, chained onto the same debounced hook
+    /// (set by `AudioSchemaBootstrap.install` when the app is built with the 27 SDK
+    /// and running on iOS/macOS 27; nil otherwise).
+    static var schemaReindexHook: (@MainActor () async -> Void)?
+
     /// Debounced full re-donation (mutations often come in bursts — imports, seeds):
     /// re-index the Spotlight entities AND re-teach Siri the speakable names.
     static func scheduleReindex(_ collections: CollectionsStore) {
@@ -39,6 +44,8 @@ enum CollectionsSpotlight {
             guard gen == generation else { return }
             PocketDJShortcuts.updateAppShortcutParameters()
             await reindex(collections, generation: gen)
+            guard gen == generation else { return }
+            await schemaReindexHook?()
         }
     }
 

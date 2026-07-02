@@ -12,6 +12,7 @@ struct BrowseView: View {
     @Environment(PlayerEngine.self) private var player
     @Environment(BurnStore.self) private var burns
     @Environment(CollectionsStore.self) private var collections
+    @Environment(IntentServices.self) private var intents
     /// Shared navigation path (owned by RootView) — lets keyboard "open" push an
     /// album/song detail programmatically, alongside the row-tap NavigationLinks.
     @Binding var path: NavigationPath
@@ -97,7 +98,23 @@ struct BrowseView: View {
             if browse.searchOnline { triggerOnline() } else { online.cancel() }
         }
         .onChange(of: browse.query) { if browse.searchOnline { triggerOnline() } }
-        .task { if browse.searchOnline { triggerOnline() } }
+        // "Search PocketDJ for …" (the system.search intent): the term is parked on
+        // the intents bridge; consume it into the search field — whether the browser
+        // is already up (onChange) or the intent launched the app (task).
+        .onChange(of: intents.pendingBrowseQuery) { _, _ in consumeIntentSearch() }
+        .task {
+            consumeIntentSearch()
+            if browse.searchOnline { triggerOnline() }
+        }
+    }
+
+    /// Atomically take the pending intent search term into the search field (live
+    /// re-read + clear, so multi-window consumers race safely — see RootView's
+    /// consumeIntentRoute for the same pattern).
+    private func consumeIntentSearch() {
+        guard let term = intents.pendingBrowseQuery else { return }
+        intents.pendingBrowseQuery = nil
+        browse.query = term
     }
 
     /// The visible items (on-device or online) for the current kind, in display order.

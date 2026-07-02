@@ -704,9 +704,39 @@ plus `updateAppShortcutParameters()` so Siri re-learns speakable names on rename
 (2) **actions → predictions** — the UI play/auto-mix call sites donate the
 equivalent parameterized intent (`IntentDonations`), never from `perform()` (the
 system auto-donates its own runs). Both are disabled under `PDJ_USE_FIXTURE` so
-tests don't pollute the simulator. The iOS-27 audio **assistant-schema domain**
-(`playAudio` etc.) is deliberately NOT adopted yet — it's beta-only; plain
-AppShortcuts is Apple's endorsed path for apps outside the shipped domains.
+tests don't pollute the simulator.
+
+**In-app search (system.search schema, live today).** `SearchLibraryIntent`
+adopts `@AppIntent(schema: .system.search)` (18.x-era, compiles on the current
+SDK): "Search PocketDJ for boogie" parks the term on
+`IntentServices.pendingBrowseQuery` + a `.browseSearch` route — RootView lands on
+the Browser and BrowseView consumes the term into its search field (same
+atomic-take pattern as the open routes).
+
+**The iOS/macOS 27 audio-schema layer (`AudioSchema27.swift`, compiled-out until
+Xcode 27).** The "Siri AI" audio domain is implemented behind
+`#if canImport(MediaIntents)` (MediaIntents is new in the 27 SDK, so with
+Xcode 26.x the file compiles out and nothing changes), every type
+`@available(iOS 27, macOS 27, *)`; shapes ported from Apple's CosmoTunes sample.
+Inside: `AudioSongEntity` / `AudioAlbumEntity` / `AudioArtistEntity` /
+`AudioPlaylistEntity` (playlists AND pockets both surface as speakable
+"playlists", routed by their `pls_`/`pkt_` id prefixes) with
+Entity/String/`IndexedEntityQuery` queries; the `PocketDJAudioEntity`
+`@UnionValue` (song | playlist); `audio.playAudio` (natural-language play,
+shuffle via `playbackAttributes`; queue insertion collapses to play-now —
+PocketDJ's Now Playing replaces the queue) and `audio.addToPlaylist` (append a
+song to a playlist or pocket); the MediaIntents `AudioSearch` value query
+("play something upbeat" → tokenized catalog search capped at 25 songs +
+name-matched collections; bare "play something" → the user's own collections);
+and `AudioSchemaIndexer` — bulk Spotlight indexing of the SMALL sets (albums
+~13k batched, playlists/pockets) into the separate `pocketdj-audio` named index,
+chained onto CollectionsSpotlight's debounced hook via
+`AudioSchemaBootstrap.install` (songs are never bulk-indexed at ~100k — they
+resolve through the string/value queries). Deliberately not adopted:
+`addToLibrary` + `updateAudioAffinity` (no add-to-library or like/dislike model;
+audio is not an all-or-nothing domain). CAVEAT: this layer has never been
+compiled against a real 27 SDK (none installed) — expect minor fix-ups on the
+first Xcode 27 build, guided by the schema macros' compile-time shape errors.
 
 ---
 

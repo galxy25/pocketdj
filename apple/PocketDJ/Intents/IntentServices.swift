@@ -7,6 +7,9 @@ import AppIntents
 enum IntentRoute: Hashable {
     case playlist(String)
     case pocket(String)
+    /// Land on the Browser tab (the system.search intent parks the query separately
+    /// on `pendingBrowseQuery` — BrowseView owns the search field's state).
+    case browseSearch
 }
 
 /// The bridge App Intents use to reach the LIVE app-scoped stores/engines.
@@ -38,6 +41,11 @@ final class IntentServices {
     /// Pending intent-driven navigation (Open Playlist/Pocket). RootView observes and
     /// consumes it (it owns the NavigationPath); set-then-clear, never queued.
     var pendingRoute: IntentRoute?
+
+    /// Pending in-app search term ("Search PocketDJ for …" — the system.search
+    /// intent). BrowseView observes and consumes it into its search field; paired
+    /// with `pendingRoute == .browseSearch`, which lands the user on the Browser.
+    var pendingBrowseQuery: String?
 
     /// One-shot guard so `ensureReady()` kicks the rips-manifest refresh only once per
     /// process (RootView.task does the same on a windowed launch — both are idempotent).
@@ -93,6 +101,20 @@ final class IntentServices {
         }
         startNowPlaying(set)
         return pocket.name
+    }
+
+    /// ▶ a single catalog song (the iOS 27 playAudio schema's song case): a
+    /// one-track Now Playing setlist, so the transport/lock-screen behave exactly
+    /// as for any other Now Playing set. Returns the title for dialogs.
+    @discardableResult
+    func playSong(id: String) async throws -> String {
+        await ensureReady()
+        guard let song = app.songsById[id] else { throw PocketDJIntentError.songNotFound }
+        guard let set = collections.playNow(songIds: [id], name: song.name), !set.tracks.isEmpty else {
+            throw PocketDJIntentError.songNotFound
+        }
+        startNowPlaying(set)
+        return song.name
     }
 
     /// Start the sequencer on the freshly-upserted Now Playing setlist — the same
@@ -170,6 +192,8 @@ final class IntentServices {
 enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
     case playlistNotFound
     case pocketNotFound
+    case songNotFound
+    case songOnlyAction
     case mixSourceNotFound
     case emptyCollection(String)
     case noBurnedSongs(String)
@@ -183,6 +207,10 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
             return "I couldn't find that playlist in PocketDJ."
         case .pocketNotFound:
             return "I couldn't find that pocket in PocketDJ."
+        case .songNotFound:
+            return "I couldn't find that song in your PocketDJ sources."
+        case .songOnlyAction:
+            return "That works on individual songs, not playlists or pockets."
         case .mixSourceNotFound:
             return "I couldn't find that pocket or set list in PocketDJ."
         case .emptyCollection(let name):
