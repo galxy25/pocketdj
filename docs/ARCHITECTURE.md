@@ -280,7 +280,7 @@ contract**. Honest status:
   seam), and a **debounced off-main add-search** over albums + songs (albums above
   songs, collapsible; exact-title first; ＋ appends live). Launch defaults changed:
   iOS opens on the home menu unless `settings.lastSection` restores the last spot
-  ("" = home; fresh iPad → Browser); macOS always opens on **Mix**; the iOS home
+  ("" = home; fresh iPad → Mix, like the Mac); macOS always opens on **Mix**; the iOS home
   title drops the ✦. Testing seam `PDJ_HOLD_PLAYBACK` freezes the sequencer's
   running state (no audio) so UI tests can drive running-state surfaces on the
   fixture catalog.

@@ -120,9 +120,9 @@ struct RootView: View {
                     section = s
                 } else if UIDevice.current.userInterfaceIdiom == .pad {
                     // iPad's split view always shows a detail column — with nothing to
-                    // restore, select Browser so the sidebar row matches what's shown
-                    // (nil would render Browser with no row highlighted).
-                    section = .browse
+                    // restore it opens on MIX (like the Mac: the DJ surface), with the
+                    // sidebar row selected to match.
+                    section = .mix
                 }
                 #endif
             }

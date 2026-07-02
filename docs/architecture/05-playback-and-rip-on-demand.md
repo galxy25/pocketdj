@@ -1022,8 +1022,8 @@ toggle) · the **Up Next** list · a debounced add-search.
   panel, the race clamps, and the launch defaults (below).
 - **Launch defaults** (RootView): iOS lands on the home menu unless
   `settings.lastSection` restores the last-visited section (persisted on every
-  section change; `""` = home; fresh iPad picks Browser so the sidebar row matches
-  the detail); macOS always lands on Mix. The iOS home title is plain "PocketDJ"
+  section change; `""` = home; a fresh iPad picks MIX — like the Mac — with the
+  sidebar row selected to match); macOS always lands on Mix. The iOS home title is plain "PocketDJ"
   (macOS keeps "✦ PocketDJ").
 
 ---
