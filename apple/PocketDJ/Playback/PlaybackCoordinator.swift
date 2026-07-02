@@ -32,7 +32,7 @@ func playLocalFile(_ url: URL, songId: String, title: String, artist: String,
                                   url: url, live: false, startMs: startMs, waveform: nil)
     rips.setNowPlaying(np)
     player.load(url: url, live: false, startMs: startMs, title: title, artist: artist,
-                endBoundaryMs: endBoundaryMs, scopeRelease: release)
+                songId: songId, endBoundaryMs: endBoundaryMs, scopeRelease: release)
 }
 
 @MainActor

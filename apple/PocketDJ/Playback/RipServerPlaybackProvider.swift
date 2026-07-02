@@ -45,7 +45,7 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
             let now = try await rips.play((id: song.id, title: song.name, artist: song.artist),
                                           startMs: nil)
             player.load(url: now.url, live: now.live, startMs: now.startMs,
-                        title: now.title, artist: now.artist)
+                        title: now.title, artist: now.artist, songId: now.songId)
             return true
         } catch {
             // Stash so the coordinator can surface it; still "handled" by this terminal

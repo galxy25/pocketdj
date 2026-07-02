@@ -4,6 +4,8 @@ import AVFoundation
 import MediaPlayer
 #if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
 #endif
 
 /// A thin `AVPlayer` wrapper that the inline player binds to. AVPlayer plays HLS
@@ -90,6 +92,17 @@ final class PlayerEngine {
     // Current track's lock-screen metadata (title / artist) for MPNowPlayingInfoCenter.
     private var nowPlayingTitle: String = ""
     private var nowPlayingArtist: String = ""
+    /// Resolves a song id to its cover-art candidate URLs (self-hosted CDN cover first, then any
+    /// remote iTunes cover — same order `CoverImage` tries). Injected once at launch from the
+    /// catalog (`AppModel.album(forSongId:)`); nil ⇒ no artwork is attached to the card. Kept as a
+    /// closure so the audio engine stays decoupled from the catalog model.
+    @ObservationIgnored var artworkURLsProvider: (@MainActor (String) -> [URL])?
+    /// The now-playing song id (for artwork resolution) + the fetched Now-Playing-card artwork.
+    /// A monotonic token supersedes an in-flight fetch when the track changes, so a slow image
+    /// never lands on the wrong song's card.
+    private var nowPlayingSongId: String?
+    private var nowPlayingArtwork: MPMediaItemArtwork?
+    private var artworkToken = 0
 
     init() {
         configureAudioSession()
@@ -135,7 +148,7 @@ final class PlayerEngine {
     /// `endBoundaryMs` (optional) arms a position-based end boundary (absolute ms in the
     /// file) so the sequencer advances at the track's own length inside a shared album mp3.
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "",
-              endBoundaryMs: Int? = nil, scopeRelease: (() -> Void)? = nil) {
+              songId: String? = nil, endBoundaryMs: Int? = nil, scopeRelease: (() -> Void)? = nil) {
         // Defensively re-arm the audio session: an interruption (call / other app) can
         // deactivate it, and a backgrounded set must keep playing across track boundaries.
         configureAudioSession()
@@ -152,6 +165,8 @@ final class PlayerEngine {
         trackEndSignaled = false
         nowPlayingTitle = title
         nowPlayingArtist = artist
+        nowPlayingSongId = songId
+        refreshArtwork(for: songId)   // async: fetches the cover, then re-pushes the card
 
         let item = AVPlayerItem(url: url)
         statusObservation?.invalidate()
@@ -238,6 +253,7 @@ final class PlayerEngine {
         pendingSeekMs = nil
         endBoundarySec = nil; trackEndSignaled = false
         scopeRelease?(); scopeRelease = nil   // release the user-folder file's security scope
+        artworkToken += 1; nowPlayingSongId = nil; nowPlayingArtwork = nil   // drop any in-flight art fetch
         clearNowPlayingInfo()
     }
 
@@ -336,7 +352,38 @@ final class PlayerEngine {
             MPNowPlayingInfoPropertyIsLiveStream: isLive,
         ]
         if !isLive, duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
+        if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    /// Resolve + fetch the current track's cover art and attach it to the Now Playing card.
+    /// Fire-and-forget: `artworkToken` supersedes an in-flight fetch when the track changes, so a
+    /// slow image never lands on the wrong song. No provider / no candidates / no decodable image
+    /// ⇒ the card simply keeps title + artist (art shown only "if available").
+    private func refreshArtwork(for songId: String?) {
+        artworkToken += 1
+        nowPlayingArtwork = nil
+        let token = artworkToken
+        guard let songId, let urls = artworkURLsProvider?(songId), !urls.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            guard let image = await PlayerEngine.loadFirstImage(urls) else { return }
+            guard let self, self.artworkToken == token else { return }   // track changed → drop
+            self.nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            self.updateNowPlayingInfo()
+        }
+    }
+
+    /// Try each candidate URL in order; return the first that decodes to an image (mirrors
+    /// `CoverImage`'s fallback ladder). The network I/O happens off the main actor.
+    private static func loadFirstImage(_ urls: [URL]) async -> PlatformImage? {
+        for url in urls {
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { continue }
+                if let img = PlatformImage(data: data) { return img }
+            } catch { continue }
+        }
+        return nil
     }
 
     private func clearNowPlayingInfo() {
