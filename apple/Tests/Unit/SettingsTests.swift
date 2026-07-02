@@ -39,6 +39,26 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(s.ripFromCloud)
     }
 
+    /// `lastSection` (the iOS "reopen where you left off" seam): defaults to nil
+    /// (= the home menu), round-trips through persist/reload — including "" for an
+    /// explicit home — and, being Optional in SettingsData, survives legacy blobs.
+    func testLastSectionPersistsAndReloads() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertNil(s.lastSection)
+
+        s.lastSection = "Mix"
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).lastSection, "Mix")
+
+        s.lastSection = ""            // the user left off ON the home menu
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).lastSection, "")
+
+        s.resetEverything()
+        XCTAssertNil(s.lastSection)
+    }
+
     /// REGRESSION (Codable back-compat): an older `pdj.settings.v1` blob written before
     /// `ripFromCloud` existed has no such key. Because `ripFromCloud` is `Bool?` in
     /// SettingsData, the blob must still decode — preserving sources/ripServerURL — and

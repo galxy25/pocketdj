@@ -120,6 +120,47 @@ final class SetlistPlayer {
         Task { await playCurrent() }
     }
 
+    // MARK: - Live queue edits (the Now Playing panel's Up-Next list)
+    //
+    // All three mutate ONLY the UPCOMING suffix — `queue[(index+1)...]`. Positions
+    // ≤ `index` (the playing track + the played history) are never touched: the
+    // end-of-track ownership guard (`handleEnded`) and the manual-jump adoption
+    // (`adoptNowPlayingIfJumped`) both key off `queue[index]`, so disturbing it
+    // would silently freeze auto-advance mid-set. `advance()` re-checks
+    // `queue.count` fresh, so appends are picked up live; none of these restart
+    // the current track or bump `CollectionsStore.nowPlayingRevision`.
+
+    /// The not-yet-played tail of the queue (empty when idle or on the last track).
+    var upcoming: [Item] {
+        guard isRunning, index + 1 < queue.count else { return [] }
+        return Array(queue[(index + 1)...])
+    }
+
+    /// Reorder within the upcoming tail (`.onMove` shape; offsets are relative to
+    /// `upcoming`, i.e. 0 = the track right after the current one).
+    func moveUpcoming(fromOffsets: IndexSet, toOffset: Int) {
+        guard isRunning, index + 1 < queue.count else { return }
+        var tail = Array(queue[(index + 1)...])
+        tail.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        queue.replaceSubrange((index + 1)..., with: tail)
+    }
+
+    /// Remove tracks from the upcoming tail (offsets relative to `upcoming`).
+    func removeUpcoming(atOffsets offsets: IndexSet) {
+        guard isRunning, index + 1 < queue.count else { return }
+        var tail = Array(queue[(index + 1)...])
+        tail.remove(atOffsets: offsets)
+        queue.replaceSubrange((index + 1)..., with: tail)
+    }
+
+    /// Append tracks to the end of the running queue (the panel's add-search).
+    /// No-op when idle: a stopped set has already torn down (`stop()` cleared the
+    /// queue) — resurrecting it is a fresh `play(...)`, the caller's call.
+    func appendToQueue(_ items: [Item]) {
+        guard isRunning, !items.isEmpty else { return }
+        queue.append(contentsOf: items)
+    }
+
     // MARK: - Internals
 
     /// The absolute position (ms) at which a track that SHARES a multi-song file should
@@ -214,6 +255,12 @@ final class SetlistPlayer {
     /// queue was built) and start it. Failure (no end event will ever fire) advances now.
     private func playCurrent() async {
         guard isRunning, index < queue.count else { return }
+        // Testing seam (`PDJ_HOLD_PLAYBACK`): keep the set "running" WITHOUT resolving any
+        // audio source. Fixture catalogs have no rips/burns, so every track would skip and
+        // the set would stop() within a frame — a UI test could never see running-state
+        // surfaces (the Now Playing panel). Holding here freezes queue/index exactly as
+        // `play(...)` left them. No-op in normal use.
+        if ProcessInfo.processInfo.environment["PDJ_HOLD_PLAYBACK"] != nil { return }
         let it = queue[index]
         let mode = playbackMode()
 

@@ -9,9 +9,18 @@ struct RootView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
     @Environment(BurnStore.self) private var burns
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(MixEngine.self) private var mix
     @Environment(IntentServices.self) private var intents
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
-    @State private var section: Section? = .browse
+    // Launch default: macOS lands on the MIX tab; iOS lands on the HOME menu (nil —
+    // the collapsed split view rests on the sidebar) unless a previously-persisted
+    // section is restored in `.task` ("open to wherever you last left off").
+    #if os(macOS)
+    @State private var section: Section? = .mix
+    #else
+    @State private var section: Section?
+    #endif
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
@@ -30,12 +39,35 @@ struct RootView: View {
         }
     }
 
+    /// The home Now Playing element shows for collection playback (the app-scoped
+    /// sequencer) in every mode EXCEPT Mix — a running/suspended Auto-DJ or live
+    /// deck owns the audio, so the panel yields.
+    private var nowPlayingVisible: Bool {
+        sequencer.isRunning && !(mix.isRunning || mix.autoMixing)
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(Section.allCases, selection: $section) { item in
-                Label(item.rawValue, systemImage: item.icon).tag(item)
+            // Sidebar = the iPhone HOME menu screen / the iPad+macOS left column.
+            // The Now Playing element rides UNDER the menu items in both shapes;
+            // while it's up, the menu list keeps just its rows' height and the
+            // panel (record player + queue + add-search) gets the rest.
+            VStack(spacing: 0) {
+                List(Section.allCases, selection: $section) { item in
+                    Label(item.rawValue, systemImage: item.icon).tag(item)
+                }
+                .frame(maxHeight: nowPlayingVisible ? 236 : .infinity)
+                if nowPlayingVisible {
+                    Divider().overlay(Theme.border)
+                    NowPlayingPanel()
+                }
             }
+            // iOS drops the ✦ AI sparkle from the home title; macOS keeps it.
+            #if os(iOS)
+            .navigationTitle("PocketDJ")
+            #else
             .navigationTitle("✦ PocketDJ")
+            #endif
             .toolbar(removing: .sidebarToggle)
             #if os(macOS)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
@@ -76,6 +108,15 @@ struct RootView: View {
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
                let s = Section(rawValue: raw) {
                 section = s
+            } else {
+                #if os(iOS)
+                // Restore the last-visited section ("open to wherever you last left
+                // off"); "" or nothing persisted ⇒ stay on the HOME menu. macOS
+                // deliberately skips this — it always lands on Mix.
+                if let raw = settings.lastSection, let s = Section(rawValue: raw) {
+                    section = s
+                }
+                #endif
             }
             await app.loadIfNeeded()
             // Testing seam: `PDJ_OPEN_FIRST_ALBUM=1` deep-links into an album so the
@@ -85,6 +126,12 @@ struct RootView: View {
                 path.append(first)
             }
             consumeIntentRoute(intents.pendingRoute)   // route parked by a cold intent launch
+        }
+        // Remember where the user is so the next iOS launch reopens there (nil —
+        // the home menu — persists as "" and restores as home).
+        .onChange(of: section) {
+            settings.lastSection = section?.rawValue ?? ""
+            settings.persist()
         }
     }
 

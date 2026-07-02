@@ -81,6 +81,10 @@ final class SettingsStore {
     var cueOutputChannel: CueChannel
     /// Mix decks flash a ring on each beat when ON; OFF (default) ⇒ no pulse. See `BeatPulseView`.
     var beatPulseEnabled: Bool
+    /// The last-visited section's rawValue ("" = the home menu) — iOS relaunches
+    /// reopen there ("open to wherever you last left off"); macOS ignores it
+    /// (always lands on Mix). Written by RootView on every section change.
+    var lastSection: String?
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -105,6 +109,7 @@ final class SettingsStore {
         self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
         self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         self.beatPulseEnabled = data.beatPulseEnabled ?? false
+        self.lastSection = data.lastSection
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -187,7 +192,8 @@ final class SettingsStore {
             skipFadeSeconds: skipFadeSeconds, mixGlideSeconds: mixGlideSeconds,
             mixAutoHidePlayed: mixAutoHidePlayed,
             cueOutputChannel: cueOutputChannel.rawValue,
-            beatPulseEnabled: beatPulseEnabled)
+            beatPulseEnabled: beatPulseEnabled,
+            lastSection: lastSection)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -217,6 +223,7 @@ final class SettingsStore {
         mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
         cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         beatPulseEnabled = d.beatPulseEnabled ?? false
+        lastSection = d.lastSection
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -261,6 +268,8 @@ struct SettingsData: Codable {
     var cueOutputChannel: String?
     /// Optional so older blobs still decode (coalesced to false at the read sites).
     var beatPulseEnabled: Bool?
+    /// Optional so older blobs still decode (nil = never persisted = home).
+    var lastSection: String?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -279,5 +288,6 @@ struct SettingsData: Codable {
         mixGlideSeconds: 10,
         mixAutoHidePlayed: true,
         cueOutputChannel: CueChannel.right.rawValue,
-        beatPulseEnabled: false)
+        beatPulseEnabled: false,
+        lastSection: nil)
 }
