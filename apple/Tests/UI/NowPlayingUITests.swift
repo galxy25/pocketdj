@@ -122,19 +122,31 @@ final class NowPlayingUITests: XCTestCase {
         XCTAssertTrue(app.el("np-add-album-alb_1").waitForExistence(timeout: 4))
         attach("add-search-results")
 
-        // Long-press the record → the current song's detail metadata in a sheet,
-        // closed by the BACK button top-left.
+        // ALBUM context menu: long-press the album row → "Add to end" queues the
+        // album's WHOLE tracklist, in album order.
+        app.staticTexts["Night Drive"].press(forDuration: 0.8)
+        let addToEnd = app.buttons["Add to end"]
+        XCTAssertTrue(addToEnd.waitForExistence(timeout: 5), "album rows should offer a context menu")
+        addToEnd.tap()
         field.buttons["Clear text"].tap()            // back to the deck + queue
+        XCTAssertTrue(app.any("np-queue-2").waitForExistence(timeout: 8),
+                      "the album's 3 tracks should all join Up next")
+        XCTAssertTrue(app.staticTexts["Drift"].exists)
+
+        // Long-press the record → the current song's detail metadata in a sheet —
+        // closed by Back (iPhone) or the always-visible ✕ (iPad/macOS).
         let record = app.any("np-record")
         XCTAssertTrue(record.waitForExistence(timeout: 8))
         record.press(forDuration: 0.8)
         XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 8),
                       "long-pressing the record should open the song detail")
         attach("record-song-detail")
-        XCTAssertTrue(app.el("np-detail-back").waitForExistence(timeout: 4))
-        app.el("np-detail-back").tap()
+        let back = app.el("np-detail-back")
+        let closer = back.waitForExistence(timeout: 2) ? back : app.el("np-detail-close")
+        XCTAssertTrue(closer.waitForExistence(timeout: 4), "a visible close control must exist")
+        closer.tap()
         XCTAssertFalse(app.any("song-detail").waitForExistence(timeout: 2),
-                       "Back should close the detail sheet")
+                       "the close control should dismiss the detail sheet")
         #endif
     }
 

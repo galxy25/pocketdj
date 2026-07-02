@@ -1740,9 +1740,15 @@ controls slide out of view so **Up next can take over the panel** — the menu/t
 above stay pinned. The **tonearm plays the record**: it rests on the outer edge at
 0:00 and sweeps toward the center label in proportion to the play position, like a real
 stylus crossing the grooves. **Right-click or long-press** is everywhere: a **queue row**
-offers *Move to top · Move to bottom · Remove*, a **search result song** offers *Add
-next · Add to end* (＋ still appends), and **the record itself** opens the current
-track's full **song detail metadata** — closed with a Back button in the top left.
+offers *Move to top · Move to bottom · Remove*, a **search result song OR album** offers
+*Add next · Add to end* (＋ still appends; an album lands its whole tracklist, in album
+order, wherever you chose), and **the record itself** opens the current track's full
+**song detail metadata** — closed with a Back button top-left on iPhone, or an
+always-visible **✕** on iPad and Mac (Esc still works for the keyboard-inclined).
+
+And the **Mix tab now wears Apple Music's AutoMix mark** — the two overlapping records
+(one solid, one open) from Apple's own symbol sheet, redrawn to color exactly like the
+neighboring tab icons.
 
 **Getting there is also nicer now:** on iOS the app opens on the **home menu** ("PocketDJ" —
 the ✦ sparkle is gone) unless you'd navigated somewhere before — then it **reopens wherever

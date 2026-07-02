@@ -1002,10 +1002,16 @@ crash report; iOS was immune, each nav bar hosts its own field). ⌘L focuses th
 panel's field (a hidden shortcut button registered only while the panel exists;
 BrowseView's own ⌘L yields via `NowPlayingPanel.isVisible`). Context menus:
 queue rows get **Move to top / Move to bottom / Remove** (`moveUpcomingNext`/
-`moveUpcomingToEnd`, uid-verified), search song rows get **Add next / Add to end**
-(`insertNextInQueue` at `index+1` / `appendToQueue`); long-pressing (iOS) or
-right-clicking (macOS) the RECORD opens the current song's `SongDetailView` in a
-sheet dismissed by a top-left Back button.
+`moveUpcomingToEnd`, uid-verified), search song AND album rows get **Add next / Add
+to end** (`insertNextInQueue` at `index+1` / `appendToQueue`; albums expand via
+`app.tracks(for:)` in album order); long-pressing (iOS) or right-clicking (macOS)
+the RECORD opens the current song's `SongDetailView` in a sheet — dismissed by a
+top-left Back button on iPhone, or an always-visible ✕ overlay on iPad/macOS
+(`NowPlayingPanel.detailUsesCloseOverlay`; the sheet's toolbar isn't a reliable
+close surface there and Esc alone is power-user-only). The Mix tab's menu icon is
+`AutoMixIcon` (RootView) — Apple Music's AutoMix mark (two overlapping records)
+redrawn as a Canvas that inherits the Label icon slot's foreground style (no
+public SF Symbol exists).
 
 - **`RecordPlayerView`** — gold disc (`Theme.accent2`) with grooves and the album's
   `CoverImage` as center label, inside a `Theme.accent` (blue) chassis + fixed

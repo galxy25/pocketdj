@@ -57,7 +57,7 @@ struct RootView: View {
             // panel (record player + queue + add-search) gets the rest.
             VStack(spacing: 0) {
                 List(Section.allCases, selection: $section) { item in
-                    Label(item.rawValue, systemImage: item.icon).tag(item)
+                    rowLabel(item).tag(item)
                 }
                 .frame(maxHeight: nowPlayingVisible ? 236 : .infinity)
                 if nowPlayingVisible {
@@ -140,6 +140,24 @@ struct RootView: View {
         .onChange(of: section) {
             settings.lastSection = section?.rawValue ?? ""
             settings.persist()
+        }
+    }
+
+    /// Menu row: every section uses its SF Symbol except MIX, which wears Apple
+    /// Music's AutoMix mark (two overlapping records — one solid, one open ring).
+    /// No public SF Symbol exists for it, so it's drawn as a tiny vector that
+    /// follows `.tint` exactly like the surrounding symbol icons.
+    @ViewBuilder private func rowLabel(_ item: Section) -> some View {
+        if item == .mix {
+            // No explicit foreground style: the Canvas inherits the Label icon
+            // slot's, so it colors exactly like the sibling SF Symbol icons on
+            // every platform (white here, accent when the platform tints them).
+            Label { Text(item.rawValue) } icon: {
+                AutoMixIcon()
+                    .frame(width: 25, height: 15)
+            }
+        } else {
+            Label(item.rawValue, systemImage: item.icon)
         }
     }
 
@@ -245,5 +263,42 @@ struct ComingSoon: View {
         .navigationTitle(title)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
+    }
+}
+
+/// Apple Music's AUTOMIX glyph, redrawn: two same-size overlapping records — the
+/// left one solid, the right one an open ring sitting ON TOP with a small cut gap
+/// where it crosses the solid disc (matching Apple's mark). Drawn with the current
+/// foreground style, so `.foregroundStyle(.tint)` renders it in the same accent as
+/// the neighboring SF Symbol tab icons.
+struct AutoMixIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let h = size.height
+            let r = h / 2                       // both records span the full height
+            let stroke = h * 0.22               // the open record's ring thickness
+            let gap = h * 0.10                  // cut gap where the ring crosses the disc
+            let leftCenter = CGPoint(x: r, y: r)
+            let rightCenter = CGPoint(x: size.width - r, y: r)
+
+            func circle(_ center: CGPoint, _ radius: CGFloat) -> Path {
+                Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius,
+                                       width: radius * 2, height: radius * 2))
+            }
+
+            // Solid left record, with the ring's footprint (plus the gap) knocked out.
+            var disc = context
+            disc.clip(to: circle(rightCenter, r + gap), options: .inverse)
+            disc.fill(circle(leftCenter, r), with: .style(.foreground))
+            var punch = context
+            punch.clip(to: circle(rightCenter, r - stroke - gap))
+            punch.fill(circle(leftCenter, r), with: .style(.foreground))
+
+            // Open right record: a ring (outer circle minus its hole).
+            var ring = circle(rightCenter, r)
+            ring.addPath(circle(rightCenter, r - stroke))
+            context.fill(ring, with: .style(.foreground), style: FillStyle(eoFill: true))
+        }
+        .accessibilityHidden(true)   // decorative — the Label's text names the tab
     }
 }

@@ -116,20 +116,39 @@ struct NowPlayingPanel: View {
         .background(Theme.bg)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("now-playing-panel")
-        // The record's song-detail sheet — closed by a BACK button top-left (the
-        // user's ask; no ✕). Its own NavigationStack hosts SongDetailView's bars.
+        // The record's song-detail sheet. Close affordance per platform (user-
+        // tested): iPhone gets a BACK button in the nav bar (top-left); iPad and
+        // macOS get an always-visible ✕ overlaid top-left — the sheet's toolbar
+        // isn't a reliable surface there, and Esc alone is power-user-only.
         .sheet(item: $detailSong) { song in
             NavigationStack {
                 SongDetailView(song: song)
                     .toolbar {
-                        ToolbarItem(placement: .navigation) {
-                            Button { detailSong = nil } label: {
-                                Label("Back", systemImage: "chevron.backward")
-                                    .labelStyle(.titleAndIcon)
+                        if !Self.detailUsesCloseOverlay {
+                            ToolbarItem(placement: .navigation) {
+                                Button { detailSong = nil } label: {
+                                    Label("Back", systemImage: "chevron.backward")
+                                        .labelStyle(.titleAndIcon)
+                                }
+                                .accessibilityIdentifier("np-detail-back")
                             }
-                            .accessibilityIdentifier("np-detail-back")
                         }
                     }
+            }
+            .overlay(alignment: .topLeading) {
+                if Self.detailUsesCloseOverlay {
+                    Button { detailSong = nil } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(Theme.fg, Theme.bgOverlay)
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.cancelAction)   // Esc still works for power users
+                    .padding(10)
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("np-detail-close")
+                }
             }
             .preferredColorScheme(.dark)
             .tint(Theme.accent)
@@ -279,6 +298,15 @@ struct NowPlayingPanel: View {
         detailSong = currentItem.flatMap { app.songsById[$0.id] }
     }
 
+    /// iPhone closes the detail with a nav-bar Back; iPad + macOS get the ✕ overlay.
+    static var detailUsesCloseOverlay: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return UIDevice.current.userInterfaceIdiom == .pad
+        #endif
+    }
+
     // MARK: - Queue / search results
 
     private var searching: Bool {
@@ -375,6 +403,18 @@ struct NowPlayingPanel: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("np-add-album-\(album.id)")
+                    }
+                    .contentShape(Rectangle())
+                    // Long-press / right-click: the album's WHOLE tracklist lands
+                    // where you choose — right after the current track, or the end
+                    // (＋ = end, the default) — in album order either way.
+                    .contextMenu {
+                        Button { addNext(songs: app.tracks(for: album)) } label: {
+                            Label("Add next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        }
+                        Button { add(album: album) } label: {
+                            Label("Add to end", systemImage: "text.append")
+                        }
                     }
                     .listRowBackground(Theme.bg)
                 }
