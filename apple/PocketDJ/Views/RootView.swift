@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Adaptive shell: a sidebar split view that collapses to a stack on iPhone and
 /// becomes a true two-column layout on iPad and Mac.
@@ -115,6 +118,11 @@ struct RootView: View {
                 // deliberately skips this — it always lands on Mix.
                 if let raw = settings.lastSection, let s = Section(rawValue: raw) {
                     section = s
+                } else if UIDevice.current.userInterfaceIdiom == .pad {
+                    // iPad's split view always shows a detail column — with nothing to
+                    // restore, select Browser so the sidebar row matches what's shown
+                    // (nil would render Browser with no row highlighted).
+                    section = .browse
                 }
                 #endif
             }

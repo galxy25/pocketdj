@@ -23,6 +23,17 @@ final class SetlistPlayer {
     struct Item: Equatable {
         let id: String; let title: String; let artist: String
         var lengthMs: Int? = nil
+        /// Per-INSTANCE identity for live-queue rows (a song can repeat in a set, so
+        /// `id` can't identify a row). Lets the Now Playing panel remove exactly the
+        /// row the user tapped even when the queue shifts underneath the tap (a track
+        /// ending mid-interaction). Excluded from equality — two Items for the same
+        /// track are still equal.
+        let uid = UUID()
+
+        static func == (lhs: Item, rhs: Item) -> Bool {
+            lhs.id == rhs.id && lhs.title == rhs.title
+                && lhs.artist == rhs.artist && lhs.lengthMs == rhs.lengthMs
+        }
     }
 
     private(set) var queue: [Item] = []
@@ -137,19 +148,28 @@ final class SetlistPlayer {
     }
 
     /// Reorder within the upcoming tail (`.onMove` shape; offsets are relative to
-    /// `upcoming`, i.e. 0 = the track right after the current one).
+    /// `upcoming`, i.e. 0 = the track right after the current one). Offsets are
+    /// CLAMPED to the live tail: the panel's drag ends against a render-time
+    /// snapshot, and a track ending mid-drag shrinks the tail underneath it —
+    /// `move(fromOffsets:toOffset:)` would trap on a stale past-the-end toOffset.
     func moveUpcoming(fromOffsets: IndexSet, toOffset: Int) {
         guard isRunning, index + 1 < queue.count else { return }
         var tail = Array(queue[(index + 1)...])
-        tail.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        let src = IndexSet(fromOffsets.filter(tail.indices.contains))
+        guard !src.isEmpty else { return }
+        tail.move(fromOffsets: src, toOffset: max(0, min(toOffset, tail.count)))
         queue.replaceSubrange((index + 1)..., with: tail)
     }
 
-    /// Remove tracks from the upcoming tail (offsets relative to `upcoming`).
-    func removeUpcoming(atOffsets offsets: IndexSet) {
-        guard isRunning, index + 1 < queue.count else { return }
+    /// Remove tracks from the upcoming tail by row IDENTITY (`Item.uid`), not by
+    /// position: a ✕ tap races playback by design (the queue can advance between
+    /// render and delivery), and a stale positional offset would silently delete
+    /// whatever shifted into that slot. Unknown uids are ignored; only rows
+    /// STRICTLY after the current track are eligible.
+    func removeUpcoming(uids: Set<UUID>) {
+        guard isRunning, index + 1 < queue.count, !uids.isEmpty else { return }
         var tail = Array(queue[(index + 1)...])
-        tail.remove(atOffsets: offsets)
+        tail.removeAll { uids.contains($0.uid) }
         queue.replaceSubrange((index + 1)..., with: tail)
     }
 

@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The HOME "Now Playing" element — shown on the iPhone menu screen and under the
 /// iPad/macOS sidebar items whenever collection playback (the app-scoped
@@ -20,21 +23,45 @@ struct NowPlayingPanel: View {
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
-    @Environment(RipsStore.self) private var rips
     @Environment(BurnStore.self) private var burns
+    #if os(iOS)
+    // Size classes are iOS-only (unavailable on plain macOS) — guard the env read.
+    @Environment(\.verticalSizeClass) private var vSize
+    #endif
 
     @State private var query = ""
     @State private var albumsExpanded = true
     @State private var songsExpanded = true
+    /// Debounced, off-main search results (see the `.task(id:)` below) — the body
+    /// must NEVER scan the ~100k-song catalog itself.
+    @State private var results: SearchResults = .empty
     #if os(iOS)
     @State private var editMode: EditMode = .inactive
     #endif
 
+    struct SearchResults: Equatable {
+        var albums: [IndexAlbum] = []
+        var songs: [IndexSong] = []
+        static let empty = SearchResults()
+    }
+
+    /// iPhone landscape: too short for the record player — the panel keeps the
+    /// header/transport/queue/search and drops the deck art.
+    private var compactHeight: Bool {
+        #if os(iOS)
+        return vSize == .compact
+        #else
+        return false
+        #endif
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             header
-            RecordPlayerView(album: currentAlbum, bpm: currentBpm, spinning: isPlayingNow)
-                .frame(width: recordSize, height: recordSize * 0.82)
+            if !compactHeight {
+                RecordPlayerView(album: currentAlbum, bpm: currentBpm, spinning: isPlayingNow)
+                    .frame(width: recordSize, height: recordSize * 0.82)
+            }
             transport
             listArea
             searchField
@@ -44,6 +71,23 @@ struct NowPlayingPanel: View {
         .background(Theme.bg)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("now-playing-panel")
+        // Debounce + compute OFF the main actor: a keystroke (or any sequencer
+        // change while a query is live) must not trigger a synchronous full-catalog
+        // scan in body. `.task(id:)` cancels the in-flight search on every change.
+        .task(id: query) {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { results = .empty; return }
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            let songs = app.songs, albums = app.albums   // value snapshots (main actor)
+            let found = await Task.detached(priority: .userInitiated) {
+                SearchResults(
+                    albums: NowPlayingSearch.albums(matching: trimmed, in: albums),
+                    songs: NowPlayingSearch.songs(matching: trimmed, in: songs))
+            }.value
+            guard !Task.isCancelled else { return }
+            results = found
+        }
     }
 
     // MARK: - Current track
@@ -138,14 +182,20 @@ struct NowPlayingPanel: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 30)
+        .frame(minHeight: 64)   // the queue/results never collapse to nothing
         #if os(iOS)
         .environment(\.editMode, $editMode)
         #endif
     }
 
     @ViewBuilder private var upNextSection: some View {
+        // Snapshot ONCE per body: rows are identified by Item.uid (a song can repeat
+        // in a set, and the queue can advance underneath an in-flight tap — a stale
+        // positional offset would delete whatever shifted into the slot). Removal is
+        // uid-verified in SetlistPlayer; the a11y ids stay positional for tests.
+        let upcoming = sequencer.upcoming
         Section {
-            ForEach(Array(sequencer.upcoming.enumerated()), id: \.offset) { offset, item in
+            ForEach(Array(upcoming.enumerated()), id: \.element.uid) { offset, item in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(item.title).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
@@ -153,7 +203,7 @@ struct NowPlayingPanel: View {
                     }
                     Spacer(minLength: 4)
                     Button {
-                        sequencer.removeUpcoming(atOffsets: IndexSet(integer: offset))
+                        sequencer.removeUpcoming(uids: [item.uid])
                     } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.fgDim)
                     }
@@ -165,7 +215,11 @@ struct NowPlayingPanel: View {
                 .accessibilityIdentifier("np-queue-\(offset)")
             }
             .onMove { from, to in sequencer.moveUpcoming(fromOffsets: from, toOffset: to) }
-            .onDelete { offsets in sequencer.removeUpcoming(atOffsets: offsets) }
+            .onDelete { offsets in
+                sequencer.removeUpcoming(uids: Set(offsets.compactMap {
+                    upcoming.indices.contains($0) ? upcoming[$0].uid : nil
+                }))
+            }
         } header: {
             HStack {
                 Text("Up next (\(sequencer.upcoming.count))")
@@ -187,10 +241,11 @@ struct NowPlayingPanel: View {
 
     /// Album results ABOVE songs, each section collapsible so the albums can be
     /// hidden to scroll just the songs. ＋ adds to the END of the running queue —
-    /// never a restart (see SetlistPlayer.appendToQueue).
+    /// never a restart (see SetlistPlayer.appendToQueue). Renders the debounced
+    /// `results` state — no catalog work happens here.
     @ViewBuilder private var searchResults: some View {
-        let albums = NowPlayingSearch.albums(matching: query, app: app)
-        let songs = NowPlayingSearch.songs(matching: query, app: app)
+        let albums = results.albums
+        let songs = results.songs
         Section {
             if albumsExpanded {
                 ForEach(albums) { album in
@@ -290,17 +345,28 @@ struct NowPlayingPanel: View {
 /// album-art label) rotates; the chassis and tonearm don't. Spin rate = one
 /// revolution per 4-beat bar of the track's BPM (≈ real 33 RPM vinyl at ~133 BPM);
 /// 33⅓ RPM when no BPM is known. Battery discipline: a `TimelineView(.animation)`
-/// PAUSED whenever playback is paused — zero redraws while frozen (the angle is
-/// computed statelessly from the wall clock, mirroring the Mix beat pulse).
+/// PAUSED whenever playback is paused — zero redraws while frozen. Pausing keeps
+/// the disc AT its current angle (accumulated into `baseAngle`) and resuming
+/// continues from there — a real platter doesn't snap back to 12 o'clock.
 struct RecordPlayerView: View {
     let album: IndexAlbum?
     let bpm: Double?
     let spinning: Bool
 
+    /// Rotation accumulated up to the last pause (degrees).
+    @State private var baseAngle: Double = 0
+    /// Wall-clock start of the CURRENT spin stretch; nil while paused.
+    @State private var spinStart: Date?
+
     /// Revolutions per second: bpm/4 revolutions per minute, or 33⅓ RPM fallback.
     private var revsPerSecond: Double {
         let rpm = bpm.map { max(8, min(120, $0 / 4)) } ?? (100.0 / 3)
         return rpm / 60
+    }
+
+    private func angle(at date: Date) -> Double {
+        let running = spinStart.map { date.timeIntervalSince($0) * revsPerSecond * 360 } ?? 0
+        return (baseAngle + running).truncatingRemainder(dividingBy: 360)
     }
 
     var body: some View {
@@ -316,15 +382,22 @@ struct RecordPlayerView: View {
 
                 // The spinning gold record (platter left-of-center, like a deck).
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !spinning)) { timeline in
-                    let t = timeline.date.timeIntervalSinceReferenceDate
-                    let angle = (t * revsPerSecond * 360).truncatingRemainder(dividingBy: 360)
                     goldRecord(diameter: disc)
-                        .rotationEffect(.degrees(spinning ? angle : 0))
+                        .rotationEffect(.degrees(angle(at: timeline.date)))
                 }
                 .frame(width: disc, height: disc)
                 .position(x: w * 0.44, y: h / 2)
 
                 tonearm(w: w, h: h)
+            }
+        }
+        .onAppear { if spinning { spinStart = Date() } }
+        .onChange(of: spinning) { _, nowSpinning in
+            if nowSpinning {
+                spinStart = Date()                    // resume from the frozen angle
+            } else {
+                baseAngle = angle(at: Date())         // freeze in place
+                spinStart = nil
             }
         }
         .accessibilityIdentifier("np-record")
@@ -381,39 +454,39 @@ struct RecordPlayerView: View {
 // MARK: - Add-search
 
 /// Tokenized free-text search for the panel's add field — every whitespace token
-/// must hit the name/artist haystack; ranked by hit count then catalog order,
-/// capped per section so a ~100k-song catalog stays snappy. (Same shape as the
-/// browse text match, kept separate from BrowseState.results so the panel never
-/// churns the Browser's memoized result cache.)
+/// must hit the name+artist haystack. Matches are ranked exact-name > name-prefix
+/// > substring (so "Neon" surfaces the song titled Neon even in a ~100k catalog
+/// where 25 earlier rows also contain the word), ties in catalog order, capped per
+/// section. Pure + nonisolated: the panel runs it on a detached task over value
+/// snapshots — never on the main actor, and never through BrowseState.results
+/// (that would churn the Browser's memoized cache).
 enum NowPlayingSearch {
     static let songCap = 25
     static let albumCap = 10
 
-    @MainActor
-    static func songs(matching query: String, app: AppModel) -> [IndexSong] {
-        rank(query: query, items: app.songs, haystack: { "\($0.name) \($0.artist)" }, cap: songCap)
+    static func songs(matching query: String, in songs: [IndexSong]) -> [IndexSong] {
+        rank(query: query, items: songs, name: { $0.name }, artist: { $0.artist }, cap: songCap)
     }
 
-    @MainActor
-    static func albums(matching query: String, app: AppModel) -> [IndexAlbum] {
-        rank(query: query, items: app.albums, haystack: { "\($0.name) \($0.artist)" }, cap: albumCap)
+    static func albums(matching query: String, in albums: [IndexAlbum]) -> [IndexAlbum] {
+        rank(query: query, items: albums, name: { $0.name }, artist: { $0.artist }, cap: albumCap)
     }
 
-    static func rank<T>(query: String, items: [T], haystack: (T) -> String, cap: Int) -> [T] {
-        let tokens = query.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    static func rank<T>(query: String, items: [T],
+                        name: (T) -> String, artist: (T) -> String, cap: Int) -> [T] {
+        let normalized = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokens = normalized.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !tokens.isEmpty else { return [] }
-        var scored: [(item: T, hits: Int, order: Int)] = []
+        var scored: [(item: T, score: Int, order: Int)] = []
         for (i, item) in items.enumerated() {
-            let hay = haystack(item).lowercased()
-            var hits = 0
-            for token in tokens {
-                guard hay.contains(token) else { hits = 0; break }   // ALL tokens must match
-                hits += 1
-            }
-            if hits > 0 { scored.append((item, hits, i)) }
+            let itemName = name(item).lowercased()
+            let hay = "\(itemName) \(artist(item).lowercased())"
+            guard tokens.allSatisfy({ hay.contains($0) }) else { continue }
+            let score = itemName == normalized ? 2 : (itemName.hasPrefix(normalized) ? 1 : 0)
+            scored.append((item, score, i))
         }
         return scored
-            .sorted { $0.hits != $1.hits ? $0.hits > $1.hits : $0.order < $1.order }
+            .sorted { $0.score != $1.score ? $0.score > $1.score : $0.order < $1.order }
             .prefix(cap)
             .map(\.item)
     }

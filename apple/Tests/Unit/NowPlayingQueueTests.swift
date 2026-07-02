@@ -57,10 +57,42 @@ final class NowPlayingQueueTests: XCTestCase {
         let seq = makeSequencer()
         seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
         seq.skipNext()                                           // current = "b", history = ["a"]
-        seq.removeUpcoming(atOffsets: IndexSet(integer: 0))      // removes "c"
+        seq.removeUpcoming(uids: [seq.upcoming[0].uid])          // removes "c"
         XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d"])
         XCTAssertEqual(seq.index, 1)
         XCTAssertEqual(seq.queue[seq.index].id, "b")             // still the same current
+        seq.stop()
+    }
+
+    /// REGRESSION (review): removal is verified by row IDENTITY, so a ✕ tap that
+    /// raced an auto-advance still removes exactly the tapped song — and a uid that
+    /// advanced INTO the current slot is no longer eligible (never yank the needle).
+    func testRemoveByUidSurvivesQueueAdvancingUnderTheTap() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
+        let cUid = seq.upcoming[1].uid                           // "c" rendered at offset 1
+        seq.skipNext()                                           // queue shifts under the tap
+        seq.removeUpcoming(uids: [cUid])                         // stale render, right song
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d"])
+
+        let dUid = seq.upcoming[0].uid                           // "d"
+        seq.skipNext()                                           // "d" becomes the CURRENT track
+        seq.removeUpcoming(uids: [dUid])                         // must not touch the needle
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d"])
+        XCTAssertEqual(seq.queue[seq.index].id, "d")
+        seq.stop()
+    }
+
+    /// REGRESSION (review): a drag that ends against a stale (pre-advance) snapshot
+    /// delivers offsets past the live tail — they are clamped/filtered, never a trap.
+    func testMoveUpcomingClampsStaleOffsets() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
+        seq.skipNext()                                           // tail = [c, d]
+        seq.moveUpcoming(fromOffsets: IndexSet(integer: 0), toOffset: 99)   // stale far drop
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d", "c"])           // clamped to end
+        seq.moveUpcoming(fromOffsets: IndexSet(integer: 42), toOffset: 0)   // all-stale source
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d", "c"])           // no-op, no trap
         seq.stop()
     }
 
@@ -86,7 +118,7 @@ final class NowPlayingQueueTests: XCTestCase {
 
         seq.play([item("a")], sourceSetlistId: "set_1")          // single track ⇒ no tail
         seq.moveUpcoming(fromOffsets: IndexSet(integer: 0), toOffset: 0)
-        seq.removeUpcoming(atOffsets: IndexSet(integer: 0))
+        seq.removeUpcoming(uids: [seq.queue[0].uid])
         XCTAssertEqual(seq.queue.map(\.id), ["a"])
         XCTAssertEqual(seq.index, 0)
         seq.stop()
@@ -106,26 +138,31 @@ final class NowPlayingSearchTests: XCTestCase {
 
     func testSongSearchMatchesNameOrArtistAllTokens() async {
         let app = await makeApp()
-        XCTAssertEqual(NowPlayingSearch.songs(matching: "aria", app: app).map(\.id),
+        XCTAssertEqual(NowPlayingSearch.songs(matching: "aria", in: app.songs).map(\.id),
                        ["sng_1", "sng_2", "sng_3"])              // artist match, catalog order
-        XCTAssertEqual(NowPlayingSearch.songs(matching: "get down", app: app).map(\.id),
+        XCTAssertEqual(NowPlayingSearch.songs(matching: "get down", in: app.songs).map(\.id),
                        ["sng_6"])                                // both tokens must hit
-        XCTAssertTrue(NowPlayingSearch.songs(matching: "get zebra", app: app).isEmpty)
-        XCTAssertTrue(NowPlayingSearch.songs(matching: "   ", app: app).isEmpty)
+        XCTAssertTrue(NowPlayingSearch.songs(matching: "get zebra", in: app.songs).isEmpty)
+        XCTAssertTrue(NowPlayingSearch.songs(matching: "   ", in: app.songs).isEmpty)
     }
 
     func testAlbumSearchMatchesNameOrArtist() async {
         let app = await makeApp()
-        XCTAssertEqual(NowPlayingSearch.albums(matching: "night drive", app: app).map(\.id),
+        XCTAssertEqual(NowPlayingSearch.albums(matching: "night drive", in: app.albums).map(\.id),
                        ["alb_1"])
-        XCTAssertEqual(NowPlayingSearch.albums(matching: "cobalt", app: app).map(\.id),
+        XCTAssertEqual(NowPlayingSearch.albums(matching: "cobalt", in: app.albums).map(\.id),
                        ["alb_3"])
     }
 
-    func testRankCapsResults() {
-        let items = (0..<40).map { "item \($0)" }
-        let out = NowPlayingSearch.rank(query: "item", items: items, haystack: { $0 }, cap: 5)
-        XCTAssertEqual(out.count, 5)
-        XCTAssertEqual(out.first, "item 0")                      // stable catalog order
+    /// REGRESSION (review): an exact-name match must surface even when the cap is
+    /// already full of earlier catalog rows that merely CONTAIN the query.
+    func testRankPrefersExactAndPrefixNameMatches() {
+        let items = (0..<30).map { "covers of neon \($0)" } + ["neon nights", "neon"]
+        let out = NowPlayingSearch.rank(query: "neon", items: items,
+                                        name: { $0 }, artist: { _ in "" }, cap: 5)
+        XCTAssertEqual(out.first, "neon")                        // exact beats everything
+        XCTAssertEqual(out[1], "neon nights")                    // then name-prefix
+        XCTAssertEqual(out.count, 5)                             // cap still applies
+        XCTAssertEqual(out[2], "covers of neon 0")               // then catalog order
     }
 }
