@@ -1465,10 +1465,32 @@ can arm them before Play or flip them mid-set):
 
 Both are off by default; the plain crossfade is unchanged when they're off.
 
+**Pause & Resume — walk away, take over, come back.** Next to Stop, the banner shows a **Pause**
+button while the auto-DJ runs (and a **Resume** button once it's paused). **Pause** doesn't stop the
+music or your recording — it just **hands you the decks**: the auto-DJ stops advancing so you can mix
+by hand for as long as you like (load tracks, ride the faders, whatever). Hit **Resume** and it slots
+back in **musically**, never with an abrupt cut:
+
+- if **one deck** is playing, it lets that track ride until it reaches the crossfade window, then loads
+  the **next unplayed** track from the collection onto the other deck and fades over;
+- if you've got **two decks blended** together, it waits for the **first** of them to end, then loads
+  the next unplayed track onto that freed deck and **glides/fades the still-playing deck over to it** —
+  so the handoff happens right as your first track runs out.
+
+It always picks the **next *unplayed*** track from the collection, so nothing you already spun during
+your hands-on stretch gets repeated. Pause and Resume both drop a marker on the session timeline (§59),
+so a replay shows exactly where you took over and handed back. Perfect for a long night: *auto-mix →
+Pause for a bathroom break's worth of hand-mixing → Resume → repeat until sunrise.*
+
+**Auto mode points both decks at the collection.** The moment you're in Auto with a collection chosen,
+**both decks' load-source is set to that collection** — so when you Pause and want to hand-load more
+tracks, the track browser is already scoped to the right crate on each deck, no re-picking.
+
 **User story:** "Point it at a pocket, hit Play or Shuffle, and let it DJ the whole crate for me —
 crossfading track to track on its own — with a Stop I can always find. Flip on FX Glide for a sweep
 through each blend, or Mix Glide to bend the keys and tempos together where the data's there so
-nothing clashes — set how long that glide takes."
+nothing clashes — set how long that glide takes. And when I want to jump in, hit Pause, mix a few
+tracks myself, then Resume and let it take back over right as my last track ends."
 
 ---
 

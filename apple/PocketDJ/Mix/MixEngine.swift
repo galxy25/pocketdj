@@ -182,6 +182,10 @@ final class MixEngine {
 
     private(set) var autoEnabled = false
     private(set) var autoMixing = false
+    /// PAUSED auto-mix: the DJ stepped away → hit Pause. The mix stays `autoMixing` (recording +
+    /// playback keep running) but the TRANSITION machine is suspended so you can take the decks over by
+    /// hand; Resume re-arms it. Distinct from `autoMixing=false` (a full Stop). See `pauseAuto`/`resumeAuto`.
+    private(set) var autoPaused = false
     private(set) var autoStatus: String?
     /// FX GLIDE (auto-mix pill): when on, each auto-mix transition sweeps a coherent effect (held for a
     /// run of 3–5 transitions) IN on the outgoing deck, holds it across the crossfade on both decks,
@@ -283,6 +287,12 @@ final class MixEngine {
     /// back once that crossfade finishes — so a fast 5 s skip never shortens the NEXT automatic
     /// crossfade. nil when no restore is pending.
     @ObservationIgnored private var pendingFadeRestore: Double?
+    /// RESUME-with-both-decks-active handoff: when Resume finds two decks playing (a manual blend), the
+    /// auto machine must wait for the FIRST (soonest-ending) deck to finish, then hand off from the
+    /// SURVIVOR to the next unplayed track. This holds that soonest-ending deck; the idle tick watches
+    /// it and, the moment it ends, retires it, loads the next track onto it, and glides the survivor
+    /// over. nil in the normal single-live-deck case.
+    @ObservationIgnored private var autoResumeEndDeck: Deck?
 
     // MARK: Auto-Mix — glide transition phases (FX Glide + Mix Glide)
 
@@ -633,7 +643,9 @@ final class MixEngine {
     }
 
     func pause(_ deck: Deck) {
-        if autoMixing { endAutoLoop() }     // a manual pause during Auto-DJ ends it (else the wall-clock resumes)
+        // A manual pause during a RUNNING Auto-DJ ends it — but NOT while auto is PAUSED, where you're
+        // deliberately hand-mixing and a per-deck pause must behave like a normal manual pause.
+        if autoMixing && !autoPaused { endAutoLoop() }
         silence(deck)
     }
 
@@ -659,7 +671,7 @@ final class MixEngine {
     }
 
     func pauseBoth() {
-        if autoMixing { endAutoLoop() }     // a manual master-Pause during Auto-DJ ends it
+        if autoMixing && !autoPaused { endAutoLoop() }     // a manual master-Pause during a RUNNING Auto-DJ ends it
         for d in Deck.allCases { pauseActiveNodes(d); setPlaying(d, false) }
         refreshTransport()
     }
@@ -971,6 +983,8 @@ final class MixEngine {
         autoQueue = shuffled ? items.shuffled() : items
         autoLivePos = 0
         autoLiveDeck = .a
+        autoPaused = false
+        autoResumeEndDeck = nil
         autoFadeStartedAt = nil
         autoDeckEndsAt = [:]
         autoDeckDurationMs = [:]
@@ -998,6 +1012,91 @@ final class MixEngine {
         pauseBoth()
     }
 
+    /// PAUSE the auto-DJ without stopping it: suspends the transition machine so you can take the decks
+    /// over by hand. Playback and any in-flight recording keep running untouched — only the auto-advance
+    /// (and the auto-stop-at-end-of-queue) is gated. Recorded as one `.autoPause` timeline marker.
+    /// No-op unless a mix is actively running (and not already paused).
+    func pauseAuto() {
+        guard autoMixing, !autoPaused else { return }
+        autoPaused = true
+        autoResumeEndDeck = nil        // a fresh pause clears any stale resume-handoff intent
+        rec(.autoPause)
+        refreshAutoStatus()
+    }
+
+    /// RESUME the auto-DJ after a manual interlude. Rather than cutting whatever's playing, it re-arms
+    /// the machine against the CURRENT live playback so the next transition lands naturally:
+    ///  • ONE deck playing  → arm its end from its REAL remaining time; the machine waits for the
+    ///    crossfade window, then loads the next unplayed track onto the free deck and fades over.
+    ///  • BOTH decks playing (a manual blend) → keep the later-ending deck as the survivor and WATCH the
+    ///    soonest-ending one; the instant it finishes, load the next unplayed track onto that freed deck
+    ///    and glide the survivor over (idle-tick `autoResumeEndDeck` + `beginResumeHandoff`).
+    ///  • NEITHER playing → restart the live deck (its track, or the next unplayed) before arming.
+    /// Recorded as one `.autoResume` marker. No-op unless a mix is paused.
+    func resumeAuto() {
+        guard autoMixing, autoPaused else { return }
+        autoPaused = false
+        rec(.autoResume)
+        let now = Date()
+        let aOn = state(.a).isPlaying, bOn = state(.b).isPlaying
+
+        if aOn && bOn {
+            // Two decks blended: the later-ending deck stays live; watch the other and hand off when it ends.
+            let remA = max(0, duration(.a) - position(.a)), remB = max(0, duration(.b) - position(.b))
+            let survivor: Deck = remA >= remB ? .a : .b            // ends LAST → stays live
+            autoLiveDeck = survivor
+            autoResumeEndDeck = other(survivor)                    // ends FIRST → handoff trigger
+            autoDeckEndsAt[survivor] = now.addingTimeInterval(survivor == .a ? remA : remB)
+            refreshAutoStatus(); startTickIfNeeded()
+            return
+        }
+
+        // One (or zero) deck playing → establish a single live deck + preload the next unplayed track.
+        let live: Deck = aOn ? .a : (bOn ? .b : autoLiveDeck)
+        if !aOn && !bOn {                                          // nothing playing — get the live deck going again
+            if state(live).loaded == nil, let k0 = nextUnplayedQueueIndex() { loadAuto(autoQueue[k0], onto: live) }
+            if state(live).loaded != nil { play(live) }
+        }
+        autoLiveDeck = live
+        autoResumeEndDeck = nil
+        if let k = nextUnplayedQueueIndex(excludingDeck: live) {
+            loadAuto(autoQueue[k], onto: other(live))              // preload the on-deck next track
+            autoLivePos = max(0, k - 1)
+            autoNextToLoad = k + 1
+        } else {
+            autoLivePos = max(autoLivePos, autoQueue.count - 1)    // queue exhausted — ride the live deck out
+        }
+        autoDeckEndsAt[live] = now.addingTimeInterval(max(0, duration(live) - position(live)))
+        refreshAutoStatus(); startTickIfNeeded()
+    }
+
+    /// Two-deck RESUME handoff (called from the idle tick when `autoResumeEndDeck` finishes): retire the
+    /// just-ended deck, load the next unplayed track onto it, and glide/crossfade the still-playing
+    /// survivor (the live deck) over to it — after which the normal auto loop continues. Ends the mix if
+    /// nothing is left to play.
+    private func beginResumeHandoff(now: Date, freed: Deck) {
+        silence(freed)                                            // the ended deck is done — retire it cleanly
+        guard let k = nextUnplayedQueueIndex(excludingDeck: autoLiveDeck) else { stopAutoMix(); return }
+        loadAuto(autoQueue[k], onto: freed)                       // freed == other(autoLiveDeck)
+        autoLivePos = max(0, k - 1)
+        autoNextToLoad = k + 1
+        if anyGlide { beginGlideTransition(now: now, preroll: 0) }  // no preroll — the first track already ended
+        else { beginAutoCrossfade(now: now) }
+    }
+
+    /// First index in the auto queue whose song hasn't started playing this session (nil ⇒ all played).
+    /// `excludingDeck` skips whatever is loaded on that deck (e.g. the live deck's current track).
+    private func nextUnplayedQueueIndex(excludingDeck exclude: Deck? = nil) -> Int? {
+        let skip = exclude.flatMap { state($0).loaded?.songId }
+        for (i, item) in autoQueue.enumerated() {
+            let sid = item.loadable.songId
+            if sid == skip { continue }
+            if recorder?.hasPlayed(sid) == true { continue }
+            return i
+        }
+        return nil
+    }
+
     private func endAutoLoop() {
         let wasMixing = autoMixing
         // Abort any in-flight glide: restore both decks' forced effect + natural tempo/pitch, so a
@@ -1008,6 +1107,8 @@ final class MixEngine {
         autoPostrollStartedAt = nil
         autoTransitionIsGlide = false
         pendingFadeRestore = nil
+        autoPaused = false
+        autoResumeEndDeck = nil
         autoMixing = false
         autoStatus = nil
         autoSourceLabel = nil
@@ -1052,6 +1153,21 @@ final class MixEngine {
             applyIncomingGlide(p)
             if p >= 1 { finishGlide() }
         } else {                                                          // IDLE — maybe start a transition
+            // RESUME with two decks blended: hold everything until the SOONEST-ending deck finishes,
+            // then retire it, load the next unplayed track onto it, and glide the survivor over. This
+            // runs even while `autoPaused` is being lifted; it takes priority over the normal window check.
+            if let endDeck = autoResumeEndDeck {
+                let ended = !state(endDeck).isPlaying || (duration(endDeck) - position(endDeck)) <= 0.05
+                if ended {
+                    autoResumeEndDeck = nil
+                    beginResumeHandoff(now: now, freed: endDeck)
+                }
+                refreshAutoStatus()
+                return
+            }
+            // PAUSED: the DJ is hand-mixing — never auto-advance (nor auto-stop at end-of-track). Playback
+            // + recording keep running; the live deck simply plays on until Resume re-arms the machine.
+            guard !autoPaused else { return }
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
             let secondsLeft = endsAt.timeIntervalSince(now)
             if autoLivePos + 1 < autoQueue.count {
@@ -1154,7 +1270,8 @@ final class MixEngine {
     private func refreshAutoStatus() {
         let s: String?
         if autoMixing {
-            let detail = autoTransitioning ? "fading" : "Deck \(autoLiveDeck.rawValue)"
+            let detail = autoPaused ? "paused — hand-mixing"
+                       : (autoTransitioning ? "fading" : "Deck \(autoLiveDeck.rawValue)")
             s = "\(min(autoLivePos + 1, autoQueue.count)) / \(autoQueue.count) · \(detail)"
         } else { s = nil }
         if s != autoStatus { autoStatus = s }

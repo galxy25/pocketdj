@@ -98,6 +98,10 @@ struct MixView: View {
         .onChange(of: settings.mixGlideSeconds) { engine.setMixGlideSeconds(settings.mixGlideSeconds) }
         .onChange(of: settings.cueOutputChannel) { engine.setCueOnRight(settings.cueOutputChannel.onRight) }
         .onChange(of: settings.beatPulseEnabled) { engine.setBeatPulseEnabled(settings.beatPulseEnabled) }
+        // Auto mode pins BOTH decks' load source to the auto-mix collection (so a Pause → hand-load-more
+        // flow needs no per-deck source picking). Fires when you pick the collection or flip on Auto.
+        .onChange(of: autoSource) { syncDeckSourcesToAuto() }
+        .onChange(of: engine.autoEnabled) { syncDeckSourcesToAuto() }
         // DELIBERATELY no `.onDisappear { engine.pauseBoth()/stopAutoMix()/teardown() }`: the engine is
         // app-scoped and its tick + audio graph must keep running when you leave the Mix tab, so a mix
         // (and an Auto-DJ) keeps playing and the lock-screen card stays live. Sibling views do pause on
@@ -277,12 +281,27 @@ struct MixView: View {
             HStack(spacing: 10) {
                 Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Auto-mixing").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                    Text(engine.autoPaused ? "Auto-mix paused" : "Auto-mixing")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
                     if let status = engine.autoStatus {
                         Text(status).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
                     }
                 }
                 Spacer()
+                // Pause / Resume — walk away, hand-mix, come back — next to Stop (in-body so it stays
+                // reachable on iPhone). Toggles: Pause a running mix; Resume a paused one (playback +
+                // recording keep running through a pause; Resume re-arms the transition machine).
+                if engine.autoPaused {
+                    Button { engine.resumeAuto() } label: { Label("Resume", systemImage: "play.fill") }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.accent2)
+                        .accessibilityIdentifier("mix-auto-resume")
+                } else {
+                    Button { engine.pauseAuto() } label: { Label("Pause", systemImage: "pause.fill") }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.accent2)
+                        .accessibilityIdentifier("mix-auto-pause")
+                }
                 Button(role: .destructive) { engine.stopAutoMix() } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }
@@ -355,8 +374,18 @@ struct MixView: View {
     /// Build the queue from the chosen collection (resolver order) + each song's catalog length,
     /// then hand it to the engine with the Settings-configured lead/fade. Shuffle is applied in
     /// the engine so order/shuffle share one path.
+    /// With Auto mode on + a collection chosen, mirror it onto BOTH decks' load source so hand-loading
+    /// more tracks during a Pause takes no per-deck source picking. Only mirrors while Auto is enabled;
+    /// a manual per-deck source change afterwards is left as-is (this fires on collection / mode change).
+    private func syncDeckSourcesToAuto() {
+        guard engine.autoEnabled, let s = autoSource else { return }
+        sourceA = s
+        sourceB = s
+    }
+
     private func startAuto(shuffled: Bool) {
         guard let src = autoSource else { return }
+        sourceA = src; sourceB = src           // both decks browse the auto collection (for hand-loading on Pause)
         let loadables = MixResolver(app: app, collections: collections, burns: burns).loadables(for: src)
         let items = loadables.map { l in
             MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)

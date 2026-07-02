@@ -548,6 +548,35 @@ pause ends the loop. (`autoStatus` shows "n / total · Deck X | fading".) When a
 feature is armed (§7.11) the transition grows an optional **pre-roll** and **post-roll**
 around this same crossfade; with none armed neither fires, so the plain path is unchanged.
 
+**Pause / Resume — step away, hand-mix, hand it back.** A running auto-DJ can be **paused**
+without stopping it: `pauseAuto()` sets an observable `autoPaused` flag that gates **only** the
+transition-trigger (the `autoFire` idle branch) — playback and any in-flight **recording** keep
+running, and a per-deck manual pause during the interlude no longer ends the mix (`pause`/`pauseBoth`
+now gate their `endAutoLoop()` on `!autoPaused`), so you can take the decks over by hand. `resumeAuto()`
+re-arms the machine against the **current live playback** rather than a stale wall-clock, so the next
+transition lands musically:
+
+```
+ resumeAuto():
+   ONE deck playing   → autoDeckEndsAt[live] = now + (duration−position); the idle branch then waits
+                        for the crossfade window, loads the next UNPLAYED track onto the free deck, fades.
+   BOTH decks playing → survivor = the LATER-ending deck (stays live); autoResumeEndDeck = the other.
+                        The idle tick WATCHES autoResumeEndDeck; the instant it ends → beginResumeHandoff:
+                        load the next unplayed track onto that freed deck + glide/crossfade the survivor over.
+   NEITHER playing    → (re)start the live deck (its track, or the next unplayed) before arming.
+   "next unplayed" = first autoQueue item whose songId isn't in the session played-set
+                     (recorder.hasPlayed — so a track hand-played during the interlude isn't repeated).
+```
+
+Both edges are logged as bare `.autoPause` / `.autoResume` timeline markers (§7.8), delimiting the manual
+interlude in the corpus. `autoStatus` reads "n / total · paused — hand-mixing" while paused.
+
+**Auto-mode source lock.** With Auto mode enabled and a collection chosen, both decks' **load source**
+(the per-deck track browser, `sourceA`/`sourceB` in `MixView`) is pinned to the auto-mix collection —
+`syncDeckSourcesToAuto()` fires on a collection change, on flipping Auto on, and at Play — so hand-loading
+more tracks during a Pause needs no per-deck source picking. A later manual per-deck source change is left
+as-is.
+
 ### 7.6 Stem decks — mix the parts, not just the track
 
 ```
