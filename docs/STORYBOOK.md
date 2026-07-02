@@ -676,7 +676,11 @@ by title/artist locally. Once you paste a **read-only search key/secret** into
 the *entire* indexed catalog — here **80 of 470** matches for *"midnight"* in
 **389 ms**, with explicit (**E**) and BPM/key badges intact. The browser signs each
 request itself (SigV4) and reaches the collection same-origin via a CloudFront proxy,
-so there's no separate server to run and the collection scales to **$0 when idle**.
+so there's no separate server to run. The backing collection is now **NextGen
+scale-to-zero** — it costs **$0 while idle** and only adds a one-time **~15 s warm-up**
+on the first search after a long pause. Settings ▸ Online search also shows the current
+**search host** with an **editable override**, so the search backend can be moved (or
+made private per-user) without shipping a new app.
 
 ---
 

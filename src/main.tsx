@@ -1,7 +1,11 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App';
+import { loadSearchConfig } from './search/esClient';
 import './styles/index.css';
+
+// Warm the online-search host config early (non-blocking); esSearch also awaits it.
+loadSearchConfig();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

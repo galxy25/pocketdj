@@ -302,9 +302,10 @@ Things found while writing that don't fully line up, gathered here so they're no
 2. **Web vs native edits are different mechanisms.** Web mutates IndexedDB in place (no
    portable doc, no round-trip); only native keeps the versioned `EditsDocument`. The
    "edits database" is a native-only entity today. (Ch. 7 §3)
-3. **aoss collection vs index name.** Collection is `pocketdj-search` (id
-   `zxvkpgoc5ivtrbqp37s5`); the index inside it is `pocketdj`. Client code and the
-   CloudFront proxy path both use `pocketdj` (the index), which must match. (Ch. 6)
+3. **aoss collection vs index name.** Collection is `pocketdj-search` (NextGen
+   scale-to-zero, id `mii9dwge3uiee2tvivt5` — changes on rebuild; clients read the host
+   from `public/search-config.json`); the index inside it is `pocketdj`. Client code and
+   the CloudFront proxy path both use `pocketdj` (the index), which must match. (Ch. 6)
 4. **`coverArtSources.url` extension drift.** `mirror-art.sh` / `index-json.ts` show
    `/art/<id>.jpg`; the Swift `Config.artURL` docstring shows `.webp`. The mirror
    writes `.jpg` (`image/jpeg`); the `.webp` comment appears stale. (Ch. 2, 7)

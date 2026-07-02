@@ -1,0 +1,6 @@
+{
+  "host": "mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws",
+  "region": "us-west-2",
+  "index": "pocketdj",
+  "note": "OpenSearch Serverless (NextGen scale-to-zero) prod collection pocketdj-search. Clients read this at launch so the search host can change without a rebuild. Update this file + the CloudFront /pocketdj/* proxy origin + the collection's data-access policy when swapping collections."
+}

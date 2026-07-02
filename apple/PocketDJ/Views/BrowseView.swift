@@ -172,6 +172,10 @@ struct BrowseView: View {
     }
 
     private func triggerOnline() {
+        // Apply the user's optional host override (Settings ▸ Endpoint) before searching;
+        // resolution is user override → global search-config.json → baked default.
+        let endpoint = settings.searchEndpoint
+        Task { await SearchConfig.shared.setUserHost(endpoint) }
         online.searchDebounced(query: browse.query, kind: browse.kind,
                                clauses: browse.clauses, sortKeys: browse.sortKeys,
                                creds: searchCreds, app: app)

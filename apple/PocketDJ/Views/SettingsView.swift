@@ -31,6 +31,10 @@ struct SettingsView: View {
     @State private var backupDoc = PlaylistZipFile(data: Data())
     @State private var backupSummary: String?
 
+    /// The host the app will actually search (user override → global search-config.json →
+    /// baked default), shown live in the Online-search section.
+    @State private var effectiveSearchHost = ""
+
     enum RipStatus { case ok(String), bad(String) }
     enum SyncStatus { case ok(String), bad(String) }
 
@@ -375,12 +379,17 @@ struct SettingsView: View {
             SecureField("Secret access key", text: $settings.searchSecretKey)
                 .pocketField()
                 .accessibilityIdentifier("settings-search-secret")
-            TextField("Endpoint (optional)", text: $settings.searchEndpoint)
+            TextField("Search host (optional — blank = shared default)", text: $settings.searchEndpoint)
                 .pocketField()
                 .font(.caption.monospaced())
+                .accessibilityIdentifier("settings-search-host")
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 #endif
+            if !effectiveSearchHost.isEmpty {
+                Text("Currently searching: \(effectiveSearchHost)")
+                    .font(.caption2.monospaced()).foregroundStyle(.secondary)
+            }
             HStack {
                 Button("Save") { settings.persist() }
                     .accessibilityIdentifier("settings-search-save")
@@ -396,7 +405,12 @@ struct SettingsView: View {
         } header: {
             Text("Online search (OpenSearch)")
         } footer: {
-            Text("Enables full-text search across the whole collection. Leave blank to stay fully offline.")
+            Text("Enables full-text search across the whole collection. Leave the host blank to follow the shared default (updates automatically); set it to point at a private or migrated search host. Leave key/secret blank to stay fully offline.")
+        }
+        // Reflect the live effective host as the override field changes.
+        .task(id: settings.searchEndpoint) {
+            await SearchConfig.shared.setUserHost(settings.searchEndpoint)
+            effectiveSearchHost = await SearchConfig.shared.resolved().host
         }
     }
 

@@ -62,6 +62,7 @@ struct RootView: View {
         .task {
             app.settings = settings   // wire the live multi-source config before loading
             app.edits = edits         // overlay local metadata edits
+            Task { await SearchService.ensureConfigLoaded() }  // pre-warm online-search host from search-config.json
             collections.app = app     // give realize() the catalog to resolve ids against
             // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
             setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
