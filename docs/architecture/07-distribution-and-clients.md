@@ -652,6 +652,94 @@ device build exercises the real MusicKit/ShazamKit App Services.
 
 ---
 
+## 7. App Intents — Siri, Shortcuts & Spotlight (native)
+
+The native app exposes its performance surface to the OS through **in-app App
+Intents** (`apple/PocketDJ/Intents/`). In-app — not an extension — because every
+intent drives *live, in-process* state (`SetlistPlayer`, `MixEngine`), and
+`AudioPlaybackIntent` runs in the app process anyway (background-launching the app
+when needed; playback then continues under the existing `audio` background mode).
+
+**The bridge.** The app's stores are `@State` on `PocketDJApp` and travel only
+through the SwiftUI environment, but intents run outside the view hierarchy — so
+`PocketDJApp.init()` registers one **`IntentServices`** (`@MainActor @Observable`)
+with `AppDependencyManager`, and every intent/entity query resolves it via
+`@Dependency`. All intent *operations* live on `IntentServices` (thin + unit-tested;
+the intent structs are adapters). To make a scene-less background launch safe, the
+store **cross-wiring moved from `RootView.task` into `PocketDJApp.init()`**
+(`collections.app`, `playbackMode`, `burns.lookup`, `coordinator.sourceOfSong`, …);
+`RootView.task` keeps only launch *actions* (manifest refresh, reconcile, catalog
+load). Intents call `ensureReady()` → the offline-first `loadIfNeeded()`.
+
+**Entities.** `PlaylistEntity` / `PocketEntity` / `AutoMixSourceEntity` wrap the
+collections by their stable prefixed-UUID ids (`pls_`/`pkt_`/`set_`). The auto-mix
+source folds *pocket | setlist* into ONE speakable parameter (a Siri phrase carries
+at most one), reusing `MixSource.id`'s `pocket:`/`setlist:` encoding. Queries are
+`EntityStringQuery`s (case-insensitive name match) and always filter the reserved
+Now Playing scratch setlist.
+
+**The intents** (8 App Shortcuts, under Apple's 10-cap, phrases like *"Play
+〈playlist〉 in PocketDJ"*):
+
+- **Play / Shuffle Playlist · Play / Shuffle Pocket** — `collections.playNow` →
+  the reserved Now Playing setlist → `setlistPlayer.play`, exactly the detail-view
+  path minus navigation. Shuffle variants are separate intent types so *"Shuffle X
+  in PocketDJ"* gets its own phrase.
+- **Auto-Mix (pocket | setlist, shuffle)** — MixView's path: `MixResolver.loadables`
+  → `AutoMixItem`s → `startAutoMix` with the Settings lead/fade, plus the same
+  settings pushes the Mix tab does on open. Speakable error when the source has no
+  burned songs (auto-mix is local-files-only).
+- **Pause / Resume Auto-Mix** — call the **lock-screen seam** (`remotePause` /
+  `remotePlay`): wall-clock-frozen suspend, resume-only-what-paused — never the
+  in-app hand-mixing pause, and never `pauseBoth()` (which would END the mix).
+- **Create Pocket** — the async on-device-LLM builder (Ch. 4 §4.1).
+- **Open Playlist / Open Pocket** — `OpenIntent`s for Spotlight results: they park
+  an `IntentRoute` on the bridge; `RootView` (owner of the `NavigationPath`)
+  consumes it via `onChange` + a `.task` check for cold launches.
+
+**Donations.** Two channels, per Apple's guidance: (1) **entities → Spotlight** —
+`IndexedEntity` conformance + a debounced wipe-and-rewrite of the named index
+`pocketdj-collections` after every `CollectionsStore.save()` (an `onChange` hook),
+plus `updateAppShortcutParameters()` so Siri re-learns speakable names on rename;
+(2) **actions → predictions** — the UI play/auto-mix call sites donate the
+equivalent parameterized intent (`IntentDonations`), never from `perform()` (the
+system auto-donates its own runs). Both are disabled under `PDJ_USE_FIXTURE` so
+tests don't pollute the simulator.
+
+**In-app search (system.search schema, live today).** `SearchLibraryIntent`
+adopts `@AppIntent(schema: .system.search)` (18.x-era, compiles on the current
+SDK): "Search PocketDJ for boogie" parks the term on
+`IntentServices.pendingBrowseQuery` + a `.browseSearch` route — RootView lands on
+the Browser and BrowseView consumes the term into its search field (same
+atomic-take pattern as the open routes).
+
+**The iOS/macOS 27 audio-schema layer (`AudioSchema27.swift`, compiled-out until
+Xcode 27).** The "Siri AI" audio domain is implemented behind
+`#if canImport(MediaIntents)` (MediaIntents is new in the 27 SDK, so with
+Xcode 26.x the file compiles out and nothing changes), every type
+`@available(iOS 27, macOS 27, *)`; shapes ported from Apple's CosmoTunes sample.
+Inside: `AudioSongEntity` / `AudioAlbumEntity` / `AudioArtistEntity` /
+`AudioPlaylistEntity` (playlists AND pockets both surface as speakable
+"playlists", routed by their `pls_`/`pkt_` id prefixes) with
+Entity/String/`IndexedEntityQuery` queries; the `PocketDJAudioEntity`
+`@UnionValue` (song | playlist); `audio.playAudio` (natural-language play,
+shuffle via `playbackAttributes`; queue insertion collapses to play-now —
+PocketDJ's Now Playing replaces the queue) and `audio.addToPlaylist` (append a
+song to a playlist or pocket); the MediaIntents `AudioSearch` value query
+("play something upbeat" → tokenized catalog search capped at 25 songs +
+name-matched collections; bare "play something" → the user's own collections);
+and `AudioSchemaIndexer` — bulk Spotlight indexing of the SMALL sets (albums
+~13k batched, playlists/pockets) into the separate `pocketdj-audio` named index,
+chained onto CollectionsSpotlight's debounced hook via
+`AudioSchemaBootstrap.install` (songs are never bulk-indexed at ~100k — they
+resolve through the string/value queries). Deliberately not adopted:
+`addToLibrary` + `updateAudioAffinity` (no add-to-library or like/dislike model;
+audio is not an all-or-nothing domain). CAVEAT: this layer has never been
+compiled against a real 27 SDK (none installed) — expect minor fix-ups on the
+first Xcode 27 build, guided by the schema macros' compile-time shape errors.
+
+---
+
 ## End of the book
 
 Back to the [top-level overview & table of contents](../ARCHITECTURE.md).

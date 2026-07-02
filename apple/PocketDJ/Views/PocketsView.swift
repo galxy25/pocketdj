@@ -228,6 +228,8 @@ struct PocketDetailView: View {
     /// "Now Playing" setlist and open it autostarting. CRITIC-B no-duplicate-push guard.
     private func play(shuffle: Bool) {
         collections.playNow(pocketId: pocketId, shuffle: shuffle)
+        // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
+        IntentDonations.playedPocket(collections.pocket(pocketId), shuffle: shuffle)
         if !nowPlayingPushed {
             nowPlayingPushed = true
             path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))

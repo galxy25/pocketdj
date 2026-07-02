@@ -221,8 +221,14 @@ final class BrowseState {
 enum BrowsePaging {
     /// Rows in one page. Big enough to fill any screen on the first render (so the grow
     /// trigger doesn't fire repeatedly to catch up), small enough that the ForEach diff
-    /// stays cheap regardless of catalog size.
-    static let pageSize = 120
+    /// stays cheap regardless of catalog size. Testing seam: `PDJ_PAGE_SIZE=<n>` shrinks
+    /// it so a UI test can exercise the grow trigger against the 7-song fixture catalog
+    /// (page 1 then fits on one screen and a working trigger chain-grows to the full set).
+    static let pageSize: Int = {
+        if let raw = ProcessInfo.processInfo.environment["PDJ_PAGE_SIZE"],
+           let n = Int(raw), n > 0 { return n }
+        return 120
+    }()
 
     /// The visible prefix for the current `visible` budget (the whole set once it fits).
     static func page(_ items: [BrowseItem], visible: Int) -> [BrowseItem] {

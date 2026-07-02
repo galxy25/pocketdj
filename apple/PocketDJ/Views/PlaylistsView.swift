@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 struct PlaylistsView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
+    @Environment(IntentServices.self) private var intents
     @Binding var path: NavigationPath
     // Playlist dialogs
     @State private var newName = ""
@@ -34,8 +35,51 @@ struct PlaylistsView: View {
 
     private var indexPlaylists: [SourcePlaylist] { app.indexPlaylists }
 
+    /// The Siri "Create Pocket" build status — the async build's ONLY user-visible
+    /// surface after the intent's "on it" dialog (the build may have been kicked off
+    /// with the app backgrounded). Building shows progress; done/failed stick until
+    /// dismissed so a silent failure can't eat the pocket.
+    @ViewBuilder private var pocketBuilderBanner: some View {
+        switch intents.pocketBuilder.phase {
+        case .idle:
+            EmptyView()
+        case .building(let brief):
+            builderBannerRow(icon: nil, text: "Building a pocket for “\(brief)”…", dismissable: false)
+        case .done(_, let name, let songCount):
+            builderBannerRow(icon: "checkmark.circle.fill",
+                             text: "Siri created “\(name)” — \(songCount) \(songCount == 1 ? "song" : "songs").",
+                             dismissable: true)
+        case .failed(let message):
+            builderBannerRow(icon: "exclamationmark.triangle.fill",
+                             text: "Pocket build failed: \(message)", dismissable: true)
+        }
+    }
+
+    private func builderBannerRow(icon: String?, text: String, dismissable: Bool) -> some View {
+        HStack(spacing: 10) {
+            if let icon {
+                Image(systemName: icon).foregroundStyle(Theme.accent)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Text(text).font(.callout).lineLimit(2)
+            Spacer()
+            if dismissable {
+                Button { intents.pocketBuilder.acknowledge() } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(Theme.accent.opacity(0.12))
+        .accessibilityIdentifier("pocket-builder-banner")
+    }
+
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            pocketBuilderBanner
             if collections.playlists.isEmpty && collections.pockets.isEmpty && indexPlaylists.isEmpty {
                 emptyState
             } else {
@@ -621,6 +665,8 @@ struct PlaylistDetailView: View {
     /// playNow and let the on-screen restart (CRITIC-I) fire.
     private func play(shuffle: Bool) {
         collections.playNow(playlistId: playlistId, shuffle: shuffle)
+        // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
+        IntentDonations.playedPlaylist(collections.playlist(playlistId), shuffle: shuffle)
         if !nowPlayingPushed {
             nowPlayingPushed = true
             path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))

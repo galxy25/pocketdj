@@ -395,6 +395,8 @@ struct MixView: View {
         engine.startAutoMix(items, shuffled: shuffled,
                             lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
                             label: autoSourceName)
+        // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
+        IntentDonations.startedAutoMix(source: src, shuffle: shuffled, collections: collections)
     }
 
     /// The single bottom Play/Pause — starts/stops BOTH decks (and the engine). Mirrors the
