@@ -991,9 +991,21 @@ any mode EXCEPT Mix; the Mix engines own their audio). The panel is ONE scrollab
 `List` (user-tested): the deck — title/artist · `RecordPlayerView` · ⏮ ⏯ ⏭ (the §10
 cross-backend toggle) — is a scrolling row ABOVE the **Up Next** section, so pulling
 up scrolls the deck away and the queue takes the whole panel (the menu list above
-stays pinned); search is the NATIVE `.searchable` control in the bar (same UI as the
-Browser — a bottom text field hid under the keyboard), `navigationBarDrawer(.always)`
-on iOS.
+stays pinned); search is the NATIVE `.searchable` control (same UI as the Browser —
+a bottom text field hid under the keyboard): `navigationBarDrawer(.always)` on
+iPhone, **`.sidebar` placement on iPad/macOS** — LOAD-BEARING, not just the user's
+left-side preference: automatic placement put the field in the macOS unified
+NSToolbar, and switching to the Browser tab (its own `.searchable`) made SwiftUI
+insert a SECOND toolbar search item — AppKit threw from
+`NSToolbar _insertNewItemWithItemIdentifier:` → `_crashOnException` (the macOS 27
+crash report; iOS was immune, each nav bar hosts its own field). ⌘L focuses the
+panel's field (a hidden shortcut button registered only while the panel exists;
+BrowseView's own ⌘L yields via `NowPlayingPanel.isVisible`). Context menus:
+queue rows get **Move to top / Move to bottom / Remove** (`moveUpcomingNext`/
+`moveUpcomingToEnd`, uid-verified), search song rows get **Add next / Add to end**
+(`insertNextInQueue` at `index+1` / `appendToQueue`); long-pressing (iOS) or
+right-clicking (macOS) the RECORD opens the current song's `SongDetailView` in a
+sheet dismissed by a top-left Back button.
 
 - **`RecordPlayerView`** — gold disc (`Theme.accent2`) with grooves and the album's
   `CoverImage` as center label, inside a `Theme.accent` (blue) chassis + fixed

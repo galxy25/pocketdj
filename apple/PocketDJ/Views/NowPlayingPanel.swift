@@ -30,8 +30,12 @@ struct NowPlayingPanel: View {
     #endif
 
     @State private var query = ""
+    @FocusState private var searchFocused: Bool
     @State private var albumsExpanded = true
     @State private var songsExpanded = true
+    /// Long-press (iOS) / right-click (macOS) on the record → the current song's
+    /// full detail metadata, presented as a sheet with a BACK button top-left.
+    @State private var detailSong: IndexSong?
     /// Debounced, off-main search results (see the `.task(id:)` below) — the body
     /// must NEVER scan the ~100k-song catalog itself.
     @State private var results: SearchResults = .empty
@@ -43,6 +47,14 @@ struct NowPlayingPanel: View {
         var albums: [IndexAlbum] = []
         var songs: [IndexSong] = []
         static let empty = SearchResults()
+    }
+
+    /// Single source of truth for "the home Now Playing element is up": collection
+    /// playback running and the Mix engines not owning the audio. RootView gates
+    /// the panel on it, and BrowseView yields its ⌘L to the panel's while true.
+    @MainActor
+    static func isVisible(sequencer: SetlistPlayer, mix: MixEngine) -> Bool {
+        sequencer.isRunning && !(mix.isRunning || mix.autoMixing)
     }
 
     /// iPhone landscape: too short for the record player — the panel keeps the
@@ -74,17 +86,54 @@ struct NowPlayingPanel: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 30)
+        // Placement is LOAD-BEARING on macOS/iPad: `.sidebar` renders the field
+        // INSIDE the left sidebar column. The automatic placement put it in the
+        // window's unified NSToolbar — and when the Browser tab (which has its own
+        // `.searchable`) came up, SwiftUI inserted a SECOND toolbar search item and
+        // AppKit threw out of `NSToolbar _insertNewItemWithItemIdentifier:` →
+        // `_crashOnException` (Levi's macOS 27 crash report; iOS never crashed
+        // because each nav bar hosts its own field). Sidebar placement keeps the
+        // panel's search out of the toolbar entirely — and puts it on the LEFT,
+        // where the user asked for it.
         #if os(iOS)
         .environment(\.editMode, $editMode)
         .searchable(text: $query,
-                    placement: .navigationBarDrawer(displayMode: .always),
+                    placement: UIDevice.current.userInterfaceIdiom == .pad
+                        ? .sidebar : .navigationBarDrawer(displayMode: .always),
                     prompt: "Add songs or albums")
         #else
-        .searchable(text: $query, prompt: "Add songs or albums")
+        .searchable(text: $query, placement: .sidebar, prompt: "Add songs or albums")
         #endif
+        .searchFocused($searchFocused)
+        // ⌘L — jump the cursor into the add-search so the whole panel is drivable
+        // from the keyboard. Registered ONLY while the panel exists; BrowseView's
+        // own ⌘L (its search field) yields to this one while the panel is up.
+        .background {
+            Button("Focus Now Playing search") { searchFocused = true }
+                .keyboardShortcut("l", modifiers: .command)
+                .frame(width: 1, height: 1).opacity(0.01)
+        }
         .background(Theme.bg)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("now-playing-panel")
+        // The record's song-detail sheet — closed by a BACK button top-left (the
+        // user's ask; no ✕). Its own NavigationStack hosts SongDetailView's bars.
+        .sheet(item: $detailSong) { song in
+            NavigationStack {
+                SongDetailView(song: song)
+                    .toolbar {
+                        ToolbarItem(placement: .navigation) {
+                            Button { detailSong = nil } label: {
+                                Label("Back", systemImage: "chevron.backward")
+                                    .labelStyle(.titleAndIcon)
+                            }
+                            .accessibilityIdentifier("np-detail-back")
+                        }
+                    }
+            }
+            .preferredColorScheme(.dark)
+            .tint(Theme.accent)
+        }
         // Debounce + compute OFF the main actor: a keystroke (or any sequencer
         // change while a query is live) must not trigger a synchronous full-catalog
         // scan in body. `.task(id:)` cancels the in-flight search on every change.
@@ -204,6 +253,18 @@ struct NowPlayingPanel: View {
                     RecordPlayerView(album: currentAlbum, bpm: currentBpm,
                                      spinning: isPlayingNow, progress: playProgress)
                         .frame(width: recordSize, height: recordSize * 0.82)
+                        // The record is the door to the current track's metadata:
+                        // long-press on iOS opens the detail DIRECTLY; macOS gets
+                        // the natural right-click menu.
+                        #if os(macOS)
+                        .contextMenu {
+                            Button { openCurrentSongDetail() } label: {
+                                Label("Song details", systemImage: "info.circle")
+                            }
+                        }
+                        #else
+                        .onLongPressGesture(minimumDuration: 0.4) { openCurrentSongDetail() }
+                        #endif
                 }
                 transport
             }
@@ -212,6 +273,10 @@ struct NowPlayingPanel: View {
             .listRowBackground(Theme.bg)
             .listRowSeparator(.hidden)
         }
+    }
+
+    private func openCurrentSongDetail() {
+        detailSong = currentItem.flatMap { app.songsById[$0.id] }
     }
 
     // MARK: - Queue / search results
@@ -241,6 +306,23 @@ struct NowPlayingPanel: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("np-remove-\(offset)")
+                }
+                .contentShape(Rectangle())
+                // Long-press (iOS) / right-click (macOS): re-slot the row without a
+                // drag — top = right after the current track, bottom = end of queue.
+                .contextMenu {
+                    Button { sequencer.moveUpcomingNext(uid: item.uid) } label: {
+                        Label("Move to top", systemImage: "arrow.up.to.line")
+                    }
+                    Button { sequencer.moveUpcomingToEnd(uid: item.uid) } label: {
+                        Label("Move to bottom", systemImage: "arrow.down.to.line")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        sequencer.removeUpcoming(uids: [item.uid])
+                    } label: {
+                        Label("Remove", systemImage: "xmark")
+                    }
                 }
                 .listRowBackground(Theme.bg)
                 .accessibilityElement(children: .contain)
@@ -315,6 +397,16 @@ struct NowPlayingPanel: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("np-add-song-\(song.id)")
                     }
+                    .contentShape(Rectangle())
+                    // Long-press / right-click: choose WHERE the song lands (＋ = end).
+                    .contextMenu {
+                        Button { addNext(songs: [song]) } label: {
+                            Label("Add next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        }
+                        Button { add(songs: [song]) } label: {
+                            Label("Add to end", systemImage: "text.append")
+                        }
+                    }
                     .listRowBackground(Theme.bg)
                 }
             }
@@ -343,13 +435,17 @@ struct NowPlayingPanel: View {
     private func add(album: IndexAlbum) {
         add(songs: app.tracks(for: album))
     }
+    private func addNext(songs: [IndexSong]) {
+        sequencer.insertNextInQueue(items(for: songs))
+    }
     private func add(songs: [IndexSong]) {
-        let items = songs.map {
+        sequencer.appendToQueue(items(for: songs))
+    }
+    private func items(for songs: [IndexSong]) -> [SetlistPlayer.Item] {
+        songs.map {
             SetlistPlayer.Item(id: $0.id, title: $0.name, artist: $0.artist, lengthMs: $0.length)
         }
-        sequencer.appendToQueue(items)
     }
-
 }
 
 // MARK: - The record player

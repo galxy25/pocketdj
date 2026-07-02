@@ -1724,7 +1724,11 @@ Top to bottom:
   (Reorder button on iPhone) or **✕ / swipe to remove**; edits touch only what hasn't
   played yet, so the current track never skips or restarts.
 - **Add-search — the same native search control as the Browser tab** (user-tested: a
-  bottom text field hid under the keyboard). The field rides the bar at the top; type
+  bottom text field hid under the keyboard). On iPhone the field rides the bar at the
+  top; on **iPad and Mac it sits on the LEFT, at the top of the sidebar** (this also
+  fixed a Mac crash — two search fields were fighting over the window toolbar). **⌘L
+  jumps the cursor straight into it**, so a set is fully drivable from the keyboard;
+  type
   anything ("optimistic", "cobalt", a title) and matching **albums appear above songs**,
   each in a **collapsible** section (fold the albums away to scroll just songs). **＋
   appends** a song — or an album's whole tracklist — to the end of the queue, live, without
@@ -1733,9 +1737,12 @@ Top to bottom:
 
 The whole deck **scrolls** (user-tested): pull the list up and the record player and its
 controls slide out of view so **Up next can take over the panel** — the menu/tab links
-above stay pinned. And the **tonearm plays the record**: it rests on the outer edge at
+above stay pinned. The **tonearm plays the record**: it rests on the outer edge at
 0:00 and sweeps toward the center label in proportion to the play position, like a real
-stylus crossing the grooves.
+stylus crossing the grooves. **Right-click or long-press** is everywhere: a **queue row**
+offers *Move to top · Move to bottom · Remove*, a **search result song** offers *Add
+next · Add to end* (＋ still appends), and **the record itself** opens the current
+track's full **song detail metadata** — closed with a Back button in the top left.
 
 **Getting there is also nicer now:** on iOS the app opens on the **home menu** ("PocketDJ" —
 the ✦ sparkle is gone) unless you'd navigated somewhere before — then it **reopens wherever

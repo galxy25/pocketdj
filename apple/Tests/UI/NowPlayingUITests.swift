@@ -49,14 +49,15 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
-    /// End-to-end panel drive (iPhone): start the seeded playlist (held playback),
-    /// pop home, and exercise the panel — title/artist header, transport buttons,
-    /// the add-search (albums collapsible above songs), queue add + remove.
+    /// End-to-end panel drive (iPhone + iPad): start the seeded playlist (held
+    /// playback), reach the home menu (iPhone pops back; iPad's sidebar is always
+    /// up), and exercise the panel — title/artist header, transport buttons, the
+    /// add-search (native field: nav-bar drawer on iPhone, LEFT sidebar on iPad),
+    /// queue add + remove.
     func testNowPlayingPanelQueueAndAddSearch() throws {
         #if os(macOS)
         throw XCTSkip("panel interactions exercised on iOS (macOS UI automation unavailable headless)")
         #else
-        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone home-screen flow")
         app.launchEnvironment["PDJ_SEED_COLLECTIONS"] = "1"
         app.launchEnvironment["PDJ_HOLD_PLAYBACK"] = "1"
         app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
@@ -95,6 +96,9 @@ final class NowPlayingUITests: XCTestCase {
         let field = app.searchFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 8), "native search field should be in the bar")
         field.tap()
+        // iPad's sidebar-placed field sometimes needs a second tap to take
+        // keyboard focus before typeText can synthesize events.
+        if !app.keyboards.firstMatch.waitForExistence(timeout: 2) { field.tap() }
         field.typeText("aria")
         let addPulse = app.el("np-add-song-sng_2")   // "Pulse" by Aria
         XCTAssertTrue(addPulse.waitForExistence(timeout: 8))
@@ -117,6 +121,20 @@ final class NowPlayingUITests: XCTestCase {
         app.el("np-albums-header").tap()             // expand again
         XCTAssertTrue(app.el("np-add-album-alb_1").waitForExistence(timeout: 4))
         attach("add-search-results")
+
+        // Long-press the record → the current song's detail metadata in a sheet,
+        // closed by the BACK button top-left.
+        field.buttons["Clear text"].tap()            // back to the deck + queue
+        let record = app.any("np-record")
+        XCTAssertTrue(record.waitForExistence(timeout: 8))
+        record.press(forDuration: 0.8)
+        XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 8),
+                      "long-pressing the record should open the song detail")
+        attach("record-song-detail")
+        XCTAssertTrue(app.el("np-detail-back").waitForExistence(timeout: 4))
+        app.el("np-detail-back").tap()
+        XCTAssertFalse(app.any("song-detail").waitForExistence(timeout: 2),
+                       "Back should close the detail sheet")
         #endif
     }
 

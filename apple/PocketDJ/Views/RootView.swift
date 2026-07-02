@@ -46,7 +46,7 @@ struct RootView: View {
     /// sequencer) in every mode EXCEPT Mix — a running/suspended Auto-DJ or live
     /// deck owns the audio, so the panel yields.
     private var nowPlayingVisible: Bool {
-        sequencer.isRunning && !(mix.isRunning || mix.autoMixing)
+        NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix)
     }
 
     var body: some View {

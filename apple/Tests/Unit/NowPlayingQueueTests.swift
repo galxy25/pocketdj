@@ -110,6 +110,43 @@ final class NowPlayingQueueTests: XCTestCase {
         XCTAssertTrue(seq.queue.isEmpty)
     }
 
+    /// Context-menu re-slotting: "Move to top" bumps an upcoming row to right
+    /// after the current track; "Move to bottom" sends it to the end — by
+    /// identity, current slot untouched, unknown uids ignored.
+    func testMoveUpcomingNextAndToEnd() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
+        let dUid = seq.upcoming[2].uid                           // "d"
+        seq.moveUpcomingNext(uid: dUid)                          // → right after current
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "d", "b", "c"])
+        XCTAssertEqual(seq.queue[seq.index].id, "a")
+
+        seq.moveUpcomingToEnd(uid: dUid)                         // → bottom
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "c", "d"])
+        seq.moveUpcomingNext(uid: UUID())                        // unknown uid: no-op
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "c", "d"])
+        seq.stop()
+    }
+
+    /// "Add next" (search context menu) inserts right after the current track,
+    /// ahead of the existing tail; ＋/"Add to end" keeps appending.
+    func testInsertNextInQueue() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b")], sourceSetlistId: "set_1")
+        seq.insertNextInQueue([item("x"), item("y")])
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "x", "y", "b"])
+        XCTAssertEqual(seq.index, 0)
+        XCTAssertEqual(seq.queue[seq.index].id, "a")             // current untouched
+
+        seq.skipNext(); seq.skipNext(); seq.skipNext()           // current = "b" (last)
+        seq.insertNextInQueue([item("z")])                       // insert clamps to tail
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "x", "y", "b", "z"])
+
+        seq.stop()
+        seq.insertNextInQueue([item("q")])                       // idle: no resurrect
+        XCTAssertTrue(seq.queue.isEmpty)
+    }
+
     func testEditsAreNoOpsWhenIdleOrNothingUpcoming() {
         let seq = makeSequencer()
         seq.appendToQueue([item("x")])                           // idle ⇒ no resurrect

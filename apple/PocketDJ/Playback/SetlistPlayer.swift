@@ -181,6 +181,30 @@ final class SetlistPlayer {
         queue.append(contentsOf: items)
     }
 
+    /// Insert tracks right AFTER the current one ("Add next"). The current slot
+    /// (`queue[index]`) is untouched — the insert only shifts the tail.
+    func insertNextInQueue(_ items: [Item]) {
+        guard isRunning, !items.isEmpty else { return }
+        queue.insert(contentsOf: items, at: min(index + 1, queue.count))
+    }
+
+    /// Bump an upcoming row (by identity) to right after the current track
+    /// ("Play next"). Unknown/played uids are ignored.
+    func moveUpcomingNext(uid: UUID) {
+        guard isRunning, index + 1 < queue.count,
+              let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        let item = queue.remove(at: pos)
+        queue.insert(item, at: index + 1)
+    }
+
+    /// Send an upcoming row (by identity) to the END of the queue ("Move to end").
+    func moveUpcomingToEnd(uid: UUID) {
+        guard isRunning, index + 1 < queue.count,
+              let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        let item = queue.remove(at: pos)
+        queue.append(item)
+    }
+
     // MARK: - Internals
 
     /// The absolute position (ms) at which a track that SHARES a multi-song file should
