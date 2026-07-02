@@ -621,6 +621,8 @@ struct PlaylistDetailView: View {
     /// playNow and let the on-screen restart (CRITIC-I) fire.
     private func play(shuffle: Bool) {
         collections.playNow(playlistId: playlistId, shuffle: shuffle)
+        // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
+        IntentDonations.playedPlaylist(collections.playlist(playlistId), shuffle: shuffle)
         if !nowPlayingPushed {
             nowPlayingPushed = true
             path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))

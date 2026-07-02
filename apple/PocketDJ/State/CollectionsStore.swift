@@ -24,6 +24,11 @@ final class CollectionsStore {
     /// AppModel.settings/edits). Weak so the store never retains the app graph.
     weak var app: AppModel?
 
+    /// Fired after every persisted mutation (post-`save()`). Wired at launch by the
+    /// App Intents layer to re-index Spotlight entities + refresh Siri's speakable
+    /// playlist/pocket vocabulary. Nil during init (decode/seed never fires it).
+    var onChange: (() -> Void)?
+
     init(fileURL: URL = CollectionsStore.defaultURL()) {
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL), let doc = try? CollectionsCodec.decode(data) {
@@ -84,6 +89,16 @@ final class CollectionsStore {
     @discardableResult
     func createPocket(_ name: String, kind: PocketKind = .harmonic) -> Pocket {
         let p = CollectionsFactory.makePocket(name, kind: kind, now: now)
+        pockets.append(p); save(); return p
+    }
+    /// One-shot creation of a pocket from an explicit ordered song list (the App
+    /// Intents "Create pocket" path) — one persist, order preserved, ids deduped.
+    @discardableResult
+    func createPocket(_ name: String, songIds: [String], description: String? = nil) -> Pocket {
+        var p = CollectionsFactory.makePocket(name, now: now)
+        var seen = Set<String>()
+        p.songIds = songIds.filter { seen.insert($0).inserted }
+        p.description = description
         pockets.append(p); save(); return p
     }
     func renamePocket(_ id: String, _ name: String) { mutatePocket(id) { $0.name = name } }
@@ -849,5 +864,6 @@ final class CollectionsStore {
                                       playlists: playlists, setlists: setlists,
                                       folders: folders, lastAddTarget: lastAddTarget)
         if let data = try? CollectionsCodec.encode(doc) { try? data.write(to: fileURL, options: .atomic) }
+        onChange?()
     }
 }

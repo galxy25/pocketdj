@@ -5,14 +5,11 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var app
     @Environment(SettingsStore.self) private var settings
-    @Environment(EditsStore.self) private var edits
     @Environment(CollectionsStore.self) private var collections
     @Environment(RipsStore.self) private var rips
-    @Environment(MusicSyncClient.self) private var musicSync
     @Environment(PlayerEngine.self) private var player
     @Environment(BurnStore.self) private var burns
-    @Environment(PlaybackCoordinator.self) private var coordinator
-    @Environment(SetlistPlayer.self) private var setlistPlayer
+    @Environment(IntentServices.self) private var intents
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     @State private var section: Section? = .browse
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
@@ -59,30 +56,17 @@ struct RootView: View {
         }
         .background { navigationShortcuts }
         .overlay(alignment: .bottomTrailing) { testProbe }
+        // Intent-driven navigation (Spotlight "Open playlist/pocket"): the intent parks a
+        // route on the bridge; this view owns the NavigationPath, so it consumes it —
+        // whether the app was already open (`onChange`) or launched by the intent (`.task`).
+        .onChange(of: intents.pendingRoute) { _, route in consumeIntentRoute(route) }
         .task {
-            app.settings = settings   // wire the live multi-source config before loading
-            app.edits = edits         // overlay local metadata edits
+            // Store cross-wiring happens in PocketDJApp.init() (so background intent
+            // launches are wired too); this task runs the launch ACTIONS.
             Task { await SearchService.ensureConfigLoaded() }  // pre-warm online-search host from search-config.json
-            collections.app = app     // give realize() the catalog to resolve ids against
-            // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
-            setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
-            rips.settings = settings  // rip server URL + token come from settings
-            musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
-            // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum,
-            // and prune any burned files iOS purged while the app was gone.
-            burns.lookup = { [weak app] id in (app?.songsById[id], app?.songsById[id]?.albumId.flatMap { app?.albumsById[$0] }) }
-            burns.settings = settings   // Feature 2: resolve the user-picked burnt-music folder
+            // Prune any burned files iOS purged while the app was gone.
             burns.reconcileOnLaunch()
-            // The matching engine orders providers by a song's ORIGIN SOURCE — give it the
-            // catalog's per-id source map so an Apple Music (Local) track tries Apple Music
-            // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
-            coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
-            #if os(iOS)
-            // Let the BGAppRefreshTask reconcile the rips manifest while backgrounded (the rip
-            // itself is server-side; this only catches up the client's "ripped" view).
-            RipReconcileBridge.shared.refresh = { [weak rips] in await rips?.refreshManifest() }
-            #endif
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
@@ -96,6 +80,20 @@ struct RootView: View {
                let first = app.albums.first {
                 path.append(first)
             }
+            consumeIntentRoute(intents.pendingRoute)   // route parked by a cold intent launch
+        }
+    }
+
+    /// Consume a pending intent route: switch to Playlists and push the item's detail.
+    private func consumeIntentRoute(_ route: IntentRoute?) {
+        guard let route else { return }
+        intents.pendingRoute = nil
+        section = .playlists
+        switch route {
+        case .playlist(let id):
+            if let pl = collections.playlist(id) { path.append(pl) }
+        case .pocket(let id):
+            if let p = collections.pocket(id) { path.append(p) }
         }
     }
 
