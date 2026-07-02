@@ -59,7 +59,11 @@ struct RootView: View {
         // Intent-driven navigation (Spotlight "Open playlist/pocket"): the intent parks a
         // route on the bridge; this view owns the NavigationPath, so it consumes it —
         // whether the app was already open (`onChange`) or launched by the intent (`.task`).
-        .onChange(of: intents.pendingRoute) { _, route in consumeIntentRoute(route) }
+        // The handler re-reads the LIVE value (not onChange's captured parameter): with
+        // several windows open (iPad split, macOS ⌘N) every RootView's onChange fires with
+        // the same captured route, but only the first finds the live value non-nil — the
+        // guard-let + clear inside consumeIntentRoute is an atomic take on the main actor.
+        .onChange(of: intents.pendingRoute) { _, _ in consumeIntentRoute(intents.pendingRoute) }
         .task {
             // Store cross-wiring happens in PocketDJApp.init() (so background intent
             // launches are wired too); this task runs the launch ACTIONS.
@@ -84,11 +88,14 @@ struct RootView: View {
         }
     }
 
-    /// Consume a pending intent route: switch to Playlists and push the item's detail.
+    /// Consume a pending intent route: switch to Playlists and open the item's detail
+    /// on a FRESH stack (Spotlight opened *this* item — whatever was pushed before
+    /// doesn't belong underneath it; mirrors the ⌘B Browser shortcut's reset).
     private func consumeIntentRoute(_ route: IntentRoute?) {
         guard let route else { return }
         intents.pendingRoute = nil
         section = .playlists
+        path = NavigationPath()
         switch route {
         case .playlist(let id):
             if let pl = collections.playlist(id) { path.append(pl) }

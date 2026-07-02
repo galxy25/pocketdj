@@ -36,15 +36,6 @@ struct PocketCandidate: Equatable, Sendable, Identifiable {
     let year: Int?
     let lengthMs: Int?
     let moods: [String]
-
-    /// One compact prompt row (~25 tokens) — the whole candidate block must fit the
-    /// on-device model's 4,096-token session window alongside instructions + output.
-    var promptRow: String {
-        let secs = (lengthMs ?? PocketFitter.fallbackLengthMs) / 1000
-        let fields = [id, title, artist, genre ?? "-", year.map(String.init) ?? "-",
-                      "\(secs)s", moods.prefix(4).joined(separator: ",")]
-        return fields.joined(separator: "|")
-    }
 }
 
 /// The model's final curation: a pocket name + chosen song ids in play order.
@@ -229,6 +220,13 @@ final class PocketBuilderService {
     init(app: AppModel, collections: CollectionsStore) {
         self.app = app
         self.collections = collections
+    }
+
+    /// Dismiss a terminal phase (the Playlists-tab banner's OK/✕). Building is not
+    /// dismissable — the build owns the phase until it lands.
+    func acknowledge() {
+        if case .building = phase { return }
+        phase = .idle
     }
 
     /// Fire-and-return: the intent has already checked model availability. On iOS a

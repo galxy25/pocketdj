@@ -64,8 +64,8 @@ struct FoundationPocketBriefModel: PocketBriefModel {
     struct Plan {
         @Guide(description: "A short, evocative pocket title of two to four words")
         var name: String
-        @Guide(description: "The id field of each chosen candidate song, in play order", .minimumCount(1), .maximumCount(40))
-        var songIds: [String]
+        @Guide(description: "The number of each chosen candidate song, in play order", .minimumCount(1), .maximumCount(40))
+        var songNumbers: [Int]
     }
 
     func parse(brief: String) async throws -> ParsedPocketBrief {
@@ -80,19 +80,42 @@ struct FoundationPocketBriefModel: PocketBriefModel {
                                  yearFrom: f.yearFrom, yearTo: f.yearTo)
     }
 
+    /// The session window is 4,096 tokens TOTAL (instructions + schema + prompt +
+    /// output), so the candidate block is budgeted by characters (~3.5 chars/token):
+    /// ~6,500 chars ≈ ~1,900 tokens, leaving room for everything else. Rows are
+    /// NUMBERED and carry no catalog id — numbers are cheap for a small model to
+    /// copy exactly; the long content-derived ids are mapped back here.
+    static let candidateCharBudget = 6_500
+
     func curate(brief: String, candidates: [PocketCandidate], maxSongs: Int) async throws -> PocketPlan {
-        let rows = candidates.map(\.promptRow).joined(separator: "\n")
+        var rows: [String] = []
+        var shown: [PocketCandidate] = []
+        var chars = 0
+        for candidate in candidates {
+            let secs = (candidate.lengthMs ?? PocketFitter.fallbackLengthMs) / 1000
+            let row = [String(rows.count + 1), candidate.title, candidate.artist,
+                       candidate.genre ?? "-", candidate.year.map(String.init) ?? "-",
+                       "\(secs)s", candidate.moods.prefix(4).joined(separator: ",")]
+                .joined(separator: "|")
+            if chars + row.count > Self.candidateCharBudget { break }
+            chars += row.count + 1
+            rows.append(row)
+            shown.append(candidate)
+        }
         let session = LanguageModelSession(instructions: """
             You are a crate-digging DJ curating a "pocket" (a small themed crate) for the \
-            listener's brief. The prompt lists candidate songs, one per line, as \
-            id|title|artist|genre|year|length|mood keywords. Choose the songs that best fit \
-            the brief's vibe and order them to flow well back-to-back. Pick at most \
-            \(maxSongs) songs. Use only ids from the list, copied exactly. Also invent a \
-            short evocative pocket title.
+            listener's brief. The prompt lists numbered candidate songs, one per line, as \
+            number|title|artist|genre|year|length|mood keywords. Choose the songs that \
+            best fit the brief's vibe and order them to flow well back-to-back. Pick at \
+            most \(maxSongs) songs, referring to each by its number. Also invent a short \
+            evocative pocket title.
             """)
-        let prompt = "Brief: \(brief)\n\nCandidates:\n\(rows)"
+        let prompt = "Brief: \(brief)\n\nCandidates:\n\(rows.joined(separator: "\n"))"
         let response = try await session.respond(to: prompt, generating: Plan.self)
-        return PocketPlan(name: response.content.name, songIds: response.content.songIds)
+        let ids = response.content.songNumbers
+            .filter { (1...shown.count).contains($0) }
+            .map { shown[$0 - 1].id }
+        return PocketPlan(name: response.content.name, songIds: ids)
     }
 }
 

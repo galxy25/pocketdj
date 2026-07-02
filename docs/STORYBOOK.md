@@ -1659,3 +1659,42 @@ or **CSV** to hand your tracklist to the outside world.
 **User story:** "Export a set as PocketDJ when I'm round-tripping it in the app — or as a plain CSV
 with just the universal columns when I need to drop the tracklist into a spreadsheet or another DJ
 tool."
+
+---
+
+## 61. Hey Siri — App Shortcuts (play, auto-mix, create a pocket)
+
+The native app's performance surface is now **voice- and system-invocable** — no Shortcuts-app
+setup, live the moment the app installs. Every phrase ends **"…in PocketDJ"**:
+
+- **"Play *Friday Warmup* in PocketDJ"** / **"Shuffle *Friday Warmup* in PocketDJ"** — plays a
+  **playlist** exactly like tapping ▶/🔀 on its detail screen: the resolved songs snapshot into the
+  reusable **Now Playing** set list and the app-scoped player starts — even from the Home Screen,
+  the Action button, or a locked phone (playback starts in the background; the lock-screen card
+  takes over from there).
+- **"Play the pocket *Deep Funk* in PocketDJ"** — same for a **pocket** (its songs, albums, and
+  nested pockets in DAG order), with a shuffle variant.
+- **"Auto-mix *Deep Funk* in PocketDJ"** — starts the **Auto-DJ** (Ch. 54) from a pocket **or** a
+  set list, with the Settings lead/fade and your glide preferences. Auto-mix plays **burned local
+  files only**, and Siri says so if the collection has none yet ("…burn it first").
+- **"Pause the auto-mix in PocketDJ" / "Resume the auto-mix in PocketDJ"** — the same suspend/resume
+  as the lock-screen ⏸/▶: the mix clock **freezes** through the pause and resumes **exactly** the
+  fade it was in — never a cold stop.
+- **"Create a pocket in PocketDJ"** — Siri asks *"What kind of pocket should I build?"* — answer in
+  plain words: *"optimistic soul, funk, r&b or disco songs from 1960 to 1989."* On-device Apple
+  Intelligence (iOS 26+) parses the brief; PocketDJ then searches the whole catalog — **exact** year
+  range, **fuzzy** genre matching, and **mood-vector similarity** over each song's sentiment
+  keywords — the model curates and orders the best matches, and up to **90 minutes** of songs (the
+  minutes are adjustable in Shortcuts) are saved as a new pocket, **asynchronously**: Siri answers
+  right away and the pocket appears in Playlists ▸ Pockets moments later, with your brief kept as
+  its description.
+
+Beyond voice, the same intents surface everywhere the system composes actions: the **Shortcuts app**
+(with playlist/pocket pickers), **Spotlight** — where your playlists and pockets are now **indexed by
+name**, and tapping one opens it straight in the app — and system **suggestions**, which learn from
+the real ▶/🔀/Auto-mix taps the app donates as you use it. Renaming a playlist re-teaches Siri the
+new name automatically.
+
+**User story:** "Hands on the decks — or walking out the door — I say *'Shuffle Crate Warmers in
+PocketDJ'* and it's playing; and when I only know the vibe I want, I ask Siri to *create a pocket*
+and find ninety minutes of it waiting in the app."

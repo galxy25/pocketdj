@@ -110,9 +110,17 @@ final class AppModel {
         // `.loading` blank, no waiting on the network) — fixes the cold/iOS-kill relaunch showing
         // an empty UI while it re-downloads a catalog it already had. Only show `.loading` when
         // there is genuinely nothing cached (true first launch).
-        let seeded = seedFromCache()
-        if !seeded { state = .loading }
-        await performRefresh(hadData: seeded)
+        if seedFromCache() {
+            // Seed applied ⇒ state is already `.loaded`. Run the conditional network refresh
+            // OFF the caller's critical path: a caller that awaits here (e.g. a Siri playback
+            // intent on a cold background launch) must not hang on ~30s-per-source network
+            // timeouts for a catalog — and burned songs — that are already on disk. Re-entry
+            // is safe: the `.loaded` early-return above keeps this to one refresh per load.
+            Task { await self.performRefresh(hadData: true) }
+            return
+        }
+        state = .loading
+        await performRefresh(hadData: false)
     }
 
     /// Populate the catalog from each enabled source's CatalogService disk cache, WITHOUT touching

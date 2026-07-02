@@ -21,7 +21,10 @@ final class IntentServicesTests: XCTestCase {
         let collections = CollectionsStore(fileURL: url)
         collections.app = app
         let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID())")!)
-        let rips = RipsStore()
+        // Hermetic rips store (ensureReady fire-and-forgets a manifest refresh — it must
+        // never reach the production S3 bucket from a unit test).
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!,
+                             session: URLSession(configuration: .ephemeral))
         let player = PlayerEngine()
         let burnsURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("pdj-intents-burns-\(UUID().uuidString).json")

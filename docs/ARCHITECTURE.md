@@ -89,10 +89,10 @@ server-less coordination work.
 | 1 | [**Foundations**](./architecture/01-foundations.md) | the whole | System entities, ownership table, the files-as-API spine, content-derived ids. **Start here.** |
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
 | 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — incl. the **`CollectionsDocument` schema versioning (v2→v3) + flat playlist `folders`** — the one shape everything speaks. Reference chapter. |
-| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **the two-deck Mix engine (first-party `AVAudioEngine` — tempo/pitch/seek/crossfader/4 effects, grid-aware beat-match, Auto-Mix, and offline STEM DECKS, §7)**, **and the deferred AI auto-*building* seam**. |
+| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **the two-deck Mix engine (first-party `AVAudioEngine` — tempo/pitch/seek/crossfader/4 effects, grid-aware beat-match, Auto-Mix, and offline STEM DECKS, §7)**, **and the AI auto-*building* seam — whose first consumer now ships: the Siri "Create Pocket" on-device-LLM builder (§4.1)**. |
 | 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp, **the analog per-song CUT export + `POST /backfill-cuts` / `POST /retag-cuts`**), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView, **now with a length-aware position end-boundary + held playback security-scope**), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme + the per-song analog-cut burn + the `@Observable` background-burn progress mirror**), the **length-aware + manual-jump-adopting** `SetlistPlayer` burnt-or-stream sequencer with **persistent ⏮/⏭ transport**, **the global device/cloud `PlaybackMode` + shared `playLocalFile` (now burned-first + scope-held on EVERY song-start path) + the explicit offline catalog disk cache (`CatalogService` `catalog-cache/`)**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`), **the measured BEAT-GRID pass (`/backfill-beatgrids` → `beatGridBpm`/`firstDownbeatMs`/`steady`)**, and **STEMS end-to-end (server Demucs `/stemify` → public `rips/stems/`; the collection-burn STEM pull; the offline `StemPlayer` audition).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, **online pagination (`from/size` + `track_total_hits`) + server-side sort + the `genreCategory` field**, **the native Browse genre + collection-membership filters**, **on-device Browse paging + the results memo (pre-built rows, `resultsKey`-keyed sort cache, growing-prefix render — instant tab/kind switching at ~100k songs)**, the star map. |
-| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, **the native app as a single universal SwiftUI target (iPhone/iPad/Mac, iOS 18/macOS 15) built with XcodeGen and shipped to TestFlight (`apple-publish`/`testflight.sh`)**, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **and the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`).** |
+| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, **the native app as a single universal SwiftUI target (iPhone/iPad/Mac, iOS 18/macOS 15) built with XcodeGen and shipped to TestFlight (`apple-publish`/`testflight.sh`)**, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`), and the App Intents layer (§7) — Siri/Shortcuts/Spotlight: play/shuffle playlist + pocket, auto-mix with lock-screen-seam pause/resume, Spotlight entity indexing + intent donations, and the Siri "Create Pocket" builder.** |
 
 ---
 
@@ -268,6 +268,25 @@ contract**. Honest status:
   newly-available stems), and a **SongDetail stem-audition panel** (`StemPlayer`,
   burn-then-play-in-sync, solo/mute/play-all) lands beside the Mix decks (Ch. 5 §15). All stem
   surfaces are **offline-only** (burned local files, never streamed).
+- **New current-state — App Intents: Siri, Shortcuts & Spotlight (native).** The
+  performance surface is now OS-invocable (`apple/PocketDJ/Intents/`, Ch. 7 §7):
+  **8 App Shortcuts** with install-time Siri phrases — *Play/Shuffle 〈playlist〉 /
+  〈pocket〉 in PocketDJ* (the `playNow` → `SetlistPlayer` path), *Auto-mix 〈pocket |
+  set list〉* (MixResolver → `startAutoMix`, burned-files-only with a speakable
+  error), *Pause/Resume the auto-mix* (the lock-screen `remotePause`/`remotePlay`
+  seam — wall-clock-frozen suspend, resume-only-what-paused), and ***Create a
+  pocket*** — the first shipped consumer of the AI auto-building seam: Apple's
+  on-device Foundation model (iOS 26+, availability-gated; app still deploys to
+  iOS 18/macOS 15) parses a brief → deterministic catalog search (exact year range +
+  fuzzy genre + `NLEmbedding` mood-vector ranking) → LLM curation → 90-minute fit →
+  a plain literal-member pocket (Ch. 4 §4.1). Intents run **in-app** via an
+  `IntentServices` bridge registered with `AppDependencyManager` in
+  `PocketDJApp.init()` (store cross-wiring moved there from `RootView.task` so
+  scene-less background launches are wired). **Donations**: playlists/pockets are
+  Spotlight-indexed as `IndexedEntity`s (debounced re-index on every collections
+  save + `updateAppShortcutParameters()` re-teaching Siri renamed names; `OpenIntent`
+  deep-links results into the app), and the UI's play/auto-mix actions donate their
+  parameterized intents for system predictions.
 - **Current-state — the NATIVE app is a first-class client.** The SwiftUI app
   (`apple/`) is a **single universal target** (one XcodeGen `project.yml` → iPhone + iPad +
   Mac via `supportedDestinations:[iOS,macOS]` × device-family `1,2`; iOS 18 / macOS 15; bundle

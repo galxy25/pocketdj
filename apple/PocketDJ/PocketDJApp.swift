@@ -166,13 +166,13 @@ struct PocketDJApp: App {
         AppDependencyManager.shared.add(dependency: intents)
         // Donations: keep Spotlight's entity index + Siri's speakable playlist/pocket
         // vocabulary in sync with the collections, at launch and after every mutation.
+        // Both run inside scheduleReindex — debounced (saves come in bursts) and gated
+        // off under PDJ_USE_FIXTURE so test runs never pollute system state.
         collections.onChange = { [weak collections] in
             guard let collections else { return }
             CollectionsSpotlight.scheduleReindex(collections)
-            PocketDJShortcuts.updateAppShortcutParameters()
         }
         CollectionsSpotlight.scheduleReindex(collections)
-        PocketDJShortcuts.updateAppShortcutParameters()
     }
 
     var body: some Scene {

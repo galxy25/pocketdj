@@ -332,6 +332,37 @@ the `RealizeCtx` from `AppModel`'s catalog (its `candidates` pool = songs with b
 populate `mixSuggestions`; do **not** change the snapshot/provenance shape, or
 existing setlists, exports, and the rip/burn flows (Ch. 5) break.
 
+### 4.1 First consumer shipped — the Siri "Create Pocket" builder (native)
+
+The seam is no longer entirely dormant: the native app's **`CreatePocketIntent`**
+(*"Create a pocket in PocketDJ"*, Ch. 7 §7) builds a pocket from a natural-language
+brief — *"optimistic soul, funk, r&b or disco songs from 1960 to 1989"* — with a
+4-step pipeline in `apple/PocketDJ/Intents/PocketBuilder.swift`:
+
+1. **Parse (LLM)** — Apple's on-device Foundation model (iOS 26/macOS 26,
+   availability-gated behind `PocketBriefModelFactory`; the app still deploys to
+   iOS 18/macOS 15) extracts `{moods, genres, yearFrom, yearTo}` via guided
+   generation (`@Generable`).
+2. **Search (deterministic, tested)** — `PocketCandidateSearch` ranks the whole
+   merged catalog: **exact** year-range filter, **fuzzy** genre (substring either
+   way, or same star-map `Genre.category`), and **vector** mood similarity —
+   `NLEmbedding` word vectors, cosine, best-match-per-brief-mood — with a
+   token-overlap fallback; sentiment-less songs (most of Apple Music) stay eligible
+   on genre+year. Top-80 become compact `id|title|artist|genre|year|len|moods` rows.
+3. **Curate (LLM)** — a fresh 4,096-token session picks + orders songs from those
+   rows and names the pocket.
+4. **Fit + persist (deterministic, tested)** — `PocketFitter` greedily fits the
+   picks to the minute budget (default 90), then
+   `CollectionsStore.createPocket(_:songIds:description:)` persists a plain
+   **literal-member pocket** — the schema's existing shape, zero migration, and the
+   brief is kept as the pocket's `description`.
+
+The intent returns immediately ("it'll show up in Pockets shortly") and
+`PocketBuilderService` (`@Observable`, app-scoped) runs the build async — the
+model calls are stubbed behind `PocketBriefModel` in unit tests. This is pillar
+(b)'s spirit (an AI-curated crate) delivered through the existing pocket contract;
+the smarter-`realize()` ordering + `mixSuggestions` producer remain the open seams.
+
 ---
 
 ## 5. Export — performance leaves the app
