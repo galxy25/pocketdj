@@ -11,9 +11,18 @@ import Foundation
 /// only an optimization; skipping it keeps this dependency-free).
 enum SessionFolders {
 
+    /// TEST SEAM: overrides the app-managed root so the storage tests (recordings usage /
+    /// delete-all) are hermetic and can never touch this machine's real session
+    /// recordings. nil in production; only tests set it (before any concurrent use).
+    nonisolated(unsafe) static var appRootOverride: URL?
+
     /// App-managed root: Application Support/mix-sessions/ (created on demand). Mirrors
     /// `RipsStore.burnsDirectory()` but under `mix-sessions/`.
     static func appRoot() throws -> URL {
+        if let dir = appRootOverride {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
         let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                appropriateFor: nil, create: true)
         let dir = base.appendingPathComponent("mix-sessions", isDirectory: true)
@@ -65,6 +74,36 @@ enum SessionFolders {
         }
         let release: (() -> Void)? = root.scoped ? { root.url.stopAccessingSecurityScopedResource() } : nil
         return (dir, release, root.isUserFolder)
+    }
+
+    /// Visit each possible session-folder root once — the app-managed `mix-sessions/` dir
+    /// + the user-picked folder (when its bookmark resolves) — holding the security scope
+    /// around the visit. Storage-manager seam (usage measurement + delete-all).
+    static func forEachRoot(bookmark: Data?, _ body: (URL) -> Void) {
+        var visited = Set<String>()
+        if let app = try? appRoot(), visited.insert(app.path).inserted { body(app) }
+        guard bookmark != nil,
+              let user = resolveRoot(bookmark: bookmark, requireWritable: false),
+              user.isUserFolder else { return }
+        defer { if user.scoped { user.url.stopAccessingSecurityScopedResource() } }
+        if visited.insert(user.url.path).inserted { body(user.url) }
+    }
+
+    /// Total on-disk bytes of captured session audio across both roots — only `.m4a` files
+    /// inside per-session subfolders (the folders hold nothing else this app writes).
+    static func recordingsUsageBytes(bookmark: Data?) -> Int {
+        var total = 0
+        let fm = FileManager.default
+        forEachRoot(bookmark: bookmark) { root in
+            let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            for dir in dirs where (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+                for f in files where f.pathExtension.lowercased() == "m4a" {
+                    total += (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                }
+            }
+        }
+        return total
     }
 
     /// Resolve a recording's file URL for PLAYBACK (read-only). `wasUserFolder` picks the root the file

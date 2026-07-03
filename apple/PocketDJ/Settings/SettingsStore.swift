@@ -85,6 +85,13 @@ final class SettingsStore {
     /// reopen there ("open to wherever you last left off"); macOS ignores it
     /// (always lands on Mix). Written by RootView on every section change.
     var lastSection: String?
+    /// Storage manager SOFT CAP (decimal GB). UNSET (nil, the default) means the app never
+    /// deletes media on its own — storage is managed manually with the delete tools. When
+    /// set, a once-a-day prune evicts least-recently-played burned media until the burned
+    /// footprint fits under the cap. See `StorageManager`.
+    var storageSoftCapGB: Double?
+    /// Epoch ms of the last completed daily prune (the once-a-day gate). nil = never.
+    var lastStoragePruneAt: Double?
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -110,6 +117,8 @@ final class SettingsStore {
         self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         self.beatPulseEnabled = data.beatPulseEnabled ?? false
         self.lastSection = data.lastSection
+        self.storageSoftCapGB = data.storageSoftCapGB
+        self.lastStoragePruneAt = data.lastStoragePruneAt
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -193,7 +202,9 @@ final class SettingsStore {
             mixAutoHidePlayed: mixAutoHidePlayed,
             cueOutputChannel: cueOutputChannel.rawValue,
             beatPulseEnabled: beatPulseEnabled,
-            lastSection: lastSection)
+            lastSection: lastSection,
+            storageSoftCapGB: storageSoftCapGB,
+            lastStoragePruneAt: lastStoragePruneAt)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -224,6 +235,8 @@ final class SettingsStore {
         cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         beatPulseEnabled = d.beatPulseEnabled ?? false
         lastSection = d.lastSection
+        storageSoftCapGB = d.storageSoftCapGB
+        lastStoragePruneAt = d.lastStoragePruneAt
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -270,6 +283,11 @@ struct SettingsData: Codable {
     var beatPulseEnabled: Bool?
     /// Optional so older blobs still decode (nil = never persisted = home).
     var lastSection: String?
+    /// Storage soft cap in decimal GB. Optional-by-design even when current: nil IS the
+    /// meaningful default (no cap ⇒ no automatic storage management).
+    var storageSoftCapGB: Double?
+    /// Optional so older blobs still decode (nil = the daily prune has never run).
+    var lastStoragePruneAt: Double?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -289,5 +307,7 @@ struct SettingsData: Codable {
         mixAutoHidePlayed: true,
         cueOutputChannel: CueChannel.right.rawValue,
         beatPulseEnabled: false,
-        lastSection: nil)
+        lastSection: nil,
+        storageSoftCapGB: nil,
+        lastStoragePruneAt: nil)
 }

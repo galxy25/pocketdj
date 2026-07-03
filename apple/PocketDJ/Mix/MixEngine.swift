@@ -393,6 +393,10 @@ final class MixEngine {
     /// The mix-session log sink (the app's `MixSessionStore`). Weak so the engine never retains the
     /// app graph; nil ⇒ recording is a no-op (tests, before wiring).
     @ObservationIgnored weak var recorder: MixSessionRecorder?
+    /// Play-stats hook (the storage manager's LRP prune signal): fired alongside
+    /// `recorder?.notePlayed` whenever a deck transitions to playing. Wired at app init
+    /// to `PlayStatsStore.notePlayed`; nil in tests.
+    @ObservationIgnored var onSongPlayed: ((String) -> Void)?
 
     /// Emit one session event for a deck (or global) action, stamping the deck's loaded song + its
     /// current playhead. The store owns the timeline (t0/tMs), coalescing, and persistence.
@@ -417,7 +421,10 @@ final class MixEngine {
         if playing {
             NowPlayingArbiter.shared.claim(self)   // a Mix deck started → own the lock-screen card
             rec(.play, deck)
-            if let id = state(deck).loaded?.songId { recorder?.notePlayed(songId: id) }
+            if let id = state(deck).loaded?.songId {
+                recorder?.notePlayed(songId: id)
+                onSongPlayed?(id)
+            }
         } else {
             rec(.pause, deck)
         }

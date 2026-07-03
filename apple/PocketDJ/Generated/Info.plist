@@ -6,6 +6,7 @@
 	<array>
 		<string>com.levi.pocketdj.burn-drain</string>
 		<string>com.levi.pocketdj.rip-reconcile</string>
+		<string>com.levi.pocketdj.storage-prune</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>

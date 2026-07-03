@@ -38,6 +38,12 @@ final class MixRecorder {
     /// Toggle capture (what the record button calls).
     func toggle() { if isRecording { stop() } else { start() } }
 
+    /// The in-flight take (session id + file name) while recording — the storage manager's
+    /// delete-all skips this open file. nil when idle.
+    var activeTake: (sessionId: String, fileName: String)? {
+        isRecording ? (recSessionId, recFileName) : nil
+    }
+
     @ObservationIgnored private var didScanOrphans = false
 
     /// One-shot on launch: re-file any recording FILE on disk that isn't referenced by a session's

@@ -123,6 +123,12 @@ final class BurnStore {
     /// user-picked burn folder. `nil` in tests / before wiring → app-storage fallback.
     var settings: SettingsStore?
 
+    /// TEST SEAM: overrides the app-managed burns root (`RipsStore.burnsDirectory()`) so
+    /// the storage tests (bulk delete / usage / prune) are hermetic and can never touch
+    /// this machine's real burned files. nil in production.
+    @ObservationIgnored var appBurnsDirOverride: URL?
+    private func appBurnsDir() -> URL? { appBurnsDirOverride ?? (try? RipsStore.burnsDirectory()) }
+
     private let rips: RipsStore
 
     /// Feature (backgrounded burning): when set, `burn(...)` hands each song to a BACKGROUND
@@ -265,7 +271,7 @@ final class BurnStore {
                 if ok { url.stopAccessingSecurityScopedResource() }   // resolved but unusable
             }
         }
-        return (try? RipsStore.burnsDirectory()).map { ($0, false, false) }
+        return appBurnsDir().map { ($0, false, false) }
     }
 
     /// Create a security-scoped bookmark for a folder URL (macOS adds `.withSecurityScope`;
@@ -287,7 +293,7 @@ final class BurnStore {
     private func itemDir(_ item: BurnItem) -> (url: URL, scoped: Bool)? {
         // nil coalesces to true: every pre-feature burn lives in Application Support.
         if item.wasAppStorage ?? true {
-            return (try? RipsStore.burnsDirectory()).map { ($0, false) }
+            return appBurnsDir().map { ($0, false) }
         }
         // READ/playback path: the folder only needs to be READABLE, not writable.
         guard let resolved = resolveBurnFolder(allowRePersist: false, requireWritable: false),
@@ -549,6 +555,150 @@ final class BurnStore {
         }
         items[songId] = nil
         save()
+    }
+
+    // MARK: Storage manager — bulk delete + usage (downloaded media ONLY)
+    //
+    // Everything here operates on the DOWNLOADED files + the burn ledger and never touches
+    // the catalog or the user's collections — a deleted song stays in the library and can
+    // always be re-burned later.
+
+    /// Remove a batch of burned songs: each item's audio file (shared-analog-aware — the
+    /// whole-album mp3 survives while any SURVIVING item still references it), sidecar,
+    /// per-song cut, stems, and beat-grid sidecar, then drop the ledger entries and save
+    /// ONCE. Unknown ids are ignored.
+    func removeBurns(songIds: [String]) {
+        let goners = Set(songIds).filter { items[$0] != nil }
+        guard !goners.isEmpty else { return }
+        // Audio files still referenced by a surviving item must not be deleted.
+        let survivorAudio = Set(items.values.filter { !goners.contains($0.songId) }.map(\.audioFileName))
+        for id in goners {
+            guard let item = items[id] else { continue }
+            if let (dir, scoped) = itemDir(item) {
+                if !item.audioFileName.isEmpty && !survivorAudio.contains(item.audioFileName) {
+                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.audioFileName))
+                }
+                if !item.sidecarFileName.isEmpty {
+                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.sidecarFileName))
+                }
+                if let cut = resolveCutFileName(for: item, in: dir) {
+                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(cut))
+                }
+                if scoped { dir.stopAccessingSecurityScopedResource() }
+            }
+            removeAuxFiles(forSong: id)
+            items[id] = nil
+        }
+        save()
+    }
+
+    /// Remove EVERY burned song, then sweep any pattern-named leftovers (the stem cache
+    /// isn't ledger-tracked, so stems for never-burned songs linger otherwise). Only files
+    /// matching this app's deterministic names are touched — a user-picked folder may hold
+    /// unrelated files, which are never deleted.
+    func removeAllBurns() {
+        removeBurns(songIds: Array(items.keys))
+        forEachBurnRoot { dir in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            for n in names where Self.isAuxFileName(n) {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(n))
+            }
+        }
+    }
+
+    /// Total on-disk bytes of burned media (audio + sidecars + cuts + stems + beat grids)
+    /// across both roots. Counts ONLY files this app wrote — ledger-recorded names + the
+    /// deterministic stem/analysis patterns — never a user folder's unrelated files.
+    func burnedUsageBytes() -> Int {
+        var ledgerNames = Set<String>()
+        for it in items.values {
+            if !it.audioFileName.isEmpty { ledgerNames.insert(it.audioFileName) }
+            if !it.sidecarFileName.isEmpty { ledgerNames.insert(it.sidecarFileName) }
+            if let c = it.cutFileName { ledgerNames.insert(c) }
+        }
+        var total = 0
+        forEachBurnRoot { dir in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            for n in names where ledgerNames.contains(n) || Self.isAuxFileName(n) {
+                let path = dir.appendingPathComponent(n).path
+                if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int {
+                    total += size
+                }
+            }
+        }
+        return total
+    }
+
+    /// Ready burned songs grouped by artist with APPROXIMATE attributable bytes (each
+    /// unique audio file counted once within the group — a shared analog album mp3 may
+    /// survive a per-artist delete if another artist's song on the same record still
+    /// references it). Sorted by artist for the Storage manager list.
+    struct ArtistUsage: Identifiable, Equatable {
+        let artist: String
+        let songIds: [String]
+        let bytes: Int
+        var id: String { artist }
+    }
+    func usageByArtist() -> [ArtistUsage] {
+        let ready = items.values.filter { $0.state == .ready }
+        let groups = Dictionary(grouping: ready) { $0.artist.isEmpty ? "Unknown artist" : $0.artist }
+        return groups.map { artist, group in
+            ArtistUsage(artist: artist,
+                        songIds: group.map(\.songId).sorted(),
+                        bytes: Self.uniqueAudioBytes(group))
+        }
+        .sorted { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
+    }
+
+    /// The subset of `ids` that are burned + ready (what a per-collection delete removes).
+    func readyBurnedIds(in ids: [String]) -> [String] {
+        ids.filter { items[$0]?.state == .ready }
+    }
+
+    /// Approximate on-disk bytes attributable to a set of burned songs (unique audio files
+    /// counted once). For the Storage manager's per-collection rows.
+    func approximateBytes(forSongs ids: [String]) -> Int {
+        Self.uniqueAudioBytes(ids.compactMap { items[$0] }.filter { $0.state == .ready })
+    }
+
+    /// Sum each DISTINCT audio file's recorded bytes once (analog albums share one mp3
+    /// across their songs, each carrying the whole file's byte count).
+    private static func uniqueAudioBytes(_ group: [BurnItem]) -> Int {
+        var seen = Set<String>(); var total = 0
+        for it in group where !it.audioFileName.isEmpty && seen.insert(it.audioFileName).inserted {
+            total += it.bytes
+        }
+        return total
+    }
+
+    /// A non-ledger companion file this app wrote: a stem (`stem-<songId>-<part>.mp3`) or
+    /// a beat-grid sidecar (`analysis-<songId>.json`).
+    nonisolated static func isAuxFileName(_ name: String) -> Bool {
+        (name.hasPrefix("stem-") && name.hasSuffix(".mp3"))
+            || (name.hasPrefix("analysis-") && name.hasSuffix(".json"))
+    }
+
+    /// Delete a song's non-ledger companion files (4 stems + beat-grid sidecar) from BOTH
+    /// possible roots — they're written to the ACTIVE folder, which may have changed since.
+    private func removeAuxFiles(forSong songId: String) {
+        forEachBurnRoot { dir in
+            for name in Self.stemNames {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(Self.stemFileName(songId, name)))
+            }
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(Self.beatgridFileName(songId)))
+        }
+    }
+
+    /// Visit each possible burn root once: the app-managed `burns/` dir + the user-picked
+    /// folder (when its bookmark resolves). Holds the security scope around the visit.
+    private func forEachBurnRoot(_ body: (URL) -> Void) {
+        var visited = Set<String>()
+        if let app = appBurnsDir(), visited.insert(app.path).inserted { body(app) }
+        guard settings?.burnFolderBookmark != nil,
+              let user = resolveBurnFolder(allowRePersist: false, requireWritable: false),
+              user.isUserFolder else { return }
+        defer { if user.scoped { user.url.stopAccessingSecurityScopedResource() } }
+        if visited.insert(user.url.path).inserted { body(user.url) }
     }
 
     /// Prune index entries whose audio file vanished (iOS purges Application Support

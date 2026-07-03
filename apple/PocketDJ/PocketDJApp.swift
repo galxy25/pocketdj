@@ -51,6 +51,13 @@ struct PocketDJApp: App {
     /// folder. Owned here (not by MixView) so a recording keeps running across Mix-tab switches, just
     /// like `mix`. Its `settings` (session-folder location) is pushed in from the Mix tab's `.task`.
     @State private var mixRecorder: MixRecorder
+    /// Device-local play stats (count + last-played per song) — every playback surface
+    /// funnels in; the storage manager's soft-cap prune orders by least-recently-played.
+    @State private var playStats: PlayStatsStore
+    /// The Settings ▸ Storage prune engine: when the user sets a soft cap, a once-a-day
+    /// pass evicts least-recently-played burned media until the footprint fits. Cap unset
+    /// (default) ⇒ never deletes anything on its own.
+    @State private var storage: StorageManager
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -133,6 +140,10 @@ struct PocketDJApp: App {
         // folder. Shares the app's `mix` (audio tap) + `mixSessions` (metadata); its session-folder
         // `settings` are pushed in from the Mix tab.
         _mixRecorder = State(initialValue: MixRecorder(engine: mix, sessions: mixSessions))
+        let playStats = PlayStatsStore(fileURL: PlayStatsStore.launchURL())
+        _playStats = State(initialValue: playStats)
+        let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
+        _storage = State(initialValue: storage)
 
         // ── Store cross-wiring ─────────────────────────────────────────────────
         // Wired HERE (not in RootView.task) so an App Intent that background-launches
@@ -152,10 +163,31 @@ struct PocketDJApp: App {
         // catalog's per-id source map so an Apple Music (Local) track tries Apple Music
         // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
         coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
+        // Play-stats hooks — every surface that starts a song notes the play (the stats
+        // store's re-count window absorbs the burned-play overlap between rips+coordinator).
+        rips.onPlay = { [weak playStats] in playStats?.notePlayed($0) }
+        coordinator.onPlay = { [weak playStats] in playStats?.notePlayed($0) }
+        mix.onSongPlayed = { [weak playStats] in playStats?.notePlayed($0) }
+        // The prune must never delete a file an engine holds OPEN: both Mix decks, the
+        // inline/now-playing track, and the sequencer's current queue item are off-limits.
+        storage.protectedSongIds = { [weak mix, weak rips, weak setlistPlayer] in
+            var ids = Set<String>()
+            if let m = mix {
+                if let a = m.loaded(.a)?.songId { ids.insert(a) }
+                if let b = m.loaded(.b)?.songId { ids.insert(b) }
+            }
+            if let np = rips?.nowPlaying?.songId { ids.insert(np) }
+            if let sp = setlistPlayer, sp.isRunning, sp.index < sp.queue.count {
+                ids.insert(sp.queue[sp.index].id)
+            }
+            return ids
+        }
         #if os(iOS)
         // Let the BGAppRefreshTask reconcile the rips manifest while backgrounded (the rip
         // itself is server-side; this only catches up the client's "ripped" view).
         RipReconcileBridge.shared.refresh = { [weak rips] in await rips?.refreshManifest() }
+        // Let the daily storage-prune BGTask reach the live prune engine (gate included).
+        StoragePruneBridge.shared.prune = { [weak storage] in storage?.pruneIfDue() }
         #endif
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
@@ -201,6 +233,8 @@ struct PocketDJApp: App {
                 .environment(mix)
                 .environment(mixSessions)
                 .environment(mixRecorder)
+                .environment(playStats)
+                .environment(storage)
                 .environment(intents)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
@@ -213,6 +247,9 @@ struct PocketDJApp: App {
                         streaming.onScenePhaseActive()
                         // Resume the background transfer reconcile on foreground (idempotent).
                         TransferCoordinator.shared.reconcileOnLaunch()
+                        // Foreground fallback for the daily soft-cap prune (macOS has no
+                        // BGTaskScheduler; iOS BGTasks are best-effort). Gated inside.
+                        storage.pruneIfDue()
                     case .background:
                         streaming.onScenePhaseBackground()
                         mixSessions.flush()    // persist the latest session state before suspension

@@ -46,6 +46,7 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - com.levi.pocketdj.burn-drain
           - com.levi.pocketdj.rip-reconcile
+          - com.levi.pocketdj.storage-prune
         # Apple Music opt-in flag (read by AppleMusicCredentials.isEnabled). MUST live
         # in this base plist: INFOPLIST_KEY_* only injects Apple's KNOWN keys, not custom
         # ones, so the build-setting form silently no-ops (the "Apple Music not available"

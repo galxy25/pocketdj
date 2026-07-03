@@ -56,6 +56,12 @@ final class PlaybackCoordinator {
     /// alert to it; cleared on dismiss / next successful play.
     var lastErrorMessage: String?
 
+    /// Play-stats hook: fired when a provider claims a play. Covers the Apple Music
+    /// streaming path, which never touches `RipsStore.nowPlaying`; the rip path fires
+    /// `RipsStore.onPlay` too, and the stats store's re-count window absorbs the overlap.
+    /// Wired at app init to `PlayStatsStore.notePlayed`; nil in tests.
+    @ObservationIgnored var onPlay: ((String) -> Void)?
+
     init(ripProvider: RipServerPlaybackProvider, appleMusic: AppleMusicPlaybackProvider) {
         self.ripProvider = ripProvider
         self.appleMusic = appleMusic
@@ -88,6 +94,7 @@ final class PlaybackCoordinator {
             }
             if await provider.tryPlay(song) {
                 activeBackend = provider.backend
+                onPlay?(song.id)
                 // Feature 1 — stream-through-ripping. The Apple Music stream has already
                 // STARTED (tryPlay returned true), so kicking off the async rip here adds
                 // ZERO playback latency. Fire-and-forget (unawaited, never blocks/delays

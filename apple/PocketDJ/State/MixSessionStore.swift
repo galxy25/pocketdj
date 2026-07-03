@@ -212,6 +212,40 @@ final class MixSessionStore: MixSessionRecorder {
                      durationMs: durationMs, wasUserFolder: wasUserFolder)
     }
 
+    /// Storage manager: delete EVERY captured recording's audio file and clear the
+    /// recordings metadata off every session, leaving the sessions/events themselves
+    /// intact (tiny JSON — the auto-mix corpus). Sweeps BOTH roots for stray takes (a
+    /// crash-orphaned `.m4a` the next orphan scan would otherwise revive) and removes
+    /// emptied per-session subfolders. `skippingSessionId`/`skippingFileName` protect an
+    /// in-flight capture's open file (pass `MixRecorder.activeTake` while recording).
+    /// Deletes audio only — never the catalog, collections, or the session logs.
+    func deleteAllRecordings(bookmark: Data?, skippingSessionId: String? = nil,
+                             skippingFileName: String? = nil) {
+        let fm = FileManager.default
+        SessionFolders.forEachRoot(bookmark: bookmark) { root in
+            let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            for dir in dirs where (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                let sessionId = dir.lastPathComponent
+                let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+                for f in files where f.pathExtension.lowercased() == "m4a" {
+                    if sessionId == skippingSessionId && f.lastPathComponent == skippingFileName { continue }
+                    try? fm.removeItem(at: f)
+                }
+                if ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).isEmpty {
+                    try? fm.removeItem(at: dir)
+                }
+            }
+        }
+        for i in sessions.indices where sessions[i].recordings?.isEmpty == false {
+            if sessions[i].id == skippingSessionId, let keep = skippingFileName {
+                sessions[i].recordings = sessions[i].recordings?.filter { $0.fileName == keep }
+            } else {
+                sessions[i].recordings = []
+            }
+        }
+        saveNow()
+    }
+
     // MARK: - Readers (Sessions screen)
 
     func session(_ id: String) -> MixSession? { sessions.first { $0.id == id } }

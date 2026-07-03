@@ -23,8 +23,6 @@ struct SettingsView: View {
     @State private var showExporter = false
     @State private var showImporter = false
     @State private var showCollectionsImporter = false
-    @State private var showBurnFolderPicker = false
-    @State private var showSessionFolderPicker = false
     @State private var exportDoc = EditsFile(data: Data())
 
     // Full backup (.pocketdj.zip)
@@ -48,8 +46,7 @@ struct SettingsView: View {
             ripSection
             mixSection
             appleMusicSyncSection
-            burnFolderSection
-            sessionFolderSection
+            storageSection
             editsSection
             collectionsSection
             backupSection
@@ -90,135 +87,26 @@ struct SettingsView: View {
         .alert("Backup imported", isPresented: Binding(get: { backupSummary != nil }, set: { if !$0 { backupSummary = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(backupSummary ?? "") }
-        // Feature 2 — burnt-music folder. [.folder] presents NSOpenPanel(canChooseDirectories)
-        // on macOS and the directory document picker on iOS — one cross-platform call.
-        .fileImporter(isPresented: $showBurnFolderPicker, allowedContentTypes: [.folder]) { result in
-            guard case .success(let url) = result else { return }
-            // The picked folder URL is security-scoped: hold access while creating the bookmark.
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            if let data = BurnStore.makeBookmark(for: url) {
-                settings.burnFolderBookmark = data
-                settings.persist()
-            }
-        }
-        // Mix SESSION folder — same cross-platform directory picker as the burnt-music folder.
-        .fileImporter(isPresented: $showSessionFolderPicker, allowedContentTypes: [.folder]) { result in
-            guard case .success(let url) = result else { return }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            if let data = BurnStore.makeBookmark(for: url) {
-                settings.sessionFolderBookmark = data
-                settings.persist()
-            }
-        }
     }
 
-    // MARK: Mix session folder
+    // MARK: Storage (one entry — the manager screen)
 
-    /// A user-pickable folder for mix SESSION data — recorded audio (and future per-session files),
-    /// one subfolder per session — so recordings are browsable in Finder / the Files app. Stored as a
-    /// security-scoped bookmark; unset falls back to the app-managed `mix-sessions/` dir. Mirrors the
-    /// burnt-music folder above. See `SessionFolders` / `MixRecorder`.
-    private var sessionFolderSection: some View {
+    /// The single door into the storage manager: usage, the burnt-music + session-recording
+    /// folder pickers (moved off this root screen), delete-by-artist/-collection/-all, the
+    /// session-recordings delete, and the soft cap. See `StorageView`.
+    private var storageSection: some View {
         Section {
-            Button { showSessionFolderPicker = true } label: {
-                Label("Choose session folder…", systemImage: "folder.badge.plus")
+            NavigationLink {
+                StorageView(settings: settings)
+            } label: {
+                Label("Storage", systemImage: "internaldrive")
             }
-            .accessibilityIdentifier("settings-session-folder-pick")
-            if let name = sessionFolderName {
-                HStack {
-                    Label(name, systemImage: "folder")
-                        .font(.caption).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
-                        .accessibilityIdentifier("settings-session-folder-path")
-                    Spacer()
-                    Button("Use app storage", role: .destructive) {
-                        settings.sessionFolderBookmark = nil
-                        settings.persist()
-                    }
-                    .font(.caption)
-                    .accessibilityIdentifier("settings-session-folder-reset")
-                }
-            }
+            .accessibilityIdentifier("settings-storage")
         } header: {
-            Text("Mix sessions")
+            Text("Storage")
         } footer: {
-            Text("Where each mix session's recorded audio is saved (one folder per session). Pick a folder to browse the recordings yourself in \(browseAppName). Leave unset to keep them in the app’s private storage.")
+            Text("Downloaded music + session recordings: where they live, what they cost, and the tools to clear them.")
         }
-    }
-
-    /// The display name of the currently-chosen session folder (resolved read-only from the
-    /// bookmark), or nil when none is set (app-storage fallback).
-    private var sessionFolderName: String? {
-        guard let data = settings.sessionFolderBookmark else { return nil }
-        var stale = false
-        #if os(macOS)
-        let opts: URL.BookmarkResolutionOptions = [.withSecurityScope]
-        #else
-        let opts: URL.BookmarkResolutionOptions = []
-        #endif
-        guard let url = try? URL(resolvingBookmarkData: data, options: opts,
-                                 relativeTo: nil, bookmarkDataIsStale: &stale) else {
-            return "Chosen folder (unavailable)"
-        }
-        return url.lastPathComponent
-    }
-
-    // MARK: Burnt-music folder (Feature 2)
-
-    /// A user-pickable folder for burnt audio + sidecars, so the files are browsable in
-    /// Finder (macOS) / the Files app (iOS). Stored as a security-scoped bookmark; unset
-    /// falls back to the app-managed Application Support `burns/` dir (not user-browsable).
-    private var burnFolderSection: some View {
-        Section {
-            Button { showBurnFolderPicker = true } label: {
-                Label("Choose burnt-music folder…", systemImage: "folder.badge.plus")
-            }
-            .accessibilityIdentifier("settings-burn-folder-pick")
-            if let name = burnFolderName {
-                HStack {
-                    Label(name, systemImage: "folder")
-                        .font(.caption).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
-                        .accessibilityIdentifier("settings-burn-folder-path")
-                    Spacer()
-                    Button("Use app storage", role: .destructive) {
-                        settings.burnFolderBookmark = nil
-                        settings.persist()
-                    }
-                    .font(.caption)
-                    .accessibilityIdentifier("settings-burn-folder-reset")
-                }
-            }
-        } header: {
-            Text("Burnt music")
-        } footer: {
-            Text("Where burnt audio + their `.txt` sidecars are saved. Pick a folder to browse the files yourself in \(browseAppName). Leave unset to keep them in the app’s private storage.")
-        }
-    }
-
-    /// The display name of the currently-chosen burnt-music folder (resolved read-only from
-    /// the bookmark), or nil when none is set (app-storage fallback).
-    private var burnFolderName: String? {
-        guard let data = settings.burnFolderBookmark else { return nil }
-        var stale = false
-        #if os(macOS)
-        let opts: URL.BookmarkResolutionOptions = [.withSecurityScope]
-        #else
-        let opts: URL.BookmarkResolutionOptions = []
-        #endif
-        guard let url = try? URL(resolvingBookmarkData: data, options: opts,
-                                 relativeTo: nil, bookmarkDataIsStale: &stale) else {
-            return "Chosen folder (unavailable)"
-        }
-        return url.lastPathComponent
-    }
-
-    private var browseAppName: String {
-        #if os(macOS)
-        return "Finder"
-        #else
-        return "the Files app"
-        #endif
     }
 
     // MARK: Backup (full .pocketdj.zip — collections + sources + edits)
