@@ -29,8 +29,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { nsFor, songIdFor } from './lib/am-ids.mjs';
-import { buildTrackScript, buildPlaylistScript, runOsascript, parsePlaylistRows, writeLibraryXml } from './lib/am-music.mjs';
-import { diffLibrary, partitionTrackRows, mergePlaylists } from './lib/am-sync-merge.mjs';
+import { buildTrackScript, buildPlaylistScript, runOsascript, parsePlaylistRows, writeLibraryXml, nonMusicFlag } from './lib/am-music.mjs';
+import {
+  diffLibrary, partitionTrackRows, mergePlaylists,
+  recordStrike, effectiveIgnoredPids, removalGuardTripped, playlistDumpLooksBroken, CONFIRM_STRIKES,
+} from './lib/am-sync-merge.mjs';
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 ? process.argv[i + 1] : def; }
 const INDEX = arg('index', 'public/apple-music-index.json');
@@ -73,9 +76,21 @@ const oldById = new Map(oldSongs.map((s) => [s.id, s]));
 const existing = new Set(oldById.keys());
 const ignoredPids = loadIgnoredPids();
 const { newPositions, newPids, removed, ignoredSeen } =
-  diffLibrary({ allPids, existingIds: existing, ns, ignoredPids: new Set(Object.keys(ignoredPids)) });
+  diffLibrary({ allPids, existingIds: existing, ns, ignoredPids: effectiveIgnoredPids(ignoredPids) });
 log(`  new tracks: ${newPositions.length} | removed: ${removed.size}` +
   (ignoredSeen ? ` | ignored (ghost/non-music): ${ignoredSeen}` : ''));
+
+// Circuit breaker: an empty/truncated `every track` snapshot that exits 0 must never
+// ship as a mass deletion — removed songs lose appleMusicId/explicit enrichment forever.
+if (allPids.length === 0 && oldSongs.length > 0) {
+  console.error('✗ empty library snapshot with a populated index — refusing to treat as mass removal');
+  cleanup(); process.exit(2);
+}
+if (removalGuardTripped(removed.size, oldSongs.length) && process.env.POCKETDJ_ALLOW_MASS_REMOVAL !== '1') {
+  console.error(`✗ implausible removal count (${removed.size} of ${oldSongs.length}) — refusing to ship unattended. ` +
+    'Set POCKETDJ_ALLOW_MASS_REMOVAL=1 if this purge is intentional.');
+  cleanup(); process.exit(2);
+}
 
 if (DRY) {
   log(`(dry-run) would add up to ${newPositions.length} new tracks and drop ${removed.size} removed.`);
@@ -94,10 +109,15 @@ if (newPositions.length) {
   log(`  fetched ${rows.length} enriched rows`);
   if (skewPids.length) log(`  ⚠ ${skewPids.length} rows landed on unrequested tracks (library changed mid-run) — dropped, retried next run`);
   if (ghostPids.length) {
+    // A systemic blank-read night (Music quitting, TCC denial) is harmless here: these
+    // are strikes, not ignores — a pid only stops re-fetching after CONFIRM_STRIKES
+    // sightings on distinct days, so real tracks self-heal the next night.
     const now = new Date().toISOString();
-    for (const pid of ghostPids) ignoredPids[pid] = ignoredPids[pid] || { firstSeen: now, reason: 'no-metadata' };
+    for (const pid of ghostPids) recordStrike(ignoredPids, pid, 'no-metadata', now);
     saveIgnoredPids(ignoredPids);
-    log(`  ⚠ ${ghostPids.length} metadata-less ghost tracks → ignore list (${IGNORE_FILE})`);
+    const confirmed = ghostPids.filter((p) => (ignoredPids[p].strikes ?? 1) >= CONFIRM_STRIKES).length;
+    log(`  ⚠ ${ghostPids.length} metadata-less tracks struck (${confirmed} now confirmed ghosts, ` +
+      `${ghostPids.length - confirmed} will retry — ${CONFIRM_STRIKES} strikes on distinct days confirm; ${IGNORE_FILE})`);
   }
   const smallXml = path.join(tmpdir, 'new.xml');
   writeLibraryXml({ rows, playlists: [], runStart: Date.now(), out: smallXml });
@@ -112,15 +132,27 @@ if (newPositions.length) {
   partial.songs = (partial.songs || []).filter((s) => !dedupSeen.has(s.id) && dedupSeen.add(s.id));
   log(`  indexed new: ${partial.songs.length} songs, ${(partial.albums || []).length} albums` +
     ((partial.songs.length < rows.length) ? ` (${rows.length - partial.songs.length} non-music/video/no-name skipped by indexer)` : ''));
-  // The indexer's skips are deterministic (music videos, podcasts, titleless rows) —
-  // without ignoring them they'd re-diff as "new" every night forever, like the ghosts.
+  // Keep indexer-skipped rows from re-diffing as "new" every night forever — but only
+  // POSITIVE evidence (the row READ a video/podcast media kind) may ignore immediately;
+  // a titleless row can be a transient read failure, so it gets strikes like a ghost.
+  // Any pid that indexes successfully is rescued from the list.
   const indexedIds = new Set(partial.songs.map((s) => s.id));
-  const nonMusicPids = rows.map((r) => r.persistentID).filter((pid) => !indexedIds.has(songIdFor(ns, pid)));
-  if (nonMusicPids.length) {
-    const now = new Date().toISOString();
-    for (const pid of nonMusicPids) ignoredPids[pid] = ignoredPids[pid] || { firstSeen: now, reason: 'non-music' };
+  const now2 = new Date().toISOString();
+  let nonMusic = 0, noName = 0, rescued = 0;
+  for (const r of rows) {
+    if (indexedIds.has(songIdFor(ns, r.persistentID))) {
+      if (ignoredPids[r.persistentID]) { delete ignoredPids[r.persistentID]; rescued++; }
+    } else if (nonMusicFlag(r)) {
+      ignoredPids[r.persistentID] = ignoredPids[r.persistentID] || { firstSeen: now2, lastSeen: now2, reason: 'non-music' };
+      nonMusic++;
+    } else {
+      recordStrike(ignoredPids, r.persistentID, 'no-name', now2);
+      noName++;
+    }
+  }
+  if (nonMusic || noName || rescued) {
     saveIgnoredPids(ignoredPids);
-    log(`  ⚠ ${nonMusicPids.length} non-music tracks → ignore list (${IGNORE_FILE})`);
+    log(`  ignore list: +${nonMusic} non-music, ${noName} no-name strikes, ${rescued} rescued (${IGNORE_FILE})`);
   }
 }
 
@@ -131,6 +163,14 @@ const pr = runOsascript(buildPlaylistScript({ rawPath: plRaw, timeoutSec: Math.f
 let playlistRows = null;
 if (pr.ok && fs.existsSync(plRaw)) playlistRows = parsePlaylistRows(fs.readFileSync(plRaw, 'utf8'));
 else log('  ⚠ playlist dump failed — keeping existing playlists (minus removed songs)');
+// The dump script creates its file BEFORE writing rows, so a hard mid-dump failure can
+// parse as "zero playlists" — which the merge would ship as "every playlist deleted".
+if (playlistRows && playlistDumpLooksBroken(playlistRows.length, (idx.playlists || []).length) &&
+    process.env.POCKETDJ_ALLOW_PLAYLIST_SHRINK !== '1') {
+  log(`  ⚠ playlist dump implausibly small (${playlistRows.length} vs ${(idx.playlists || []).length} committed) — ` +
+    'treating as read failure (set POCKETDJ_ALLOW_PLAYLIST_SHRINK=1 if this mass deletion is intentional)');
+  playlistRows = null;
+}
 
 // 6. merge
 // 6a. songs: drop removed, append new (existing songs preserved verbatim)

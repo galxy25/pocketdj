@@ -261,6 +261,22 @@ export function parsePlaylistRows(text) {
   return out;
 }
 
+// POSITIVE non-music evidence for a fetched row → the plist flag key to emit (else null).
+// 'unknown' is a real Music.app media-kind enumerator, so it must not suppress the
+// Kind-string fallback. Shared by writeLibraryXml (flag emission) and the incremental
+// sync's ignore-list decision — a row may only be permanently ignored on evidence like
+// this, never on absence of a title (which can be a transient read failure).
+export function nonMusicFlag(e) {
+  const mk = (e.mediaKind || '').toLowerCase();
+  const mkUnset = !mk || mk === 'unknown';
+  if (mk === 'music video' || mk === 'home video' || (mkUnset && /video|movie/i.test(e.kind || ''))) return 'Has Video';
+  if (mk === 'movie') return 'Movie';
+  if (mk === 'tv show') return 'TV Show';
+  if (mk === 'podcast') return 'Podcast';
+  if (mk === 'audiobook') return 'Audiobook';
+  return null;
+}
+
 // Serialise rows (+ optional playlists) to an indexer-compatible Library.xml plist.
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const numOf = (s) => { const n = parseInt(s, 10); return Number.isFinite(n) ? n : 0; };
@@ -293,12 +309,8 @@ export function writeLibraryXml({ rows, playlists = [], runStart, out }) {
     // Non-music flags so the indexer's music-only filter can fire on AppleScript-sourced
     // rows exactly as it does on a native Library.xml (media kind first, Kind as fallback
     // for pre-v3 TSVs that lack the column).
-    const mk = (e.mediaKind || '').toLowerCase();
-    if (mk === 'music video' || mk === 'home video' || (!mk && /video|movie/i.test(e.kind || ''))) xml.push('\t\t\t<key>Has Video</key><true/>');
-    else if (mk === 'movie') xml.push('\t\t\t<key>Movie</key><true/>');
-    else if (mk === 'tv show') xml.push('\t\t\t<key>TV Show</key><true/>');
-    else if (mk === 'podcast') xml.push('\t\t\t<key>Podcast</key><true/>');
-    else if (mk === 'audiobook') xml.push('\t\t\t<key>Audiobook</key><true/>');
+    const flag = nonMusicFlag(e);
+    if (flag) xml.push(`\t\t\t<key>${flag}</key><true/>`);
     if (e.persistentID) xml.push(`\t\t\t<key>Persistent ID</key><string>${esc(e.persistentID)}</string>`);
     xml.push('\t\t</dict>');
   });
@@ -307,8 +319,8 @@ export function writeLibraryXml({ rows, playlists = [], runStart, out }) {
   let plEmitted = 0;
   xml.push('\t<key>Playlists</key>', '\t<array>');
   for (const pl of playlists) {
+    // Empty playlists are emitted: existence in Music is truth, emptiness is a state.
     const items = (pl.pids || []).map((pid) => pidToTid.get(pid)).filter(Boolean);
-    if (items.length === 0) continue;
     plEmitted++;
     xml.push('\t\t<dict>');
     xml.push(`\t\t\t<key>Name</key><string>${esc(pl.name || 'Untitled Playlist')}</string>`);

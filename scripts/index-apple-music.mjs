@@ -320,11 +320,13 @@ async function main() {
   flushTrack(); // safety
   if (songStream) await new Promise((r) => songStream.end(r));
 
-  // ---- resolve playlists: Track IDs -> songIds; drop empties ----
+  // ---- resolve playlists: Track IDs -> songIds. Empty playlists are KEPT: existence in
+  // the source is truth (dropping them here made a full rebuild re-ship the deletion of
+  // empty playlists the incremental sync intentionally preserves — the OTG lesson). ----
   const resolvedPlaylists = playlists.map((p) => {
     const songIds = p.trackIds.map((tid) => trackToSong.get(tid)).filter(Boolean);
     return { id: 'pl_' + sha1(`${ns}|${p.persistentId || p.name}`).slice(0, 12), name: p.name, songIds };
-  }).filter((p) => p.songIds.length > 0);
+  });
 
   const albumArr = [...albums.values()].map((a) => ({
     id: a.id, artist: a.artist, name: a.name,

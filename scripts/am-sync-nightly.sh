@@ -48,6 +48,29 @@ mkdir -p "$(dirname "$LOG")"
 log() { echo "[am-sync-nightly $(date -u +%FT%TZ)] $*" | tee -a "$LOG"; }
 run() { if [ "$DRY_RUN" = 1 ]; then echo "DRYRUN: $*" | tee -a "$LOG"; else "$@"; fi; }
 
+# Single-instance lock (mkdir is atomic; macOS has no flock). The 04:00 launchd run and a
+# manual invocation share one clone — without this they reset --hard under each other.
+# exec preserves the PID, so the post-re-exec shell re-owns the lock by pid match; a lock
+# whose pid is dead is stale (crash) and reclaimed.
+LOCK_DIR="$STATE_DIR/.sync.lock"
+acquire_lock() {
+  mkdir -p "$STATE_DIR"
+  if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; return 0; fi
+  local pid
+  pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ "$pid" = "$$" ]; then return 0; fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 1; fi
+  rm -rf "$LOCK_DIR" && mkdir "$LOCK_DIR" 2>/dev/null && echo $$ > "$LOCK_DIR/pid"
+}
+cleanup() {
+  if [ -n "${TMP:-}" ]; then rm -rf "$TMP"; fi
+  if [ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" = "$$" ]; then rm -rf "$LOCK_DIR"; fi
+}
+if [ "$DRY_RUN" != 1 ]; then
+  acquire_lock || { log "another sync run holds the lock (pid $(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?')) — skipping"; exit 0; }
+fi
+trap cleanup EXIT
+
 # ---- clone-mode bootstrap ---------------------------------------------------------
 # Not already in the clone → sync it to origin/main and re-exec the CLONE's copy of this
 # script (so the running code is always fresh main, regardless of the invoking checkout).
@@ -57,10 +80,18 @@ if [ -n "$CLONE_DIR" ] && [ "${POCKETDJ_NIGHTLY_IN_CLONE:-0}" != "1" ]; then
     log "(dry-run) would sync clone $CLONE_DIR and re-exec from it — continuing in-place"
   else
     ORIGIN="${POCKETDJ_NIGHTLY_ORIGIN:-$("$GIT" -C "$REPO" remote get-url origin)}"
+    # Self-heal: a SIGKILL/power loss mid-clone leaves .git present with no worktree —
+    # without this check the job would fail identically every night, forever.
+    if [ -d "$CLONE_DIR/.git" ] && ! { "$GIT" -C "$CLONE_DIR" rev-parse --git-dir >/dev/null 2>&1 && [ -f "$CLONE_DIR/scripts/am-sync-nightly.sh" ]; }; then
+      log "⚠ sync clone unhealthy — re-cloning"
+      rm -rf "$CLONE_DIR"
+    fi
     if [ ! -d "$CLONE_DIR/.git" ]; then
       log "creating sync clone at $CLONE_DIR (from $ORIGIN)"
       "$GIT" clone --branch main "$ORIGIN" "$CLONE_DIR" >>"$LOG" 2>&1
     fi
+    # Stale index.lock from a crashed run — safe to clear, we hold the sync lock.
+    rm -f "$CLONE_DIR/.git/index.lock"
     "$GIT" -C "$CLONE_DIR" fetch origin main >>"$LOG" 2>&1 || log "⚠ clone fetch failed — proceeding with last-synced clone"
     "$GIT" -C "$CLONE_DIR" checkout -f main >>"$LOG" 2>&1
     # A crashed prior run may leave an unpushed nightly commit — discarding is safe: this
@@ -82,8 +113,7 @@ if [ "$BRANCH" != "main" ]; then log "repo on '$BRANCH' (not main) — skipping 
 if [ -n "$("$GIT" status --porcelain)" ]; then log "working tree dirty — skipping this run"; exit 0; fi
 run "$GIT" pull --ff-only origin main || { log "git pull failed — skipping this run"; exit 0; }
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/am-nightly.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/am-nightly.XXXXXX")"   # removed by the cleanup EXIT trap
 MERGED="$TMP/merged.json"
 
 index_hash() { shasum -a 256 "$INDEX" | awk '{print $1}'; }
@@ -98,6 +128,12 @@ ensure_deps() {
 
 # Deploy S3 dev+prod, record the deployed index hash, refresh online search.
 ship() {
+  # Heal a prior in-place crash between commit and push: never deploy an index whose
+  # commit isn't on GitHub (audit trail is load-bearing, GitHub BEFORE S3).
+  if [ -n "$("$GIT" rev-list origin/main..HEAD 2>/dev/null)" ]; then
+    log "local main ahead of origin — pushing audit trail before deploy"
+    run "$GIT" push origin main
+  fi
   ensure_deps
   run "$DEPLOY" dev
   run "$DEPLOY" prod
@@ -125,7 +161,16 @@ ship() {
 }
 
 log "running incremental sync…"
-"$NODE" "$REPO/scripts/am-incremental-sync.mjs" --index "$INDEX" --out "$MERGED" --repo "$REPO" 2>&1 | tee -a "$LOG"
+# Dry-run must not mutate persistent state: the sync's ignore-list strikes are sandboxed
+# into $TMP (seeded from the real file so the preview diff matches a real run).
+SYNC_STATE_ARGS=()
+if [ "$DRY_RUN" = 1 ]; then
+  mkdir -p "$TMP/am-sync-state"
+  cp "$STATE_DIR/ignored-pids.json" "$TMP/am-sync-state/" 2>/dev/null || true
+  SYNC_STATE_ARGS=(--state-dir "$TMP/am-sync-state")
+fi
+"$NODE" "$REPO/scripts/am-incremental-sync.mjs" --index "$INDEX" --out "$MERGED" --repo "$REPO" \
+  ${SYNC_STATE_ARGS[@]+"${SYNC_STATE_ARGS[@]}"} 2>&1 | tee -a "$LOG"
 
 if cmp -s "$MERGED" "$INDEX"; then
   if [ -f "$MARKER" ] && [ "$(cat "$MARKER" 2>/dev/null)" = "$(index_hash)" ]; then

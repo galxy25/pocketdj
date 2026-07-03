@@ -2,9 +2,12 @@
 // shipped real damage before they were extracted: the mid-edit "OTG" playlist deletion
 // (2026-06-30), the perpetual "new tracks: 13" ghost churn, and snapshot-skew rows.
 import { describe, it, expect } from 'vitest';
-import { diffLibrary, partitionTrackRows, mergePlaylists } from '../../scripts/lib/am-sync-merge.mjs';
+import {
+  diffLibrary, partitionTrackRows, mergePlaylists,
+  recordStrike, effectiveIgnoredPids, removalGuardTripped, playlistDumpLooksBroken, CONFIRM_STRIKES,
+} from '../../scripts/lib/am-sync-merge.mjs';
 import { nsFor, songIdFor, playlistIdFor } from '../../scripts/lib/am-ids.mjs';
-import { parsePlaylistRows, writeLibraryXml, COLS } from '../../scripts/lib/am-music.mjs';
+import { parsePlaylistRows, writeLibraryXml, nonMusicFlag, COLS } from '../../scripts/lib/am-music.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -112,6 +115,87 @@ describe('mergePlaylists (presence governs existence)', () => {
       ns,
     });
     expect(out[0].songIds).toEqual([sid('P1'), sid('P2')]);
+  });
+});
+
+describe('ignore-list strikes (transient read failures must self-heal)', () => {
+  it('emptiness-derived entries only become effective after CONFIRM_STRIKES distinct days', () => {
+    const m = {};
+    recordStrike(m, 'G1', 'no-metadata', '2026-07-03T04:00:00Z');
+    expect(effectiveIgnoredPids(m).has('G1')).toBe(false); // strike 1 — retries tomorrow
+    recordStrike(m, 'G1', 'no-metadata', '2026-07-04T04:00:00Z');
+    expect(effectiveIgnoredPids(m).has('G1')).toBe(false); // strike 2
+    recordStrike(m, 'G1', 'no-metadata', '2026-07-05T04:00:00Z');
+    expect(m.G1.strikes).toBe(CONFIRM_STRIKES);
+    expect(effectiveIgnoredPids(m).has('G1')).toBe(true);
+  });
+
+  it('does not double-strike within the same day (manual rerun after the 04:00 run)', () => {
+    const m = {};
+    recordStrike(m, 'G1', 'no-metadata', '2026-07-03T04:00:00Z');
+    recordStrike(m, 'G1', 'no-metadata', '2026-07-03T09:30:00Z');
+    expect(m.G1.strikes).toBe(1);
+  });
+
+  it('positive-evidence non-music entries are effective immediately', () => {
+    const m = { V1: { firstSeen: 'x', lastSeen: 'x', reason: 'non-music' } };
+    expect(effectiveIgnoredPids(m).has('V1')).toBe(true);
+  });
+});
+
+describe('mass-removal circuit breaker', () => {
+  it('allows plausible nightly removals and trips on implausible ones', () => {
+    expect(removalGuardTripped(50, 92591)).toBe(false);
+    expect(removalGuardTripped(463, 92591)).toBe(false); // 0.5% = 463
+    expect(removalGuardTripped(464, 92591)).toBe(true);
+    expect(removalGuardTripped(92591, 92591)).toBe(true); // empty snapshot = wipe
+    expect(removalGuardTripped(10, 100)).toBe(false); // small library: 50-floor applies
+  });
+});
+
+describe('playlist-dump circuit breaker', () => {
+  it('treats an empty or >50%-shrunk dump as a read failure', () => {
+    expect(playlistDumpLooksBroken(0, 118)).toBe(true);
+    expect(playlistDumpLooksBroken(58, 118)).toBe(true);
+    expect(playlistDumpLooksBroken(60, 118)).toBe(false);
+    expect(playlistDumpLooksBroken(0, 0)).toBe(false);   // first-ever run
+    expect(playlistDumpLooksBroken(1, 3)).toBe(false);   // tiny populations exempt
+  });
+});
+
+describe('mergePlaylists identity under partial read failures', () => {
+  const finalSongIds = new Set([sid('P1')]);
+
+  it('reuses the committed id when the ppid read came back blank', () => {
+    const committed = { id: playlistIdFor(ns, 'REALPPID'), name: 'OTG', songIds: [sid('P1')] };
+    const out = mergePlaylists({
+      playlistRows: [{ ppid: '', name: 'OTG', pids: ['P1'] }],
+      oldPlaylists: [committed],
+      finalSongIds,
+      ns,
+    });
+    expect(out).toEqual([{ id: committed.id, name: 'OTG', songIds: [sid('P1')] }]);
+  });
+
+  it('retains committed playlists displaced by unidentifiable (blank/blank) rows', () => {
+    const committed = { id: playlistIdFor(ns, 'X1'), name: 'Certified', songIds: [sid('P1'), sid('GONE')] };
+    const out = mergePlaylists({
+      playlistRows: [{ ppid: '', name: '', pids: [] }],
+      oldPlaylists: [committed],
+      finalSongIds,
+      ns,
+    });
+    expect(out).toEqual([{ id: committed.id, name: 'Certified', songIds: [sid('P1')] }]);
+  });
+});
+
+describe('nonMusicFlag', () => {
+  it('does not let media kind "unknown" suppress the Kind fallback', () => {
+    expect(nonMusicFlag({ mediaKind: 'unknown', kind: 'QuickTime movie file' })).toBe('Has Video');
+    expect(nonMusicFlag({ mediaKind: 'unknown', kind: 'AAC audio file' })).toBe(null);
+    expect(nonMusicFlag({ mediaKind: 'song', kind: 'Protected MPEG-4 video file' })).toBe(null);
+    expect(nonMusicFlag({ mediaKind: 'music video', kind: '' })).toBe('Has Video');
+    expect(nonMusicFlag({ mediaKind: 'podcast' })).toBe('Podcast');
   });
 });
 
