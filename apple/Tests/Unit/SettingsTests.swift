@@ -197,6 +197,48 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(s.cueOutputChannel, .right)
         XCTAssertFalse(s.beatPulseEnabled)
     }
+
+    // MARK: Storage soft cap (unset by default ⇒ the app never auto-manages storage)
+
+    func testStorageCapDefaultsUnsetAndPersists() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertNil(s.storageSoftCapGB, "no cap by default — storage stays user-managed")
+        XCTAssertNil(s.lastStoragePruneAt)
+        s.storageSoftCapGB = 32
+        s.lastStoragePruneAt = 1_234
+        s.persist()
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.storageSoftCapGB, 32)
+        XCTAssertEqual(reloaded.lastStoragePruneAt, 1_234)
+    }
+
+    func testLegacyBlobWithoutStorageCapDecodesUnset() {
+        let defaults = freshDefaults()
+        let legacy = """
+        {
+          "sources": [],
+          "ripServerURL": "https://legacy.test",
+          "ripToken": "",
+          "searchAccessKeyID": "",
+          "searchSecretKey": "",
+          "searchEndpoint": ""
+        }
+        """
+        defaults.set(Data(legacy.utf8), forKey: "pdj.settings.v1")
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.ripServerURL, "https://legacy.test", "legacy settings must survive")
+        XCTAssertNil(s.storageSoftCapGB, "missing key decodes as UNSET, not a default cap")
+        XCTAssertNil(s.lastStoragePruneAt)
+    }
+
+    func testResetClearsStorageCap() {
+        let s = SettingsStore(defaults: freshDefaults())
+        s.storageSoftCapGB = 64; s.lastStoragePruneAt = 99; s.persist()
+        s.resetEverything()
+        XCTAssertNil(s.storageSoftCapGB)
+        XCTAssertNil(s.lastStoragePruneAt)
+    }
 }
 
 final class CatalogMergeTests: XCTestCase {

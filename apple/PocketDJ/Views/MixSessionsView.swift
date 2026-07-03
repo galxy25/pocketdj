@@ -134,6 +134,8 @@ struct MixSessionDetailView: View {
     /// A STABLE snapshot for the duration of the screen (the current session keeps recording).
     @State private var events: [MixSessionEvent] = []
     @State private var recPlayer = RecordingAudioPlayer()
+    /// The take a delete was requested for (drives the confirmation dialog; nil ⇒ closed).
+    @State private var pendingDeleteRec: MixRecording?
 
     /// Recordings are read LIVE from the store (not snapshotted) so a take filed while this screen is
     /// open — or one that landed just before it opened — always shows.
@@ -233,10 +235,23 @@ struct MixSessionDetailView: View {
                                 .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
                         }
                         Spacer()
+                        // Delete THIS take (Settings ▸ Storage deletes them all).
+                        Button { pendingDeleteRec = rec } label: {
+                            Image(systemName: "trash")
+                                .font(.caption).foregroundStyle(Theme.danger)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("mix-recording-delete-\(rec.id)")
+                        .accessibilityLabel("Delete recording")
                     }
                     // Scrub bar — only for the take that's currently playing.
                     if recPlayer.playingId == rec.id {
                         RecordingScrubBar(player: recPlayer)
+                    }
+                }
+                .contextMenu {       // right-click (macOS) / long-press (iOS) parity
+                    Button(role: .destructive) { pendingDeleteRec = rec } label: {
+                        Label("Delete recording", systemImage: "trash")
                     }
                 }
             }
@@ -247,6 +262,20 @@ struct MixSessionDetailView: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
         .padding(.horizontal, 12)
         .accessibilityIdentifier("mix-recordings-panel")
+        .confirmationDialog("Delete this recording?",
+                            isPresented: Binding(get: { pendingDeleteRec != nil },
+                                                 set: { if !$0 { pendingDeleteRec = nil } }),
+                            titleVisibility: .visible, presenting: pendingDeleteRec) { rec in
+            Button("Delete recording", role: .destructive) {
+                if recPlayer.playingId == rec.id { recPlayer.stop() }   // release the file first
+                store.deleteRecording(sessionId: sessionId, recordingId: rec.id,
+                                      bookmark: settings.sessionFolderBookmark)
+            }
+            .accessibilityIdentifier("mix-recording-delete-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: { rec in
+            Text("Removes this take's audio file (\(Fmt.duration(rec.durationMs))) from this device. The session's played-tracks log and timeline are kept.")
+        }
     }
 
     private static func recDate(_ epochMs: Double) -> String {

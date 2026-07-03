@@ -730,7 +730,8 @@ each `BurnItem` carries the analyzed `bpm`/`musicalKey`/`camelot`/`durationMs` a
 analog, the `startMs` seek offset into the shared per-album mp3. `localURL(forSong:)`
 existence-checks before returning a URL (so a purged file degrades gracefully),
 `reconcileOnLaunch()` prunes items whose audio vanished, and `remove(_:)` + `totalBytes`
-make the layout eviction-ready. Offline playback and live mixing themselves are
+make the layout eviction-ready — the **storage manager (§9.2)** is the shipped consumer
+of those hooks (bulk deletes + the soft-cap LRP prune). Offline playback and live mixing themselves are
 **deferred** — this is the storage layout + seams those will consume, feeding
 `PlayerEngine.load(url:live:startMs:title:artist:…)` (§7), which already accepts any local
 URL + `startMs`. The human-readable `<songId>.txt` sidecar mirrors the `burn-setlist`
@@ -861,6 +862,73 @@ its own **`@Observable backgroundProgress`** property. The overlay reads
 **`burns.backgroundProgress`** — a tracked `@Observable` on the `@MainActor @Observable`
 `BurnStore` — so it re-renders as each download completes. The counters are run-scoped
 (`beginRun` republishes `(0,0)`), so a second burn starts at 0.
+
+### 9.2 The storage manager — Settings ▸ Storage (delete tools + the soft-cap LRP prune)
+
+**Why.** Burns, stems, beat grids, and session recordings accumulate unbounded on-device.
+The DJ wants **manual control by default** and an **opt-in** ceiling the app keeps for them.
+Everything here deletes **downloaded media only** — never a catalog song or a
+pocket/playlist/setlist membership; anything deleted re-downloads on the next burn.
+
+**The screen.** [`apple/PocketDJ/Views/StorageView.swift`](../../apple/PocketDJ/Views/StorageView.swift)
+is pushed from the Settings root's single **Storage** row (`settings-storage`); the
+burnt-music + mix-session **folder pickers moved here** off the Settings root. It shows
+live usage (burned bytes via `BurnStore.burnedUsageBytes()`, recordings via
+`SessionFolders.recordingsUsageBytes(bookmark:)`), the delete tools (by **artist** —
+`BurnStore.usageByArtist()`; by **collection** — `CollectionsStore.songIds(for…)` ∩
+`readyBurnedIds`; **all burnt music**; **session recordings**), and the **soft cap**.
+
+**Bulk delete (`BurnStore.removeBurns/removeAllBurns`).** Batch removal is
+shared-analog-aware (the whole-album mp3 survives while any *surviving* item references
+it) and removes each song's sidecar, per-song cut, stems, and beat-grid sidecar, saving
+once. Three **data-safety rules** (hardened by adversarial review):
+1. an item whose dir is **unreachable** right now (user-folder burn on an unplugged
+   drive) is **skipped**, never ledger-dropped — dropping the record without deleting the
+   file would orphan it forever (the same rule `reconcileOnLaunch` follows);
+2. aux files are attributed by **exact shape** (`BurnStore.auxFileSongId`:
+   `stem-<songId>-<part>.mp3`, part ∈ vocals/drums/bass/other; `analysis-<songId>.json`)
+   and, in a **user-picked folder**, only when the parsed id is app-known (ledger ∪ rips
+   manifest) — a user's own `stem-loop.mp3` is never counted or deleted;
+3. `removeAllBurns` first calls `requestStop()` so an in-flight background burn can't
+   finalize later and resurrect a deleted item.
+
+**Session recordings.** `MixSessionStore.deleteAllRecordings(bookmark:skipping…)` sweeps
+only **app-named session folders** (`mses_…`/known ids — a user-picked root's own
+subfolders are untouchable), protects the in-flight take (`MixRecorder.activeTake`), and
+drops a take's metadata only when its file is **provably gone** (an unreachable user root
+keeps its records). Per-take delete from the session detail's Recordings panel goes
+through `deleteRecording(sessionId:recordingId:bookmark:)` — same rules, plus emptied
+app-named session-folder tidy-up. `MixRecorder` bumps new take names past any file already
+on disk (a preserved take can't be truncated), and `recoverOrphans` carries the same
+`mses_` guard so a user's own `.m4a` is never adopted as a take.
+
+**Play stats → the prune order.**
+[`PlayStatsStore`](../../apple/PocketDJ/State/PlayStatsStore.swift)
+(`pocketdj-play-stats.json`, Application Support, device-local) records
+`{playCount, lastPlayedAt}` per song, fed by every playback surface: `RipsStore.onPlay`
+(every `nowPlaying` transition — single rows, set lists, burned local files, rip
+streaming), `PlaybackCoordinator.onPlay` (Apple Music streaming wins, which never touch
+`RipsStore.nowPlaying`), and `MixEngine.onSongPlayed` (the deck transport funnel). A 30 s
+re-count window absorbs the burned-play double-hook and seek/restarts.
+
+**The soft cap (`StorageManager`).** `SettingsStore.storageSoftCapGB` is **nil by default
+— an unset cap means the app never deletes media on its own**; setting it *is* the opt-in
+(no separate toggle). [`StorageManager`](../../apple/PocketDJ/State/StorageManager.swift)
+`.pruneIfDue()` gates on a ~20 h interval (`lastStoragePruneAt`, epoch ms) and
+`pruneNow()` then: (1) sweeps **orphan aux cache** (stems/grids for never-burned songs —
+cheap space first), then (2) evicts ready burns **least-recently-played first**
+(never-played → oldest `downloadedAt` first), re-measuring disk after each eviction (a
+shared analog album only frees when its last song goes), skipping the **protected set**
+(both Mix decks' loaded songs, `rips.nowPlaying`, the sequencer's current item — wired in
+`PocketDJApp.init`). Scheduling: a **`BGProcessingTask`** (`com.levi.pocketdj.storage-prune`,
+no network/power constraints, ~6 h deferral, §11.2) plus a **foreground `.active`
+fallback** on both platforms (macOS has no BGTaskScheduler) — the once-a-day arbiter is
+`pruneIfDue`'s own gate, so repeated fires are safe.
+
+**Test seams.** `BurnStore.appBurnsDirOverride` + `SessionFolders.appRootOverride` point
+the app-managed roots at temp dirs so the storage tests (`BurnStoreStorageTests`,
+`StorageManagerTests`, `MixSessionRecordingsDeleteTests`, `PlayStatsStoreTests`) are
+hermetic — they can never touch a real machine's burns or recordings.
 
 ---
 
@@ -1160,15 +1228,19 @@ SwiftUI can't express two things, so `PocketDJApp` adds an
   tells the system the app is done processing so it can re-suspend. `didFinishLaunching`
   also calls `coordinator.activate()` to **force the session (and its delegate) into
   existence at launch**.
-- **BGTasks (iOS-only, `#if os(iOS)`).** The delegate **registers** two tasks and the
+- **BGTasks (iOS-only, `#if os(iOS)`).** The delegate **registers** three tasks and the
   `.background` scenePhase hook **submits** them: a **`BGProcessingTask`**
   (`com.levi.pocketdj.burn-drain`) that re-arms itself + `reconcileOnLaunch`s stuck
   transfers (completing the BGTask from *inside* the async reconcile callback, not before
-  it runs), and a **`BGAppRefreshTask`** (`com.levi.pocketdj.rip-reconcile`,
+  it runs), a **`BGAppRefreshTask`** (`com.levi.pocketdj.rip-reconcile`,
   `earliestBeginDate` +15 min) that re-arms + refreshes the **public rips manifest** so a
   backgrounded collection RIP's progress (§9.1) reconciles — via a tiny `@MainActor`
   `RipReconcileBridge` the app wires to `{ await rips.refreshManifest() }` (the task itself
-  holds no store references). Both identifiers must appear in
+  holds no store references) — and a second **`BGProcessingTask`**
+  (`com.levi.pocketdj.storage-prune`, no network/power constraints, ~6 h deferral) that
+  re-arms + runs the storage manager's **once-a-day soft-cap prune** (§9.2) through the
+  matching `StoragePruneBridge` (the once-a-day arbiter is `pruneIfDue`'s own 20 h gate,
+  so an early fire is a no-op). All identifiers must appear in
   `BGTaskSchedulerPermittedIdentifiers` (Ch. 7 §6). **macOS** (`MacAppDelegate`) only
   `activate()`s the session — it doesn't suspend the same way and `BGTaskScheduler` is
   unavailable, so background transfers ride the background `URLSession` directly.

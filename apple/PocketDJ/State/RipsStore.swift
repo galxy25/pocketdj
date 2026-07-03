@@ -135,6 +135,10 @@ final class RipsStore {
     private(set) var stemJobs: [String: StemJob] = [:]
     /// The track the inline player is currently bound to.
     private(set) var nowPlaying: NowPlaying?
+    /// Fired when playback moves to a DIFFERENT song (every `nowPlaying` transition —
+    /// single rows, set lists, burned local files, rip streaming). Wired at app init to
+    /// `PlayStatsStore.notePlayed` (the storage manager's LRP prune signal); nil in tests.
+    @ObservationIgnored var onPlay: ((String) -> Void)?
 
     /// Synchronous in-flight guard for the fire-and-forget async rip (Feature 1).
     /// Held from BEFORE the `await` until the POST resolves so back-to-back calls for
@@ -390,7 +394,9 @@ final class RipsStore {
             songId: song.id, title: song.title, artist: song.artist, url: url, live: live,
             startMs: resolvedStart,
             waveform: live ? nil : Self.waveformURL(for: entry, ripsBase: ripsBase))
+        let prev = nowPlaying?.songId
         nowPlaying = np
+        if np.songId != prev { onPlay?(np.songId) }
         return np
     }
 
@@ -420,7 +426,11 @@ final class RipsStore {
         return dest
     }
 
-    func setNowPlaying(_ n: NowPlaying?) { nowPlaying = n }
+    func setNowPlaying(_ n: NowPlaying?) {
+        let prev = nowPlaying?.songId
+        nowPlaying = n
+        if let id = n?.songId, id != prev { onPlay?(id) }
+    }
 
     // MARK: Analog cut export (burn-only)
 

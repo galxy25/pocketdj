@@ -52,6 +52,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             guard let task = task as? BGAppRefreshTask else { task.setTaskCompleted(success: false); return }
             Self.handleRipReconcile(task)
         }
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: StorageManager.bgTaskId, using: nil) { task in
+            guard let task = task as? BGProcessingTask else { task.setTaskCompleted(success: false); return }
+            Self.handleStoragePrune(task)
+        }
     }
 
     /// BGProcessingTask: re-arm itself, reconcile any stuck transfers (the background session
@@ -80,11 +85,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
+    /// BGProcessingTask: re-arm itself, run the storage manager's once-a-day soft-cap
+    /// prune (a no-op when the cap is unset or the last run is <20 h old — the gate lives
+    /// in `StorageManager.pruneIfDue`), then complete.
+    private static func handleStoragePrune(_ task: BGProcessingTask) {
+        scheduleStoragePrune()
+        task.expirationHandler = { task.setTaskCompleted(success: false) }
+        Task {
+            await StoragePruneBridge.shared.prune?()
+            task.setTaskCompleted(success: true)
+        }
+    }
+
     // MARK: Submit / re-arm (called from the .background scenePhase hook + each handler)
 
     static func scheduleBackgroundTasks() {
         scheduleBurnDrain()
         scheduleRipReconcile()
+        scheduleStoragePrune()
     }
 
     private static func scheduleBurnDrain() {
@@ -99,6 +117,25 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         try? BGTaskScheduler.shared.submit(request)
     }
+
+    /// Disk-only work (no network / power constraints). Asks for a ~6 h deferral; the
+    /// once-a-day arbiter is `pruneIfDue`'s own gate, so an early or repeated fire is safe.
+    private static func scheduleStoragePrune() {
+        let request = BGProcessingTaskRequest(identifier: StorageManager.bgTaskId)
+        request.requiresNetworkConnectivity = false
+        request.requiresExternalPower = false
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 6 * 3600)
+        try? BGTaskScheduler.shared.submit(request)
+    }
+}
+
+/// A tiny main-actor bridge so the storage-prune BGTask (which has no store references)
+/// can run the daily soft-cap prune. The app sets `prune` at launch to
+/// `{ storage.pruneIfDue() }`. Mirrors `RipReconcileBridge`.
+@MainActor
+final class StoragePruneBridge {
+    static let shared = StoragePruneBridge()
+    var prune: (() async -> Void)?
 }
 
 /// A tiny main-actor bridge so the BGAppRefreshTask (which has no store references) can refresh

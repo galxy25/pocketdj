@@ -969,13 +969,14 @@ won't masquerade as the standard recording (and vice-versa) — only the genuine
 matches, so a cloud rip never quietly swaps in the wrong version. The setting's footer warns that
 because cloud rips capture in real time, one at a time, a large **Rip/Burn can take a while**.
 
-**Burnt-music folder.** A new **Burnt music** section lets you pick **where burned audio +
+**Burnt-music folder.** A **Burnt music folder** section lets you pick **where burned audio +
 their `.txt` sidecars are saved**. By default they live in the app's private storage; tap
 **Choose burnt-music folder…** and pick any folder (the system folder picker on each platform)
 to have burns land somewhere **you can browse yourself** — in **Finder** on the Mac or **the
 Files app** on iPhone/iPad. The chosen folder's name is shown with a **Use app storage** button
 to revert. Now the mixer-ready files (audio + BPM/key/sentiment sidecar) are right where you can
-drag them into a DJ app or back them up.
+drag them into a DJ app or back them up. *(This picker now lives on the **Settings ▸ Storage**
+screen — the storage manager, §64 — together with the session folder and the delete tools.)*
 
 **User story:** "Rip from my actual Apple Music library when it's the same record — and drop
 the burned files in a folder I can open, not buried inside the app."
@@ -1598,8 +1599,9 @@ if the toolbar tucks the button away. Tap the button again (or Stop) to end the 
 
 Recordings are filed **per session** into a **session folder** — one subfolder per mix session, so
 each sitting keeps its own takes (and there's room to grow other session data later). By default that
-lives in the app's private storage; in **Settings ▸ Mix sessions** you can **pick your own folder**
-(just like the burnt-music folder) to browse the `.m4a` files yourself in Finder / the Files app.
+lives in the app's private storage; in **Settings ▸ Storage** (the storage manager, §64) you can
+**pick your own folder** (just like the burnt-music folder) to browse the `.m4a` files yourself in
+Finder / the Files app.
 
 **It's written to survive a crash.** The take isn't held in memory and flushed at the end — it's
 **streamed to disk continuously** (fragmented AAC), so if the app is killed, runs out of disk, or the
@@ -1610,7 +1612,10 @@ loses the recording.
 Every take shows up back on the **Sessions** screen (the same place that replays the *actions* of a
 mix): open a session and each recording gets a **▶ / ⏹ play control** **and a scrub bar** — so you can
 **hear the mix back** and **jump around inside it**, not just watch the moves. The session list marks
-how many takes a session has.
+how many takes a session has. Each take also has a **🗑 delete** (tap or long-press/right-click) that,
+after a confirmation, removes **that one recording's audio** — the session's played-tracks log and
+timeline stay. To clear **every** take at once, use **Settings ▸ Storage ▸ Delete session
+recordings** (§64).
 
 **User story:** "Hit record before I start the set, let the mix run, and stop when I'm done — then
 play the whole thing back from Sessions and scrub to any moment, or grab the file from my own folder
@@ -1771,3 +1776,56 @@ about two and a half seconds later. Pure decoration: it never blocks a tap, and 
 itself runs exactly as before.
 
 **User story:** "If I'm going to erase everything, at least let me enjoy the blast."
+
+---
+
+## 64. Settings ▸ Storage — the storage manager
+
+Burned music, stems, beat grids, and mix recordings all live on your device — and until now
+the only way out was the nuclear reset. Settings now has a single **Storage** row that opens
+the **storage manager** (with a back button to return), gathering everything about on-device
+space in one place.
+
+**What's on it.** At the top, **On this device** shows what your library actually costs:
+**Burnt music** (songs + total size — audio, per-song cuts, stems, beat grids, and sidecars,
+across the app's storage *and* your chosen folder) and **Session recordings** (takes + size).
+Below that live the two **folder pickers** that used to sit on the Settings root — the
+burnt-music folder (§34) and the mix-sessions folder (§58) — unchanged, just relocated to
+where they belong.
+
+**Deleting downloaded music.** Three tools, all with confirmations, and all with the same
+guarantee: **only the downloaded files are removed — never a song from your library, or from
+any pocket, playlist, or set list.** Anything you delete can simply be burned again later.
+
+- **Delete by artist…** — every burned artist with song count and size; tap one to clear
+  their downloads.
+- **Delete by collection…** — your pockets, playlists, and set lists that have burned music,
+  each with a burned-song count and size; tap one to clear those songs' downloads (the
+  collection itself is untouched).
+- **Delete all burnt music** — the sweep: audio, cuts, stems, beat grids, sidecars, gone.
+
+A matching **Delete session recordings** clears every captured take's audio while keeping
+each session's played-tracks log and timeline (a recording in progress is never touched) —
+and the Sessions screen deletes **individual takes** (§58) when you only want one gone.
+
+**The soft cap — storage that manages itself, only if you ask.** By default **no cap is
+set, and the app never deletes music on its own** — storage is yours to manage with the
+tools above. Tap **Set a soft cap…** and the cap starts at your current footprint (so
+nothing becomes instantly evictable), adjustable by the GB. With a cap set, **once a day**
+— in the background on iPhone/iPad, or when the app comes forward — the app prunes burnt
+music down under the cap, **least-recently-played first**: the records you haven't touched
+in months go before anything you played last night, and whatever's actually loaded on a
+deck or playing right now is never touched. A **Prune now** button runs the same pass on
+demand, and **Remove cap** returns the app to fully-manual storage. (To know what
+"least-recently-played" means, the app now quietly keeps per-song play counts and
+last-played times on-device — every play surface counts: rows, set lists, and the Mix
+decks.)
+
+Deletes here are safe by design around **your own folders**: if you've pointed burns or
+recordings at a folder of your own, the app only ever removes files **it** wrote there —
+your other audio and subfolders are never counted, never touched. And if a burn lives on a
+drive that isn't plugged in right now, the app skips it rather than forgetting about it.
+
+**User story:** "Show me what PocketDJ is costing my phone, let me clear an artist I'm done
+with or a set I've played out — without touching my library — and if I give it a budget,
+keep me under it by tossing what I never play."

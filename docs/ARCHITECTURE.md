@@ -311,6 +311,21 @@ contract**. Honest status:
   Store Connect upload; `ITSAppUsesNonExemptEncryption=false`; auto-distributes to the "Alphas"
   internal group). It is the **primary modern client** where the DJ/mix/stem features live,
   alongside the original offline-first PWA (Ch. 7 §2.1, §4.1).
+- **New current-state — the STORAGE MANAGER (native).** Settings gains a single
+  **Storage** row that pushes the manager screen (Ch. 5 §9.2): live on-device usage
+  (burned music + session recordings), the burnt-music/session **folder pickers moved
+  there** off the Settings root, delete tools for downloaded media (**by artist**, **by
+  collection** — pockets/playlists/set lists, **all burnt music**, **session
+  recordings**; the session detail also deletes **individual takes**), and an opt-in
+  **soft storage cap**. Every delete removes downloaded files only — catalog +
+  collection membership are untouched, and anything re-burns later. The cap is **unset
+  by default (the app never deletes on its own)**; when set, a once-a-day prune —
+  `com.levi.pocketdj.storage-prune` BGTask + a foreground fallback — evicts burns
+  **least-recently-played first**, ordered by the new device-local `PlayStatsStore`
+  (fed by every playback surface), never touching deck-loaded/now-playing songs.
+  Bulk deletes are shared-analog-aware and hardened against user-folder data loss
+  (exact-shape + app-known aux attribution; unreachable-folder items are skipped, not
+  ledger-orphaned; only `mses_…` session folders are swept). (Ch. 5 §9.2, §11.2; Ch. 7 §6)
 - **Coming — AI-assisted auto-*building* playlists.** The *mixing* half is no longer
   hypothetical — a two-deck Mix engine with grid-aware beat-matching **and a timed
   Auto-Mix auto-DJ now ships** (Ch. 4 §7). What's still deferred is **AI-curated
