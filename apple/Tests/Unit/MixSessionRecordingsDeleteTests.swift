@@ -91,6 +91,37 @@ final class MixSessionRecordingsDeleteTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: live.path), "open take kept")
     }
 
+    /// A USER-NAMED subfolder in a user-picked session root (their own audio) is never
+    /// swept — only app-named `mses_…` session folders are.
+    func testDeleteAllRecordingsNeverTouchesUserSubfolders() throws {
+        let store = MixSessionStore(fileURL: storeURL)
+        let userDir = root.appendingPathComponent("My Voice Memos", isDirectory: true)
+        try FileManager.default.createDirectory(at: userDir, withIntermediateDirectories: true)
+        let memo = userDir.appendingPathComponent("idea.m4a")
+        try Data([0x0]).write(to: memo)
+
+        store.deleteAllRecordings(bookmark: nil)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: memo.path),
+                      "a user's own .m4a in their own folder is never deleted")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: userDir.path))
+    }
+
+    /// A take recorded into a user folder whose bookmark can't resolve right now keeps
+    /// its metadata — nothing was deleted, so nothing may be forgotten.
+    func testDeleteAllRecordingsKeepsMetadataForUnreachableUserFolderTakes() throws {
+        let store = MixSessionStore(fileURL: storeURL)
+        store.notePlayed(songId: "s1")
+        let current = store.currentId
+        store.addRecording(toSession: current, fileName: "recording-1.m4a",
+                           startedAt: 1_000, durationMs: 2_000, wasUserFolder: true)
+
+        store.deleteAllRecordings(bookmark: nil)   // user root unreachable (no bookmark)
+
+        XCTAssertEqual(store.recordings(forSession: current).count, 1,
+                       "metadata survives — the file was never reachable to delete")
+    }
+
     func testRecordingsUsageBytesCountsTakes() throws {
         let store = MixSessionStore(fileURL: storeURL)
         try addTake(store, sessionId: store.currentId, name: "recording-1.m4a", bytes: 6)

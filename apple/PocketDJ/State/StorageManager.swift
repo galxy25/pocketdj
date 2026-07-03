@@ -66,6 +66,14 @@ final class StorageManager {
         var usage = burns.burnedUsageBytes()
         var result = PruneResult(usageBytes: usage, capBytes: capBytes)
         if usage > capBytes {
+            // Cheap space first: orphan stem/beat-grid cache (songs with no burned
+            // audio) goes before any real burned song is evicted.
+            burns.sweepOrphanAuxFiles()
+            let afterSweep = burns.burnedUsageBytes()
+            result.freedBytes += max(0, usage - afterSweep)
+            usage = afterSweep
+        }
+        if usage > capBytes {
             let protected = protectedSongIds()
             // LRP first — never-played (0) ahead of everything, oldest download breaking ties.
             let candidates = burns.items.values

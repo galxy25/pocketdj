@@ -566,49 +566,79 @@ final class BurnStore {
     /// Remove a batch of burned songs: each item's audio file (shared-analog-aware — the
     /// whole-album mp3 survives while any SURVIVING item still references it), sidecar,
     /// per-song cut, stems, and beat-grid sidecar, then drop the ledger entries and save
-    /// ONCE. Unknown ids are ignored.
+    /// ONCE. Unknown ids are ignored. An item whose dir is UNRESOLVABLE right now (a
+    /// user-folder burn on an unplugged drive / offline provider) is SKIPPED entirely —
+    /// dropping its ledger entry without deleting its files would orphan them forever
+    /// (the same "no data destruction" rule `reconcileOnLaunch` follows).
     func removeBurns(songIds: [String]) {
-        let goners = Set(songIds).filter { items[$0] != nil }
-        guard !goners.isEmpty else { return }
-        // Audio files still referenced by a surviving item must not be deleted.
-        let survivorAudio = Set(items.values.filter { !goners.contains($0.songId) }.map(\.audioFileName))
-        for id in goners {
+        let requested = Set(songIds).filter { items[$0] != nil }
+        guard !requested.isEmpty else { return }
+        // Resolve reachability first: only reachable items are actually removed, and the
+        // shared-audio survivor check must treat skipped (unreachable) items as survivors.
+        var goners: [String: (url: URL, scoped: Bool)] = [:]
+        for id in requested {
             guard let item = items[id] else { continue }
-            if let (dir, scoped) = itemDir(item) {
-                if !item.audioFileName.isEmpty && !survivorAudio.contains(item.audioFileName) {
-                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.audioFileName))
-                }
-                if !item.sidecarFileName.isEmpty {
-                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.sidecarFileName))
-                }
-                if let cut = resolveCutFileName(for: item, in: dir) {
-                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(cut))
-                }
-                if scoped { dir.stopAccessingSecurityScopedResource() }
+            guard let resolved = itemDir(item) else { continue }   // unreachable → keep
+            goners[id] = resolved
+        }
+        let gonerIds = Set(goners.keys)
+        guard !gonerIds.isEmpty else { return }
+        // Audio files still referenced by a surviving (or skipped) item must not be deleted.
+        let survivorAudio = Set(items.values.filter { !gonerIds.contains($0.songId) }.map(\.audioFileName))
+        for (id, resolved) in goners {
+            guard let item = items[id] else { continue }
+            let dir = resolved.url
+            if !item.audioFileName.isEmpty && !survivorAudio.contains(item.audioFileName) {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.audioFileName))
             }
+            if !item.sidecarFileName.isEmpty {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.sidecarFileName))
+            }
+            if let cut = resolveCutFileName(for: item, in: dir) {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(cut))
+            }
+            if resolved.scoped { dir.stopAccessingSecurityScopedResource() }
             removeAuxFiles(forSong: id)
             items[id] = nil
         }
         save()
     }
 
-    /// Remove EVERY burned song, then sweep any pattern-named leftovers (the stem cache
-    /// isn't ledger-tracked, so stems for never-burned songs linger otherwise). Only files
-    /// matching this app's deterministic names are touched — a user-picked folder may hold
-    /// unrelated files, which are never deleted.
+    /// Remove EVERY burned song, then sweep any aux leftovers (the stem cache isn't
+    /// ledger-tracked, so stems for never-burned songs linger otherwise). Cancels any
+    /// in-flight burn first — otherwise a background download finalizing later would
+    /// resurrect its ledger entry + file. Items in an unreachable user folder are kept
+    /// (see `removeBurns`). Only files this app provably wrote are touched.
     func removeAllBurns() {
+        requestStop()   // halt an in-process burn loop + cancel pending background downloads
         removeBurns(songIds: Array(items.keys))
-        forEachBurnRoot { dir in
+        sweepAuxFiles { _ in true }
+    }
+
+    /// Delete aux files (stems / beat grids) whose parsed songId passes `shouldSweep`,
+    /// in every reachable root — subject to the per-root ownership rule (`ownsAuxFile`),
+    /// so a user folder's own files are never touched.
+    private func sweepAuxFiles(_ shouldSweep: (String) -> Bool) {
+        forEachBurnRoot { dir, isUserFolder in
             let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-            for n in names where Self.isAuxFileName(n) {
+            for n in names {
+                guard let id = Self.auxFileSongId(n), shouldSweep(id),
+                      ownsAuxFile(n, inUserFolder: isUserFolder) else { continue }
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(n))
             }
         }
     }
 
+    /// Storage-manager prune pre-pass: delete ORPHAN aux files — stems / beat grids for
+    /// songs with no ledger entry (auditioned-but-never-burned cache). Cheap space that
+    /// should go before any real burned song is evicted.
+    func sweepOrphanAuxFiles() {
+        sweepAuxFiles { self.items[$0] == nil }
+    }
+
     /// Total on-disk bytes of burned media (audio + sidecars + cuts + stems + beat grids)
-    /// across both roots. Counts ONLY files this app wrote — ledger-recorded names + the
-    /// deterministic stem/analysis patterns — never a user folder's unrelated files.
+    /// across both roots. Counts ONLY files this app provably wrote — ledger-recorded
+    /// names + owned aux files — never a user folder's unrelated files.
     func burnedUsageBytes() -> Int {
         var ledgerNames = Set<String>()
         for it in items.values {
@@ -617,9 +647,9 @@ final class BurnStore {
             if let c = it.cutFileName { ledgerNames.insert(c) }
         }
         var total = 0
-        forEachBurnRoot { dir in
+        forEachBurnRoot { dir, isUserFolder in
             let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-            for n in names where ledgerNames.contains(n) || Self.isAuxFileName(n) {
+            for n in names where ledgerNames.contains(n) || ownsAuxFile(n, inUserFolder: isUserFolder) {
                 let path = dir.appendingPathComponent(n).path
                 if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int {
                     total += size
@@ -671,17 +701,43 @@ final class BurnStore {
         return total
     }
 
-    /// A non-ledger companion file this app wrote: a stem (`stem-<songId>-<part>.mp3`) or
-    /// a beat-grid sidecar (`analysis-<songId>.json`).
-    nonisolated static func isAuxFileName(_ name: String) -> Bool {
-        (name.hasPrefix("stem-") && name.hasSuffix(".mp3"))
-            || (name.hasPrefix("analysis-") && name.hasSuffix(".json"))
+    /// Parse a non-ledger companion file this app writes, returning the embedded songId
+    /// iff `name` matches an EXACT deterministic shape — a stem
+    /// `stem-<songId>-<part>.mp3` (part ∈ vocals/drums/bass/other) or a beat-grid sidecar
+    /// `analysis-<songId>.json`. A loose prefix match isn't enough: a user's own
+    /// `stem-loop.mp3` in their picked folder must never parse.
+    nonisolated static func auxFileSongId(_ name: String) -> String? {
+        if name.hasPrefix("stem-") && name.hasSuffix(".mp3") {
+            let core = String(name.dropFirst("stem-".count).dropLast(".mp3".count))
+            for part in stemNames where core.hasSuffix("-\(part)") {
+                let id = String(core.dropLast(part.count + 1))
+                return id.isEmpty ? nil : id
+            }
+            return nil
+        }
+        if name.hasPrefix("analysis-") && name.hasSuffix(".json") {
+            let id = String(name.dropFirst("analysis-".count).dropLast(".json".count))
+            return id.isEmpty ? nil : id
+        }
+        return nil
+    }
+
+    /// Whether an aux file BELONGS TO THIS APP in the given root. In the app-managed root
+    /// any exact-shaped name qualifies (the dir is app-private, so everything there is
+    /// ours). In a USER-PICKED folder the embedded songId must additionally be one the
+    /// app knows (burn ledger or rips manifest) — a user's own coincidentally-named file
+    /// is never counted or deleted. Conservative when offline (unknown id → not ours).
+    private func ownsAuxFile(_ name: String, inUserFolder: Bool) -> Bool {
+        guard let id = Self.auxFileSongId(name) else { return false }
+        guard inUserFolder else { return true }
+        return items[id] != nil || rips.manifest[id] != nil
     }
 
     /// Delete a song's non-ledger companion files (4 stems + beat-grid sidecar) from BOTH
     /// possible roots — they're written to the ACTIVE folder, which may have changed since.
+    /// Exact deterministic names only, so this is safe in a user-picked folder.
     private func removeAuxFiles(forSong songId: String) {
-        forEachBurnRoot { dir in
+        forEachBurnRoot { dir, _ in
             for name in Self.stemNames {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(Self.stemFileName(songId, name)))
             }
@@ -689,16 +745,17 @@ final class BurnStore {
         }
     }
 
-    /// Visit each possible burn root once: the app-managed `burns/` dir + the user-picked
-    /// folder (when its bookmark resolves). Holds the security scope around the visit.
-    private func forEachBurnRoot(_ body: (URL) -> Void) {
+    /// Visit each possible burn root once — the app-managed `burns/` dir, then the
+    /// user-picked folder (when its bookmark resolves) with `isUserFolder: true`. Holds
+    /// the security scope around the visit.
+    private func forEachBurnRoot(_ body: (URL, _ isUserFolder: Bool) -> Void) {
         var visited = Set<String>()
-        if let app = appBurnsDir(), visited.insert(app.path).inserted { body(app) }
+        if let app = appBurnsDir(), visited.insert(app.path).inserted { body(app, false) }
         guard settings?.burnFolderBookmark != nil,
               let user = resolveBurnFolder(allowRePersist: false, requireWritable: false),
               user.isUserFolder else { return }
         defer { if user.scoped { user.url.stopAccessingSecurityScopedResource() } }
-        if visited.insert(user.url.path).inserted { body(user.url) }
+        if visited.insert(user.url.path).inserted { body(user.url, true) }
     }
 
     /// Prune index entries whose audio file vanished (iOS purges Application Support

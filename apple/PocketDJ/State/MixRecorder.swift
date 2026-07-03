@@ -66,6 +66,10 @@ final class MixRecorder {
             let dirs = (try? fm.contentsOfDirectory(at: root.url, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
             for dir in dirs where (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
                 let sessionId = dir.lastPathComponent
+                // Only app-named session folders (every real session id is "mses_…"). A
+                // user-picked root may hold the user's OWN subfolders of audio — adopting
+                // those as "recordings" would later mark them deletable in-app.
+                guard sessionId.hasPrefix("mses_") else { continue }
                 let known = Set(sessions.recordings(forSession: sessionId).map { $0.fileName })
                 let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey])) ?? []
                 for file in files where file.pathExtension.lowercased() == "m4a" && !known.contains(file.lastPathComponent) {
@@ -93,8 +97,15 @@ final class MixRecorder {
         guard !sessionId.isEmpty,
               let folder = SessionFolders.sessionFolder(sessionId, bookmark: settings?.sessionFolderBookmark)
         else { return false }
-        // Human-readable, stable take name (next number in this session's folder).
-        let seq = sessions.recordings(forSession: sessionId).count + 1
+        // Human-readable, stable take name (next number in this session's folder) —
+        // bumped past any file already on disk: a take kept while its metadata was
+        // cleared (Storage ▸ delete recordings during a capture) or a crash orphan
+        // would otherwise be TRUNCATED by an AVAudioFile open at the same name.
+        var seq = sessions.recordings(forSession: sessionId).count + 1
+        while FileManager.default.fileExists(
+            atPath: folder.url.appendingPathComponent("recording-\(seq).m4a").path) {
+            seq += 1
+        }
         let fileName = "recording-\(seq).m4a"
         let url = folder.url.appendingPathComponent(fileName)
         // `startRecording` OWNS `folder.release` (drops it on failure OR on stop) — never release here.

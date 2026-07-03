@@ -248,8 +248,10 @@ struct PocketDJApp: App {
                         // Resume the background transfer reconcile on foreground (idempotent).
                         TransferCoordinator.shared.reconcileOnLaunch()
                         // Foreground fallback for the daily soft-cap prune (macOS has no
-                        // BGTaskScheduler; iOS BGTasks are best-effort). Gated inside.
-                        storage.pruneIfDue()
+                        // BGTaskScheduler; iOS BGTasks are best-effort). Gated inside; a
+                        // plain Task defers it past the activation tick so foregrounding
+                        // never waits on disk scans.
+                        Task { storage.pruneIfDue() }
                     case .background:
                         streaming.onScenePhaseBackground()
                         mixSessions.flush()    // persist the latest session state before suspension

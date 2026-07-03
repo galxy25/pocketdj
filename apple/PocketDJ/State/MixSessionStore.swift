@@ -212,20 +212,29 @@ final class MixSessionStore: MixSessionRecorder {
                      durationMs: durationMs, wasUserFolder: wasUserFolder)
     }
 
-    /// Storage manager: delete EVERY captured recording's audio file and clear the
-    /// recordings metadata off every session, leaving the sessions/events themselves
-    /// intact (tiny JSON — the auto-mix corpus). Sweeps BOTH roots for stray takes (a
-    /// crash-orphaned `.m4a` the next orphan scan would otherwise revive) and removes
-    /// emptied per-session subfolders. `skippingSessionId`/`skippingFileName` protect an
-    /// in-flight capture's open file (pass `MixRecorder.activeTake` while recording).
-    /// Deletes audio only — never the catalog, collections, or the session logs.
+    /// Storage manager: delete EVERY captured recording's audio file and clear those
+    /// takes' metadata, leaving the sessions/events themselves intact (tiny JSON — the
+    /// auto-mix corpus). Sweeps BOTH roots for stray takes (a crash-orphaned `.m4a` the
+    /// next orphan scan would otherwise revive) and removes emptied per-session
+    /// subfolders. `skippingSessionId`/`skippingFileName` protect an in-flight capture's
+    /// open file (pass `MixRecorder.activeTake` while recording).
+    ///
+    /// Data-safety rules (a user-picked session folder may hold the user's OWN folders +
+    /// audio, and a burn folder on another device may be unreachable right now):
+    ///   • only SESSION folders are swept — subfolders this app named (`mses_…` / a known
+    ///     session id); anything else in a user-picked folder is never touched;
+    ///   • metadata is dropped only for takes whose file is PROVABLY gone — a recording
+    ///     in a currently-unresolvable user folder keeps its record (nothing was deleted).
     func deleteAllRecordings(bookmark: Data?, skippingSessionId: String? = nil,
                              skippingFileName: String? = nil) {
         let fm = FileManager.default
+        let knownIds = Set(sessions.map(\.id))
         SessionFolders.forEachRoot(bookmark: bookmark) { root in
             let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
             for dir in dirs where (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
                 let sessionId = dir.lastPathComponent
+                // Only app-named session folders — never a user's own subfolder.
+                guard sessionId.hasPrefix("mses_") || knownIds.contains(sessionId) else { continue }
                 let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
                 for f in files where f.pathExtension.lowercased() == "m4a" {
                     if sessionId == skippingSessionId && f.lastPathComponent == skippingFileName { continue }
@@ -236,12 +245,28 @@ final class MixSessionStore: MixSessionRecorder {
                 }
             }
         }
-        for i in sessions.indices where sessions[i].recordings?.isEmpty == false {
-            if sessions[i].id == skippingSessionId, let keep = skippingFileName {
-                sessions[i].recordings = sessions[i].recordings?.filter { $0.fileName == keep }
-            } else {
-                sessions[i].recordings = []
+        // Is the user root reachable right now? (Resolve read-only; release the scope.)
+        var userRootReachable = false
+        if bookmark != nil,
+           let user = SessionFolders.resolveRoot(bookmark: bookmark, requireWritable: false),
+           user.isUserFolder {
+            userRootReachable = true
+            if user.scoped { user.url.stopAccessingSecurityScopedResource() }
+        }
+        for i in sessions.indices {
+            guard var recs = sessions[i].recordings, !recs.isEmpty else { continue }
+            let sid = sessions[i].id
+            recs.removeAll { rec in
+                if sid == skippingSessionId && rec.fileName == skippingFileName { return false }
+                // Keep the record when its root can't even be checked — nothing was deleted.
+                if rec.wasUserFolder && !userRootReachable { return false }
+                let resolved = SessionFolders.recordingURL(sessionId: sid, fileName: rec.fileName,
+                                                           wasUserFolder: rec.wasUserFolder,
+                                                           bookmark: bookmark)
+                resolved?.release?()
+                return resolved == nil   // provably gone → drop the metadata
             }
+            sessions[i].recordings = recs
         }
         saveNow()
     }

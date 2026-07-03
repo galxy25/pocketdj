@@ -141,6 +141,58 @@ final class BurnStoreStorageTests: XCTestCase {
         XCTAssertTrue(exists("keep-me.pdf"), "never delete files this app didn't write")
     }
 
+    /// An item recorded as living in the USER folder whose bookmark doesn't resolve
+    /// (unplugged drive / no folder configured) must be SKIPPED — dropping its ledger
+    /// entry without deleting its files would orphan them forever.
+    func testRemoveBurnsKeepsUnreachableUserFolderItems() throws {
+        var it = item("s1", audio: "a-s1.mp3", bytes: 10)
+        it.wasAppStorage = false          // written to a user folder…
+        let store = try makeStore([it])   // …but no bookmark is configured now
+        store.removeBurns(songIds: ["s1"])
+        XCTAssertNotNil(store.items["s1"], "unreachable item keeps its ledger entry")
+        store.removeAllBurns()
+        XCTAssertNotNil(store.items["s1"], "delete-all skips it too — no silent orphaning")
+    }
+
+    /// In a USER-PICKED folder, only exact-shaped aux names whose songId the app KNOWS
+    /// are counted/swept — the user's own coincidentally-named files are never touched.
+    func testUserFolderAuxOwnershipProtectsForeignFiles() throws {
+        let store = try makeStore([item("s1", audio: "a-s1.mp3", bytes: 10)])
+        // A separate USER folder with a resolvable bookmark.
+        let user = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-userburns-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: user) }
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        settings.burnFolderBookmark = try XCTUnwrap(BurnStore.makeBookmark(for: user))
+        store.settings = settings
+
+        func writeUser(_ name: String, bytes: Int) throws {
+            try Data(repeating: 0, count: bytes).write(to: user.appendingPathComponent(name))
+        }
+        try writeUser("stem-loop.mp3", bytes: 11)          // user's file: "loop" is no stem part
+        try writeUser("analysis-2026.json", bytes: 13)     // user's file: id unknown to the app
+        try writeUser("stem-s1-vocals.mp3", bytes: 7)      // ours: ledger-known id + real part
+
+        let before = store.burnedUsageBytes()
+        XCTAssertEqual(before, 10 + 1 + 7, "user files never counted (audio+sidecar+our stem)")
+
+        store.removeAllBurns()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: user.appendingPathComponent("stem-loop.mp3").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: user.appendingPathComponent("analysis-2026.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: user.appendingPathComponent("stem-s1-vocals.mp3").path))
+    }
+
+    func testAuxFileSongIdParsesOnlyExactShapes() {
+        XCTAssertEqual(BurnStore.auxFileSongId("stem-abc-vocals.mp3"), "abc")
+        XCTAssertEqual(BurnStore.auxFileSongId("stem-a-b-drums.mp3"), "a-b")
+        XCTAssertEqual(BurnStore.auxFileSongId("analysis-abc.json"), "abc")
+        XCTAssertNil(BurnStore.auxFileSongId("stem-loop.mp3"), "no valid part suffix")
+        XCTAssertNil(BurnStore.auxFileSongId("stem--vocals.mp3"), "empty id")
+        XCTAssertNil(BurnStore.auxFileSongId("analysis-.json"), "empty id")
+        XCTAssertNil(BurnStore.auxFileSongId("music.mp3"))
+    }
+
     // MARK: Usage measurement
 
     func testBurnedUsageBytesCountsOnlyOurFiles() throws {

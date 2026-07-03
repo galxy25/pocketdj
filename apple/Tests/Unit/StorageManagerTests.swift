@@ -112,6 +112,20 @@ final class StorageManagerTests: XCTestCase {
                              "still over cap because the protected set can't be touched")
     }
 
+    /// Orphan aux cache (stems/grids for songs with no burned audio) is swept BEFORE any
+    /// real burned song is evicted — cheap space first.
+    func testPruneSweepsOrphanAuxBeforeEvictingSongs() throws {
+        let w = try makeWorld(items: [("s1", 1)])   // 10 audio bytes
+        // 20 bytes of orphan stem cache for a song that was never burned.
+        try Data(repeating: 0, count: 20).write(to: dir.appendingPathComponent("stem-zzz-vocals.mp3"))
+        w.settings.storageSoftCapGB = gb(12)        // 30 → sweep orphan (10 left) fits
+        let result = try XCTUnwrap(w.mgr.pruneNow(now: 1_000))
+        XCTAssertEqual(result.evicted, 0, "orphan sweep sufficed — no song evicted")
+        XCTAssertNotNil(w.burns.items["s1"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("stem-zzz-vocals.mp3").path))
+        XCTAssertEqual(result.freedBytes, 20)
+    }
+
     // MARK: The once-a-day gate
 
     func testPruneIfDueHonorsDailyGate() throws {

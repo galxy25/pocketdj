@@ -258,7 +258,13 @@ struct StorageView: View {
 
     private var capGBBinding: Binding<Double> {
         Binding(get: { settings.storageSoftCapGB ?? 1 },
-                set: { settings.storageSoftCapGB = $0; settings.persist() })
+                set: {
+                    // A stray stepper tick landing after "Remove cap" must not
+                    // resurrect the cap (and re-arm auto-pruning).
+                    guard settings.storageSoftCapGB != nil else { return }
+                    settings.storageSoftCapGB = $0
+                    settings.persist()
+                })
     }
 
     // MARK: Delete downloaded music
@@ -283,7 +289,9 @@ struct StorageView: View {
                 Label("Delete all burnt music", systemImage: "trash")
             }
             .accessibilityIdentifier("storage-delete-all-burns")
-            .disabled(readyBurnCount == 0 && burns.items.isEmpty)
+            // Enabled while ANYTHING remains clearable — ready burns, stuck ledger
+            // entries, or stray on-disk bytes (orphan stems) the sweep can remove.
+            .disabled(readyBurnCount == 0 && burns.items.isEmpty && (burnedBytes ?? 0) == 0)
             .confirmationDialog("Delete all burnt music?",
                                 isPresented: $confirmingDeleteAll, titleVisibility: .visible) {
                 Button("Delete downloaded music", role: .destructive) {
