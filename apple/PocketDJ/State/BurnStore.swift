@@ -378,7 +378,9 @@ final class BurnStore {
     // the player calls on stop (mirroring `localURLForPlayback`) — AVAudioFile must read the file
     // for the whole session.
 
-    private static let stemNames = ["vocals", "drums", "bass", "other"]
+    // nonisolated: read by the nonisolated `auxFileSongId` parser (immutable + Sendable,
+    // so this is safe under Swift 6 isolation checking).
+    private nonisolated static let stemNames = ["vocals", "drums", "bass", "other"]
     private static func stemFileName(_ songId: String, _ stem: String) -> String { "stem-\(songId)-\(stem).mp3" }
 
     /// Local URLs for ALL 4 stems iff every one already exists on disk in the ACTIVE burn folder
