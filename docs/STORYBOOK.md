@@ -654,6 +654,12 @@ source's imported playlists). Importing the library also **mirrors your iTunes
 playlists** into app playlists. (This shot also shows the **Online search** panel —
 see below.)
 
+The mirrors now track your Music library **faithfully overnight**: a playlist you
+create or rework in Music shows up (or updates) in the catalog the next morning even
+if you'd been mid-edit at sync time — a playlist that's momentarily **empty stays
+listed as empty instead of disappearing** — and albums you add stream-ready the same
+night. Music **videos** in your library no longer sneak in as bogus "songs".
+
 ### Show *and* hide — collection filters on the song list
 
 ![Show / hide collection filters](storybook/29-show-hide-filters-mobile.png)
