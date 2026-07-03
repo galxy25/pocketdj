@@ -11,9 +11,10 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
-// Tab-separated column layout (v2) for the intermediate per-track rows.
+// Tab-separated column layout (v3) for the intermediate per-track rows. mediaKind is
+// appended LAST so a v2 TSV (13 cols) still parses — it just reads back as ''.
 export const COLS = ['persistentID', 'artist', 'title', 'album', 'albumArtist', 'genre', 'year',
-  'trackNumber', 'discNumber', 'totalTime', 'dateAdded', 'location', 'kind'];
+  'trackNumber', 'discNumber', 'totalTime', 'dateAdded', 'location', 'kind', 'mediaKind'];
 export const TSV_HEADER = COLS.join('\t');
 
 // AppleScript handlers: text sanitiser (strip tab/CR/LF so a value can't break the row
@@ -62,6 +63,7 @@ const TRACK_BODY = `
         set da to ""
         set lo to ""
         set kd to ""
+        set mk to ""
         try
           set pid to (persistent ID of t) as text
         end try
@@ -101,7 +103,10 @@ const TRACK_BODY = `
         try
           set kd to ((kind of t) as text)
         end try
-        set end of buf to pid & tab & ar & tab & nm & tab & al & tab & aa & tab & gn & tab & yr & tab & tn & tab & dn & tab & tt & tab & da & tab & lo & tab & kd`;
+        try
+          set mk to ((media kind of t) as text)
+        end try
+        set end of buf to pid & tab & ar & tab & nm & tab & al & tab & aa & tab & gn & tab & yr & tab & tn & tab & dn & tab & tt & tab & da & tab & lo & tab & kd & tab & mk`;
 
 const asPath = (p) => p.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
@@ -120,7 +125,15 @@ export function buildTrackScript({ rawPath, timeoutSec, selector, positions }) {
     set tks to ${selector}
   end tell
   set total to (count of tks)`;
-  const pick = positions ? `set t to item (item k of poss) of tks` : `set t to item k of tks`;
+  // positions mode indexes into a SECOND library snapshot (line above) — if the library
+  // shrank between snapshots an out-of-range pick must yield an empty row (dropped at
+  // parse), not abort the whole run with an uncaught AppleScript error.
+  const pick = positions
+    ? `set t to missing value
+        try
+          set t to item (item k of poss) of tks
+        end try`
+    : `set t to item k of tks`;
   return `${HANDLERS}
 set outPath to "${asPath(rawPath)}"
 set fh to open for access (POSIX file outPath) with write permission
@@ -148,7 +161,8 @@ return total`;
 
 // Build the playlist AppleScript: one row per regular user playlist —
 //   persistentID<TAB>name<TAB>comma-joined track persistent IDs
-// skipping folders + special playlists (special kind ≠ none).
+// skipping folders + special playlists (special kind ≠ none). A failed track read
+// emits "!ERR" as the membership column — never mistakable for a real (empty) list.
 export function buildPlaylistScript({ rawPath, timeoutSec }) {
   return `${HANDLERS}
 set outPath to "${asPath(rawPath)}"
@@ -181,12 +195,25 @@ with timeout of ${timeoutSec} seconds
           set ppid to ((persistent ID of p) as text)
         end try
         set tids to {}
+        set tidsOk to true
+        set tcount to -1
         try
-          set tids to (get persistent ID of every track of p)
+          set tcount to (count of tracks of p)
         end try
+        if tcount is -1 then
+          set tidsOk to false
+        else if tcount > 0 then
+          -- NB: this read ERRORS (-1728) on an EMPTY playlist, hence the count gate above.
+          try
+            set tids to (get persistent ID of every track of p)
+          on error
+            set tidsOk to false
+          end try
+        end if
         set AppleScript's text item delimiters to ","
         set tidStr to (tids as text)
         set AppleScript's text item delimiters to ""
+        if not tidsOk then set tidStr to "!ERR"
         set lineOut to ppid & tab & pn & tab & tidStr
       end if
     end tell
@@ -220,11 +247,14 @@ export function parseTrackRows(text) {
 }
 
 // Parse the playlist raw TSV: persistentID<TAB>name<TAB>pid,pid,…
+// A "!ERR" membership marker means the track read failed in Music (readError: true) —
+// callers must treat that as "membership unknown", NOT as an empty playlist.
 export function parsePlaylistRows(text) {
   const out = [];
   for (const ln of text.split('\n')) {
     if (!ln) continue;
     const [ppid = '', name = '', tidStr = ''] = ln.split('\t');
+    if (tidStr === '!ERR') { out.push({ ppid, name, pids: [], readError: true }); continue; }
     const pids = tidStr ? tidStr.split(',').map((s) => s.trim()).filter(Boolean) : [];
     out.push({ ppid, name, pids });
   }
@@ -260,6 +290,15 @@ export function writeLibraryXml({ rows, playlists = [], runStart, out }) {
     if (e.dateAdded) xml.push(`\t\t\t<key>Date Added</key><date>${esc(e.dateAdded)}</date>`);
     if (e.location) xml.push(`\t\t\t<key>Location</key><string>${esc('file://' + encodeURI(e.location))}</string>`);
     if (e.kind) xml.push(`\t\t\t<key>Kind</key><string>${esc(e.kind)}</string>`);
+    // Non-music flags so the indexer's music-only filter can fire on AppleScript-sourced
+    // rows exactly as it does on a native Library.xml (media kind first, Kind as fallback
+    // for pre-v3 TSVs that lack the column).
+    const mk = (e.mediaKind || '').toLowerCase();
+    if (mk === 'music video' || mk === 'home video' || (!mk && /video|movie/i.test(e.kind || ''))) xml.push('\t\t\t<key>Has Video</key><true/>');
+    else if (mk === 'movie') xml.push('\t\t\t<key>Movie</key><true/>');
+    else if (mk === 'tv show') xml.push('\t\t\t<key>TV Show</key><true/>');
+    else if (mk === 'podcast') xml.push('\t\t\t<key>Podcast</key><true/>');
+    else if (mk === 'audiobook') xml.push('\t\t\t<key>Audiobook</key><true/>');
     if (e.persistentID) xml.push(`\t\t\t<key>Persistent ID</key><string>${esc(e.persistentID)}</string>`);
     xml.push('\t\t</dict>');
   });

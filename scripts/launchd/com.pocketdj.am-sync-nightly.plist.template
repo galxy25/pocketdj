@@ -1,24 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  PocketDJ Apple-Music nightly sync — launchd timer TEMPLATE.  *** INERT — NOT INSTALLED ***
+  PocketDJ Apple-Music nightly sync — launchd timer TEMPLATE.
 
-  Runs scripts/am-sync-nightly.sh at 04:00 local: diff the live Music library against the
-  committed index (am-incremental-sync), and if anything changed, commit + push + deploy.
-  It is SAFE-BY-GUARD (skips unless the repo is on `main` and clean) and a no-change night is
-  a true no-op, so RunAtLoad is harmless — but it's left false so loading doesn't fire a run.
+  Install/refresh with:  scripts/install-am-sync-nightly.sh
+  (fills __LAUNCHER__ / __HOME__, copies to ~/Library/LaunchAgents, reloads the job).
 
-  This REPLACES the rip server's in-process 04:00 am-check (now disabled) and the old
-  change-set → full-rebuild am-sync-agent. Do NOT run both: this owns 04:00 now.
+  Points at the STABLE launcher in ~/.pocketdj/bin — never at a checkout — so whatever
+  branch the dev repo is on at 04:00 is irrelevant. The launcher hands off to the
+  dedicated sync clone (~/.pocketdj/am-sync-clone), which always runs origin/main:
+  diff the live Music library against the committed index (am-incremental-sync), and if
+  anything changed, commit + push, deploy S3 dev+prod, refresh online search. A no-change
+  night is a true no-op (deploy marker checked). RunAtLoad stays false so (re)loading
+  the job doesn't fire a run.
 
-  Activate (drop the .template suffix):
-    # 1) Fill the REPLACE_ME placeholders (REPO path; PATH incl. node/aws/git).
-    cp scripts/launchd/com.pocketdj.am-sync-nightly.plist.template \
-       ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
-    launchctl load ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
-    # stop:  launchctl unload ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+  This REPLACES the rip server's in-process 04:00 am-check (disabled) and the old
+  change-set → full-rebuild am-sync-agent. Do NOT run both: this owns 04:00.
 
-  Preview WITHOUT installing:
-    POCKETDJ_NIGHTLY_REPO=/Users/REPLACE_ME/pocketdj scripts/am-sync-nightly.sh --dry-run
+  Stop:     launchctl unload ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+  Preview:  scripts/am-sync-nightly.sh with the dry-run flag (no clone/commit/deploy).
 -->
 <plist version="1.0">
 <dict>
@@ -28,18 +27,14 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <!-- REPLACE with the absolute path to am-sync-nightly.sh. -->
-    <string>/Users/REPLACE_ME/pocketdj/scripts/am-sync-nightly.sh</string>
+    <string>__LAUNCHER__</string>
   </array>
 
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- The repo to sync from (on `main`). The job pulls/commits/ships only when it's clean. -->
-    <key>POCKETDJ_NIGHTLY_REPO</key>
-    <string>/Users/REPLACE_ME/pocketdj</string>
     <key>AWS_PROFILE</key>
     <string>levi</string>
-    <!-- launchd has a minimal PATH; include node, aws, git, osascript locations. -->
+    <!-- launchd has a minimal PATH; include node, npm, aws, git, osascript locations. -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
@@ -55,8 +50,8 @@
   <false/>
 
   <key>StandardOutPath</key>
-  <string>/Users/REPLACE_ME/.pocketdj/am-sync-nightly.out.log</string>
+  <string>__HOME__/.pocketdj/am-sync-nightly.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/REPLACE_ME/.pocketdj/am-sync-nightly.err.log</string>
+  <string>__HOME__/.pocketdj/am-sync-nightly.err.log</string>
 </dict>
 </plist>

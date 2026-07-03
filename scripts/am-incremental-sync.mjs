@@ -24,11 +24,13 @@
 //     [--source-name "Apple Music (Local)"] [--timeout 1800] [--repo .] [--dry-run]
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { nsFor, songIdFor, playlistIdFor } from './lib/am-ids.mjs';
-import { buildTrackScript, buildPlaylistScript, runOsascript, parseTrackRows, parsePlaylistRows, writeLibraryXml } from './lib/am-music.mjs';
+import { nsFor, songIdFor } from './lib/am-ids.mjs';
+import { buildTrackScript, buildPlaylistScript, runOsascript, parsePlaylistRows, writeLibraryXml } from './lib/am-music.mjs';
+import { diffLibrary, partitionTrackRows, mergePlaylists } from './lib/am-sync-merge.mjs';
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 ? process.argv[i + 1] : def; }
 const INDEX = arg('index', 'public/apple-music-index.json');
@@ -36,8 +38,21 @@ const OUT = arg('out');
 const SOURCE = arg('source-name', 'Apple Music (Local)');
 const TIMEOUT = parseInt(arg('timeout', '1800'), 10) * 1000;
 const REPO = arg('repo', path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+const STATE_DIR = arg('state-dir', path.join(os.homedir(), '.pocketdj', 'am-sync'));
 const DRY = process.argv.includes('--dry-run');
-if (!OUT && !DRY) { console.error('usage: --index <committed.json> --out <merged.json> [--source-name N] [--timeout S] [--dry-run]'); process.exit(1); }
+if (!OUT && !DRY) { console.error('usage: --index <committed.json> --out <merged.json> [--source-name N] [--timeout S] [--state-dir D] [--dry-run]'); process.exit(1); }
+
+// Persistent ignore list for metadata-less "ghost" library entries (orphaned iCloud
+// uploads whose every field reads back empty). They can never be indexed, so without
+// this they re-diff as "new" every night forever. Delete the file to re-probe them.
+const IGNORE_FILE = path.join(STATE_DIR, 'ignored-pids.json');
+function loadIgnoredPids() {
+  try { return JSON.parse(fs.readFileSync(IGNORE_FILE, 'utf8')).pids || {}; } catch { return {}; }
+}
+function saveIgnoredPids(pids) {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.writeFileSync(IGNORE_FILE, JSON.stringify({ version: 1, pids }, null, 2));
+}
 
 const ns = nsFor(SOURCE);
 const tmpdir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'am-inc-'));
@@ -51,20 +66,16 @@ if (!pidRes.ok) { console.error('✗ pid fetch failed: ' + pidRes.err); cleanup(
 const allPids = pidRes.out.split(',').map((s) => s.trim()).filter(Boolean);
 log(`  ${allPids.length} tracks in library`);
 
-// 2. diff against the committed index by song id
+// 2. diff against the committed index by song id (known ghosts excluded, not "new")
 const idx = JSON.parse(fs.readFileSync(INDEX, 'utf8'));
 const oldSongs = idx.songs || [];
 const oldById = new Map(oldSongs.map((s) => [s.id, s]));
 const existing = new Set(oldById.keys());
-const currentSongIds = new Set();
-const newPositions = [];
-allPids.forEach((pid, i) => {
-  const sid = songIdFor(ns, pid);
-  currentSongIds.add(sid);
-  if (!existing.has(sid)) newPositions.push(i + 1); // 1-based for AppleScript
-});
-const removed = new Set([...existing].filter((sid) => !currentSongIds.has(sid)));
-log(`  new tracks: ${newPositions.length} | removed: ${removed.size}`);
+const ignoredPids = loadIgnoredPids();
+const { newPositions, newPids, removed, ignoredSeen } =
+  diffLibrary({ allPids, existingIds: existing, ns, ignoredPids: new Set(Object.keys(ignoredPids)) });
+log(`  new tracks: ${newPositions.length} | removed: ${removed.size}` +
+  (ignoredSeen ? ` | ignored (ghost/non-music): ${ignoredSeen}` : ''));
 
 if (DRY) {
   log(`(dry-run) would add up to ${newPositions.length} new tracks and drop ${removed.size} removed.`);
@@ -79,8 +90,15 @@ if (newPositions.length) {
   const raw = path.join(tmpdir, 'new.tsv');
   const tr = runOsascript(buildTrackScript({ rawPath: raw, timeoutSec: Math.floor(TIMEOUT / 1000), positions: newPositions }), TIMEOUT + 30000);
   if (!tr.ok) { console.error('✗ enriched fetch failed: ' + tr.err); cleanup(); process.exit(2); }
-  const rows = parseTrackRows(fs.readFileSync(raw, 'utf8'));
+  const { rows, ghostPids, skewPids } = partitionTrackRows(fs.readFileSync(raw, 'utf8'), newPids);
   log(`  fetched ${rows.length} enriched rows`);
+  if (skewPids.length) log(`  ⚠ ${skewPids.length} rows landed on unrequested tracks (library changed mid-run) — dropped, retried next run`);
+  if (ghostPids.length) {
+    const now = new Date().toISOString();
+    for (const pid of ghostPids) ignoredPids[pid] = ignoredPids[pid] || { firstSeen: now, reason: 'no-metadata' };
+    saveIgnoredPids(ignoredPids);
+    log(`  ⚠ ${ghostPids.length} metadata-less ghost tracks → ignore list (${IGNORE_FILE})`);
+  }
   const smallXml = path.join(tmpdir, 'new.xml');
   writeLibraryXml({ rows, playlists: [], runStart: Date.now(), out: smallXml });
   const partialOut = path.join(tmpdir, 'partial.json');
@@ -88,8 +106,22 @@ if (newPositions.length) {
     '--xml', smallXml, '--out', partialOut, '--source-name', SOURCE], { encoding: 'utf8' });
   if (ir.status !== 0) { console.error('✗ index-apple-music failed: ' + (ir.stderr || '')); cleanup(); process.exit(2); }
   partial = JSON.parse(fs.readFileSync(partialOut, 'utf8'));
-  log(`  indexed new: ${(partial.songs || []).length} songs, ${(partial.albums || []).length} albums` +
-    (((partial.songs || []).length < newPositions.length) ? ` (${newPositions.length - (partial.songs || []).length} non-music/no-name skipped)` : ''));
+  // In-run + cross-run dedup: a skew-shifted or double-listed row must never append a
+  // song id that already exists (or append the same id twice).
+  const dedupSeen = new Set(existing);
+  partial.songs = (partial.songs || []).filter((s) => !dedupSeen.has(s.id) && dedupSeen.add(s.id));
+  log(`  indexed new: ${partial.songs.length} songs, ${(partial.albums || []).length} albums` +
+    ((partial.songs.length < rows.length) ? ` (${rows.length - partial.songs.length} non-music/video/no-name skipped by indexer)` : ''));
+  // The indexer's skips are deterministic (music videos, podcasts, titleless rows) —
+  // without ignoring them they'd re-diff as "new" every night forever, like the ghosts.
+  const indexedIds = new Set(partial.songs.map((s) => s.id));
+  const nonMusicPids = rows.map((r) => r.persistentID).filter((pid) => !indexedIds.has(songIdFor(ns, pid)));
+  if (nonMusicPids.length) {
+    const now = new Date().toISOString();
+    for (const pid of nonMusicPids) ignoredPids[pid] = ignoredPids[pid] || { firstSeen: now, reason: 'non-music' };
+    saveIgnoredPids(ignoredPids);
+    log(`  ⚠ ${nonMusicPids.length} non-music tracks → ignore list (${IGNORE_FILE})`);
+  }
 }
 
 // 5. playlists — always re-dump + remap to song ids (membership changes carry no date)
@@ -131,19 +163,16 @@ for (const a of (partial.albums || [])) {                    // brand-new albums
   finalAlbums.push(songs && songs.length ? { ...a, trackList: sortTracks(songs) } : a);
 }
 
-// 6c. playlists: rebuild from the fresh dump (membership remapped via hash), else prune existing
+// 6c. playlists: rebuild from the fresh dump (membership remapped via hash), else prune existing.
+// Presence in the dump governs existence — an empty playlist ships EMPTY, it is not a
+// deletion. (The old zero-members-means-drop rule shipped the deletion of "OTG" on
+// 2026-06-30 while its contents were mid-swap in Music.)
 let finalPlaylists;
 if (playlistRows) {
-  finalPlaylists = [];
-  for (const pl of playlistRows) {
-    const songIds = pl.pids.map((pid) => songIdFor(ns, pid)).filter((sid) => finalSongIds.has(sid));
-    if (!songIds.length) continue;
-    finalPlaylists.push({ id: playlistIdFor(ns, pl.ppid || pl.name), name: pl.name, songIds });
-  }
+  finalPlaylists = mergePlaylists({ playlistRows, oldPlaylists: idx.playlists, finalSongIds, ns, log });
 } else {
   finalPlaylists = (idx.playlists || [])
-    .map((p) => ({ ...p, songIds: (p.songIds || []).filter((sid) => finalSongIds.has(sid)) }))
-    .filter((p) => p.songIds.length);
+    .map((p) => ({ ...p, songIds: (p.songIds || []).filter((sid) => finalSongIds.has(sid)) }));
 }
 
 // 6d. assemble (preserve key order: manifest, albums, playlists, songs) + refresh counts
