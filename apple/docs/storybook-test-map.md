@@ -20,6 +20,7 @@ server-side. Don't treat their absence as a coverage gap.
 | Storybook chapter | UI test(s) | Unit test(s) | Native? |
 |---|---|---|---|
 | 5 Settings popout | `SettingsUITests` (all) | `SettingsStoreTests` | ✅ |
+| 5a Settings ▸ Storage (manager: folders, deletes, soft cap) | `StorageUITests` | `BurnStoreStorageTests`, `StorageManagerTests`, `PlayStatsStoreTests`, `MixSessionRecordingsDeleteTests` | ✅ native-only |
 | 8 Single-album view | `BrowseUITests.testAlbumNavigationShowsTrackTable`, `testSongDetailFromTrackTable` | `DecodingTests` | ✅ |
 | 9 Song detail modal | `BrowseUITests.testSongDetailFromTrackTable` | — | ✅ |
 | 10 Browser — albums | `BrowseUITests.testBrowserLoadsAlbums`, `testLayoutToggleKeepsAlbumsVisible` | `BrowseStateTests` | ✅ |
@@ -53,7 +54,8 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 | `PocketDJ/Browse/**`, `Views/BrowseView.swift` | `BrowseUITests` | `BrowseStateTests`, `FilterEngineTests`, `SortEngineTests` |
 | `Views/AlbumDetailView.swift`, `Views/SongDetailView.swift` | `BrowseUITests` | `DecodingTests` |
 | `Views/Edit*View.swift`, `Models/EditSchema.swift`, `State/EditsStore.swift` | `SettingsUITests` | `EditSchemaTests` |
-| `Views/SettingsView.swift`, `State/SettingsStore.swift` | `SettingsUITests` | `SettingsStoreTests`, `CatalogMergeTests` |
+| `Views/SettingsView.swift`, `State/SettingsStore.swift` | `SettingsUITests`, `StorageUITests` | `SettingsStoreTests`, `CatalogMergeTests` |
+| `Views/StorageView.swift`, `State/{StorageManager,PlayStatsStore}.swift`, `State/BurnStore.swift` (storage ops), `State/SessionFolders.swift` | `StorageUITests` | `BurnStoreStorageTests`, `StorageManagerTests`, `PlayStatsStoreTests`, `MixSessionRecordingsDeleteTests`, `BurnStoreFolderTests`, `SessionFoldersTests` |
 | `Services/Search/**`, `State/OnlineSearchModel.swift` | `SettingsUITests` | `SigV4Tests` |
 | `State/CollectionsStore.swift`, `Models/CollectionsSchema.swift`, `Views/{Pockets,Playlists,AddToCollection,SetlistDetail}*.swift` | `PocketsUITests`, `PlaylistsUITests`, `SetlistUITests`, `IndexPlaylistsUITests` | `CollectionsSchemaTests`, `CollectionsStoreTests`, `RealizeEngineTests` |
 | `Performance/**` | *(none)* | `RealizeEngineTests`, `SeededRNGTests`, `HarmonicsUnitTests` |
