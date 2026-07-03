@@ -545,7 +545,7 @@ re-run `xcodegen generate` after edits):
 | `INFOPLIST_KEY_NSAppleMusicUsageDescription` | "PocketDJ uses Apple Music to play and search tracks from your subscription." | the MusicKit consent prompt |
 | `PocketDJAppleMusicEnabled` (in the **base Info.plist**, not `INFOPLIST_KEY_*`) | **`YES`** | build-time gate that wakes `AppleMusicProvider` (still needs the portal MusicKit App Service to run on device). Must be a real Info.plist key — `INFOPLIST_KEY_PocketDJAppleMusicEnabled` no-ops because `INFOPLIST_KEY_*` only injects Apple's *known* keys |
 | `UIBackgroundModes` | **`[audio, fetch, processing]`** (was `[audio]`) | `audio` = background playback + lock-screen Now Playing (Ch. 5 §7, §11.3); **`fetch`** lets the `BGAppRefreshTask` (rip-reconcile) run; **`processing`** lets the `BGProcessingTask` (burn-drain) run — the **background-processing** feature (Ch. 5 §11). iOS-only; macOS ignores them |
-| `BGTaskSchedulerPermittedIdentifiers` | **`[com.levi.pocketdj.burn-drain, com.levi.pocketdj.rip-reconcile]`** | the two BGTask identifiers the `AppDelegate` registers + submits; iOS refuses to register an identifier not declared here (Ch. 5 §11.2) |
+| `BGTaskSchedulerPermittedIdentifiers` | **`[com.levi.pocketdj.burn-drain, com.levi.pocketdj.rip-reconcile, com.levi.pocketdj.storage-prune]`** | the three BGTask identifiers the `AppDelegate` registers + submits (burn-drain reconcile, rips-manifest refresh, the storage manager's daily soft-cap prune); iOS refuses to register an identifier not declared here (Ch. 5 §11.2, §9.2) |
 
 The `UIBackgroundModes` array can't be a scalar `INFOPLIST_KEY_*`, so `project.yml`
 declares it (and `BGTaskSchedulerPermittedIdentifiers`) in its base **`info:`** block;
