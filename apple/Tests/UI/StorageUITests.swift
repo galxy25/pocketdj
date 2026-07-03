@@ -43,18 +43,29 @@ final class StorageUITests: XCTestCase {
         link.tap()
     }
 
+    /// Attach a proof screenshot to the result bundle (exported for visual verification).
+    private func snap(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     func testStorageEntryOpensManagerWithMovedFolderPickers() {
         let app = launch()
         openStorage(app)
         // The manager screen: usage row + BOTH folder pickers moved off the Settings root.
         XCTAssertTrue(app.staticTexts["storage-usage-burns"].waitForExistence(timeout: 10))
+        snap(app, "storage-top")
         XCTAssertTrue(reveal(app, app.buttons["settings-burn-folder-pick"]))
         XCTAssertTrue(reveal(app, app.buttons["settings-session-folder-pick"]))
         // And the delete tools + unset-by-default cap.
         XCTAssertTrue(reveal(app, app.buttons["storage-cap-set"]),
                       "cap starts UNSET — the set button shows, not the stepper")
+        snap(app, "storage-cap-unset")
         XCTAssertTrue(reveal(app, app.buttons["storage-delete-all-burns"]))
         XCTAssertTrue(reveal(app, app.buttons["storage-delete-recordings"]))
+        snap(app, "storage-delete-tools")
     }
 
     func testBackReturnsToSettingsRoot() {
