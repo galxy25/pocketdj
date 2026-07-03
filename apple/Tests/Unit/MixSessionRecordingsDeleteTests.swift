@@ -122,6 +122,72 @@ final class MixSessionRecordingsDeleteTests: XCTestCase {
                        "metadata survives — the file was never reachable to delete")
     }
 
+    // MARK: Single-take delete (the session view's per-recording trash)
+
+    func testDeleteRecordingRemovesOneTakeAndKeepsSiblings() throws {
+        let store = MixSessionStore(fileURL: storeURL)
+        store.notePlayed(songId: "s1")
+        let current = store.currentId
+        let take1 = try addTake(store, sessionId: current, name: "recording-1.m4a")
+        let take2 = try addTake(store, sessionId: current, name: "recording-2.m4a")
+        let rec1 = try XCTUnwrap(store.recordings(forSession: current).first)
+
+        XCTAssertTrue(store.deleteRecording(sessionId: current, recordingId: rec1.id, bookmark: nil))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: take1.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: take2.path), "sibling take untouched")
+        XCTAssertEqual(store.recordings(forSession: current).map(\.fileName), ["recording-2.m4a"])
+        XCTAssertNotNil(store.session(current), "session + its logs survive")
+        XCTAssertEqual(store.playedSongIds(forSession: current), ["s1"])
+        // Persisted: a reloaded store agrees (flush() forces the async writer to disk).
+        store.flush()
+        XCTAssertEqual(MixSessionStore(fileURL: storeURL).recordings(forSession: current).count, 1)
+    }
+
+    func testDeleteRecordingPrunesEmptiedSessionFolder() throws {
+        let store = MixSessionStore(fileURL: storeURL)
+        let current = store.currentId
+        _ = try addTake(store, sessionId: current, name: "recording-1.m4a")
+        let rec = try XCTUnwrap(store.recordings(forSession: current).first)
+
+        XCTAssertTrue(store.deleteRecording(sessionId: current, recordingId: rec.id, bookmark: nil))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(current).path),
+                       "last take gone → the app-named session folder is tidied away")
+    }
+
+    /// A take in a currently-unreachable user folder is refused — nothing deleted,
+    /// metadata kept (same no-silent-orphaning rule as delete-all).
+    func testDeleteRecordingRefusesUnreachableUserFolderTake() {
+        let store = MixSessionStore(fileURL: storeURL)
+        let current = store.currentId
+        store.addRecording(toSession: current, fileName: "recording-1.m4a",
+                           startedAt: 1_000, durationMs: 2_000, wasUserFolder: true)
+        let rec = store.recordings(forSession: current)[0]
+
+        XCTAssertFalse(store.deleteRecording(sessionId: current, recordingId: rec.id, bookmark: nil))
+        XCTAssertEqual(store.recordings(forSession: current).count, 1, "metadata kept")
+    }
+
+    /// A stale record (reachable root, file already gone) just drops its metadata.
+    func testDeleteRecordingDropsStaleRecordWhoseFileIsGone() {
+        let store = MixSessionStore(fileURL: storeURL)
+        let current = store.currentId
+        store.addRecording(toSession: current, fileName: "recording-1.m4a",
+                           startedAt: 1_000, durationMs: 2_000, wasUserFolder: false)
+
+        XCTAssertTrue(store.deleteRecording(sessionId: current,
+                                            recordingId: store.recordings(forSession: current)[0].id,
+                                            bookmark: nil))
+        XCTAssertTrue(store.recordings(forSession: current).isEmpty)
+    }
+
+    func testDeleteRecordingUnknownIdsAreNoOps() {
+        let store = MixSessionStore(fileURL: storeURL)
+        XCTAssertFalse(store.deleteRecording(sessionId: "nope", recordingId: "rec1", bookmark: nil))
+        XCTAssertFalse(store.deleteRecording(sessionId: store.currentId, recordingId: "nope", bookmark: nil))
+    }
+
     func testRecordingsUsageBytesCountsTakes() throws {
         let store = MixSessionStore(fileURL: storeURL)
         try addTake(store, sessionId: store.currentId, name: "recording-1.m4a", bytes: 6)

@@ -271,6 +271,46 @@ final class MixSessionStore: MixSessionRecorder {
         saveNow()
     }
 
+    /// Session view / storage manager: delete ONE captured take — its audio file and its
+    /// metadata (the session itself, with its events/played log, is untouched). Same
+    /// data-safety rule as `deleteAllRecordings`: when the take's root is UNREACHABLE
+    /// right now (a user folder on an unplugged drive / offline provider), nothing is
+    /// deleted and the metadata is KEPT — no silent orphaning. A take whose file is
+    /// already gone (reachable root, missing file) just drops its stale record. The
+    /// emptied app-named session folder is pruned. Returns true when the take's record
+    /// was removed.
+    @discardableResult
+    func deleteRecording(sessionId: String, recordingId: String, bookmark: Data?) -> Bool {
+        guard let si = sessions.firstIndex(where: { $0.id == sessionId }),
+              let rec = sessions[si].recordings?.first(where: { $0.id == recordingId }) else { return false }
+        let fm = FileManager.default
+        if let resolved = SessionFolders.recordingURL(sessionId: sessionId, fileName: rec.fileName,
+                                                      wasUserFolder: rec.wasUserFolder, bookmark: bookmark) {
+            let dir = resolved.url.deletingLastPathComponent()
+            try? fm.removeItem(at: resolved.url)
+            // Tidy an emptied session folder (app-named `mses_…`/session-id dir — never a
+            // user's own folder, recordingURL only resolves inside session folders).
+            if ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).isEmpty {
+                try? fm.removeItem(at: dir)
+            }
+            resolved.release?()
+        } else if rec.wasUserFolder {
+            // The file didn't resolve: distinguish "root unreachable" (keep everything)
+            // from "root reachable, file already gone" (stale record → drop it).
+            var reachable = false
+            if bookmark != nil,
+               let root = SessionFolders.resolveRoot(bookmark: bookmark, requireWritable: false),
+               root.isUserFolder {
+                reachable = true
+                if root.scoped { root.url.stopAccessingSecurityScopedResource() }
+            }
+            if !reachable { return false }
+        }
+        sessions[si].recordings?.removeAll { $0.id == recordingId }
+        saveNow()
+        return true
+    }
+
     // MARK: - Readers (Sessions screen)
 
     func session(_ id: String) -> MixSession? { sessions.first { $0.id == id } }
