@@ -74,23 +74,42 @@ metadata *edits* to existing tracks (rare). For those, do an occasional **full r
 
 ## Activate
 
-The nightly job runs from the working repo by default and is **SAFE-BY-GUARD**: it pulls, commits,
-and ships only when the repo is on `main` and clean, so it never disrupts in-progress dev (it skips
-that night and recovers the next).
+The nightly job runs from a **dedicated always-on-`main` clone** (`~/.pocketdj/am-sync-clone`),
+never from the dev checkout — a feature branch left checked out at 04:00 cannot starve the sync
+(which it silently did 2026-07-01..03 under the old in-repo design). launchd invokes a stable
+launcher in `~/.pocketdj/bin` that health-checks/re-creates the clone and hands off to the clone's
+`am-sync-nightly.sh`, which resets to `origin/main` and re-execs itself, so the running sync code
+is always fresh `main`. A single-instance lock (`~/.pocketdj/am-sync/.sync.lock`) keeps a manual
+run and the 04:00 run from resetting the clone under each other.
 
 ```bash
-# Preview WITHOUT installing (no pull/commit/deploy — every mutating step is echoed):
+# Preview WITHOUT installing (no clone/commit/deploy — mutating steps are echoed; the
+# ignore-list state is sandboxed so a preview never alters what future real runs index):
 scripts/am-sync-nightly.sh --dry-run
 
-# Install the 04:00 timer (edit the REPLACE_ME placeholders first):
-cp scripts/launchd/com.pocketdj.am-sync-nightly.plist.template \
-   ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
-launchctl load ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
+# Install/refresh the 04:00 timer (bakes the origin URL into the launcher, fills the
+# plist placeholders, and (re)loads the job — idempotent):
+scripts/install-am-sync-nightly.sh
 # Stop:  launchctl unload ~/Library/LaunchAgents/com.pocketdj.am-sync-nightly.plist
 ```
 
-Overridable env: `POCKETDJ_NIGHTLY_REPO` (repo to sync from), `POCKETDJ_NODE_CMD`,
+Overridable env: `POCKETDJ_NIGHTLY_CLONE_DIR` (sync-clone path; set **empty** to run in-place —
+then the legacy SAFE-BY-GUARD applies: only ships when the repo is on clean `main`),
+`POCKETDJ_NIGHTLY_ORIGIN` (clone URL), `POCKETDJ_NIGHTLY_REPO`, `POCKETDJ_NODE_CMD`,
 `POCKETDJ_GIT_CMD`, `POCKETDJ_DEPLOY_CMD`, `POCKETDJ_NIGHTLY_LOG`.
+
+State under `~/.pocketdj/am-sync/`: `ignored-pids.json` (metadata-less ghost entries and
+non-music tracks that must not re-diff as "new" nightly; emptiness-derived entries need 3
+strikes on distinct days before they stick, and any pid that later indexes is rescued — delete
+the file to re-probe everything) and `last-deployed-index.sha256` (deploy marker: a no-change
+night still ships S3 + search if the last committed index was never confirmed deployed).
+
+Data-safety circuit breakers (both abort the night's ship, converging next healthy run):
+an empty/implausibly-shrunken library snapshot refuses to ship as a mass removal
+(`POCKETDJ_ALLOW_MASS_REMOVAL=1` overrides), and an empty/>50%-shrunken playlist dump is
+treated as a read failure (`POCKETDJ_ALLOW_PLAYLIST_SHRINK=1` overrides). Playlists present
+in Music always ship — **empty is a state, not a deletion** (the OTG lesson: a mid-edit
+playlist momentarily resolving to zero members must not ship as a deletion).
 
 ## Retired (legacy)
 

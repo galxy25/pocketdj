@@ -110,6 +110,24 @@ lives in `scripts/lib/am-ids.mjs` + `scripts/lib/am-music.mjs`. `explicit` is th
 Music won't expose over AppleScript — `am-merge-catalog-ids.mjs` carries it forward with the
 storeIds. Full design: **`docs/apple-music-sync.md`**.
 
+**Resilience (2026-07-03).** The nightly job runs from a **dedicated always-on-`main` clone**
+(`~/.pocketdj/am-sync-clone`) via a stable launcher in `~/.pocketdj/bin`
+(`scripts/install-am-sync-nightly.sh` installs both) — a feature branch checked out in the dev
+repo at 04:00 can no longer starve the sync, and the clone self-heals (health check + re-clone,
+stale-lock clearing, single-instance mkdir lock, deploy-marker catch-up so a crash between push
+and deploy converges). The merge itself follows **presence-is-truth** for playlists: a playlist
+Music still has ships even with zero resolvable members (**empty is a state, not a deletion** —
+a mid-edit playlist once shipped as a deletion), a failed per-playlist track read (`!ERR`)
+retains the previous membership, and empty/>50%-shrunken playlist dumps or implausible
+mass-removals (> max(50, 0.5%) of songs) abort the night instead of shipping unattended damage.
+Metadata-less "ghost" entries and non-music tracks live in `~/.pocketdj/am-sync/ignored-pids.json`
+so they stop re-diffing as new: emptiness-derived entries need **3 strikes on distinct days**
+(one transient blank AppleScript read can't blacklist a real track; later success rescues the
+pid), while positive-evidence non-music rows (`media kind` → `Has Video`/`Podcast`/… flags via
+`nonMusicFlag`, so the indexer's music-only filter now fires on the incremental path too) are
+ignored immediately. Pure diff/merge decisions live in `scripts/lib/am-sync-merge.mjs`
+(unit-tested in `tests/unit/am-sync-merge.test.mjs`).
+
 ---
 
 ## 3. AppleScript / Shortcuts "API" — capturing what can't be copied
