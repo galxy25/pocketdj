@@ -109,6 +109,9 @@ struct PocketDJApp: App {
             appleMusic: AppleMusicPlaybackProvider(provider: amProvider))
         _app = State(initialValue: app)
         _settings = State(initialValue: settings)
+        // Debug capture persists across launches: a relaunch mid-repro starts a fresh session
+        // immediately (the buffer is memory-only — see MixDiag / Settings ▸ Debug).
+        if settings.debugLoggingEnabled { MixDiag.shared.start() }
         _edits = State(initialValue: edits)
         _collections = State(initialValue: collections)
         _musicSync = State(initialValue: musicSync)
@@ -137,9 +140,12 @@ struct PocketDJApp: App {
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
         // App-scoped audio recorder: captures the mix's house output into the current session's
-        // folder. Shares the app's `mix` (audio tap) + `mixSessions` (metadata); its session-folder
-        // `settings` are pushed in from the Mix tab.
-        _mixRecorder = State(initialValue: MixRecorder(engine: mix, sessions: mixSessions))
+        // folder. Shares the app's `mix` (audio tap) + `mixSessions` (metadata). Its session-folder
+        // `settings` are wired HERE (not only from the Mix tab) so launch-time crash-orphan
+        // recovery (RootView's task) can scan the user-picked folder too.
+        let mixRecorder = MixRecorder(engine: mix, sessions: mixSessions)
+        mixRecorder.settings = settings
+        _mixRecorder = State(initialValue: mixRecorder)
         let playStats = PlayStatsStore(fileURL: PlayStatsStore.launchURL())
         _playStats = State(initialValue: playStats)
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
@@ -189,6 +195,24 @@ struct PocketDJApp: App {
         // Let the daily storage-prune BGTask reach the live prune engine (gate included).
         StoragePruneBridge.shared.prune = { [weak storage] in storage?.pruneIfDue() }
         #endif
+        // Orderly exits (macOS Cmd-Q / iOS willTerminate) finalize + FILE an in-flight take —
+        // without this every quit-mid-recording relied on next-launch orphan recovery. The flush
+        // is what makes the filing DURABLE: addRecording persists via an async actor write that
+        // loses the race with `.terminateNow`/exit().
+        RecordingExitBridge.shared.finalize = { [weak mixRecorder, weak mixSessions] in
+            mixRecorder?.stop()
+            mixSessions?.flush()
+        }
+        // A stale-but-resolvable session-folder bookmark mints fresh data mid-resolve; persist it
+        // back so it keeps resolving next launch (a stale bookmark eventually stops working —
+        // which silently orphans every user-folder recording).
+        SessionFolders.onStaleBookmark = { [weak settings] data in
+            Task { @MainActor in
+                settings?.sessionFolderBookmark = data
+                settings?.persist()   // must land in UserDefaults NOW — no later persist() is
+                                      // guaranteed to run before quit (macOS can sit on one section)
+            }
+        }
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
         // One bridge instance carries the live stores to intents + entity queries.

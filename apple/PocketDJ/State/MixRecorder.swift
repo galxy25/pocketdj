@@ -24,41 +24,73 @@ final class MixRecorder {
     private(set) var isRecording = false
     /// Epoch ms when the current capture began (the view derives the elapsed clock from this).
     private(set) var startedAtMs: Double = 0
+    /// True while a capture is running but no MEDIA has been appended for several seconds even
+    /// though the mix is audible — the engine watchdogs are trying to bring audio back; the record
+    /// UI shows a warning state instead of pulsing over a silently dead take.
+    private(set) var captureStalled = false
+    /// Set when a take was auto-stopped because its writer died (disk full / session folder
+    /// vanished). The Mix view surfaces it once as an alert and clears it.
+    var writerFailureMessage: String?
 
     // The in-flight take, captured at start so a Reset mid-capture still files it against its session.
     @ObservationIgnored private var recSessionId = ""
     @ObservationIgnored private var recFileName = ""
     @ObservationIgnored private var recWasUserFolder = false
+    @ObservationIgnored private var watchdogTask: Task<Void, Never>?
 
     init(engine: MixEngine, sessions: MixSessionStore) {
         self.engine = engine
         self.sessions = sessions
+        // Writer death mid-take → auto-stop + FILE the partial take (its fragments up to the
+        // failure are durable). Without this the sink drops every later buffer while the UI keeps
+        // pulsing "recording" — the unbounded silent-loss hole.
+        engine.onRecordingFailed = { [weak self] in self?.writerDidFail() }
+    }
+
+    /// The take's writer died permanently. Stop + file what was captured, and tell the UI why.
+    private func writerDidFail() {
+        guard isRecording else { return }
+        writerFailureMessage = "Recording stopped: the take couldn't keep writing (low disk space "
+            + "or the session folder became unavailable). The audio captured so far was saved."
+        stop()
     }
 
     /// Toggle capture (what the record button calls).
     func toggle() { if isRecording { stop() } else { start() } }
 
-    /// The in-flight take (session id + file name) while recording — the storage manager's
-    /// delete-all skips this open file. nil when idle.
-    var activeTake: (sessionId: String, fileName: String)? {
-        isRecording ? (recSessionId, recFileName) : nil
+    /// The in-flight take (session id + file name + which root it's in) while recording — the
+    /// storage manager's delete-all skips this open file, and the orphan scan must not adopt it.
+    /// The root flag matters: the SAME session id + file name can exist in both roots (a capture
+    /// that fell back to app storage while the user folder was offline), and only one is live.
+    var activeTake: (sessionId: String, fileName: String, wasUserFolder: Bool)? {
+        isRecording ? (recSessionId, recFileName, recWasUserFolder) : nil
     }
 
-    @ObservationIgnored private var didScanOrphans = false
+    // Per-ROOT scan latches: each root is scanned once per launch, but a root that FAILS TO
+    // RESOLVE (user folder offline / stale bookmark / settings not wired yet) is retried on the
+    // next call instead of being latched off for the whole launch — the old single latch silently
+    // skipped a momentarily-offline user folder forever.
+    @ObservationIgnored private var scannedAppRoot = false
+    @ObservationIgnored private var scannedUserRoot = false
 
-    /// One-shot on launch: re-file any recording FILE on disk that isn't referenced by a session's
-    /// `recordings[]` — e.g. a take interrupted by a crash (metadata is filed only on a clean stop, but
-    /// the fragmented `.m4a` survives). Each session folder is named by its session id, so an orphan is
-    /// re-homed to its own session (revived if that session is gone). Safe + idempotent (skips files
-    /// already recorded), so repeated launches don't duplicate.
+    /// Re-file any recording FILE on disk that isn't referenced by a session's `recordings[]` —
+    /// e.g. a take interrupted by a crash (metadata is filed only on a clean stop, but the
+    /// fragmented `.m4a` survives). Each session folder is named by its session id, so an orphan is
+    /// re-homed to its own session (revived if that session is gone). Safe + idempotent (skips
+    /// files already recorded), so repeated calls don't duplicate. Runs at LAUNCH (RootView's
+    /// task — a crashed take must reappear no matter which tab the app restores into), again when
+    /// the Mix tab opens, and before the Storage recordings sweep.
     func recoverOrphans() {
-        guard !didScanOrphans else { return }
-        didScanOrphans = true
         let fm = FileManager.default
         var roots: [(url: URL, isUser: Bool, release: (() -> Void)?)] = []
-        if let app = try? SessionFolders.appRoot() { roots.append((app, false, nil)) }
-        if let user = SessionFolders.resolveRoot(bookmark: settings?.sessionFolderBookmark, requireWritable: false),
+        if !scannedAppRoot, let app = try? SessionFolders.appRoot() {
+            scannedAppRoot = true
+            roots.append((app, false, nil))
+        }
+        if !scannedUserRoot, let bookmark = settings?.sessionFolderBookmark,
+           let user = SessionFolders.resolveRoot(bookmark: bookmark, requireWritable: false),
            user.isUserFolder {
+            scannedUserRoot = true
             roots.append((user.url, true, user.scoped ? { user.url.stopAccessingSecurityScopedResource() } : nil))
         }
         for root in roots {
@@ -73,11 +105,22 @@ final class MixRecorder {
                 let known = Set(sessions.recordings(forSession: sessionId).map { $0.fileName })
                 let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey])) ?? []
                 for file in files where file.pathExtension.lowercased() == "m4a" && !known.contains(file.lastPathComponent) {
-                    var durMs = 0
-                    if let af = try? AVAudioFile(forReading: file) {
-                        let sr = af.processingFormat.sampleRate
-                        if sr > 0 { durMs = Int(Double(af.length) / sr * 1000) }
-                    }
+                    // Never adopt the take being captured RIGHT NOW (its fragments are already a
+                    // readable file, but its metadata is filed only on stop): adopting it would
+                    // file a DUPLICATE row on stop and let a per-row delete unlink the live file
+                    // mid-write. Reachable when this root failed to resolve at launch and a scan
+                    // (Mix tab re-entry / Storage sweep) lands mid-capture. Root-aware on purpose:
+                    // a same-named file in the OTHER root is a genuine orphan, not the live take.
+                    if let live = activeTake, live.sessionId == sessionId,
+                       live.fileName == file.lastPathComponent,
+                       live.wasUserFolder == root.isUser { continue }
+                    // A take that died before its FIRST fragment (~2 s) is unreadable by every
+                    // AVFoundation consumer — filing it would create a dead "0:00" row whose play
+                    // button silently no-ops. Leave it on disk unfiled (the recordings sweep
+                    // cleans such strays up).
+                    guard let af = try? AVAudioFile(forReading: file),
+                          af.processingFormat.sampleRate > 0, af.length > 0 else { continue }
+                    let durMs = Int(Double(af.length) / af.processingFormat.sampleRate * 1000)
                     let created = (try? file.resourceValues(forKeys: [.creationDateKey]))?.creationDate
                     let started = (created?.timeIntervalSince1970 ?? 0) * 1000
                     sessions.recoverRecording(sessionId: sessionId, name: "Recovered recording",
@@ -115,15 +158,25 @@ final class MixRecorder {
         recWasUserFolder = folder.isUserFolder
         startedAtMs = Date().timeIntervalSince1970 * 1000
         isRecording = true
+        captureStalled = false
+        startWatchdog()
         return true
     }
 
     /// Stop capture + file the take's metadata onto its session. No-op if not recording.
     func stop() {
         guard isRecording else { return }
+        // The take's CONTENT clock, read BEFORE finalize: media seconds actually appended. Wall
+        // clock would overstate the take after any stall or drop (frozen tap during a route
+        // change, dropped buffers) — the file is the truth. Wall clock stays as the fallback for
+        // the degenerate no-media case.
+        let contentMs = Int(engine.recordingAppendedSeconds * 1000)
         engine.stopRecording()
         isRecording = false
-        let durationMs = max(0, Int(Date().timeIntervalSince1970 * 1000 - startedAtMs))
+        captureStalled = false
+        watchdogTask?.cancel(); watchdogTask = nil
+        let wallMs = max(0, Int(Date().timeIntervalSince1970 * 1000 - startedAtMs))
+        let durationMs = contentMs > 0 ? contentMs : wallMs
         // Normal case: the originating session still exists → attach the take.
         if sessions.addRecording(toSession: recSessionId, fileName: recFileName, startedAt: startedAtMs,
                                  durationMs: durationMs, wasUserFolder: recWasUserFolder) != nil {
@@ -134,5 +187,34 @@ final class MixRecorder {
         sessions.recoverRecording(sessionId: recSessionId, name: "Recovered recording",
                                   fileName: recFileName, startedAt: startedAtMs,
                                   durationMs: durationMs, wasUserFolder: recWasUserFolder)
+    }
+
+    /// Capture-liveness watchdog: while recording, appended MEDIA time must keep advancing whenever
+    /// the mix is audible. A ≥5 s freeze (engine stalled and unrecovered, tap detached) flips
+    /// `captureStalled` so the record UI warns instead of silently pulsing over a dead take. Clears
+    /// itself the moment media flows again. Deliberately does NOT auto-stop: a stall during an
+    /// interruption pause is a take the user wants to continue, and definitive writer death already
+    /// auto-stops via `onRecordingFailed`.
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            var lastAppended = -1.0
+            var stagnantSince: Date?
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, self.isRecording else { break }
+                let appended = self.engine.recordingAppendedSeconds
+                let mixAudible = self.engine.isRunning          // any deck playing
+                if appended > lastAppended + 0.01 || !mixAudible {
+                    stagnantSince = nil
+                    self.captureStalled = false
+                } else if let since = stagnantSince {
+                    if Date().timeIntervalSince(since) >= 5 { self.captureStalled = true }
+                } else {
+                    stagnantSince = Date()
+                }
+                lastAppended = appended
+            }
+        }
     }
 }

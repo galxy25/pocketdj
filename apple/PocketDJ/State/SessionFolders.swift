@@ -7,9 +7,16 @@ import Foundation
 /// capture) or READ (playback) must call the returned `release` when done to drop the security scope.
 ///
 /// Pure static helpers taking the bookmark `Data?` directly (not the whole SettingsStore), so they can
-/// run without hopping the main actor. A stale-but-resolvable bookmark is used as-is (re-persist is
-/// only an optimization; skipping it keeps this dependency-free).
+/// run without hopping the main actor. A stale-but-resolvable bookmark is used as-is for THIS call,
+/// and a fresh bookmark is minted + handed to `onStaleBookmark` so the app can re-persist it (Apple's
+/// recommendation — a stale bookmark left un-refreshed eventually stops resolving, silently orphaning
+/// every user-folder recording).
 enum SessionFolders {
+
+    /// Stale-bookmark refresh seam: when a bookmark resolves but reports STALE, fresh bookmark
+    /// data is minted inside the live security scope and handed here; the app persists it back
+    /// into settings. Wired once at app init; nil in tests.
+    nonisolated(unsafe) static var onStaleBookmark: ((Data) -> Void)?
 
     /// TEST SEAM: overrides the app-managed root so the storage tests (recordings usage /
     /// delete-all) are hermetic and can never touch this machine's real session
@@ -47,6 +54,16 @@ enum SessionFolders {
             if let url = try? URL(resolvingBookmarkData: data, options: opts,
                                   relativeTo: nil, bookmarkDataIsStale: &stale) {
                 let ok = url.startAccessingSecurityScopedResource()
+                if ok, stale {
+                    // Mint the replacement inside the live scope (bookmark creation needs access).
+                    #if os(macOS)
+                    let fresh = try? url.bookmarkData(options: [.withSecurityScope],
+                                                      includingResourceValuesForKeys: nil, relativeTo: nil)
+                    #else
+                    let fresh = try? url.bookmarkData()
+                    #endif
+                    if let fresh { onStaleBookmark?(fresh) }
+                }
                 if ok && (!requireWritable || FileManager.default.isWritableFile(atPath: url.path)) {
                     return (url, true, true)
                 }

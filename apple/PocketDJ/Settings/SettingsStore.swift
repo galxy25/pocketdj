@@ -92,6 +92,9 @@ final class SettingsStore {
     var storageSoftCapGB: Double?
     /// Epoch ms of the last completed daily prune (the once-a-day gate). nil = never.
     var lastStoragePruneAt: Double?
+    /// Settings ▸ Debug: record the mix engine's diagnostic log (`MixDiag`) so a remote tester
+    /// can export it and ship it back. OFF (default) ⇒ os_log only, nothing buffered.
+    var debugLoggingEnabled: Bool
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -119,6 +122,7 @@ final class SettingsStore {
         self.lastSection = data.lastSection
         self.storageSoftCapGB = data.storageSoftCapGB
         self.lastStoragePruneAt = data.lastStoragePruneAt
+        self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -204,7 +208,8 @@ final class SettingsStore {
             beatPulseEnabled: beatPulseEnabled,
             lastSection: lastSection,
             storageSoftCapGB: storageSoftCapGB,
-            lastStoragePruneAt: lastStoragePruneAt)
+            lastStoragePruneAt: lastStoragePruneAt,
+            debugLoggingEnabled: debugLoggingEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -237,6 +242,7 @@ final class SettingsStore {
         lastSection = d.lastSection
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
+        debugLoggingEnabled = d.debugLoggingEnabled ?? false
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -288,6 +294,8 @@ struct SettingsData: Codable {
     var storageSoftCapGB: Double?
     /// Optional so older blobs still decode (nil = the daily prune has never run).
     var lastStoragePruneAt: Double?
+    /// Optional so older blobs still decode — Settings ▸ Debug capture toggle (nil = off).
+    var debugLoggingEnabled: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -309,5 +317,6 @@ struct SettingsData: Codable {
         beatPulseEnabled: false,
         lastSection: nil,
         storageSoftCapGB: nil,
-        lastStoragePruneAt: nil)
+        lastStoragePruneAt: nil,
+        debugLoggingEnabled: nil)
 }

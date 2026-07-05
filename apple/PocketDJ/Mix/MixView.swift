@@ -96,6 +96,15 @@ struct MixView: View {
             recorder.settings = settings                              // session-folder location source
             recorder.recoverOrphans()                                 // re-file any crash-interrupted takes
         }
+        // Writer death mid-take (disk full / session folder vanished): the recorder auto-stopped
+        // and FILED the partial take — tell the user why the record button went dark.
+        .alert("Recording stopped",
+               isPresented: Binding(get: { recorder.writerFailureMessage != nil },
+                                    set: { if !$0 { recorder.writerFailureMessage = nil } })) {
+            Button("OK", role: .cancel) { recorder.writerFailureMessage = nil }
+        } message: {
+            Text(recorder.writerFailureMessage ?? "")
+        }
         .onChange(of: settings.mixGlideSeconds) { engine.setMixGlideSeconds(settings.mixGlideSeconds) }
         .onChange(of: settings.skipFadeSeconds) { engine.setSkipFadeSeconds(settings.skipFadeSeconds) }
         .onChange(of: settings.cueOutputChannel) { engine.setCueOnRight(settings.cueOutputChannel.onRight) }
@@ -346,9 +355,18 @@ struct MixView: View {
     /// pulsing dot mirrors the toolbar button's purple→red pulse.
     private var recordingIndicator: some View {
         HStack(spacing: 10) {
-            Image(systemName: "record.circle.fill").font(.title3).modifier(RecordPulse(active: true))
+            // Stalled capture (engine stopped and unrecovered — no media reaching the take):
+            // amber warning triangle instead of the healthy pulsing dot, so the indicator never
+            // pulses reassuringly over a dead take.
+            if recorder.captureStalled {
+                Image(systemName: "exclamationmark.triangle.fill").font(.title3).foregroundStyle(.orange)
+            } else {
+                Image(systemName: "record.circle.fill").font(.title3).modifier(RecordPulse(active: true))
+            }
             VStack(alignment: .leading, spacing: 1) {
-                Text("Recording").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                Text(recorder.captureStalled ? "Recording — no audio" : "Recording")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(recorder.captureStalled ? Color.orange : Theme.fg)
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     Text(Self.elapsedClock(sinceMs: recorder.startedAtMs))
                         .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
@@ -363,7 +381,7 @@ struct MixView: View {
         .padding(12)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-            .strokeBorder(Color.red.opacity(0.5), lineWidth: 1))
+            .strokeBorder((recorder.captureStalled ? Color.orange : Color.red).opacity(0.5), lineWidth: 1))
         .accessibilityIdentifier("mix-record-indicator")
     }
 

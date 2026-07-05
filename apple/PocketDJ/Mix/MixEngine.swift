@@ -3,6 +3,79 @@ import Observation
 import AVFoundation        // AVAudioEngine + nodes (iOS · iPad · Mac); AVAudioSession is iOS-only (guarded below)
 import AudioToolbox        // DynamicsProcessor AU parameter ids + AudioUnitSetParameter
 import MediaPlayer         // MPNowPlayingInfoCenter + MPRemoteCommandCenter (lock-screen Now Playing)
+import os                  // mixdiag Logger — device-switch/recovery diagnostics
+
+/// Render-tap liveness mirrors for the `mixdiag` diagnostics — written on the tap thread, read on
+/// main. Plain aligned 64-bit stores (a torn read skews a diagnostic by one callback — harmless;
+/// same contract as `MixTapSink.isCapturing`).
+final class MixTapPulse: @unchecked Sendable {
+    /// `Date.timeIntervalSinceReferenceDate` of the last houseSum tap callback (0 = never).
+    var lastTapAt: Double = 0
+    /// …of the last callback that carried actual signal (peak > -66 dBFS). 0 = never.
+    var lastAudibleAt: Double = 0
+}
+
+/// The in-app DEBUG-SESSION log behind Settings ▸ Debug: turn capture ON, reproduce the issue,
+/// turn it OFF, export the session (a remote TestFlight tester ships the file back via iCloud).
+/// Every `MixEngine` diagnostic line goes to os_log unconditionally; while capturing it is ALSO
+/// buffered here (~1 heartbeat line/s + recovery/transport events — a few KB per minute).
+@MainActor
+@Observable
+final class MixDiag {
+    static let shared = MixDiag()
+    private(set) var isCapturing = false
+    private(set) var lines: [String] = []
+    private(set) var startedAt: Date?
+    private(set) var endedAt: Date?
+
+    private static let stampFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
+
+    /// Begin a fresh session (clears the previous capture).
+    func start() {
+        lines = []
+        startedAt = Date()
+        endedAt = nil
+        isCapturing = true
+        append("mixdiag session START — \(Self.buildIdentity())")
+    }
+
+    /// End the session; the buffer stays for export until the next `start()`.
+    func stop() {
+        guard isCapturing else { return }
+        append("mixdiag session END")
+        isCapturing = false
+        endedAt = Date()
+    }
+
+    func append(_ line: String) {
+        guard isCapturing else { return }
+        lines.append(Self.stampFmt.string(from: Date()) + "  " + line)
+        if lines.count > 50_000 { lines.removeFirst(lines.count / 2) }   // runaway-session bound
+    }
+
+    /// The full session as a shareable text file body.
+    func dump() -> String {
+        "PocketDJ debug session — \(Self.buildIdentity())\n"
+        + "captured \(startedAt.map { $0.formatted() } ?? "?") → \(endedAt.map { $0.formatted() } ?? "running")\n\n"
+        + lines.joined(separator: "\n") + "\n"
+    }
+
+    static func buildIdentity() -> String {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        #if os(macOS)
+        let plat = "macOS"
+        #else
+        let plat = "iOS"
+        #endif
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        return "v\(v) build \(b) · \(plat) \(os)"
+    }
+}
 
 /// Cross-platform DJ mix engine — a first-party two-deck `AVAudioEngine` graph. Each deck is
 ///
@@ -204,7 +277,9 @@ final class MixEngine {
     // MARK: Private — graph
 
     @ObservationIgnored private let burns: BurnStore
-    @ObservationIgnored private let engine = AVAudioEngine()
+    /// `var` (not `let`): after a media-services reset every node — including the engine itself —
+    /// is orphaned and must be recreated (`rebuildAfterMediaReset`).
+    @ObservationIgnored private var engine = AVAudioEngine()
     @ObservationIgnored private var built = false
     @ObservationIgnored private var players: [Deck: AVAudioPlayerNode] = [:]
     /// Per-deck normalizing mixer right after the player. `player → inputMixer` carries the FILE's
@@ -265,7 +340,39 @@ final class MixEngine {
     @ObservationIgnored private var stemReleases: [Deck: () -> Void] = [:]
     #if os(iOS)
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private var routeChangeObserver: NSObjectProtocol?
+    @ObservationIgnored private var mediaResetObserver: NSObjectProtocol?
+    /// Interruption `.began` actually parked a LIVE mix, so `.ended` may auto-resume it. Without
+    /// this, `.ended`+shouldResume replays a STALE in-app pause memory (remotePause's idempotency
+    /// guard deliberately preserves `masterPausedDecks`) or starts a loaded-but-never-played deck
+    /// via `resumeMasterPaused`'s now-playing fallback.
+    @ObservationIgnored private var interruptionParked = false
     #endif
+    /// Observer for `.AVAudioEngineConfigurationChange` — registered PER ENGINE INSTANCE (the
+    /// notification's object is the engine), so a media-reset rebuild re-registers it.
+    @ObservationIgnored private var configChangeObserver: NSObjectProtocol?
+    /// Device-switch / recovery diagnostics. ~1 info line per second while a deck plays, plus one
+    /// line per recovery event — invisible cost unless collected:
+    ///   log stream --predicate 'subsystem == "com.levi.pocketdj"' --info
+    @ObservationIgnored private static let diag = Logger(subsystem: "com.levi.pocketdj", category: "mixdiag")
+    private func dlog(_ s: String) {
+        Self.diag.info("\(s, privacy: .public)")
+        MixDiag.shared.append(s)     // no-op unless a Settings ▸ Debug capture session is running
+    }
+    @ObservationIgnored private let tapPulse = MixTapPulse()
+    @ObservationIgnored private var lastDiagHeartbeat: Date?
+    @ObservationIgnored private var lastRenderingDiag: Bool?
+    /// Wall-clock moment the tick watchdog first saw the engine stopped while the mix thinks it's
+    /// live. Parks the auto-machine clocks (mirroring `remotePausedAt`) so a stall never burns a
+    /// track's runway or fires a transition into a dead engine; recovery shifts them forward.
+    @ObservationIgnored private var engineStallAt: Date?
+    /// Last engine-recovery attempt — rate-limits the tick watchdog's restart tries to ~1/s.
+    @ObservationIgnored private var lastEngineRecoveryAttempt: Date?
+    /// The engine was seen down (or reconfigured — config change) while the mix was live. The next
+    /// RENDERING tick re-primes the playing decks: a node that played through an engine stop can
+    /// come back as a ZOMBIE (claims playing, renders silence) that only a pause()+play() revives —
+    /// and the engine can restart via ANY path (watchdog, observer, a transport call, macOS itself).
+    @ObservationIgnored private var engineDownWhileLive = false
 
     /// Single ~10 Hz driver: advances each playing deck's playhead AND steps the auto-mix crossfade.
     @ObservationIgnored private var tickTask: Task<Void, Never>?
@@ -449,6 +556,14 @@ final class MixEngine {
     @ObservationIgnored private let recordingSink = MixTapSink()
     /// The session-folder security-scope release held for the WHOLE capture (nil ⇒ app storage).
     @ObservationIgnored private var recordingRelease: (() -> Void)?
+    /// One-shot per take: the sink's writer FAILED PERMANENTLY (disk full / the session folder's
+    /// provider died). Wired by `MixRecorder` to auto-stop and file the partial take — the
+    /// fragments up to the failure are durable; without this the tap drops every later buffer
+    /// silently while the UI keeps pulsing "recording". Also fired by the media-reset rebuild.
+    @ObservationIgnored var onRecordingFailed: (() -> Void)?
+    /// Seconds of MEDIA actually appended to the current take — the take's CONTENT clock (wall
+    /// clock minus stalls/drops). Feeds the recorder's duration metadata + liveness watchdog.
+    var recordingAppendedSeconds: Double { recordingSink.appendedSeconds }
 
     /// Begin capturing the fully-mixed HOUSE output to `url` as AAC (`.m4a`) — just toggles the
     /// already-installed `houseSum` tap's capture flag (no graph change → playback is untouched).
@@ -470,18 +585,23 @@ final class MixEngine {
                                   channels: format.channelCount) else { release?(); return false }
         recordingRelease = release
         isRecording = true
+        dlog("rec: START run=\(engine.isRunning ? 1 : 0)")
         return true
     }
 
     /// Stop an in-progress capture: flip off the sink's flag (the tap stays installed → no graph
     /// reconfiguration, so playback keeps running), finalize the file, and drop the session-folder
-    /// scope. No-op if not recording.
+    /// scope — but only AFTER the async finalize completes: releasing a provider folder's security
+    /// scope mid-`finishWriting` can fail the fragmented file's tail write. No-op if not recording.
     func stopRecording() {
         guard isRecording else { return }
-        recordingSink.end()
-        recordingRelease?()
+        dlog("rec: STOP appended=\(String(format: "%.1f", recordingAppendedSeconds))s")
+        let release = recordingRelease
         recordingRelease = nil
         isRecording = false
+        recordingSink.end {
+            if let release { DispatchQueue.main.async { release() } }
+        }
     }
 
     // MARK: - Lifecycle
@@ -492,6 +612,8 @@ final class MixEngine {
         #if os(iOS)
         activateAudioSession()
         registerInterruptionHandling()
+        registerRouteChangeHandling()
+        registerMediaResetHandling()
         #endif
         let canonical = Self.canonicalFormat
         // The shared clean house-sum + its downstream cue-pan node (see the `houseSum` doc). Built once.
@@ -560,6 +682,7 @@ final class MixEngine {
         // and `isReady` false — the app degrades to a silent Mix tab rather than crashing.
         do { try engine.start() } catch { return }
         built = true
+        registerConfigChangeHandling()  // per-instance: the system stops the engine on a route-format change
         configureMixRemoteCommands()    // wire lock-screen transport once the graph is live
         // Push whatever the UI already set, then derive gains.
         for d in Deck.allCases {
@@ -574,13 +697,51 @@ final class MixEngine {
         // decks on-device).
         if let hs = houseSum {
             let sink = recordingSink
+            let pulse = tapPulse
             hs.installTap(onBus: 0, bufferSize: 4096, format: hs.outputFormat(forBus: 0)) { buffer, _ in
+                // Liveness mirrors for mixdiag: proves the render graph is actually pulling, and
+                // whether it carries signal. Sparse peak scan — diagnostics, not metering.
+                let now = Date().timeIntervalSinceReferenceDate
+                pulse.lastTapAt = now
+                if let ch = buffer.floatChannelData?[0] {
+                    var peak: Float = 0
+                    let n = Int(buffer.frameLength)
+                    var i = 0
+                    while i < n { peak = max(peak, abs(ch[i])); i += 64 }
+                    if peak > 0.0005 { pulse.lastAudibleAt = now }
+                }
                 sink.write(buffer)
+            }
+        }
+        // Writer death (disk full / provider folder vanished) surfaces here: hop to the main actor
+        // and let the recorder auto-stop + file the partial take (fragments to this point are
+        // durable). One-shot per take (the sink re-arms on the next `begin`).
+        recordingSink.onWriterFailure = { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRecording else { return }
+                self.onRecordingFailed?()
+                if self.isRecording { self.stopRecording() }   // recorder not wired → still stop cleanly
             }
         }
     }
 
     func prepare() { ensureEngine() }
+
+    // TEST SEAMS — dead-engine transport tests (route-change hardening). The system stops the
+    // engine out from under the app on a route/config change; tests reproduce that state here
+    // (the graph stays built, exactly like the real event).
+    func stopEngineForTesting() { engine.stop() }
+    var engineIsRunningForTesting: Bool { engine.isRunning }
+    /// Drive the route/config-change observer path directly (the real observers are wired to the
+    /// shared session / the private engine instance, which tests can't post as).
+    func simulateEngineRecoveryForTesting() { recoverFromEngineStop() }
+    /// Backdate a stall park (as if the tick watchdog stamped it `age` seconds ago).
+    func parkEngineStallForTesting(secondsAgo age: Double) { engineStallAt = Date().addingTimeInterval(-age) }
+    var autoFadeStartedAtForTesting: Date? { autoFadeStartedAt }
+    /// Park a deck's player NODE while leaving the deck's intent playing (the macOS device-switch
+    /// state: engine renders on, node silently stopped).
+    func parkPlayerNodeForTesting(_ deck: Deck) { players[deck]?.pause() }
+    func playerNodeIsPlayingForTesting(_ deck: Deck) -> Bool { players[deck]?.isPlaying ?? false }
 
     func teardown() {
         endAutoLoop()
@@ -597,7 +758,10 @@ final class MixEngine {
         mutate(.b) { $0.loaded = nil; $0.startMs = nil }
         #if os(iOS)
         if let o = interruptionObserver { NotificationCenter.default.removeObserver(o); interruptionObserver = nil }
+        if let o = routeChangeObserver { NotificationCenter.default.removeObserver(o); routeChangeObserver = nil }
+        if let o = mediaResetObserver { NotificationCenter.default.removeObserver(o); mediaResetObserver = nil }
         #endif
+        if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
     }
 
     // MARK: - Loading
@@ -686,18 +850,85 @@ final class MixEngine {
 
     // MARK: - Transport
 
+    /// Start the engine if it isn't running — REPORTING failure instead of swallowing it. Every
+    /// transport path must check this before `AVAudioPlayerNode.play()`/`play(at:)`: play on a
+    /// stopped engine raises an UNCATCHABLE ObjC exception (`_engine->IsRunning()`) — the
+    /// headphones→speaker route-change crash. A failed start means "stay parked": the tick
+    /// watchdog + route/config observers keep retrying and `resumePlayingDecks()` brings the
+    /// audio back the moment the engine can run again.
+    @discardableResult
+    private func startEngineIfNeeded() -> Bool {
+        guard built else { return false }
+        if engine.isRunning { return true }
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+        do { try engine.start() } catch { return false }
+        return engine.isRunning
+    }
+
+    /// Resume every deck the UI still considers playing (single-file or stems) — the shared tail
+    /// of engine recovery (route/config change, interruption end, tick watchdog restart).
+    ///
+    /// RE-PRIME, don't just play: a node that was playing when the system stopped the engine can
+    /// come back from the restart as a ZOMBIE — `isPlaying` true, schedule intact, position
+    /// advancing, rendering pure silence (observed on macOS across the 44.1↔48 kHz output-format
+    /// change of an AirPods switch; a bare `play()` no-ops on it because it already claims to be
+    /// playing). `pause()` then `play()` — exactly the manual workaround — re-primes the render
+    /// state without touching the schedule, so the deck resumes from where it stopped.
+    private func resumePlayingDecks() {
+        for d in Deck.allCases where state(d).isPlaying {
+            if stemActive(d) {
+                ensureStemsScheduled(d)
+                for n in (stemPlayers[d] ?? [:]).values where n.isPlaying { n.pause() }
+                startStems(d)
+            } else if let p = players[d] {
+                if p.isPlaying { p.pause() }
+                p.play()
+            }
+        }
+    }
+
+    /// A macOS output-device switch can leave the ENGINE rendering while the PLAYER nodes were
+    /// silently parked by the reconfigure — the mix looks alive, `houseSum` renders zeros, and an
+    /// open take records dead air with no warning (the content clock keeps advancing). Deck INTENT
+    /// is the truth: re-kick any intent-playing deck whose node isn't actually playing. Safe to
+    /// call every tick — a no-op in every legitimate state (every deliberate pause clears the
+    /// intent first, and seek/restart stop+re-play inside one main-actor turn the tick can't
+    /// interleave). Callers must ensure the engine is RUNNING (play() on a dead engine traps).
+    private func healParkedPlayers() {
+        for d in Deck.allCases where state(d).isPlaying {
+            if stemActive(d) {
+                if let nodes = stemPlayers[d], nodes.values.contains(where: { !$0.isPlaying }) {
+                    dlog("heal: re-kick STEMS deck \(d.rawValue)")
+                    ensureStemsScheduled(d)
+                    startStems(d)
+                }
+            } else if let p = players[d], !p.isPlaying {
+                dlog("heal: re-kick deck \(d.rawValue)")
+                p.play()
+            }
+        }
+    }
+
     func play(_ deck: Deck) {
         guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
+        dlog("ui: play(\(deck.rawValue)) run=\(engine.isRunning ? 1 : 0) node=\((players[deck]?.isPlaying ?? false) ? 1 : 0)")
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
         ensureEngine()
-        if !engine.isRunning { try? engine.start() }
-        if stemActive(deck) { ensureStemsScheduled(deck); startStems(deck) } else { players[deck]?.play() }
+        // Even when the engine can't run RIGHT NOW (mid route change / session in transition) the
+        // deck is still marked playing — that's the INTENT the watchdog restores; only the
+        // uncatchable play()-on-a-dead-engine call is skipped.
+        if startEngineIfNeeded() {
+            if stemActive(deck) { ensureStemsScheduled(deck); startStems(deck) } else { players[deck]?.play() }
+        }
         setPlaying(deck, true)
         refreshTransport()
         startTickIfNeeded()
     }
 
     func pause(_ deck: Deck) {
+        dlog("ui: pause(\(deck.rawValue)) run=\(engine.isRunning ? 1 : 0) node=\((players[deck]?.isPlaying ?? false) ? 1 : 0)")
         // A manual pause during a RUNNING Auto-DJ ends it — but NOT while auto is PAUSED, where you're
         // deliberately hand-mixing and a per-deck pause must behave like a normal manual pause.
         if autoMixing && !autoPaused { endAutoLoop() }
@@ -715,13 +946,16 @@ final class MixEngine {
     func togglePlay(_ deck: Deck) { state(deck).isPlaying ? pause(deck) : play(deck) }
 
     func playBoth() {
+        dlog("ui: playBoth run=\(engine.isRunning ? 1 : 0)")
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
         unfreezeAutoClock()      // master play un-silences everything — unpark any remote-frozen fade
         ensureEngine()
-        if !engine.isRunning { try? engine.start() }
+        let engineUp = startEngineIfNeeded()   // dead engine → decks still marked playing; watchdog resumes
         suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
         for d in Deck.allCases where state(d).loaded != nil {
-            if stemActive(d) { ensureStemsScheduled(d); startStems(d) } else { players[d]?.play() }
+            if engineUp {
+                if stemActive(d) { ensureStemsScheduled(d); startStems(d) } else { players[d]?.play() }
+            }
             setPlaying(d, true)
         }
         refreshTransport()
@@ -729,6 +963,7 @@ final class MixEngine {
     }
 
     func pauseBoth() {
+        dlog("ui: pauseBoth run=\(engine.isRunning ? 1 : 0)")
         masterPausedDecks = Set(Deck.allCases.filter { state($0).isPlaying })   // what the lock-screen ▶ resumes
         if autoMixing && !autoPaused { endAutoLoop() }     // a manual master-Pause during a RUNNING Auto-DJ ends it
         suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
@@ -772,7 +1007,11 @@ final class MixEngine {
             pauseAuto()                      // BEFORE pauseBoth — a running auto-loop would be ended by it
             resumeAutoOnRemotePlay = true    // set-only: never clobber an earlier ⏸'s intent
         }
-        if autoMixing { remotePausedAt = Date() }   // freeze transition timers while the decks are silent
+        if autoMixing {
+            unparkEngineStall()              // fold an in-progress stall into the freeze — the resume
+                                             // shift must not count the overlapping dead time twice
+            remotePausedAt = Date()          // freeze transition timers while the decks are silent
+        }
         pauseBoth()                          // records masterPausedDecks; autoPaused=true keeps the loop
     }
 
@@ -831,8 +1070,8 @@ final class MixEngine {
             segmentStartSeconds[deck] = 0       // rewound to source 0:00
             setPosition(deck, 0)
             if was {
-                if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
-                player.play(); setPlaying(deck, true)           // was already playing → no spurious event
+                if startEngineIfNeeded() { player.play() }   // dead engine → stay scheduled; watchdog resumes
+                setPlaying(deck, true)                        // was already playing → no spurious event
             }
         }
         refreshTransport()
@@ -908,8 +1147,8 @@ final class MixEngine {
             segmentStartSeconds[deck] = clamped   // the new segment begins `clamped` s into the source
             setPosition(deck, clamped)
             if was, count > 0 {
-                if !engine.isRunning { try? engine.start() }   // recover if an interruption stopped the engine
-                player.play(); setPlaying(deck, true)           // was already playing → no spurious event
+                if startEngineIfNeeded() { player.play() }   // dead engine → stay scheduled; watchdog resumes
+                setPlaying(deck, true)                        // was already playing → no spurious event
             }
         }
         refreshTransport()
@@ -924,6 +1163,7 @@ final class MixEngine {
     /// auto-mixes on time (capped by the crossfade lead/length) instead of playing silently past it.
     private func refreshAutoDeckEndIfLive(_ deck: Deck) {
         guard autoMixing, deck == autoLiveDeck, !autoTransitioning else { return }
+        checkpointEngineStall()   // a mid-stall seek's fresh stamp gets only the stall that follows it
         let durMs = autoDeckDurationMs[deck] ?? Self.autoFallbackDurationMs
         let remaining = max(0, Double(durMs) / 1000 - position(deck)) / max(0.05, state(deck).rate)
         autoDeckEndsAt[deck] = Date().addingTimeInterval(remaining)
@@ -1176,6 +1416,8 @@ final class MixEngine {
         guard autoMixing, autoPaused else { return }
         unfreezeAutoClock()              // an IN-APP Resume after a lock-screen ⏸ must also unpark the
                                          // machine's frozen wall clock, or autoFire stays gated forever
+        checkpointEngineStall()          // resuming mid-stall: the fresh end stamps below must only be
+                                         // shifted by the stall time that FOLLOWS them
         autoPaused = false
         resumeAutoOnRemotePlay = false   // ANY resume consumes the remote-restore intent — a later
                                          // deliberate in-app pause must not be resurrected by a stray
@@ -1264,6 +1506,7 @@ final class MixEngine {
         autoResumeEndDeck = nil
         resumeAutoOnRemotePlay = false
         remotePausedAt = nil
+        engineStallAt = nil     // a stale stall park must never shift the NEXT mix's fresh clocks
         autoMixing = false
         autoStatus = nil
         autoSourceLabel = nil
@@ -1294,6 +1537,9 @@ final class MixEngine {
         // them forward by the frozen interval). Without this gate a wall-clock pre-roll/fade would
         // hit p ≥ 1 during the pause and audibly restart playback on a locked, paused phone.
         guard remotePausedAt == nil else { return }
+        // Engine stalled (route change / lost session): the clocks are parked by the tick watchdog
+        // — a transition must not fire into a dead engine (the play()-on-stopped-engine crash).
+        guard engineStallAt == nil else { return }
         let now = Date()
         if let prerollStart = autoPrerollStartedAt {                       // PRE-ROLL (glide)
             let p = min(max(now.timeIntervalSince(prerollStart) / max(0.05, glideInSecondsActive), 0), 1)
@@ -1749,7 +1995,7 @@ final class MixEngine {
             if count > 0 {
                 player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
                                        at: nil, completionHandler: nil)
-                if was { if !engine.isRunning { try? engine.start() }; player.play() }
+                if was, startEngineIfNeeded() { player.play() }   // dead engine → watchdog resumes
             }
         }
         refreshTransport()
@@ -1833,7 +2079,7 @@ final class MixEngine {
 
     /// Start the deck's stem nodes at ONE shared host time → sample-accurate sync.
     private func startStems(_ deck: Deck) {
-        if !engine.isRunning { try? engine.start() }
+        guard startEngineIfNeeded() else { return }   // play(at:) on a dead engine is the same uncatchable trap
         let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.06))
         for n in (stemPlayers[deck] ?? [:]).values { n.play(at: when) }
     }
@@ -2023,7 +2269,14 @@ final class MixEngine {
 
     private func other(_ d: Deck) -> Deck { d == .a ? .b : .a }
 
-    private func refreshTransport() { isRunning = deckA.isPlaying || deckB.isPlaying }
+    private func refreshTransport() {
+        isRunning = deckA.isPlaying || deckB.isPlaying
+        #if os(iOS)
+        // ANY resume (in-app deck ▶, master play, lock-screen ▶/⏭) supersedes an interruption's
+        // park — a later stray .ended must not auto-resume over a subsequent deliberate pause.
+        if isRunning { interruptionParked = false }
+        #endif
+    }
 
     /// Push gains onto the graph. The deck's main VOLUME + equal-power crossfade live downstream on
     /// `mainGains` (see `applyCueRouting`), NOT on the source nodes — so the post-FX CUE tap is
@@ -2214,23 +2467,131 @@ final class MixEngine {
     /// Advance playheads + step the auto-mix; returns false (→ stop ticking) when fully idle.
     private func tickFire() -> Bool {
         let now = Date()
-        let dt = lastTickAt.map { now.timeIntervalSince($0) } ?? 0
+        // Clamp dt: a suspension or a stopped-engine stall must not teleport playheads to
+        // end-of-track (which would fire an instant overdue transition on resume).
+        let dt = min(lastTickAt.map { now.timeIntervalSince($0) } ?? 0, 0.5)
         lastTickAt = now
-        for d in Deck.allCases where state(d).isPlaying {
-            let dur = duration(d)
-            guard dur > 0 else {                 // nothing / zero-length loaded — don't run the playhead forever
-                if !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
-                continue
+        let rendering = built && engine.isRunning
+        if lastRenderingDiag != rendering {
+            dlog("render \(lastRenderingDiag.map(String.init) ?? "nil")→\(rendering)")
+            lastRenderingDiag = rendering
+        }
+        diagHeartbeat(rendering: rendering)
+        if rendering {
+            unparkEngineStall()      // engine came back via any path → shift the parked clocks
+            if engineDownWhileLive { // …and re-prime: zombie nodes survive a bare play()
+                engineDownWhileLive = false
+                dlog("re-prime after engine comeback")
+                resumePlayingDecks()
             }
-            let pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
-            setPosition(d, pos)
-            if pos >= dur, !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
+            healParkedPlayers()      // macOS device switch: engine renders on, player nodes parked
+            for d in Deck.allCases where state(d).isPlaying {
+                let dur = duration(d)
+                guard dur > 0 else {             // nothing / zero-length loaded — don't run the playhead forever
+                    if !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
+                    continue
+                }
+                let pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
+                setPosition(d, pos)
+                if pos >= dur, !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
+            }
+        } else if deckA.isPlaying || deckB.isPlaying || autoMixing {
+            // WATCHDOG: the system stopped the engine (route change / missed interruption-.ended /
+            // config change) while the mix thinks it's live — park the clocks and bring it back
+            // (~1 try/s). Positions deliberately do NOT advance: nothing is rendering, and a
+            // recording's content clock is frozen with the tap. The parked-state policy (a
+            // remote/interruption ⏸ stays silent unless a deck was hand-started) lives in
+            // `recoverFromEngineStop`.
+            engineDownWhileLive = true
+            recoverFromEngineStop()
         }
         refreshTransport()
-        if autoMixing { autoFire() }
+        if autoMixing, rendering { autoFire() }
         let active = deckA.isPlaying || deckB.isPlaying || autoMixing
         if !active { tickTask = nil; return false }
         return true
+    }
+
+    /// One `mixdiag` line per second while anything plays: the full liveness picture — engine
+    /// state vs render-callback age vs signal age vs per-deck intent/node/position — so a silent
+    /// failure in the field shows exactly WHICH layer died (engine stopped / callbacks stopped /
+    /// rendering zeros / node parked).
+    private func diagHeartbeat(rendering: Bool) {
+        let now = Date()
+        guard lastDiagHeartbeat.map({ now.timeIntervalSince($0) >= 1 }) ?? true else { return }
+        lastDiagHeartbeat = now
+        let t = now.timeIntervalSinceReferenceDate
+        let tapAge = tapPulse.lastTapAt == 0 ? -1 : t - tapPulse.lastTapAt
+        let audibleAge = tapPulse.lastAudibleAt == 0 ? -1 : t - tapPulse.lastAudibleAt
+        let outHz = Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)
+        func deck(_ d: Deck) -> String {
+            let intent = state(d).isPlaying ? 1 : 0
+            let node = (players[d]?.isPlaying ?? false) ? 1 : 0
+            return "(\(intent),\(node),\(String(format: "%.1f", position(d))))"
+        }
+        dlog("hb render=\(rendering ? 1 : 0) run=\(engine.isRunning ? 1 : 0)"
+             + " tapAge=\(String(format: "%.2f", tapAge)) sigAge=\(String(format: "%.2f", audibleAge))"
+             + " A=\(deck(.a)) B=\(deck(.b)) out=\(outHz)Hz rec=\(isRecording ? 1 : 0)"
+             + " stall=\(engineStallAt != nil ? 1 : 0) rp=\(remotePausedAt != nil ? 1 : 0) auto=\(autoMixing ? 1 : 0)/\(autoPaused ? 1 : 0)")
+    }
+
+    /// Bring a system-stopped engine back and resume the decks that were playing. Called from the
+    /// route/config-change observers and the tick watchdog; safe to call any time (no-ops when the
+    /// engine is running or nothing wants audio). A failed start stays parked — `engineStallAt`
+    /// freezes the auto-machine clocks so a stall never burns a track's runway, and the tick keeps
+    /// retrying about once a second until the session comes back.
+    private func recoverFromEngineStop() {
+        guard built else { return }
+        // Deliberately parked with SILENT decks (lock-screen ⏸ / interruption .began): restarting
+        // the engine would render real silence at full rate into an open take — only an explicit
+        // resume unparks. But a deck the user HAND-STARTED during the park (autoPaused
+        // hand-mixing) is meant to be audible, so it keeps full recovery.
+        let anyDeckPlaying = deckA.isPlaying || deckB.isPlaying
+        guard remotePausedAt == nil || anyDeckPlaying else {
+            dlog("recover: parked (rp set, decks silent) — no restart")
+            return
+        }
+        // Engine survived (or auto-recovered — macOS does this on some device switches) but the
+        // PLAYER nodes may have been parked by the reconfigure: silence renders into the house
+        // sum (and an open take) while everything claims to be live. Re-kick them.
+        if engine.isRunning { unparkEngineStall(); healParkedPlayers(); return }
+        guard anyDeckPlaying || autoMixing else { return }
+        // While remote-frozen the auto clocks are ALREADY parked — a stall park stacked on top
+        // would shift them twice on resume. Recover the audio without the stall bookkeeping.
+        if remotePausedAt == nil, engineStallAt == nil {
+            engineStallAt = Date()
+            dlog("recover: engine down — stall parked")
+        }
+        if let last = lastEngineRecoveryAttempt, Date().timeIntervalSince(last) < 0.9 { return }
+        lastEngineRecoveryAttempt = Date()
+        let ok = startEngineIfNeeded()
+        dlog("recover: engine.start → \(ok ? "OK" : "FAILED")")
+        guard ok else { return }
+        unparkEngineStall()
+        resumePlayingDecks()             // re-primes (pause+play) — a bare play() no-ops on zombies
+        engineDownWhileLive = false      // re-primed here; the tick needn't do it again
+    }
+
+    /// Shift every armed auto-machine timestamp past the stall (mirrors `unfreezeAutoClock`) so
+    /// the machine resumes where the engine died instead of firing a burst of overdue transitions.
+    private func unparkEngineStall() {
+        guard let stalledAt = engineStallAt else { return }
+        engineStallAt = nil
+        let delta = Date().timeIntervalSince(stalledAt)
+        guard delta > 0 else { return }
+        autoPrerollStartedAt = autoPrerollStartedAt?.addingTimeInterval(delta)
+        autoFadeStartedAt = autoFadeStartedAt?.addingTimeInterval(delta)
+        autoPostrollStartedAt = autoPostrollStartedAt?.addingTimeInterval(delta)
+        for (d, t) in autoDeckEndsAt { autoDeckEndsAt[d] = t.addingTimeInterval(delta) }
+    }
+
+    /// Re-base an in-progress stall: shift the already-armed clocks by the stall-so-far and park
+    /// again from NOW. Call before stamping a fresh auto-machine timestamp mid-stall — the fresh
+    /// stamp must be shifted only by the stall time that FOLLOWS it, not the whole stall.
+    private func checkpointEngineStall() {
+        guard engineStallAt != nil else { return }
+        unparkEngineStall()
+        engineStallAt = Date()
     }
 
     /// The DynamicsProcessor (compressor) component description — Apple's built-in AU.
@@ -2255,10 +2616,18 @@ final class MixEngine {
         } catch { /* non-fatal */ }
     }
 
-    /// Recover from an audio-session interruption (phone call / Siri / route loss). The system stops
-    /// the engine and does NOT auto-restart it — so on `.ended` we reactivate, restart the engine, and
-    /// resume whichever decks the UI still considers playing (otherwise the Mix tab goes silently dead
-    /// and seek/transport produce no audio). Mirrors `PlayerEngine.configureInterruptionObserver`.
+    /// Recover from an audio-session interruption (phone call / Siri / route loss).
+    ///
+    /// `.began`: the system already stopped the engine — SUSPEND the mix exactly like a lock-screen
+    /// ⏸ (`remotePause`: park the auto-machine clocks, remember the playing decks, silence). Without
+    /// this the wall-clock machine keeps arming and drives a transition into the dead engine — the
+    /// uncatchable play()-on-stopped-engine crash — and a recording keeps "running" over dead air.
+    ///
+    /// `.ended`: resume what the ⏸ recorded when iOS says `.shouldResume` (`remotePlay` restarts the
+    /// engine via the guarded path and un-parks the clocks). When iOS says DON'T auto-resume, stay
+    /// parked with the engine stopped: restarting it with silent decks would append real silence at
+    /// full rate into an open take. Lock-screen ▶ / in-app play resumes manually — and Apple
+    /// documents `.ended` itself is not guaranteed, which is why the tick watchdog exists.
     private func registerInterruptionHandling() {
         guard interruptionObserver == nil else { return }
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -2268,18 +2637,107 @@ final class MixEngine {
                 guard let self, self.built,
                       let info = note.userInfo,
                       let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
-                      AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
-                let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
-                    .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
-                try? AVAudioSession.sharedInstance().setActive(true)
-                if !self.engine.isRunning { try? self.engine.start() }
-                if shouldResume {
-                    for d in Deck.allCases where self.state(d).isPlaying { self.players[d]?.play() }
+                      let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+                switch type {
+                case .began:
+                    // LATCH (never assign): a duplicate .began delivered over the already-parked
+                    // mix (Bluetooth/CarPlay re-sends) must not erase the pairing record.
+                    if self.isRunning { self.interruptionParked = true }
+                    self.remotePause()
+                case .ended:
+                    let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
+                        .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
+                    guard shouldResume else { return }   // stay parked — no silence into an open take
+                    // Resume ONLY what .began itself silenced, and only while it is still parked:
+                    // an unconditional remotePlay would replay a stale in-app pause memory or start
+                    // a loaded-but-never-played deck via the now-playing fallback.
+                    guard self.interruptionParked, !self.isRunning else { return }
+                    self.interruptionParked = false
+                    self.remotePlay()
+                @unknown default:
+                    break
                 }
             }
         }
     }
+
+    /// A route CHANGE (headphones ⇄ speaker ⇄ Bluetooth) can stop the engine WITHOUT any
+    /// interruption — the reported crash scenario. Recover immediately instead of waiting for the
+    /// tick watchdog, so an active recording misses as little as possible. `recoverFromEngineStop`
+    /// no-ops when the engine kept running (same-format route swaps).
+    private func registerRouteChangeHandling() {
+        guard routeChangeObserver == nil else { return }
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recoverFromEngineStop() }
+        }
+    }
+
+    /// mediaserverd crashed: every engine/node/tap in this process is orphaned and must be
+    /// RECREATED (Apple's contract for `mediaServicesWereReset`) — without this, `built` stays true
+    /// forever, the graph is dead for the life of the process, and an active capture freezes with
+    /// `isRecording` stuck on.
+    private func registerMediaResetHandling() {
+        guard mediaResetObserver == nil else { return }
+        mediaResetObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rebuildAfterMediaReset() }
+        }
+    }
+
+    /// Rebuild the whole graph after a media-services reset. File any in-flight take FIRST (the
+    /// writer is not CoreAudio-backed and can still finalize its fragments), then recreate the
+    /// engine + every node. Decks come back loaded-but-paused at their positions — restarting
+    /// playback after a daemon crash is the user's call; what matters is the capture files cleanly
+    /// and the Mix tab isn't dead until relaunch.
+    private func rebuildAfterMediaReset() {
+        guard built else { return }
+        onRecordingFailed?()                   // recorder auto-stops + files the partial take
+        if isRecording { stopRecording() }     // recorder not wired (tests) → still finalize + drop scope
+        endAutoLoop()
+        pauseBoth()
+        tickTask?.cancel(); tickTask = nil
+        unwireStems(.a); unwireStems(.b)
+        if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
+        engine.stop()
+        engine = AVAudioEngine()               // the orphaned graph is unusable — recreate everything
+        built = false
+        engineStallAt = nil
+        ensureEngine()                         // fresh graph + tap; re-pushes the UI's rates/effects/gains
+        // Re-open + re-schedule each deck's file at its position, paused. The old `AVAudioFile`
+        // objects are orphaned with the daemon — reopen from the stored path.
+        for d in Deck.allCases {
+            guard let path = paths[d], files[d] != nil else { continue }
+            if let f = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) { files[d] = f }
+            seek(d, toSeconds: position(d))
+        }
+    }
     #endif
+
+    /// The system stopped + uninitialized the engine because its I/O configuration changed — the
+    /// headphones→speaker sample-rate flip of the reported crash. Restart and resume: the graph's
+    /// internal connections are all pinned at the canonical format (the output node re-negotiates
+    /// the hardware rate on start), so no re-wiring is needed — the whole failure mode was that
+    /// NOBODY restarted the engine while the wall-clock machine kept driving into it.
+    private func registerConfigChangeHandling() {
+        if let o = configChangeObserver { NotificationCenter.default.removeObserver(o) }
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dlog("CONFIG CHANGE: run=\(self.engine.isRunning ? 1 : 0)"
+                          + " nodeA=\((self.players[.a]?.isPlaying ?? false) ? 1 : 0)"
+                          + " nodeB=\((self.players[.b]?.isPlaying ?? false) ? 1 : 0)"
+                          + " out=\(Int(self.engine.outputNode.outputFormat(forBus: 0).sampleRate))Hz")
+                // A config change means the engine WAS stopped/reconfigured — even if it (or the
+                // watchdog) already restarted it between ticks, playing nodes may be zombies.
+                self.engineDownWhileLive = true
+                self.recoverFromEngineStop()
+            }
+        }
+    }
 }
 
 // MARK: - Recording tap sink
@@ -2294,14 +2752,35 @@ final class MixEngine {
 /// `@unchecked Sendable`: the writer state is touched ONLY on `queue`; `isCapturing` is a plain aligned
 /// `Bool` (realtime tap reads it, main writes it) where the only race — a start/stop landing between
 /// two buffers — drops at most one buffer, which is harmless.
-private final class MixTapSink: @unchecked Sendable {
+final class MixTapSink: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.pocketdj.mix.recording")
     // Queue-confined writer state:
     private var writer: AVAssetWriter?
     private var input: AVAssetWriterInput?
     private var started = false
+    /// The writer failed PERMANENTLY (startWriting refused / status left `.writing`). Latched for
+    /// the take: `startWriting` must NEVER be retried on a failed writer — the second call raises
+    /// an uncatchable `NSInternalInconsistencyException` one tap-buffer (~93 ms) later.
+    private var failed = false
+    private var reportedFailure = false
     private var nextPTS: CMTime = .zero
     private var isCapturing = false         // realtime-readable
+
+    /// One-shot (per take) permanent-failure callback — fired ON THE SINK QUEUE with
+    /// `writer.error`. The engine hops it to the main actor.
+    var onWriterFailure: ((Error?) -> Void)?
+
+    /// Media seconds appended to the current take — the CONTENT clock, readable from any thread
+    /// (the recorder's duration metadata + liveness watchdog read it from the main actor).
+    private let appendedLock = NSLock()
+    private var appendedSecondsValue: Double = 0
+    var appendedSeconds: Double {
+        appendedLock.lock(); defer { appendedLock.unlock() }
+        return appendedSecondsValue
+    }
+    private func setAppendedSeconds(_ v: Double) {
+        appendedLock.lock(); appendedSecondsValue = v; appendedLock.unlock()
+    }
 
     /// Begin a fragmented-AAC capture at `url`. Returns false if the writer can't be created.
     func begin(url: URL, sampleRate: Double, channels: AVAudioChannelCount) -> Bool {
@@ -2318,42 +2797,71 @@ private final class MixTapSink: @unchecked Sendable {
         inp.expectsMediaDataInRealTime = true
         guard w.canAdd(inp) else { return false }
         w.add(inp)
-        queue.async { self.writer = w; self.input = inp; self.started = false; self.nextPTS = .zero }
+        queue.async {
+            self.writer = w; self.input = inp; self.started = false
+            self.failed = false; self.reportedFailure = false
+            self.nextPTS = .zero
+            // Zero the mirror ON THE QUEUE: a previous take's final append can still be pending
+            // ahead of us and would overwrite a caller-thread reset with the OLD take's total.
+            self.setAppendedSeconds(0)
+        }
         isCapturing = true
         return true
     }
 
     /// Stop capturing immediately, then finalize (fragments already make it playable pre-finish).
-    func end() {
+    /// `completion` fires (on the sink queue) once the finalize has COMPLETED — the caller holds
+    /// the session folder's security scope open until then.
+    func end(_ completion: (() -> Void)? = nil) {
         isCapturing = false
         queue.async {
-            guard let w = self.writer, let inp = self.input else { self.reset(); return }
+            guard let w = self.writer, let inp = self.input else { self.reset(); completion?(); return }
             self.reset()
             if w.status == .writing {
                 inp.markAsFinished()
-                w.finishWriting { [w] in _ = w }   // capture `w` so it lives until finalize COMPLETES
+                w.finishWriting { [w] in _ = w; completion?() }   // `w` lives until finalize COMPLETES
+            } else {
+                completion?()   // failed/never-started writer: `finishWriting` would throw — the
+                                // flushed fragments (if any) are durable without it
             }
         }
     }
 
-    private func reset() { writer = nil; input = nil; started = false; nextPTS = .zero }
+    private func reset() {
+        writer = nil; input = nil; started = false; nextPTS = .zero
+        failed = false; reportedFailure = false
+    }
+
+    /// Queue-confined: latch the take as dead and surface it ONCE. Every later buffer is a cheap
+    /// no-op — the alternative (silently dropping forever while the UI pulses "recording") was the
+    /// unbounded-loss hole.
+    private func fail(_ w: AVAssetWriter?) {
+        failed = true
+        guard !reportedFailure else { return }
+        reportedFailure = true
+        onWriterFailure?(w?.error)
+    }
 
     /// Realtime tap entry (fires continuously): while capturing, copy the transient buffer + enqueue
     /// the encode/append off the realtime thread. Otherwise an immediate return (one flag check).
     func write(_ buffer: AVAudioPCMBuffer) {
         guard isCapturing, let copy = buffer.deepCopy() else { return }
         queue.async {
-            guard let w = self.writer, let inp = self.input else { return }
+            guard let w = self.writer, let inp = self.input, !self.failed else { return }
             if !self.started {                                // lazily start on the first buffer
-                guard w.startWriting() else { return }
+                guard w.startWriting() else { self.fail(w); return }   // NEVER retried — see `failed`
                 w.startSession(atSourceTime: .zero)
                 self.started = true; self.nextPTS = .zero
             }
-            guard w.status == .writing, inp.isReadyForMoreMediaData,
-                  let sb = Self.sampleBuffer(from: copy, pts: self.nextPTS) else { return }
+            guard w.status == .writing else { self.fail(w); return }   // writer died mid-take → surface it
+            guard inp.isReadyForMoreMediaData,
+                  let sb = Self.sampleBuffer(from: copy, pts: self.nextPTS) else { return }   // transient: drop one buffer
             if inp.append(sb) {
                 self.nextPTS = CMTimeAdd(self.nextPTS,
                     CMTime(value: CMTimeValue(copy.frameLength), timescale: CMTimeScale(copy.format.sampleRate)))
+                self.setAppendedSeconds(CMTimeGetSeconds(self.nextPTS))
+            } else if w.status != .writing {
+                self.fail(w)                                   // append refused because the writer failed
             }
         }
     }

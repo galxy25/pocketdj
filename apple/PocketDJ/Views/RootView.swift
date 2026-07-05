@@ -14,6 +14,7 @@ struct RootView: View {
     @Environment(BurnStore.self) private var burns
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(MixEngine.self) private var mix
+    @Environment(MixRecorder.self) private var mixRecorder
     @Environment(IntentServices.self) private var intents
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     // Launch default: macOS lands on the MIX tab; iOS lands on the HOME menu (nil —
@@ -105,6 +106,10 @@ struct RootView: View {
             Task { await SearchService.ensureConfigLoaded() }  // pre-warm online-search host from search-config.json
             // Prune any burned files iOS purged while the app was gone.
             burns.reconcileOnLaunch()
+            // Re-file any crash-orphaned recording AT LAUNCH — a crashed take must reappear no
+            // matter which tab the app restores into (waiting for a Mix-tab visit left it
+            // invisible everywhere while the Storage sweep could still delete it).
+            mixRecorder.recoverOrphans()
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.

@@ -322,6 +322,11 @@ struct StorageView: View {
             .confirmationDialog("Delete all session recordings?",
                                 isPresented: $confirmingDeleteRecordings, titleVisibility: .visible) {
                 Button("Delete recordings", role: .destructive) {
+                    // File any still-unrecovered crash orphan FIRST: the sweep also removes stray
+                    // `.m4a`s by design, and a take the user has never SEEN (crash before this
+                    // launch's recovery reached its root) must not be silently destroyed by a
+                    // delete aimed at old takes.
+                    mixRecorder.recoverOrphans()
                     let active = mixRecorder.activeTake
                     mixSessions.deleteAllRecordings(bookmark: settings.sessionFolderBookmark,
                                                     skippingSessionId: active?.sessionId,
