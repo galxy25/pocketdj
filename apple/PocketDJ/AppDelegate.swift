@@ -6,6 +6,19 @@ import BackgroundTasks
 import AppKit
 #endif
 
+/// A tiny main-actor bridge (the `RipReconcileBridge` pattern) so the app/scene delegates — which
+/// hold no store references — can finalize an in-flight mix recording on an ORDERLY exit (macOS
+/// Cmd-Q, iOS willTerminate). The app sets `finalize` at launch to `{ mixRecorder.stop() }`: stop
+/// files the take's metadata synchronously, so even if the process dies before the async
+/// `finishWriting` completes, the flushed fragments + filed metadata make the take playable — no
+/// orphan-recovery pass needed. (No exit hook runs on a CRASH; that path is covered by fragments +
+/// launch-time orphan recovery.)
+@MainActor
+final class RecordingExitBridge {
+    static let shared = RecordingExitBridge()
+    var finalize: (() -> Void)?
+}
+
 #if os(iOS)
 /// iOS app delegate — the home for the two things SwiftUI can't express:
 ///   • `application(_:handleEventsForBackgroundURLSession:completionHandler:)`, which the
@@ -37,6 +50,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         guard identifier == TransferCoordinator.sessionIdentifier else { completionHandler(); return }
         TransferCoordinator.shared.activate()
         TransferCoordinator.shared.backgroundCompletionHandler = completionHandler
+    }
+
+    /// Best-effort: an orderly termination (rare on iOS — most exits are suspend/jetsam, and no
+    /// hook runs on a crash) files an in-flight take instead of leaving a crash orphan.
+    func applicationWillTerminate(_ application: UIApplication) {
+        MainActor.assumeIsolated { RecordingExitBridge.shared.finalize?() }
     }
 
     // MARK: BGTaskScheduler
@@ -153,6 +172,13 @@ final class RipReconcileBridge {
 final class MacAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         TransferCoordinator.shared.activate()
+    }
+
+    /// Cmd-Q mid-recording: file the take's metadata + kick off finalize BEFORE the process goes
+    /// down. Cheap and reliable on macOS (unlike iOS, quits here are orderly by default).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated { RecordingExitBridge.shared.finalize?() }
+        return .terminateNow
     }
 }
 #endif

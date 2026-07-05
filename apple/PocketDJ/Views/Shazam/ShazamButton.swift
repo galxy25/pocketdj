@@ -7,6 +7,10 @@ import SwiftUI
 /// `ShazamRecognizer` — zero coupling to native playback / streaming.
 struct ShazamButton: View {
     @Environment(AppModel.self) private var app
+    /// Recognition is GATED while a mix recording is active: `SHManagedSession`'s microphone
+    /// capture flips the shared audio session's category, which stops the engine mid-take (a
+    /// self-inflicted route-change) — and nothing restores the `.playback` configuration after.
+    @Environment(MixRecorder.self) private var mixRecorder
 
     /// Owned recognizer; rebuilt nowhere — it reads `app.songs` lazily at match time
     /// via the autoclosure, so a later catalog load is still seen.
@@ -21,8 +25,12 @@ struct ShazamButton: View {
             label
         }
         .buttonStyle(.plain)
+        .disabled(mixRecorder.isRecording)
+        .opacity(mixRecorder.isRecording ? 0.4 : 1)
+        .help(mixRecorder.isRecording ? "Song identification is off while recording a mix"
+                                      : "Identify the song playing")
         .accessibilityLabel("Identify the song playing")
-        .accessibilityValue(accessibilityValue)
+        .accessibilityValue(mixRecorder.isRecording ? "Unavailable while recording" : accessibilityValue)
         .onChange(of: phase) { _, new in
             if case .matched(let m) = new { presentedMatch = PresentedMatch(match: m) }
         }

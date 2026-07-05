@@ -188,6 +188,13 @@ struct MixSessionDetailView: View {
             events = store.events(forSession: sessionId).filter { !$0.kind.isUnknown }
         }
         .onDisappear { pause(); recPlayer.stop() }
+        .alert("Can't play recording",
+               isPresented: Binding(get: { recPlayer.lastError != nil },
+                                    set: { if !$0 { recPlayer.lastError = nil } })) {
+            Button("OK", role: .cancel) { recPlayer.lastError = nil }
+        } message: {
+            Text(recPlayer.lastError ?? "")
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { exportCSV() } label: { Label("Export tracklist (CSV)", systemImage: "tablecells") }
@@ -467,6 +474,9 @@ struct MixSessionDetailView: View {
     private(set) var playingId: String?
     /// The playing take's length (seconds), for the scrub slider's range. 0 when stopped.
     private(set) var duration: Double = 0
+    /// Why the last play attempt failed (nil ⇒ none) — the detail view surfaces it as an alert
+    /// instead of the old silent no-op on a damaged/unresolvable take.
+    var lastError: String?
 
     override init() { super.init() }
 
@@ -486,13 +496,19 @@ struct MixSessionDetailView: View {
         stop()
         guard let resolved = SessionFolders.recordingURL(sessionId: sessionId, fileName: rec.fileName,
                                                          wasUserFolder: rec.wasUserFolder, bookmark: bookmark)
-        else { return }
+        else {
+            lastError = "The audio file for this take couldn't be found — it may live in a session "
+                + "folder that isn't available right now."
+            return
+        }
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
         guard let p = try? AVAudioPlayer(contentsOf: resolved.url) else {
             resolved.release?()
+            lastError = "This take can't be played — the file is damaged (most likely a recording "
+                + "cut off before its first save)."
             return
         }
         release = resolved.release

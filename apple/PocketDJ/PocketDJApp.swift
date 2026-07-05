@@ -137,9 +137,12 @@ struct PocketDJApp: App {
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
         // App-scoped audio recorder: captures the mix's house output into the current session's
-        // folder. Shares the app's `mix` (audio tap) + `mixSessions` (metadata); its session-folder
-        // `settings` are pushed in from the Mix tab.
-        _mixRecorder = State(initialValue: MixRecorder(engine: mix, sessions: mixSessions))
+        // folder. Shares the app's `mix` (audio tap) + `mixSessions` (metadata). Its session-folder
+        // `settings` are wired HERE (not only from the Mix tab) so launch-time crash-orphan
+        // recovery (RootView's task) can scan the user-picked folder too.
+        let mixRecorder = MixRecorder(engine: mix, sessions: mixSessions)
+        mixRecorder.settings = settings
+        _mixRecorder = State(initialValue: mixRecorder)
         let playStats = PlayStatsStore(fileURL: PlayStatsStore.launchURL())
         _playStats = State(initialValue: playStats)
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
@@ -189,6 +192,15 @@ struct PocketDJApp: App {
         // Let the daily storage-prune BGTask reach the live prune engine (gate included).
         StoragePruneBridge.shared.prune = { [weak storage] in storage?.pruneIfDue() }
         #endif
+        // Orderly exits (macOS Cmd-Q / iOS willTerminate) finalize + FILE an in-flight take —
+        // without this every quit-mid-recording relied on next-launch orphan recovery.
+        RecordingExitBridge.shared.finalize = { [weak mixRecorder] in mixRecorder?.stop() }
+        // A stale-but-resolvable session-folder bookmark mints fresh data mid-resolve; persist it
+        // back so it keeps resolving next launch (a stale bookmark eventually stops working —
+        // which silently orphans every user-folder recording).
+        SessionFolders.onStaleBookmark = { [weak settings] data in
+            Task { @MainActor in settings?.sessionFolderBookmark = data }
+        }
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
         // One bridge instance carries the live stores to intents + entity queries.
