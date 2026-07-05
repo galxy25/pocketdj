@@ -1612,8 +1612,20 @@ Finder / the Files app.
 **It's written to survive a crash.** The take isn't held in memory and flushed at the end — it's
 **streamed to disk continuously** (fragmented AAC), so if the app is killed, runs out of disk, or the
 phone dies mid-set, **whatever played up to that moment is already a playable file**. On the next
-launch the app **re-files any interrupted take** back onto its session automatically, so a crash never
-loses the recording.
+launch the app **re-files any interrupted take** back onto its session automatically — from whichever
+screen you open, and even a take that was mid-capture when you **quit the app** is filed on the way
+out — so a crash never loses the recording.
+
+**And it survives everything short of a crash, too.** Yank the headphones, switch to the speaker, hop
+between Bluetooth devices mid-set — the audio engine the system kills comes **back by itself**, the mix
+picks up where it stopped, and the take keeps rolling (dead air is never silently written into it). A
+**phone call** pauses the whole performance exactly like the lock-screen ⏸ — and when the call ends,
+only what the call paused resumes; a mix you'd already paused yourself stays paused. If capture ever
+*does* stop making progress while music is audibly playing, the recording strip turns **amber —
+"Recording — no audio"** — so you find out mid-set, not at playback. And if the file itself can't keep
+writing (disk full, your session folder vanished), the recording **stops itself, keeps everything
+captured so far, and tells you why** instead of pulsing over a dead take. While recording, the Shazam
+button sits out — its microphone listener would fight the capture for the audio session.
 
 Every take shows up back on the **Sessions** screen (the same place that replays the *actions* of a
 mix): open a session and each recording gets a **▶ / ⏹ play control** **and a scrub bar** — so you can

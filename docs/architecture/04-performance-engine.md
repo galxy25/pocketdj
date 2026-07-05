@@ -846,9 +846,43 @@ of ticks (see §7.8 for how that node renders + the [sessions spec](../design/mi
 
  MODEL: MixSession.recordings: [MixRecording]?  (OPTIONAL — schema v2, a v1 doc decodes unchanged)
         MixRecording{ id, fileName, startedAt, durationMs, wasUserFolder }
- UI: MixView RecordButton (toolbar, pulsing purple→red) + in-content "● Recording m:ss"; MixSessionsView
-     recordingsPanel = per-take ▶/⏹ + RecordingScrubBar (seek). RecordingAudioPlayer (AVAudioPlayerDelegate:
-     auto-reset on finish, no poll loop) resolves via SessionFolders + holds the scope.
+ UI: MixView RecordButton (toolbar, pulsing purple→red) + in-content "● Recording m:ss" (amber
+     "Recording — no audio" while captureStalled); MixSessionsView recordingsPanel = per-take ▶/⏹ +
+     RecordingScrubBar (seek). RecordingAudioPlayer (AVAudioPlayerDelegate: auto-reset on finish, no
+     poll loop) resolves via SessionFolders + holds the scope; playback failure surfaces via lastError.
+     ShazamButton is DISABLED while isRecording (its mic session would fight the capture's).
+
+ FAILURE HANDLING (the bulletproofing layer — every way the take or the engine can die, closed):
+   ENGINE DEATH (route change / config change / interruption): the system stops AVAudioEngine out from
+     under the app; driving AVAudioPlayerNode.play() into it is an UNCATCHABLE ObjC exception. Every
+     play-after-start site goes through startEngineIfNeeded() -> Bool; observers for
+     .AVAudioEngineConfigurationChange (re-registered PER engine instance) + routeChangeNotification (iOS)
+     call recoverFromEngineStop(), and the ~10 Hz tick doubles as a WATCHDOG (retries ~1/s).
+   CLOCK PARKING: engineStallAt freezes the auto-machine clocks while the engine is down (mirrors
+     remotePausedAt); unparkEngineStall() shifts them by the stall on recovery; checkpointEngineStall()
+     re-bases before a mid-stall re-stamp (seek, resumeAuto); remotePause() FOLDS an in-progress stall
+     into the freeze — an overlap is never counted twice.
+   PARK POLICY: a deliberate park (lock-screen ⏸ / interruption .began -> remotePause) stays SILENT —
+     restarting the engine there would append dead air into the open take — EXCEPT a deck the user
+     hand-started during the park (autoPaused hand-mixing), which keeps full recovery. Interruption
+     .ended resumes ONLY what .began parked (interruptionParked latch; any resume clears it) and honors
+     shouldResume=false by staying parked. mediaServicesWereReset -> rebuildAfterMediaReset(): file the
+     in-flight take FIRST, then recreate the engine + graph (decks come back loaded-but-paused).
+   WRITER DEATH (disk full / folder vanished): MixTapSink latches `failed` (startWriting is NEVER retried —
+     the second call raises ~93 ms later) and fires one-shot onWriterFailure -> MixRecorder auto-stops,
+     FILES the partial take (fragments are durable), and MixView explains via writerFailureMessage.
+     stopRecording defers the security-scope release until finishWriting COMPLETES.
+   LIVENESS: appendedSeconds = the take's CONTENT clock (NSLock mirror of the sink's nextPTS, zeroed ON
+     the sink queue); MixRecorder's 2 s watchdog flips captureStalled when media freezes >=5 s while the
+     mix is audible; stop() files durationMs from the content clock (wall clock only as fallback).
+   ORPHANS: recoverOrphans() runs at LAUNCH (RootView.task — any tab), per-ROOT scan latches retry an
+     unresolvable user root, unreadable stubs are skipped (no phantom 0:00 rows), and the ACTIVE take is
+     never adopted (root-aware identity — the same name can exist in both roots). The Storage sweep runs
+     recovery FIRST so an unseen crash take becomes visible before anything destructive.
+   EXIT + BOOKMARKS: RecordingExitBridge (macOS applicationShouldTerminate / iOS willTerminate) ->
+     mixRecorder.stop() + mixSessions.flush() (the store's async actor save loses the race with exit).
+     SessionFolders.onStaleBookmark re-mints a stale-but-resolving bookmark INSIDE the live scope and
+     persists it immediately (settings.persist()).
 ```
 
 **Reading it.** Recording taps the **clean-house sum** (`houseSum`, §7.10) — *not* the final output — so
@@ -872,6 +906,28 @@ needed — idempotently, so relaunching never duplicates a take. Back on the **S
 gets a **▶/⏹ control and a scrub bar** (`RecordingScrubBar`; `RecordingAudioPlayer` uses
 `AVAudioPlayerDelegate` to auto-reset at end-of-file, replacing an earlier poll loop that could stop
 playback on a transient state flip), so a session now replays both its **actions** (§7.8) and its **audio**.
+
+**Bulletproofing it.** The fragmented writer only guarantees the *file*; the FAILURE-HANDLING block above
+is what guarantees the *take*. The founding bug: unplugging headphones mid-recorded-Auto-Mix **stopped the
+engine out from under the app**, nothing observed it, and the wall-clock auto-DJ machine drove
+`AVAudioPlayerNode.play()` into the dead engine — an **uncatchable** ObjC exception, while the capture had
+already frozen silently. The fix is layered. Every transport path now goes through a **guarded
+`startEngineIfNeeded()`**; **route/config-change observers** plus a **tick watchdog** restart a
+system-stopped engine (~1 try/s), while **`engineStallAt` parks the auto-machine clocks** so a stall never
+burns a track's runway — with careful bookkeeping (`remotePause` *folds* an in-progress stall into its
+freeze; `checkpointEngineStall` re-bases mid-stall re-stamps) so overlapping parks never double-shift a
+transition. A **deliberate** park (lock-screen ⏸, phone call) deliberately stays silent — restarting the
+engine there would append **dead air into the open take** — except for a deck the user **hand-started**
+during the park, which keeps full recovery; the interruption pairing (`interruptionParked`) makes `.ended`
+resume **only what `.began` parked**. Independently of the engine, the **writer** can die (disk full,
+folder vanished): the sink **latches the failure** (a retried `startWriting` traps ~93 ms later), fires a
+one-shot callback, and the recorder **auto-stops and files the partial take** with an alert — while a
+**content clock** (`appendedSeconds`) + a 2 s **liveness watchdog** turn any silent capture freeze into a
+visible amber **"Recording — no audio"** instead of a dead take behind a pulsing record button. Orderly
+exits file the take **and synchronously flush** the session store (`RecordingExitBridge`), and the orphan
+scan is hardened to run at launch from **any** tab, retry a user root that failed to resolve, skip
+unreadable stubs, and never adopt the **in-flight** take (root-aware, so a same-named crash orphan in the
+*other* root is still recovered).
 
 ## Next
 
