@@ -193,6 +193,33 @@ final class RecordingBulletproofTests: XCTestCase {
         e.teardown()
     }
 
+    /// The macOS device-switch variant: the ENGINE keeps rendering but the reconfigure parks the
+    /// PLAYER nodes — silence renders into the house sum (and an open take) while the deck claims
+    /// to be playing. The tick (and the route/config recovery path) must re-kick parked nodes.
+    func testTickHealsParkedPlayerWhileEngineRuns() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 6)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x"), on: .a)
+        e.play(.a)
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a))
+
+        e.parkPlayerNodeForTesting(.a)                 // the device switch parks the node…
+        XCTAssertFalse(e.playerNodeIsPlayingForTesting(.a))
+        XCTAssertTrue(e.isPlaying(.a), "…while the deck's intent stays playing")
+        try await Task.sleep(nanoseconds: 400_000_000) // a couple of ticks
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a),
+                      "the tick must re-kick a parked player node while the engine renders")
+
+        e.parkPlayerNodeForTesting(.a)                 // and the observer path heals it too
+        e.simulateEngineRecoveryForTesting()
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a),
+                      "route/config recovery must re-kick parked nodes when the engine survived")
+        e.teardown()
+    }
+
     /// A stall park overlapping a remote park must shift the auto-machine clocks ONCE (the
     /// stall-so-far folds into the freeze at ⏸) — a double shift lands transitions late by the
     /// pause length: recorded dead air past the live track's end / a pinned crossfader.

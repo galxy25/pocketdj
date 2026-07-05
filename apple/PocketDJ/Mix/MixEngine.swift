@@ -635,6 +635,10 @@ final class MixEngine {
     /// Backdate a stall park (as if the tick watchdog stamped it `age` seconds ago).
     func parkEngineStallForTesting(secondsAgo age: Double) { engineStallAt = Date().addingTimeInterval(-age) }
     var autoFadeStartedAtForTesting: Date? { autoFadeStartedAt }
+    /// Park a deck's player NODE while leaving the deck's intent playing (the macOS device-switch
+    /// state: engine renders on, node silently stopped).
+    func parkPlayerNodeForTesting(_ deck: Deck) { players[deck]?.pause() }
+    func playerNodeIsPlayingForTesting(_ deck: Deck) -> Bool { players[deck]?.isPlaying ?? false }
 
     func teardown() {
         endAutoLoop()
@@ -765,6 +769,26 @@ final class MixEngine {
     private func resumePlayingDecks() {
         for d in Deck.allCases where state(d).isPlaying {
             if stemActive(d) { ensureStemsScheduled(d); startStems(d) } else { players[d]?.play() }
+        }
+    }
+
+    /// A macOS output-device switch can leave the ENGINE rendering while the PLAYER nodes were
+    /// silently parked by the reconfigure — the mix looks alive, `houseSum` renders zeros, and an
+    /// open take records dead air with no warning (the content clock keeps advancing). Deck INTENT
+    /// is the truth: re-kick any intent-playing deck whose node isn't actually playing. Safe to
+    /// call every tick — a no-op in every legitimate state (every deliberate pause clears the
+    /// intent first, and seek/restart stop+re-play inside one main-actor turn the tick can't
+    /// interleave). Callers must ensure the engine is RUNNING (play() on a dead engine traps).
+    private func healParkedPlayers() {
+        for d in Deck.allCases where state(d).isPlaying {
+            if stemActive(d) {
+                if let nodes = stemPlayers[d], nodes.values.contains(where: { !$0.isPlaying }) {
+                    ensureStemsScheduled(d)
+                    startStems(d)
+                }
+            } else if let p = players[d], !p.isPlaying {
+                p.play()
+            }
         }
     }
 
@@ -2327,6 +2351,7 @@ final class MixEngine {
         let rendering = built && engine.isRunning
         if rendering {
             unparkEngineStall()      // engine came back via any path → shift the parked clocks
+            healParkedPlayers()      // macOS device switch: engine renders on, player nodes parked
             for d in Deck.allCases where state(d).isPlaying {
                 let dur = duration(d)
                 guard dur > 0 else {             // nothing / zero-length loaded — don't run the playhead forever
@@ -2366,7 +2391,10 @@ final class MixEngine {
         // hand-mixing) is meant to be audible, so it keeps full recovery.
         let anyDeckPlaying = deckA.isPlaying || deckB.isPlaying
         guard remotePausedAt == nil || anyDeckPlaying else { return }
-        if engine.isRunning { unparkEngineStall(); return }
+        // Engine survived (or auto-recovered — macOS does this on some device switches) but the
+        // PLAYER nodes may have been parked by the reconfigure: silence renders into the house
+        // sum (and an open take) while everything claims to be live. Re-kick them.
+        if engine.isRunning { unparkEngineStall(); healParkedPlayers(); return }
         guard anyDeckPlaying || autoMixing else { return }
         // While remote-frozen the auto clocks are ALREADY parked — a stall park stacked on top
         // would shift them twice on resume. Recover the audio without the stall bookkeeping.
