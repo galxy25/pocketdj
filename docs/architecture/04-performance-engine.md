@@ -883,6 +883,18 @@ of ticks (see §7.8 for how that node renders + the [sessions spec](../design/mi
      mixRecorder.stop() + mixSessions.flush() (the store's async actor save loses the race with exit).
      SessionFolders.onStaleBookmark re-mints a stale-but-resolving bookmark INSIDE the live scope and
      persists it immediately (settings.persist()).
+   ZOMBIE NODES (the macOS AirPods case, root-caused from a field debug session): an engine stop
+     across an output-format change (44.1↔48 kHz) brings AVAudioPlayerNodes back `isPlaying`=true,
+     schedule intact, position advancing — RENDERING SILENCE; a bare play() no-ops on them.
+     resumePlayingDecks() therefore RE-PRIMES (pause() then play(); stems pause + synced re-start),
+     and an `engineDownWhileLive` latch re-primes on the next rendering tick after ANY engine-down
+     window (the config-change observer sets it too — an auto-restart between ticks still reconfigured).
+   DIAGNOSTICS (Settings ▸ Debug): MixEngine emits a `mixdiag` os_log stream — a 1 Hz heartbeat
+     (engine running vs render-callback age vs SIGNAL age via the MixTapPulse tap mirrors, per-deck
+     intent/node/position, output rate, rec/stall/park flags) + every recovery/transport event.
+     MixDiag (@Observable, memory-only ring buffer) captures it as an explicit SESSION: toggle on →
+     reproduce → toggle off → export (plain-text fileExporter) → ship back via iCloud. The zombie-node
+     signature that cracked the AirPods bug: render=1 run=1 tapAge≈0, sigAge growing, A=(1,1,pos↑).
 ```
 
 **Reading it.** Recording taps the **clean-house sum** (`houseSum`, §7.10) — *not* the final output — so

@@ -1617,8 +1617,10 @@ screen you open, and even a take that was mid-capture when you **quit the app** 
 out — so a crash never loses the recording.
 
 **And it survives everything short of a crash, too.** Yank the headphones, switch to the speaker, hop
-between Bluetooth devices mid-set — the audio engine the system kills comes **back by itself**, the mix
-picks up where it stopped, and the take keeps rolling (dead air is never silently written into it). A
+between Bluetooth devices mid-set — on the Mac, pick your AirPods from the menu bar and back again —
+the audio engine the system kills comes **back by itself** within a beat, the mix picks up where it
+stopped, and the take keeps rolling (dead air is never silently written into it — even the sneaky Mac
+case where a deck *claimed* to be playing while producing silence is detected and revived). A
 **phone call** pauses the whole performance exactly like the lock-screen ⏸ — and when the call ends,
 only what the call paused resumes; a mix you'd already paused yourself stays paused. If capture ever
 *does* stop making progress while music is audibly playing, the recording strip turns **amber —
@@ -1847,3 +1849,28 @@ drive that isn't plugged in right now, the app skips it rather than forgetting a
 **User story:** "Show me what PocketDJ is costing my phone, let me clear an artist I'm done
 with or a set I've played out — without touching my library — and if I give it a budget,
 keep me under it by tossing what I never play."
+
+---
+
+## 65. Settings ▸ Debug — capture a debug session, ship it back
+
+Remote testing has a feedback loop now. **Settings ▸ Debug** (the last row — and the footer
+beneath it always shows **exactly which build you're running**, version and build number) opens a
+small panel with one switch: **Capture debug log**. Turn it on, **reproduce whatever's misbehaving**,
+turn it off — and the frozen session appears right there with an **Export** button. Save the text
+file straight into **iCloud Drive** (or AirDrop it) and it's off the device and in front of whoever's
+debugging, no cables, no Terminal, no Xcode.
+
+What's in a session: the mix engine's once-a-second **liveness heartbeat** — is the engine running,
+are render callbacks actually firing, is there **actual signal** or silence, what each deck *thinks*
+it's doing vs. what its player is really doing — plus a time-stamped line for every recovery event
+and transport action. It's exactly the trail that pinned down the AirPods silent-switch bug: the log
+showed a deck "playing" at full position speed while rendering pure zeros, which is a one-line fix
+once you can see it.
+
+The capture survives an app relaunch (it starts a fresh session if the switch was left on), lives
+only in memory, and costs nothing when it's off.
+
+**User story:** "The bug only happens on my MacBook, not the machine with the debugger. Flip on
+capture, make it happen, flip it off, drop the file in iCloud — and the fix shows up in the next
+build instead of twenty questions."
