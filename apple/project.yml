@@ -93,8 +93,8 @@ targets:
         # the prompts never fire unless the matching feature is enabled at
         # runtime (ShazamKit mic capture / MusicKit authorization), so shipping
         # them in the default build is harmless.
-        #   • Microphone — the "?♪?" ShazamKit recognizer's audio capture.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "PocketDJ listens to identify the song that's playing."
+        #   • Microphone — Studio sample recording + the "?♪?" ShazamKit recognizer.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "PocketDJ uses the microphone to record samples and to identify songs that are playing."
         #   • Apple Music — MusicKit catalog search + playback when linked.
         INFOPLIST_KEY_NSAppleMusicUsageDescription: "PocketDJ uses Apple Music to play and search tracks from your subscription."
         # --- MusicKit + ShazamKit entitlements ---------------------------------

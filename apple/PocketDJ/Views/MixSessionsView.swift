@@ -502,8 +502,13 @@ struct MixSessionDetailView: View {
             return
         }
         #if os(iOS)
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Studio mic capture holds the shared session at .playAndRecord — re-arming .playback
+        // here would tear down the recorder's live input tap mid-take (spec §4 coexistence
+        // rule); take replay works fine under .playAndRecord, so only skip the re-arm.
+        if !AudioSessionPolicy.micCaptureActive {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
         #endif
         guard let p = try? AVAudioPlayer(contentsOf: resolved.url) else {
             resolved.release?()

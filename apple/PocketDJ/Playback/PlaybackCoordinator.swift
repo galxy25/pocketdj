@@ -24,14 +24,22 @@ import Observation
 /// matter which surface started the burned file. It mirrors `RipServerPlaybackProvider.tryPlay`
 /// for the rip path: stamp `nowPlaying`, then load the SAME `PlayerEngine` the inline
 /// waveform/scrubber binds to. `startMs` is the analog seek offset within a shared album mp3.
+///
+/// `atMs` (optional, spec §9) is a CUE offset in ms from the SONG's 0:00 — the burned-file
+/// path of the Studio Cues tab (sample-exact, unlike the streaming providers). It shifts
+/// ONLY the load/seek position (`startMs + atMs`, `RipsStore.cueSeekMs`); `NowPlaying.startMs`
+/// and the caller's `endBoundaryMs` keep anchoring on the song's TRUE start, so a cue play
+/// inside a shared analog album mp3 still ends at the song's own end, not `atMs` past it.
 @MainActor
 func playLocalFile(_ url: URL, songId: String, title: String, artist: String,
                    startMs: Int?, rips: RipsStore, player: PlayerEngine,
-                   endBoundaryMs: Int? = nil, release: (() -> Void)? = nil) {
+                   endBoundaryMs: Int? = nil, atMs: Int? = nil, release: (() -> Void)? = nil) {
+    let seekMs = RipsStore.cueSeekMs(sharedFileStartMs: startMs, atMs: atMs, live: false)
     let np = RipsStore.NowPlaying(songId: songId, title: title, artist: artist,
-                                  url: url, live: false, startMs: startMs, waveform: nil)
+                                  url: url, live: false, startMs: startMs, seekMs: seekMs,
+                                  waveform: nil)
     rips.setNowPlaying(np)
-    player.load(url: url, live: false, startMs: startMs, title: title, artist: artist,
+    player.load(url: url, live: false, startMs: seekMs, title: title, artist: artist,
                 songId: songId, endBoundaryMs: endBoundaryMs, scopeRelease: release)
 }
 
@@ -84,7 +92,14 @@ final class PlaybackCoordinator {
     /// Run the matching engine: try each provider for `song` in order; the first that
     /// returns true wins (record it as `activeBackend`); if none does, surface the rip
     /// provider's error (the terminal fallback's failure is the actionable one).
-    func play(_ song: IndexSong) async {
+    ///
+    /// `atMs` (optional, default nil = from the top) is a CUE offset in ms from the
+    /// song's 0:00 (spec §9 — the Studio Cues tab's tap-to-play-from-here). It threads
+    /// straight through to the winning provider's `tryPlay`; see the protocol doc for
+    /// each backend's seek mechanism and the live-HLS "cannot seek" caveat (CuesView
+    /// should pre-check `cueSeekSupported(for:)` and show the "still ripping" disabled
+    /// state instead of playing a cue that would silently start at 0:00).
+    func play(_ song: IndexSong, atMs: Int? = nil) async {
         lastErrorMessage = nil
         for provider in providers(for: song) {
             // Switching backends: stop the previously-active one so two engines don't both
@@ -92,7 +107,7 @@ final class PlaybackCoordinator {
             if let active = activeBackend, active != provider.backend {
                 providerFor(active)?.stop()
             }
-            if await provider.tryPlay(song) {
+            if await provider.tryPlay(song, atMs: atMs) {
                 activeBackend = provider.backend
                 onPlay?(song.id)
                 // Feature 1 — stream-through-ripping. The Apple Music stream has already
@@ -116,9 +131,28 @@ final class PlaybackCoordinator {
 
     /// Convenience for the row ▶ given only (id, title, artist) — projects a minimal
     /// `IndexSong` and plays it. (The provider chain only needs id/name/artist + the
-    /// source map keyed by id, so a minimal projection is sufficient.)
-    func play(id: String, title: String, artist: String) async {
-        await play(IndexSong.minimal(id: id, name: title, artist: artist))
+    /// source map keyed by id, so a minimal projection is sufficient.) `atMs` = optional
+    /// cue offset, threaded through exactly like `play(_:atMs:)`.
+    func play(id: String, title: String, artist: String, atMs: Int? = nil) async {
+        await play(IndexSong.minimal(id: id, name: title, artist: artist), atMs: atMs)
+    }
+
+    /// Whether a cue offset passed to `play(_:atMs:)` would actually be APPLIED for
+    /// `song` RIGHT NOW (spec §9). Derivation mirrors `providers(for:)` ordering:
+    ///   • Apple Music would win (source match + ready) → true — play-then-seek works
+    ///     regardless of rip state;
+    ///   • otherwise the rip path decides: only a DURABLE cached S3 mp3 can seek. A song
+    ///     whose rip is still IN FLIGHT (or not started) resolves to live HLS, which
+    ///     cannot seek — CuesView shows those slots as a "still ripping" disabled state.
+    /// Best-effort: if Apple Music is predicted to win here but its `resolve` MISSES at
+    /// play time, the cycle falls through to the rip provider, which records the dropped
+    /// cue in `ripProvider.lastCueDropped` (the after-the-fact backstop signal).
+    /// NOTE for burned songs: local files don't route through the coordinator at all —
+    /// CuesView plays those via `playLocalFile(..., startMs: cue + BurnStore.startMs(forSong:))`,
+    /// which always seeks exactly; check `BurnStore.localURLForPlayback` FIRST, then this.
+    func cueSeekSupported(for song: IndexSong) -> Bool {
+        if sourceOfSong(song.id) == Config.appleMusicSourceName, appleMusic.isReady { return true }
+        return ripProvider.canCueSeek(song.id)
     }
 
     // MARK: Unified transport (delegate to the active provider)

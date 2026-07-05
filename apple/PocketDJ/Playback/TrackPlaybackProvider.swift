@@ -34,13 +34,30 @@ protocol TrackPlaybackProvider: AnyObject {
     /// Attempt to resolve `song` in this backend and start playback. Returns `true`
     /// when playback was started (this provider "wins" and becomes active); `false`
     /// when the song couldn't be matched (the coordinator tries the next provider).
-    func tryPlay(_ song: IndexSong) async -> Bool
+    ///
+    /// `atMs` is an OPTIONAL cue offset — ms from the SONG's 0:00 (spec §9, the Studio
+    /// Cues tab). nil = play from the top, exactly the pre-cue behavior. Each provider
+    /// applies it its own way:
+    ///   • rip server: folded into the `PlayerEngine.load` start position (plus the
+    ///     shared-analog-album `startMs` when the song lives inside one album mp3);
+    ///     a LIVE in-flight HLS rip cannot seek, so the cue is DROPPED there (see
+    ///     `RipServerPlaybackProvider.lastCueDropped` / `canCueSeek`).
+    ///   • Apple Music: play-then-seek via `ApplicationMusicPlayer.playbackTime`
+    ///     (documented ~<1 s imprecision).
+    func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool
 
     /// Pause if playing, resume if paused (the now-playing ▶ toggle).
     func togglePlayPause()
 
     /// Stop playback and tear down this provider's now-playing session.
     func stop()
+}
+
+extension TrackPlaybackProvider {
+    /// Play from the top — the call shape every pre-cue site uses. A protocol requirement
+    /// can't carry a default argument, so the `atMs: Int? = nil` default lives here: every
+    /// existing `tryPlay(song)` call compiles unchanged and means "no cue" (spec §9).
+    func tryPlay(_ song: IndexSong) async -> Bool { await tryPlay(song, atMs: nil) }
 }
 
 /// Which backend is driving playback — used to record the winner and to branch the

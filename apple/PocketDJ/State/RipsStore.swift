@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os                  // rips Logger — studio-id guard + cue diagnostics
 
 /// Rip-on-demand client — a faithful native port of the PWA's `useRipsStore`.
 ///
@@ -120,7 +121,18 @@ final class RipsStore {
         var artist: String
         var url: URL
         var live: Bool
+        /// The SONG's start within a shared analog album mp3 (nil for per-song files /
+        /// live HLS). This stays the song's TRUE start even on a cue play — it is the
+        /// anchor `SetlistPlayer.sharedFileEndBoundaryMs` (+ its now-playing adoption)
+        /// computes `startMs + lengthMs` from; folding a cue offset in here would push a
+        /// shared-album track's advance boundary INTO the next song on the album side.
         var startMs: Int?
+        /// The absolute file position playback should actually START at (spec §9): equal
+        /// to `startMs` on a plain play; `startMs`-shifted by the requested cue offset on
+        /// a cue play (`RipsStore.cueSeekMs`); nil for live HLS (unseekable — the cue is
+        /// dropped and the caller is told via `live`). `PlayerEngine.load(startMs:)`
+        /// consumes THIS, boundary math consumes `startMs` — the split is load-bearing.
+        var seekMs: Int? = nil
         /// Absolute waveform image URL (nil for a live stream — there's no static art yet).
         var waveform: URL?
     }
@@ -164,9 +176,36 @@ final class RipsStore {
     /// analog fallback. Sent in the POST body only when true (older servers ignore it).
     var ripFromCloud: Bool { settings?.ripFromCloud ?? false }
 
+    /// Studio-id guard + cue diagnostics (spec §8/§9) — one info line per fenced request;
+    /// invisible cost unless collected:
+    ///   log stream --predicate 'subsystem == "com.levi.pocketdj"' --info
+    @ObservationIgnored private static let diag = Logger(subsystem: "com.levi.pocketdj", category: "rips")
+    private func dlog(_ s: String) { Self.diag.info("\(s, privacy: .public)") }
+
     init(ripsBase: URL = Config.ripsBase, session: URLSession = .shared) {
         self.ripsBase = ripsBase
         self.session = session
+    }
+
+    // MARK: Studio-id fence (spec §8 defense-in-depth)
+
+    /// Pure: drop studio-namespaced ids (`smp_`/`lp_`/`ptn_`/`tk_` — `StudioFactory.studioPrefixes`,
+    /// the single source of truth). Studio items ride collections' string arrays, so ANY
+    /// collection-shaped id list handed to rip/stemify may contain them — and a studio id
+    /// reaching the rip server would trigger a live-search rip of a garbage title into the
+    /// public bucket. The server rejects them too (`rip-server.mjs`); this client mirror keeps
+    /// the requests from ever leaving the device. (`cue_` ids pass through on purpose: cues
+    /// never ride collection arrays — see `StudioFactory.newCueId`.)
+    nonisolated static func excludingStudioIds(_ ids: [String]) -> [String] {
+        ids.filter { !StudioFactory.isStudioId($0) }
+    }
+
+    /// Guard-return check for the SINGLE-song rip/stemify entry points: true (and one log
+    /// line) when `id` is studio-namespaced and the caller must bail before any network.
+    private func fencedStudioId(_ id: String, path: String) -> Bool {
+        guard StudioFactory.isStudioId(id) else { return false }
+        dlog("\(path): skipped studio id \(id) — studio items never rip (spec §8)")
+        return true
     }
 
     private var manifestURL: URL { ripsBase.appendingPathComponent("rips/manifest.json") }
@@ -286,6 +325,10 @@ final class RipsStore {
 
     enum RipError: LocalizedError {
         case noServer, ripFailed(Int), didNotStart(String?), serverError(String?), timedOut
+        /// A studio-namespaced id reached a rip path (spec §8) — these play from their own
+        /// local files and must NEVER hit the rip server (defense-in-depth; the server
+        /// rejects them too). Surfacing an explicit error beats a confusing server 4xx.
+        case studioItem
         var errorDescription: String? {
             switch self {
             case .noServer:           return "No rip server configured (Settings ▸ Rip server)."
@@ -293,6 +336,7 @@ final class RipsStore {
             case .didNotStart(let m): return m ?? "Rip did not start."
             case .serverError(let m): return m ?? "Rip failed."
             case .timedOut:           return "Rip timed out."
+            case .studioItem:         return "Studio items play from their own files — they can’t be ripped."
             }
         }
     }
@@ -305,6 +349,9 @@ final class RipsStore {
     @discardableResult
     func ensureURL(_ songId: String, allowLive: Bool) async throws -> URL {
         if let cached = cachedURL(songId) { return cached }
+        // Spec §8: the play/download choke point that POSTs `/rip` — a studio id here
+        // (a stale collection row, an old caller) must fail loudly, not live-search rip.
+        if fencedStudioId(songId, path: "ensureURL") { throw RipError.studioItem }
         guard hasServer else { throw RipError.noServer }
         let base = serverUrl, tok = token
 
@@ -384,8 +431,18 @@ final class RipsStore {
     /// `PlayerEngine` directly off this single explicit play — the inline panel must
     /// NOT load the engine in its lifecycle (it recycles in the LazyVStack and would
     /// auto-play / fight a user pause). The caller owns the one-and-only `player.load`.
+    ///
+    /// `startMs` (pre-existing) is an ABSOLUTE override of the manifest entry's shared-
+    /// analog-album start. `atMs` (spec §9) is a CUE offset in ms from the SONG's 0:00:
+    /// the returned `NowPlaying.seekMs` becomes `(startMs ?? entry.startMs ?? 0) + atMs`
+    /// — the song's position inside a shared analog album file plus the cue, or the cue
+    /// directly for a per-song digital file — while `NowPlaying.startMs` keeps the song's
+    /// TRUE start for end-boundary math (see the `NowPlaying` field docs). A LIVE HLS
+    /// stream cannot seek, so both come back nil there: the caller detects the dropped
+    /// cue via `live == true` (the coordinator's rip provider records `lastCueDropped`).
     @discardableResult
-    func play(_ song: (id: String, title: String, artist: String), startMs: Int? = nil) async throws -> NowPlaying {
+    func play(_ song: (id: String, title: String, artist: String), startMs: Int? = nil,
+              atMs: Int? = nil) async throws -> NowPlaying {
         let url = try await ensureURL(song.id, allowLive: true)
         let live = url.absoluteString.contains("/hls/")
         let entry = manifest[song.id]
@@ -393,11 +450,26 @@ final class RipsStore {
         let np = NowPlaying(
             songId: song.id, title: song.title, artist: song.artist, url: url, live: live,
             startMs: resolvedStart,
+            seekMs: Self.cueSeekMs(sharedFileStartMs: resolvedStart, atMs: atMs, live: live),
             waveform: live ? nil : Self.waveformURL(for: entry, ripsBase: ripsBase))
         let prev = nowPlaying?.songId
         nowPlaying = np
         if np.songId != prev { onPlay?(np.songId) }
         return np
+    }
+
+    /// Pure (spec §9): the absolute file position playback should START at for an optional
+    /// cue. `sharedFileStartMs` = the song's start within a shared analog album mp3 (nil
+    /// for per-song digital files); `atMs` = cue offset from the SONG's 0:00 (negative
+    /// values clamp to 0 — a cue can't precede the song). Rules:
+    ///   • live HLS → nil ALWAYS (an in-flight rip stream can't seek; the cue is dropped
+    ///     and callers must surface that, never silently seek-to-0),
+    ///   • no cue → the shared-file start unchanged (the pre-cue behavior, bit-for-bit),
+    ///   • cue → `(sharedFileStartMs ?? 0) + atMs` — analog offsets ADD, digital is direct.
+    nonisolated static func cueSeekMs(sharedFileStartMs: Int?, atMs: Int?, live: Bool) -> Int? {
+        if live { return nil }
+        guard let atMs else { return sharedFileStartMs }
+        return (sharedFileStartMs ?? 0) + max(0, atMs)
     }
 
     /// Resolve a song to its durable mp3 and return the raw bytes. The caller decides
@@ -488,6 +560,8 @@ final class RipsStore {
     ///   3. the server's manifest skip + single-flight inflight join is the exact-once
     ///      cross-process / restart backstop.
     func requestRipIfNeeded(_ songId: String) async {
+        // (0) spec §8 — a studio id NEVER rips (fire-and-forget path: silent guard-return).
+        if fencedStudioId(songId, path: "requestRipIfNeeded") { return }
         // (1) cheap guard — cut popular-song spam at the cheapest point, before any network.
         if cachedURL(songId) != nil { return }
         if let phase = jobs[songId]?.phase, Self.inFlightPhases.contains(phase) { return }
@@ -535,6 +609,9 @@ final class RipsStore {
     @discardableResult
     func requestRip(songId: String, title: String, artist: String,
                     appleMusicId: String? = nil, lengthMs: Int? = nil) async -> RipRequestOutcome {
+        // Spec §8 — a studio id NEVER rips. `.unknown` is the honest outcome ("not a
+        // rippable catalog song") and stops every caller's completion polling.
+        if fencedStudioId(songId, path: "requestRip") { return .unknown }
         if cachedURL(songId) != nil { return .ready }
         guard hasServer else { return .noServer }
         let base = serverUrl, tok = token
@@ -604,7 +681,15 @@ final class RipsStore {
     /// outcomes + counts. If the server is older and 404s `/rip-collection`, falls back to
     /// a per-song loop and synthesizes the counts. Empty input is a no-op (zero counts).
     func ripCollection(_ songIds: [String]) async -> BatchRipResult {
-        let ids = orderedUnique(songIds)
+        // Spec §8 — collections may carry studio ids (samples/loops/patterns ride the same
+        // string arrays); fence them out BEFORE the POST so the batch body never leaves the
+        // device with one. The consumer boundary (songIds resolvers) excludes them too —
+        // this is the belt-AND-suspenders layer, mirrored server-side in rip-server.mjs.
+        let kept = Self.excludingStudioIds(songIds)
+        if kept.count != songIds.count {
+            dlog("ripCollection: skipped \(songIds.count - kept.count) studio id(s) — studio items never rip (spec §8)")
+        }
+        let ids = orderedUnique(kept)
         guard !ids.isEmpty else { return BatchRipResult() }
         guard hasServer else { return await ripCollectionFallback(ids) }
 
@@ -742,6 +827,9 @@ final class RipsStore {
     /// backstop. Stores the returned job and (if it's still working) polls to completion in a
     /// detached task so the row flips to "stemmed" without blocking the caller. Never throws.
     func stemify(_ songId: String) async {
+        // Spec §8 — a studio id NEVER stems (the server would rip-first, i.e. live-search
+        // a garbage title). Fire-and-forget path: silent guard-return, one log line.
+        if fencedStudioId(songId, path: "stemify") { return }
         if isStemmed(songId) { return }
         if let p = stemJobs[songId]?.phase, Self.stemInFlightPhases.contains(p) { return }
         if requestingStems.contains(songId) { return }
@@ -825,7 +913,13 @@ final class RipsStore {
     /// `confirmLarge: true`). An older server that 404s falls back to a per-song loop. Empty
     /// input is a no-op.
     func stemifyCollection(_ songIds: [String], confirmLarge: Bool = false) async -> BatchStemResult {
-        let ids = Self.orderedUnique(songIds)
+        // Spec §8 — same studio-id fence as `ripCollection` (stemify rip-firsts a missing
+        // song, so a leaked studio id is exactly as dangerous here).
+        let kept = Self.excludingStudioIds(songIds)
+        if kept.count != songIds.count {
+            dlog("stemifyCollection: skipped \(songIds.count - kept.count) studio id(s) — studio items never stem (spec §8)")
+        }
+        let ids = Self.orderedUnique(kept)
         guard !ids.isEmpty else { return BatchStemResult() }
         guard hasServer else { return await stemifyCollectionFallback(ids) }
 

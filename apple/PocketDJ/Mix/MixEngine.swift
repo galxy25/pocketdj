@@ -2610,6 +2610,10 @@ final class MixEngine {
 
     #if os(iOS)
     private func activateAudioSession() {
+        // Studio mic capture holds the shared session at .playAndRecord — re-arming .playback
+        // here would tear the live input tap's route out from under the recorder mid-take
+        // (spec §4 coexistence rule); playback works fine under .playAndRecord, so skip.
+        guard !AudioSessionPolicy.micCaptureActive else { return }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
