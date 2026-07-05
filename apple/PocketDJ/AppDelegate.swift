@@ -8,11 +8,13 @@ import AppKit
 
 /// A tiny main-actor bridge (the `RipReconcileBridge` pattern) so the app/scene delegates — which
 /// hold no store references — can finalize an in-flight mix recording on an ORDERLY exit (macOS
-/// Cmd-Q, iOS willTerminate). The app sets `finalize` at launch to `{ mixRecorder.stop() }`: stop
-/// files the take's metadata synchronously, so even if the process dies before the async
-/// `finishWriting` completes, the flushed fragments + filed metadata make the take playable — no
-/// orphan-recovery pass needed. (No exit hook runs on a CRASH; that path is covered by fragments +
-/// launch-time orphan recovery.)
+/// Cmd-Q, iOS willTerminate). The app sets `finalize` at launch to
+/// `{ mixRecorder.stop(); mixSessions.flush() }`: stop files the take's metadata and the flush
+/// writes it to disk SYNCHRONOUSLY (the store's normal save is an async actor write that loses
+/// the race with `.terminateNow`/exit()), so even if the process dies before the async
+/// `finishWriting` completes, the flushed fragments + persisted metadata make the take playable —
+/// no orphan-recovery pass needed. (No exit hook runs on a CRASH; that path is covered by
+/// fragments + launch-time orphan recovery.)
 @MainActor
 final class RecordingExitBridge {
     static let shared = RecordingExitBridge()

@@ -44,6 +44,11 @@ final class RecordingBulletproofTests: XCTestCase {
                               camelot: nil, key: nil, albumId: nil)
     }
 
+    private func loadable(_ id: String) -> MixLoadable {
+        MixLoadable(songId: id, title: "T", artist: "A", bpm: 120,
+                    camelot: nil, key: nil, albumId: nil, lengthMs: 180_000)
+    }
+
     /// One 4096-frame stereo float buffer of quiet sine — the tap's shape.
     private func makeTapBuffer(sr: Double = 44_100) -> AVAudioPCMBuffer {
         let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
@@ -135,6 +140,63 @@ final class RecordingBulletproofTests: XCTestCase {
         XCTAssertGreaterThan(e.recordingAppendedSeconds, beforeStall,
                              "capture must resume appending after the engine recovers")
         e.stopRecording()
+        e.teardown()
+    }
+
+    // MARK: - Parked-mix invariants: recovery + resume must respect a deliberate ⏸
+
+    /// A parked mix (interruption .began / lock-screen ⏸) must STAY parked through route/config
+    /// changes: the recovery path restarting the engine there would render real silence at full
+    /// rate into an open take, with the decks silenced and no UI warning.
+    func testRouteChangeRecoveryRespectsRemotePark() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x"), on: .a)
+        let item = MixEngine.AutoMixItem(loadable: loadable("x"), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+
+        e.stopEngineForTesting()                       // iOS quiesces the session…
+        e.remotePause()                                // …and .began parks the mix
+        e.simulateEngineRecoveryForTesting()           // AirPods disconnect while parked
+        XCTAssertFalse(e.engineIsRunningForTesting,
+                       "a parked mix must stay parked — no dead air into an open take")
+
+        e.remotePlay()                                 // only an explicit resume unparks
+        XCTAssertTrue(e.engineIsRunningForTesting)
+        XCTAssertTrue(e.isPlaying(.a))
+        e.teardown()
+    }
+
+    /// A stall park overlapping a remote park must shift the auto-machine clocks ONCE (the
+    /// stall-so-far folds into the freeze at ⏸) — a double shift lands transitions late by the
+    /// pause length: recorded dead air past the live track's end / a pinned crossfader.
+    func testStallOverlappingRemoteParkShiftsClocksOnce() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x"), on: .a)
+        let q = [MixEngine.AutoMixItem(loadable: loadable("x"), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("y"), durationMs: 180_000)]
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        e.skipToNext(fadeSeconds: 5)                   // a crossfade is now in flight
+        let fade0 = try XCTUnwrap(e.autoFadeStartedAtForTesting)
+
+        e.stopEngineForTesting()                       // the system killed the engine…
+        e.parkEngineStallForTesting(secondsAgo: 0.5)   // …and the watchdog parked 0.5 s ago
+        let pausedAt = Date()
+        e.remotePause()                                // ⏸ lands mid-stall: folds the stall-so-far
+        try await Task.sleep(nanoseconds: 400_000_000)
+        e.remotePlay()                                 // ▶ adds only the freeze window
+        let frozen = Date().timeIntervalSince(pausedAt)
+        try await Task.sleep(nanoseconds: 250_000_000) // a buggy unpark would double-shift on this tick
+        let shift = try XCTUnwrap(e.autoFadeStartedAtForTesting).timeIntervalSince(fade0)
+        XCTAssertEqual(shift, 0.5 + frozen, accuracy: 0.2,
+                       "overlapping stall + freeze must move the fade clock once, not twice")
         e.teardown()
     }
 
@@ -314,6 +376,40 @@ final class RecordingBulletproofTests: XCTestCase {
         }
     }
 
+    // MARK: - Mid-capture scan: the in-flight take is never adopted as an orphan
+
+    /// A scan that reaches the live capture's root mid-take (Storage sweep / Mix-tab re-entry
+    /// after a launch-time root-resolve failure) must skip the file being written RIGHT NOW —
+    /// adopting it files a duplicate row on stop and lets a per-row delete unlink the live file.
+    func testRecoverOrphansSkipsTheInFlightTake() async throws {
+        try await withTempAppRoot { _ in
+            let e = makeEngine()
+            e.ensureEngine()
+            try XCTSkipUnless(e.isReady, "no audio device on this test host")
+            let src = try makeSineWAV(seconds: 6)
+            defer { try? FileManager.default.removeItem(at: src) }
+            e.loadFile(src, release: nil, startMs: nil, meta: meta("x"), on: .a)
+            e.play(.a)
+
+            let store = makeStore()
+            let recorder = MixRecorder(engine: e, sessions: store)
+            let sessionId = store.currentId
+            XCTAssertTrue(recorder.start())
+            // Past the writer's first ~2 s fragment flush: the in-flight file is now a readable,
+            // length > 0 AVAudioFile — exactly what the orphan scan would adopt.
+            try await Task.sleep(nanoseconds: 3_200_000_000)
+            XCTAssertGreaterThan(e.recordingAppendedSeconds, 2)
+
+            recorder.recoverOrphans()                  // mid-capture scan of the take's own root
+            XCTAssertTrue(store.recordings(forSession: sessionId).isEmpty,
+                          "the live take must not be adopted mid-capture")
+            recorder.stop()
+            XCTAssertEqual(store.recordings(forSession: sessionId).count, 1,
+                           "stop files the take exactly once — no duplicate row")
+            e.teardown()
+        }
+    }
+
     // MARK: - Sweep ordering: recover-then-sweep leaves no invisible loss
 
     /// The Storage flow now runs recovery BEFORE the destructive sweep — an orphan the user has
@@ -375,6 +471,36 @@ final class RecordingBulletproofTests: XCTestCase {
         post(.ended, options: [.shouldResume])                // iOS says: resume
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertTrue(e.isPlaying(.a), ".shouldResume must bring the parked deck back")
+        e.teardown()
+    }
+
+    /// `.ended` may resume ONLY what `.began` itself parked: with the mix already paused in-app
+    /// before the interruption, an unconditional resume would replay the stale pause memory —
+    /// decks blast back unprompted after a phone call the user never noticed.
+    func testInterruptionEndedResumesOnlyWhatItParked() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 6)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x"), on: .a)
+        e.play(.a)
+        e.pauseBoth()                                         // deliberate in-app master pause
+        XCTAssertFalse(e.isPlaying(.a))
+
+        func post(_ type: AVAudioSession.InterruptionType, options: AVAudioSession.InterruptionOptions? = nil) {
+            var info: [AnyHashable: Any] = [AVAudioSessionInterruptionTypeKey: type.rawValue]
+            if let options { info[AVAudioSessionInterruptionOptionKey] = options.rawValue }
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification,
+                                            object: AVAudioSession.sharedInstance(), userInfo: info)
+        }
+
+        post(.began)                                          // phone call over an already-paused mix
+        try await Task.sleep(nanoseconds: 200_000_000)
+        post(.ended, options: [.shouldResume])                // call ends; iOS suggests resuming
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(e.isPlaying(.a),
+                       ".ended must not replay a pause memory the interruption never created")
         e.teardown()
     }
     #endif

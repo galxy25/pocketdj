@@ -103,6 +103,13 @@ final class MixRecorder {
                 let known = Set(sessions.recordings(forSession: sessionId).map { $0.fileName })
                 let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey])) ?? []
                 for file in files where file.pathExtension.lowercased() == "m4a" && !known.contains(file.lastPathComponent) {
+                    // Never adopt the take being captured RIGHT NOW (its fragments are already a
+                    // readable file, but its metadata is filed only on stop): adopting it would
+                    // file a DUPLICATE row on stop and let a per-row delete unlink the live file
+                    // mid-write. Reachable when this root failed to resolve at launch and a scan
+                    // (Mix tab re-entry / Storage sweep) lands mid-capture.
+                    if let live = activeTake, live.sessionId == sessionId,
+                       live.fileName == file.lastPathComponent { continue }
                     // A take that died before its FIRST fragment (~2 s) is unreadable by every
                     // AVFoundation consumer — filing it would create a dead "0:00" row whose play
                     // button silently no-ops. Leave it on disk unfiled (the recordings sweep

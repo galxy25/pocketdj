@@ -193,13 +193,22 @@ struct PocketDJApp: App {
         StoragePruneBridge.shared.prune = { [weak storage] in storage?.pruneIfDue() }
         #endif
         // Orderly exits (macOS Cmd-Q / iOS willTerminate) finalize + FILE an in-flight take —
-        // without this every quit-mid-recording relied on next-launch orphan recovery.
-        RecordingExitBridge.shared.finalize = { [weak mixRecorder] in mixRecorder?.stop() }
+        // without this every quit-mid-recording relied on next-launch orphan recovery. The flush
+        // is what makes the filing DURABLE: addRecording persists via an async actor write that
+        // loses the race with `.terminateNow`/exit().
+        RecordingExitBridge.shared.finalize = { [weak mixRecorder, weak mixSessions] in
+            mixRecorder?.stop()
+            mixSessions?.flush()
+        }
         // A stale-but-resolvable session-folder bookmark mints fresh data mid-resolve; persist it
         // back so it keeps resolving next launch (a stale bookmark eventually stops working —
         // which silently orphans every user-folder recording).
         SessionFolders.onStaleBookmark = { [weak settings] data in
-            Task { @MainActor in settings?.sessionFolderBookmark = data }
+            Task { @MainActor in
+                settings?.sessionFolderBookmark = data
+                settings?.persist()   // must land in UserDefaults NOW — no later persist() is
+                                      // guaranteed to run before quit (macOS can sit on one section)
+            }
         }
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────

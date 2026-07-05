@@ -269,6 +269,11 @@ final class MixEngine {
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     @ObservationIgnored private var routeChangeObserver: NSObjectProtocol?
     @ObservationIgnored private var mediaResetObserver: NSObjectProtocol?
+    /// Interruption `.began` actually parked a LIVE mix, so `.ended` may auto-resume it. Without
+    /// this, `.ended`+shouldResume replays a STALE in-app pause memory (remotePause's idempotency
+    /// guard deliberately preserves `masterPausedDecks`) or starts a loaded-but-never-played deck
+    /// via `resumeMasterPaused`'s now-playing fallback.
+    @ObservationIgnored private var interruptionParked = false
     #endif
     /// Observer for `.AVAudioEngineConfigurationChange` — registered PER ENGINE INSTANCE (the
     /// notification's object is the engine), so a media-reset rebuild re-registers it.
@@ -624,6 +629,12 @@ final class MixEngine {
     // (the graph stays built, exactly like the real event).
     func stopEngineForTesting() { engine.stop() }
     var engineIsRunningForTesting: Bool { engine.isRunning }
+    /// Drive the route/config-change observer path directly (the real observers are wired to the
+    /// shared session / the private engine instance, which tests can't post as).
+    func simulateEngineRecoveryForTesting() { recoverFromEngineStop() }
+    /// Backdate a stall park (as if the tick watchdog stamped it `age` seconds ago).
+    func parkEngineStallForTesting(secondsAgo age: Double) { engineStallAt = Date().addingTimeInterval(-age) }
+    var autoFadeStartedAtForTesting: Date? { autoFadeStartedAt }
 
     func teardown() {
         endAutoLoop()
@@ -849,7 +860,11 @@ final class MixEngine {
             pauseAuto()                      // BEFORE pauseBoth — a running auto-loop would be ended by it
             resumeAutoOnRemotePlay = true    // set-only: never clobber an earlier ⏸'s intent
         }
-        if autoMixing { remotePausedAt = Date() }   // freeze transition timers while the decks are silent
+        if autoMixing {
+            unparkEngineStall()              // fold an in-progress stall into the freeze — the resume
+                                             // shift must not count the overlapping dead time twice
+            remotePausedAt = Date()          // freeze transition timers while the decks are silent
+        }
         pauseBoth()                          // records masterPausedDecks; autoPaused=true keeps the loop
     }
 
@@ -1001,6 +1016,7 @@ final class MixEngine {
     /// auto-mixes on time (capped by the crossfade lead/length) instead of playing silently past it.
     private func refreshAutoDeckEndIfLive(_ deck: Deck) {
         guard autoMixing, deck == autoLiveDeck, !autoTransitioning else { return }
+        checkpointEngineStall()   // a mid-stall seek's fresh stamp gets only the stall that follows it
         let durMs = autoDeckDurationMs[deck] ?? Self.autoFallbackDurationMs
         let remaining = max(0, Double(durMs) / 1000 - position(deck)) / max(0.05, state(deck).rate)
         autoDeckEndsAt[deck] = Date().addingTimeInterval(remaining)
@@ -1253,6 +1269,8 @@ final class MixEngine {
         guard autoMixing, autoPaused else { return }
         unfreezeAutoClock()              // an IN-APP Resume after a lock-screen ⏸ must also unpark the
                                          // machine's frozen wall clock, or autoFire stays gated forever
+        checkpointEngineStall()          // resuming mid-stall: the fresh end stamps below must only be
+                                         // shifted by the stall time that FOLLOWS them
         autoPaused = false
         resumeAutoOnRemotePlay = false   // ANY resume consumes the remote-restore intent — a later
                                          // deliberate in-app pause must not be resurrected by a stray
@@ -1341,6 +1359,7 @@ final class MixEngine {
         autoResumeEndDeck = nil
         resumeAutoOnRemotePlay = false
         remotePausedAt = nil
+        engineStallAt = nil     // a stale stall park must never shift the NEXT mix's fresh clocks
         autoMixing = false
         autoStatus = nil
         autoSourceLabel = nil
@@ -2334,6 +2353,10 @@ final class MixEngine {
     /// retrying about once a second until the session comes back.
     private func recoverFromEngineStop() {
         guard built else { return }
+        // Deliberately parked (lock-screen ⏸ / interruption .began): the route/config observers
+        // land here too, and restarting a parked mix's engine would render real silence at full
+        // rate into an open take. Only an explicit resume (remotePlay) unparks.
+        guard remotePausedAt == nil else { return }
         if engine.isRunning { unparkEngineStall(); return }
         guard deckA.isPlaying || deckB.isPlaying || autoMixing else { return }
         if engineStallAt == nil { engineStallAt = Date() }
@@ -2355,6 +2378,15 @@ final class MixEngine {
         autoFadeStartedAt = autoFadeStartedAt?.addingTimeInterval(delta)
         autoPostrollStartedAt = autoPostrollStartedAt?.addingTimeInterval(delta)
         for (d, t) in autoDeckEndsAt { autoDeckEndsAt[d] = t.addingTimeInterval(delta) }
+    }
+
+    /// Re-base an in-progress stall: shift the already-armed clocks by the stall-so-far and park
+    /// again from NOW. Call before stamping a fresh auto-machine timestamp mid-stall — the fresh
+    /// stamp must be shifted only by the stall time that FOLLOWS it, not the whole stall.
+    private func checkpointEngineStall() {
+        guard engineStallAt != nil else { return }
+        unparkEngineStall()
+        engineStallAt = Date()
     }
 
     /// The DynamicsProcessor (compressor) component description — Apple's built-in AU.
@@ -2403,11 +2435,17 @@ final class MixEngine {
                       let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
                 switch type {
                 case .began:
+                    self.interruptionParked = self.isRunning   // only a LIVE mix gets parked below
                     self.remotePause()
                 case .ended:
                     let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
                         .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
                     guard shouldResume else { return }   // stay parked — no silence into an open take
+                    // Resume ONLY what .began itself silenced, and only while it is still parked:
+                    // an unconditional remotePlay would replay a stale in-app pause memory or start
+                    // a loaded-but-never-played deck via the now-playing fallback.
+                    guard self.interruptionParked, !self.isRunning else { return }
+                    self.interruptionParked = false
                     self.remotePlay()
                 @unknown default:
                     break
@@ -2546,8 +2584,10 @@ final class MixTapSink: @unchecked Sendable {
             self.writer = w; self.input = inp; self.started = false
             self.failed = false; self.reportedFailure = false
             self.nextPTS = .zero
+            // Zero the mirror ON THE QUEUE: a previous take's final append can still be pending
+            // ahead of us and would overwrite a caller-thread reset with the OLD take's total.
+            self.setAppendedSeconds(0)
         }
-        setAppendedSeconds(0)
         isCapturing = true
         return true
     }
