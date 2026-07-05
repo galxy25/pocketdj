@@ -170,6 +170,29 @@ final class RecordingBulletproofTests: XCTestCase {
         e.teardown()
     }
 
+    /// The park exemption must not swallow HAND-MIXING: a deck the user starts while the mix is
+    /// remote-parked (the sanctioned autoPaused hand-mix takeover) is meant to be audible — engine
+    /// recovery must still bring it back after a route change.
+    func testHandMixDuringRemoteParkKeepsEngineRecovery() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x"), on: .a)
+        let item = MixEngine.AutoMixItem(loadable: loadable("x"), durationMs: 180_000)
+        e.startAutoMix([item], shuffled: false, lead: 15, fade: 3)
+        e.remotePause()                                // lock-screen ⏸ parks the mix…
+        e.play(.a)                                     // …and the user takes deck A over by hand
+        XCTAssertTrue(e.isPlaying(.a))
+
+        e.stopEngineForTesting()                       // route change kills the engine
+        e.simulateEngineRecoveryForTesting()
+        XCTAssertTrue(e.engineIsRunningForTesting,
+                      "a hand-started deck keeps full engine recovery during a remote park")
+        e.teardown()
+    }
+
     /// A stall park overlapping a remote park must shift the auto-machine clocks ONCE (the
     /// stall-so-far folds into the freeze at ⏸) — a double shift lands transitions late by the
     /// pause length: recorded dead air past the live track's end / a pinned crossfader.
@@ -501,6 +524,36 @@ final class RecordingBulletproofTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertFalse(e.isPlaying(.a),
                        ".ended must not replay a pause memory the interruption never created")
+        e.teardown()
+    }
+
+    /// Duplicate `.began` deliveries (Bluetooth/CarPlay re-sends) over the already-parked mix
+    /// must not erase the record that the interruption parked a LIVE mix — the matching
+    /// `.ended`+shouldResume still resumes it.
+    func testDuplicateInterruptionBeganStillResumes() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let src = try makeSineWAV(seconds: 6)
+        defer { try? FileManager.default.removeItem(at: src) }
+        e.loadFile(src, release: nil, startMs: nil, meta: meta("x"), on: .a)
+        e.play(.a)
+
+        func post(_ type: AVAudioSession.InterruptionType, options: AVAudioSession.InterruptionOptions? = nil) {
+            var info: [AnyHashable: Any] = [AVAudioSessionInterruptionTypeKey: type.rawValue]
+            if let options { info[AVAudioSessionInterruptionOptionKey] = options.rawValue }
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification,
+                                            object: AVAudioSession.sharedInstance(), userInfo: info)
+        }
+
+        post(.began)                                          // parks the live mix
+        try await Task.sleep(nanoseconds: 200_000_000)
+        post(.began)                                          // duplicate delivery over the parked mix
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(e.isPlaying(.a))
+        post(.ended, options: [.shouldResume])
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(e.isPlaying(.a), "a duplicate .began must not cancel the .ended resume")
         e.teardown()
     }
     #endif

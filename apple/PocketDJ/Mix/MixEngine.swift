@@ -2122,7 +2122,14 @@ final class MixEngine {
 
     private func other(_ d: Deck) -> Deck { d == .a ? .b : .a }
 
-    private func refreshTransport() { isRunning = deckA.isPlaying || deckB.isPlaying }
+    private func refreshTransport() {
+        isRunning = deckA.isPlaying || deckB.isPlaying
+        #if os(iOS)
+        // ANY resume (in-app deck ▶, master play, lock-screen ▶/⏭) supersedes an interruption's
+        // park — a later stray .ended must not auto-resume over a subsequent deliberate pause.
+        if isRunning { interruptionParked = false }
+        #endif
+    }
 
     /// Push gains onto the graph. The deck's main VOLUME + equal-power crossfade live downstream on
     /// `mainGains` (see `applyCueRouting`), NOT on the source nodes — so the post-FX CUE tap is
@@ -2330,13 +2337,13 @@ final class MixEngine {
                 setPosition(d, pos)
                 if pos >= dur, !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
             }
-        } else if remotePausedAt == nil, deckA.isPlaying || deckB.isPlaying || autoMixing {
+        } else if deckA.isPlaying || deckB.isPlaying || autoMixing {
             // WATCHDOG: the system stopped the engine (route change / missed interruption-.ended /
             // config change) while the mix thinks it's live — park the clocks and bring it back
             // (~1 try/s). Positions deliberately do NOT advance: nothing is rendering, and a
-            // recording's content clock is frozen with the tap. Deliberately parked states
-            // (`remotePausedAt`, lock-screen ⏸ / interruption .began) are exempt — restarting the
-            // engine there would append dead air into an open take.
+            // recording's content clock is frozen with the tap. The parked-state policy (a
+            // remote/interruption ⏸ stays silent unless a deck was hand-started) lives in
+            // `recoverFromEngineStop`.
             recoverFromEngineStop()
         }
         refreshTransport()
@@ -2353,13 +2360,17 @@ final class MixEngine {
     /// retrying about once a second until the session comes back.
     private func recoverFromEngineStop() {
         guard built else { return }
-        // Deliberately parked (lock-screen ⏸ / interruption .began): the route/config observers
-        // land here too, and restarting a parked mix's engine would render real silence at full
-        // rate into an open take. Only an explicit resume (remotePlay) unparks.
-        guard remotePausedAt == nil else { return }
+        // Deliberately parked with SILENT decks (lock-screen ⏸ / interruption .began): restarting
+        // the engine would render real silence at full rate into an open take — only an explicit
+        // resume unparks. But a deck the user HAND-STARTED during the park (autoPaused
+        // hand-mixing) is meant to be audible, so it keeps full recovery.
+        let anyDeckPlaying = deckA.isPlaying || deckB.isPlaying
+        guard remotePausedAt == nil || anyDeckPlaying else { return }
         if engine.isRunning { unparkEngineStall(); return }
-        guard deckA.isPlaying || deckB.isPlaying || autoMixing else { return }
-        if engineStallAt == nil { engineStallAt = Date() }
+        guard anyDeckPlaying || autoMixing else { return }
+        // While remote-frozen the auto clocks are ALREADY parked — a stall park stacked on top
+        // would shift them twice on resume. Recover the audio without the stall bookkeeping.
+        if remotePausedAt == nil, engineStallAt == nil { engineStallAt = Date() }
         if let last = lastEngineRecoveryAttempt, Date().timeIntervalSince(last) < 0.9 { return }
         lastEngineRecoveryAttempt = Date()
         guard startEngineIfNeeded() else { return }
@@ -2435,7 +2446,9 @@ final class MixEngine {
                       let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
                 switch type {
                 case .began:
-                    self.interruptionParked = self.isRunning   // only a LIVE mix gets parked below
+                    // LATCH (never assign): a duplicate .began delivered over the already-parked
+                    // mix (Bluetooth/CarPlay re-sends) must not erase the pairing record.
+                    if self.isRunning { self.interruptionParked = true }
                     self.remotePause()
                 case .ended:
                     let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)

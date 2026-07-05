@@ -58,10 +58,12 @@ final class MixRecorder {
     /// Toggle capture (what the record button calls).
     func toggle() { if isRecording { stop() } else { start() } }
 
-    /// The in-flight take (session id + file name) while recording — the storage manager's
-    /// delete-all skips this open file. nil when idle.
-    var activeTake: (sessionId: String, fileName: String)? {
-        isRecording ? (recSessionId, recFileName) : nil
+    /// The in-flight take (session id + file name + which root it's in) while recording — the
+    /// storage manager's delete-all skips this open file, and the orphan scan must not adopt it.
+    /// The root flag matters: the SAME session id + file name can exist in both roots (a capture
+    /// that fell back to app storage while the user folder was offline), and only one is live.
+    var activeTake: (sessionId: String, fileName: String, wasUserFolder: Bool)? {
+        isRecording ? (recSessionId, recFileName, recWasUserFolder) : nil
     }
 
     // Per-ROOT scan latches: each root is scanned once per launch, but a root that FAILS TO
@@ -107,9 +109,11 @@ final class MixRecorder {
                     // readable file, but its metadata is filed only on stop): adopting it would
                     // file a DUPLICATE row on stop and let a per-row delete unlink the live file
                     // mid-write. Reachable when this root failed to resolve at launch and a scan
-                    // (Mix tab re-entry / Storage sweep) lands mid-capture.
+                    // (Mix tab re-entry / Storage sweep) lands mid-capture. Root-aware on purpose:
+                    // a same-named file in the OTHER root is a genuine orphan, not the live take.
                     if let live = activeTake, live.sessionId == sessionId,
-                       live.fileName == file.lastPathComponent { continue }
+                       live.fileName == file.lastPathComponent,
+                       live.wasUserFolder == root.isUser { continue }
                     // A take that died before its FIRST fragment (~2 s) is unreadable by every
                     // AVFoundation consumer — filing it would create a dead "0:00" row whose play
                     // button silently no-ops. Leave it on disk unfiled (the recordings sweep
