@@ -368,6 +368,11 @@ final class MixEngine {
     @ObservationIgnored private var engineStallAt: Date?
     /// Last engine-recovery attempt — rate-limits the tick watchdog's restart tries to ~1/s.
     @ObservationIgnored private var lastEngineRecoveryAttempt: Date?
+    /// The engine was seen down (or reconfigured — config change) while the mix was live. The next
+    /// RENDERING tick re-primes the playing decks: a node that played through an engine stop can
+    /// come back as a ZOMBIE (claims playing, renders silence) that only a pause()+play() revives —
+    /// and the engine can restart via ANY path (watchdog, observer, a transport call, macOS itself).
+    @ObservationIgnored private var engineDownWhileLive = false
 
     /// Single ~10 Hz driver: advances each playing deck's playhead AND steps the auto-mix crossfade.
     @ObservationIgnored private var tickTask: Task<Void, Never>?
@@ -864,9 +869,23 @@ final class MixEngine {
 
     /// Resume every deck the UI still considers playing (single-file or stems) — the shared tail
     /// of engine recovery (route/config change, interruption end, tick watchdog restart).
+    ///
+    /// RE-PRIME, don't just play: a node that was playing when the system stopped the engine can
+    /// come back from the restart as a ZOMBIE — `isPlaying` true, schedule intact, position
+    /// advancing, rendering pure silence (observed on macOS across the 44.1↔48 kHz output-format
+    /// change of an AirPods switch; a bare `play()` no-ops on it because it already claims to be
+    /// playing). `pause()` then `play()` — exactly the manual workaround — re-primes the render
+    /// state without touching the schedule, so the deck resumes from where it stopped.
     private func resumePlayingDecks() {
         for d in Deck.allCases where state(d).isPlaying {
-            if stemActive(d) { ensureStemsScheduled(d); startStems(d) } else { players[d]?.play() }
+            if stemActive(d) {
+                ensureStemsScheduled(d)
+                for n in (stemPlayers[d] ?? [:]).values where n.isPlaying { n.pause() }
+                startStems(d)
+            } else if let p = players[d] {
+                if p.isPlaying { p.pause() }
+                p.play()
+            }
         }
     }
 
@@ -2460,6 +2479,11 @@ final class MixEngine {
         diagHeartbeat(rendering: rendering)
         if rendering {
             unparkEngineStall()      // engine came back via any path → shift the parked clocks
+            if engineDownWhileLive { // …and re-prime: zombie nodes survive a bare play()
+                engineDownWhileLive = false
+                dlog("re-prime after engine comeback")
+                resumePlayingDecks()
+            }
             healParkedPlayers()      // macOS device switch: engine renders on, player nodes parked
             for d in Deck.allCases where state(d).isPlaying {
                 let dur = duration(d)
@@ -2478,6 +2502,7 @@ final class MixEngine {
             // recording's content clock is frozen with the tap. The parked-state policy (a
             // remote/interruption ⏸ stays silent unless a deck was hand-started) lives in
             // `recoverFromEngineStop`.
+            engineDownWhileLive = true
             recoverFromEngineStop()
         }
         refreshTransport()
@@ -2543,7 +2568,8 @@ final class MixEngine {
         dlog("recover: engine.start → \(ok ? "OK" : "FAILED")")
         guard ok else { return }
         unparkEngineStall()
-        resumePlayingDecks()
+        resumePlayingDecks()             // re-primes (pause+play) — a bare play() no-ops on zombies
+        engineDownWhileLive = false      // re-primed here; the tick needn't do it again
     }
 
     /// Shift every armed auto-machine timestamp past the stall (mirrors `unfreezeAutoClock`) so
@@ -2705,6 +2731,9 @@ final class MixEngine {
                           + " nodeA=\((self.players[.a]?.isPlaying ?? false) ? 1 : 0)"
                           + " nodeB=\((self.players[.b]?.isPlaying ?? false) ? 1 : 0)"
                           + " out=\(Int(self.engine.outputNode.outputFormat(forBus: 0).sampleRate))Hz")
+                // A config change means the engine WAS stopped/reconfigured — even if it (or the
+                // watchdog) already restarted it between ticks, playing nodes may be zombies.
+                self.engineDownWhileLive = true
                 self.recoverFromEngineStop()
             }
         }
