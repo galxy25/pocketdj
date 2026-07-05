@@ -51,6 +51,7 @@ struct SettingsView: View {
             collectionsSection
             backupSection
             resetSection
+            debugSection
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
@@ -544,11 +545,25 @@ struct SettingsView: View {
                 Text("Removes sources, search & rip-server config, and cached covers. Your collections are cleared too. This can’t be undone.")
             }
         } footer: {
-            Text("PocketDJ \(appVersion). App updates (new views + data migrations) ship via the App Store.")
+            Text("App updates (new views + data migrations) ship via the App Store.")
         }
     }
 
-    private var appVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String).map { "v\($0)" } ?? ""
+    // MARK: Debug (capture-session diagnostics — see DebugView)
+
+    /// Last section on purpose: its footer is the app's build identity, so a TestFlight
+    /// tester can say exactly which build they're running.
+    private var debugSection: some View {
+        Section {
+            NavigationLink {
+                DebugView(settings: settings)
+            } label: {
+                Label("Debug", systemImage: "stethoscope")
+            }
+            .accessibilityIdentifier("settings-debug")
+        } footer: {
+            Text("PocketDJ \(MixDiag.buildIdentity())")
+                .accessibilityIdentifier("settings-build-version")
+        }
     }
 }

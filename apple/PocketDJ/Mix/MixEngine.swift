@@ -3,6 +3,79 @@ import Observation
 import AVFoundation        // AVAudioEngine + nodes (iOS · iPad · Mac); AVAudioSession is iOS-only (guarded below)
 import AudioToolbox        // DynamicsProcessor AU parameter ids + AudioUnitSetParameter
 import MediaPlayer         // MPNowPlayingInfoCenter + MPRemoteCommandCenter (lock-screen Now Playing)
+import os                  // mixdiag Logger — device-switch/recovery diagnostics
+
+/// Render-tap liveness mirrors for the `mixdiag` diagnostics — written on the tap thread, read on
+/// main. Plain aligned 64-bit stores (a torn read skews a diagnostic by one callback — harmless;
+/// same contract as `MixTapSink.isCapturing`).
+final class MixTapPulse: @unchecked Sendable {
+    /// `Date.timeIntervalSinceReferenceDate` of the last houseSum tap callback (0 = never).
+    var lastTapAt: Double = 0
+    /// …of the last callback that carried actual signal (peak > -66 dBFS). 0 = never.
+    var lastAudibleAt: Double = 0
+}
+
+/// The in-app DEBUG-SESSION log behind Settings ▸ Debug: turn capture ON, reproduce the issue,
+/// turn it OFF, export the session (a remote TestFlight tester ships the file back via iCloud).
+/// Every `MixEngine` diagnostic line goes to os_log unconditionally; while capturing it is ALSO
+/// buffered here (~1 heartbeat line/s + recovery/transport events — a few KB per minute).
+@MainActor
+@Observable
+final class MixDiag {
+    static let shared = MixDiag()
+    private(set) var isCapturing = false
+    private(set) var lines: [String] = []
+    private(set) var startedAt: Date?
+    private(set) var endedAt: Date?
+
+    private static let stampFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
+
+    /// Begin a fresh session (clears the previous capture).
+    func start() {
+        lines = []
+        startedAt = Date()
+        endedAt = nil
+        isCapturing = true
+        append("mixdiag session START — \(Self.buildIdentity())")
+    }
+
+    /// End the session; the buffer stays for export until the next `start()`.
+    func stop() {
+        guard isCapturing else { return }
+        append("mixdiag session END")
+        isCapturing = false
+        endedAt = Date()
+    }
+
+    func append(_ line: String) {
+        guard isCapturing else { return }
+        lines.append(Self.stampFmt.string(from: Date()) + "  " + line)
+        if lines.count > 50_000 { lines.removeFirst(lines.count / 2) }   // runaway-session bound
+    }
+
+    /// The full session as a shareable text file body.
+    func dump() -> String {
+        "PocketDJ debug session — \(Self.buildIdentity())\n"
+        + "captured \(startedAt.map { $0.formatted() } ?? "?") → \(endedAt.map { $0.formatted() } ?? "running")\n\n"
+        + lines.joined(separator: "\n") + "\n"
+    }
+
+    static func buildIdentity() -> String {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        #if os(macOS)
+        let plat = "macOS"
+        #else
+        let plat = "iOS"
+        #endif
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        return "v\(v) build \(b) · \(plat) \(os)"
+    }
+}
 
 /// Cross-platform DJ mix engine — a first-party two-deck `AVAudioEngine` graph. Each deck is
 ///
@@ -278,6 +351,17 @@ final class MixEngine {
     /// Observer for `.AVAudioEngineConfigurationChange` — registered PER ENGINE INSTANCE (the
     /// notification's object is the engine), so a media-reset rebuild re-registers it.
     @ObservationIgnored private var configChangeObserver: NSObjectProtocol?
+    /// Device-switch / recovery diagnostics. ~1 info line per second while a deck plays, plus one
+    /// line per recovery event — invisible cost unless collected:
+    ///   log stream --predicate 'subsystem == "com.levi.pocketdj"' --info
+    @ObservationIgnored private static let diag = Logger(subsystem: "com.levi.pocketdj", category: "mixdiag")
+    private func dlog(_ s: String) {
+        Self.diag.info("\(s, privacy: .public)")
+        MixDiag.shared.append(s)     // no-op unless a Settings ▸ Debug capture session is running
+    }
+    @ObservationIgnored private let tapPulse = MixTapPulse()
+    @ObservationIgnored private var lastDiagHeartbeat: Date?
+    @ObservationIgnored private var lastRenderingDiag: Bool?
     /// Wall-clock moment the tick watchdog first saw the engine stopped while the mix thinks it's
     /// live. Parks the auto-machine clocks (mirroring `remotePausedAt`) so a stall never burns a
     /// track's runway or fires a transition into a dead engine; recovery shifts them forward.
@@ -496,6 +580,7 @@ final class MixEngine {
                                   channels: format.channelCount) else { release?(); return false }
         recordingRelease = release
         isRecording = true
+        dlog("rec: START run=\(engine.isRunning ? 1 : 0)")
         return true
     }
 
@@ -505,6 +590,7 @@ final class MixEngine {
     /// scope mid-`finishWriting` can fail the fragmented file's tail write. No-op if not recording.
     func stopRecording() {
         guard isRecording else { return }
+        dlog("rec: STOP appended=\(String(format: "%.1f", recordingAppendedSeconds))s")
         let release = recordingRelease
         recordingRelease = nil
         isRecording = false
@@ -606,7 +692,19 @@ final class MixEngine {
         // decks on-device).
         if let hs = houseSum {
             let sink = recordingSink
+            let pulse = tapPulse
             hs.installTap(onBus: 0, bufferSize: 4096, format: hs.outputFormat(forBus: 0)) { buffer, _ in
+                // Liveness mirrors for mixdiag: proves the render graph is actually pulling, and
+                // whether it carries signal. Sparse peak scan — diagnostics, not metering.
+                let now = Date().timeIntervalSinceReferenceDate
+                pulse.lastTapAt = now
+                if let ch = buffer.floatChannelData?[0] {
+                    var peak: Float = 0
+                    let n = Int(buffer.frameLength)
+                    var i = 0
+                    while i < n { peak = max(peak, abs(ch[i])); i += 64 }
+                    if peak > 0.0005 { pulse.lastAudibleAt = now }
+                }
                 sink.write(buffer)
             }
         }
@@ -783,10 +881,12 @@ final class MixEngine {
         for d in Deck.allCases where state(d).isPlaying {
             if stemActive(d) {
                 if let nodes = stemPlayers[d], nodes.values.contains(where: { !$0.isPlaying }) {
+                    dlog("heal: re-kick STEMS deck \(d.rawValue)")
                     ensureStemsScheduled(d)
                     startStems(d)
                 }
             } else if let p = players[d], !p.isPlaying {
+                dlog("heal: re-kick deck \(d.rawValue)")
                 p.play()
             }
         }
@@ -794,6 +894,7 @@ final class MixEngine {
 
     func play(_ deck: Deck) {
         guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
+        dlog("ui: play(\(deck.rawValue)) run=\(engine.isRunning ? 1 : 0) node=\((players[deck]?.isPlaying ?? false) ? 1 : 0)")
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
         ensureEngine()
         // Even when the engine can't run RIGHT NOW (mid route change / session in transition) the
@@ -808,6 +909,7 @@ final class MixEngine {
     }
 
     func pause(_ deck: Deck) {
+        dlog("ui: pause(\(deck.rawValue)) run=\(engine.isRunning ? 1 : 0) node=\((players[deck]?.isPlaying ?? false) ? 1 : 0)")
         // A manual pause during a RUNNING Auto-DJ ends it — but NOT while auto is PAUSED, where you're
         // deliberately hand-mixing and a per-deck pause must behave like a normal manual pause.
         if autoMixing && !autoPaused { endAutoLoop() }
@@ -825,6 +927,7 @@ final class MixEngine {
     func togglePlay(_ deck: Deck) { state(deck).isPlaying ? pause(deck) : play(deck) }
 
     func playBoth() {
+        dlog("ui: playBoth run=\(engine.isRunning ? 1 : 0)")
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
         unfreezeAutoClock()      // master play un-silences everything — unpark any remote-frozen fade
         ensureEngine()
@@ -841,6 +944,7 @@ final class MixEngine {
     }
 
     func pauseBoth() {
+        dlog("ui: pauseBoth run=\(engine.isRunning ? 1 : 0)")
         masterPausedDecks = Set(Deck.allCases.filter { state($0).isPlaying })   // what the lock-screen ▶ resumes
         if autoMixing && !autoPaused { endAutoLoop() }     // a manual master-Pause during a RUNNING Auto-DJ ends it
         suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
@@ -2349,6 +2453,11 @@ final class MixEngine {
         let dt = min(lastTickAt.map { now.timeIntervalSince($0) } ?? 0, 0.5)
         lastTickAt = now
         let rendering = built && engine.isRunning
+        if lastRenderingDiag != rendering {
+            dlog("render \(lastRenderingDiag.map(String.init) ?? "nil")→\(rendering)")
+            lastRenderingDiag = rendering
+        }
+        diagHeartbeat(rendering: rendering)
         if rendering {
             unparkEngineStall()      // engine came back via any path → shift the parked clocks
             healParkedPlayers()      // macOS device switch: engine renders on, player nodes parked
@@ -2378,6 +2487,29 @@ final class MixEngine {
         return true
     }
 
+    /// One `mixdiag` line per second while anything plays: the full liveness picture — engine
+    /// state vs render-callback age vs signal age vs per-deck intent/node/position — so a silent
+    /// failure in the field shows exactly WHICH layer died (engine stopped / callbacks stopped /
+    /// rendering zeros / node parked).
+    private func diagHeartbeat(rendering: Bool) {
+        let now = Date()
+        guard lastDiagHeartbeat.map({ now.timeIntervalSince($0) >= 1 }) ?? true else { return }
+        lastDiagHeartbeat = now
+        let t = now.timeIntervalSinceReferenceDate
+        let tapAge = tapPulse.lastTapAt == 0 ? -1 : t - tapPulse.lastTapAt
+        let audibleAge = tapPulse.lastAudibleAt == 0 ? -1 : t - tapPulse.lastAudibleAt
+        let outHz = Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)
+        func deck(_ d: Deck) -> String {
+            let intent = state(d).isPlaying ? 1 : 0
+            let node = (players[d]?.isPlaying ?? false) ? 1 : 0
+            return "(\(intent),\(node),\(String(format: "%.1f", position(d))))"
+        }
+        dlog("hb render=\(rendering ? 1 : 0) run=\(engine.isRunning ? 1 : 0)"
+             + " tapAge=\(String(format: "%.2f", tapAge)) sigAge=\(String(format: "%.2f", audibleAge))"
+             + " A=\(deck(.a)) B=\(deck(.b)) out=\(outHz)Hz rec=\(isRecording ? 1 : 0)"
+             + " stall=\(engineStallAt != nil ? 1 : 0) rp=\(remotePausedAt != nil ? 1 : 0) auto=\(autoMixing ? 1 : 0)/\(autoPaused ? 1 : 0)")
+    }
+
     /// Bring a system-stopped engine back and resume the decks that were playing. Called from the
     /// route/config-change observers and the tick watchdog; safe to call any time (no-ops when the
     /// engine is running or nothing wants audio). A failed start stays parked — `engineStallAt`
@@ -2390,7 +2522,10 @@ final class MixEngine {
         // resume unparks. But a deck the user HAND-STARTED during the park (autoPaused
         // hand-mixing) is meant to be audible, so it keeps full recovery.
         let anyDeckPlaying = deckA.isPlaying || deckB.isPlaying
-        guard remotePausedAt == nil || anyDeckPlaying else { return }
+        guard remotePausedAt == nil || anyDeckPlaying else {
+            dlog("recover: parked (rp set, decks silent) — no restart")
+            return
+        }
         // Engine survived (or auto-recovered — macOS does this on some device switches) but the
         // PLAYER nodes may have been parked by the reconfigure: silence renders into the house
         // sum (and an open take) while everything claims to be live. Re-kick them.
@@ -2398,10 +2533,15 @@ final class MixEngine {
         guard anyDeckPlaying || autoMixing else { return }
         // While remote-frozen the auto clocks are ALREADY parked — a stall park stacked on top
         // would shift them twice on resume. Recover the audio without the stall bookkeeping.
-        if remotePausedAt == nil, engineStallAt == nil { engineStallAt = Date() }
+        if remotePausedAt == nil, engineStallAt == nil {
+            engineStallAt = Date()
+            dlog("recover: engine down — stall parked")
+        }
         if let last = lastEngineRecoveryAttempt, Date().timeIntervalSince(last) < 0.9 { return }
         lastEngineRecoveryAttempt = Date()
-        guard startEngineIfNeeded() else { return }
+        let ok = startEngineIfNeeded()
+        dlog("recover: engine.start → \(ok ? "OK" : "FAILED")")
+        guard ok else { return }
         unparkEngineStall()
         resumePlayingDecks()
     }
@@ -2559,7 +2699,14 @@ final class MixEngine {
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o) }
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.recoverFromEngineStop() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dlog("CONFIG CHANGE: run=\(self.engine.isRunning ? 1 : 0)"
+                          + " nodeA=\((self.players[.a]?.isPlaying ?? false) ? 1 : 0)"
+                          + " nodeB=\((self.players[.b]?.isPlaying ?? false) ? 1 : 0)"
+                          + " out=\(Int(self.engine.outputNode.outputFormat(forBus: 0).sampleRate))Hz")
+                self.recoverFromEngineStop()
+            }
         }
     }
 }

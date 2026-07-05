@@ -109,6 +109,9 @@ struct PocketDJApp: App {
             appleMusic: AppleMusicPlaybackProvider(provider: amProvider))
         _app = State(initialValue: app)
         _settings = State(initialValue: settings)
+        // Debug capture persists across launches: a relaunch mid-repro starts a fresh session
+        // immediately (the buffer is memory-only — see MixDiag / Settings ▸ Debug).
+        if settings.debugLoggingEnabled { MixDiag.shared.start() }
         _edits = State(initialValue: edits)
         _collections = State(initialValue: collections)
         _musicSync = State(initialValue: musicSync)
