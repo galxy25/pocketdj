@@ -41,6 +41,15 @@ enum Config {
     /// scale-to-zero rebuild → new host) WITHOUT shipping a new client build.
     static var searchConfigURL: URL { catalogBase.appendingPathComponent("search-config.json") }
 
+    /// Studio ▸ Instruments pack index (`{version, attribution, sharedBanks, packs}`),
+    /// listing the downloadable SoundFont banks. Lives on the public rips bucket — the
+    /// bucket policy only makes `rips/*` public, so packs MUST stay under that prefix.
+    static var instrumentsIndexURL: URL { ripsBase.appendingPathComponent("rips/instruments/index.json") }
+
+    /// Base for instrument-pack keys relative to the index (e.g. `banks/<file>.sf2` →
+    /// `rips/instruments/banks/<file>.sf2`). Sibling of `instrumentsIndexURL`.
+    static var instrumentsBase: URL { ripsBase.appendingPathComponent("rips/instruments") }
+
     /// Resolve an art URL that may be root-relative (`/art/<albumId>.jpg`, the
     /// mirrored thumbnail served by the same CloudFront) or already absolute
     /// (e.g. an iTunes `mzstatic` cover).

@@ -33,7 +33,17 @@ import Foundation
 //   same heterogeneous folder groups as playlists (folders hold BOTH). Additive + lenient:
 //   a v3 doc migrates forward (every pocket's folderId stays nil ⇒ top level); a v4 doc
 //   loads degraded on a v3 app (the unknown `folderId` key is simply ignored, pockets intact).
-let collectionsSchemaVersion = 4
+// v4 → v5: playlist decoding became LOSSY per element — the `[Playlist]` list, every
+//   chapter array, and every nested `children` recursion decode through
+//   `LossyDecodableArray`, so ONE undecodable / unknown-`kind` node drops THAT ELEMENT
+//   ONLY, never a chapter, the list, or the document. Structural insurance shipped AHEAD
+//   of any new node kind: previously a single unknown kind made the whole synthesized
+//   `[Playlist]` decode throw, the document's lenient `try?` silently yielded
+//   `playlists = []`, and the next save() DESTROYED every playlist. Studio items
+//   (samples `smp_` / loops `lp_` / patterns `ptn_`) ride the EXISTING string arrays
+//   (`Pocket.songIds` + `.song` nodes) as namespaced ids — deliberately NO new Kind case
+//   — so a v4 app still decodes a v5 doc (studio rows just degrade at resolution time).
+let collectionsSchemaVersion = 5
 
 enum PocketKind: String, Codable, Hashable, Sendable { case harmonic, performance }
 
@@ -112,6 +122,33 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+// MARK: - Lossy per-element array decoding (the v5 insurance)
+
+/// Decodes `[Element]` DROPPING the elements that fail — one bad or unknown-kind element
+/// costs that element only, never the whole array. Each element decodes into a
+/// `FailableBox` (which swallows the element's error into `nil`), then the boxes are
+/// compacted. Applied at every `[Playlist]` / `[PlaylistNode]` site (document list,
+/// chapter arrays, nested `children`) so a future node kind — or one corrupt row — can
+/// NEVER wipe playlists: pre-v5, the synthesized `[PlaylistNode]` decode threw on a
+/// single unknown kind, the document's lenient `try?` yielded `playlists = []`, and the
+/// next save() persisted the empty list (total loss on the older app).
+struct LossyDecodableArray<Element: Decodable>: Decodable {
+    var elements: [Element]
+
+    /// Decodes to `nil` instead of throwing, so the enclosing ARRAY decode survives.
+    private struct FailableBox<T: Decodable>: Decodable {
+        let value: T?
+        init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+    }
+
+    init(from decoder: Decoder) throws {
+        // A non-array value still throws (same as synthesized) — only ELEMENT failures
+        // are absorbed. The `try` here surfaces that type-mismatch to the caller.
+        let c = try decoder.singleValueContainer()
+        elements = try c.decode([FailableBox<Element>].self).compactMap(\.value)
+    }
+}
+
 /// A node in a playlist template. A flat, `kind`-discriminated, recursive shape
 /// (matches the PWA JSON): song/album/pocket/text leaves + `sequence` chapters.
 struct PlaylistNode: Codable, Identifiable, Hashable, Sendable {
@@ -131,6 +168,45 @@ struct PlaylistNode: Codable, Identifiable, Hashable, Sendable {
     var note: String?            // performer cue
 
     var id: String { nodeId }
+
+    enum CodingKeys: String, CodingKey {
+        case nodeId, kind, songId, albumId, pocketId, text, name, targetMs, children, note
+    }
+
+    /// Memberwise init, spelled out because the hand-written `init(from:)` below would
+    /// otherwise suppress the compiler's — same parameter order + nil defaults every
+    /// existing call site (factories, stores, tests) already relies on.
+    init(nodeId: String, kind: Kind, songId: String? = nil, albumId: String? = nil,
+         pocketId: String? = nil, text: String? = nil, name: String? = nil,
+         targetMs: Int? = nil, children: [PlaylistNode]? = nil, note: String? = nil) {
+        self.nodeId = nodeId; self.kind = kind
+        self.songId = songId; self.albumId = albumId; self.pocketId = pocketId; self.text = text
+        self.name = name; self.targetMs = targetMs; self.children = children
+        self.note = note
+    }
+
+    /// v5 LOSSY decode. Field-for-field identical to the synthesized decoder for the
+    /// known kinds — required `nodeId`/`kind` throw when missing, every optional uses
+    /// `decodeIfPresent` (so a present-but-wrong-type value still throws) — with two
+    /// deliberate differences:
+    ///   • an unknown `kind` STRING throws (exactly like synthesized): the point is
+    ///     that the enclosing `LossyDecodableArray` then drops just this node;
+    ///   • `children` recurses through `LossyDecodableArray`, so an unknown-kind
+    ///     grandchild drops that grandchild only and THIS node survives.
+    /// `encode(to:)` stays SYNTHESIZED, so round-trip bytes are unchanged for known kinds.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        nodeId = try c.decode(String.self, forKey: .nodeId)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        songId = try c.decodeIfPresent(String.self, forKey: .songId)
+        albumId = try c.decodeIfPresent(String.self, forKey: .albumId)
+        pocketId = try c.decodeIfPresent(String.self, forKey: .pocketId)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        targetMs = try c.decodeIfPresent(Int.self, forKey: .targetMs)
+        children = try c.decodeIfPresent(LossyDecodableArray<PlaylistNode>.self, forKey: .children)?.elements
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+    }
 }
 
 /// A flat, named grouping of playlists (v3). Membership is by `Playlist.folderId`, so a
@@ -165,6 +241,36 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var folderId: String?              // v3: optional ⇒ back-compat (nil = top level)
     var createdAt: Double = 0
     var updatedAt: Double = 0
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description, sequences, targetMs, folderId, createdAt, updatedAt
+    }
+
+    /// Memberwise init, spelled out because the hand-written `init(from:)` below would
+    /// otherwise suppress the compiler's (same parameters/defaults every call site uses).
+    init(id: String, name: String, description: String? = nil, sequences: [PlaylistNode],
+         targetMs: Int? = nil, folderId: String? = nil, createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.description = description
+        self.sequences = sequences; self.targetMs = targetMs; self.folderId = folderId
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+
+    /// v5 LOSSY chapters: `sequences` decodes per-element, so one undecodable /
+    /// unknown-kind chapter node drops that chapter slot only — the playlist and its
+    /// other chapters survive. Every other field mirrors the synthesized decoder
+    /// exactly (required fields throw), so a playlist that is itself undecodable is
+    /// dropped by the DOCUMENT's lossy `[Playlist]` — that playlist only, never the list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        sequences = try c.decode(LossyDecodableArray<PlaylistNode>.self, forKey: .sequences).elements
+        targetMs = try c.decodeIfPresent(Int.self, forKey: .targetMs)
+        folderId = try c.decodeIfPresent(String.self, forKey: .folderId)
+        createdAt = try c.decode(Double.self, forKey: .createdAt)
+        updatedAt = try c.decode(Double.self, forKey: .updatedAt)
+    }
 }
 
 // MARK: - Setlist instance — the frozen performance produced by ▶ Play
@@ -310,7 +416,10 @@ struct CollectionsDocument: Codable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? 0
         pockets = (try? c.decode([Pocket].self, forKey: .pockets)) ?? []
-        playlists = (try? c.decode([Playlist].self, forKey: .playlists)) ?? []
+        // v5: the playlists LIST is lossy per element — an undecodable playlist drops
+        // that playlist only (previously one bad playlist zeroed the whole list here,
+        // and the next save() persisted the loss).
+        playlists = (try? c.decode(LossyDecodableArray<Playlist>.self, forKey: .playlists))?.elements ?? []
         setlists = (try? c.decode([Setlist].self, forKey: .setlists)) ?? []
         folders = (try? c.decode([PlaylistFolder].self, forKey: .folders)) ?? []
         lastAddTarget = try? c.decode(AddTarget.self, forKey: .lastAddTarget)
@@ -348,6 +457,11 @@ enum CollectionsMigration {
         //   decode already defaults the field to nil (top level), so the mapping forward
         //   is the no-op identity. Kept explicit so the version bump is visible + the
         //   seam exists for any future pocket-folder-shape transform.
+        // v4 → v5: no shape change — v5 = lossy per-element playlist decode + studio
+        //   namespaced ids (smp_/lp_/ptn_) riding the EXISTING songIds arrays. Both are
+        //   decoder/consumer behaviour, not stored shape, so the mapping forward is the
+        //   no-op identity. Kept explicit so the version bump is visible + the seam
+        //   exists for any future studio-shape transform.
         doc.schemaVersion = collectionsSchemaVersion
         return doc
     }
