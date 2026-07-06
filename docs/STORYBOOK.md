@@ -2016,7 +2016,9 @@ beat still plays."
 
 The **Instruments** sub-tab turns the app into a small **MIDI instrument**. Seven voices —
 **piano, violin, bass guitar, acoustic guitar, trumpet, clarinet, harp** — play from a **wired / USB
-MIDI keyboard** or the **on-screen keys**. (Network and Bluetooth MIDI aren't in this version.)
+MIDI keyboard** or the **on-screen keys**. (Network and Bluetooth MIDI aren't in this version.) The
+on-screen keyboard spans **six octaves** and opens on **C3**; it **scrolls**, and the **‹ ›** buttons
+on either side jump a whole octave at a time (on a Mac, the **left / right arrow keys** do the same).
 
 **The sounds are one download.** All seven voices live in a single **~32 MB General MIDI sound bank**
 (**GeneralUser GS** — its license asks for credit, so the packs screen shows the attribution), so the
