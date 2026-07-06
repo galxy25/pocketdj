@@ -17,6 +17,16 @@ final class BrowseState {
     /// Search mode: false = on-device (local filter), true = online (OpenSearch).
     var searchOnline: Bool = false
 
+    /// The on-device results the BrowseView renders (filtered + sorted, WITHOUT membership).
+    /// Published by `refreshResults`, which does the heavy filter+sort OFF the main actor — the
+    /// view reads THIS instead of computing inline, so a large-catalog search/sort never blocks the
+    /// main thread (the multi-second `localizedCaseInsensitiveContains` runloop hang). Membership
+    /// (song mode) is layered on cheaply at read time in `visibleResults`.
+    private(set) var displayItems: [BrowseItem] = []
+    /// The `resultsKey` the current `displayItems` were computed for — lets `refreshResults` skip
+    /// redundant recomputes and drop a cancelled/stale run's output.
+    @ObservationIgnored private var displayKey: String?
+
     // MARK: Collection-membership filter (song mode only) — mirrors the PWA's
     // BrowserView SHOW/HIDE filters (src/components/browser/BrowserView.tsx). Held as
     // TRANSIENT state (not persisted in the Snapshot), exactly like the PWA keeps it in
@@ -113,6 +123,10 @@ final class BrowseState {
     /// contents) live outside the key and can change independently, so it always reflects
     /// the current collections. Crucially it does NOT trigger a re-sort: the costly work
     /// stays behind the memo even on the membership path.
+    /// Synchronous derivation (base rows → text query → clause filter → multi-key sort → membership).
+    /// Kept for tests + any caller that needs the result inline; the BrowseView instead renders the
+    /// OFF-main `displayItems` via `visibleResults` (see `refreshResults`) so the heavy work never
+    /// runs on the main actor.
     func results(_ app: AppModel, collections: CollectionsStore? = nil) -> [BrowseItem] {
         let sorted = app.cachedBrowseResults(resultsKey(app)) { computeSorted(app) }
         if kind == .song, membershipActive, let collections {
@@ -121,11 +135,56 @@ final class BrowseState {
         return sorted
     }
 
+    /// The rows the BrowseView renders: the OFF-main-computed `displayItems` with the cheap
+    /// collection-membership filter (song mode) layered on at read time so it always reflects the
+    /// live collections. Never does the heavy filter/sort — that lands in `displayItems`.
+    func visibleResults(_ collections: CollectionsStore? = nil) -> [BrowseItem] {
+        if kind == .song, membershipActive, let collections {
+            return applyMembership(displayItems, collections)
+        }
+        return displayItems
+    }
+
+    /// The `.task(id:)` signature the BrowseView keys its off-main recompute on: changes whenever any
+    /// input to the filtered+sorted set changes (kind, query, filters, sort, catalog revision).
+    /// Membership is deliberately excluded — it's applied cheaply at read time, not recomputed here.
+    func recomputeSignature(_ app: AppModel) -> String { resultsKey(app) }
+
+    /// Recompute the on-device results OFF the main actor and publish to `displayItems`. Driven by
+    /// the BrowseView's `.task(id: recomputeSignature)`, so a changed input auto-cancels the in-flight
+    /// run (debounce). A memo hit publishes instantly; a miss with an active text query waits out a
+    /// short debounce, then filters + sorts on a detached task before assigning back on the main
+    /// actor. Membership is NOT applied here (it's layered in `visibleResults`).
+    func refreshResults(_ app: AppModel) async {
+        let key = resultsKey(app)
+        if displayKey == key { return }                       // already current
+        if let cached = app.peekBrowseResults(key) {          // memo hit → instant
+            displayItems = cached
+            displayKey = key
+            return
+        }
+        // Debounce ONLY an active text query (rapid typing); base/filter/sort changes apply at once.
+        if !query.isEmpty {
+            try? await Task.sleep(for: .milliseconds(180))
+            if Task.isCancelled { return }
+        }
+        // Snapshot the inputs on the main actor, then filter+sort on a detached (off-main) task.
+        let base = app.browseItems(kind)
+        let keys = app.searchKeys(kind)
+        let (q, cl, sk) = (query, clauses, sortKeys)
+        let sorted = await Task.detached(priority: .userInitiated) {
+            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: cl, sortKeys: sk)
+        }.value
+        if Task.isCancelled { return }
+        app.storeBrowseResults(key, sorted)
+        displayItems = sorted
+        displayKey = key
+    }
+
     /// The memoized portion: base rows → text query → clause filter → multi-key sort.
     private func computeSorted(_ app: AppModel) -> [BrowseItem] {
-        var base = baseItems(app)
-        if !query.isEmpty { base = base.filter { textMatch($0, query) } }
-        return SortEngine.apply(FilterEngine.apply(base, clauses), sortKeys)
+        Self.filterSort(base: app.browseItems(kind), searchKeys: app.searchKeys(kind),
+                        query: query, clauses: clauses, sortKeys: sortKeys)
     }
 
     /// Resolve the union of song ids placed in the selected collection ids (mixed
@@ -174,17 +233,24 @@ final class BrowseState {
         includeAny = false; includeIds = []; excludeAny = false; excludeIds = []
     }
 
-    private func textMatch(_ item: BrowseItem, _ q: String) -> Bool {
-        switch item {
-        case .album(let a, _):
-            return a.name.localizedCaseInsensitiveContains(q)
-                || a.artist.localizedCaseInsensitiveContains(q)
-                || (a.genre ?? "").localizedCaseInsensitiveContains(q)
-        case .song(let s, let albumName, _, _):
-            return s.name.localizedCaseInsensitiveContains(q)
-                || s.artist.localizedCaseInsensitiveContains(q)
-                || albumName.localizedCaseInsensitiveContains(q)
+    /// The pure filter+sort core, `nonisolated` so it runs on a background executor (called from
+    /// `refreshResults`'s detached task). The text query is matched with a cheap `contains` over the
+    /// pre-folded (case/diacritic-insensitive) `searchKeys` (parallel to `base`, same order/count)
+    /// instead of ~90k × 3 per-field `localizedCaseInsensitiveContains` calls — the runloop-hang source.
+    nonisolated static func filterSort(base: [BrowseItem], searchKeys: [String],
+                                       query: String, clauses: [Clause], sortKeys: [SortKey]) -> [BrowseItem] {
+        var items = base
+        // Fold the query the SAME way the searchKeys were folded (case- + diacritic-insensitive,
+        // locale-independent), and strip newlines: the searchKeys join fields with "\n", so a query
+        // containing one could match ACROSS the field boundary (a lone "\n" would match the whole
+        // catalog) — the old per-field OR never did. A real query has no newline; the strip keeps
+        // "abba\n" matching "abba".
+        let q = query.replacingOccurrences(of: "\n", with: "")
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        if !q.isEmpty, base.count == searchKeys.count {
+            items = zip(base, searchKeys).compactMap { $0.1.contains(q) ? $0.0 : nil }
         }
+        return SortEngine.apply(FilterEngine.apply(items, clauses), sortKeys)
     }
 
     /// Distinct values present for an options-backed field (drives `any of` pickers).

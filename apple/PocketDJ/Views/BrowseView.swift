@@ -108,6 +108,14 @@ struct BrowseView: View {
             consumeIntentSearch()
             if browse.searchOnline { triggerOnline() }
         }
+        // Recompute the on-device results OFF the main actor whenever an input changes (kind, query,
+        // filters, sort, catalog reload). Keying the task on the signature auto-cancels the previous
+        // run, giving free debounce while typing — the heavy filter+sort never blocks the main thread.
+        // In online mode the id is a constant so the on-device recompute doesn't run per keystroke;
+        // toggling back to on-device flips the id and recomputes for the current query.
+        .task(id: browse.searchOnline ? "online" : browse.recomputeSignature(app)) {
+            if !browse.searchOnline { await browse.refreshResults(app) }
+        }
     }
 
     /// Atomically take the pending intent search term into the search field (live
@@ -121,7 +129,7 @@ struct BrowseView: View {
 
     /// The visible items (on-device or online) for the current kind, in display order.
     private var visibleItems: [BrowseItem] {
-        browse.searchOnline ? online.items : browse.results(app, collections: collections)
+        browse.searchOnline ? online.items : browse.visibleResults(collections)
     }
 
     /// The row ids currently shown in WHICHEVER list is up (on-device or online), in
@@ -328,7 +336,7 @@ struct BrowseView: View {
             } else {
                 // Full ordered set is memoized (cheap); render only a growing prefix so the
                 // ForEach stays small no matter how large the catalog is.
-                let items = browse.results(app, collections: collections)
+                let items = browse.visibleResults(collections)
                 let page = BrowsePaging.page(items, visible: liveVisible)
                 resultsHeader(items.count)
                 if browse.kind == .album { albumResults(page, fullCount: items.count) }

@@ -26,6 +26,13 @@ final class AppModel {
     /// Observed, so a view reading them re-renders when the catalog changes.
     private(set) var albumBrowseItems: [BrowseItem] = []
     private(set) var songBrowseItems: [BrowseItem] = []
+    /// Per-item case/diacritic-folded search haystack (title + artist + album/genre), parallel to
+    /// `albumBrowseItems` / `songBrowseItems` and built ONCE alongside them. Lets the text-query
+    /// filter be a cheap pre-folded `contains` (run OFF the main actor) instead of ~90k × 3
+    /// locale-aware `localizedCaseInsensitiveContains` calls per keystroke ON the main actor — the
+    /// multi-second search hang the runloop hang reports captured.
+    private(set) var albumSearchKeys: [String] = []
+    private(set) var songSearchKeys: [String] = []
     /// Bumped whenever the effective catalog changes (load / edit). Part of the browse
     /// results cache key, so a stale memo can never survive a catalog change.
     private(set) var catalogRevision = 0
@@ -80,6 +87,12 @@ final class AppModel {
     @ObservationIgnored private var browseResultsOrder: [String] = []
     private static let browseResultsCacheCap = 6
 
+    /// Single-flight guard for `loadIfNeeded`. The seed/refresh now suspend (off-main build), so
+    /// `state` is no longer claimed synchronously before the first `await` — this flag stops two
+    /// concurrent callers (a multi-window RootView `.task` + an App-Intent launch) from both passing
+    /// the state check and building the catalog twice / firing duplicate network refreshes.
+    @ObservationIgnored private var loadInFlight = false
+
     /// Optional fixed loader (tests / fixtures). When nil, sources come from `settings`.
     private let loader: CatalogLoading?
     /// Settings drive the live multi-source catalog (set by the app at launch).
@@ -106,11 +119,19 @@ final class AppModel {
         case .loaded, .loading: return
         default: break
         }
-        // OFFLINE-FIRST: render the last-good catalog from the on-disk cache SYNCHRONOUSLY (no
-        // `.loading` blank, no waiting on the network) — fixes the cold/iOS-kill relaunch showing
-        // an empty UI while it re-downloads a catalog it already had. Only show `.loading` when
-        // there is genuinely nothing cached (true first launch).
-        if seedFromCache() {
+        // Single-flight: the build below suspends, so claim the load with a flag (not `state`, which
+        // we intentionally leave `.idle` on the seed path to avoid a loading flash). Without this a
+        // second concurrent caller would slip past the `state` check during the first's `await`.
+        if loadInFlight { return }
+        loadInFlight = true
+        defer { loadInFlight = false }
+        // OFFLINE-FIRST: render the last-good catalog from the on-disk cache — no waiting on the
+        // network — fixing the cold/iOS-kill relaunch that showed an empty UI while it re-downloaded
+        // a catalog it already had. The decode + merge + edit-overlay + browse-row build all run OFF
+        // the main actor (see `seedFromCache` → `buildDerived`), so a large (~90k-row) catalog never
+        // blocks the first frame — the visionOS blank-first-window on cold relaunch was this same
+        // build blocking the compositor's first frame. Only show `.loading` when nothing is cached.
+        if await seedFromCache() {
             // Seed applied ⇒ state is already `.loaded`. Run the conditional network refresh
             // OFF the caller's critical path: a caller that awaits here (e.g. a Siri playback
             // intent on a cold background launch) must not hang on ~30s-per-source network
@@ -124,16 +145,36 @@ final class AppModel {
     }
 
     /// Populate the catalog from each enabled source's CatalogService disk cache, WITHOUT touching
-    /// the network. Returns whether anything was seeded. No-op for the fixture/test loader (no
-    /// per-URL cache) and on a true first launch (no cache yet).
+    /// the network. The heavy work — JSON-decoding each cached index and building the merged,
+    /// edit-overlaid, indexed catalog + browse rows — runs on a detached task OFF the main actor;
+    /// only the final `assign` of the finished value touches `@MainActor` state. Returns whether
+    /// anything was seeded. No-op for the fixture/test loader (no per-URL cache) and on a true
+    /// first launch (no cache yet).
     @discardableResult
-    private func seedFromCache() -> Bool {
+    private func seedFromCache() async -> Bool {
         guard loader == nil else { return false }
         let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
-        let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
-        guard !cached.isEmpty else { return false }
-        apply(cached)
+        let albumEdits = edits?.doc.albums ?? [:]
+        let songEdits = edits?.doc.songs ?? [:]
+        let derived = await Task.detached(priority: .userInitiated) { () -> Derived? in
+            let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
+            guard !cached.isEmpty else { return nil }
+            return AppModel.buildDerived(indexes: cached, albumEdits: albumEdits, songEdits: songEdits)
+        }.value
+        guard let derived else { return false }
+        assign(derived)
+        reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
+        state = .loaded
         return true
+    }
+
+    /// If the user saved a metadata edit DURING an off-main catalog build, that build's `derived`
+    /// captured a STALE edit snapshot — re-overlay the current edits so a mid-load save isn't visually
+    /// clobbered (the edit itself is already persisted in `EditsStore`). Common case: no change → no-op.
+    private func reconcileEditsAfterBuild(albumEdits: [String: AlbumEdit], songEdits: [String: SongEdit]) {
+        if (edits?.doc.albums ?? [:]) != albumEdits || (edits?.doc.songs ?? [:]) != songEdits {
+            applyEdits()
+        }
     }
 
     /// Conditionally refresh from the network. A 304/offline/failed refresh is NON-DESTRUCTIVE:
@@ -141,7 +182,17 @@ final class AppModel {
     /// is never dropped, and we only surface `.failed` when there was nothing to show.
     private func performRefresh(hadData: Bool) async {
         do {
-            apply(try await fetchIndexes())
+            let indexes = try await fetchIndexes()
+            let albumEdits = edits?.doc.albums ?? [:]
+            let songEdits = edits?.doc.songs ?? [:]
+            // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
+            // OFF the main actor; only the finished value is assigned back on `@MainActor`.
+            let derived = await Task.detached(priority: .userInitiated) {
+                AppModel.buildDerived(indexes: indexes, albumEdits: albumEdits, songEdits: songEdits)
+            }.value
+            assign(derived)
+            reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
+            state = .loaded
         } catch {
             // Refresh failed (e.g. true first launch + offline). Keep whatever is already on
             // screen; only blank to an error when we have nothing seeded/loaded.
@@ -149,63 +200,158 @@ final class AppModel {
         }
     }
 
-    /// Assign the merged catalog + per-source tags + index playlists from a set of source indexes,
-    /// overlay edits, and mark `.loaded`. Shared by the instant cache seed and the network refresh
-    /// so both paths populate state identically (and atomically — never a half-applied catalog).
-    private func apply(_ indexes: [IndexJSON]) {
-        let index = AppModel.merge(indexes)
-        let sources = AppModel.sourceTags(indexes)
-        manifest = index.manifest
-        indexPlaylists = AppModel.sourcePlaylists(indexes)
-        albumSourceById = sources.albums
-        songSourceById = sources.songs
-        availableSources = sources.names
-        rawAlbums = index.albums
-        rawSongs = index.songs
-        rawAlbumsById = Dictionary(rawAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        rawSongsById = Dictionary(rawSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        applyEdits()
-        state = .loaded
+    /// The fully-derived catalog produced OFF the main actor by `buildDerived`: the merged raw
+    /// index + per-source tags + playlists, plus the effective (edit-overlaid, sorted, indexed)
+    /// catalog and its pre-built browse rows + search keys. `assign` hands it to `@MainActor`
+    /// state in one cheap, atomic step (never a half-applied catalog).
+    struct Derived {
+        let manifest: Manifest?
+        let indexPlaylists: [SourcePlaylist]
+        let albumSourceById: [String: String]
+        let songSourceById: [String: String]
+        let availableSources: [String]
+        let rawAlbums: [IndexAlbum]
+        let rawSongs: [IndexSong]
+        let rawAlbumsById: [String: IndexAlbum]
+        let rawSongsById: [String: IndexSong]
+        let effective: Effective
     }
 
-    /// Rebuild the effective catalog by overlaying local edits onto the raw index.
-    /// Call after the catalog loads or whenever an edit is saved.
-    func applyEdits() {
-        let albumEdits = edits?.doc.albums ?? [:]
-        let songEdits = edits?.doc.songs ?? [:]
-        albums = rawAlbums.map { $0.applying(albumEdits[$0.id]) }.sorted {
+    /// The edit-overlaid, sorted, indexed catalog + its pre-built browse rows and search keys.
+    /// Shared by the launch build (`buildDerived`, off-main) and the edit-save rebuild
+    /// (`applyEdits`, on-main) so both produce identical effective state.
+    struct Effective {
+        let albums: [IndexAlbum]
+        let songs: [IndexSong]
+        let songsById: [String: IndexSong]
+        let albumsById: [String: IndexAlbum]
+        let albumBrowseItems: [BrowseItem]
+        let songBrowseItems: [BrowseItem]
+        let albumSearchKeys: [String]
+        let songSearchKeys: [String]
+    }
+
+    /// Merge source indexes → tag by source → overlay edits → sort → index → build browse rows.
+    /// Pure + `nonisolated` so the whole heavy pipeline runs on a background executor; the
+    /// `@MainActor` model only assigns the result (see `assign`).
+    nonisolated static func buildDerived(indexes: [IndexJSON],
+                                         albumEdits: [String: AlbumEdit],
+                                         songEdits: [String: SongEdit]) -> Derived {
+        let index = merge(indexes)
+        let sources = sourceTags(indexes)
+        let rawAlbums = index.albums
+        let rawSongs = index.songs
+        let effective = buildEffective(rawAlbums: rawAlbums, rawSongs: rawSongs,
+                                       albumSourceById: sources.albums, songSourceById: sources.songs,
+                                       albumEdits: albumEdits, songEdits: songEdits)
+        return Derived(
+            manifest: index.manifest,
+            indexPlaylists: sourcePlaylists(indexes),
+            albumSourceById: sources.albums,
+            songSourceById: sources.songs,
+            availableSources: sources.names,
+            rawAlbums: rawAlbums,
+            rawSongs: rawSongs,
+            rawAlbumsById: Dictionary(rawAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+            rawSongsById: Dictionary(rawSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+            effective: effective)
+    }
+
+    /// Overlay edits onto the raw catalog, sort albums, index by id, and pre-build the browse rows
+    /// + per-item search keys. Pure + `nonisolated` (the album sort over ~90k rows uses
+    /// `localizedCaseInsensitiveCompare`, which was a main-actor cost — moved off it here).
+    nonisolated static func buildEffective(rawAlbums: [IndexAlbum], rawSongs: [IndexSong],
+                                           albumSourceById: [String: String],
+                                           songSourceById: [String: String],
+                                           albumEdits: [String: AlbumEdit],
+                                           songEdits: [String: SongEdit]) -> Effective {
+        let albums = rawAlbums.map { $0.applying(albumEdits[$0.id]) }.sorted {
             let a = $0.artist.localizedCaseInsensitiveCompare($1.artist)
             return a == .orderedSame
                 ? $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
                 : a == .orderedAscending
         }
-        songs = rawSongs.map { $0.applying(songEdits[$0.id]) }
-        songsById = Dictionary(songs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        albumsById = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        rebuildBrowseItems()
-    }
+        let songs = rawSongs.map { $0.applying(songEdits[$0.id]) }
+        let songsById = Dictionary(songs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let albumsById = Dictionary(albums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-    /// Rebuild the pre-derived browse rows (and invalidate the results memo) after the
-    /// effective catalog changes. Resolves each song's album name / origin source / top-
-    /// tier genre category up front — the same per-item derivation BrowseState.baseItems
-    /// used to do on every render. Called only from `applyEdits`.
-    private func rebuildBrowseItems() {
-        albumBrowseItems = albums.map { .album($0, source: albumSourceById[$0.id]) }
-        songBrowseItems = songs.map { song in
+        let albumItems = albums.map { BrowseItem.album($0, source: albumSourceById[$0.id]) }
+        let albumKeys = albums.map { searchKey($0.name, $0.artist, $0.genre ?? "") }
+        let songItems = songs.map { song -> BrowseItem in
             let album = song.albumId.flatMap { albumsById[$0] }
             return .song(song, albumName: album?.name ?? "",
                          source: songSourceById[song.id],
                          genre: Genre.category(album?.genre))
         }
+        let songKeys = songs.map { song -> String in
+            let albumName = song.albumId.flatMap { albumsById[$0]?.name } ?? ""
+            return searchKey(song.name, song.artist, albumName)
+        }
+        return Effective(albums: albums, songs: songs, songsById: songsById, albumsById: albumsById,
+                         albumBrowseItems: albumItems, songBrowseItems: songItems,
+                         albumSearchKeys: albumKeys, songSearchKeys: songKeys)
+    }
+
+    /// One case- AND diacritic-insensitive haystack from an item's searchable fields, matched with a
+    /// plain `contains` against a same-folded query. `folding(…, locale: nil)` is DETERMINISTIC across
+    /// locales (unlike the old `localizedCaseInsensitiveContains`, which also missed "İ" U+0130 whose
+    /// `lowercased()` gains a combining dot) and ~an order of magnitude cheaper than per-field
+    /// locale-aware search; diacritic-insensitivity ("café" ≈ "cafe") is a win for accented artist/
+    /// album names. The `\n` separators keep a match within one field — a query never spans two joined
+    /// values, mirroring the old per-field OR.
+    nonisolated static func searchKey(_ fields: String...) -> String {
+        fields.joined(separator: "\n").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
+    /// Assign a fully-derived catalog to `@MainActor` state in one atomic step.
+    private func assign(_ d: Derived) {
+        manifest = d.manifest
+        indexPlaylists = d.indexPlaylists
+        albumSourceById = d.albumSourceById
+        songSourceById = d.songSourceById
+        availableSources = d.availableSources
+        rawAlbums = d.rawAlbums
+        rawSongs = d.rawSongs
+        rawAlbumsById = d.rawAlbumsById
+        rawSongsById = d.rawSongsById
+        assign(effective: d.effective)
+    }
+
+    /// Assign the effective (edit-overlaid) catalog + browse rows, bump the revision, and clear the
+    /// results memo. Shared by the launch assign and the on-main `applyEdits` rebuild.
+    private func assign(effective e: Effective) {
+        albums = e.albums
+        songs = e.songs
+        songsById = e.songsById
+        albumsById = e.albumsById
+        albumBrowseItems = e.albumBrowseItems
+        songBrowseItems = e.songBrowseItems
+        albumSearchKeys = e.albumSearchKeys
+        songSearchKeys = e.songSearchKeys
         catalogRevision &+= 1
         browseResultsCache.removeAll(keepingCapacity: true)
         browseResultsOrder.removeAll(keepingCapacity: true)
     }
 
+    /// Rebuild the effective catalog by overlaying local edits onto the raw index. Called after an
+    /// edit is saved (the launch path builds this OFF the main actor via `buildDerived`). Edit saves
+    /// are user-initiated and infrequent, so this stays synchronous.
+    func applyEdits() {
+        assign(effective: Self.buildEffective(
+            rawAlbums: rawAlbums, rawSongs: rawSongs,
+            albumSourceById: albumSourceById, songSourceById: songSourceById,
+            albumEdits: edits?.doc.albums ?? [:], songEdits: edits?.doc.songs ?? [:]))
+    }
+
     /// The pre-built, unfiltered browse rows for a kind (album name / source / genre
-    /// already resolved). O(1) — the array is built once in `applyEdits`.
+    /// already resolved). O(1) — the array is built once in `buildEffective`.
     func browseItems(_ kind: ItemKind) -> [BrowseItem] {
         kind == .album ? albumBrowseItems : songBrowseItems
+    }
+
+    /// The pre-built folded search keys parallel to `browseItems(kind)` (same order/count).
+    func searchKeys(_ kind: ItemKind) -> [String] {
+        kind == .album ? albumSearchKeys : songSearchKeys
     }
 
     /// Return the memoized browse results for `key`, computing + caching on a miss. The
@@ -213,13 +359,24 @@ final class AppModel {
     func cachedBrowseResults(_ key: String, compute: () -> [BrowseItem]) -> [BrowseItem] {
         if let hit = browseResultsCache[key] { return hit }
         let value = compute()
+        storeBrowseResults(key, value)
+        return value
+    }
+
+    /// Memo peek (no compute) — the OFF-main browse pipeline computes on a detached task, then
+    /// stores the finished set here (see `BrowseState.refreshResults`).
+    func peekBrowseResults(_ key: String) -> [BrowseItem]? { browseResultsCache[key] }
+
+    /// Store a browse result set into the bounded LRU memo (idempotent — a concurrent refresh that
+    /// already filled this key wins; recompute of the same key is deterministic anyway).
+    func storeBrowseResults(_ key: String, _ value: [BrowseItem]) {
+        if browseResultsCache[key] != nil { return }
         browseResultsCache[key] = value
         browseResultsOrder.append(key)
         if browseResultsOrder.count > Self.browseResultsCacheCap {
             let evict = browseResultsOrder.removeFirst()
             browseResultsCache.removeValue(forKey: evict)
         }
-        return value
     }
 
     func rawAlbum(_ id: String) -> IndexAlbum? { rawAlbumsById[id] }
@@ -229,8 +386,13 @@ final class AppModel {
     /// screen and refreshes in place — never resets to `.idle`/`.loading`, so it can't blank the
     /// catalog. On a cold model with nothing loaded yet it seeds from cache first.
     func reload() async {
+        // Share loadIfNeeded's single-flight gate: reload also awaits an off-main build, so a manual
+        // reload racing the launch load (or another reload) would otherwise double-build the catalog.
+        if loadInFlight { return }
+        loadInFlight = true
+        defer { loadInFlight = false }
         let hadData = !albums.isEmpty
-        if !hadData { _ = seedFromCache() }
+        if !hadData { _ = await seedFromCache() }
         await performRefresh(hadData: hadData || !albums.isEmpty)
     }
 
