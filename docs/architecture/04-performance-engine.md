@@ -1385,6 +1385,92 @@ here and in the spec. Add-to paths reuse the string-id plumbing (`AddToCollectio
 a `.studio(id, title)` case) and `SetlistDetailView` rows show a Sample/Loop/Sequence badge from
 the id prefix.
 
+### 8.7 Round 4 — on-device beat detection, file/stem sampling, slicing→pads, editable + live score
+
+**Why.** The Studio round 4 removes four ceilings: a sample could only come from an indexed track or
+the mic; a grid-less sample needed manual tap-tempo; a sample couldn't be chopped into performance
+pads; and the instrument score was read-only, post-take notation. Each is additive to the **schema-v5
+lossy-decode** doctrine (§8.6) — new fields/lists degrade to defaults or drop the single element on an
+old build, never bricking the document.
+
+**On-device beat detection — `Support/BeatDetect.swift`.** The app previously only *consumed* beat
+grids (server-side librosa, `analog-indexer/audio/analyze-beatgrid.py`). `BeatDetect.detectGrid(_:
+AVAudioPCMBuffer) -> StudioGrid?` ports that pass to **Accelerate/vDSP** so an imported/mic sample —
+which has no `analysis-<id>.json` sidecar — can still get a tempo: half-wave-rectified **spectral-flux
+onset envelope** (vDSP real FFT) → **autocorrelation** over a wide 55–210 BPM search weighted by a
+log-normal prior centred on 120 → **octave-fold** into the DJ window [70,180] → onset-energy **4/4
+downbeat phase**. All `nonisolated` statics run off the main actor; the buffer comes from
+`StudioRender.decodeFileSync` (pure file I/O — no `AVAudioSession`, so it's session-policy-safe by
+construction). Output is a constant `StudioGrid(bpm:firstDownbeatMs:)` — exactly what
+`BeatMath.sliceBoundaries`/`sliceStarts` consume. Wired as **Auto-detect tempo** in the sample
+editor's grid-less branch; write-back via `StudioStore.setSampleGrid` (which deliberately does NOT
+bump `renderRevision` — the grid drives slicing math, not the baked audio).
+
+**Sampling from files + downloaded + stems.** `StudioSource` gains an additive **`.file(originalName:)`**
+case (unknown `type` still degrades to `.mic` on old builds). `StudioRender.importAudioFile(sourceURL:
+to:)` decodes any container AVFoundation reads → canonical 44.1k AAC `sample-<id>.m4a`, rejecting
+DRM-protected assets (`AVURLAsset.hasProtectedContent` → `StudioRenderError.protectedSource`) so a
+FairPlay `.m4p` can't become a sample. The Samples view drives a `.fileImporter([.audio])` (transient
+security-scoped copy INTO the samples folder, never persisting the external URL). **Downloaded-only
+sampling** is a `restrictToDownloaded` mode on `StudioNewSampleFromTrackView` that filters the picker
+to `BurnStore.readyBurnedIds`, so every pick instant-carves and never streams/burns. **Stem-source**
+sampling: when `RipsStore.isStemmed(songId)` (or `BurnStore.stemsBurned`) is true, the carve screen
+offers per-stem chips (the 4 `StemPlayer.stems`); `StudioRender.carveStemMix(stemURLs:startMs:endMs:
+to:)` reads each selected stem's window — stems are **song-relative** (0:00 = song start, unlike the
+album-offset single-file carve), resolved via `BurnStore.localStemURLs`/`burnStems` — and SUMS them
+(`vDSP_vadd`) into one canonical AAC. Demucs stems sum back to ≈the original, so no attenuation is
+applied (a subset is simply quieter, like muting deck stems in §7.6).
+
+**Slicing → performance pads.** A new persisted list `StudioDocument.slices: [StudioSlice]` (threaded
+through `StudioStore.init` load + `snapshotDocument` — a top-level list must touch BOTH or it never
+persists). `StudioSlice` (id `slc_`, **NON-riding** like `cue_` — never in `StudioFactory.studioPrefixes`)
+is a **start-marker cue point**: `sampleId, slot(0–7), startMs, name?`; the play-out boundary is
+derived (`StudioStore.sliceWindow` = this pad's start → the next pad's start, or the sample's raw end),
+so pads may be dragged out of time order. The 8-slot CRUD mirrors cues (`setSlice`/`setSlices` chop/
+`removeSlice`/`nudgeSlice`); `deleteSample` sweeps a sample's orphan slices. `BeatMath.sliceStarts(
+count:grid:durationMs:)` computes the auto-chop — even time division grid-less, snapped to the beat
+lattice with a grid (coincident snaps merge → fewer pads). Audition is `StudioEngine.playSlice(startMs:
+endMs:)` — a **self-contained one-shot** on the already-loaded RAW sample (its own `sliceEndSec`
+out-point checked by the render-clock tick; never touches the trim window, guarded against the
+zero-frame crash). A **performance pad** is baked by carving the slice region into a normal `smp_`
+sample (`StudioSliceEditorView` → `StudioRender.carveTrackRegion`), which then flows into Loops / the
+16-step sequencer (`StudioPatternRow.targetId`) / "use as sample" under the existing `smp_` fence for
+free; "Send pads to sequencer" bakes every pad → a new `StudioPattern`, one row each.
+
+**Proper accidentals + editable score.** `StudioNoteEvent` gains an additive **`accidental: Accidental?`**
+(`{natural,sharp,flat}`, display-only — the MIDI number is the sound, so `SMFWriter` is untouched).
+`ScoreItem` carries a `spellings: [Int: Accidental]` map threaded through `ScoreQuantizer`;
+`ScoreLayout.spelledPosition(midi:clef:accidental:)` places the head on the natural line ABOVE/BELOW
+and draws the accidental (E♭ = the E line + ♭, not the D♯ line), backed by a new `ScoreGlyph.flat`.
+Editing mutates the RAW event stream, not the derived score: `StudioTake.editedEvents: [StudioNoteEvent]?`
+(nil ⇒ keep deriving so quantizer improvements still apply; non-nil ⇒ the score/replay/MIDI read it via
+`take.scoreEvents`), persisted by `StudioStore.setTakeEvents` (extends `durationMs`; `revertTakeEdits`
+drops it). On-staff hit-testing is pure/inverse: `ScorePage` now carries structured
+`LaidSystem`/`LaidMeasure`/`LaidStrip` geometry, and `ScoreLayout.locate(point:page:)` +
+`naturalMidi`/`onsetFromX`/`notePoint` invert the layout math (round-trip unit-tested). The editable
+surface is extracted into **`ScoreEditorView`** (place/select/toolbar/selection-ring via
+`SpatialTapGesture` → page space), shared by the take Score screen (→ `setTakeEvents`) and the live
+staff (→ `setLiveEvents`).
+
+**One live editable staff.** `InstrumentEventLog` gains an **always-on** capture path
+(`liveOn`/`liveOff`, anchored at the first note, completed-notes-only, coalesced `snapshotLiveIfDirty`)
+that is deliberately SEPARATE from the take `armed` gate AND called BEFORE the audible guard in the
+engine's `noteOn`/`noteOff` + the CoreMIDI path — so it fills even with no instrument loaded and never
+desyncs a take's audio (the take log stays audible-only). It publishes on the existing 30 Hz highlight
+pump into `InstrumentEngine.liveEvents` (the pump was **moved above `engine.start()`** so the
+audio-independent drains run even when audio can't start). `StudioInstrumentsView` renders it through
+the shared `ScoreEditorView`; **Save-as-take** files the events with a silent placeholder audio (launch
+reconcile prunes takes whose file is missing — replay plays events, so the take is audible; only "use
+as sample" is silent, a documented follow-up). New tests: `BeatDetectTests`, `BeatMathTests`
+(sliceStarts), `StudioRenderTests` (stem-mix sum), `ScoreLayoutTests` (spelling + locate round-trips),
+`StudioStoreTests` (slices + editedEvents), `InstrumentLiveLogTests` (capture + engine noteOn→liveEvents).
+
+**visionOS App Icon.** Distribution-adjacent (Ch. 7): `Assets.xcassets` gained an
+`AppIcon.solidimagestack` (layered visionOS icon: pocket/back · controller/middle · DJ/front, split
+from the flat icon so the straight-on composite is pixel-identical) beside the existing
+`AppIcon.appiconset` — actool resolves the right type per platform, injecting the
+`CFBundleIcons.CFBundlePrimaryIcon` key the visionOS TestFlight upload requires.
+
 ## Next
 
 → [Chapter 5 — Playback & Rip-on-Demand](./05-playback-and-rip-on-demand.md)

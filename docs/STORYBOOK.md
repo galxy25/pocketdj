@@ -2094,3 +2094,44 @@ never touched — and it **never auto-prunes** anything you made.
 **User story:** "My loop sits in tomorrow's warmup playlist right next to real records and plays in
 its slot — but when I hit *Rip collection* or export the CSV, PocketDJ knows it's mine and leaves it
 alone."
+
+## 73. Round 4 — sample anything, slice it into pads, and write on the staff
+
+The Studio grows four ways: where a **sample** can come from, how you **detect its tempo** on the
+device, how you **chop it into playable pads**, and how the instrument **score becomes something you
+write on** — live or after the fact.
+
+**Sample from a file, a download, or just the stems.** Samples used to come from an indexed track or
+the mic; now a small **⤓ menu** on the Samples bar adds two more doors. **Import audio file…** opens
+the system file browser — pick any mp3 / m4a / wav / aiff / caf and it's transcoded and dropped in as
+a new sample (a purchased, DRM'd track is politely refused — it can't become a sample). **From
+downloaded track** is the offline door: it shows only tracks you've already downloaded, so you can
+carve a stab on a plane with no signal. And for a track that's been **stemmed**, the carve screen
+grows a **"Stem source"** toggle — flip it on and the four stems (**drums · bass · vocals · other**)
+become chips you can turn on and off. Grab just the **drums**, or **drums + bass**, and PocketDJ
+mixes only those parts into your sample (the name remembers the recipe: "*Song · drums+bass*").
+
+**Auto-detect the tempo, right on the device.** A sample that didn't inherit a beat grid (a mic take,
+an import) used to need you to tap the tempo by hand. Now there's an **Auto-detect tempo** button — it
+listens to the sample **on the phone** (no server, works offline) and finds the BPM, so loops and
+slices can snap to the groove without you counting.
+
+**Slice a sample into pads.** Open a sample and tap **Slice into pads**. A waveform appears with up
+to **eight numbered markers** you can drag, and an **Auto-slice** that chops the sample into N pieces
+— **on the beat grid** if it has one, an even split if it doesn't. Each pad is a **tap-to-play** slice
+(from its marker to the next). When you've got the chops you want, **Make sample** bakes a pad into a
+normal sample, or **Send pads to sequencer** turns the whole set into a new 16-step pattern — so a
+one-bar break becomes eight pads you can re-sequence.
+
+**A score you can write on — live and recorded.** The instrument **Score** screen used to be
+read-only notation of a saved take. Now it has an **Edit** button: **tap the staff to place a note**,
+tap a note to select it (it gets a ring), then set its **length** (𝅘𝅥𝅮 · 𝅘𝅥 · 𝅗𝅥 · 𝅝), toggle its
+**accidental** (♮ · ♯ · ♭ — a flat now draws as a real flat, not a sharp), or **delete** it. Replay
+and the PDF/MIDI export follow your edits. And up on **Instruments**, a **Live score** fills in *as
+you play* the keys (or a connected MIDI keyboard) — the same staff, the same editing — and **Save**
+files it as a take. Play a phrase, fix the one note you fluffed by tapping it on the staff, and keep
+it.
+
+**User story:** "I imported a break, hit Auto-detect, sliced it into eight pads on the grid, sent
+them to the sequencer, then noodled a bass line on the keys — the notes drew themselves on the staff,
+I flatted the third with a tap, and saved the whole thing as a take."
