@@ -53,10 +53,33 @@ enum ScoreGlyph: Sendable {
     case text(String, at: CGPoint, size: CGFloat, bold: Bool)
 }
 
-/// One laid-out page: fixed size + its glyphs in z-order (staff furniture first, notes after).
+/// A laid measure's horizontal extent + its ABSOLUTE index in the score (for hit-testing).
+struct LaidMeasure: Sendable {
+    var measureIndex: Int
+    var x: CGFloat
+    var width: CGFloat
+}
+
+/// A laid staff strip: its role + top-line y (bottom line = top + 4·spacing).
+struct LaidStrip: Sendable {
+    var role: StaffRole
+    var top: CGFloat
+}
+
+/// One laid system's geometry — enough to invert a screen tap back to (measure, onset, staff,
+/// staff-position). Populated only for on-screen editing; the PDF export ignores it.
+struct LaidSystem: Sendable {
+    var strips: [LaidStrip]
+    var measures: [LaidMeasure]
+    var spacing: CGFloat
+}
+
+/// One laid-out page: fixed size + its glyphs in z-order (staff furniture first, notes after) +
+/// the structured system geometry the score editor hit-tests against.
 struct ScorePage: Sendable {
     var size: CGSize
     var glyphs: [ScoreGlyph]
+    var systems: [LaidSystem] = []
 }
 
 // MARK: - Layout engine (pure)
@@ -137,6 +160,78 @@ enum ScoreLayout {
         }
     }
 
+    // MARK: Hit-testing (inverse layout — score editing)
+
+    /// A tap resolved to score coordinates: measure, 16th within it, staff, and diatonic staff
+    /// position (bottom line = 0). nil when the tap is off every system.
+    struct Located: Sendable {
+        var measureIndex: Int
+        var onset16ths: Int
+        var staff: StaffRole
+        var position: Int
+    }
+
+    /// Invert a page-space tap into score coordinates. Picks the system by its y-band, the nearest
+    /// strip, the measure by x (nearest if between measures), then inverts `xPosition` + the head
+    /// y-math. `point` MUST be in PAGE space (the caller divides screen coords by the page scale).
+    nonisolated static func locate(point p: CGPoint, page: ScorePage) -> Located? {
+        for sys in page.systems {
+            let s = sys.spacing
+            guard let first = sys.strips.first, let last = sys.strips.last else { continue }
+            let top = first.top - 3 * s                 // ledgerPad = 3·spacing headroom
+            let bottom = last.top + 4 * s + 3 * s
+            guard p.y >= top, p.y <= bottom else { continue }
+            let strip = sys.strips.min { abs(($0.top + 2 * s) - p.y) < abs(($1.top + 2 * s) - p.y) }!
+            let lm = sys.measures.first { p.x >= $0.x && p.x < $0.x + $0.width }
+                ?? sys.measures.min { abs(($0.x + $0.width / 2) - p.x) < abs(($1.x + $1.width / 2) - p.x) }
+            guard let lm else { continue }
+            let onset = onsetFromX(p.x, measureX: lm.x, measureWidth: lm.width)
+            let bottomLine = strip.top + 4 * s
+            let position = Int(((bottomLine - p.y) / (s / 2)).rounded())
+            return Located(measureIndex: lm.measureIndex, onset16ths: onset,
+                           staff: strip.role, position: position)
+        }
+        return nil
+    }
+
+    /// Inverse of `xPosition`: the 16th slot nearest `x` inside its measure (clamped 0…15).
+    nonisolated static func onsetFromX(_ x: CGFloat, measureX: CGFloat, measureWidth: CGFloat) -> Int {
+        let pad: CGFloat = 10
+        let inner = measureWidth - 2 * pad
+        guard inner > 0 else { return 0 }
+        return max(0, min(15, Int(((x - measureX - pad) * 16 / inner).rounded())))
+    }
+
+    /// Inverse of `staffPosition` for a WHITE key: the natural MIDI note at a diatonic staff
+    /// position (a tap lands on a line/space = a natural; the editor applies accidentals).
+    nonisolated static func naturalMidi(position: Int, clef: StaffRole) -> Int {
+        let reference = clef == .treble ? 30 : 18
+        let diatonic = position + reference
+        let octave = Int((Double(diatonic) / 7).rounded(.down))   // floor-divide for low ledger notes
+        let letterIndex = diatonic - octave * 7                   // 0…6 = C D E F G A B
+        let semis = [0, 2, 4, 5, 7, 9, 11]
+        return (octave + 1) * 12 + semis[letterIndex]
+    }
+
+    /// Page index + page-space point of a note head (the editor's selection ring). Finds the laid
+    /// measure with the note's onset and the strip for its staff. nil if not laid on any page.
+    nonisolated static func notePoint(midi: Int, accidental: Accidental?, onset16ths absOnset: Int,
+                                      plan: ClefPlan, pages: [ScorePage]) -> (page: Int, point: CGPoint)? {
+        let staff = plan.staff(forNote: midi)
+        let sp = spelledPosition(midi: midi, clef: staff, accidental: accidental)
+        let measureIndex = absOnset / 16, within = absOnset % 16
+        for (pi, page) in pages.enumerated() {
+            for sys in page.systems {
+                guard let lm = sys.measures.first(where: { $0.measureIndex == measureIndex }),
+                      let strip = sys.strips.first(where: { $0.role == staff }) else { continue }
+                let x = xPosition(onset16ths: within, measureX: lm.x, measureWidth: lm.width)
+                let y = strip.top + 4 * sys.spacing - CGFloat(sp.position) * sys.spacing / 2
+                return (pi, CGPoint(x: x, y: y))
+            }
+        }
+        return nil
+    }
+
     // MARK: Pagination
 
     /// Lay the whole score out into pages: header (page 1), then systems of up to
@@ -157,6 +252,7 @@ enum ScoreLayout {
 
         var pages: [ScorePage] = []
         var glyphs: [ScoreGlyph] = []
+        var pageSystems: [LaidSystem] = []
 
         // Header — title + "Instrument — N BPM" (spec §7), first page only.
         let heading = title.trimmingCharacters(in: .whitespaces)
@@ -172,14 +268,16 @@ enum ScoreLayout {
             let chunk = Array(score.measures[start..<min(start + m.measuresPerSystem,
                                                          score.measures.count)])
             if y + blockH > m.pageSize.height - m.margin, !glyphs.isEmpty {
-                pages.append(ScorePage(size: m.pageSize, glyphs: glyphs))
+                pages.append(ScorePage(size: m.pageSize, glyphs: glyphs, systems: pageSystems))
                 glyphs = []
+                pageSystems = []
                 y = m.margin
             }
-            appendSystem(chunk, plan: plan, y: y, left: left, right: right, m: m, into: &glyphs)
+            appendSystem(chunk, plan: plan, startIndex: start, y: y, left: left, right: right,
+                         m: m, into: &glyphs, systems: &pageSystems)
             y += blockH + m.systemGap
         }
-        pages.append(ScorePage(size: m.pageSize, glyphs: glyphs))
+        pages.append(ScorePage(size: m.pageSize, glyphs: glyphs, systems: pageSystems))
         return pages
     }
 
@@ -187,8 +285,10 @@ enum ScoreLayout {
 
     /// One system: staff lines + clefs + barlines for `measures`, then every item's glyphs.
     private nonisolated static func appendSystem(_ measures: [ScoreMeasure], plan: ClefPlan,
+                                                 startIndex: Int,
                                                  y: CGFloat, left: CGFloat, right: CGFloat,
-                                                 m: Metrics, into glyphs: inout [ScoreGlyph]) {
+                                                 m: Metrics, into glyphs: inout [ScoreGlyph],
+                                                 systems: inout [LaidSystem]) {
         let s = m.staffSpacing
         let stripH = 4 * s
         // Staff strips, top-first: (role, top-line y). The strip order matches `plan.staves`.
@@ -231,14 +331,18 @@ enum ScoreLayout {
                                 to: CGPoint(x: bx, y: sysBottom), width: 1.1))
         }
 
+        var laidMeasures: [LaidMeasure] = []
         for (i, measure) in measures.enumerated() {
             let mx = left + m.clefZoneWidth + measureWidth * CGFloat(i)
+            laidMeasures.append(LaidMeasure(measureIndex: startIndex + i, x: mx, width: measureWidth))
             for item in measure.items {
                 let x = xPosition(onset16ths: item.onset16ths, measureX: mx,
                                   measureWidth: measureWidth)
                 appendItem(item, plan: plan, strips: strips, x: x, spacing: s, into: &glyphs)
             }
         }
+        systems.append(LaidSystem(strips: strips.map { LaidStrip(role: $0.role, top: $0.top) },
+                                  measures: laidMeasures, spacing: s))
     }
 
     /// One item's glyphs. Rests draw ONCE on the topmost staff (single-voice model — mirroring

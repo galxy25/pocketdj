@@ -223,6 +223,41 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    func testScoreEditorPlacesAndDeletesANote() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)                                   // Instruments
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8), "the seeded take should be listed")
+        takeRow.tap()
+        // Score screen → enter edit mode.
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8), "score screen with an Edit control")
+        edit.tap()
+        XCTAssertTrue(app.el("score-length-4").waitForExistence(timeout: 5), "the edit toolbar")
+        let del = app.el("score-delete")
+        XCTAssertFalse(del.isEnabled, "Delete is disabled until a note is selected")
+        // Pick flat + a half note, then tap the staff to place a note (selects it ⇒ Delete enables).
+        app.el("score-acc-flat").tap()
+        app.el("score-length-2").tap()
+        let page = app.any("score-page-0")
+        XCTAssertTrue(page.waitForExistence(timeout: 5), "the first score page")
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: del)],
+             timeout: 5)                               // placing selected the new note
+        snap("score-editor")
+        // Delete removes it → Delete disabled again.
+        del.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == false"), evaluatedWith: del)],
+             timeout: 5)
+        #endif
+    }
+
     // MARK: - (4) Loops
 
     func testLoopsSeededRowAndSliceChips() throws {

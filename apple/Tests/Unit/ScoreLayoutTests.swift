@@ -85,6 +85,53 @@ final class ScoreLayoutTests: XCTestCase {
         XCTAssertEqual(ScoreLayout.spelledPosition(midi: 61, clef: .treble, accidental: .natural).accidental, .sharp)
     }
 
+    // MARK: Hit-testing (inverse layout) — locate must round-trip notePoint
+
+    func testLocateRoundTripsNotePointTreble() {
+        let doc = ScoreDocument(measures: [ScoreMeasure(index: 0, items: [
+            ScoreItem(onset16ths: 4, kind: .notes([64]), duration: .quarter)])],
+                                bpm: 120, clefPlan: .treble)
+        let pages = ScoreLayout.paginate(score: doc, title: "T", instrument: .violin)
+        let np = try! XCTUnwrap(ScoreLayout.notePoint(midi: 64, accidental: nil, onset16ths: 4,
+                                                      plan: .treble, pages: pages))
+        let loc = try! XCTUnwrap(ScoreLayout.locate(point: np.point, page: pages[np.page]))
+        XCTAssertEqual(loc.measureIndex, 0)
+        XCTAssertEqual(loc.onset16ths, 4)
+        XCTAssertEqual(loc.staff, .treble)
+        XCTAssertEqual(loc.position, 0)                          // E4 = treble bottom line
+        XCTAssertEqual(ScoreLayout.naturalMidi(position: loc.position, clef: .treble), 64)
+    }
+
+    func testLocateRoundTripsGrandStaffBassInLaterMeasure() {
+        // A C3 (bass staff) at measure 5, onset 8 — exercises measure indexing + the bass strip.
+        var measures = (0..<6).map { ScoreMeasure(index: $0, items: []) }
+        measures[5].items = [ScoreItem(onset16ths: 8, kind: .notes([48]), duration: .quarter)]
+        let doc = ScoreDocument(measures: measures, bpm: 120, clefPlan: .grandStaff)
+        let pages = ScoreLayout.paginate(score: doc, title: "T", instrument: .piano)
+        let np = try! XCTUnwrap(ScoreLayout.notePoint(midi: 48, accidental: nil, onset16ths: 5 * 16 + 8,
+                                                      plan: .grandStaff, pages: pages))
+        let loc = try! XCTUnwrap(ScoreLayout.locate(point: np.point, page: pages[np.page]))
+        XCTAssertEqual(loc.measureIndex, 5)
+        XCTAssertEqual(loc.onset16ths, 8)
+        XCTAssertEqual(loc.staff, .bass)
+        XCTAssertEqual(ScoreLayout.naturalMidi(position: loc.position, clef: .bass), 48)
+    }
+
+    func testNaturalMidiInvertsStaffPosition() {
+        for (midi, clef) in [(64, StaffRole.treble), (60, .treble), (77, .treble), (43, .bass), (48, .bass)] {
+            let pos = ScoreLayout.staffPosition(midi: midi, clef: clef).position
+            XCTAssertEqual(ScoreLayout.naturalMidi(position: pos, clef: clef), midi,
+                           "naturalMidi should invert staffPosition for white key \(midi)")
+        }
+    }
+
+    func testOnsetFromXInvertsXPosition() {
+        for onset in 0...15 {
+            let x = ScoreLayout.xPosition(onset16ths: onset, measureX: 100, measureWidth: 240)
+            XCTAssertEqual(ScoreLayout.onsetFromX(x, measureX: 100, measureWidth: 240), onset)
+        }
+    }
+
     func testQuantizerCarriesEventAccidentalIntoSpellings() {
         // An event spelled flat surfaces as a per-note override on the score item.
         let doc = ScoreQuantizer.quantize(

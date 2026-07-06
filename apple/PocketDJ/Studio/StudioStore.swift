@@ -371,6 +371,25 @@ final class StudioStore {
         saveNow()
     }
 
+    /// Persist an EDITED note stream for a take (score editing, spec §7). Sets `editedEvents` so the
+    /// score/replay/MIDI read it instead of the raw performance, and extends `durationMs` if a
+    /// placed note runs past the old end (the take's audio is unchanged — replay plays events).
+    func setTakeEvents(_ id: String, events: [StudioNoteEvent]) {
+        guard let i = takes.firstIndex(where: { $0.id == id }) else { return }
+        takes[i].editedEvents = events
+        if let maxOff = events.map(\.offMs).max(), maxOff > takes[i].durationMs {
+            takes[i].durationMs = maxOff
+        }
+        saveNow()
+    }
+
+    /// Drop a take's edits — the score reverts to deriving from the raw performance.
+    func revertTakeEdits(_ id: String) {
+        guard let i = takes.firstIndex(where: { $0.id == id }), takes[i].editedEvents != nil else { return }
+        takes[i].editedEvents = nil
+        saveNow()
+    }
+
     /// Delete a take (file + record). Takes are always app-managed — the root is always
     /// reachable, so there is no keep-record branch. Samples created via "Use as sample" are
     /// untouched (they COPIED the audio; their `.take` source is provenance only).
@@ -779,6 +798,20 @@ final class StudioStore {
                                  createdAt: now))
         setCue(songId: "sng_1", slot: 0, positionMs: 1_000, name: "Intro")
         setCue(songId: "sng_1", slot: 1, positionMs: 5_000, name: "Drop")
+
+        // A tiny piano take (C4 D4 E4 G4 quarters at 120 BPM) so the Score screen — and its
+        // editor — is reachable in UI tests / demos. Audio is a synth tone (replay plays events).
+        if takes.isEmpty, let takesDir = try? StudioFolders.appRoot(.takes) {
+            let takeId = "tk_fixture"
+            let takeFile = StudioFolders.fileName(.takes, id: takeId)
+            Self.writeSeedTone(to: takesDir.appendingPathComponent(takeFile), seconds: 2.0, aac: true)
+            let events = [60, 62, 64, 67].enumerated().map { i, n in
+                StudioNoteEvent(onMs: i * 500, offMs: i * 500 + 480, note: n, velocity: 96)
+            }
+            addTake(StudioTake(id: takeId, name: "Seeded Take", instrument: .piano,
+                               fileName: takeFile, bpm: 120, events: events,
+                               durationMs: 2_000, createdAt: now))
+        }
     }
 
     /// Write a short 440 Hz tone (44.1 kHz mono) — AAC m4a or LPCM 16-bit CAF. Returns the

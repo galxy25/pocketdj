@@ -513,15 +513,24 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     var events: [StudioNoteEvent] = []
     var durationMs: Int = 0
     var createdAt: Double = 0
+    /// User-EDITED note stream (spec §7 editing). nil ⇒ never edited: the score/replay/MIDI derive
+    /// from raw `events` (so quantizer improvements still apply). Non-nil ⇒ the score is the source
+    /// of truth for this take — score/replay/MIDI read THIS instead. Additive: old builds drop it.
+    var editedEvents: [StudioNoteEvent]?
+
+    /// The events the score, replay, and exports read: the edited stream once the user has touched
+    /// the score, else the raw performance.
+    var scoreEvents: [StudioNoteEvent] { editedEvents ?? events }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, instrument, fileName, bpm, events, durationMs, createdAt
+        case id, name, instrument, fileName, bpm, events, durationMs, createdAt, editedEvents
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
          bpm: Double = 120, events: [StudioNoteEvent] = [], durationMs: Int = 0,
-         createdAt: Double = 0) {
+         createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
-        self.bpm = bpm; self.events = events; self.durationMs = durationMs; self.createdAt = createdAt
+        self.bpm = bpm; self.events = events; self.durationMs = durationMs
+        self.createdAt = createdAt; self.editedEvents = editedEvents
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -534,6 +543,8 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
             .compactMap(\.value)
         durationMs = (try? c.decode(Int.self, forKey: .durationMs)) ?? 0
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        editedEvents = (try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .editedEvents))?
+            .compactMap(\.value)
     }
 }
 

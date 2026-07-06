@@ -218,6 +218,35 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertTrue(store.slices(forSample: "smp_x").isEmpty)
     }
 
+    // MARK: Take edits — editedEvents override + duration extension + revert
+
+    func testSetTakeEventsPersistsEditsExtendsDurationAndReverts() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_a", name: "T", fileName: StudioFolders.fileName(.takes, id: "tk_a"),
+                                 bpm: 120, events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 96)],
+                                 durationMs: 500))
+        XCTAssertNil(store.take("tk_a")?.editedEvents)              // untouched ⇒ derive from raw
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.count, 1)
+
+        store.setTakeEvents("tk_a", events: [
+            StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 96, accidental: .flat),
+            StudioNoteEvent(onMs: 1_000, offMs: 2_000, note: 67, velocity: 96),
+        ])
+        XCTAssertEqual(store.take("tk_a")?.editedEvents?.count, 2)
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.count, 2)    // scoreEvents now the edited stream
+        XCTAssertEqual(store.take("tk_a")?.durationMs, 2_000)       // extended to the new max offMs
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.first?.accidental, .flat)
+
+        // Round-trips through persistence (flush = synchronous write before reload).
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.take("tk_a")?.editedEvents?.count, 2)
+
+        store.revertTakeEdits("tk_a")
+        XCTAssertNil(store.take("tk_a")?.editedEvents)              // back to deriving from raw
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.count, 1)
+    }
+
     // MARK: Delete with referrers
 
     func testReferrersCountsAndDeleteKeepsThem() throws {

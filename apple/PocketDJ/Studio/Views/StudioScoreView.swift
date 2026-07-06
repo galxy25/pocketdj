@@ -25,7 +25,17 @@ struct StudioScoreView: View {
     @State private var midiDoc = ScoreMIDIFile(data: Data())
     @State private var errorText: String?
 
+    // Editing (spec §7): a tap places a note (current length + accidental) or selects an existing
+    // one; the toolbar's length/accidental then re-apply to the selection, and Delete removes it.
+    @State private var editing = false
+    @State private var editLength: NoteDuration = .quarter
+    @State private var editAccidental: Accidental = .natural
+    /// Index into the take's effective (edited) event stream of the selected note; nil = none.
+    @State private var selectedIndex: Int?
+
     private var take: StudioTake? { studio.take(takeId) }
+    /// The events the score renders/edits — the edited stream once touched, else the raw take.
+    private var events: [StudioNoteEvent] { take?.scoreEvents ?? [] }
 
     var body: some View {
         Group {
@@ -64,25 +74,30 @@ struct StudioScoreView: View {
     // MARK: Content
 
     private func content(_ take: StudioTake) -> some View {
-        // Quantize + paginate per render: pure functions over an immutable event log — cheap
-        // at real take sizes (hundreds of events), and always in sync with a rename (title).
-        let doc = ScoreQuantizer.quantize(events: take.events, bpm: take.bpm,
+        // Quantize + paginate per render: pure functions over the EFFECTIVE event log (edited once
+        // touched) — cheap at real take sizes, always in sync with edits + a rename (title).
+        let doc = ScoreQuantizer.quantize(events: take.scoreEvents, bpm: take.bpm,
                                           instrument: take.instrument)
         let pages = ScoreLayout.paginate(score: doc, title: displayTitle(take),
                                          instrument: take.instrument)
+        let sel = selectionPoint(take: take, pages: pages)
         return ScrollView {
             VStack(spacing: 14) {
                 actionBar(take)
-                if take.events.isEmpty {
-                    Text("No notes were recorded in this take.")
+                if editing { editToolbar(take) }
+                if take.scoreEvents.isEmpty {
+                    Text(editing ? "Tap the staff to place a note."
+                                 : "No notes were recorded in this take.")
                         .font(.caption).foregroundStyle(Theme.fgDim)
                 }
                 // Vertical page scroll — every page keeps the A4 aspect and scales to width.
                 ForEach(pages.indices, id: \.self) { i in
-                    ScorePageView(page: pages[i])
-                        .aspectRatio(pages[i].size.width / pages[i].size.height,
-                                     contentMode: .fit)
+                    ScorePageView(page: pages[i], editing: editing,
+                                  highlight: sel?.page == i ? sel?.point : nil,
+                                  onTap: editing ? { p in handleTap(at: p, page: pages[i], take: take) } : nil)
+                        .aspectRatio(pages[i].size.width / pages[i].size.height, contentMode: .fit)
                         .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
+                        .accessibilityIdentifier("score-page-\(i)")
                 }
                 Text("\(pages.count) page\(pages.count == 1 ? "" : "s") · \(take.instrument.displayName) · \(Fmt.bpm(take.bpm)) BPM")
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
@@ -107,8 +122,17 @@ struct StudioScoreView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(instruments.isReplaying ? Theme.danger : Theme.accent)
-            .disabled(take.events.isEmpty)
+            .disabled(take.scoreEvents.isEmpty)
             .accessibilityIdentifier("score-replay")
+            Button {
+                editing.toggle()
+                if !editing { selectedIndex = nil }
+            } label: {
+                Label(editing ? "Done" : "Edit", systemImage: editing ? "checkmark" : "pencil")
+            }
+            .buttonStyle(.bordered)
+            .tint(editing ? Theme.accent2 : Theme.accent)
+            .accessibilityIdentifier("score-edit")
             Spacer(minLength: 0)
             Button { exportPDF(take) } label: {
                 Label("PDF", systemImage: "doc.richtext")
@@ -121,10 +145,154 @@ struct StudioScoreView: View {
         }
     }
 
+    // MARK: Edit toolbar + operations (spec §7)
+
+    /// The four supported edits: note length (1/8·1/4·1/2·whole), accidental (♮/♯/♭), delete.
+    /// Length/accidental are the PLACEMENT defaults AND re-apply to the selected note.
+    private func editToolbar(_ take: StudioTake) -> some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Text("Length").font(.caption2).foregroundStyle(Theme.fgDim)
+                ForEach([NoteDuration.eighth, .quarter, .half, .whole], id: \.self) { d in
+                    chip(lengthLabel(d), on: editLength == d, id: "score-length-\(lengthTag(d))") {
+                        setLength(d, take: take)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 6) {
+                Text("Accidental").font(.caption2).foregroundStyle(Theme.fgDim)
+                ForEach([Accidental.natural, .sharp, .flat], id: \.self) { a in
+                    chip(accidentalLabel(a), on: editAccidental == a, id: "score-acc-\(a.rawValue)") {
+                        setAccidental(a, take: take)
+                    }
+                }
+                Spacer(minLength: 0)
+                Button(role: .destructive) { deleteSelected(take: take) } label: {
+                    Label("Delete", systemImage: "trash").lineLimit(1).fixedSize()
+                }
+                .buttonStyle(.bordered).tint(Theme.danger)
+                .disabled(selectedIndex == nil)
+                .accessibilityIdentifier("score-delete")
+            }
+            Text(selectedIndex != nil
+                 ? "Editing the selected note — tap the staff to place another."
+                 : "Tap the staff to place a note, or tap a note to select it.")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+    }
+
+    private func chip(_ text: String, on: Bool, id: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.callout.weight(.semibold))
+                .frame(minWidth: 34)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background((on ? Theme.accent : Theme.fgDim).opacity(on ? 0.22 : 0.10), in: Capsule())
+                .foregroundStyle(on ? Theme.accent : Theme.fg)
+                .overlay(Capsule().stroke(on ? Theme.accent.opacity(0.5) : .clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
+    }
+
+    private func lengthLabel(_ d: NoteDuration) -> String {
+        switch d { case .eighth: return "1/8"; case .quarter: return "1/4"
+        case .half: return "1/2"; case .whole: return "○"; default: return "\(d.sixteenths)" }
+    }
+    private func lengthTag(_ d: NoteDuration) -> String {
+        switch d { case .eighth: return "8"; case .quarter: return "4"
+        case .half: return "2"; case .whole: return "1"; default: return "x" }
+    }
+    private func accidentalLabel(_ a: Accidental) -> String {
+        switch a { case .natural: return "♮"; case .sharp: return "♯"; case .flat: return "♭" }
+    }
+
+    /// A tap on a page: select the note at that spot, else place a new one there.
+    private func handleTap(at pagePoint: CGPoint, page: ScorePage, take: StudioTake) {
+        guard let loc = ScoreLayout.locate(point: pagePoint, page: page) else { selectedIndex = nil; return }
+        let plan = ClefPlan.plan(for: take.instrument)
+        let step = ScoreQuantizer.sixteenthMs(bpm: take.bpm)
+        // Existing note at this (measure, onset, staff, position)?
+        if let j = take.scoreEvents.firstIndex(where: {
+            let abs16 = Int((Double($0.onMs) / step).rounded())
+            let staff = plan.staff(forNote: $0.note)
+            let pos = ScoreLayout.spelledPosition(midi: $0.note, clef: staff, accidental: $0.accidental).position
+            return abs16 == loc.measureIndex * 16 + loc.onset16ths && staff == loc.staff && pos == loc.position
+        }) {
+            selectedIndex = j
+            // Reflect the selected note's length/accidental into the toolbar.
+            let e = take.scoreEvents[j]
+            editLength = NoteDuration.snapped(toSixteenths: max(1, Int((Double(e.offMs - e.onMs) / step).rounded())))
+            editAccidental = e.accidental ?? .natural
+            return
+        }
+        // Place a new note.
+        let natural = ScoreLayout.naturalMidi(position: loc.position, clef: loc.staff)
+        let (midi, acc): (Int, Accidental?)
+        switch editAccidental {
+        case .natural: (midi, acc) = (natural, nil)
+        case .sharp: (midi, acc) = (natural + 1, .sharp)
+        case .flat: (midi, acc) = (natural - 1, .flat)
+        }
+        let onMs = Int((Double(loc.measureIndex * 16 + loc.onset16ths) * step).rounded())
+        let offMs = onMs + Int((Double(editLength.sixteenths) * step).rounded())
+        var next = take.scoreEvents
+        next.append(StudioNoteEvent(onMs: onMs, offMs: offMs, note: midi, velocity: 96, accidental: acc))
+        studio.setTakeEvents(takeId, events: next)
+        selectedIndex = next.count - 1
+    }
+
+    private func setLength(_ d: NoteDuration, take: StudioTake) {
+        editLength = d
+        guard let j = selectedIndex, j < take.scoreEvents.count else { return }
+        let step = ScoreQuantizer.sixteenthMs(bpm: take.bpm)
+        var next = take.scoreEvents
+        next[j].offMs = next[j].onMs + Int((Double(d.sixteenths) * step).rounded())
+        studio.setTakeEvents(takeId, events: next)
+    }
+
+    private func setAccidental(_ a: Accidental, take: StudioTake) {
+        editAccidental = a
+        guard let j = selectedIndex, j < take.scoreEvents.count else { return }
+        var next = take.scoreEvents
+        let e = next[j]
+        let staff = ClefPlan.plan(for: take.instrument).staff(forNote: e.note)
+        let pos = ScoreLayout.spelledPosition(midi: e.note, clef: staff, accidental: e.accidental).position
+        let natural = ScoreLayout.naturalMidi(position: pos, clef: staff)
+        switch a {
+        case .natural: next[j].note = natural; next[j].accidental = nil
+        case .sharp: next[j].note = natural + 1; next[j].accidental = .sharp
+        case .flat: next[j].note = natural - 1; next[j].accidental = .flat
+        }
+        studio.setTakeEvents(takeId, events: next)
+    }
+
+    private func deleteSelected(take: StudioTake) {
+        guard let j = selectedIndex, j < take.scoreEvents.count else { return }
+        var next = take.scoreEvents
+        next.remove(at: j)
+        studio.setTakeEvents(takeId, events: next)
+        selectedIndex = nil
+    }
+
+    /// The selected note's page + page-space point (the selection ring). nil when nothing selected.
+    private func selectionPoint(take: StudioTake, pages: [ScorePage]) -> (page: Int, point: CGPoint)? {
+        guard let j = selectedIndex, j < take.scoreEvents.count else { return nil }
+        let e = take.scoreEvents[j]
+        let step = ScoreQuantizer.sixteenthMs(bpm: take.bpm)
+        let abs16 = Int((Double(e.onMs) / step).rounded())
+        return ScoreLayout.notePoint(midi: e.note, accidental: e.accidental, onset16ths: abs16,
+                                     plan: ClefPlan.plan(for: take.instrument), pages: pages)
+    }
+
     // MARK: Exports
 
     private func exportPDF(_ take: StudioTake) {
-        let doc = ScoreQuantizer.quantize(events: take.events, bpm: take.bpm,
+        let doc = ScoreQuantizer.quantize(events: take.scoreEvents, bpm: take.bpm,
                                           instrument: take.instrument)
         let data = ScorePDF.makePDF(score: doc, title: displayTitle(take),
                                     instrument: take.instrument)
@@ -141,7 +309,7 @@ struct StudioScoreView: View {
     private func exportMIDI(_ take: StudioTake) {
         // Deliberately the RAW unquantized events (spec §7): MIDI is the faithful performance
         // for a DAW; the score is the readable simplification.
-        midiDoc = ScoreMIDIFile(data: SMFWriter.write(events: take.events, bpm: take.bpm,
+        midiDoc = ScoreMIDIFile(data: SMFWriter.write(events: take.scoreEvents, bpm: take.bpm,
                                                       instrument: take.instrument))
         showMIDIExporter = true
     }
@@ -171,16 +339,35 @@ struct StudioScoreView: View {
 /// black-on-white by design, deliberately not theme-tinted (screen == export).
 private struct ScorePageView: View {
     let page: ScorePage
+    var editing = false
+    /// Page-space center of the selection ring drawn on THIS page (nil = none).
+    var highlight: CGPoint?
+    /// Tap callback with the point converted to PAGE space (editing only).
+    var onTap: ((CGPoint) -> Void)?
 
     var body: some View {
-        Canvas { ctx, size in
-            ctx.withCGContext { cg in
-                let scale = size.width / page.size.width
-                cg.saveGState()
-                cg.scaleBy(x: scale, y: scale)
-                ScoreRenderer.draw(page, in: cg)
-                cg.restoreGState()
+        GeometryReader { geo in
+            Canvas { ctx, size in
+                ctx.withCGContext { cg in
+                    let scale = size.width / page.size.width
+                    cg.saveGState()
+                    cg.scaleBy(x: scale, y: scale)
+                    ScoreRenderer.draw(page, in: cg)
+                    if let h = highlight {
+                        cg.setStrokeColor(CGColor(red: 0.43, green: 0.66, blue: 1, alpha: 0.95))
+                        cg.setLineWidth(1.6)
+                        cg.strokeEllipse(in: CGRect(x: h.x - 8, y: h.y - 8, width: 16, height: 16))
+                    }
+                    cg.restoreGState()
+                }
             }
+            .contentShape(Rectangle())
+            // Attached unconditionally; `onTap` is nil unless editing, so it no-ops otherwise. A
+            // tap coexists with the parent ScrollView's drag-to-scroll.
+            .gesture(SpatialTapGesture().onEnded { ev in
+                let scale = max(1, geo.size.width) / page.size.width
+                onTap?(CGPoint(x: ev.location.x / scale, y: ev.location.y / scale))
+            })
         }
     }
 }
