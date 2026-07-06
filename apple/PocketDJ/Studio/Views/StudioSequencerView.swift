@@ -265,9 +265,12 @@ private struct SequencerEditor: View {
         .onDisappear {
             // Leaving the editor (back, sub-tab switch, tab switch) stops the pattern — a
             // sequencer bar looping with no grid on screen is noise, not persistent playback
-            // (task contract; unlike the Mix decks, which deliberately keep playing).
+            // (task contract; unlike the Mix decks, which deliberately keep playing). Gate on
+            // OWNERSHIP: the engine is app-scoped and plays ONE pattern globally, so with a second
+            // window open it may be sounding ANOTHER window's pattern — only stop the one THIS
+            // editor loaded (mirrors the delete path's `loadedPatternId == id` guard above).
             prepareTask?.cancel()
-            if engine.isPlayingPattern { engine.stopPattern() }
+            if engine.loadedPatternId == patternId, engine.isPlayingPattern { engine.stopPattern() }
         }
         .alert("Rename pattern", isPresented: $renaming) {
             TextField("Name", text: $nameDraft).accessibilityIdentifier("seq-rename-field")

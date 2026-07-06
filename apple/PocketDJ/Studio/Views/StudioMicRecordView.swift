@@ -45,11 +45,15 @@ struct StudioMicRecordView: View {
         #if os(macOS)
         .frame(minWidth: 460, minHeight: 420)
         #endif
+        // Count this sheet as a presenter (multi-window): the session is torn down only when the
+        // LAST mic-record sheet leaves, so a second window's sheet can't kill this capture.
+        .onAppear { micRecorder.retainPresenter() }
         // Permission + meter come up on appear; the first run shows the system prompt.
         .task { await micRecorder.beginMonitoring() }
-        // Leaving the sheet tears the session down + restores playback. A dismissal MID-TAKE files
-        // the take (default name) inside the recorder — recorded audio is never silently lost.
-        .onDisappear { micRecorder.endMonitoring() }
+        // Leaving the sheet releases this presenter; the LAST release tears the session down +
+        // restores playback. A dismissal MID-TAKE (when this is the last sheet) files the take
+        // (default name) inside the recorder — recorded audio is never silently lost.
+        .onDisappear { micRecorder.releasePresenter() }
         // A permanent writer death (disk full / folder vanished) auto-stopped + filed the partial
         // take; surface the reason once, then clear it.
         .alert("Recording stopped", isPresented: writerFailureBinding) {

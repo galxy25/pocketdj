@@ -335,7 +335,12 @@ struct PocketDJApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // A value-less WindowGroup with an explicit id: `openWindow(id: "main")` opens a genuinely
+        // NEW window on every call (multi-window ⌘N — see NewWindowCommands). Because every store is
+        // @State on the App (created ONCE in init), all windows share the SAME engines/collections;
+        // only RootView's per-window @State (selected tab + NavigationStack) is independent. The id
+        // is required — without it openWindow(id:) has nothing to match and silently no-ops.
+        WindowGroup(id: "main") {
             RootView()
                 .environment(app)
                 .environment(settings)
@@ -394,6 +399,33 @@ struct PocketDJApp: App {
         .defaultSize(width: 1180, height: 800)
         .windowToolbarStyle(.unified)
         #endif
+        // ⌘N → New Window. Lets the user run e.g. a Performance surface in one window and the Mix
+        // surface in another without switching tabs. Applies on every platform, but the command
+        // registers only where a second window can actually show (macOS + iPadOS; NOT iPhone).
+        .commands { NewWindowCommands() }
+    }
+}
+
+/// File ▸ New Window (⌘N). REPLACES the framework's automatic macOS "New Window" item so there is
+/// exactly one ⌘N binding (appending instead would double-bind it on Mac), and ADDS the command to
+/// iPadOS, which has no automatic New Window. Gated on `\.supportsMultipleWindows` — false on iPhone
+/// (which can't display two windows) and true on iPad/Mac — so iPhone registers no ⌘N at all.
+///
+/// A Commands struct does NOT inherit the environment injected into the WindowGroup content, so this
+/// reads ONLY system actions (`openWindow`, `supportsMultipleWindows`) and opens the window with no
+/// payload — the shared app-scoped stores are reached by the new RootView through `.environment(...)`
+/// exactly as the first window's is.
+private struct NewWindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            if supportsMultipleWindows {
+                Button("New Window") { openWindow(id: "main") }
+                    .keyboardShortcut("n", modifiers: .command)
+            }
+        }
     }
 }
 
