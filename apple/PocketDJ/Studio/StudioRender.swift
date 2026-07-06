@@ -1,5 +1,9 @@
 import Foundation
-import AVFoundation
+// @preconcurrency: AVFAudio's value types (AVAudioPCMBuffer, AVAudioConverterInputBlock) predate
+// Swift's Sendable annotations, so passing them across the offline converter's `@Sendable` input
+// block trips Sendable warnings that are noise here — all this work is actor-serialized on one
+// thread. This is the compiler's own suggested fix.
+@preconcurrency import AVFoundation
 import os
 
 // MARK: - Render errors
@@ -100,8 +104,8 @@ actor StudioRender {
 
         let chain = try Self.makeOfflineChain(fileFormat: file.processingFormat, edit: edit)
         defer { chain.engine.stop() }
-        chain.player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(count),
-                                     at: nil, completionHandler: nil)
+        Self.scheduleSegment(file, on: chain.player, startingFrame: startFrame,
+                             frameCount: AVAudioFrameCount(count))
         chain.player.play()
 
         // Musical length: the source window, resampled to canonical, time-stretched by rate.
@@ -147,8 +151,8 @@ actor StudioRender {
 
         let chain = try Self.makeOfflineChain(fileFormat: file.processingFormat, edit: edit)
         defer { chain.engine.stop() }
-        chain.player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(count),
-                                     at: nil, completionHandler: nil)
+        Self.scheduleSegment(file, on: chain.player, startingFrame: startFrame,
+                             frameCount: AVAudioFrameCount(count))
         chain.player.play()
 
         let head = Self.primingHeadFrames(chain)
@@ -201,10 +205,9 @@ actor StudioRender {
         let anchor = AVAudioTime(sampleTime: 0, atRate: Self.canonicalSampleRate)
         for v in voices {
             for col in v.row.steps.indices where v.row.steps[col] {
-                v.player.scheduleBuffer(v.buffer,
-                                        at: StudioEngine.stepTime(anchor: anchor, index: col, bpm: bpm,
-                                                                  sampleRate: Self.canonicalSampleRate),
-                                        options: .interrupts, completionHandler: nil)
+                Self.scheduleStep(v.buffer, on: v.player,
+                                  at: StudioEngine.stepTime(anchor: anchor, index: col, bpm: bpm,
+                                                            sampleRate: Self.canonicalSampleRate))
             }
             v.player.play()
         }
@@ -406,6 +409,27 @@ actor StudioRender {
         let sec = chain.timePitch.auAudioUnit.latency
             + chain.engine.outputNode.auAudioUnit.latency
         return max(0, Int64((sec * canonicalSampleRate).rounded()))
+    }
+
+    // MARK: - Fire-and-forget scheduling (synchronous by design)
+
+    /// Schedule a file segment for offline pull. Deliberately the completion-handler overload —
+    /// NOT the `async` variant the concurrency checker suggests in the `async` render bodies:
+    /// awaiting that suspends until the segment finishes PLAYING, but here we schedule and then
+    /// immediately `renderOffline` faster than realtime. Kept in a synchronous helper so the
+    /// (inapplicable) async-alternative suggestion never fires at the call sites.
+    private nonisolated static func scheduleSegment(_ file: AVAudioFile, on player: AVAudioPlayerNode,
+                                                    startingFrame: AVAudioFramePosition,
+                                                    frameCount: AVAudioFrameCount) {
+        player.scheduleSegment(file, startingFrame: startingFrame, frameCount: frameCount,
+                               at: nil, completionHandler: nil)
+    }
+
+    /// Schedule one sequencer step buffer (`.interrupts` mono-choke) for offline pull. Same
+    /// rationale as `scheduleSegment(_:on:...)` — the synchronous completion-handler overload.
+    private nonisolated static func scheduleStep(_ buffer: AVAudioPCMBuffer, on player: AVAudioPlayerNode,
+                                                 at time: AVAudioTime) {
+        player.scheduleBuffer(buffer, at: time, options: .interrupts, completionHandler: nil)
     }
 
     // MARK: - Pull → trim head → write → drain tail
