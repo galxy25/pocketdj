@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Performance ▸ SAMPLES — the sample library (spec §1 + §10).
 ///
@@ -24,6 +25,14 @@ struct StudioSamplesView: View {
 
     @State private var showNewFromTrack = false
     @State private var showMicRecord = false
+    /// "From downloaded track" — the offline-only track carve (restrictToDownloaded).
+    @State private var showDownloadedTrack = false
+    /// The file browser (`.fileImporter`) for arbitrary audio files.
+    @State private var showFileImporter = false
+    /// A file import is transcoding in the background (spinner in the bar).
+    @State private var importing = false
+    /// Import failed (DRM / unreadable / folder unreachable) — explained in an alert.
+    @State private var importError: String?
     /// The sample whose editor sheet is open (id boxed for `sheet(item:)`).
     @State private var editing: StudioSampleRef?
     @State private var renamingId: String?
@@ -55,8 +64,16 @@ struct StudioSamplesView: View {
         .background(Theme.bg)
         .task { wire() }
         .sheet(isPresented: $showNewFromTrack) { StudioNewSampleFromTrackView() }
+        .sheet(isPresented: $showDownloadedTrack) { StudioNewSampleFromTrackView(restrictToDownloaded: true) }
         .sheet(isPresented: $showMicRecord) { StudioMicRecordView() }
         .sheet(item: $editing) { ref in StudioSampleEditorView(sampleId: ref.id) }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.audio],
+                      allowsMultipleSelection: false) { result in handleImport(result) }
+        .alert("Couldn’t import", isPresented: importErrorBinding) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(importError ?? "")
+        }
         .alert("Rename sample", isPresented: renameBinding) {
             TextField("Name", text: $renameDraft)
             Button("Save") {
@@ -123,9 +140,30 @@ struct StudioSamplesView: View {
             .foregroundStyle(Theme.accent2)
             .accessibilityIdentifier("sample-record-mic")
 
+            // Other in-catalog / file sources live behind a compact menu so the two primary
+            // buttons (and their UI-test ids) stay put and the iPhone-portrait bar isn't crowded.
+            Menu {
+                Button { showFileImporter = true } label: {
+                    Label("Import audio file…", systemImage: "folder")
+                }
+                Button { showDownloadedTrack = true } label: {
+                    Label("From downloaded track", systemImage: "opticaldisc")
+                }
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Theme.accent.opacity(0.18), in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("sample-add-menu")
+
             Spacer()
 
-            if !samples.isEmpty {
+            if importing {
+                ProgressView().controlSize(.small)
+            } else if !samples.isEmpty {
                 Text("\(samples.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.fgDim)
@@ -141,7 +179,7 @@ struct StudioSamplesView: View {
                 .foregroundStyle(Theme.fgDim)
             Text("No samples yet")
                 .font(.headline).foregroundStyle(Theme.fg)
-            Text("Carve a region out of any track, or record straight from the microphone.")
+            Text("Carve a region out of any track, import an audio file, or record from the mic.")
                 .font(.caption).foregroundStyle(Theme.fgDim)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -214,6 +252,7 @@ struct StudioSamplesView: View {
         case .track: return "music.note"
         case .mic: return "mic.fill"
         case .take: return "pianokeys"
+        case .file: return "waveform"
         }
     }
 
@@ -222,6 +261,7 @@ struct StudioSamplesView: View {
         case .track: return "track"
         case .mic: return "mic"
         case .take: return "take"
+        case .file: return "file"
         }
     }
 
@@ -229,6 +269,63 @@ struct StudioSamplesView: View {
 
     private var renameBinding: Binding<Bool> {
         Binding(get: { renamingId != nil }, set: { if !$0 { renamingId = nil } })
+    }
+
+    private var importErrorBinding: Binding<Bool> {
+        Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
+    }
+
+    // MARK: File import (arbitrary audio → transcode → new grid-less sample)
+
+    /// Transcode a picked audio file into a canonical `.m4a` sample. The `.fileImporter` URL is a
+    /// TRANSIENT security-scoped grant — we hold the scope only while copying INTO the samples
+    /// folder and never persist the external URL (the StorageView import precedent). Grid-less on
+    /// arrival (no server sidecar): the editor's Auto-detect/tap-tempo sets a tempo before slicing.
+    private func handleImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else {
+            if case .failure(let e) = result { importError = e.localizedDescription }
+            return
+        }
+        let scoped = url.startAccessingSecurityScopedResource()
+        guard let dest = StudioFolders.folder(.samples, bookmark: studio.bookmark(for: .samples)) else {
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            importError = "Your samples folder isn’t reachable right now (Settings ▸ Storage)."
+            return
+        }
+        let sampleId = StudioFactory.newSampleId()
+        let fileName = StudioFolders.fileName(.samples, id: sampleId)
+        let destURL = dest.url.appendingPathComponent(fileName)
+        let displayName = url.deletingPathExtension().lastPathComponent
+        importing = true
+        Task {
+            defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                dest.release?()
+            }
+            do {
+                let imported = try await StudioRender.shared.importAudioFile(sourceURL: url, to: destURL)
+                studio.addSample(StudioSample(
+                    id: sampleId, name: displayName.isEmpty ? "Imported sample" : displayName,
+                    fileName: fileName, wasUserFolder: dest.isUserFolder,
+                    createdAt: Date().timeIntervalSince1970 * 1000,
+                    durationMs: imported.durationMs,
+                    source: .file(originalName: url.lastPathComponent),
+                    grid: nil, edit: .neutral))
+                importing = false
+                editing = StudioSampleRef(id: sampleId)   // open the editor on the new sample
+            } catch {
+                importing = false
+                importError = importMessage(for: error)
+            }
+        }
+    }
+
+    private func importMessage(for error: Error) -> String {
+        if case StudioRenderError.protectedSource = error {
+            return "This file is DRM-protected (a purchased or streamed track), so it can’t be "
+                 + "turned into a sample."
+        }
+        return "Couldn’t read that audio file. Try a different one (mp3, m4a, wav, aiff, or caf)."
     }
 
     private var deleteBinding: Binding<Bool> {

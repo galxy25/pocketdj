@@ -40,10 +40,15 @@ enum StudioSource: Hashable, Sendable {
     case mic
     /// Copied from an instrument take's rendered audio (`tk_…` id, provenance only).
     case take(takeId: String)
+    /// Imported from an arbitrary audio file the user picked in the file browser — the original
+    /// file name is kept only for the "from <name>" label. The audio was transcoded + copied into
+    /// the samples folder, so the external file never needs to exist again (like `.take`, and no
+    /// grid until auto-detect/tap-tempo sets one).
+    case file(originalName: String)
 }
 
 extension StudioSource: Codable {
-    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId }
+    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId, originalName }
 
     /// Lenient: an unknown/missing `type` (a future source kind read by this build) degrades to
     /// `.mic` — generic "recorded audio" provenance. The sample's FILE is what matters and it
@@ -57,6 +62,8 @@ extension StudioSource: Codable {
                           endMs: (try? c?.decode(Int.self, forKey: .endMs)) ?? 0)
         case "take":
             self = .take(takeId: (try? c?.decode(String.self, forKey: .takeId)) ?? "")
+        case "file":
+            self = .file(originalName: (try? c?.decode(String.self, forKey: .originalName)) ?? "")
         default:
             self = .mic
         }
@@ -75,6 +82,9 @@ extension StudioSource: Codable {
         case .take(let takeId):
             try c.encode("take", forKey: .type)
             try c.encode(takeId, forKey: .takeId)
+        case .file(let originalName):
+            try c.encode("file", forKey: .type)
+            try c.encode(originalName, forKey: .originalName)
         }
     }
 }

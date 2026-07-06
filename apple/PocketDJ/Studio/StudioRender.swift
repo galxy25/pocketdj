@@ -23,6 +23,8 @@ enum StudioRenderError: Error {
     case engineStart(Error)
     /// PCM buffer/converter allocation failed (absurd sizes / exhausted memory).
     case cannotCreateBuffer
+    /// The imported file is DRM-protected (a FairPlay `.m4p` / stream) — never a sample (spec §12).
+    case protectedSource(URL)
 }
 
 // MARK: - StudioRender (offline bounce — spec §4)
@@ -257,6 +259,27 @@ actor StudioRender {
         }
         let ms = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
         Self.rlog("carve \(sourceURL.lastPathComponent) [\(startMs)–\(endMs)ms] → \(frames)f/\(ms)ms")
+        return (frames, ms)
+    }
+
+    /// Import an ARBITRARY audio file (file browser) as a new sample: decode the WHOLE file →
+    /// canonical → AAC `.m4a`, exactly like a full-length `carveTrackRegion` but from any container
+    /// AVFoundation can read (mp3/wav/aiff/caf/m4a…). Rejects DRM-protected assets up front — a
+    /// FairPlay `.m4p` must never be turned into a sample (spec §12). The imported sample starts
+    /// grid-less (no server sidecar); auto-detect/tap-tempo sets a grid before slicing.
+    func importAudioFile(sourceURL: URL, to destURL: URL) async throws -> (frames: Int64, durationMs: Int) {
+        let asset = AVURLAsset(url: sourceURL)
+        if (try? await asset.load(.hasProtectedContent)) == true {
+            throw StudioRenderError.protectedSource(sourceURL)
+        }
+        let canonical = try Self.decodeFileSync(url: sourceURL)   // whole-file read + convert-to-canonical
+        guard canonical.frameLength > 0 else { throw StudioRenderError.emptyWindow }
+        let frames = try Self.writeAtomically(to: destURL, settings: Self.aacSettings) { out in
+            try out.write(from: canonical)
+            return Int64(canonical.frameLength)
+        }
+        let ms = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
+        Self.rlog("import \(sourceURL.lastPathComponent) → \(frames)f/\(ms)ms")
         return (frames, ms)
     }
 

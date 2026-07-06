@@ -187,6 +187,8 @@ struct StudioSampleEditorView: View {
             return "Microphone recording"
         case .take:
             return "From an instrument take"
+        case .file(let originalName):
+            return originalName.isEmpty ? "Imported audio file" : "Imported from \(originalName)"
         case nil:
             return ""
         }

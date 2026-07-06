@@ -34,6 +34,11 @@ struct StudioNewSampleFromTrackView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(\.dismiss) private var dismiss
 
+    /// Restrict the picker to tracks already downloaded to the device (fully offline sampling) — the
+    /// "From downloaded track" entry point. Default false = browse the whole catalog (a non-downloaded
+    /// pick streams / burns on demand, the normal "From track" flow).
+    var restrictToDownloaded = false
+
     /// The source-resolution phase for the selected song (the ladder above).
     private enum SourcePhase: Equatable {
         case idle            // nothing selected
@@ -108,8 +113,11 @@ struct StudioNewSampleFromTrackView: View {
     private var header: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Sample from track").font(.headline).foregroundStyle(Theme.fg)
-                Text(selectedSong == nil ? "Pick a track to carve" : "Set the in/out points")
+                Text(restrictToDownloaded ? "Sample from downloaded" : "Sample from track")
+                    .font(.headline).foregroundStyle(Theme.fg)
+                Text(selectedSong == nil
+                     ? (restrictToDownloaded ? "Pick a downloaded track to carve" : "Pick a track to carve")
+                     : "Set the in/out points")
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             }
             Spacer()
@@ -160,6 +168,14 @@ struct StudioNewSampleFromTrackView: View {
         if query.isEmpty {
             let burnedSet = Set(burns.readyBurnedIds(in: all.map(\.id)))
             filtered = all.filter { burnedSet.contains($0.id) }
+        } else if restrictToDownloaded {
+            // Offline mode: even a typed query only surfaces downloaded tracks, so every pick
+            // resolves through the instant-carve (ready) branch — never a stream/burn.
+            let burnedSet = Set(burns.readyBurnedIds(in: all.map(\.id)))
+            filtered = all.filter {
+                burnedSet.contains($0.id)
+                    && ($0.name.lowercased().contains(query) || $0.artist.lowercased().contains(query))
+            }
         } else {
             filtered = all.filter {
                 $0.name.lowercased().contains(query) || $0.artist.lowercased().contains(query)
