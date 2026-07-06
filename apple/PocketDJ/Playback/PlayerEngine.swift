@@ -105,7 +105,15 @@ final class PlayerEngine {
     private var artworkToken = 0
 
     init() {
-        configureAudioSession()
+        // NO synchronous audio-session activation here. Activating a `.playback` AVAudioSession
+        // (`setActive(true)`) can BLOCK on a cold audio subsystem, and PlayerEngine is built in
+        // `PocketDJApp.init()` — i.e. BEFORE the SwiftUI scene body runs. On visionOS that stalled
+        // the first-frame presentation, so the launch placeholder ("TestFlight Launch screen") never
+        // got replaced — a blank window until a second launch found the subsystem warm ("open
+        // twice"). The session is (re-)armed lazily by whoever actually needs audio: `load()` below
+        // re-arms it before playback, and every engine (Mix / Studio / Stem / Instrument) does its
+        // own setCategory + setActive on start — so nothing is silenced; activation just no longer
+        // sits on the launch critical path.
         configureInterruptionObserver()
         configureRemoteCommands()
         // Drive the scrubber ~4×/s.
