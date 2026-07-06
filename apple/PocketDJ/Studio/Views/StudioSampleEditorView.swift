@@ -43,6 +43,8 @@ struct StudioSampleEditorView: View {
     @State private var detectInFlight = false
     /// The last auto-detect couldn't lock a tempo (short/quiet/aperiodic) — surfaced in the caption.
     @State private var detectFailed = false
+    /// The sample being sliced (boxed for `sheet(item:)`).
+    @State private var slicing: StudioSampleRef?
 
     /// Always read the LIVE store row — edits stream through the store, and rename/delete can
     /// happen underneath (deleted ⇒ the "gone" state below).
@@ -63,6 +65,7 @@ struct StudioSampleEditorView: View {
                             trimSection(s)
                             editSection(s)
                             gridSection(s)
+                            sliceSection(s)
                             renderFootnote(s)
                         }
                         .padding(16)
@@ -97,6 +100,7 @@ struct StudioSampleEditorView: View {
             // renderNow() no-ops when the cache is already fresh or nothing was ever edited.
             Task { await renderNow() }
         }
+        .sheet(item: $slicing) { ref in StudioSliceEditorView(sampleId: ref.id) }
         .alert("Rename sample", isPresented: $renaming) {
             TextField("Name", text: $renameDraft)
             Button("Save") { studio.renameSample(sampleId, to: renameDraft) }
@@ -393,6 +397,30 @@ struct StudioSampleEditorView: View {
                 Text(gridCaption(s))
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             }
+        }
+    }
+
+    /// Entry to the slice/pad editor (spec: slicing). Shows the current pad count as a hint.
+    @ViewBuilder
+    private func sliceSection(_ s: StudioSample) -> some View {
+        let padCount = studio.slices(forSample: s.id).count
+        section("SLICE INTO PADS") {
+            Button { slicing = StudioSampleRef(id: s.id) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.split.2x2")
+                    Text(padCount > 0 ? "Edit \(padCount) pad\(padCount == 1 ? "" : "s")" : "Slice into pads")
+                        .font(.callout.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("sample-slice")
+            Text("Chop this sample into up to 8 tap-to-play pads (auto by beat grid, or drag markers).")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
         }
     }
 

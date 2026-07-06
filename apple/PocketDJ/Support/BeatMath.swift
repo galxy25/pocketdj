@@ -114,4 +114,41 @@ enum BeatMath {
         let s = Int(start.rounded())
         return (s, s + len, len)
     }
+
+    /// Up to `count` slice START points partitioning `[0, durationMs)` for auto-slicing a sample
+    /// (spec: slicing → pads). With a grid, the even-time cut points are SNAPPED to the nearest beat
+    /// so pads land on the groove; grid-less, it's a plain even time chop. Pad 0 is always 0 (tap
+    /// from the top). De-duped + sorted — coincident snaps just yield fewer than `count` pads.
+    nonisolated static func sliceStarts(count: Int,
+                                        grid: (bpm: Double, firstDownbeatMs: Int, beatsMs: [Int])?,
+                                        durationMs: Int) -> [Int] {
+        let n = max(1, min(count, 8))                       // 8 = the pad-grid cap (not coupled to the model)
+        guard durationMs > 0 else { return [0] }
+        let targets = (0..<n).map { $0 * durationMs / n }
+        guard let g = grid, let beats = beatLattice(grid: g, durationMs: durationMs), !beats.isEmpty else {
+            return targets
+        }
+        var out = targets.map { t in beats.min(by: { abs($0 - t) < abs($1 - t) }) ?? t }
+        out[0] = 0                                          // the first pad always plays from 0:00
+        return Array(Set(out)).sorted()
+    }
+
+    /// Beat positions in `[0, durationMs)` — the real measured grid when present, else a constant
+    /// lattice from `bpm` phased on `firstDownbeatMs`. nil when there's no usable grid.
+    private nonisolated static func beatLattice(grid g: (bpm: Double, firstDownbeatMs: Int, beatsMs: [Int]),
+                                                durationMs: Int) -> [Int]? {
+        if !g.beatsMs.isEmpty {
+            return g.beatsMs.filter { $0 >= 0 && $0 < durationMs }
+        }
+        guard g.bpm > 0 else { return nil }
+        let step = 60_000.0 / g.bpm
+        var x = Double(g.firstDownbeatMs)
+        while x - step >= 0 { x -= step }                   // rewind to the earliest in-range beat
+        var out: [Int] = []
+        while x < Double(durationMs) {
+            if x >= 0 { out.append(Int(x.rounded())) }
+            x += step
+        }
+        return out
+    }
 }

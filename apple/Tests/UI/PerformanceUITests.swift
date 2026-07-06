@@ -196,6 +196,33 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    func testSliceEditorAutoSliceAndPad() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: sheet/slice flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(0)
+        let row = app.any("sample-row-smp_fixture")
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()                                   // opens the sample editor sheet
+        // The Slice-into-pads entry is near the bottom of the editor — scroll it into view.
+        let sliceEntry = app.el("sample-slice")
+        XCTAssertTrue(sliceEntry.waitForExistence(timeout: 8))
+        if !sliceEntry.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        sliceEntry.tap()
+        // Auto-slice → pads populate; tapping a pad auditions it (must not crash).
+        let auto = app.el("slice-auto")
+        XCTAssertTrue(auto.waitForExistence(timeout: 8), "slice editor should show Auto-slice")
+        auto.tap()
+        let pad0 = app.el("slice-pad-0")
+        XCTAssertTrue(pad0.waitForExistence(timeout: 5), "auto-slice should populate pad 0")
+        snap("slice-editor")
+        pad0.tap()
+        XCTAssertTrue(app.el("slice-send-sequencer").waitForExistence(timeout: 3),
+                      "the bake-to-sequencer action should be present with pads")
+        #endif
+    }
+
     // MARK: - (4) Loops
 
     func testLoopsSeededRowAndSliceChips() throws {

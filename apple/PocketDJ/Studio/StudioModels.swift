@@ -557,6 +557,39 @@ struct StudioCue: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+// MARK: - Slices (sample partition → performance pads)
+
+/// One slice of a SAMPLE — a start-marker cue point that plays until the NEXT slice's start (by
+/// time) or the sample's end (spec: slicing). Up to `maxSlots` per sample, store-enforced. `slot`
+/// is the stable pad index / colour (0–7); the play-out boundary is derived from sibling starts,
+/// NOT the slot, so pads may be dragged out of time order. A slice is an audition-only MARKER with
+/// a NON-riding id (like a cue) — "Make pad" bakes the region into a real `smp_` sample that then
+/// flows through Loops / the sequencer / use-as-sample under the normal studio-id fence.
+struct StudioSlice: Codable, Identifiable, Hashable, Sendable {
+    /// 8 slots (0–7) per sample — the hard cap the store enforces (matches the 8-pad grid).
+    static let maxSlots = 8
+
+    var id: String                    // "slc_…" (NOT a collection-riding prefix — see StudioFactory)
+    var sampleId: String
+    var slot: Int                     // 0–7, unique per (sampleId, slot); also the pad/colour index
+    var startMs: Int                  // slice IN point, SAMPLE-relative (the OUT is the next start)
+    var name: String?
+
+    enum CodingKeys: String, CodingKey { case id, sampleId, slot, startMs, name }
+    init(id: String, sampleId: String, slot: Int, startMs: Int, name: String? = nil) {
+        self.id = id; self.sampleId = sampleId; self.slot = slot
+        self.startMs = startMs; self.name = name
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newSliceId()
+        sampleId = (try? c.decode(String.self, forKey: .sampleId)) ?? ""
+        slot = (try? c.decode(Int.self, forKey: .slot)) ?? 0
+        startMs = (try? c.decode(Int.self, forKey: .startMs)) ?? 0
+        name = try? c.decode(String.self, forKey: .name)
+    }
+}
+
 // MARK: - Document (persistence envelope)
 
 /// The versioned studio document (`pocketdj-studio.json`). Every list decodes per-element
@@ -569,13 +602,16 @@ struct StudioDocument: Codable, Sendable {
     var patterns: [StudioPattern] = []
     var takes: [StudioTake] = []
     var cues: [StudioCue] = []
+    var slices: [StudioSlice] = []
 
-    enum CodingKeys: String, CodingKey { case schemaVersion, samples, loops, patterns, takes, cues }
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, samples, loops, patterns, takes, cues, slices
+    }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
-         cues: [StudioCue] = []) {
+         cues: [StudioCue] = [], slices: [StudioSlice] = []) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
-        self.patterns = patterns; self.takes = takes; self.cues = cues
+        self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -589,6 +625,8 @@ struct StudioDocument: Codable, Sendable {
         takes = ((try? c.decode([StudioLossyBox<StudioTake>].self, forKey: .takes)) ?? [])
             .compactMap(\.value)
         cues = ((try? c.decode([StudioLossyBox<StudioCue>].self, forKey: .cues)) ?? [])
+            .compactMap(\.value)
+        slices = ((try? c.decode([StudioLossyBox<StudioSlice>].self, forKey: .slices)) ?? [])
             .compactMap(\.value)
     }
 }
@@ -604,6 +642,9 @@ enum StudioFactory {
     /// Cues are deliberately NOT in `studioPrefixes`: a cue never rides a collection id array,
     /// so the rip/realize guards must not treat `cue_` as a routable studio item.
     static func newCueId() -> String { "cue_" + uid() }
+    /// Slices are audition-only MARKERS on a sample — like `cue_`, NEVER in `studioPrefixes` (a
+    /// slice id never rides a collection array; "Make pad" bakes a real `smp_` sample instead).
+    static func newSliceId() -> String { "slc_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore

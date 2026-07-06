@@ -195,6 +195,29 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(store.cues(forSong: "sng_1").count, 7)
     }
 
+    // MARK: Slices — 8-pad cap, derived play window, chop, orphan cleanup
+
+    func testSliceCapWindowChopAndOrphanCleanup() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(makeSample("smp_x"))                       // durationMs = 2000
+        for slot in 0..<StudioSlice.maxSlots {
+            XCTAssertNotNil(store.setSlice(sampleId: "smp_x", slot: slot, startMs: slot * 250))
+        }
+        XCTAssertEqual(store.slices(forSample: "smp_x").count, 8)
+        XCTAssertNil(store.setSlice(sampleId: "smp_x", slot: 8, startMs: 0))     // slot-domain cap
+        XCTAssertNil(store.setSlice(sampleId: "smp_x", slot: -1, startMs: 0))
+        // Derived window: pad 0 = [0,250), the last pad ends at the raw duration.
+        XCTAssertEqual(store.sliceWindow(sampleId: "smp_x", slot: 0)?.startMs, 0)
+        XCTAssertEqual(store.sliceWindow(sampleId: "smp_x", slot: 0)?.endMs, 250)
+        XCTAssertEqual(store.sliceWindow(sampleId: "smp_x", slot: 7)?.endMs, 2_000)
+        // Chop replaces everything, slot = time order, de-duped + capped.
+        store.setSlices(sampleId: "smp_x", startsMs: [1_000, 0, 0, 500])
+        XCTAssertEqual(store.slices(forSample: "smp_x").map(\.startMs), [0, 500, 1_000])
+        // Deleting the parent sample sweeps its pads (no orphans).
+        _ = store.deleteSample("smp_x")
+        XCTAssertTrue(store.slices(forSample: "smp_x").isEmpty)
+    }
+
     // MARK: Delete with referrers
 
     func testReferrersCountsAndDeleteKeepsThem() throws {
