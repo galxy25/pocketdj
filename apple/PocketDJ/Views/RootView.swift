@@ -296,12 +296,19 @@ struct RootView: View {
     }
 
     @ViewBuilder private var detail: some View {
-        switch section ?? .browse {
+        switch section {
         case .browse:      BrowseView(path: $path)
         case .playlists:   PlaylistsView(path: $path)
         case .mix:         MixView(path: $path)
         case .performance: PerformanceView()
         case .settings:    SettingsView(settings: settings)
+        case .none:
+            // No section = the iPhone HOME menu (the sidebar owns the screen; this detail isn't
+            // shown). Render a neutral backdrop — NOT the old `?? .browse` fallback — so popping a
+            // tab back to home never briefly re-renders the Browser album grid mid pop-animation.
+            // That flash only became visible once the catalog started painting instantly off the
+            // main actor; before, the fallback Browser was empty/mid-load so nothing showed.
+            Theme.bg.ignoresSafeArea()
         }
     }
 }
