@@ -1,6 +1,6 @@
 # Performance tab ("Studio") — samples, loops, step sequencer, virtual instruments, cue points
 
-**Status: design complete (rev 2, post-adversarial-review) — being built on `feat/performance-tab` (2026-07-05).**
+**Status: SHIPPED on `feat/performance-tab` (2026-07-05). The code is authoritative; this spec is the design record (Appendix #30 doctrine).**
 
 A new top-level **Performance** tab in the native app (iPhone / iPad / macOS) for making and
 performing with your own material: record **samples** from any indexed track or the microphone,

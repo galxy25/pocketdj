@@ -33,6 +33,13 @@ server-side. Don't treat their absence as a coverage gap.
 | 21–22 Playlists — list / template | `PlaylistsUITests` (create → chapter → rename → delete), `IndexPlaylistsUITests` | `CollectionsStoreTests` (playlist + sequences + moveNode + dup-from-songIds), `CatalogMergeTests` (index playlists) | ✅ |
 | 23–24 Setlist — generated / track detail | `SetlistUITests` (Play → frozen set list) | `RealizeEngineTests`, `SeededRNGTests`, `HarmonicsUnitTests`, `CollectionsStoreTests` (realize-from-songIds) | ✅ |
 | 27 Multi-source, collection filters & online search | `SettingsUITests.testAddSourceAppendsRow`, `testLoadAppleMusicAddsSource…` | `SettingsStoreTests`, `CatalogMergeTests`, `SigV4Tests` | ✅ |
+| 66 Performance tab (Studio) — Samples | `PerformanceUITests` | `StudioStoreTests`, `StudioEngineMathTests`, `StudioRenderTests`, `StudioMicRecorderTests`, `BeatMathTests` | ✅ native-only |
+| 67 Performance — Loops | `PerformanceUITests` | `StudioStoreTests`, `StudioRenderTests`, `BeatMathTests` | ✅ native-only |
+| 68 Performance — Sequencer | `PerformanceUITests` | `StudioEngineMathTests`, `StudioStoreTests` | ✅ native-only |
+| 69 Performance — Instruments (MIDI · packs · score/SMF/PDF) | `PerformanceUITests` | `InstrumentPacksTests`, `ScoreQuantizerTests`, `SMFWriterTests`, `ScoreLayoutTests` | ✅ native-only |
+| 70 Performance — Cues | `PerformanceUITests` | `CuePlumbingTests`, `StudioStoreTests` (cue max-8) | ✅ native-only |
+| 71 Studio items in pockets / playlists (schema v5) | `PerformanceUITests` | `CollectionsStudioTests`, `CollectionsLossyDecodeTests` | ✅ native-only |
+| 72 Settings ▸ Storage — studio folder locations | `PerformanceUITests`, `StorageUITests` | `StudioFoldersTests`, `StudioStoreTests` | ✅ native-only |
 | 1–4, 6–7 Star map / solar system | — | — | ❌ removed in native |
 | 17 Delete-track confirm · 25 Collection Map/List · 28 Stream & download | — | — | ❌ PWA / server-side |
 
@@ -41,6 +48,17 @@ server-side. Don't treat their absence as a coverage gap.
 of the unit coverage. The deep create/rename/delete + Play interactions are iOS-only
 (`#if !os(macOS)`, like the other suites); macOS runs only the empty-state assertions.
 The Setlist Play flow seeds a playlist via `PDJ_SEED_COLLECTIONS=1`.
+
+**Performance tab (Studio, ch 66–72)** carries **13 unit suites** — `StudioStoreTests`,
+`StudioFoldersTests`, `BeatMathTests`, `CollectionsLossyDecodeTests`, `StudioEngineMathTests`,
+`StudioRenderTests`, `StudioMicRecorderTests`, `InstrumentPacksTests`, `ScoreQuantizerTests`,
+`SMFWriterTests`, `ScoreLayoutTests`, `CuePlumbingTests`, `CollectionsStudioTests` — all in the
+always-run unit bundle. The **`PerformanceUITests`** class above is the intended UI suite
+(tab + sub-tab nav incl. ⌘1..⌘5 via `typeKey` on macOS, seeded rows, rename/delete, cue slots,
+storage sections; iOS-deep, macOS empty-state per convention), seeded via **`PDJ_SEED_STUDIO=1`**
+(fixture sample/loop/pattern/cue rows + a bundled ~1 s audio fixture). **NOTE: `PerformanceUITests`
+is not yet in `apple/Tests/UI/` — the Studio shipped with unit coverage only; the UI suite is
+pending, so treat its rows here as coverage-intent until the class lands.**
 
 ---
 
@@ -57,9 +75,10 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 | `Views/SettingsView.swift`, `State/SettingsStore.swift` | `SettingsUITests`, `StorageUITests` | `SettingsStoreTests`, `CatalogMergeTests` |
 | `Views/StorageView.swift`, `State/{StorageManager,PlayStatsStore}.swift`, `State/BurnStore.swift` (storage ops), `State/SessionFolders.swift` | `StorageUITests` | `BurnStoreStorageTests`, `StorageManagerTests`, `PlayStatsStoreTests`, `MixSessionRecordingsDeleteTests`, `BurnStoreFolderTests`, `SessionFoldersTests` |
 | `Services/Search/**`, `State/OnlineSearchModel.swift` | `SettingsUITests` | `SigV4Tests` |
-| `State/CollectionsStore.swift`, `Models/CollectionsSchema.swift`, `Views/{Pockets,Playlists,AddToCollection,SetlistDetail}*.swift` | `PocketsUITests`, `PlaylistsUITests`, `SetlistUITests`, `IndexPlaylistsUITests` | `CollectionsSchemaTests`, `CollectionsStoreTests`, `RealizeEngineTests` |
-| `Performance/**` | *(none)* | `RealizeEngineTests`, `SeededRNGTests`, `HarmonicsUnitTests` |
-| `Support/**` (Camelot, Genre, Fmt, Config) | *(none)* | `CamelotTests`, `GenreTests`, `FormatTests` |
+| `State/CollectionsStore.swift`, `Models/CollectionsSchema.swift`, `Views/{Pockets,Playlists,AddToCollection,SetlistDetail}*.swift` | `PocketsUITests`, `PlaylistsUITests`, `SetlistUITests`, `IndexPlaylistsUITests` | `CollectionsSchemaTests`, `CollectionsStoreTests`, `RealizeEngineTests`, `CollectionsStudioTests`, `CollectionsLossyDecodeTests` (v5 studio ids + lossy decode) |
+| `Performance/**` *(realize engine — pockets→setlists; NOT the Performance tab, that's `Studio/**`)* | *(none)* | `RealizeEngineTests`, `SeededRNGTests`, `HarmonicsUnitTests` |
+| `PocketDJ/Studio/**` (the Performance TAB — samples/loops/sequencer/instruments/cues) | `PerformanceUITests` | `StudioStoreTests`, `StudioFoldersTests`, `BeatMathTests`, `StudioEngineMathTests`, `StudioRenderTests`, `StudioMicRecorderTests`, `InstrumentPacksTests`, `ScoreQuantizerTests`, `SMFWriterTests`, `ScoreLayoutTests`, `CuePlumbingTests`, `CollectionsStudioTests`, `CollectionsLossyDecodeTests` |
+| `Support/**` (Camelot, Genre, Fmt, Config; incl. `BeatMath.swift`, `Config.instruments*`) | *(none)* | `CamelotTests`, `GenreTests`, `FormatTests`, `BeatMathTests` |
 | `Models/IndexModels.swift`, `State/AppModel.swift` | `BrowseUITests` | `DecodingTests`, `CatalogMergeTests` |
 | **`PocketDJApp.swift`, `RootView.swift`, `Theme.swift`, `project.yml`, `Tests/UI/XCUIHelpers.swift`** | **ALL (shell/infra)** | **ALL** |
 
@@ -67,6 +86,14 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 only** (logic) + the relevant device if the change is platform-specific (a macOS
 keyboard path → also macOS; an iPad layout → also iPad). A change to a **shell/infra**
 row, or touching ≥3 feature rows → **run-all** (full matrix). When unsure, widen.
+
+**The Performance-tab merge is a full-matrix run.** Adding the Studio tab touched the
+**shell/infra** row — `RootView.swift` (the new `Section.performance` case + `pianokeys` icon
++ the ⌘P / ⇧⌘P / ⌥⌘P shadow-button reshuffle), `PocketDJApp.swift` (the app-scoped
+`StudioStore` / `StudioMicRecorder` / engine `@State` + cross-wiring), and `project.yml` (the
+new `Studio/**` files + the reworded mic usage string) — **and** it spans well over three
+feature rows (Studio, Collections, Storage, Support, Playback). Either trigger alone mandates
+**run-all** (every class × iPhone + iPad + macOS); this merge hits both.
 
 ---
 

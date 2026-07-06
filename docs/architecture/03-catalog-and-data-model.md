@@ -293,7 +293,7 @@ The native app persists the whole collections graph as **one versioned, lenient-
 ```
  CollectionsDocument { schemaVersion, pockets[], playlists[], setlists[],
                        folders:[PlaylistFolder]  (v3),  lastAddTarget? }
-   collectionsSchemaVersion = 3      additive-only · lenient (missing version ⇒ v0; missing lists ⇒ [])
+   collectionsSchemaVersion = 5      additive-only · lenient (missing version ⇒ v0; missing lists ⇒ [])
 
  CollectionsMigration.migrate(doc):                      runs when doc.schemaVersion < current
    v1 → v2   pockets gain ordered notes:[PocketNote]    (each older pocket gets notes:[])
@@ -301,6 +301,12 @@ The native app persists the whole collections graph as **one versioned, lenient-
              (lenient decode already defaults folders→[] and every folderId→nil ⇒ top level;
               the migration just stamps schemaVersion — a no-op remap, the seam for a future
               folder-shape transform)
+   v3 → v4   pockets gain folderId?     (lenient decode already defaults it → nil ⇒ top level; no-op remap)
+   v4 → v5   NO stored-shape change — studio support is decoder + consumer behaviour, not new fields:
+             (a) per-element LOSSY decode at every [PlaylistNode] + the [Playlist] list itself, and
+             (b) studio namespaced ids (smp_/lp_/ptn_) riding the EXISTING songIds / SongNode arrays
+             (both are behaviour, so the mapping forward is again the no-op identity; the bump just
+              makes the version visible + reserves the seam for a future studio-shape transform)
 ```
 
 **Reading it.** `schemaVersion` is bumped on any shape change and
@@ -312,7 +318,32 @@ optional **`folderId: String?`** and the document gained a **flat `folders:
 forward (folders defaults to `[]`, every `folderId` stays `nil` ⇒ top level), and a v3 doc
 **loads degraded on a v2 app** (the unknown `folders` / `folderId` keys are ignored,
 playlists intact). Deleting a folder keeps its playlists (they fall back to top level —
-`folderId ⇒ nil`); folders are name-ordered (case-insensitive) for stable display.
+`folderId ⇒ nil`); folders are name-ordered (case-insensitive) for stable display. **v3→v4**
+extended the same folder idea to **pockets** (`Pocket.folderId?`, `nil ⇒ top level`) — the
+identical additive, lenient, no-op-remap shape.
+
+**The v4→v5 step — studio items ride the collections graph.** This is the step the
+**Performance tab (Studio)** landed, and it is deliberately a **behaviour** change with
+**no new stored fields** — so it follows the additive/lenient template exactly. Two things
+turned on: (a) **per-element lossy decoding**, shipped **everywhere** a `[PlaylistNode]` is
+decoded (a chapter's `children`, the nested `children` recursion) *and* on the `[Playlist]`
+list itself — each element decodes into a failable box whose failure drops **that element
+only**, so one unknown-kind node can never take down a chapter, a list, or the document; and
+(b) **studio namespaced ids** (`smp_` samples, `lp_` loops, `ptn_` sequences) that ride the
+**existing** `Pocket.songIds` / `SongNode.songId` string arrays — **no new `PlaylistNode.Kind`
+case**, because a new synthesized-`Codable` case would wipe playlists on any older build that
+hit it (the trap the lossy decoder now insures against for all *future* kinds). The migration
+is again a **pure no-op remap** (nothing to transform — the ids were always valid strings),
+so a v4 doc migrates forward untouched and a **v5 doc loads degraded on a v4 app**: an older
+build without the lossy decoder that trips on a studio-bearing node now drops just that node
+(once every reader is v5) rather than the whole list, and even a pre-v5 reader keeps every
+node it *does* understand. Studio ids **carry through import / merge / backup unchanged** —
+they are plain strings in the same arrays folders and members already travel in, so the
+`importCollection` remint and the backup zip (`BackupZip.swift`) need **no** studio-specific
+handling; the import-remint leaves unknown-prefix ids untouched, and the referenced media
+stays device-local (documented in [Ch. 4 §8.6](./04-performance-engine.md#86-collections-integration--namespaced-ids-schema-v5-lossy-decode-and-the-consumer-fence)).
+The full per-consumer resolution policy (which consumers *resolve* a studio id vs. *fence* it
+out of rip/burn/CSV/autofill) lives there.
 
 **Folders survive import / merge / backup.** Because a folder is pure id+name, it carries
 cleanly through every transfer path (`CollectionsStore.importCollection` + the backup zip):

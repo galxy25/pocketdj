@@ -27,8 +27,9 @@ apple/
     Models/IndexModels.swift  # Codable for current-index.json
     Services/                 # CatalogService, RipServerService, Streaming/, Search/, Shazam/
     State/AppModel.swift
-    Browse/  Views/  Settings/ Performance/        # browse grid, star map, collections engine
+    Browse/  Views/  Settings/ Performance/        # browse grid, star map, collections engine (REALIZE)
     Mix/                      # MixEngine/MixView — first-party AVAudioEngine two-deck DJ engine
+    Studio/                   # Performance TAB: samples/loops/sequencer/instruments/cues — NOT Performance/ (realize)
     Playback/                 # SetlistPlayer, PlayerEngine, StemPlayer, rip/Apple-Music providers
     Resources/  Assets.xcassets
   Tests/{Unit,UI,Fixtures}    # PocketDJTests (pure logic) + PocketDJUITests (XCUITest)
@@ -85,8 +86,12 @@ grid + **Star Map** → **Album** track table (BPM / key / Camelot), **Pockets /
 Playlists / Setlists** with the realize/performance engine, **rip-on-demand + live
 streaming** (rip server + public S3 rips), **Apple Music** streaming, offline
 **Burns**, the **Mix** two-deck DJ engine (first-party AVAudioEngine: tempo / pitch /
-seek / effects / crossfader / beat-match / auto-mix), and **Stems** (Demucs separation
-+ SongDetail audition panel + Mix stem decks + collection burn-stems).
+seek / effects / crossfader / beat-match / auto-mix), **Stems** (Demucs separation
++ SongDetail audition panel + Mix stem decks + collection burn-stems), and the
+**Performance** tab ("Studio": record samples from tracks or the mic, beat-grid-synced
+loops, a 16-step sequencer, seven MIDI virtual instruments with score/PDF/MIDI export,
+and per-track cue points — its own `Studio/` engines, separate from the `Performance/`
+realize engine, and its samples/loops/sequences ride pockets/playlists as collection items).
 
 > **On-device testing note.** Stem playback and the Mix decks read **local files**, so
 > testing them needs a Setlist **burned** to the on-device Burns folder first (the

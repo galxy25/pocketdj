@@ -1874,3 +1874,220 @@ only in memory, and costs nothing when it's off.
 **User story:** "The bug only happens on my MacBook, not the machine with the debugger. Flip on
 capture, make it happen, flip it off, drop the file in iCloud — and the fix shows up in the next
 build instead of twenty questions."
+
+---
+
+# Part V — Performance: the Studio (native)
+
+Everything up to here has been about *records* — finding them, shaping them into a set, ripping,
+burning and mixing them. **Part V is where you make your own.** The native iPhone / iPad / Mac app
+grows a fifth top-level tab — **Performance** (the piano-keys icon), a little **Studio** for your own
+material: **sample** any indexed track or the microphone, slice beat-synced **loops**, program a
+16-step **sequencer**, play seven **virtual instruments** from a MIDI keyboard and capture the take
+as a **musical score** you can replay or export, and drop **cue points** on any track so a tap starts
+it exactly where you marked. Samples, loops and sequences become **collection items** — they live in
+your pockets and playlists beside real songs — and each family gets its own **folder in Settings ▸
+Storage**.
+
+Like Mix, the Studio is **native-only** — the PWA has no Studio screen (a playlist that happens to
+hold a studio item simply skips it on the web) — and it reads the **same catalog, rips and
+collections** as everything else: a sample is carved from the *same* vinyl rip a burn would download,
+a cue seeks the *same* streamed or burned file a row ▶ plays. The Studio makes new kinds of audio —
+mic captures and downloaded instrument banks — but it never invents a new catalog: it always starts
+from a song you already have.
+
+These sections are **prose-only** (no screenshots captured yet). They describe the real Studio
+surfaces under `apple/PocketDJ/Studio/` — the shell (`Views/PerformanceView.swift`), the five sub-tab
+views (`StudioSamplesView.swift` · `StudioLoopsView.swift` · `StudioSequencerView.swift` ·
+`StudioInstrumentsView.swift` · `StudioCuesView.swift`), the engines (`StudioEngine.swift` ·
+`StudioMicRecorder.swift` · `InstrumentEngine.swift` · `StudioRender.swift`) and the store
+(`StudioStore.swift` / `StudioModels.swift`).
+
+---
+
+## 66. The Performance tab — a studio in your pocket
+
+The native app has a **fifth top-level tab**: **Performance** (the **piano-keys** icon, beside
+Browser · Playlists · Mix · Settings), and **⌘P** jumps straight to it. Because ⌘P used to open
+Playlists, the whole keyboard reshuffles by one: **Playlists is now ⇧⌘P**, and Browser's
+play-focused ▶ moves to **⌥⌘P** — one physical key, three deliberate homes.
+
+Inside, a **segmented picker** across the top splits the Studio into **five sub-tabs**, and **⌘1–⌘5**
+step between them (scoped to this tab, so they never fight Browser's own ⌘1/⌘2):
+
+**Affordances**
+- **Samples** (⌘1, waveform) — capture audio from a track or the mic and shape it.
+- **Loops** (⌘2, repeat) — slice a sample into a beat-synced loop.
+- **Sequencer** (⌘3, grid) — a 16-step drum-machine grid over your samples and loops.
+- **Instruments** (⌘4, piano-keys) — play and record the virtual instruments.
+- **Cues** (⌘5, flag) — set jump-to points on any track.
+
+On a **narrow iPhone in portrait** the five segments show **just their symbols** (five text labels
+won't fit); a **wider** screen shows symbol *and* word. The Studio **remembers the sub-tab** you were
+last on and reopens there, and — the toolbar-overflow lesson from Playlists — its important controls
+stay **in the content**, never buried behind a `•••`.
+
+**User story:** "I hit ⌘P, land on Samples where I left off, and the whole Studio is one number-key
+away — 1 to grab a sample, 3 to drop it into a beat — without ever reaching for the mouse."
+
+---
+
+## 67. Samples — grab a piece of any track, or the room
+
+A **sample** is a piece of audio you own — carved out of a song in your crate, or recorded from the
+**microphone**.
+
+**From a track** (**＋ from track**). Pick a song — a search field, with a **burned badge** on the
+ones already on your device — then land in the **region editor**: the song's **waveform** (drawn from
+the local file when there is one), **start and end handles**, **in / out** mark buttons you can tap
+while it auditions, and **fine nudges** (±10 ms, or ±1 beat when the song's grid is known; on iPhone
+portrait the fine controls pop into the fixed-width popover from §60). How the Studio *reaches* the
+audio depends on what you've already got, and it never dead-ends:
+
+- **Burned** — it carves straight from the on-device file.
+- **Ripped but not burned** — it **burns the song on demand** first, showing the same **burning →
+  ready → failed + Retry** panel the stem audition uses.
+- **Apple-Music-only, never ripped** — it says **"Rip first"** and points you at the existing rip
+  flow, rather than silently doing nothing.
+
+The carved sample **inherits the parent song's beat grid** — offset-shifted so beat one lands where
+*your* clip begins — so a slice out of a 120-BPM track already knows it's 120 BPM.
+
+**From the microphone** (**● record**). Grant permission once, watch the **level meter**, record and
+stop, and name the take. A mic sample has **no grid** until you give it one — **tap the tempo** out on
+the tap-tempo button or **type a BPM** (the same affordance waits in the Loops empty state).
+
+**Editing is non-destructive.** Open a sample and you can **rename**, **trim**, and dial **gain**,
+**playback rate** (½–2×), **pitch** (±12 semitones), and **reverb** and **delay** — all auditioned
+live through the Studio's chain, and **none of it written into the file** until something that needs a
+finished file asks for one (a loop, a sequenced hit, or playing the sample inside a collection).
+Change an edit and the render just refreshes.
+
+**User story:** "I loop back to the four bars I love in a record I haven't even burned yet — the
+Studio burns it, I drag the handles onto the break, nudge the start to the downbeat, and now I've got
+a clean sample that still remembers it's 118 BPM."
+
+---
+
+## 68. Loops — a seamless bar you can lean on
+
+A **loop** is a **beat-synced slice of a sample** that repeats forever with **no click at the seam**.
+Pick a sample, choose a **length in beats** — **½, 1, 2, 4, 8, 16 or 32** — set the **anchor**, and
+the Studio snaps the window to the sample's real **downbeats** and renders it. Save, rename, delete;
+the audition **loops** so you hear exactly what you'll get.
+
+Two things make a loop dependable. First, it's **rendered to its own standalone file with your edits
+baked in**, so it **plays offline** and — crucially — **outlives its source**: delete the sample it
+came from and the loop keeps playing (you just can't *re-slice* it anymore, and the row notes the
+source is gone). Second, that file is written in a **lossless, gapless format** on purpose: a
+compressed loop file would add a tiny hiccup of silence at the loop point and **tick** on every pass —
+so loops are the one Studio artifact that isn't an `.m4a`, and they come back around clean, bar after
+bar.
+
+**User story:** "I slice a two-beat stab out of a horn sample, hit audition, and it just breathes —
+round and round with no tick — so I know it'll hold a groove under a whole set."
+
+---
+
+## 69. Sequencer — sixteen steps, your samples on the grid
+
+The **Sequencer** is a **16-step** drum machine. **Add rows** — each row is a **sample or a loop** —
+and **tap the steps** under each to place a hit on that sixteenth of the bar. Set the **pattern BPM**,
+hit **play**, and it cycles the bar; **name and save** patterns, and load them back later.
+
+It behaves like a real step sequencer. Hits **choke themselves** — retrigger a row and it cuts its
+own ringing tail, the classic mono-voice feel. On a **narrow iPhone** the 16 steps **wrap to two rows
+of 8** with a group separator every four steps so your thumb can find the beat; a **wide** screen
+lays all 16 in a single line. You can **bounce** a pattern to a single audio file whenever you want a
+finished loop of the whole thing (it re-bounces the moment you edit it).
+
+It's also **forgiving of your own housekeeping**: a row whose sample or loop you later **deleted**
+shows up as a **muted "missing" row** and is simply **skipped** — never a crash — and a pattern with
+**nothing switched on** politely **declines** to play or bounce rather than choking on an empty
+schedule.
+
+**User story:** "I drop my kick sample on row one, the horn loop on row two, tap out a pattern on my
+phone in two rows of eight, and bounce it — and even after I've thrown away the original samples the
+beat still plays."
+
+---
+
+## 70. Virtual instruments — play it, score it, keep it
+
+The **Instruments** sub-tab turns the app into a small **MIDI instrument**. Seven voices —
+**piano, violin, bass guitar, acoustic guitar, trumpet, clarinet, harp** — play from a **wired / USB
+MIDI keyboard** or the **on-screen keys**. (Network and Bluetooth MIDI aren't in this version.)
+
+**The sounds download as packs.** The first pack pulls a **shared ~32 MB General MIDI sound bank**
+(**GeneralUser GS** — its license asks for credit, so the packs screen shows the attribution); every
+pack after that is **instant**, because they all share that one bank. Downloaded packs play
+**offline**, and you delete them from the packs screen or Settings ▸ Storage.
+
+**Recording a take.** A **metronome click** and a **one-bar count-in** (both on by default, both
+switchable) lead you in, then you play. The Studio captures the **actual notes** — not just the audio
+— so a take renders to **real sheet music**: a **grand staff** for piano and harp, a **treble staff**
+for the melodic voices, **bass clef** for bass guitar, with note heads, stems, flags, ledger lines,
+chords and rests. **Replay** plays those same notes back through the instrument, so **the page and
+the sound always agree**.
+
+And a take doesn't have to stay a take:
+
+**Affordances**
+- **Export PDF** — real, vector **sheet music** (not a screenshot).
+- **Export MIDI** — a standard MIDI file, from your **raw** performance (before the score rounded it
+  to the grid).
+- **Use as sample** — **copies** the take's audio into a **new sample** with a grid from its tempo,
+  handing you the whole **play it → sample it → loop it** path.
+
+**User story:** "I count myself in, play a bass line on my keyboard, and there it is as sheet music I
+can export as a PDF — or turn straight into a sample and slice into a loop for the sequencer."
+
+---
+
+## 71. Cue points — tap to drop the needle
+
+**Cues** let you mark up to **eight jump-to points on any track** and start playback from any of them
+with one tap. Pick a song and its **timeline** appears — a **digital** song draws its own **waveform**;
+an **analog** song's waveform is the **whole album side**, cropped to just this song's slice. **Tap a
+slot** to drop a cue at the playhead; **tap it again to jump there and play**. Long-press or ⋯ to
+**set-at-playhead**, **rename**, **nudge** a cue a hair earlier or later, or **delete** it — each of
+the eight **slots keeps its own stable color**.
+
+A cue plays through the **same playback path** a row ▶ uses, so it behaves like the rest of the app:
+
+- a **burned local file** jumps **exactly**;
+- a **streamed** track plays-then-**seeks** (Apple Music lands within about a second);
+- a track that's **still ripping** right now **can't seek yet** — its cue buttons show a **"still
+  ripping"** state until the capture finishes.
+
+**User story:** "I mark the drop, the last chorus and the outro on a record, and mid-set I just tap
+the flag for the drop — and it's there, whether that track's burned on my phone or streaming."
+
+---
+
+## 72. Studio in your collections & storage — where your creations live
+
+Your Studio creations are **first-class collection items**. A **sample, loop or sequence** can be
+**added to a pocket or playlist** exactly like a song — the **Add-to** sheet lists them, and a set-list
+row wears a **Sample / Loop / Sequence** badge so you can tell them apart at a glance. Play a
+collection and your studio items **play in place from their own local files**; **counts and runtimes
+include them**, with their real lengths.
+
+But the Studio **deliberately stays out of the parts of the app that talk to the cloud or the
+wallet**. **Rip**, **Burn** and **Stemify** on a collection **skip** your studio items — they're
+already on the device, there's nothing to fetch and nothing to push to the public cache — the
+**tracklist CSV** export leaves them out, and **Auto-Mix's autofill** won't reach for one of your
+loops as a "harmonic bridge" in some other set. (Belt and braces: the rip server itself **refuses**
+studio ids, so even an **older build** that predates the Studio can't accidentally trigger a rip on
+one of your samples.)
+
+**Storage.** Settings ▸ Storage (§64) grows a **folder picker** for each user-relocatable family —
+**samples**, **loops**, **sequences** — plus **usage rows** for those three and for **takes** and
+**instrument packs**, and a **delete-all** for each family. **Takes and instrument packs stay
+app-managed** (no folder to lose them in). And the same safety rules as your burns apply: the Studio
+**only ever counts and deletes files it wrote**, so your own audio in a folder you pointed it at is
+never touched — and it **never auto-prunes** anything you made.
+
+**User story:** "My loop sits in tomorrow's warmup playlist right next to real records and plays in
+its slot — but when I hit *Rip collection* or export the CSV, PocketDJ knows it's mine and leaves it
+alone."

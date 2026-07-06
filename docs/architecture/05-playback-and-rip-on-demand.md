@@ -902,6 +902,29 @@ app-named session-folder tidy-up. `MixRecorder` bumps new take names past any fi
 on disk (a preserved take can't be truncated), and `recoverOrphans` carries the same
 `mses_` guard so a user's own `.m4a` is never adopted as a take.
 
+**Studio content — the Performance tab's five families.** The Studio (Ch. 4 §8) adds its
+own storage, surfaced in the same screen. `StorageView` gains a **studio usage section**
+(per-family bytes) plus **three folder pickers** (`storage-samples-folder-choose`,
+`…-loops-…`, `…-sequences-…`) and a per-family **delete-all**. The app-managed roots are
+`Application Support/studio/{samples,loops,sequences,takes,instruments}/`, and **three of the
+five families are user-relocatable** via new optional security-scoped bookmarks in
+`SettingsStore` — `samplesFolderBookmark`, `loopsFolderBookmark`, `sequencesFolderBookmark`
+(optional `SettingsData` fields, back-compat decode, resolved by `StudioFolders`). **Takes
+and instrument packs are always app-managed** (under `studio/takes/` and `studio/instruments/`)
+— no bookmark, so there's never ambiguity about which root a take or a 32 MB bank resolves
+against. Usage/delete operate through `StudioStore` (samples/loops/sequences/takes, via
+`StudioFolders.usageBytes(family:bookmark:knownIds:)`) and `InstrumentPackStore` (banks),
+filtering **strictly** by the family's exact filename shape **and** a document-known id (the
+same `BurnStore.ownsAuxFile` discipline in rule 2 above) so a co-located or user-authored file
+is never counted or swept; a per-family delete-all runs mic-take orphan recovery first, skips
+the recorder's active take, and — like session recordings — **keeps records whose user root is
+unreachable**. The whole area follows the **never-auto-pruned doctrine**: **user-created studio
+content is never touched by the soft-cap LRP prune** (the session-recordings rule), files an
+engine holds open join the `protectedSongIds`-style guards, and instrument packs — though
+re-downloadable — are **not** LRP-pruned in v1 either (delete via the UI only). `StudioStore`'s
+`launchURL()` fixture seam + `StudioFolders.appRootOverride` are the hermetic test seams, so
+`StudioStoreTests` / `StudioFoldersTests` never touch a real machine's studio content.
+
 **Play stats → the prune order.**
 [`PlayStatsStore`](../../apple/PocketDJ/State/PlayStatsStore.swift)
 (`pocketdj-play-stats.json`, Application Support, device-local) records
@@ -1049,6 +1072,19 @@ button's trailing slot** (`startStopButton` — not a menu item), and the second
 `overflowMenu` (Edit is present-but-disabled mid-set, since reordering would desync the
 sequencer's queue index). **macOS** keeps the flat trailing toolbar (no `.principal` nav bar)
 with prev/next inline while running.
+
+**Studio rows in a set — the `studioResolve` branch.** A pocket/playlist realized into a set
+(Ch. 4 §8.6) can contain **studio ids** (`smp_`/`lp_`/`ptn_`). `SetlistPlayer.playCurrent`
+therefore checks a **`studioResolve`** closure **first** — before the `burns`/`coordinator`
+resolution and **above** the device/cloud split — because a studio item is a **device-local
+file**, not a catalog track: there is no rip, no stream, no `startMs`/end-boundary (studio
+files are per-item with a natural end). `studioResolve` returns the item's local `url`, a
+security-scope `release`, its `title`, and its real `lengthMs`; the sequencer plays it through
+the **same `playLocalFile` helper** as a burnt track (§12), so `nowPlaying`, the per-row
+`InlinePlayerSlot` (§7), and the row pause/resume toggle stay consistent, and — since a
+playable studio row *is* on-device audio — it counts toward the device-mode `loadedAnyDeviceTrack`
+guard (an all-studio set never trips the "nothing on device" banner). A studio row that can't
+resolve (its file was pruned/relocated) advances immediately, exactly like a dead cloud source.
 
 ### 10.1 The home Now Playing deck — live queue edits + the spinning record
 
@@ -1608,6 +1644,39 @@ stale schedule-completions after a seek/stop. **Solo/mute** is an instant, glitc
 `TimelineView` scrubber, and a centered **Play-All** master. Like the Mix stem decks it is
 **offline-only** — it plays **local burned files**, never a stream — and `.onDisappear`
 releases the held folder scope.
+
+### 15.3 Studio-id guards on the rip / stem paths — keeping device-local ids off the wire
+
+**Why.** The Performance tab (Ch. 4 §8) lets **studio ids** (`smp_`/`lp_`/`ptn_`/`tk_`) ride
+the collection `songIds` arrays, and a mixed pocket/setlist flows into the very batch verbs
+this chapter's rip/stem paths consume (`/rip-collection`, `/stemify-collection`, §2, §9). A
+studio item is a **device-local file** with no catalog source, so it must never reach the rip
+server — otherwise an *old* build's play-through-coordinator on a studio row could fire a
+**live-search rip into the public bucket** under the studio id. The guard is **defense in
+depth**: enforced both client-side and — because the rip server is **shared infrastructure
+across app versions** — server-side.
+
+**Source of truth:**
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
+(`StudioFactory.isStudioId` skips in `ripCollection` / `requestRip` / `stemify`) and
+[`scripts/rip-server.mjs`](../../scripts/rip-server.mjs) (the `STUDIO_ID = /^(smp_|lp_|ptn_|tk_)/`
+reject at `/rip`, `/rip-collection`, `/stemify`).
+
+```
+ CLIENT   RipsStore.ripCollection / requestRip / stemify → filter/skip StudioFactory.isStudioId(id)
+          (a whole-collection Rip drops studio rows so one loop in a mix never fails the batch)
+ SERVER   /rip · /rip-collection · /stemify:  STUDIO_ID.test(songId) → 400 (single) / filtered out (collection)
+          → "studio ids are device-local (not rippable)"   (idempotent, safe for any app version)
+```
+
+**Reading it.** The client filters studio ids out of every collection Rip/Stemify request and
+early-returns a typed `studioItem` error for a single one, so a mixed collection rips its
+catalog songs and silently leaves its loops alone. The server independently rejects the same
+prefixes at the enqueue boundary (HTTP 400 for a single id, filtered out of a collection batch),
+so even an app build that predates the client guard can't leak a studio id into the public rips
+bucket. The cue-point ids (`cue_…`) are **deliberately not** in the studio-prefix set — a cue
+never rides a collection `songIds` array; it references a real catalog `songId` that *should*
+rip/stream normally (Ch. 4 §8.5).
 
 ## Next
 
