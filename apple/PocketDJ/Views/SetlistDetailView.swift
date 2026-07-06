@@ -67,7 +67,11 @@ struct SetlistDetailView: View {
     }
 
     /// The ordered, playable tracks (cue/empty rows stripped), carrying title + artist so
-    /// the now-playing label + coordinator.play have what they need.
+    /// the now-playing label + coordinator.play have what they need. STUDIO rows
+    /// (`smp_`/`lp_`/`ptn_` — spec §8) pass this filter on purpose: they are playable
+    /// (isText nil, non-empty songId) and SetlistPlayer resolves them via its
+    /// `studioResolve` seam; their `shownMs` is the REAL snapshot length (playNow/
+    /// realize freeze it from the studio lookup), so lengths display correctly too.
     private func playableItems(_ setlist: Setlist) -> [SetlistPlayer.Item] {
         setlist.tracks
             .filter { $0.isText != true && !$0.songId.isEmpty }
@@ -393,17 +397,30 @@ struct SetlistDetailView: View {
         }
     }
 
-    /// The setlist-only provenance column (source + chapter), shown inside the shared
-    /// row to the left of the transport placeholders.
+    /// The setlist-only provenance column (kind + source + chapter), shown inside the
+    /// shared row to the left of the transport placeholders.
     @ViewBuilder
     private func provenanceBadges(_ track: SetlistTrack) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
+            studioKindBadge(track.songId)
             sourceBadge(track.source)
             // Show the chapter only when it's a real, named one (not the default).
             if let seq = track.sequenceName, !seq.isEmpty, seq != "Default" {
                 Badge(seq, color: Theme.fgDim)
             }
         }
+    }
+
+    /// "Sample" / "Loop" / "Sequence" mini-badge for STUDIO rows, styled like the
+    /// provenance badges below. Routed on the ID PREFIX because a frozen SetlistTrack
+    /// carries no kind field (the additive schema rides namespaced ids — spec §8);
+    /// the prefix is the same signal playback + the rip fences key on. EmptyView for
+    /// ordinary songs, so existing rows render byte-identically.
+    @ViewBuilder
+    private func studioKindBadge(_ songId: String) -> some View {
+        if songId.hasPrefix("smp_") { Badge("Sample", color: Theme.accent2) }
+        else if songId.hasPrefix("lp_") { Badge("Loop", color: Theme.accent2) }
+        else if songId.hasPrefix("ptn_") { Badge("Sequence", color: Theme.accent2) }
     }
 
     @ViewBuilder

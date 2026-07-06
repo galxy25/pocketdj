@@ -1,10 +1,14 @@
 import SwiftUI
 
-/// Sheet to add a song or album to a pocket or playlist (or a new one). Remembers
-/// the last target — including the playlist chapter — and surfaces it first, so
-/// building up a collection is just "Add to…" then tap the remembered target.
+/// Sheet to add a song, album, or STUDIO item (sample/loop/pattern — spec §8) to a
+/// pocket or playlist (or a new one). Remembers the last target — including the
+/// playlist chapter — and surfaces it first, so building up a collection is just
+/// "Add to…" then tap the remembered target.
 struct AddToCollectionView: View {
-    enum Item: Hashable { case song(String), album(String) }
+    /// `.studio` carries the item's TITLE alongside its `smp_`/`lp_`/`ptn_` id because
+    /// this sheet is presented from Studio list rows with no detail screen behind it
+    /// (unlike songs/albums) — the header below names what's being added.
+    enum Item: Hashable { case song(String), album(String), studio(id: String, title: String) }
 
     @Environment(CollectionsStore.self) private var collections
     @Environment(\.dismiss) private var dismiss
@@ -16,6 +20,21 @@ struct AddToCollectionView: View {
     var body: some View {
         NavigationStack {
             List {
+                // WHAT is being added — shown only for studio items: a sample/loop/
+                // sequence row has no backing detail screen naming it behind this
+                // sheet, so the sheet itself says so. Songs/albums keep the sheet
+                // exactly as it was (their detail screen is right behind it).
+                if case .studio(_, let title) = item {
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: studioIcon).foregroundStyle(Theme.accent2)
+                            Text(title).foregroundStyle(Theme.fg)
+                            Spacer()
+                            Text(studioKindLabel).font(.caption).foregroundStyle(Theme.fgDim)
+                        }
+                    } header: { Text("Adding") }
+                }
+
                 if let last = collections.lastAddTarget, let label = collections.lastTargetLabel(last) {
                     Section("Last used") {
                         Button { addTo(last); dismiss() } label: {
@@ -92,6 +111,10 @@ struct AddToCollectionView: View {
         switch item {
         case .song(let s): collections.addSong(s, to: target)
         case .album(let a): collections.addAlbum(a, to: target)
+        // Studio ids ride the SAME string-id plumbing as songs (spec §8's namespaced-id
+        // mechanism): pockets keep them in `songIds`, playlists as `.song` nodes; every
+        // consumer routes on the id prefix at resolve time.
+        case .studio(let id, _): collections.addSong(id, to: target)
         }
     }
 
@@ -99,7 +122,25 @@ struct AddToCollectionView: View {
         switch item {
         case .song(let s): return p.songIds.contains(s)
         case .album(let a): return p.albumIds.contains(a)
+        case .studio(let id, _): return p.songIds.contains(id)   // rides songIds (see addTo)
         }
+    }
+
+    /// "Sample" / "Loop" / "Sequence" from the studio id's prefix — the id namespace IS
+    /// the kind (no schema field carries it; spec §8), mirroring every other consumer.
+    private var studioKindLabel: String {
+        guard case .studio(let id, _) = item else { return "" }
+        if id.hasPrefix("lp_") { return "Loop" }
+        if id.hasPrefix("ptn_") { return "Sequence" }
+        return "Sample"
+    }
+
+    /// The sub-tab's SF symbol per kind (spec §1: waveform / repeat / grid).
+    private var studioIcon: String {
+        guard case .studio(let id, _) = item else { return "waveform" }
+        if id.hasPrefix("lp_") { return "repeat" }
+        if id.hasPrefix("ptn_") { return "square.grid.4x3.fill" }
+        return "waveform"
     }
 
     private func newRow(_ placeholder: String, text: Binding<String>,

@@ -58,6 +58,26 @@ struct PocketDJApp: App {
     /// pass evicts least-recently-played burned media until the footprint fits. Cap unset
     /// (default) ⇒ never deletes anything on its own.
     @State private var storage: StorageManager
+    /// The Studio (Performance tab) document store — samples, loops, sequencer patterns,
+    /// instrument takes, and cue points, persisted as `pocketdj-studio.json`. App-scoped like
+    /// every long-lived store so launch hooks (reconcile/orphan recovery in RootView's task)
+    /// and background intent launches find it wired.
+    @State private var studio: StudioStore
+    /// APP-SCOPED Studio audition/sequencer engine (sample chain + loop audition + 16-step
+    /// pattern playback) — owned here, NOT by the Performance tab's views, so audition keeps
+    /// playing across tab switches (the MixEngine/SetlistPlayer ownership doctrine).
+    @State private var studioEngine: StudioEngine
+    /// APP-SCOPED mic recorder for Studio samples — its capture must survive navigating away
+    /// from the tab mid-take, and its crash-orphan recovery runs from RootView's launch task
+    /// (the MixRecorder lifecycle, input-side edition).
+    @State private var studioMic: StudioMicRecorder
+    /// APP-SCOPED virtual-instrument engine (sampler + MIDI + take recording). Owned here so
+    /// a wired MIDI keyboard keeps sounding across tabs and an in-flight take can be filed by
+    /// the exit bridge even when the Performance tab isn't mounted.
+    @State private var instrumentEngine: InstrumentEngine
+    /// Instrument sound-bank pack downloads (S3 manifest + file-based downloadTask). App-scoped
+    /// so an in-flight 32 MB bank download survives tab switches.
+    @State private var instrumentPacks: InstrumentPackStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -150,6 +170,20 @@ struct PocketDJApp: App {
         _playStats = State(initialValue: playStats)
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
         _storage = State(initialValue: storage)
+        // ── Studio (Performance tab) stores + engines ──────────────────────────
+        // All app-scoped for the same two reasons as the Mix stack: audition/recording/
+        // instrument state must survive tab switches, and cross-wiring happens HERE (not in a
+        // view task) so background App-Intent launches and the exit bridge find working stores.
+        let studio = StudioStore(fileURL: StudioStore.launchURL())
+        let studioEngine = StudioEngine()
+        let studioMic = StudioMicRecorder()
+        let instrumentEngine = InstrumentEngine()
+        let instrumentPacks = InstrumentPackStore()
+        _studio = State(initialValue: studio)
+        _studioEngine = State(initialValue: studioEngine)
+        _studioMic = State(initialValue: studioMic)
+        _instrumentEngine = State(initialValue: instrumentEngine)
+        _instrumentPacks = State(initialValue: instrumentPacks)
 
         // ── Store cross-wiring ─────────────────────────────────────────────────
         // Wired HERE (not in RootView.task) so an App Intent that background-launches
@@ -195,13 +229,59 @@ struct PocketDJApp: App {
         // Let the daily storage-prune BGTask reach the live prune engine (gate included).
         StoragePruneBridge.shared.prune = { [weak storage] in storage?.pruneIfDue() }
         #endif
+        // ── Studio cross-wiring ────────────────────────────────────────────────
+        // The store resolves per-family folder bookmarks through settings; the mic recorder
+        // files finished/auto-stopped samples into the store and resolves the samples-folder
+        // bookmark itself (the MixRecorder.settings pattern — pushed here, not from a view,
+        // so launch-time orphan recovery can scan the user-picked folder too).
+        studio.settings = settings
+        studioMic.store = studio
+        studioMic.settings = settings
+        // Storage sweeps must never delete the file a recorder holds OPEN — and EITHER capture
+        // engine can own the in-flight file (a mic sample take or an instrument take), so the
+        // store's active-take guard asks both.
+        studio.activeTakeFileName = { [weak studioMic, weak instrumentEngine] in
+            studioMic?.activeTakeFileName ?? instrumentEngine?.activeTakeFileName
+        }
+        // Engine-ended instrument takes (engine outage / interruption / media reset / writer
+        // death) are FILED, never dropped — the partial audio + events are data (the
+        // MixRecorder auto-file doctrine). The view files clean stops itself; this callback
+        // is exclusively the unattended path.
+        instrumentEngine.onTakeAutoStopped = { [weak studio] result in
+            studio?.addTake(StudioTake(autoFiled: result))
+        }
+        // Collections ↔ Studio seams (spec §8's per-consumer table): `studioLookup` feeds
+        // counts/runtime/playNow snapshots + realize's synthetic entries (metadata only, no
+        // disk touch); `studioResolve` is SetlistPlayer's playback branch (scope-held local
+        // file). Camelot stays nil in v1 — loops inherit bpm from their grid, key inheritance
+        // is a documented follow-up, and Harmonics drops nil axes safely.
+        collections.studioLookup = { [weak studio] id in
+            guard let info = studio?.displayInfo(forStudioId: id) else { return nil }
+            return (title: info.title, lengthMs: info.lengthMs, bpm: info.bpm, camelot: nil)
+        }
+        setlistPlayer.studioResolve = { [weak studio] id in
+            studio?.localURLForPlayback(id: id)
+        }
         // Orderly exits (macOS Cmd-Q / iOS willTerminate) finalize + FILE an in-flight take —
         // without this every quit-mid-recording relied on next-launch orphan recovery. The flush
         // is what makes the filing DURABLE: addRecording persists via an async actor write that
         // loses the race with `.terminateNow`/exit().
-        RecordingExitBridge.shared.finalize = { [weak mixRecorder, weak mixSessions] in
+        RecordingExitBridge.shared.finalize = { [weak mixRecorder, weak mixSessions,
+                                                 weak studioMic, weak instrumentEngine, weak studio] in
             mixRecorder?.stop()
             mixSessions?.flush()
+            // Studio's quit paths ride the same bridge: the mic recorder files + flushes its
+            // own in-flight sample take; an in-flight INSTRUMENT take is stopped and filed
+            // here (stopTake during the count-in is a cancel → nil, nothing to file), then the
+            // studio document is flushed SYNCHRONOUSLY — addTake's normal save is the same
+            // async actor write that loses the race with `.terminateNow`/exit().
+            studioMic?.finalizeForExit()
+            if let instrumentEngine, instrumentEngine.isRecordingTake {
+                if let result = instrumentEngine.stopTake() {
+                    studio?.addTake(StudioTake(autoFiled: result))
+                }
+                studio?.flush()
+            }
         }
         // A stale-but-resolvable session-folder bookmark mints fresh data mid-resolve; persist it
         // back so it keeps resolving next launch (a stale bookmark eventually stops working —
@@ -211,6 +291,22 @@ struct PocketDJApp: App {
                 settings?.sessionFolderBookmark = data
                 settings?.persist()   // must land in UserDefaults NOW — no later persist() is
                                       // guaranteed to run before quit (macOS can sit on one section)
+            }
+        }
+        // Same stale-bookmark re-mint doctrine, per Studio FAMILY: the fresh data must land in
+        // the MATCHING settings field and hit UserDefaults immediately (an un-persisted re-mint
+        // silently orphans every user-folder sample/loop/pattern on the next launch — the S6
+        // lesson generalized).
+        StudioFolders.onStaleBookmark = { [weak settings] family, data in
+            Task { @MainActor in
+                guard let settings else { return }
+                switch family {
+                case .samples: settings.samplesFolderBookmark = data
+                case .loops: settings.loopsFolderBookmark = data
+                case .sequences: settings.sequencesFolderBookmark = data
+                case .takes, .instruments: return   // always app-managed — no bookmark exists (spec §3)
+                }
+                settings.persist()
             }
         }
 
@@ -259,6 +355,11 @@ struct PocketDJApp: App {
                 .environment(mixRecorder)
                 .environment(playStats)
                 .environment(storage)
+                .environment(studio)
+                .environment(studioEngine)
+                .environment(studioMic)
+                .environment(instrumentEngine)
+                .environment(instrumentPacks)
                 .environment(intents)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
@@ -279,6 +380,7 @@ struct PocketDJApp: App {
                     case .background:
                         streaming.onScenePhaseBackground()
                         mixSessions.flush()    // persist the latest session state before suspension
+                        studio.flush()         // studio document too — same suspension-race doctrine
                         // Submit/re-submit the BGTasks (burn-drain + rip-reconcile) so a
                         // backgrounded burn/rip keeps advancing/reconciling. iOS-only.
                         #if os(iOS)
@@ -292,5 +394,18 @@ struct PocketDJApp: App {
         .defaultSize(width: 1180, height: 800)
         .windowToolbarStyle(.unified)
         #endif
+    }
+}
+
+/// Map an engine-ended instrument take to its filed record with the default "Take <date>" name
+/// (the user renames later in the Instruments tab). One mapping shared by the auto-stop callback
+/// AND the orderly-exit bridge so both unattended paths file byte-identical records.
+private extension StudioTake {
+    @MainActor init(autoFiled r: InstrumentEngine.TakeResult) {
+        self.init(id: r.takeId,
+                  name: "Take " + Date.now.formatted(date: .abbreviated, time: .shortened),
+                  instrument: r.instrument, fileName: r.fileName, bpm: r.bpm,
+                  events: r.events, durationMs: r.durationMs,
+                  createdAt: Date().timeIntervalSince1970 * 1000)
     }
 }

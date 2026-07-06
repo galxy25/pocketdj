@@ -29,6 +29,15 @@ final class CollectionsStore {
     /// playlist/pocket vocabulary. Nil during init (decode/seed never fires it).
     var onChange: (() -> Void)?
 
+    /// STUDIO SEAM (spec §8, wired at app init by the integrator to `StudioStore`):
+    /// resolve a studio id (`smp_`/`lp_`/`ptn_`) to its display metadata — title plus
+    /// the REAL lengthMs (mandatory: a 4-second loop must never count or realize as the
+    /// engine's 210 s default track), and bpm/camelot when known. nil until wired (and
+    /// in most unit tests). NIL-SAFE BY CONTRACT: every consumer below treats a nil
+    /// seam / nil result as "not resolvable" and degrades to the exact catalog-only
+    /// behavior it had before Studio existed (studio ids simply drop out).
+    var studioLookup: ((String) -> (title: String, lengthMs: Int, bpm: Double?, camelot: String?)?)?
+
     init(fileURL: URL = CollectionsStore.defaultURL()) {
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL), let doc = try? CollectionsCodec.decode(data) {
@@ -107,6 +116,10 @@ final class CollectionsStore {
         for i in pockets.indices { pockets[i].childPocketIds.removeAll { $0 == id } }
         save()
     }
+    /// Membership add. `songId` is a PLAIN STRING id — STUDIO ids (`smp_`/`lp_`/`ptn_`,
+    /// spec §8's namespaced-id mechanism) ride this exact path verbatim: a pocket stores
+    /// them in `songIds` like any song and every consumer routes on the id PREFIX at
+    /// resolve time (playable vs. rip/CSV). No `addStudioItem` twin is needed — this IS it.
     func addSong(_ songId: String, toPocket id: String) {
         mutatePocket(id) { if !$0.songIds.contains(songId) { $0.songIds.append(songId) } }
     }
@@ -374,6 +387,9 @@ final class CollectionsStore {
 
     func setLastAddTarget(_ target: AddTarget?) { lastAddTarget = target; save() }
 
+    /// The Add-to sheet's seam. Like `addSong(toPocket:)`, the id is prefix-agnostic:
+    /// `AddToCollectionView.Item.studio` routes its `smp_`/`lp_`/`ptn_` ids straight
+    /// through here (spec §8) — the string-array plumbing needs no studio-specific twin.
     func addSong(_ songId: String, to target: AddTarget) {
         switch target.kind {
         case .pocket:   addSong(songId, toPocket: target.id)
@@ -408,36 +424,105 @@ final class CollectionsStore {
     /// A pure `CollectionCatalog` wired to the live catalog (AppModel) + these pockets,
     /// for counting songs / summing runtime of a playlist, chapter, or pocket. Returns
     /// an empty catalog if the app graph isn't wired yet (so callers never crash).
+    /// STUDIO-AWARE: it carries title+length for every studio id referenced by these
+    /// collections (spec §8 — counts/runtime INCLUDE studio items with real lengths),
+    /// which is why `songIds(...)` below must strip them back out for rip/burn/CSV.
     func catalog() -> CollectionCatalog {
         let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return CollectionCatalog(songsById: app?.songsById ?? [:],
                                  albumsById: app?.albumsById ?? [:],
-                                 pocketsById: pocketsById)
+                                 pocketsById: pocketsById,
+                                 studio: studioEntries())
+    }
+
+    /// Title + real length for every studio id referenced ANYWHERE in these pockets /
+    /// playlists, resolved through `studioLookup` (empty when the seam isn't wired).
+    /// REFERENCED-ONLY on purpose: this is a lookup table for ids the collections
+    /// already carry, never an enumeration of the whole studio library — the catalog
+    /// must not become a discovery surface for studio content.
+    private func studioEntries() -> [String: (title: String, lengthMs: Int)] {
+        guard let lookup = studioLookup else { return [:] }
+        var out: [String: (title: String, lengthMs: Int)] = [:]
+        func add(_ id: String) {
+            guard StudioFactory.isStudioId(id), out[id] == nil, let info = lookup(id) else { return }
+            out[id] = (title: info.title, lengthMs: info.lengthMs)
+        }
+        for p in pockets { p.songIds.forEach(add) }
+        func walk(_ nodes: [PlaylistNode]) {
+            for n in nodes {
+                if n.kind == .song, let id = n.songId { add(id) }
+                if let kids = n.children { walk(kids) }
+            }
+        }
+        for pl in playlists { walk(pl.sequences) }
+        return out
     }
 
     // MARK: Collection → songIds (for batch RIP / BURN — Feature 2)
     //
     // Pure, deduped resolvers, one per collection type (each resolves differently).
-    // Text/note nodes are excluded — CollectionCatalog only yields IndexSongs, and the
-    // setlist resolver filters `isText` cues. An empty / missing collection yields [].
+    // Text/note nodes are excluded — and so are STUDIO ids (`smp_`/`lp_`/`ptn_`):
+    // these resolvers feed RIP / BURN / STEMIFY / CSV / Browse membership filters /
+    // Storage — money-and-infra paths where a studio id must never leak (spec §8's
+    // per-consumer policy; RipsStore + rip-server carry the defense-in-depth mirrors).
+    // Playback wants studio rows — use the `playableIds(...)` companions instead.
+    // An empty / missing collection yields [].
 
     /// Every resolved song id of an editable playlist (album/pocket expanded, deduped).
+    /// CATALOG-ONLY: `catalog()` is studio-aware (for counts/playback), so studio ids
+    /// are explicitly stripped here — historically they dropped "naturally" because
+    /// `songsById` had no `smp_`/`lp_`/`ptn_` entries; the studio-aware catalog would
+    /// otherwise leak them into every rip/burn/CSV consumer of this method.
     func songIds(forPlaylist id: String) -> [String] {
         guard let pl = playlist(id) else { return [] }
-        return catalog().songs(inPlaylist: pl).map { $0.id }
+        return catalog().songs(inPlaylist: pl).map { $0.id }.filter { !StudioFactory.isStudioId($0) }
     }
     /// Every resolved song id of a pocket DAG (own + album tracks + nested, cycle-guarded).
+    /// CATALOG-ONLY — same studio strip as `songIds(forPlaylist:)`, same reason.
     func songIds(forPocket id: String) -> [String] {
         var seen = Set<String>()
         return catalog().resolvePocketSongs(id, seen: &seen).map { $0.id }
+            .filter { !StudioFactory.isStudioId($0) }
     }
-    /// Every audio track's song id of a frozen setlist (text cues excluded).
+    /// Every audio track's song id of a frozen setlist (text cues excluded). STUDIO rows
+    /// are excluded exactly like text cues: this raw-passthrough resolver feeds the
+    /// setlist Rip/Burn buttons, the CSV export, and StorageCollectionsView — a frozen
+    /// set that carries a loop row must not enqueue `lp_…` at the rip server or write it
+    /// into a tracklist CSV (spec §8; playback reads `playableIds(forSetlist:)`).
     func songIds(forSetlist id: String) -> [String] {
         guard let sl = setlist(id) else { return [] }
-        return sl.tracks.filter { $0.isText != true && !$0.songId.isEmpty }.map { $0.songId }
+        return sl.tracks
+            .filter { $0.isText != true && !$0.songId.isEmpty && !StudioFactory.isStudioId($0.songId) }
+            .map { $0.songId }
     }
     /// A read-only "From your sources" playlist's song ids (already a flat list).
     func songIds(forSource source: SourcePlaylist) -> [String] { source.songIds }
+
+    // MARK: Collection → playableIds (playback companions — studio rows KEPT)
+    //
+    // Same resolution + order as `songIds(...)` but KEEPING studio ids: samples /
+    // loops / patterns are playable rows (SetlistPlayer resolves them via its
+    // `studioResolve` seam; `playNow` snapshots them via `studioLookup`). NEVER feed
+    // these to rip/burn/CSV — that's what the catalog-only `songIds(...)` are for.
+
+    /// Playlist's resolved playable ids, in play order (albums/pockets expanded; studio
+    /// ids kept when `studioLookup` resolves them — an unresolvable studio id drops out,
+    /// matching how unknown catalog ids behave everywhere else).
+    func playableIds(forPlaylist id: String) -> [String] {
+        guard let pl = playlist(id) else { return [] }
+        return catalog().songs(inPlaylist: pl).map { $0.id }
+    }
+    /// Pocket DAG's resolved playable ids (cycle-guarded, deduped; studio ids kept).
+    func playableIds(forPocket id: String) -> [String] {
+        var seen = Set<String>()
+        return catalog().resolvePocketSongs(id, seen: &seen).map { $0.id }
+    }
+    /// A frozen setlist's playable ids in FROZEN ORDER — studio rows included (they're
+    /// snapshotted tracks like any other); only text cues (no backing item) drop out.
+    func playableIds(forSetlist id: String) -> [String] {
+        guard let sl = setlist(id) else { return [] }
+        return sl.tracks.filter { $0.isText != true && !$0.songId.isEmpty }.map { $0.songId }
+    }
 
     // MARK: - CSV tracklist export (universal columns — see TracklistCSV)
 
@@ -460,6 +545,8 @@ final class CollectionsStore {
     /// Resolve a list of song ids to the `(id,title,artist)` tuples the BURN queue +
     /// sidecar need, using the live catalog. Ids with no catalog song are dropped (the
     /// server is the unknown-id backstop for RIP; BURN can't burn a song it can't name).
+    /// Studio ids drop here too (`songsById` never contains them) — a third fence behind
+    /// the `songIds(...)` strip and the RipsStore/rip-server guards.
     func burnTuples(_ songIds: [String]) -> [(id: String, title: String, artist: String)] {
         songIds.compactMap { id in app?.songsById[id].map { (id: id, title: $0.name, artist: $0.artist) } }
     }
@@ -468,12 +555,57 @@ final class CollectionsStore {
 
     /// Build the read-only RealizeCtx from the injected catalog (AppModel). The
     /// autofill candidate pool is every catalog song with BOTH bpm AND camelot.
-    private func makeCtx() -> RealizeCtx? {
+    ///
+    /// STUDIO (spec §8): synthetic pseudo-songs for studio ids are injected into
+    /// `ctx.songsById` ONLY for ids the playlist being realized actually references
+    /// (its song nodes + its pocket refs' DAGs) — carrying the REAL lengthMs from
+    /// `studioLookup` so a 4 s loop never realizes as the 210 s default track.
+    /// AUTOFILL FENCE: they are NEVER added to `ctx.candidates` — a user's loop must
+    /// not surface as a harmonic bridge in arbitrary setlists (the candidate pool is
+    /// built from `app.songs`, which is catalog-only by construction; the injection
+    /// below deliberately touches `songsById` alone). Internal (not private) so
+    /// CollectionsStudioTests can assert the injection + the fence directly.
+    func makeCtx(for playlist: Playlist? = nil) -> RealizeCtx? {
         guard let app else { return nil }
         let candidates = app.songs.filter { $0.bpm != nil && $0.camelot != nil }
         let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return RealizeCtx(songsById: app.songsById, albumsById: app.albumsById,
+        var songsById = app.songsById
+        if let playlist, let lookup = studioLookup {
+            for id in referencedStudioIds(in: playlist) where songsById[id] == nil {
+                guard let info = lookup(id) else { continue }   // unresolvable → node places nothing
+                songsById[id] = IndexSong.studioSynthetic(id: id, title: info.title,
+                                                          lengthMs: info.lengthMs,
+                                                          bpm: info.bpm, camelot: info.camelot)
+            }
+        }
+        return RealizeCtx(songsById: songsById, albumsById: app.albumsById,
                           pocketsById: pocketsById, candidates: candidates)
+    }
+
+    /// The studio ids a playlist can reach at realize time: its song nodes (recursing
+    /// through sub-sequences) PLUS its pocket refs' DAG members (cycle-guarded) — a
+    /// pocket holding a loop must place that loop when the playlist realizes. Album
+    /// nodes can't carry studio ids (trackLists are catalog data), so they're skipped.
+    private func referencedStudioIds(in playlist: Playlist) -> Set<String> {
+        var out = Set<String>()
+        var seenPockets = Set<String>()
+        func addPocket(_ id: String) {
+            guard seenPockets.insert(id).inserted, let p = pocket(id) else { return }
+            for sid in p.songIds where StudioFactory.isStudioId(sid) { out.insert(sid) }
+            p.childPocketIds.forEach(addPocket)
+        }
+        func walk(_ nodes: [PlaylistNode]) {
+            for n in nodes {
+                switch n.kind {
+                case .song:     if let id = n.songId, StudioFactory.isStudioId(id) { out.insert(id) }
+                case .pocket:   if let id = n.pocketId { addPocket(id) }
+                case .sequence: walk(n.children ?? [])
+                case .album, .text: break
+                }
+            }
+        }
+        walk(playlist.sequences)
+        return out
     }
 
     /// "Name — take N": the next take number for a playlist (history count + 1).
@@ -488,7 +620,7 @@ final class CollectionsStore {
     /// `seed`; when nil, a fresh per-call seed yields a new "take" each Play.
     @discardableResult
     func realize(playlistId: String, seed: String? = nil, name: String? = nil) -> Setlist? {
-        guard let pl = playlist(playlistId), let ctx = makeCtx() else { return nil }
+        guard let pl = playlist(playlistId), let ctx = makeCtx(for: pl) else { return nil }
         let theSeed = seed ?? CollectionsFactory.uid()   // fresh seed ⇒ a different take each Play
         let theName = name ?? nextSetlistName(forPlaylist: playlistId)
         let setlist = RealizeEngine.buildSetlist(pl, ctx, seed: theSeed, name: theName, now: now)
@@ -504,11 +636,14 @@ final class CollectionsStore {
     /// nil if the catalog context is unavailable.
     @discardableResult
     func realize(songIds: [String], name: String) -> Setlist? {
-        guard let ctx = makeCtx() else { return nil }
         var seq = CollectionsFactory.makeSequence("Set")
         seq.children = songIds.map { PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: $0) }
         let transient = Playlist(id: CollectionsFactory.newPlaylistId(), name: name,
                                  sequences: [seq], createdAt: now, updatedAt: now)
+        // Ctx is built FOR the transient playlist so explicit studio ids (a caller
+        // passing playable ids) get their synthetic entries too — same referenced-only
+        // injection + candidates fence as the persisted-playlist path.
+        guard let ctx = makeCtx(for: transient) else { return nil }
         let setlist = RealizeEngine.buildSetlist(transient, ctx, seed: CollectionsFactory.uid(),
                                                  name: name, now: now)
         setlists.append(setlist)
@@ -527,6 +662,18 @@ final class CollectionsStore {
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false) -> Setlist? {
         guard let app else { return nil }
         var tracks: [SetlistTrack] = songIds.compactMap { id in
+            // STUDIO rows (spec §8 — playNow RESOLVES studio ids): synthesize the frozen
+            // snapshot from the studio lookup — title + REAL lengthMs so `shownMs` never
+            // invents the 210 s fallback for a 4 s loop, bpm/camelot when known, and a
+            // "Studio" artist so the row + Now Playing label read sensibly. Unresolvable
+            // (seam unwired / item deleted) drops the row, exactly like an unknown
+            // catalog id on the line below.
+            if StudioFactory.isStudioId(id) {
+                guard let info = studioLookup?(id) else { return nil }
+                return SetlistTrack(songId: id, artist: "Studio", name: info.title,
+                                    bpm: info.bpm, camelot: info.camelot, lengthMs: info.lengthMs,
+                                    source: .explicit)
+            }
             guard let s = app.songsById[id] else { return nil }   // drop unresolvable ids
             return SetlistTrack(songId: s.id, artist: s.artist, name: s.name,
                                 bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
@@ -547,15 +694,18 @@ final class CollectionsStore {
     }
 
     /// ▶ Play a playlist into the reusable Now Playing setlist (literal resolved order).
+    /// Resolves via `playableIds` — studio rows are PLAYABLE and belong in Now Playing
+    /// (spec §8), unlike the rip/CSV-facing `songIds(forPlaylist:)`.
     @discardableResult
     func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
-        playNow(songIds: songIds(forPlaylist: playlistId),
+        playNow(songIds: playableIds(forPlaylist: playlistId),
                 name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle)
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
+    /// `playableIds` for the same reason as the playlist variant above.
     @discardableResult
     func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
-        playNow(songIds: songIds(forPocket: pocketId),
+        playNow(songIds: playableIds(forPocket: pocketId),
                 name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle)
     }
 
