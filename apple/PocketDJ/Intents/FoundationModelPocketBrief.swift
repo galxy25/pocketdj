@@ -5,13 +5,13 @@ import FoundationModels
 
 /// Builds the LLM client for the Create-Pocket pipeline, or throws a speakable
 /// reason. The ONLY place that knows about FoundationModels' OS gate (iOS 26 /
-/// macOS 26 — the app deploys to iOS 18 / macOS 15, so everything is #available-
-/// scoped and the framework auto-weak-links).
+/// macOS 26 / visionOS 26 — the app deploys to iOS 18 / macOS 15 / visionOS 2, so
+/// everything is #available-scoped and the framework auto-weak-links).
 enum PocketBriefModelFactory {
     @MainActor
     static func make() throws -> any PocketBriefModel {
         #if canImport(FoundationModels)
-        guard #available(iOS 26.0, macOS 26.0, *) else {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else {
             throw PocketDJIntentError.intelligenceUnavailable(
                 "Creating pockets needs iOS 26 or macOS 26 with Apple Intelligence.")
         }
@@ -45,7 +45,7 @@ enum PocketBriefModelFactory {
 /// window, and the candidate block (~80 rows × ~25 tokens) plus instructions and
 /// the guided-output schema must fit inside the second one. Guided generation
 /// (`@Generable`) makes the outputs schema-valid by construction — no JSON parsing.
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 struct FoundationPocketBriefModel: PocketBriefModel {
 
     @Generable(description: "Music filters extracted from a listener's playlist brief")

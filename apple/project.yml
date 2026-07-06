@@ -4,6 +4,7 @@ options:
   deploymentTarget:
     iOS: "18.0"
     macOS: "15.0"
+    visionOS: "2.0"
   createIntermediateGroups: true
   groupSortPosition: top
 
@@ -27,8 +28,8 @@ settings:
 targets:
   PocketDJ:
     type: application
-    # Single multiplatform target — one app that runs on iPhone, iPad, and Mac.
-    supportedDestinations: [iOS, macOS]
+    # Single multiplatform target — one app that runs on iPhone, iPad, Mac, and Vision Pro.
+    supportedDestinations: [iOS, macOS, visionOS]
     sources:
       - path: PocketDJ
     # A base Info.plist supplies the one key Xcode's INFOPLIST_KEY_* generation can't
@@ -76,6 +77,11 @@ targets:
           - "@executable_path/Frameworks"
           - "@executable_path/../Frameworks"
         TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad
+        # visionOS is device family 7 (Apple Vision). Per-SDK override so the iOS
+        # slice keeps "1,2" and the Vision Pro slice (device + simulator) declares 7 —
+        # without it the built app is rejected as incompatible with the visionOS platform.
+        "TARGETED_DEVICE_FAMILY[sdk=xros*]": "7"
+        "TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]": "7"
         GENERATE_INFOPLIST_FILE: "YES"
         ENABLE_PREVIEWS: "YES"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
