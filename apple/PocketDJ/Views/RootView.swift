@@ -18,6 +18,11 @@ struct RootView: View {
     @Environment(StudioStore.self) private var studio
     @Environment(StudioMicRecorder.self) private var studioMic
     @Environment(IntentServices.self) private var intents
+    // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
+    // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
+    // button so it self-hides exactly where ⌘N does (see NewWindowCommands in PocketDJApp).
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     // Launch default: macOS lands on the MIX tab; iOS lands on the HOME menu (nil —
     // the collapsed split view rests on the sidebar) unless a previously-persisted
@@ -73,13 +78,11 @@ struct RootView: View {
                     NowPlayingPanel()
                 }
             }
-            // iOS drops the ✦ AI sparkle from the home title; macOS keeps it.
-            #if os(iOS)
+            // Plain "PocketDJ" home title on every platform — the old ✦ AI sparkle is gone.
+            // Its leading spot now holds the "+" New Window button (multi-window platforms only).
             .navigationTitle("PocketDJ")
-            #else
-            .navigationTitle("✦ PocketDJ")
-            #endif
             .toolbar(removing: .sidebarToggle)
+            .toolbar { newWindowToolbar }
             #if os(macOS)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
             #endif
@@ -163,6 +166,28 @@ struct RootView: View {
             settings.lastSection = section?.rawValue ?? ""
             settings.persist()
         }
+    }
+
+    /// Leading toolbar: a "+" that opens a NEW app window — the on-screen twin of ⌘N /
+    /// File ▸ New Window. Sits to the leading edge of the "PocketDJ" home title, where the
+    /// old ✦ sparkle used to be. Gated on `supportsMultipleWindows`, so it appears on
+    /// iPad/macOS/visionOS and self-hides on iPhone (which can't display a second window).
+    /// Placement mirrors MixView's leading cluster: `.topBarLeading` on iOS/iPadOS,
+    /// `.navigation` on macOS/visionOS.
+    @ToolbarContentBuilder private var newWindowToolbar: some ToolbarContent {
+        if supportsMultipleWindows {
+            #if os(iOS)
+            ToolbarItem(placement: .topBarLeading) { newWindowButton }
+            #else
+            ToolbarItem(placement: .navigation) { newWindowButton }
+            #endif
+        }
+    }
+
+    private var newWindowButton: some View {
+        Button { openWindow(id: "main") } label: { Image(systemName: "plus") }
+            .help("New Window — run another surface (Mix, Performance…) alongside this one")
+            .accessibilityIdentifier("new-window")
     }
 
     /// Menu row: every section uses its SF Symbol except MIX, which wears Apple
