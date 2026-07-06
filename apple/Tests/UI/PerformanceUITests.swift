@@ -258,6 +258,20 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    func testLiveStaffSectionPresent() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: Instruments live-staff exercised on iOS")
+        #else
+        // The live staff renders in the Instruments tab (its fill-from-play + edit path is covered
+        // by InstrumentLiveLogTests — XCUITest can't reliably drive the keys' min-distance-0 drag).
+        launchPerformance()
+        switchTab(3)                                   // Instruments
+        let staff = app.any("live-staff")
+        XCTAssertTrue(staff.waitForExistence(timeout: 15), "the live score section should be present")
+        snap("live-staff")
+        #endif
+    }
+
     // MARK: - (4) Loops
 
     func testLoopsSeededRowAndSliceChips() throws {

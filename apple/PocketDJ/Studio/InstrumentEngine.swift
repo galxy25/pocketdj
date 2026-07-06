@@ -56,6 +56,14 @@ final class InstrumentEventLog: @unchecked Sendable {
     private var active: Set<Int> = []
     private var highlightsDirty = false
 
+    // Always-on LIVE capture (spec §7 "one editable staff") — independent of the take `armed`
+    // gate: every note is logged so a free-play staff fills as you play. Anchored at the FIRST
+    // note (no count-in). Completed notes only (a held note appears on release), drained coalesced.
+    private var liveEvents: [StudioNoteEvent] = []
+    private var livePending: [Int: (onMs: Int, velocity: Int)] = [:]
+    private var liveAnchor: UInt64?
+    private var liveDirty = false
+
     /// Arm recording. Called BEFORE beat 1 (during the count-in): notes sound immediately but
     /// only packets stamped at/after `beat1HostTime` enter the log — a warm-up note during the
     /// count-in is heard, not recorded.
@@ -124,12 +132,68 @@ final class InstrumentEventLog: @unchecked Sendable {
         return events.count + pending.count
     }
 
+    /// Live note-on (any thread) — ALWAYS captured, independent of the take `armed` gate AND of
+    /// whether the sampler made a sound (the caller invokes this BEFORE the audible-only guard, so
+    /// a free-play staff fills even with no instrument loaded). Anchored at the first note; a
+    /// re-trigger with no off closes the prior sounding at the new onset.
+    func liveOn(note: Int, velocity: Int, hostTime: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        if liveAnchor == nil { liveAnchor = hostTime }
+        let ms = max(0, msFrom(liveAnchor!, hostTime))
+        if let prev = livePending.removeValue(forKey: note) {
+            liveEvents.append(StudioNoteEvent(onMs: prev.onMs, offMs: max(prev.onMs, ms),
+                                              note: note, velocity: prev.velocity))
+        }
+        livePending[note] = (ms, velocity)
+        liveDirty = true
+    }
+
+    /// Live note-off — closes the note into the live stream (completed events only).
+    func liveOff(note: Int, hostTime: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        guard let lp = livePending.removeValue(forKey: note), let anchor = liveAnchor else { return }
+        liveEvents.append(StudioNoteEvent(onMs: lp.onMs, offMs: max(lp.onMs, msFrom(anchor, hostTime)),
+                                          note: note, velocity: lp.velocity))
+        liveDirty = true
+    }
+
+    /// Coalesced drain of the LIVE (free-play) stream — completed notes, onset-sorted, iff it
+    /// changed since the last drain. nil when unchanged (the pump publishes nothing while idle).
+    func snapshotLiveIfDirty() -> [StudioNoteEvent]? {
+        lock.lock(); defer { lock.unlock() }
+        guard liveDirty else { return nil }
+        liveDirty = false
+        return liveEvents.sorted { $0.onMs < $1.onMs }
+    }
+
+    /// Replace the live stream (score editing on the live staff). Keeps the anchor + any held
+    /// notes, so notes played AFTER an edit still land on the same time base.
+    func setLive(_ newEvents: [StudioNoteEvent]) {
+        lock.lock(); defer { lock.unlock() }
+        liveEvents = newEvents
+        liveDirty = true
+    }
+
+    /// Reset the live stream (new session / after "Save as take").
+    func clearLive() {
+        lock.lock(); defer { lock.unlock() }
+        liveEvents = []
+        livePending = [:]
+        liveAnchor = nil
+        liveDirty = true
+    }
+
     /// ms from beat 1 for a packet host time — negative during the count-in. Both operands go
     /// through `AVAudioTime.seconds(forHostTime:)` (mach timebase) and subtract as Doubles so
     /// pre-beat-1 stamps can't underflow the UInt64 domain.
     private func msFromBeat1(_ hostTime: UInt64) -> Int {
-        let sec = AVAudioTime.seconds(forHostTime: hostTime)
-            - AVAudioTime.seconds(forHostTime: beat1Host)
+        msFrom(beat1Host, hostTime)
+    }
+
+    /// ms between two host times (mach timebase), subtracted as Doubles so a stamp before the
+    /// anchor can't underflow the UInt64 domain.
+    private func msFrom(_ anchor: UInt64, _ hostTime: UInt64) -> Int {
+        let sec = AVAudioTime.seconds(forHostTime: hostTime) - AVAudioTime.seconds(forHostTime: anchor)
         return Int((sec * 1000).rounded())
     }
 }
@@ -174,6 +238,9 @@ final class InstrumentEngine {
     /// Currently-held keys (MIDI + on-screen), coalesced at ~30 Hz — the ONLY note-driven UI
     /// state, and it's pump-published, never per-note (spec §4's threading rule).
     private(set) var pressedNotes: Set<Int> = []
+    /// The always-on LIVE (free-play) note stream, coalesced at ~30 Hz — the live editable staff
+    /// renders this. Completed notes only; edits round-trip through `setLiveEvents`.
+    private(set) var liveEvents: [StudioNoteEvent] = []
     /// Display names of connected wired/USB MIDI sources (refreshed on CoreMIDI setup changes).
     private(set) var midiSourceNames: [String] = []
     /// The in-flight take's file name — `StudioStore.activeTakeFileName` wires to this so
@@ -283,6 +350,9 @@ final class InstrumentEngine {
     /// host (no audio device) leaving `isReady` false — a degraded silent tab, never a crash.
     func ensureEngine() {
         guard !built else { return }
+        // The coalesced drain publishes highlights + the live staff — both audio-INDEPENDENT, so it
+        // must run even if `engine.start()` below fails (no audio device). Idempotent.
+        startHighlightPump()
         #if os(iOS)
         activateAudioSession()
         registerInterruptionHandling()
@@ -333,7 +403,6 @@ final class InstrumentEngine {
         registerConfigChangeHandling()
         setupMIDIIfNeeded()
         startWatchdog()
-        startHighlightPump()
         dlog("instr: engine built + started")
     }
 
@@ -433,17 +502,21 @@ final class InstrumentEngine {
         interruptionParked = false     // an explicit key press is a user resume
         #endif
         _ = startEngineIfNeeded()      // wake a system-stopped engine before making sound
-        guard rt.engineReady, let smp = sampler else { return }
         let n = UInt8(clamping: max(0, min(127, note)))
         let v = UInt8(clamping: max(1, min(127, velocity)))
+        // Live staff capture is UNCONDITIONAL (fills even with no instrument loaded) — before the
+        // audible guard, and separate from the take log so it never desyncs a take's audio.
+        eventLog.liveOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
+        guard rt.engineReady, let smp = sampler else { return }
         smp.startNote(n, withVelocity: v, onChannel: 0)
         eventLog.noteOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
         NowPlayingArbiter.shared.claim(self)   // audible → own the card slot (no card written)
     }
 
     func noteOff(_ note: Int) {
-        guard rt.engineReady, let smp = sampler else { return }
         let n = UInt8(clamping: max(0, min(127, note)))
+        eventLog.liveOff(note: Int(n), hostTime: mach_absolute_time())   // unconditional live close
+        guard rt.engineReady, let smp = sampler else { return }
         smp.stopNote(n, onChannel: 0)
         eventLog.noteOff(note: Int(n), hostTime: mach_absolute_time())
     }
@@ -1000,11 +1073,13 @@ final class InstrumentEngine {
                         guard let msg = parseMIDI1Word(words[i]) else { continue }
                         switch msg {
                         case .noteOn(let note, let velocity):
+                            log.liveOn(note: Int(note), velocity: Int(velocity), hostTime: host)
                             if rt.engineReady, let smp = rt.sampler {
                                 smp.startNote(note, withVelocity: velocity, onChannel: 0)
                             }
                             log.noteOn(note: Int(note), velocity: Int(velocity), hostTime: host)
                         case .noteOff(let note):
+                            log.liveOff(note: Int(note), hostTime: host)
                             if rt.engineReady, let smp = rt.sampler {
                                 smp.stopNote(note, onChannel: 0)
                             }
@@ -1036,6 +1111,25 @@ final class InstrumentEngine {
 
     /// Publishes `pressedNotes` at most ~30×/s and ONLY when the held-key set actually changed —
     /// the coalesced alternative to per-note main-actor hops. Idle cost is one lock/flag check.
+    /// Commit an edited live stream (the live editable staff). Updates the published copy
+    /// immediately and the log's source so notes played after an edit share the same time base.
+    func setLiveEvents(_ events: [StudioNoteEvent]) {
+        eventLog.setLive(events)
+        liveEvents = events
+    }
+
+    /// Reset the live staff (after "Save as take", or a manual clear).
+    func clearLiveEvents() {
+        eventLog.clearLive()
+        liveEvents = []
+    }
+
+    /// TEST SEAM: run one live-drain synchronously (the 30 Hz pump does this on a timer). Lets a
+    /// unit test verify the noteOn/noteOff → liveEvents path without the async pump or a UI gesture.
+    func pumpLiveOnceForTesting() {
+        if let live = eventLog.snapshotLiveIfDirty() { liveEvents = live }
+    }
+
     private func startHighlightPump() {
         guard highlightTask == nil else { return }
         highlightTask = Task { @MainActor [weak self] in
@@ -1044,6 +1138,9 @@ final class InstrumentEngine {
                 guard let self else { break }
                 if let notes = self.eventLog.drainHighlightsIfDirty() {
                     self.pressedNotes = notes
+                }
+                if let live = self.eventLog.snapshotLiveIfDirty() {
+                    self.liveEvents = live
                 }
             }
         }
