@@ -1153,8 +1153,12 @@ public SF Symbol exists).
 - **Launch defaults** (RootView): iOS lands on the home menu unless
   `settings.lastSection` restores the last-visited section (persisted on every
   section change; `""` = home; a fresh iPad picks MIX — like the Mac — with the
-  sidebar row selected to match); macOS always lands on Mix. The iOS home title is plain "PocketDJ"
-  (macOS keeps "✦ PocketDJ").
+  sidebar row selected to match); macOS always lands on Mix. The home title is plain "PocketDJ"
+  on **every** platform (the ✦ sparkle was removed from macOS/visionOS too); its leading
+  toolbar slot now holds a **＋ New Window** button (`openWindow(id:"main")`, the on-screen
+  twin of ⌘N) gated on `\.supportsMultipleWindows` — shown on iPad/macOS/visionOS, hidden on
+  iPhone. Placement mirrors MixView's leading cluster (`.topBarLeading` iOS, `.navigation`
+  macOS/visionOS).
 
 ---
 

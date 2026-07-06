@@ -1776,8 +1776,12 @@ And the **Mix tab now wears Apple Music's AutoMix mark** — the two overlapping
 neighboring tab icons.
 
 **Getting there is also nicer now:** on iOS the app opens on the **home menu** ("PocketDJ" —
-the ✦ sparkle is gone) unless you'd navigated somewhere before — then it **reopens wherever
-you last left off**. On the Mac it always opens on the **Mix** tab, ready to DJ.
+the ✦ sparkle is gone on **every** platform now, not just iPhone) unless you'd navigated
+somewhere before — then it **reopens wherever you last left off**. On the Mac it always opens
+on the **Mix** tab, ready to DJ. And where the sparkle used to sit, **iPad, Mac and Vision Pro**
+now show a **＋ New Window** button — tap it to open a second window (run Performance in one,
+Mix in another); it's the on-screen twin of **⌘N** / File ▸ New Window. iPhone, which can't
+display two windows, hides it.
 
 **User story:** "I start a pocket from the couch, glance at my phone's home screen and see
 the gold record turning at the track's tempo with what's coming next — I drag tomorrow's
