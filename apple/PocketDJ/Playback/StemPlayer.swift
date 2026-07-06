@@ -189,6 +189,10 @@ final class StemPlayer {
 
     private func configureSession() {
         #if canImport(UIKit) && !os(macOS)
+        // Studio mic capture holds the shared session at .playAndRecord — re-arming .playback
+        // here would tear down the recorder's live input tap mid-take (spec §4 coexistence
+        // rule); stem audition works fine under .playAndRecord, so skip.
+        guard !AudioSessionPolicy.micCaptureActive else { return }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)

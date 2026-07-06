@@ -63,7 +63,13 @@ extension AppleMusicPlaybackProvider {
     /// Current playback position (seconds) — drives the inline scrubber for this backend.
     var positionSeconds: Double { ApplicationMusicPlayer.shared.playbackTime }
 
-    func tryPlay(_ song: IndexSong) async -> Bool {
+    /// `atMs` (spec §9 cue offset) is applied PLAY-THEN-SEEK: MusicKit exposes no "start
+    /// at position" enqueue, so we start playback and then set
+    /// `ApplicationMusicPlayer.playbackTime` (via the existing `seek(to:)`). DOCUMENTED
+    /// IMPRECISION: the seek lands after playback has audibly started and the streaming
+    /// player snaps to its own buffer boundaries, so the cue is accurate to roughly <1 s
+    /// (vs. sample-exact for burned/ripped local files) — acceptable per spec §9.
+    func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool {
         guard isReady else { return false }
         // 1) Resolve the song to a catalog track (namespaced `am:<id>` → direct fetch,
         //    else a title/artist search). A miss → false → the engine falls back to rips.
@@ -78,6 +84,9 @@ extension AppleMusicPlaybackProvider {
             guard let catalogSong = resp.items.first else { return false }
             player.queue = [catalogSong]
             try await player.play()
+            // 3) Cue: `play()` has returned (playback started), so the position write
+            //    sticks — a write before the queue item is ready would be ignored.
+            if let atMs, atMs > 0 { seek(to: Double(atMs) / 1000) }
             isPlaying = true
             nowPlaying = NowPlaying(songId: song.id, title: song.name, artist: song.artist)
             return true
@@ -119,7 +128,7 @@ extension AppleMusicPlaybackProvider {
 extension AppleMusicPlaybackProvider {
     var isReady: Bool { false }
     var positionSeconds: Double { 0 }
-    func tryPlay(_ song: IndexSong) async -> Bool { false }
+    func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool { false }
     func togglePlayPause() {}
     func seek(to seconds: Double) {}
     func stop() { nowPlaying = nil }

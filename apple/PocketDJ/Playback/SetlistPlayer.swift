@@ -69,6 +69,15 @@ final class SetlistPlayer {
     /// stream-first behaviour is unchanged until the mode toggle is wired.
     var playbackMode: () -> PlaybackMode = { .cloud }
 
+    /// STUDIO SEAM (spec §8, wired at app init to `StudioStore.localURLForPlayback`):
+    /// resolve a studio id (`smp_`/`lp_`/`ptn_`) to its playable LOCAL file. The
+    /// returned `release` closure keeps a user-folder file's security scope open
+    /// through playback (the BurnStore `res.release` contract — the player calls it on
+    /// stop / next load). nil until wired; a nil RESULT (item deleted, dirty pattern
+    /// bounce, unreachable folder) makes the row skip forward exactly like an
+    /// unresolvable song — no end event would ever fire for it.
+    var studioResolve: ((String) -> (url: URL, release: (() -> Void)?, title: String, lengthMs: Int)?)?
+
     init(player: PlayerEngine, rips: RipsStore, burns: BurnStore, coordinator: PlaybackCoordinator) {
         self.player = player
         self.rips = rips
@@ -306,6 +315,27 @@ final class SetlistPlayer {
         // `play(...)` left them. No-op in normal use.
         if ProcessInfo.processInfo.environment["PDJ_HOLD_PLAYBACK"] != nil { return }
         let it = queue[index]
+
+        // STUDIO rows (sample/loop/pattern — spec §8): resolved via the StudioStore seam
+        // BEFORE burns/coordinator, and ABOVE the device/cloud split — a studio item is a
+        // LOCAL file in both modes (there is no cloud copy of a user's sample), so mode
+        // must not gate it. The item's own snapshot title/artist ("Studio") label the
+        // now-playing; no startMs/end boundary — studio files are per-item with a natural
+        // end. Unresolvable ⇒ skip forward like any dead source.
+        if StudioFactory.isStudioId(it.id) {
+            guard let res = studioResolve?(it.id) else {
+                advance()
+                return
+            }
+            // A playable studio row IS on-device audio: count it so a device-mode set
+            // made of loops never raises the "no burned files" banner (CRITIC-D).
+            loadedAnyDeviceTrack = true
+            playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
+                          startMs: nil, rips: rips, player: player,
+                          endBoundaryMs: nil, release: res.release)
+            return
+        }
+
         let mode = playbackMode()
 
         // DEVICE mode: play ONLY a burned local file. A track with no burned file is SKIPPED

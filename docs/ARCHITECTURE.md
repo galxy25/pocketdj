@@ -89,7 +89,7 @@ server-less coordination work.
 | 1 | [**Foundations**](./architecture/01-foundations.md) | the whole | System entities, ownership table, the files-as-API spine, content-derived ids. **Start here.** |
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
 | 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — incl. the **`CollectionsDocument` schema versioning (v2→v3) + flat playlist `folders`** — the one shape everything speaks. Reference chapter. |
-| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **the two-deck Mix engine (first-party `AVAudioEngine` — tempo/pitch/seek/crossfader/4 effects, grid-aware beat-match, Auto-Mix, and offline STEM DECKS, §7)**, **and the AI auto-*building* seam — whose first consumer now ships: the Siri "Create Pocket" on-device-LLM builder (§4.1)**. |
+| 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **the two-deck Mix engine (first-party `AVAudioEngine` — tempo/pitch/seek/crossfader/4 effects, grid-aware beat-match, Auto-Mix, and offline STEM DECKS, §7)**, **and the AI auto-*building* seam — whose first consumer now ships: the Siri "Create Pocket" on-device-LLM builder (§4.1)**, **and the native PERFORMANCE tab (Studio, §8+) — samples, beat-synced loops, a 16-step sequencer, MIDI virtual instruments with score/PDF/MIDI export, and per-track cue points, whose creations ride collections as namespaced ids**. |
 | 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp, **the analog per-song CUT export + `POST /backfill-cuts` / `POST /retag-cuts`**), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView, **now with a length-aware position end-boundary + held playback security-scope**), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme + the per-song analog-cut burn + the `@Observable` background-burn progress mirror**), the **length-aware + manual-jump-adopting** `SetlistPlayer` burnt-or-stream sequencer with **persistent ⏮/⏭ transport**, **the home NOW PLAYING deck (§10.1 — spinning beat-grid-rate gold record, live Up-Next queue edits by row identity, debounced add-search, iOS home/restore + macOS-Mix launch defaults)**, **the global device/cloud `PlaybackMode` + shared `playLocalFile` (now burned-first + scope-held on EVERY song-start path) + the explicit offline catalog disk cache (`CatalogService` `catalog-cache/`)**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`), **the measured BEAT-GRID pass (`/backfill-beatgrids` → `beatGridBpm`/`firstDownbeatMs`/`steady`)**, and **STEMS end-to-end (server Demucs `/stemify` → public `rips/stems/`; the collection-burn STEM pull; the offline `StemPlayer` audition).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, **online pagination (`from/size` + `track_total_hits`) + server-side sort + the `genreCategory` field**, **the native Browse genre + collection-membership filters**, **on-device Browse paging + the results memo (pre-built rows, `resultsKey`-keyed sort cache, growing-prefix render — instant tab/kind switching at ~100k songs)**, the star map. |
 | 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, **the native app as a single universal SwiftUI target (iPhone/iPad/Mac, iOS 18/macOS 15) built with XcodeGen and shipped to TestFlight (`apple-publish`/`testflight.sh`)**, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`), and the App Intents layer (§7) — Siri/Shortcuts/Spotlight: play/shuffle playlist + pocket, auto-mix with lock-screen-seam pause/resume, Spotlight entity indexing + intent donations, and the Siri "Create Pocket" builder.** |
@@ -326,6 +326,48 @@ contract**. Honest status:
   Bulk deletes are shared-analog-aware and hardened against user-folder data loss
   (exact-shape + app-known aux attribution; unreachable-folder items are skipped, not
   ledger-orphaned; only `mses_…` session folders are swept). (Ch. 5 §9.2, §11.2; Ch. 7 §6)
+- **New current-state — the PERFORMANCE tab (Studio): samples, loops, a 16-step sequencer,
+  virtual instruments & cue points (native).** A fifth top-level tab
+  (`RootView.Section.performance = "Performance"`, `pianokeys`, **⌘P** — which bumps Playlists to
+  **⇧⌘P** and Browse's play-focused ▶ to **⌥⌘P**) hosts a native **Studio** for user-authored audio,
+  all under **`apple/PocketDJ/Studio/`** — deliberately *not* the pre-existing realize-engine
+  directory `apple/PocketDJ/Performance/` (appendix #37). Five ⌘1–⌘5 sub-tabs (SF-symbol-only on
+  compact width): **Samples** — carve a region out of any track (a burned → burn-on-demand →
+  "rip first" source ladder) or record the **mic**, then a non-destructive `StudioSampleEdit` chain
+  (trim/gain/rate/pitch/reverb/delay) with a tap-tempo / manual-BPM grid; **Loops** — beat-grid
+  slices at ½–32 beats rendered to **LPCM CAF** so they loop seamlessly (appendix #39); **Sequencer**
+  — a 16-step `StudioPattern` over sample/loop rows with mono-choke and on-demand bounce;
+  **Instruments** — an `AVAudioUnitSampler` playing seven GM voices from **wired/USB MIDI** + on-screen
+  keys, with click + count-in take recording → a quantized **score** (`ScoreModel`) exportable as
+  **PDF/MIDI** (`ScorePDF`/`SMFWriter`) and reusable via "use as sample"; and **Cues** — up to 8
+  jump-to points per track (`StudioCue`) that thread a `startMs` through `PlaybackCoordinator` into
+  burned **and** streamed playback (a still-ripping HLS track shows a disabled "still ripping" cue).
+  State is one lenient versioned document `pocketdj-studio.json` (`StudioStore`/`StudioModels.swift`,
+  id prefixes `smp_`/`lp_`/`ptn_`/`tk_` via `StudioFactory`) with a **`BurnStore.reconcileOnLaunch`**-
+  style unreachable-root-safe reconcile; three first-party AVFoundation engines (`StudioEngine`,
+  `StudioMicRecorder`, `InstrumentEngine`) built to the MixEngine hardening contract, plus an
+  **offline `AVAudioFile`-write bounce** (`StudioRender`, *not* the realtime `MixTapSink` recipe —
+  appendix #40). A process-wide `AudioSessionPolicy.micCaptureActive` flag now guards **every**
+  `setCategory(.playback)` site so a playback load can't yank the category out from under a live mic
+  tap (appendix #42). Studio items ride the **existing collection string arrays as namespaced ids**
+  (collections **schema v5** = **lossy per-element** `[PlaylistNode]`/`[Playlist]` decode +
+  `LossyDecodableArray` + a no-op migration, `CollectionsSchema.swift`; appendix #41): they are
+  **included** in playback (`playableIds(forSetlist:)`), counts/runtime, and realize node-placement
+  (synthetic pseudo-songs with a mandatory `lengthMs`), but **excluded** from Rip/Burn/Stemify, the
+  tracklist CSV (`songIds(forSetlist:)`), and realize autofill — a per-consumer policy fenced by
+  `RipsStore.excludingStudioIds` **and** a `scripts/rip-server.mjs` id-reject guard as
+  defense-in-depth (appendix #38). Instrument packs download from a new **public `rips/instruments/`**
+  S3 artifact class (`Config.instrumentsIndexURL`/`instrumentsBase`; a shared ~32 MB **GeneralUser
+  GS** bank with attribution, deduped by bank key). Storage adds three user-relocatable families
+  (samples/loops/sequences security-scoped bookmarks) + always-app-managed takes/packs to Settings ▸
+  Storage. **Deferred, honestly:** **network + BLE MIDI** (wired/USB + on-screen only — network needs
+  `NSLocalNetworkUsageDescription`/Bonjour, BLE needs new entitlements); the **PWA Studio UI** (the
+  web client silently drops studio ids from realize, so a shared seed reproduces different sets —
+  documented divergence); **camelot-key inheritance** for studio items (they realize with length +
+  bpm but **no** harmonic key, so beat-match can't key-match them); and routing the 32 MB pack
+  download through **`TransferCoordinator`** (v1 uses a foreground file `URLSession.downloadTask`,
+  strictly better than the in-memory stems path — upgrade path noted). (Ch. 4 §8+, Ch. 5 §9.2,
+  Ch. 7; STORYBOOK §66–72)
 - **Coming — AI-assisted auto-*building* playlists.** The *mixing* half is no longer
   hypothetical — a two-deck Mix engine with grid-aware beat-matching **and a timed
   Auto-Mix auto-DJ now ships** (Ch. 4 §7). What's still deferred is **AI-curated
@@ -542,3 +584,74 @@ Things found while writing that don't fully line up, gathered here so they're no
     is the **PWA/tooling** path, not the native app's. A maintainer feeding the native universal CSV
     to `burn-setlist` would get "Song ID column missing"; downstream audio resolution rides the
     **`.pocketdj.zip`** (catalog-by-id) instead. (Ch. 4 §5, Ch. 5)
+37. **`apple/PocketDJ/Performance/` is the realize engine; the Performance *tab* lives in
+    `apple/PocketDJ/Studio/`.** The directory `Performance/` predates the Studio and holds
+    `RealizeEngine.swift` (with a `struct Performance` at `RealizeEngine.swift:44`) — the pockets →
+    playlists → **setlist realize** math, nothing to do with the UI tab named "Performance". The new
+    top-level tab's code (samples/loops/sequencer/instruments/cues) is entirely under `Studio/`, and
+    every new type carries a `Studio*` / `Instrument*` prefix precisely so it can't collide with the
+    reserved `Performance` type or the reserved `PocketKind:'performance'` (the AI-crate seam). A
+    maintainer who "consolidates the two Performance folders," renames `Studio/` to `Performance/`, or
+    adds a bare `Performance`-named type would conflate the realize engine with the tab and shadow the
+    existing struct. Note also `RootView.Section.performance` **rawValue is `"Performance"`** and is
+    persisted (`settings.lastSection`) — renaming the case rawValue silently strands users on a dead
+    restore key. (Ch. 4 §1, §8)
+38. **Studio ids must NEVER reach a rip / burn / stemify / CSV resolver — the exclusion is
+    per-consumer, and enforced in TWO places.** Studio samples/loops/patterns ride collections'
+    plain string arrays as `smp_`/`lp_`/`ptn_` ids, so *every* collection-shaped id list is a
+    potential leak. The policy is intentionally **per-consumer, not global**: playback, counts/runtime,
+    and realize node-placement **include** studio ids (`CollectionsStore.playableIds(forSetlist:)`,
+    the studio-aware catalog), while Rip/Burn/Stemify, the tracklist CSV (`songIds(forSetlist:)`), and
+    realize *autofill* **exclude** them. The client fence is `RipsStore.excludingStudioIds` (+ the
+    single-song `fencedStudioId` guard); the **server** independently rejects `smp_|lp_|ptn_|tk_` at
+    `/rip`, `/rip-collection`, `/stemify` in `scripts/rip-server.mjs`, because the rip server is
+    **shared infrastructure across app versions** — an *old* build with no Studio, playing a studio row
+    through its play-through-coordinator, must not live-search-rip a garbage title into the **public**
+    bucket. A maintainer who routes playback through the catalog-only `songIds(...)` (studio rows go
+    silent) or drops either the client fence or the server guard (studio garbage hits S3) breaks the
+    model. `cue_` ids are deliberately **not** in `StudioFactory.studioPrefixes` — a cue never rides a
+    collection array. (Ch. 4 §6, Ch. 5 §2, §9; STORYBOOK §72)
+39. **Loop files are LPCM CAF with an authoritative frame count — AAC would tick at the seam.** Every
+    other Studio artifact (samples, take audio, pattern bounces) is `.m4a`, but a **loop** is written
+    as **LPCM CAF** (`loop-<id>.caf`, `StudioFolders`/`StudioRender.cafSettings`) and carries an
+    authoritative `frames: Int64` in `StudioLoop`. AAC's encoder priming/padding adds a few ms of
+    silence at file head/tail, so an m4a loop **ticks** on every wrap; CAF has no such gap, the render
+    truncates to exactly the beat-window frame count, and the audition trims/pads the decoded buffer to
+    `frames` before `scheduleBuffer(..., .loops)`. A maintainer who "unifies" loops to `.m4a` for
+    consistency, or treats `lengthMs` (advisory) as the loop length instead of `frames`, reintroduces
+    the seam tick and drifts the beat. (Ch. 4 §9; STORYBOOK §68)
+40. **`StudioRender` bounces with `AVAudioFile(forWriting:)`, NEVER the realtime `MixTapSink`
+    recipe.** The offline renderer (`StudioRender.swift`) runs
+    `AVAudioEngine.enableManualRenderingMode(.offline)` and writes output with
+    `AVAudioFile(forWriting:settings:)` — **blocking** writes with no backpressure. The Mix session
+    recorder's `MixTapSink`/`AVAssetWriter` path is a **realtime** tap that *drops buffers when the
+    encoder is busy* (the common case offline), so only its **failure-latch** discipline carries over,
+    not the writer. Render rules that matter: samples/bounces render `ceil(frames/rate)` **+ an FX tail
+    drain** (until < −60 dBFS or a 3 s cap); **loops truncate to the exact beat-window frames** (tails
+    cut — seams stay clean); and the timePitch/AU **priming-latency head is trimmed** so written frame
+    0 is musical frame 0 (else every baked loop opens with silence and beat-sync dies). A maintainer
+    who swaps in the `MixTapSink` recipe offline gets silently truncated/dropped renders. (Ch. 4 §8,
+    §9; appendix #39)
+41. **The collections v5 lossy `[PlaylistNode]` decode is the unknown-kind insurance — never revert
+    it to a whole-array `try?`.** `collectionsSchemaVersion = 5` ships **`LossyDecodableArray<T>`** at
+    **every** node-list site — a playlist's `sequences` chapters, the recursive `children`, AND the
+    document's top-level `[Playlist]` list — so a single node the running build can't decode (a
+    *future* new `PlaylistNode.Kind`, or a corrupt element) drops **only that node**, never its
+    siblings, chapter, playlist, or document. This is what makes studio ids (and any later new kind)
+    safe to add without a migration wiping older builds — the synthesized-`Codable` trap, where one
+    unknown enum case throws the whole array. A maintainer who "simplifies" a lossy list back to
+    `try? container.decode([PlaylistNode].self)` (or forgets the per-element box on a newly-added
+    nested array) reinstates the whole-playlist-wipe bug the v5 decode exists to prevent. The v4→v5
+    migration is a deliberate **no-op** (shape unchanged; v5 *is* the decode behavior). (Ch. 3 §3.1,
+    Ch. 4 §8; STORYBOOK §72)
+42. **`AudioSessionPolicy.micCaptureActive` guards EVERY `setCategory(.playback)` call site — it is
+    not optional at any of them.** The mic recorder / instrument-take capture runs the iOS session as
+    `.playAndRecord`; a stray `setCategory(.playback)` from any *other* engine mid-take (a setlist
+    auto-advance, a StemPlayer load) is itself a **route-changing** operation that would yank the
+    category out from under the live input tap and drop the recording. So a process-wide nonisolated
+    atomic `AudioSessionPolicy.micCaptureActive` is set for the take's duration and **every**
+    `setCategory(.playback)` site NO-OPs on it: `MixEngine`, `PlayerEngine`, `StemPlayer`,
+    `MixSessionsView`'s `RecordingAudioPlayer`, and the Studio's own engines. A maintainer who adds a
+    **new** playback engine (or a new `setCategory(.playback)` call) without wiring this guard
+    reintroduces the take-killing route change — the flag only protects the sites that check it.
+    (Ch. 4 §8; STORYBOOK §67, §70)

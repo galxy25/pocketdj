@@ -304,7 +304,11 @@ struct BrowseView: View {
             // can type a query then arrow into the results and Return to open one.
             Button("FocusUp-shadow") { moveFocus(-1) }.keyboardShortcut(.upArrow, modifiers: [])
             Button("FocusDown-shadow") { moveFocus(1) }.keyboardShortcut(.downArrow, modifiers: [])
-            Button("PlayFocused-shadow") { toggleFocusedSong() }.keyboardShortcut("p", modifiers: .command)
+            // ⌥⌘P (was ⌘P): plain ⌘P is now the app-wide Performance-tab shortcut
+            // (RootView's Performance-shadow, spec §0's collision table) — and both
+            // registrations would be live while Browse is showing, which macOS resolves
+            // ambiguously (the ⌘L lesson above). Play-focused keeps its label, new key.
+            Button("PlayFocused-shadow") { toggleFocusedSong() }.keyboardShortcut("p", modifiers: [.command, .option])
             Button("OpenFocused-shadow") { openFocusedRow() }.keyboardShortcut(.return, modifiers: [])
             Button("OpenFocusedAlt-shadow") { openFocusedRow() }.keyboardShortcut("o", modifiers: .command)
         }

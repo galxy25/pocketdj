@@ -304,8 +304,10 @@ fields degrade to "no-op" rather than throwing — so a newer client's export st
 imports on an older one (it just ignores what it doesn't understand). `edits.json`
 carries its *own* `schemaVersion` (the `EditsDocument`, currently 2) independent of the
 zip's. The **collections** payload likewise versions independently (`collectionsSchemaVersion`,
-now **2** — pockets gained the optional free-text `notes` list); additive + lenient, so a
-v2 pocket's `notes` simply degrade to "ignored" on a v1 reader and members stay intact.
+now **5** — pockets gained free-text `notes` (v2) then `folderId` (v4), playlists gained
+`folderId` + `folders` (v3), and v5 turned on lossy per-element decode + studio ids riding
+`songIds` (Ch. 3 §3.1)); additive + lenient throughout, so e.g. a v2 pocket's `notes` simply
+degrade to "ignored" on a v1 reader and members stay intact.
 
 **How (worked example): a metadata fix made on iPhone shows up in the browser.** On
 iPhone you correct a song's BPM → it lands in `pocketdj-edits.json`
@@ -737,6 +739,73 @@ resolve through the string/value queries). Deliberately not adopted:
 audio is not an all-or-nothing domain). CAVEAT: this layer has never been
 compiled against a real 27 SDK (none installed) — expect minor fix-ups on the
 first Xcode 27 build, guided by the schema macros' compile-time shape errors.
+
+---
+
+## 8. Virtual-instrument packs on S3 — a new public-read artifact class
+
+**Why.** The Performance tab's instruments (Ch. 4 §8.4) play from **SoundFont sound banks**
+that are far too large to bundle in the app (a General-MIDI bank is ~32 MB) and want to be
+**downloaded once and cached offline**, exactly like ripped audio. That is the same job the
+**rips bucket** already does for mp3s, stems, beat grids, and waveforms (§1, Ch. 5) — a
+static, public-read, globally-durable origin the client fetches with **no running server** —
+so instrument packs become **a new public-read artifact class under the same `rips/` prefix**.
+(The `rips/` prefix is mandatory: it's the bucket policy's public-read grant, §1.)
+
+**Source of truth:** the S3 layout under `pocketdj-rips-011183829623/rips/instruments/`, the
+client [`apple/PocketDJ/Studio/InstrumentPacks.swift`](../../apple/PocketDJ/Studio/InstrumentPacks.swift)
+(manifest decode + bank download + pack store), and
+[`apple/PocketDJ/Support/Config.swift`](../../apple/PocketDJ/Support/Config.swift)
+(`instrumentsIndexURL`, `instrumentsBase` — added next to `ripsBase`).
+
+```
+ rips/instruments/                                (PUBLIC-READ, in the rips bucket)
+   index.json   { version, attribution,
+                  sharedBanks: [{ key, bytes, sha256 }],
+                  packs:       [{ id, name, instrument, program, bankKey, bytes }] }
+   banks/generaluser-gs-2.0.3.sf2                 32 MB GM bank (GeneralUser GS)
+
+ v1 ships SEVEN packs (one per InstrumentKey: piano/violin/bassGuitar/acousticGuitar/
+   trumpet/clarinet/harp) all referencing the ONE shared bank via bankKey → the second
+   pack downloaded is INSTANT (dedupe by bankKey). Manifest supports per-pack banks later.
+
+ CLIENT (InstrumentPacks.swift):
+   index fetched like CatalogService — explicit file cache, OFFLINE-FIRST
+   bank download = file-based URLSession.downloadTask (NEVER in-memory Data), progress published,
+     atomic move into Application Support/studio/instruments/, existence-check idempotent
+     (BurnStore stems-trio shape) → re-download is a no-op if the bank is already present
+   Config.instrumentsIndexURL = ripsBase/rips/instruments/index.json ; Config.instrumentsBase = ripsBase/rips/instruments
+   delete per bank in Settings ▸ Storage + the Instruments UI (Ch. 5 §9.2 — app-managed, not LRP-pruned)
+
+ UPLOAD (dev machine only): aws --profile levi, us-west-2 — THE APP NEVER WRITES S3 (§1 private-write)
+```
+
+**Reading it.** `rips/instruments/index.json` is a small manifest listing the **shared banks**
+(each with a `key`, `bytes`, and a `sha256`) and the **packs** (each an `InstrumentKey`
+program mapping plus the `bankKey` it needs). v1 ships **seven packs — one per instrument** —
+that all reference the **same** GeneralUser GS bank, so the client **dedupes downloads by
+`bankKey`**: once any instrument's bank is on device, the other six are instant. The
+manifest already carries a `sharedBanks` array and per-pack `bankKey`, so per-pack banks can
+be added later with no shape change. The bank is **GeneralUser GS 2.0.3** — a license that
+**permits free use and redistribution** — and the manifest's `attribution` string is shown in
+the Instruments packs screen to honour it.
+
+The client (`InstrumentPacks.swift`) treats the index like the **catalog** (§2): an **explicit
+file cache, offline-first**, so the packs list opens without a network. Bank downloads use a
+**file-based `URLSession.downloadTask`** (never an in-memory `Data` — a 32 MB blob has no
+business on the heap), publish progress, and **atomically move** the finished file into the
+app-managed `studio/instruments/` root; the download is **existence-check idempotent** (the
+`BurnStore` stems-trio pattern, Ch. 5 §15), so a re-download is a clean no-op. `Config` gains
+**`instrumentsIndexURL`** and **`instrumentsBase`** right beside `ripsBase`. Deletion is per
+bank, from **Settings ▸ Storage** and the Instruments UI (packs are **app-managed** and, in
+v1, **not** LRP-pruned — delete via the UI only, Ch. 5 §9.2). `InstrumentPacksTests` cover the
+manifest decode, the GM program mapping, and the bank dedupe.
+
+Like every other object in the rips bucket, the packs are **uploaded from the dev machine only**
+(`aws --profile levi`, `us-west-2`) — **the app never writes S3** (§1's private-write half:
+only the `levi` principal can `s3:PutObject`). So a pack is created and pushed exactly the way
+a mirrored cover or a manifest is, and every client reads it back over public-read https with
+the rip server off.
 
 ---
 

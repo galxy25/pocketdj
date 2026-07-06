@@ -969,16 +969,14 @@ private struct BeatPulseView: View {
 
     /// The most recent beat at/just before `pos` (source seconds) + whether it's a bar downbeat. Uses
     /// the REAL per-beat grid (`beatsMs`, burned/fetched) when present — so a tempo-DRIFTING track
-    /// pulses on its actual beats — otherwise synthesizes a constant grid from the measured BPM + the
+    /// pulses on its actual beats (the binary searches live in the shared `BeatMath`, also used by
+    /// Studio loop slicing) — otherwise synthesizes a constant grid from the measured BPM + the
     /// first-downbeat phase. nil before the first beat / when there's no grid at all.
     private func lastBeat(_ t: MixEngine.LoadedTrack, at pos: Double) -> (sec: Double, down: Bool)? {
         let posMs = pos * 1000
         if let beats = t.beatsMs, !beats.isEmpty {
-            var lo = 0, hi = beats.count                // largest beat ≤ posMs
-            while lo < hi { let mid = (lo + hi) / 2; if Double(beats[mid]) <= posMs { lo = mid + 1 } else { hi = mid } }
-            guard lo > 0 else { return nil }
-            let bms = beats[lo - 1]
-            return (Double(bms) / 1000, isDownbeat(bms, t.downbeatsMs))
+            guard let hit = BeatMath.lastBeat(beatsMs: beats, downbeatsMs: t.downbeatsMs, atMs: posMs) else { return nil }
+            return (Double(hit.beatMs) / 1000, hit.isDownbeat)
         }
         let bpm = (t.gridBpm ?? 0) > 0 ? (t.gridBpm ?? 0) : (t.bpm ?? 0)
         guard bpm > 0 else { return nil }
@@ -987,14 +985,6 @@ private struct BeatPulseView: View {
         let idx = floor((pos - downSec) / secPerBeat)
         guard idx >= 0 else { return nil }
         return (downSec + idx * secPerBeat, Int(idx).isMultiple(of: 4))   // every 4th beat = downbeat (4/4)
-    }
-
-    /// A bar downbeat? Near-membership of `beatMs` in the measured `downbeatsMs` (⊆ `beatsMs`).
-    private func isDownbeat(_ beatMs: Int, _ downbeats: [Int]?) -> Bool {
-        guard let d = downbeats, !d.isEmpty else { return false }
-        var lo = 0, hi = d.count                        // nearest downbeat by binary search
-        while lo < hi { let mid = (lo + hi) / 2; if d[mid] < beatMs { lo = mid + 1 } else { hi = mid } }
-        return [lo - 1, lo].contains { $0 >= 0 && $0 < d.count && abs(d[$0] - beatMs) <= 30 }
     }
 }
 

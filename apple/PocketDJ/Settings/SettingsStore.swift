@@ -95,6 +95,27 @@ final class SettingsStore {
     /// Settings ▸ Debug: record the mix engine's diagnostic log (`MixDiag`) so a remote tester
     /// can export it and ship it back. OFF (default) ⇒ os_log only, nothing buffered.
     var debugLoggingEnabled: Bool
+    /// Studio SAMPLES folder: a SECURITY-SCOPED bookmark to the user-picked folder rendered
+    /// sample audio is written into (browsable in Finder/Files). `nil` → the app-managed
+    /// Application Support `studio/samples/` dir. Mirrors `burnFolderBookmark`; see `StudioFolders`.
+    var samplesFolderBookmark: Data?
+    /// Studio LOOPS folder: same pattern for rendered loop files (`loop-<id>.caf`). `nil` →
+    /// app-managed Application Support `studio/loops/`. See `StudioFolders`.
+    var loopsFolderBookmark: Data?
+    /// Studio SEQUENCES folder: same pattern for bounced sequencer patterns
+    /// (`pattern-<id>.m4a`). `nil` → app-managed Application Support `studio/sequences/`.
+    /// Takes + instrument packs are deliberately ALWAYS app-managed (no bookmark).
+    var sequencesFolderBookmark: Data?
+    /// The last-visited Performance sub-tab's rawValue (Samples/Loops/Sequencer/Instruments/
+    /// Cues) so the tab reopens where you left off — the Studio twin of `lastSection`.
+    /// nil = never visited ⇒ the view's own default.
+    var studioTab: String?
+    /// Studio ▸ Instruments: metronome CLICK during take recording. ON by default; the click
+    /// joins the graph downstream of the take-capture tap so it is never recorded.
+    var studioClickEnabled: Bool
+    /// Studio ▸ Instruments: 1-bar COUNT-IN before take recording starts (beat 1 = end of
+    /// count-in = the score quantizer's anchor). ON by default.
+    var studioCountInEnabled: Bool
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -123,6 +144,12 @@ final class SettingsStore {
         self.storageSoftCapGB = data.storageSoftCapGB
         self.lastStoragePruneAt = data.lastStoragePruneAt
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
+        self.samplesFolderBookmark = data.samplesFolderBookmark
+        self.loopsFolderBookmark = data.loopsFolderBookmark
+        self.sequencesFolderBookmark = data.sequencesFolderBookmark
+        self.studioTab = data.studioTab
+        self.studioClickEnabled = data.studioClickEnabled ?? true
+        self.studioCountInEnabled = data.studioCountInEnabled ?? true
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -209,7 +236,13 @@ final class SettingsStore {
             lastSection: lastSection,
             storageSoftCapGB: storageSoftCapGB,
             lastStoragePruneAt: lastStoragePruneAt,
-            debugLoggingEnabled: debugLoggingEnabled)
+            debugLoggingEnabled: debugLoggingEnabled,
+            samplesFolderBookmark: samplesFolderBookmark,
+            loopsFolderBookmark: loopsFolderBookmark,
+            sequencesFolderBookmark: sequencesFolderBookmark,
+            studioTab: studioTab,
+            studioClickEnabled: studioClickEnabled,
+            studioCountInEnabled: studioCountInEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -243,6 +276,12 @@ final class SettingsStore {
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
+        samplesFolderBookmark = d.samplesFolderBookmark
+        loopsFolderBookmark = d.loopsFolderBookmark
+        sequencesFolderBookmark = d.sequencesFolderBookmark
+        studioTab = d.studioTab
+        studioClickEnabled = d.studioClickEnabled ?? true
+        studioCountInEnabled = d.studioCountInEnabled ?? true
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -296,6 +335,18 @@ struct SettingsData: Codable {
     var lastStoragePruneAt: Double?
     /// Optional so older blobs still decode — Settings ▸ Debug capture toggle (nil = off).
     var debugLoggingEnabled: Bool?
+    /// Optional so older blobs still decode — Studio samples folder bookmark (nil = app-managed).
+    var samplesFolderBookmark: Data?
+    /// Optional so older blobs still decode — Studio loops folder bookmark (nil = app-managed).
+    var loopsFolderBookmark: Data?
+    /// Optional so older blobs still decode — Studio sequences folder bookmark (nil = app-managed).
+    var sequencesFolderBookmark: Data?
+    /// Optional so older blobs still decode (nil = never visited ⇒ the view's default sub-tab).
+    var studioTab: String?
+    /// Optional so older blobs still decode (coalesced to true at the read sites).
+    var studioClickEnabled: Bool?
+    /// Optional so older blobs still decode (coalesced to true at the read sites).
+    var studioCountInEnabled: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -318,5 +369,11 @@ struct SettingsData: Codable {
         lastSection: nil,
         storageSoftCapGB: nil,
         lastStoragePruneAt: nil,
-        debugLoggingEnabled: nil)
+        debugLoggingEnabled: nil,
+        samplesFolderBookmark: nil,
+        loopsFolderBookmark: nil,
+        sequencesFolderBookmark: nil,
+        studioTab: nil,
+        studioClickEnabled: nil,
+        studioCountInEnabled: nil)
 }

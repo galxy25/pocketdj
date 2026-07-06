@@ -429,6 +429,17 @@ function fail(job, error) { job.error = error; setPhase(job, 'error'); if (job.r
 // `../../..` path-traversal attempt) can NEVER reach persistQueue/the worker through the
 // ad-hoc branch: it won't match here and won't be in the catalog, so it 404s.
 const ADHOC_ID = /^amrec_[A-Za-z0-9]+$/;
+// PocketDJ STUDIO artifact ids (samples `smp_`, loops `lp_`, sequencer patterns `ptn_`,
+// instrument takes `tk_`) — device-local user creations that ride collection songId
+// arrays since collections schema v5. They must NEVER reach the rip/stem queues: this
+// server is SHARED infrastructure across app versions, and an OLD build that resolves a
+// studio row through its play-through-coordinator would otherwise fire a rip-on-demand
+// here, live-search-capture some arbitrary Apple Music result, and upload it to the
+// PUBLIC rips bucket under the studio id. Defense-in-depth twin of the client-side
+// RipsStore skip (docs/design/performance-studio-spec.md §8) — reject at every enqueue
+// door, same strict-shape philosophy as ADHOC_ID above.
+const STUDIO_ID = /^(smp_|lp_|ptn_|tk_)/;
+const isStudioId = (id) => STUDIO_ID.test(String(id || ''));
 function adhocRow(songId, adhoc) {
   return {
     id: songId, name: adhoc.title, artist: adhoc.artist, albumId: null,
@@ -1572,6 +1583,12 @@ const server = http.createServer(async (req, res) => {
   // exact jobView/ready/404 contract the app's RipsStore.Job decoder expects.
   if (path === '/rip' && req.method === 'POST') {
     const { songId, ripFromCloud, title, artist, appleMusicId, lengthMs } = await readJson(req);
+    // Studio artifacts are device-local — never rippable (see STUDIO_ID). 400, not 404:
+    // the id's SHAPE is the problem, so "unknown" would invite retries.
+    if (isStudioId(songId)) {
+      console.error(`  rip: rejected studio id ${songId} (device-local artifact, never ripped)`);
+      return send(res, 400, { error: 'studio ids are device-local (not rippable)' });
+    }
     // Optional ad-hoc descriptor: lets a freshly-recognized track (not in any indexed
     // source) be captured by artist+title. Ignored when the songId is already known.
     const adhoc = (title && artist) ? { title, artist, appleMusicId, lengthMs } : null;
@@ -1588,7 +1605,12 @@ const server = http.createServer(async (req, res) => {
   // durable queue scales out as needed.
   if (path === '/rip-collection' && req.method === 'POST') {
     const { songIds, ripFromCloud } = await readJson(req);
-    const ids = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    const all = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    // Studio artifacts are device-local — SKIP them (with a logged reason) and continue,
+    // so one studio row in a mixed collection never fails the whole batch (see STUDIO_ID).
+    const studio = all.filter(isStudioId);
+    if (studio.length) console.error(`  rip-collection: skipped ${studio.length} studio id(s) (device-local artifacts): ${studio.join(', ')}`);
+    const ids = all.filter((id) => !isStudioId(id));
     const results = ids.map((id) => {
       const r = acceptRip(id, ripFromCloud);
       return { songId: id, status: r.status, jobId: r.job ? r.job.jobId : null, url: r.url || (r.job && r.job.url) || null };
@@ -1630,6 +1652,12 @@ const server = http.createServer(async (req, res) => {
   // jobView-shaped so the app reuses its job decoder; idempotent (a stemmed song returns ready).
   if (path === '/stemify' && req.method === 'POST') {
     const { songId, ripFromCloud } = await readJson(req);
+    // Studio artifacts are device-local — never stemmable (a stem job would chain into a
+    // rip; see STUDIO_ID). 400, mirroring /rip.
+    if (isStudioId(songId)) {
+      console.error(`  stemify: rejected studio id ${songId} (device-local artifact, never stemmed)`);
+      return send(res, 400, { error: 'studio ids are device-local (not stemmable)' });
+    }
     const r = acceptStem(songId, ripFromCloud);
     if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
     if (r.status === 'ineligible') return send(res, 200, { jobId: null, songId, phase: 'ineligible' });
@@ -1641,7 +1669,11 @@ const server = http.createServer(async (req, res) => {
   // DAG or large playlist could otherwise enqueue a multi-day job); re-send with confirmLarge.
   if (path === '/stemify-collection' && req.method === 'POST') {
     const { songIds, ripFromCloud, confirmLarge } = await readJson(req);
-    const ids = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    const all = Array.isArray(songIds) ? [...new Set(songIds)] : [];
+    // Studio artifacts: skip + continue, mirroring /rip-collection (see STUDIO_ID).
+    const studio = all.filter(isStudioId);
+    if (studio.length) console.error(`  stemify-collection: skipped ${studio.length} studio id(s) (device-local artifacts): ${studio.join(', ')}`);
+    const ids = all.filter((id) => !isStudioId(id));
     if (ids.length > CFG.stemCollectionCap && !confirmLarge)
       return send(res, 200, { needsConfirm: true, count: ids.length, cap: CFG.stemCollectionCap,
         message: `${ids.length} songs — this is a long job; re-send with confirmLarge:true` });

@@ -15,6 +15,8 @@ struct RootView: View {
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(MixEngine.self) private var mix
     @Environment(MixRecorder.self) private var mixRecorder
+    @Environment(StudioStore.self) private var studio
+    @Environment(StudioMicRecorder.self) private var studioMic
     @Environment(IntentServices.self) private var intents
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     // Launch default: macOS lands on the MIX tab; iOS lands on the HOME menu (nil —
@@ -31,14 +33,19 @@ struct RootView: View {
         case browse = "Browser"
         case playlists = "Playlists"
         case mix = "Mix"
+        // The Studio tab (samples/loops/sequencer/instruments/cues). rawValue triple-duties
+        // as sidebar label + settings.lastSection token + PDJ_START_SECTION seam — never
+        // rename it (spec §0's collision table pins the string).
+        case performance = "Performance"
         case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
             switch self {
-            case .browse:    return "list.bullet"
-            case .playlists: return "music.note.list"
-            case .mix:       return "slider.horizontal.3"
-            case .settings:  return "gearshape"
+            case .browse:      return "list.bullet"
+            case .playlists:   return "music.note.list"
+            case .mix:         return "slider.horizontal.3"
+            case .performance: return "pianokeys"
+            case .settings:    return "gearshape"
             }
         }
     }
@@ -110,6 +117,16 @@ struct RootView: View {
             // matter which tab the app restores into (waiting for a Mix-tab visit left it
             // invisible everywhere while the Storage sweep could still delete it).
             mixRecorder.recoverOrphans()
+            // Studio (Performance tab) launch hooks — the same at-launch doctrine as the two
+            // lines above, and deliberately in THIS order: reconcile drops records whose files
+            // are PROVABLY gone (unreachable user roots skip, never prune); the UI-test fixture
+            // seed runs BEFORE the mic orphan scan so a leftover fixture file from a previous
+            // run is re-adopted as the seeded sample (an orphan-scan adoption first would file
+            // it as "Recovered recording" and veto the seed's empty-document guard); the scan
+            // then re-files crash-orphaned mic takes regardless of which tab the app lands on.
+            studio.reconcileOnLaunch()
+            studio.seedFixtureIfRequested()
+            studioMic.recoverOrphans()
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
@@ -236,8 +253,15 @@ struct RootView: View {
                 .keyboardShortcut("b", modifiers: .command)
             Button("Settings-shadow") { section = .settings }
                 .keyboardShortcut(",", modifiers: .command)
-            Button("Playlists-shadow") { section = .playlists }
+            // ⌘P → Performance, ⇧⌘P → Playlists (spec §0's collision table): plain ⌘P
+            // belonged to Playlists, but the Performance tab claims it — and one key must
+            // never have two live registrations (the ⌘L ambiguity lesson in BrowseView),
+            // so Playlists moves to ⇧⌘P and Browse's play-focused moves to ⌥⌘P. The
+            // shadow LABELS keep their names — they are load-bearing XCUITest queries.
+            Button("Performance-shadow") { section = .performance }
                 .keyboardShortcut("p", modifiers: .command)
+            Button("Playlists-shadow") { section = .playlists }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             // ⌘M → Mix. On macOS this INTENTIONALLY overrides the system "minimize" shortcut
             // (the user asked for it); the Mix tab exists on iPhone, iPad, AND Mac.
             Button("Mix-shadow") { section = .mix }
@@ -248,10 +272,11 @@ struct RootView: View {
 
     @ViewBuilder private var detail: some View {
         switch section ?? .browse {
-        case .browse:    BrowseView(path: $path)
-        case .playlists: PlaylistsView(path: $path)
-        case .mix:       MixView(path: $path)
-        case .settings:  SettingsView(settings: settings)
+        case .browse:      BrowseView(path: $path)
+        case .playlists:   PlaylistsView(path: $path)
+        case .mix:         MixView(path: $path)
+        case .performance: PerformanceView()
+        case .settings:    SettingsView(settings: settings)
         }
     }
 }
