@@ -4,6 +4,7 @@ import Foundation
 // block trips Sendable warnings that are noise here — all this work is actor-serialized on one
 // thread. This is the compiler's own suggested fix.
 @preconcurrency import AVFoundation
+import Accelerate
 import os
 
 // MARK: - Render errors
@@ -23,6 +24,8 @@ enum StudioRenderError: Error {
     case engineStart(Error)
     /// PCM buffer/converter allocation failed (absurd sizes / exhausted memory).
     case cannotCreateBuffer
+    /// The imported file is DRM-protected (a FairPlay `.m4p` / stream) — never a sample (spec §12).
+    case protectedSource(URL)
 }
 
 // MARK: - StudioRender (offline bounce — spec §4)
@@ -257,6 +260,88 @@ actor StudioRender {
         }
         let ms = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
         Self.rlog("carve \(sourceURL.lastPathComponent) [\(startMs)–\(endMs)ms] → \(frames)f/\(ms)ms")
+        return (frames, ms)
+    }
+
+    /// Carve a MIX of selected STEMS for a region into one canonical AAC sample (spec §10 + stem
+    /// sampling). Reads each stem's `[startMs, endMs)` window — stems are SONG-RELATIVE (0:00 = song
+    /// start, like a cut, so NO album offset), converts each to canonical, and SUMS them
+    /// sample-for-sample into one accumulator. Demucs stems sum back to ~the original mix, so no
+    /// attenuation is applied (a subset is simply quieter, exactly like muting stems on a deck). At
+    /// least one stem URL required; an unreadable stem throws (all-or-nothing, the mix must be whole).
+    func carveStemMix(stemURLs: [URL], startMs: Int, endMs: Int, to destURL: URL) async throws
+        -> (frames: Int64, durationMs: Int) {
+        guard startMs >= 0, endMs > startMs, !stemURLs.isEmpty else { throw StudioRenderError.emptyWindow }
+        let windowFrames = AVAudioFrameCount(max(1, Int((Double(endMs - startMs) / 1000
+                                                         * Self.canonicalSampleRate).rounded())))
+        guard let acc = AVAudioPCMBuffer(pcmFormat: StudioAudio.canonicalFormat,
+                                         frameCapacity: windowFrames) else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        acc.frameLength = windowFrames
+        if let d = acc.floatChannelData {                    // fresh buffers aren't guaranteed zeroed
+            for c in 0..<Int(acc.format.channelCount) {
+                memset(d[c], 0, Int(windowFrames) * MemoryLayout<Float>.size)
+            }
+        }
+        var summed = 0
+        for url in stemURLs {
+            guard let file = try? AVAudioFile(forReading: url) else {
+                throw StudioRenderError.unreadableSource(url)
+            }
+            let sr = file.processingFormat.sampleRate
+            guard sr > 0, file.length > 0 else { continue }
+            let startFrame = min(AVAudioFramePosition((Double(startMs) / 1000 * sr).rounded()), file.length)
+            let endFrame = min(AVAudioFramePosition((Double(endMs) / 1000 * sr).rounded()), file.length)
+            guard endFrame > startFrame else { continue }
+            file.framePosition = startFrame
+            let raw = try Self.readFrames(file, count: AVAudioFrameCount(endFrame - startFrame), from: url)
+            guard raw.frameLength > 0 else { continue }
+            let canonical = try Self.convertToCanonical(raw)
+            Self.addBuffer(canonical, into: acc)
+            summed += 1
+        }
+        guard summed > 0 else { throw StudioRenderError.emptyWindow }
+        let frames = try Self.writeAtomically(to: destURL, settings: Self.aacSettings) { out in
+            try out.write(from: acc)
+            return Int64(acc.frameLength)
+        }
+        let ms = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
+        Self.rlog("stem-carve \(summed) stems [\(startMs)–\(endMs)ms] → \(frames)f/\(ms)ms")
+        return (frames, ms)
+    }
+
+    /// Sum `src`'s frames into `acc` in place (both canonical stereo) — `acc[i] += src[i]` per
+    /// channel over the overlapping length. The mix accumulator's length is the authority; a stem
+    /// that ran a frame short just contributes silence for the tail.
+    private nonisolated static func addBuffer(_ src: AVAudioPCMBuffer, into acc: AVAudioPCMBuffer) {
+        guard let s = src.floatChannelData, let d = acc.floatChannelData else { return }
+        let n = min(src.frameLength, acc.frameLength)
+        guard n > 0 else { return }
+        let ch = min(Int(src.format.channelCount), Int(acc.format.channelCount))
+        for c in 0..<ch {
+            vDSP_vadd(d[c], 1, s[c], 1, d[c], 1, vDSP_Length(n))
+        }
+    }
+
+    /// Import an ARBITRARY audio file (file browser) as a new sample: decode the WHOLE file →
+    /// canonical → AAC `.m4a`, exactly like a full-length `carveTrackRegion` but from any container
+    /// AVFoundation can read (mp3/wav/aiff/caf/m4a…). Rejects DRM-protected assets up front — a
+    /// FairPlay `.m4p` must never be turned into a sample (spec §12). The imported sample starts
+    /// grid-less (no server sidecar); auto-detect/tap-tempo sets a grid before slicing.
+    func importAudioFile(sourceURL: URL, to destURL: URL) async throws -> (frames: Int64, durationMs: Int) {
+        let asset = AVURLAsset(url: sourceURL)
+        if (try? await asset.load(.hasProtectedContent)) == true {
+            throw StudioRenderError.protectedSource(sourceURL)
+        }
+        let canonical = try Self.decodeFileSync(url: sourceURL)   // whole-file read + convert-to-canonical
+        guard canonical.frameLength > 0 else { throw StudioRenderError.emptyWindow }
+        let frames = try Self.writeAtomically(to: destURL, settings: Self.aacSettings) { out in
+            try out.write(from: canonical)
+            return Int64(canonical.frameLength)
+        }
+        let ms = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
+        Self.rlog("import \(sourceURL.lastPathComponent) → \(frames)f/\(ms)ms")
         return (frames, ms)
     }
 

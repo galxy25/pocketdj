@@ -196,6 +196,82 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    func testSliceEditorAutoSliceAndPad() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: sheet/slice flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(0)
+        let row = app.any("sample-row-smp_fixture")
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()                                   // opens the sample editor sheet
+        // The Slice-into-pads entry is near the bottom of the editor — scroll it into view.
+        let sliceEntry = app.el("sample-slice")
+        XCTAssertTrue(sliceEntry.waitForExistence(timeout: 8))
+        if !sliceEntry.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        sliceEntry.tap()
+        // Auto-slice → pads populate; tapping a pad auditions it (must not crash).
+        let auto = app.el("slice-auto")
+        XCTAssertTrue(auto.waitForExistence(timeout: 8), "slice editor should show Auto-slice")
+        auto.tap()
+        let pad0 = app.el("slice-pad-0")
+        XCTAssertTrue(pad0.waitForExistence(timeout: 5), "auto-slice should populate pad 0")
+        snap("slice-editor")
+        pad0.tap()
+        XCTAssertTrue(app.el("slice-send-sequencer").waitForExistence(timeout: 3),
+                      "the bake-to-sequencer action should be present with pads")
+        #endif
+    }
+
+    func testScoreEditorPlacesAndDeletesANote() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)                                   // Instruments
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8), "the seeded take should be listed")
+        takeRow.tap()
+        // Score screen → enter edit mode.
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8), "score screen with an Edit control")
+        edit.tap()
+        XCTAssertTrue(app.el("score-length-4").waitForExistence(timeout: 5), "the edit toolbar")
+        let del = app.el("score-delete")
+        XCTAssertFalse(del.isEnabled, "Delete is disabled until a note is selected")
+        // Pick flat + a half note, then tap the staff to place a note (selects it ⇒ Delete enables).
+        app.el("score-acc-flat").tap()
+        app.el("score-length-2").tap()
+        let page = app.any("score-page-0")
+        XCTAssertTrue(page.waitForExistence(timeout: 5), "the first score page")
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: del)],
+             timeout: 5)                               // placing selected the new note
+        snap("score-editor")
+        // Delete removes it → Delete disabled again.
+        del.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == false"), evaluatedWith: del)],
+             timeout: 5)
+        #endif
+    }
+
+    func testLiveStaffSectionPresent() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: Instruments live-staff exercised on iOS")
+        #else
+        // The live staff renders in the Instruments tab (its fill-from-play + edit path is covered
+        // by InstrumentLiveLogTests — XCUITest can't reliably drive the keys' min-distance-0 drag).
+        launchPerformance()
+        switchTab(3)                                   // Instruments
+        let staff = app.any("live-staff")
+        XCTAssertTrue(staff.waitForExistence(timeout: 15), "the live score section should be present")
+        snap("live-staff")
+        #endif
+    }
+
     // MARK: - (4) Loops
 
     func testLoopsSeededRowAndSliceChips() throws {

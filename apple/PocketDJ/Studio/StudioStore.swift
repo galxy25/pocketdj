@@ -42,6 +42,7 @@ final class StudioStore {
     private(set) var patterns: [StudioPattern] = []
     private(set) var takes: [StudioTake] = []
     private(set) var cues: [StudioCue] = []
+    private(set) var slices: [StudioSlice] = []
 
     /// Source of the per-family folder bookmarks. Pushed in from the view layer / app (like
     /// `MixRecorder.settings`) so this never has to be wired at app-init time. Weak ⇒ no retain
@@ -69,6 +70,7 @@ final class StudioStore {
             patterns = doc.patterns
             takes = doc.takes
             cues = doc.cues
+            slices = doc.slices
         }
     }
 
@@ -194,6 +196,7 @@ final class StudioStore {
             try? FileManager.default.removeItem(at: got.url)
             got.release?()
         }
+        slices.removeAll { $0.sampleId == id }   // pads are markers on this sample — no orphans
         samples.remove(at: i)
         saveNow()
         return true
@@ -368,6 +371,25 @@ final class StudioStore {
         saveNow()
     }
 
+    /// Persist an EDITED note stream for a take (score editing, spec §7). Sets `editedEvents` so the
+    /// score/replay/MIDI read it instead of the raw performance, and extends `durationMs` if a
+    /// placed note runs past the old end (the take's audio is unchanged — replay plays events).
+    func setTakeEvents(_ id: String, events: [StudioNoteEvent]) {
+        guard let i = takes.firstIndex(where: { $0.id == id }) else { return }
+        takes[i].editedEvents = events
+        if let maxOff = events.map(\.offMs).max(), maxOff > takes[i].durationMs {
+            takes[i].durationMs = maxOff
+        }
+        saveNow()
+    }
+
+    /// Drop a take's edits — the score reverts to deriving from the raw performance.
+    func revertTakeEdits(_ id: String) {
+        guard let i = takes.firstIndex(where: { $0.id == id }), takes[i].editedEvents != nil else { return }
+        takes[i].editedEvents = nil
+        saveNow()
+    }
+
     /// Delete a take (file + record). Takes are always app-managed — the root is always
     /// reachable, so there is no keep-record branch. Samples created via "Use as sample" are
     /// untouched (they COPIED the audio; their `.take` source is provenance only).
@@ -434,6 +456,88 @@ final class StudioStore {
     func nudgeCue(songId: String, slot: Int, deltaMs: Int) {
         guard let i = cues.firstIndex(where: { $0.songId == songId && $0.slot == slot }) else { return }
         cues[i].positionMs = max(0, cues[i].positionMs + deltaMs)
+        scheduleSave()
+    }
+
+    // MARK: - Slices (max 8 pads per sample, store-enforced; the 8-cap mirrors cues)
+
+    /// A sample's slices, slot-ordered (the 8-pad grid maps by slot, not array position).
+    func slices(forSample sampleId: String) -> [StudioSlice] {
+        slices.filter { $0.sampleId == sampleId }.sorted { $0.slot < $1.slot }
+    }
+
+    func slice(sampleId: String, slot: Int) -> StudioSlice? {
+        slices.first { $0.sampleId == sampleId && $0.slot == slot }
+    }
+
+    /// The [start, end) window a slice PLAYS: from its own start to the next slice's start (by
+    /// time, across all pads) or the sample's effective end. nil if the slice/sample is gone or the
+    /// window is empty (a start at/after the end).
+    func sliceWindow(sampleId: String, slot: Int) -> (startMs: Int, endMs: Int)? {
+        guard let s = slice(sampleId: sampleId, slot: slot), let sample = sample(sampleId) else { return nil }
+        let nextStart = slices.filter { $0.sampleId == sampleId && $0.startMs > s.startMs }
+            .map(\.startMs).min()
+        // Raw duration: slices/playSlice operate on the raw sample file (0:00 = raw start), so the
+        // last pad ends at the raw end — not the (trim-shortened) effective duration.
+        let end = nextStart ?? sample.durationMs
+        guard end > s.startMs else { return nil }
+        return (s.startMs, end)
+    }
+
+    /// Set/replace one pad's start. The 8-per-sample cap is the slot domain itself (0–7), so no
+    /// path can file a ninth. Replacing keeps the id + name (a re-set just moves the point).
+    @discardableResult
+    func setSlice(sampleId: String, slot: Int, startMs: Int, name: String? = nil) -> StudioSlice? {
+        guard !sampleId.isEmpty, (0..<StudioSlice.maxSlots).contains(slot) else { return nil }
+        let start = max(0, startMs)
+        if let i = slices.firstIndex(where: { $0.sampleId == sampleId && $0.slot == slot }) {
+            slices[i].startMs = start
+            if let name { slices[i].name = normalizedCueName(name) }
+            saveNow()
+            return slices[i]
+        }
+        let slice = StudioSlice(id: StudioFactory.newSliceId(), sampleId: sampleId, slot: slot,
+                                startMs: start, name: name.flatMap(normalizedCueName))
+        slices.append(slice)
+        saveNow()
+        return slice
+    }
+
+    /// Replace ALL of a sample's slices with a set of start points (auto-slice): de-duped, sorted,
+    /// capped at `maxSlots`, slot = time order. Clears the sample's existing pads first.
+    func setSlices(sampleId: String, startsMs: [Int]) {
+        guard !sampleId.isEmpty else { return }
+        slices.removeAll { $0.sampleId == sampleId }
+        let starts = Array(Set(startsMs.map { max(0, $0) })).sorted().prefix(StudioSlice.maxSlots)
+        for (slot, start) in starts.enumerated() {
+            slices.append(StudioSlice(id: StudioFactory.newSliceId(), sampleId: sampleId,
+                                      slot: slot, startMs: start))
+        }
+        saveNow()
+    }
+
+    func removeSlice(sampleId: String, slot: Int) {
+        let before = slices.count
+        slices.removeAll { $0.sampleId == sampleId && $0.slot == slot }
+        if slices.count != before { saveNow() }
+    }
+
+    func clearSlices(sampleId: String) {
+        let before = slices.count
+        slices.removeAll { $0.sampleId == sampleId }
+        if slices.count != before { saveNow() }
+    }
+
+    func renameSlice(sampleId: String, slot: Int, name: String?) {
+        guard let i = slices.firstIndex(where: { $0.sampleId == sampleId && $0.slot == slot }) else { return }
+        slices[i].name = name.flatMap(normalizedCueName)
+        saveNow()
+    }
+
+    /// Nudge a pad's start by ±deltaMs (clamped ≥ 0). Debounced — nudge buttons repeat.
+    func nudgeSlice(sampleId: String, slot: Int, deltaMs: Int) {
+        guard let i = slices.firstIndex(where: { $0.sampleId == sampleId && $0.slot == slot }) else { return }
+        slices[i].startMs = max(0, slices[i].startMs + deltaMs)
         scheduleSave()
     }
 
@@ -694,6 +798,20 @@ final class StudioStore {
                                  createdAt: now))
         setCue(songId: "sng_1", slot: 0, positionMs: 1_000, name: "Intro")
         setCue(songId: "sng_1", slot: 1, positionMs: 5_000, name: "Drop")
+
+        // A tiny piano take (C4 D4 E4 G4 quarters at 120 BPM) so the Score screen — and its
+        // editor — is reachable in UI tests / demos. Audio is a synth tone (replay plays events).
+        if takes.isEmpty, let takesDir = try? StudioFolders.appRoot(.takes) {
+            let takeId = "tk_fixture"
+            let takeFile = StudioFolders.fileName(.takes, id: takeId)
+            Self.writeSeedTone(to: takesDir.appendingPathComponent(takeFile), seconds: 2.0, aac: true)
+            let events = [60, 62, 64, 67].enumerated().map { i, n in
+                StudioNoteEvent(onMs: i * 500, offMs: i * 500 + 480, note: n, velocity: 96)
+            }
+            addTake(StudioTake(id: takeId, name: "Seeded Take", instrument: .piano,
+                               fileName: takeFile, bpm: 120, events: events,
+                               durationMs: 2_000, createdAt: now))
+        }
     }
 
     /// Write a short 440 Hz tone (44.1 kHz mono) — AAC m4a or LPCM 16-bit CAF. Returns the
@@ -730,7 +848,7 @@ final class StudioStore {
 
     private func snapshotDocument() -> StudioDocument {
         StudioDocument(schemaVersion: studioSchemaVersion, samples: samples, loops: loops,
-                       patterns: patterns, takes: takes, cues: cues)
+                       patterns: patterns, takes: takes, cues: cues, slices: slices)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.

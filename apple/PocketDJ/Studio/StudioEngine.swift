@@ -218,6 +218,9 @@ final class StudioEngine {
     /// A segment is currently scheduled on the player (play resumes it; false forces a fresh
     /// `scheduleSegment` — after end-of-window, a seek, or a trim change while paused).
     @ObservationIgnored private var sampleScheduled = false
+    /// Non-nil while a SLICE pad is auditioning one-shot: the source-seconds out-point the tick
+    /// stops at. Independent of the trim window, so slice pads never disturb the editor transport.
+    @ObservationIgnored private var sliceEndSec: Double?
 
     // MARK: Loop-audition state
 
@@ -454,6 +457,7 @@ final class StudioEngine {
         samplePlayer?.stop()
         isPlayingSample = false
         sampleScheduled = false
+        sliceEndSec = nil
         sampleFile = nil
         samplePath = nil
         loadedSampleId = nil
@@ -467,6 +471,7 @@ final class StudioEngine {
     func playSample() {
         guard sampleFile != nil else { return }
         ensureEngine()
+        sliceEndSec = nil                 // normal transport plays the trim window, not a slice pad
         clearInterruptionPark()
         if !sampleScheduled {
             guard scheduleSampleWindow(from: samplePausedAt) else { return }   // zero-frame window — refuse
@@ -484,6 +489,7 @@ final class StudioEngine {
         samplePausedAt = samplePlayheadSeconds()
         samplePlayer?.pause()
         isPlayingSample = false
+        sliceEndSec = nil
         clearInterruptionPark()
         maybeResignArbiter()
         dlog("ui: pauseSample at=\(String(format: "%.2f", samplePausedAt))")
@@ -493,11 +499,43 @@ final class StudioEngine {
     func stopSample() {
         samplePlayer?.stop()
         sampleScheduled = false
+        sliceEndSec = nil
         samplePausedAt = sampleWindowSeconds()?.start ?? 0
         if isPlayingSample { dlog("ui: stopSample") }
         isPlayingSample = false
         clearInterruptionPark()
         maybeResignArbiter()
+    }
+
+    /// One-shot audition of a SLICE window `[startMs, endMs)` on the ALREADY-LOADED sample (the
+    /// editor loads the raw file). Self-contained: schedules the segment directly and stops at the
+    /// out-point via the tick's `sliceEndSec` check — it never reads/writes the trim window, so
+    /// tapping pads doesn't disturb the editor's own transport. Reuses the one `samplePlayer` + FX
+    /// chain (monophonic, like loop/sample audition). A zero-frame window is refused (crash guard).
+    func playSlice(startMs: Int, endMs: Int) {
+        ensureEngine()
+        guard built, let f = sampleFile, let player = samplePlayer else { return }
+        let sr = f.processingFormat.sampleRate
+        guard sr > 0, endMs > startMs else { return }
+        let durSec = Double(f.length) / sr
+        let from = min(max(0, Double(startMs) / 1000), durSec)
+        let to = min(max(from, Double(endMs) / 1000), durSec)
+        let startFrame = AVAudioFramePosition((from * sr).rounded())
+        let endFrame = AVAudioFramePosition((to * sr).rounded())
+        let count = endFrame - startFrame
+        guard count > 0 else { return }                 // zero-frame schedule = uncatchable crash
+        clearInterruptionPark()
+        player.stop()
+        player.scheduleSegment(f, startingFrame: startFrame, frameCount: AVAudioFrameCount(count),
+                               at: nil, completionHandler: nil)
+        sampleSegmentStartSeconds = from
+        samplePausedAt = from
+        sampleScheduled = true
+        sliceEndSec = to
+        if startEngineIfNeeded() { player.play() }
+        isPlayingSample = true
+        NowPlayingArbiter.shared.claim(self)
+        startTickIfNeeded()
     }
 
     /// Seek within the sample's source timeline (clamped into the trim window). While playing
@@ -507,6 +545,7 @@ final class StudioEngine {
         let wasPlaying = isPlayingSample
         samplePlayer?.stop()
         sampleScheduled = false
+        sliceEndSec = nil
         samplePausedAt = t
         guard wasPlaying else { return }
         if scheduleSampleWindow(from: t), startEngineIfNeeded() {
@@ -586,8 +625,22 @@ final class StudioEngine {
     /// each pass, so the fallback read stays near-truth across a stall (positions freeze with
     /// the engine — never advanced by wall clock).
     private func checkSampleEndBoundary() {
-        guard isPlayingSample, let w = sampleWindowSeconds() else { return }
+        guard isPlayingSample else { return }
         let ph = samplePlayheadSeconds()
+        // Slice pad one-shot: stop at the pad's out-point, then hand transport back to the trim
+        // window (sliceEndSec cleared) — the editor's next play reschedules from the window start.
+        if let end = sliceEndSec {
+            samplePausedAt = min(ph, end)
+            guard ph >= end - 0.01 else { return }
+            samplePlayer?.stop()
+            sampleScheduled = false
+            sliceEndSec = nil
+            samplePausedAt = sampleWindowSeconds()?.start ?? 0
+            isPlayingSample = false
+            maybeResignArbiter()
+            return
+        }
+        guard let w = sampleWindowSeconds() else { return }
         samplePausedAt = min(max(ph, w.start), w.end)
         guard ph >= w.end - 0.01 else { return }
         dlog("sample audition ended at \(String(format: "%.2f", ph))")

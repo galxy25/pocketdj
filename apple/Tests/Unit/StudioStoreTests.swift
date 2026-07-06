@@ -151,6 +151,19 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertTrue(store.cues.isEmpty)
     }
 
+    // MARK: Source provenance — .file round-trips; encoded form stays old-build-safe
+
+    func testFileSourceRoundTripsAndDegradesGracefully() throws {
+        let src = StudioSource.file(originalName: "Amen Break.wav")
+        let data = try JSONEncoder().encode(src)
+        XCTAssertEqual(try JSONDecoder().decode(StudioSource.self, from: data), src)
+        // Encoded as type:"file" + originalName — an OLD build with no .file case hits its
+        // hand-written default arm and degrades to .mic (the sample still plays; label is lost).
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "file")
+        XCTAssertEqual(obj["originalName"] as? String, "Amen Break.wav")
+    }
+
     // MARK: Cues — max 8, slot replace
 
     func testCueMaxEightAndSlotReplace() {
@@ -180,6 +193,58 @@ final class StudioStoreTests: XCTestCase {
         store.removeCue(songId: "sng_1", slot: 0)
         XCTAssertNil(store.cue(songId: "sng_1", slot: 0))
         XCTAssertEqual(store.cues(forSong: "sng_1").count, 7)
+    }
+
+    // MARK: Slices — 8-pad cap, derived play window, chop, orphan cleanup
+
+    func testSliceCapWindowChopAndOrphanCleanup() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(makeSample("smp_x"))                       // durationMs = 2000
+        for slot in 0..<StudioSlice.maxSlots {
+            XCTAssertNotNil(store.setSlice(sampleId: "smp_x", slot: slot, startMs: slot * 250))
+        }
+        XCTAssertEqual(store.slices(forSample: "smp_x").count, 8)
+        XCTAssertNil(store.setSlice(sampleId: "smp_x", slot: 8, startMs: 0))     // slot-domain cap
+        XCTAssertNil(store.setSlice(sampleId: "smp_x", slot: -1, startMs: 0))
+        // Derived window: pad 0 = [0,250), the last pad ends at the raw duration.
+        XCTAssertEqual(store.sliceWindow(sampleId: "smp_x", slot: 0)?.startMs, 0)
+        XCTAssertEqual(store.sliceWindow(sampleId: "smp_x", slot: 0)?.endMs, 250)
+        XCTAssertEqual(store.sliceWindow(sampleId: "smp_x", slot: 7)?.endMs, 2_000)
+        // Chop replaces everything, slot = time order, de-duped + capped.
+        store.setSlices(sampleId: "smp_x", startsMs: [1_000, 0, 0, 500])
+        XCTAssertEqual(store.slices(forSample: "smp_x").map(\.startMs), [0, 500, 1_000])
+        // Deleting the parent sample sweeps its pads (no orphans).
+        _ = store.deleteSample("smp_x")
+        XCTAssertTrue(store.slices(forSample: "smp_x").isEmpty)
+    }
+
+    // MARK: Take edits — editedEvents override + duration extension + revert
+
+    func testSetTakeEventsPersistsEditsExtendsDurationAndReverts() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_a", name: "T", fileName: StudioFolders.fileName(.takes, id: "tk_a"),
+                                 bpm: 120, events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 96)],
+                                 durationMs: 500))
+        XCTAssertNil(store.take("tk_a")?.editedEvents)              // untouched ⇒ derive from raw
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.count, 1)
+
+        store.setTakeEvents("tk_a", events: [
+            StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 96, accidental: .flat),
+            StudioNoteEvent(onMs: 1_000, offMs: 2_000, note: 67, velocity: 96),
+        ])
+        XCTAssertEqual(store.take("tk_a")?.editedEvents?.count, 2)
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.count, 2)    // scoreEvents now the edited stream
+        XCTAssertEqual(store.take("tk_a")?.durationMs, 2_000)       // extended to the new max offMs
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.first?.accidental, .flat)
+
+        // Round-trips through persistence (flush = synchronous write before reload).
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.take("tk_a")?.editedEvents?.count, 2)
+
+        store.revertTakeEdits("tk_a")
+        XCTAssertNil(store.take("tk_a")?.editedEvents)              // back to deriving from raw
+        XCTAssertEqual(store.take("tk_a")?.scoreEvents.count, 1)
     }
 
     // MARK: Delete with referrers

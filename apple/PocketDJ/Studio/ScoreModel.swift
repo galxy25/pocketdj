@@ -126,6 +126,9 @@ struct ScoreItem: Hashable, Sendable {
     var onset16ths: Int
     var kind: Kind
     var duration: NoteDuration
+    /// Per-note spelling overrides (MIDI → accidental) for a `.notes` chord; empty ⇒ every note
+    /// derives its spelling. Additive with a default so existing constructors keep working.
+    var spellings: [Int: Accidental] = [:]
 }
 
 /// One 4/4 measure. The quantizer guarantees `items` are onset-ordered, non-overlapping, and
@@ -224,8 +227,10 @@ enum ScoreQuantizer {
         let plan = ClefPlan.plan(for: instrument)
         let step = sixteenthMs(bpm: tempo)
 
-        // 1–3: snap + merge into chords keyed by absolute onset (in 16ths from beat 1).
+        // 1–3: snap + merge into chords keyed by absolute onset (in 16ths from beat 1). Per-note
+        // spelling overrides ride alongside, keyed the same way (last write wins for a repeated note).
         var chords: [Int: (notes: Set<Int>, dur16: Int)] = [:]
+        var chordSpellings: [Int: [Int: Accidental]] = [:]
         for e in events {
             guard (0...127).contains(e.note) else { continue }
             let on16 = max(0, Int((Double(e.onMs) / step).rounded()))
@@ -235,6 +240,7 @@ enum ScoreQuantizer {
             c.notes.insert(e.note)
             c.dur16 = max(c.dur16, snapped)
             chords[on16] = c
+            if let acc = e.accidental { chordSpellings[on16, default: [:]][e.note] = acc }
         }
         guard !chords.isEmpty else {
             return ScoreDocument(measures: [], bpm: tempo, clefPlan: plan)
@@ -265,7 +271,8 @@ enum ScoreQuantizer {
         var measures = (0..<end / 16).map { ScoreMeasure(index: $0, items: []) }
         for f in flat {
             measures[f.onset / 16].items
-                .append(ScoreItem(onset16ths: f.onset % 16, kind: f.kind, duration: f.duration))
+                .append(ScoreItem(onset16ths: f.onset % 16, kind: f.kind, duration: f.duration,
+                                  spellings: chordSpellings[f.onset] ?? [:]))
         }
         return ScoreDocument(measures: measures, bpm: tempo, clefPlan: plan)
     }

@@ -159,4 +159,36 @@ final class BeatMathTests: XCTestCase {
         XCTAssertNil(BeatMath.sliceBoundaries(anchorMs: 0, beats: 0,
                                               grid: (bpm: 120, firstDownbeatMs: 0, beatsMs: drifting)))
     }
+
+    // MARK: sliceStarts — auto-slice partition points
+
+    func testSliceStartsEvenChopNoGrid() {
+        // Grid-less: a plain even time chop, pad 0 at 0.
+        XCTAssertEqual(BeatMath.sliceStarts(count: 4, grid: nil, durationMs: 4_000),
+                       [0, 1_000, 2_000, 3_000])
+    }
+
+    func testSliceStartsCapsAtEightAndClampsCount() {
+        XCTAssertEqual(BeatMath.sliceStarts(count: 99, grid: nil, durationMs: 8_000).count, 8)
+        XCTAssertEqual(BeatMath.sliceStarts(count: 0, grid: nil, durationMs: 8_000), [0])
+    }
+
+    func testSliceStartsSnapsToConstantGridBeats() {
+        // 120 BPM ⇒ 500 ms beats. Even quarters of a 4 s clip (0,1000,2000,3000) already land on
+        // beats, and pad 0 is forced to 0.
+        let starts = BeatMath.sliceStarts(count: 4,
+                                          grid: (bpm: 120, firstDownbeatMs: 0, beatsMs: []),
+                                          durationMs: 4_000)
+        XCTAssertEqual(starts, [0, 1_000, 2_000, 3_000])
+        // An off-beat division snaps to the nearest 500 ms beat.
+        let three = BeatMath.sliceStarts(count: 3,
+                                         grid: (bpm: 120, firstDownbeatMs: 0, beatsMs: []),
+                                         durationMs: 3_000)
+        XCTAssertEqual(three, [0, 1_000, 2_000])          // 0, 1000, 2000 already on beats
+    }
+
+    func testSliceStartsFirstPadAlwaysZero() {
+        let starts = BeatMath.sliceStarts(count: 2, grid: nil, durationMs: 5_000)
+        XCTAssertEqual(starts.first, 0)
+    }
 }

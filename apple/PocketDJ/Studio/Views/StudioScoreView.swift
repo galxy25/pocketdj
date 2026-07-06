@@ -25,6 +25,9 @@ struct StudioScoreView: View {
     @State private var midiDoc = ScoreMIDIFile(data: Data())
     @State private var errorText: String?
 
+    /// Edit mode (spec §7) — toggled by the action bar, passed to the shared ScoreEditorView.
+    @State private var editing = false
+
     private var take: StudioTake? { studio.take(takeId) }
 
     var body: some View {
@@ -64,27 +67,14 @@ struct StudioScoreView: View {
     // MARK: Content
 
     private func content(_ take: StudioTake) -> some View {
-        // Quantize + paginate per render: pure functions over an immutable event log — cheap
-        // at real take sizes (hundreds of events), and always in sync with a rename (title).
-        let doc = ScoreQuantizer.quantize(events: take.events, bpm: take.bpm,
-                                          instrument: take.instrument)
-        let pages = ScoreLayout.paginate(score: doc, title: displayTitle(take),
-                                         instrument: take.instrument)
-        return ScrollView {
+        ScrollView {
             VStack(spacing: 14) {
                 actionBar(take)
-                if take.events.isEmpty {
-                    Text("No notes were recorded in this take.")
-                        .font(.caption).foregroundStyle(Theme.fgDim)
-                }
-                // Vertical page scroll — every page keeps the A4 aspect and scales to width.
-                ForEach(pages.indices, id: \.self) { i in
-                    ScorePageView(page: pages[i])
-                        .aspectRatio(pages[i].size.width / pages[i].size.height,
-                                     contentMode: .fit)
-                        .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
-                }
-                Text("\(pages.count) page\(pages.count == 1 ? "" : "s") · \(take.instrument.displayName) · \(Fmt.bpm(take.bpm)) BPM")
+                // The shared editable surface — a take commits edits as `editedEvents`.
+                ScoreEditorView(events: take.scoreEvents, bpm: take.bpm, instrument: take.instrument,
+                                title: displayTitle(take), editing: editing,
+                                onEdit: { studio.setTakeEvents(takeId, events: $0) })
+                Text("\(take.instrument.displayName) · \(Fmt.bpm(take.bpm)) BPM")
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
             .padding()
@@ -107,8 +97,16 @@ struct StudioScoreView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(instruments.isReplaying ? Theme.danger : Theme.accent)
-            .disabled(take.events.isEmpty)
+            .disabled(take.scoreEvents.isEmpty)
             .accessibilityIdentifier("score-replay")
+            Button {
+                editing.toggle()
+            } label: {
+                Label(editing ? "Done" : "Edit", systemImage: editing ? "checkmark" : "pencil")
+            }
+            .buttonStyle(.bordered)
+            .tint(editing ? Theme.accent2 : Theme.accent)
+            .accessibilityIdentifier("score-edit")
             Spacer(minLength: 0)
             Button { exportPDF(take) } label: {
                 Label("PDF", systemImage: "doc.richtext")
@@ -124,12 +122,10 @@ struct StudioScoreView: View {
     // MARK: Exports
 
     private func exportPDF(_ take: StudioTake) {
-        let doc = ScoreQuantizer.quantize(events: take.events, bpm: take.bpm,
+        let doc = ScoreQuantizer.quantize(events: take.scoreEvents, bpm: take.bpm,
                                           instrument: take.instrument)
         let data = ScorePDF.makePDF(score: doc, title: displayTitle(take),
                                     instrument: take.instrument)
-        // Empty Data = CG resource exhaustion (ScorePDF's documented failure mode) — surface
-        // it instead of writing a corrupt file.
         guard !data.isEmpty else {
             errorText = "Couldn't build the PDF."
             return
@@ -139,9 +135,9 @@ struct StudioScoreView: View {
     }
 
     private func exportMIDI(_ take: StudioTake) {
-        // Deliberately the RAW unquantized events (spec §7): MIDI is the faithful performance
-        // for a DAW; the score is the readable simplification.
-        midiDoc = ScoreMIDIFile(data: SMFWriter.write(events: take.events, bpm: take.bpm,
+        // Deliberately the RAW/effective events (spec §7): the score's readable simplification is
+        // the PDF; MIDI is the faithful stream a DAW ingests.
+        midiDoc = ScoreMIDIFile(data: SMFWriter.write(events: take.scoreEvents, bpm: take.bpm,
                                                       instrument: take.instrument))
         showMIDIExporter = true
     }
@@ -161,29 +157,6 @@ struct StudioScoreView: View {
     }
 }
 
-// MARK: - One laid page (Canvas host)
-
-/// Draws ONE `ScorePage` via `ScoreRenderer` inside a SwiftUI Canvas. `withCGContext` hands a
-/// TOP-LEFT-origin y-DOWN CGContext — exactly the renderer's contract (ScorePDF flips its PDF
-/// context to the same space). The page is laid at A4 metrics and SCALED to the canvas, so the
-/// on-screen sheet is proportionally identical to the exported PDF (and stays crisp — vector
-/// paths scale, they don't resample). The renderer paints its own white sheet: notation is
-/// black-on-white by design, deliberately not theme-tinted (screen == export).
-private struct ScorePageView: View {
-    let page: ScorePage
-
-    var body: some View {
-        Canvas { ctx, size in
-            ctx.withCGContext { cg in
-                let scale = size.width / page.size.width
-                cg.saveGState()
-                cg.scaleBy(x: scale, y: scale)
-                ScoreRenderer.draw(page, in: cg)
-                cg.restoreGState()
-            }
-        }
-    }
-}
 
 // MARK: - FileDocument wrappers (the EditsFile precedent)
 

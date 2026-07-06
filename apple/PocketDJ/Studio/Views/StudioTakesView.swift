@@ -87,7 +87,7 @@ struct StudioTakesView: View {
                         .font(.title3)
                 }
                 .buttonStyle(.borderless)
-                .disabled(take.events.isEmpty)
+                .disabled(take.scoreEvents.isEmpty)
                 .accessibilityIdentifier("take-replay-\(take.id)")
                 Button {
                     useAsSample(take)
@@ -189,9 +189,9 @@ enum StudioTakeReplay {
             instruments.stopReplay()
             return true
         }
-        guard !take.events.isEmpty else { return true }   // nothing to play — not an error
+        guard !take.scoreEvents.isEmpty else { return true }   // nothing to play — not an error
         if instruments.currentInstrument == take.instrument {
-            instruments.replayTake(events: take.events, instrument: take.instrument)
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument)
             return true
         }
         // Wrong (or no) instrument loaded: load the right bank first when it's downloaded.
@@ -199,14 +199,14 @@ enum StudioTakeReplay {
            let url = packs.localBankURL(pack) {
             Task { @MainActor in
                 _ = await instruments.loadInstrument(take.instrument, bankURL: url)
-                instruments.replayTake(events: take.events, instrument: take.instrument)
+                instruments.replayTake(events: take.scoreEvents, instrument: take.instrument)
             }
             return true
         }
         // No bank for this instrument on disk. If SOMETHING is loaded, degrade to it
         // (audible, logged); with nothing loaded the sampler is silent — report that.
         if instruments.currentInstrument != nil {
-            instruments.replayTake(events: take.events, instrument: take.instrument)
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument)
             return true
         }
         return false

@@ -40,10 +40,15 @@ enum StudioSource: Hashable, Sendable {
     case mic
     /// Copied from an instrument take's rendered audio (`tk_…` id, provenance only).
     case take(takeId: String)
+    /// Imported from an arbitrary audio file the user picked in the file browser — the original
+    /// file name is kept only for the "from <name>" label. The audio was transcoded + copied into
+    /// the samples folder, so the external file never needs to exist again (like `.take`, and no
+    /// grid until auto-detect/tap-tempo sets one).
+    case file(originalName: String)
 }
 
 extension StudioSource: Codable {
-    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId }
+    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId, originalName }
 
     /// Lenient: an unknown/missing `type` (a future source kind read by this build) degrades to
     /// `.mic` — generic "recorded audio" provenance. The sample's FILE is what matters and it
@@ -57,6 +62,8 @@ extension StudioSource: Codable {
                           endMs: (try? c?.decode(Int.self, forKey: .endMs)) ?? 0)
         case "take":
             self = .take(takeId: (try? c?.decode(String.self, forKey: .takeId)) ?? "")
+        case "file":
+            self = .file(originalName: (try? c?.decode(String.self, forKey: .originalName)) ?? "")
         default:
             self = .mic
         }
@@ -75,6 +82,9 @@ extension StudioSource: Codable {
         case .take(let takeId):
             try c.encode("take", forKey: .type)
             try c.encode(takeId, forKey: .takeId)
+        case .file(let originalName):
+            try c.encode("file", forKey: .type)
+            try c.encode(originalName, forKey: .originalName)
         }
     }
 }
@@ -457,15 +467,24 @@ enum InstrumentKey: String, Codable, CaseIterable, Hashable, Sendable {
 /// One played note inside a take. Times are ms measured from BEAT 1 — the end of the count-in
 /// (spec §4/§7): the same anchor ScoreQuantizer snaps to, so the score, the replay, and the MIDI
 /// export all agree on where the music starts. `note`/`velocity` are raw MIDI (0–127).
+/// How a note is spelled on the staff (spec §7 editing). Absent on an event ⇒ DERIVE the spelling
+/// (C-major sharps: a black key is the natural-below + ♯). An explicit value overrides that so an
+/// EDITED note can read as a flat (E♭, not D♯). DISPLAY-ONLY — the MIDI note is the sound, so the
+/// MIDI/PDF exports (SMF writes raw MIDI numbers) are unaffected by spelling.
+enum Accidental: String, Codable, Hashable, Sendable { case natural, sharp, flat }
+
 struct StudioNoteEvent: Codable, Hashable, Sendable {
     var onMs: Int
     var offMs: Int
     var note: Int
     var velocity: Int
+    /// Optional spelling override (nil ⇒ derived). Additive: old builds ignore the extra key.
+    var accidental: Accidental?
 
-    enum CodingKeys: String, CodingKey { case onMs, offMs, note, velocity }
-    init(onMs: Int, offMs: Int, note: Int, velocity: Int) {
-        self.onMs = onMs; self.offMs = offMs; self.note = note; self.velocity = velocity
+    enum CodingKeys: String, CodingKey { case onMs, offMs, note, velocity, accidental }
+    init(onMs: Int, offMs: Int, note: Int, velocity: Int, accidental: Accidental? = nil) {
+        self.onMs = onMs; self.offMs = offMs; self.note = note
+        self.velocity = velocity; self.accidental = accidental
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -473,6 +492,7 @@ struct StudioNoteEvent: Codable, Hashable, Sendable {
         offMs = (try? c.decode(Int.self, forKey: .offMs)) ?? 0
         note = (try? c.decode(Int.self, forKey: .note)) ?? 0
         velocity = (try? c.decode(Int.self, forKey: .velocity)) ?? 0
+        accidental = try? c.decode(Accidental.self, forKey: .accidental)
     }
 }
 
@@ -493,15 +513,24 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     var events: [StudioNoteEvent] = []
     var durationMs: Int = 0
     var createdAt: Double = 0
+    /// User-EDITED note stream (spec §7 editing). nil ⇒ never edited: the score/replay/MIDI derive
+    /// from raw `events` (so quantizer improvements still apply). Non-nil ⇒ the score is the source
+    /// of truth for this take — score/replay/MIDI read THIS instead. Additive: old builds drop it.
+    var editedEvents: [StudioNoteEvent]?
+
+    /// The events the score, replay, and exports read: the edited stream once the user has touched
+    /// the score, else the raw performance.
+    var scoreEvents: [StudioNoteEvent] { editedEvents ?? events }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, instrument, fileName, bpm, events, durationMs, createdAt
+        case id, name, instrument, fileName, bpm, events, durationMs, createdAt, editedEvents
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
          bpm: Double = 120, events: [StudioNoteEvent] = [], durationMs: Int = 0,
-         createdAt: Double = 0) {
+         createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
-        self.bpm = bpm; self.events = events; self.durationMs = durationMs; self.createdAt = createdAt
+        self.bpm = bpm; self.events = events; self.durationMs = durationMs
+        self.createdAt = createdAt; self.editedEvents = editedEvents
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -514,6 +543,8 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
             .compactMap(\.value)
         durationMs = (try? c.decode(Int.self, forKey: .durationMs)) ?? 0
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        editedEvents = (try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .editedEvents))?
+            .compactMap(\.value)
     }
 }
 
@@ -547,6 +578,39 @@ struct StudioCue: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+// MARK: - Slices (sample partition → performance pads)
+
+/// One slice of a SAMPLE — a start-marker cue point that plays until the NEXT slice's start (by
+/// time) or the sample's end (spec: slicing). Up to `maxSlots` per sample, store-enforced. `slot`
+/// is the stable pad index / colour (0–7); the play-out boundary is derived from sibling starts,
+/// NOT the slot, so pads may be dragged out of time order. A slice is an audition-only MARKER with
+/// a NON-riding id (like a cue) — "Make pad" bakes the region into a real `smp_` sample that then
+/// flows through Loops / the sequencer / use-as-sample under the normal studio-id fence.
+struct StudioSlice: Codable, Identifiable, Hashable, Sendable {
+    /// 8 slots (0–7) per sample — the hard cap the store enforces (matches the 8-pad grid).
+    static let maxSlots = 8
+
+    var id: String                    // "slc_…" (NOT a collection-riding prefix — see StudioFactory)
+    var sampleId: String
+    var slot: Int                     // 0–7, unique per (sampleId, slot); also the pad/colour index
+    var startMs: Int                  // slice IN point, SAMPLE-relative (the OUT is the next start)
+    var name: String?
+
+    enum CodingKeys: String, CodingKey { case id, sampleId, slot, startMs, name }
+    init(id: String, sampleId: String, slot: Int, startMs: Int, name: String? = nil) {
+        self.id = id; self.sampleId = sampleId; self.slot = slot
+        self.startMs = startMs; self.name = name
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newSliceId()
+        sampleId = (try? c.decode(String.self, forKey: .sampleId)) ?? ""
+        slot = (try? c.decode(Int.self, forKey: .slot)) ?? 0
+        startMs = (try? c.decode(Int.self, forKey: .startMs)) ?? 0
+        name = try? c.decode(String.self, forKey: .name)
+    }
+}
+
 // MARK: - Document (persistence envelope)
 
 /// The versioned studio document (`pocketdj-studio.json`). Every list decodes per-element
@@ -559,13 +623,16 @@ struct StudioDocument: Codable, Sendable {
     var patterns: [StudioPattern] = []
     var takes: [StudioTake] = []
     var cues: [StudioCue] = []
+    var slices: [StudioSlice] = []
 
-    enum CodingKeys: String, CodingKey { case schemaVersion, samples, loops, patterns, takes, cues }
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, samples, loops, patterns, takes, cues, slices
+    }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
-         cues: [StudioCue] = []) {
+         cues: [StudioCue] = [], slices: [StudioSlice] = []) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
-        self.patterns = patterns; self.takes = takes; self.cues = cues
+        self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -579,6 +646,8 @@ struct StudioDocument: Codable, Sendable {
         takes = ((try? c.decode([StudioLossyBox<StudioTake>].self, forKey: .takes)) ?? [])
             .compactMap(\.value)
         cues = ((try? c.decode([StudioLossyBox<StudioCue>].self, forKey: .cues)) ?? [])
+            .compactMap(\.value)
+        slices = ((try? c.decode([StudioLossyBox<StudioSlice>].self, forKey: .slices)) ?? [])
             .compactMap(\.value)
     }
 }
@@ -594,6 +663,9 @@ enum StudioFactory {
     /// Cues are deliberately NOT in `studioPrefixes`: a cue never rides a collection id array,
     /// so the rip/realize guards must not treat `cue_` as a routable studio item.
     static func newCueId() -> String { "cue_" + uid() }
+    /// Slices are audition-only MARKERS on a sample — like `cue_`, NEVER in `studioPrefixes` (a
+    /// slice id never rides a collection array; "Make pad" bakes a real `smp_` sample instead).
+    static func newSliceId() -> String { "slc_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore

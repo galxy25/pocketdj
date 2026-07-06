@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // MARK: - Studio ▸ Instruments (spec §1/§7)
 //
@@ -29,6 +30,8 @@ struct StudioInstrumentsView: View {
     /// Transient inline notice (download hints, start-failure reasons). Inline text, not an
     /// alert — these are advisory, and alerts would fight the record flow.
     @State private var notice: String?
+    /// The live staff is in edit mode (tap-to-place/select on the free-play score).
+    @State private var liveEditing = false
 
     var body: some View {
         ScrollView {
@@ -39,6 +42,7 @@ struct StudioInstrumentsView: View {
                 // contract (2 octaves don't fit a 390 pt screen at playable key widths).
                 PianoKeysView()
                     .frame(height: 200)
+                liveStaffSection
                 takesLink
                 packsSection
                 midiSection
@@ -273,6 +277,92 @@ struct StudioInstrumentsView: View {
     }
 
     private func defaultTakeName() -> String { "Take \(studio.takes.count + 1)" }
+
+    // MARK: Live editable staff (spec §7 "one editable staff")
+
+    /// A single staff that fills in as you play (the always-on `InstrumentEngine.liveEvents`) and is
+    /// tap-editable in place — the SAME `ScoreEditorView` a saved take uses. "Save" files it as a
+    /// take; "Clear" resets it. Free-play has no click, so it renders at 120 BPM.
+    @ViewBuilder
+    private var liveStaffSection: some View {
+        let live = instruments.liveEvents
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Label("Live score", systemImage: "music.quarternote.3")
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                Spacer(minLength: 0)
+                if !live.isEmpty {
+                    Button { liveEditing.toggle() } label: {
+                        Label(liveEditing ? "Done" : "Edit", systemImage: liveEditing ? "checkmark" : "pencil")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered).tint(liveEditing ? Theme.accent2 : Theme.accent)
+                    .accessibilityIdentifier("live-edit")
+                    Button { saveLiveAsTake() } label: {
+                        Label("Save", systemImage: "square.and.arrow.down").font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered).tint(Theme.accent)
+                    .accessibilityIdentifier("live-save")
+                    Button(role: .destructive) {
+                        instruments.clearLiveEvents(); liveEditing = false
+                    } label: {
+                        Label("Clear", systemImage: "trash").font(.caption.weight(.semibold)).labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.bordered).tint(Theme.danger)
+                    .accessibilityIdentifier("live-clear")
+                }
+            }
+            if live.isEmpty && !liveEditing {
+                Text("Play the keys (or a connected MIDI keyboard) — your notes appear here as a "
+                     + "score you can edit and save as a take.")
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
+            } else {
+                ScoreEditorView(events: live, bpm: 120,
+                                instrument: instruments.currentInstrument ?? .piano,
+                                title: "Live", editing: liveEditing,
+                                onEdit: { instruments.setLiveEvents($0) })
+            }
+        }
+        .padding(12)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .accessibilityIdentifier("live-staff")
+    }
+
+    /// File the live staff as a take. Replay plays the EVENTS (audible via the sampler), so the take
+    /// is fully playable; the audio file is a silent placeholder (kept so launch reconcile doesn't
+    /// prune the record) — synthesizing real note audio offline is a follow-up. Clears the staff.
+    private func saveLiveAsTake() {
+        let live = instruments.liveEvents
+        guard !live.isEmpty, let takesDir = try? StudioFolders.appRoot(.takes) else {
+            notice = "Couldn't save — the takes folder isn't reachable."
+            return
+        }
+        let takeId = StudioFactory.newTakeId()
+        let fileName = StudioFolders.fileName(.takes, id: takeId)
+        let dur = max(500, live.map(\.offMs).max() ?? 500)
+        writePlaceholderTakeAudio(to: takesDir.appendingPathComponent(fileName), durationMs: dur)
+        studio.addTake(StudioTake(id: takeId, name: defaultTakeName(),
+                                  instrument: instruments.currentInstrument ?? .piano,
+                                  fileName: fileName, bpm: 120, events: live, durationMs: dur,
+                                  createdAt: Date().timeIntervalSince1970 * 1000))
+        instruments.clearLiveEvents()
+        liveEditing = false
+        notice = "Saved to Takes."
+    }
+
+    /// A silent AAC placeholder so the take file exists (reconcile keeps it; replay uses events).
+    private func writePlaceholderTakeAudio(to url: URL, durationMs: Int) {
+        let sr = 44_100.0
+        let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                                        AVSampleRateKey: sr, AVNumberOfChannelsKey: 1]
+        try? FileManager.default.removeItem(at: url)
+        guard let file = try? AVAudioFile(forWriting: url, settings: settings),
+              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                         frameCapacity: AVAudioFrameCount(sr * Double(durationMs) / 1000))
+        else { return }
+        buf.frameLength = buf.frameCapacity   // fresh buffer = silence
+        try? file.write(from: buf)
+    }
 
     // MARK: Takes (pushed list — the layout call: the list + score live one push away)
 
