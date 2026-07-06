@@ -61,6 +61,39 @@ final class ScoreLayoutTests: XCTestCase {
         XCTAssertFalse(ScoreLayout.staffPosition(midi: 60, clef: .treble).sharp)
     }
 
+    func testSpelledPositionHonoursOverrides() {
+        // No override ⇒ derived (E4 natural, C#4 as sharp-of-C).
+        let eNat = ScoreLayout.spelledPosition(midi: 64, clef: .treble, accidental: nil)
+        XCTAssertEqual(eNat.position, 0)             // E4 bottom line
+        XCTAssertEqual(eNat.accidental, .natural)
+        let cSharp = ScoreLayout.spelledPosition(midi: 61, clef: .treble, accidental: nil)
+        XCTAssertEqual(cSharp.position, -2)
+        XCTAssertEqual(cSharp.accidental, .sharp)
+
+        // .flat on MIDI 63 (D#/Eb) ⇒ the E LINE + ♭ (E♭), not the D♯ line.
+        let eFlat = ScoreLayout.spelledPosition(midi: 63, clef: .treble, accidental: .flat)
+        XCTAssertEqual(eFlat.position, ScoreLayout.staffPosition(midi: 64, clef: .treble).position)
+        XCTAssertEqual(eFlat.accidental, .flat)
+
+        // .sharp on MIDI 61 ⇒ the C line + ♯ (C♯).
+        let cS = ScoreLayout.spelledPosition(midi: 61, clef: .treble, accidental: .sharp)
+        XCTAssertEqual(cS.position, ScoreLayout.staffPosition(midi: 60, clef: .treble).position)
+        XCTAssertEqual(cS.accidental, .sharp)
+
+        // .natural on a white key ⇒ no glyph; on a black key it falls back to the derived sharp.
+        XCTAssertEqual(ScoreLayout.spelledPosition(midi: 60, clef: .treble, accidental: .natural).accidental, .natural)
+        XCTAssertEqual(ScoreLayout.spelledPosition(midi: 61, clef: .treble, accidental: .natural).accidental, .sharp)
+    }
+
+    func testQuantizerCarriesEventAccidentalIntoSpellings() {
+        // An event spelled flat surfaces as a per-note override on the score item.
+        let doc = ScoreQuantizer.quantize(
+            events: [StudioNoteEvent(onMs: 0, offMs: 240, note: 63, velocity: 96, accidental: .flat)],
+            bpm: 120, instrument: .piano)
+        let item = doc.measures.first?.items.first { if case .notes = $0.kind { return true }; return false }
+        XCTAssertEqual(item?.spellings[63], .flat)
+    }
+
     // MARK: Staves / clefs
 
     func testGrandStaffSystemDrawsBothClefs() {

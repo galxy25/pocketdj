@@ -37,9 +37,12 @@ enum ScoreGlyph: Sendable {
     case flags(tip: CGPoint, count: Int, stemUp: Bool, spacing: CGFloat)
     /// Augmentation dot (also the F-clef's two dots).
     case dot(center: CGPoint, radius: CGFloat)
-    /// Sharp sign centered on its note head's y (the only accidental — black keys are always
-    /// spelled as sharps, matching `ScoreLayout.staffPosition`'s C-major/sharps spelling).
+    /// Sharp sign centered on its note head's y. The DERIVED spelling (no override) uses only this
+    /// — black keys spell as the natural-below + ♯, matching `ScoreLayout.staffPosition`.
     case sharp(center: CGPoint, size: CGFloat)
+    /// Flat sign centered on its note head's y — emitted only for a note whose spelling was
+    /// OVERRIDDEN to `.flat` (score editing, spec §7). Never produced by the derived spelling.
+    case flat(center: CGPoint, size: CGFloat)
     /// A rest. `center` = the staff's MIDDLE line at the item's x; the shape per duration is
     /// the renderer's (always the BASE duration — dotted rests get a separate `.dot` glyph).
     case rest(NoteDuration, center: CGPoint, spacing: CGFloat)
@@ -111,6 +114,27 @@ enum ScoreLayout {
         let diatonic = octave * 7 + letter[pc]
         let reference = clef == .treble ? 30 : 18   // E4 / G2 (each clef's bottom line)
         return (diatonic - reference, sharps[pc])
+    }
+
+    /// The accidental glyph a note's spelling resolves to. `.natural` ⇒ nothing drawn (v1 has no
+    /// key signatures, so a white-key note needs no ♮).
+    enum RenderedAccidental: Sendable { case natural, sharp, flat }
+
+    /// Staff position + accidental glyph, honouring an optional spelling OVERRIDE. Without one it
+    /// derives C-major sharps (`staffPosition`). `.flat`/`.sharp` put the head on the natural staff
+    /// line ABOVE/BELOW and draw the accidental — so E♭ reads as the E line + ♭, not the D♯ line.
+    /// `.natural` on a black-key MIDI (an inconsistent override) falls back to the derived spelling.
+    nonisolated static func spelledPosition(midi: Int, clef: StaffRole, accidental: Accidental?)
+        -> (position: Int, accidental: RenderedAccidental) {
+        switch accidental {
+        case .flat:
+            return (staffPosition(midi: midi + 1, clef: clef).position, .flat)
+        case .sharp:
+            return (staffPosition(midi: midi - 1, clef: clef).position, .sharp)
+        case .natural, nil:
+            let base = staffPosition(midi: midi, clef: clef)
+            return (base.position, base.sharp ? .sharp : .natural)
+        }
     }
 
     // MARK: Pagination
@@ -237,7 +261,7 @@ enum ScoreLayout {
             for strip in strips {
                 let mine = notes.filter { plan.staff(forNote: $0) == strip.role }
                 guard !mine.isEmpty else { continue }
-                appendChord(mine, clef: strip.role, top: strip.top, x: x,
+                appendChord(mine, spellings: item.spellings, clef: strip.role, top: strip.top, x: x,
                             duration: item.duration, spacing: s, into: &glyphs)
             }
         }
@@ -246,7 +270,8 @@ enum ScoreLayout {
     /// Heads + sharps + ledger lines + dots + one shared stem (+ flags) for the notes of one
     /// item that landed on one staff. v1 simplifications, on purpose: all heads share the
     /// chord's x (no second-interval offset), and dots sit beside every head.
-    private nonisolated static func appendChord(_ notes: [Int], clef: StaffRole, top: CGFloat,
+    private nonisolated static func appendChord(_ notes: [Int], spellings: [Int: Accidental],
+                                                clef: StaffRole, top: CGFloat,
                                                 x: CGFloat, duration: NoteDuration,
                                                 spacing s: CGFloat,
                                                 into glyphs: inout [ScoreGlyph]) {
@@ -257,12 +282,14 @@ enum ScoreLayout {
         var ledgers = Set<Int>()
 
         for note in notes.sorted() {
-            let sp = staffPosition(midi: note, clef: clef)
+            let sp = spelledPosition(midi: note, clef: clef, accidental: spellings[note])
             let hy = bottomLine - CGFloat(sp.position) * s / 2
             positions.append(sp.position)
             headYs.append(hy)
-            if sp.sharp {
-                glyphs.append(.sharp(center: CGPoint(x: x - 2.6 * rx, y: hy), size: s))
+            switch sp.accidental {
+            case .sharp: glyphs.append(.sharp(center: CGPoint(x: x - 2.6 * rx, y: hy), size: s))
+            case .flat:  glyphs.append(.flat(center: CGPoint(x: x - 2.6 * rx, y: hy), size: s))
+            case .natural: break
             }
             glyphs.append(.noteHead(center: CGPoint(x: x, y: hy), rx: rx, ry: ry,
                                     filled: duration.filledHead))
@@ -375,6 +402,17 @@ enum ScoreRenderer {
                 ctx.addLine(to: CGPoint(x: c.x + 0.72 * s, y: c.y + dy - 0.15 * s))
                 ctx.strokePath()
             }
+
+        case .flat(let c, let s):
+            // A tall left ascender + a bowl curving out to the right and back — the ♭ skeleton.
+            ctx.setLineWidth(1.0)
+            ctx.move(to: CGPoint(x: c.x - 0.30 * s, y: c.y - 1.15 * s))
+            ctx.addLine(to: CGPoint(x: c.x - 0.30 * s, y: c.y + 0.55 * s))
+            ctx.strokePath()
+            ctx.move(to: CGPoint(x: c.x - 0.30 * s, y: c.y - 0.15 * s))
+            ctx.addQuadCurve(to: CGPoint(x: c.x - 0.30 * s, y: c.y + 0.55 * s),
+                             control: CGPoint(x: c.x + 0.60 * s, y: c.y + 0.05 * s))
+            ctx.strokePath()
 
         case .rest(let duration, let c, let s):
             drawRest(duration, at: c, spacing: s, in: ctx)

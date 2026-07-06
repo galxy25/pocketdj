@@ -467,15 +467,24 @@ enum InstrumentKey: String, Codable, CaseIterable, Hashable, Sendable {
 /// One played note inside a take. Times are ms measured from BEAT 1 — the end of the count-in
 /// (spec §4/§7): the same anchor ScoreQuantizer snaps to, so the score, the replay, and the MIDI
 /// export all agree on where the music starts. `note`/`velocity` are raw MIDI (0–127).
+/// How a note is spelled on the staff (spec §7 editing). Absent on an event ⇒ DERIVE the spelling
+/// (C-major sharps: a black key is the natural-below + ♯). An explicit value overrides that so an
+/// EDITED note can read as a flat (E♭, not D♯). DISPLAY-ONLY — the MIDI note is the sound, so the
+/// MIDI/PDF exports (SMF writes raw MIDI numbers) are unaffected by spelling.
+enum Accidental: String, Codable, Hashable, Sendable { case natural, sharp, flat }
+
 struct StudioNoteEvent: Codable, Hashable, Sendable {
     var onMs: Int
     var offMs: Int
     var note: Int
     var velocity: Int
+    /// Optional spelling override (nil ⇒ derived). Additive: old builds ignore the extra key.
+    var accidental: Accidental?
 
-    enum CodingKeys: String, CodingKey { case onMs, offMs, note, velocity }
-    init(onMs: Int, offMs: Int, note: Int, velocity: Int) {
-        self.onMs = onMs; self.offMs = offMs; self.note = note; self.velocity = velocity
+    enum CodingKeys: String, CodingKey { case onMs, offMs, note, velocity, accidental }
+    init(onMs: Int, offMs: Int, note: Int, velocity: Int, accidental: Accidental? = nil) {
+        self.onMs = onMs; self.offMs = offMs; self.note = note
+        self.velocity = velocity; self.accidental = accidental
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -483,6 +492,7 @@ struct StudioNoteEvent: Codable, Hashable, Sendable {
         offMs = (try? c.decode(Int.self, forKey: .offMs)) ?? 0
         note = (try? c.decode(Int.self, forKey: .note)) ?? 0
         velocity = (try? c.decode(Int.self, forKey: .velocity)) ?? 0
+        accidental = try? c.decode(Accidental.self, forKey: .accidental)
     }
 }
 
