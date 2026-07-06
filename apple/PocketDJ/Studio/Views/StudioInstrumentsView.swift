@@ -104,8 +104,7 @@ struct StudioInstrumentsView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(selected ? Theme.bg : Theme.fg)
                     .lineLimit(1).minimumScaleFactor(0.7)
-                chipStatus(selected: selected, downloaded: downloaded,
-                           progress: progress, bytes: pack?.bytes ?? 0)
+                chipStatus(selected: selected, downloaded: downloaded, progress: progress)
             }
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
@@ -123,7 +122,7 @@ struct StudioInstrumentsView: View {
 
     /// The chip's one-line status: Loaded / spinner / download progress / "Get · size".
     @ViewBuilder
-    private func chipStatus(selected: Bool, downloaded: Bool, progress: Double?, bytes: Int) -> some View {
+    private func chipStatus(selected: Bool, downloaded: Bool, progress: Double?) -> some View {
         if selected {
             if instruments.isLoadingInstrument {
                 ProgressView().controlSize(.mini)
@@ -136,8 +135,9 @@ struct StudioInstrumentsView: View {
         } else if downloaded {
             Text("Ready").font(.caption2).foregroundStyle(Theme.fgDim)
         } else {
-            Text("Get" + (bytes > 0 ? " · \(Self.sizeString(bytes))" : ""))
-                .font(.caption2).foregroundStyle(Theme.accent2)
+            // No per-chip size — the download is one shared bank, sized once in the Sound packs
+            // row below; advertising 31 MB on every chip implied seven separate downloads.
+            Text("Get").font(.caption2).foregroundStyle(Theme.accent2)
         }
     }
 
@@ -149,10 +149,12 @@ struct StudioInstrumentsView: View {
             return
         }
         guard downloaded else {
-            // The download CTA: first tap starts the bank download (progress shows on the
-            // chip AND the pack row — same `progressByBank` entry); tap again once ready.
+            // The download CTA: first tap starts the shared sound-bank download (progress shows
+            // on the chip AND the bank row — same `progressByBank` entry); tap again once ready.
+            // Say "sound bank … all instruments" so it's clear this one download enables every
+            // instrument, not just this chip.
             packs.download(pack)
-            notice = "Downloading \(pack.name) — tap again when it's ready."
+            notice = "Downloading the sound bank (enables all instruments) — tap again when it's ready."
             return
         }
         guard let url = packs.localBankURL(pack) else {
@@ -311,10 +313,17 @@ struct StudioInstrumentsView: View {
                     }
                 }
             } else {
+                // ONE row per sound BANK, not per instrument. The seven GM instruments are all
+                // presets inside a single 32 MB SoundFont, so there is exactly one download —
+                // and it enables every instrument at once. Showing seven "Get" buttons made
+                // downloading Piano look like it also grabbed everything else; grouping by
+                // bankKey makes the single shared download honest (and still degrades correctly
+                // if a future manifest gives an instrument its own bank → its own row).
+                let groups = bankGroups
                 VStack(spacing: 0) {
-                    ForEach(packs.packs) { pack in
-                        packRow(pack)
-                        if pack.id != packs.packs.last?.id { Divider().overlay(Theme.border) }
+                    ForEach(groups, id: \.key) { group in
+                        bankRow(group)
+                        if group.key != groups.last?.key { Divider().overlay(Theme.border) }
                     }
                 }
                 .background(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).fill(Theme.bgRaised))
@@ -328,45 +337,69 @@ struct StudioInstrumentsView: View {
         }
     }
 
-    private func packRow(_ pack: InstrumentPack) -> some View {
-        HStack(spacing: 10) {
+    /// Packs grouped by the bank they share, preserving manifest order. One entry per distinct
+    /// bank file → one download row. In v1 every instrument shares one bank, so this collapses to
+    /// a single row covering all seven.
+    private var bankGroups: [(key: String, packs: [InstrumentPack])] {
+        var order: [String] = []
+        var byKey: [String: [InstrumentPack]] = [:]
+        for pack in packs.packs where !pack.bankKey.isEmpty {
+            if byKey[pack.bankKey] == nil { order.append(pack.bankKey) }
+            byKey[pack.bankKey, default: []].append(pack)
+        }
+        return order.map { (key: $0, packs: byKey[$0]!) }
+    }
+
+    /// A single downloadable sound bank. The representative pack (first in the group) drives the
+    /// shared per-bank download/progress/delete state and carries the a11y ids.
+    private func bankRow(_ group: (key: String, packs: [InstrumentPack])) -> some View {
+        let rep = group.packs[0]
+        let bytes = packs.bank(forKey: group.key)?.bytes ?? rep.bytes
+        // One instrument → its own name; many → "Instrument sound bank" so it never reads as if
+        // one download only grabbed Piano.
+        let title = group.packs.count == 1 ? rep.name : "Instrument sound bank"
+        let subtitle: String = {
+            if let err = packs.error(for: rep) { return err }
+            let size = bytes > 0 ? Self.sizeString(bytes) : ""
+            if group.packs.count == 1 { return size }
+            let names = group.packs.map(\.name).joined(separator: ", ")
+            // "Piano, Violin, … · 31 MB" — makes the one-download-for-all reality explicit.
+            return size.isEmpty ? names : "\(names) · \(size)"
+        }()
+        return HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(pack.name).font(.subheadline).foregroundStyle(Theme.fg).lineLimit(1)
-                if let err = packs.error(for: pack) {
-                    Text(err).font(.caption2).foregroundStyle(Theme.danger)
-                } else {
-                    Text(pack.bytes > 0 ? Self.sizeString(pack.bytes) : pack.instrument.displayName)
-                        .font(.caption2).foregroundStyle(Theme.fgDim)
-                }
+                Text(title).font(.subheadline).foregroundStyle(Theme.fg).lineLimit(1)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(packs.error(for: rep) != nil ? Theme.danger : Theme.fgDim)
+                    .lineLimit(2)
             }
             Spacer()
-            if let progress = packs.progress(for: pack) {
-                // Downloads are per-BANK: two packs sharing one bank show the same bar.
-                ProgressView(value: progress)
-                    .frame(width: 90)
-                Button { packs.cancelDownload(pack) } label: {
+            if let progress = packs.progress(for: rep) {
+                ProgressView(value: progress).frame(width: 90)
+                Button { packs.cancelDownload(rep) } label: {
                     Image(systemName: "xmark.circle")
                 }
                 .buttonStyle(.borderless)
-                .accessibilityIdentifier("pack-cancel-\(pack.id)")
-            } else if packs.isDownloaded(pack) {
+                .accessibilityIdentifier("pack-cancel-\(rep.id)")
+            } else if packs.isDownloaded(rep) {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accent)
                 Button(role: .destructive) {
-                    // Deleting the BANK flips every pack sharing it back to downloadable —
+                    // Deleting the BANK flips every instrument sharing it back to downloadable —
                     // banks are re-downloadable, which is why deletion is allowed at all.
-                    packs.deleteBank(bankKey: pack.bankKey)
+                    packs.deleteBank(bankKey: group.key)
                 } label: {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
                 .tint(Theme.danger)
-                .accessibilityIdentifier("pack-delete-\(pack.id)")
+                .accessibilityIdentifier("pack-delete-\(rep.id)")
             } else {
-                Button { packs.download(pack) } label: {
+                Button { packs.download(rep) } label: {
                     Label("Get", systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderless)
-                .accessibilityIdentifier("pack-download-\(pack.id)")
+                .accessibilityIdentifier("pack-download-\(rep.id)")
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)

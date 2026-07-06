@@ -2018,10 +2018,11 @@ The **Instruments** sub-tab turns the app into a small **MIDI instrument**. Seve
 **piano, violin, bass guitar, acoustic guitar, trumpet, clarinet, harp** — play from a **wired / USB
 MIDI keyboard** or the **on-screen keys**. (Network and Bluetooth MIDI aren't in this version.)
 
-**The sounds download as packs.** The first pack pulls a **shared ~32 MB General MIDI sound bank**
-(**GeneralUser GS** — its license asks for credit, so the packs screen shows the attribution); every
-pack after that is **instant**, because they all share that one bank. Downloaded packs play
-**offline**, and you delete them from the packs screen or Settings ▸ Storage.
+**The sounds are one download.** All seven voices live in a single **~32 MB General MIDI sound bank**
+(**GeneralUser GS** — its license asks for credit, so the packs screen shows the attribution), so the
+**Sound packs** section shows **one row** — get it once and **every instrument** is ready. (Tapping a
+locked instrument kicks off that same shared download.) The bank plays **offline**, and you delete it
+from the packs screen or Settings ▸ Storage.
 
 **Recording a take.** A **metronome click** and a **one-bar count-in** (both on by default, both
 switchable) lead you in, then you play. The Studio captures the **actual notes** — not just the audio
