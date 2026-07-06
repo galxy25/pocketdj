@@ -75,6 +75,23 @@ struct StudioNewSampleFromTrackView: View {
     @State private var carving = false
     @State private var carveError: String?
 
+    /// The selected track has stems (downloaded OR stemmed server-side) → the stem-source toggle shows.
+    @State private var stemsAvailable = false
+    /// Stems already on the device (no download needed at carve time).
+    @State private var stemsDownloaded = false
+    /// Carve a MIX of the selected stems instead of the full track.
+    @State private var stemMode = false
+    /// Which stems feed the mix (canonical names; the UI keeps ≥1 selected).
+    @State private var enabledStems: Set<String> = Set(StemPlayer.stems)
+
+    /// Display order + labels/icons for the 4 stems (the model keeps them as bare strings).
+    private static let stemDisplay: [(key: String, label: String, icon: String)] = [
+        ("drums", "Drums", "metronome"),
+        ("bass", "Bass", "waveform"),
+        ("other", "Other", "guitars"),
+        ("vocals", "Vocals", "music.mic"),
+    ]
+
     /// The minimum carveable window — a zero-frame carve is refused by `StudioRender` anyway; the
     /// floor keeps the handles from crossing (the sample-editor trim contract).
     private static let minWindowMs = 50
@@ -231,6 +248,7 @@ struct StudioNewSampleFromTrackView: View {
                 waveformStrip(song)
                 transport(song)
                 handleControls(song)
+                stemSection(song)
                 carveBar(song)
             case .needsBurn:
                 burnPrompt(song)
@@ -406,6 +424,58 @@ struct StudioNewSampleFromTrackView: View {
         }
     }
 
+    // MARK: Stem source (mix a subset of the track's separated stems)
+
+    @ViewBuilder
+    private func stemSection(_ song: IndexSong) -> some View {
+        if stemsAvailable {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(isOn: $stemMode) {
+                    Label("Stem source", systemImage: "square.stack.3d.up")
+                        .font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
+                }
+                .tint(Theme.accent)
+                .accessibilityIdentifier("sample-stem-mode")
+
+                if stemMode {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)],
+                              alignment: .leading, spacing: 8) {
+                        ForEach(Self.stemDisplay, id: \.key) { st in
+                            stemChip(st)
+                        }
+                    }
+                    Text(stemsDownloaded
+                         ? "Carves a mix of the selected stems for this region."
+                         : "Carves a mix of the selected stems — they’ll download first.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private func stemChip(_ st: (key: String, label: String, icon: String)) -> some View {
+        let on = enabledStems.contains(st.key)
+        return Button {
+            if on {
+                if enabledStems.count > 1 { enabledStems.remove(st.key) }   // never disable the last
+            } else {
+                enabledStems.insert(st.key)
+            }
+        } label: {
+            Label(st.label, systemImage: st.icon)
+                .font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background((on ? Theme.accent : Theme.fgDim).opacity(on ? 0.20 : 0.10), in: Capsule())
+                .overlay(Capsule().stroke(on ? Theme.accent.opacity(0.5) : .clear, lineWidth: 1))
+                .foregroundStyle(on ? Theme.accent : Theme.fgDim)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("sample-stem-\(st.key)")
+    }
+
     // MARK: Carve
 
     private func carveBar(_ song: IndexSong) -> some View {
@@ -494,6 +564,12 @@ struct StudioNewSampleFromTrackView: View {
         fileStartMs = 0
         carveError = nil
         guard let song = selectedSong else { phase = .idle; return }
+        // Stem availability for this song: downloaded stems (offline) OR stemmed server-side
+        // (download-on-carve). Reset the subset to all-on for each new selection.
+        stemsDownloaded = burns.stemsBurned(forSong: song.id)
+        stemsAvailable = stemsDownloaded || rips.isStemmed(song.id)
+        stemMode = false
+        enabledStems = Set(StemPlayer.stems)
         phase = .resolving
         // A fresh region: 0 → the first ~8 s (or the whole song when it's shorter). A sample is
         // short, so an 8 s default is a useful starting window the user tightens.
@@ -557,6 +633,7 @@ struct StudioNewSampleFromTrackView: View {
     // MARK: - Carve
 
     private func carve(_ song: IndexSong) async {
+        if stemMode { await carveStems(song); return }
         carving = true
         carveError = nil
         defer { carving = false }
@@ -596,6 +673,56 @@ struct StudioNewSampleFromTrackView: View {
         } catch {
             carveError = "Couldn’t carve this region. Try a slightly different in/out point."
         }
+    }
+
+    /// Carve a MIX of the selected stems for the region. Stems are SONG-RELATIVE, so the window is
+    /// `[regionStartMs, regionEndMs]` as typed — no album offset (unlike the single-file carve). Local
+    /// stems are used directly; if not yet downloaded they're fetched on demand (`burnStems`).
+    private func carveStems(_ song: IndexSong) async {
+        carving = true
+        carveError = nil
+        defer { carving = false }
+        var resolved = burns.localStemURLs(forSong: song.id)
+        if resolved == nil { resolved = await burns.burnStems(forSong: song.id) }
+        guard let stems = resolved else {
+            carveError = "Couldn’t get this track’s stems. Make sure it’s stemmed, then try again."
+            return
+        }
+        defer { stems.release?() }
+        // Selected subset in canonical order; the UI guarantees ≥1 enabled.
+        let selected = StemPlayer.stems.filter { enabledStems.contains($0) }.compactMap { stems.urls[$0] }
+        guard !selected.isEmpty else { carveError = "Pick at least one stem to carve."; return }
+        guard let dest = StudioFolders.folder(.samples, bookmark: studio.bookmark(for: .samples)) else {
+            carveError = "Your samples folder isn’t reachable right now (Settings ▸ Storage)."
+            return
+        }
+        defer { dest.release?() }
+        let sampleId = StudioFactory.newSampleId()
+        let fileName = StudioFolders.fileName(.samples, id: sampleId)
+        let destURL = dest.url.appendingPathComponent(fileName)
+        do {
+            let carved = try await StudioRender.shared.carveStemMix(
+                stemURLs: selected, startMs: regionStartMs, endMs: regionEndMs, to: destURL)
+            let grid = await inheritedGrid(song: song)
+            studio.addSample(StudioSample(
+                id: sampleId, name: stemSampleName(song), fileName: fileName,
+                wasUserFolder: dest.isUserFolder,
+                createdAt: Date().timeIntervalSince1970 * 1000,
+                durationMs: carved.durationMs,
+                source: .track(songId: song.id, startMs: regionStartMs, endMs: regionEndMs),
+                grid: grid, edit: .neutral))
+            if let pid = previewId, engine.loadedSampleId == pid { engine.unloadSample() }
+            dismiss()
+        } catch {
+            carveError = "Couldn’t carve those stems. Try a different region or fewer stems."
+        }
+    }
+
+    /// "<song> · <stems>" — full set reads "stems", a subset lists the chosen names (drums+bass…).
+    private func stemSampleName(_ song: IndexSong) -> String {
+        let sel = StemPlayer.stems.filter { enabledStems.contains($0) }
+        let suffix = sel.count == StemPlayer.stems.count ? "stems" : sel.joined(separator: "+")
+        return "\(song.name) · \(suffix)"
     }
 
     /// The sample's inherited beat grid. FULL grid: the song's per-beat sidecar (song-relative ms),

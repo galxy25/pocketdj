@@ -300,6 +300,51 @@ final class StudioRenderTests: XCTestCase {
         }
     }
 
+    // MARK: Stem-mix carve (sum of selected stems)
+
+    func testCarveStemMixSumsSelectedStems() async throws {
+        // Two identical in-phase 0.5-amplitude sines: one stem ⇒ ~0.354 RMS, both summed ⇒ ~2×.
+        let a = try makeSineCAF(name: "stemA.caf", seconds: 1.0)
+        let b = try makeSineCAF(name: "stemB.caf", seconds: 1.0)
+        let one = dir.appendingPathComponent("one.m4a")
+        let both = dir.appendingPathComponent("both.m4a")
+        let rOne = try await StudioRender.shared.carveStemMix(stemURLs: [a], startMs: 0, endMs: 500, to: one)
+        let rBoth = try await StudioRender.shared.carveStemMix(stemURLs: [a, b], startMs: 0, endMs: 500, to: both)
+        XCTAssertEqual(rOne.frames, 22_050)          // the window is authoritative, frame-exact
+        XCTAssertEqual(rBoth.durationMs, 500)
+        let rmsOne = try fullRMS(one)
+        let rmsBoth = try fullRMS(both)
+        XCTAssertGreaterThan(rmsOne, 0.15, "a single stem must be audible")
+        XCTAssertEqual(rmsBoth / rmsOne, 2.0, accuracy: 0.35, "summing two in-phase stems ≈ doubles level")
+    }
+
+    func testCarveStemMixRejectsBadInput() async throws {
+        let a = try makeSineCAF(name: "stemA.caf", seconds: 1.0)
+        // No stems, and zero/reversed windows, all refuse — never a zero-frame schedule.
+        let cases: [(urls: [URL], s: Int, e: Int)] = [([], 0, 500), ([a], 500, 500), ([a], 700, 300)]
+        for c in cases {
+            do {
+                _ = try await StudioRender.shared.carveStemMix(stemURLs: c.urls, startMs: c.s, endMs: c.e,
+                                                               to: dir.appendingPathComponent("bad.m4a"))
+                XCTFail("stem mix (\(c.urls.count) urls, \(c.s)-\(c.e)) must throw")
+            } catch let err as StudioRenderError {
+                guard case .emptyWindow = err else { return XCTFail("expected .emptyWindow, got \(err)") }
+            }
+        }
+    }
+
+    private func fullRMS(_ url: URL) throws -> Double {
+        let buf = try StudioRender.decodeFileSync(url: url)
+        let n = Int(buf.frameLength), ch = Int(buf.format.channelCount)
+        guard n > 0 else { return 0 }
+        var sum = 0.0
+        for c in 0..<ch {
+            let p = buf.floatChannelData![c]
+            for i in 0..<n { sum += Double(p[i]) * Double(p[i]) }
+        }
+        return (sum / Double(n * ch)).squareRoot()
+    }
+
     // MARK: Failure latch — a throwing render never leaves a partial file
 
     func testThrowingRenderLeavesNoPartialFile() async throws {

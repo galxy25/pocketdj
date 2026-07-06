@@ -151,6 +151,19 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertTrue(store.cues.isEmpty)
     }
 
+    // MARK: Source provenance — .file round-trips; encoded form stays old-build-safe
+
+    func testFileSourceRoundTripsAndDegradesGracefully() throws {
+        let src = StudioSource.file(originalName: "Amen Break.wav")
+        let data = try JSONEncoder().encode(src)
+        XCTAssertEqual(try JSONDecoder().decode(StudioSource.self, from: data), src)
+        // Encoded as type:"file" + originalName — an OLD build with no .file case hits its
+        // hand-written default arm and degrades to .mic (the sample still plays; label is lost).
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "file")
+        XCTAssertEqual(obj["originalName"] as? String, "Amen Break.wav")
+    }
+
     // MARK: Cues — max 8, slot replace
 
     func testCueMaxEightAndSlotReplace() {
