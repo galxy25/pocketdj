@@ -457,33 +457,99 @@ struct StudioInstrumentsView: View {
     }
 }
 
-// MARK: - On-screen piano keys (2 octaves C3–C5)
+// MARK: - On-screen piano keys (6 octaves C1–C7, octave-scrollable)
 
-/// The PLAY surface: a scrollable two-octave keyboard (MIDI 48…72). Each key drives
-/// `InstrumentEngine.noteOn/noteOff` — the SAME pipeline as CoreMIDI input (spec §4), so a
-/// take records identically from either. Highlights render from `engine.pressedNotes` (the
-/// ~30 Hz coalesced set), so MIDI input and replay light the keys too, not just local touches.
+/// The PLAY surface: a horizontally scrollable six-octave keyboard (MIDI 24…96) that opens on
+/// C3. `<` / `>` buttons flank it and jump the view down / up a whole octave; on macOS the
+/// **left / right arrow keys** do the same (the keyboard also free-scrolls by touch/trackpad).
+/// Each key drives `InstrumentEngine.noteOn/noteOff` — the SAME pipeline as CoreMIDI input
+/// (spec §4), so a take records identically from either. Highlights render from
+/// `engine.pressedNotes` (the ~30 Hz coalesced set), so MIDI input and replay light the keys
+/// too, not just local touches.
 ///
-/// Sizing: white keys are a FIXED 44 pt wide (comfortable touch targets) inside a horizontal
-/// ScrollView — on iPhone portrait the keyboard scrolls, on iPad/macOS it mostly fits. Height
-/// follows the container (the Instruments tab gives it ~200 pt).
+/// Sizing: white keys are a FIXED 44 pt wide (comfortable touch targets); height follows the
+/// container (the Instruments tab gives it ~200 pt).
 struct PianoKeysView: View {
     @Environment(InstrumentEngine.self) private var instruments
 
-    /// C3…C5 inclusive (MIDI 60 = C4 — the same convention ScoreLayout documents).
-    var lowNote: Int = 48
-    var highNote: Int = 72
+    /// C1…C7 inclusive (MIDI 60 = C4 — the same convention ScoreLayout documents).
+    var lowNote: Int = 24
+    var highNote: Int = 96
+
+    /// The C we scroll to the leading edge; starts at C3 (48) — the natural playing register.
+    /// `<` / `>` move it one octave, clamped so a full octave always stays in view.
+    @State private var anchorC: Int = 48
 
     /// Pitch classes that are black keys (C#, D#, F#, G#, A#).
     private static let blackPCs: Set<Int> = [1, 3, 6, 8, 10]
     private static let whiteKeyWidth: CGFloat = 44
 
+    /// The C notes a button/arrow can anchor to — every octave except the very top one (so the
+    /// last position still shows a full octave rather than a sliver).
+    private var anchorCs: [Int] { Array(stride(from: lowNote, through: highNote - 12, by: 12)) }
+
     var body: some View {
-        GeometryReader { geo in
-            ScrollView(.horizontal, showsIndicators: false) {
-                keyboard(height: geo.size.height)
+        HStack(spacing: 6) {
+            octaveButton(symbol: "chevron.left", id: "piano-octave-down",
+                         disabled: anchorC <= (anchorCs.first ?? lowNote)) { shiftOctave(-12) }
+            GeometryReader { geo in
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        keyboard(height: geo.size.height)
+                    }
+                    // Programmatic octave jumps (buttons + arrow keys) animate to the anchor C;
+                    // free touch-scrolling in between is untouched.
+                    .onChange(of: anchorC) {
+                        withAnimation(.easeInOut(duration: 0.18)) { proxy.scrollTo(anchorC, anchor: .leading) }
+                    }
+                    .onAppear { proxy.scrollTo(anchorC, anchor: .leading) }
+                }
             }
+            octaveButton(symbol: "chevron.right", id: "piano-octave-up",
+                         disabled: anchorC >= (anchorCs.last ?? lowNote)) { shiftOctave(12) }
         }
+        .background { arrowKeyShortcuts }
+    }
+
+    /// Move the anchor C by one octave, clamped to the playable range.
+    private func shiftOctave(_ delta: Int) {
+        let lo = anchorCs.first ?? lowNote
+        let hi = anchorCs.last ?? lowNote
+        anchorC = min(max(anchorC + delta, lo), hi)
+    }
+
+    /// A flanking octave-jump control — a full-height chevron, dimmed at the range ends.
+    private func octaveButton(symbol: String, id: String, disabled: Bool,
+                              _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.title3.weight(.semibold))
+                .frame(width: 30)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(disabled ? Theme.fgDim : Theme.accent)
+        .disabled(disabled)
+        .accessibilityIdentifier(id)
+    }
+
+    /// macOS left/right arrow keys jump octaves (spec: "on macOS the arrow keys scroll"). Hidden
+    /// 1×1 shadow buttons — the app's established keyboard-shortcut pattern — mounted only while
+    /// this keyboard is, so plain arrows aren't hijacked elsewhere. iOS relies on the `<`/`>`
+    /// buttons + touch scroll (no hardware keyboard assumed).
+    @ViewBuilder private var arrowKeyShortcuts: some View {
+        #if os(macOS)
+        Group {
+            Button("piano-octave-down-key") { shiftOctave(-12) }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+            Button("piano-octave-up-key") { shiftOctave(12) }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+        }
+        .frame(width: 1, height: 1).opacity(0.01)
+        #else
+        EmptyView()
+        #endif
     }
 
     private func keyboard(height: CGFloat) -> some View {
@@ -494,13 +560,15 @@ struct PianoKeysView: View {
         let blackH = height * 0.6
         // ZStack: whites first, blacks OVERLAID after so they win hit-testing at the
         // boundaries (each key carries its own gesture — simultaneous touches on different
-        // keys work because they're distinct views).
+        // keys work because they're distinct views). Each white key carries `.id(note)` so the
+        // ScrollViewReader can jump to a C; C is always white, so anchor Cs resolve here.
         return ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
                 ForEach(whites, id: \.self) { note in
                     PianoKey(note: note, isBlack: false,
                              label: note % 12 == 0 ? "C\(note / 12 - 1)" : nil)
                         .frame(width: whiteW, height: height)
+                        .id(note)
                 }
             }
             ForEach(blacks, id: \.self) { note in

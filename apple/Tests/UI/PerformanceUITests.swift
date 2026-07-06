@@ -272,6 +272,10 @@ final class PerformanceUITests: XCTestCase {
             || app.staticTexts["Couldn't load the pack index."].exists
         XCTAssertTrue(packsPresent, "pack rows (or the offline loading/retry fallback) should show")
         snap("instruments-packs")
+        // The on-screen keyboard's octave-jump controls (`<` / `>`) flank the keys at the very
+        // bottom of the scroll — reveal + assert both exist.
+        XCTAssertTrue(reveal(app.el("piano-octave-up")), "the octave-up (>) keyboard control should exist")
+        XCTAssertTrue(app.el("piano-octave-down").exists, "the octave-down (<) keyboard control should exist")
         #endif
     }
 

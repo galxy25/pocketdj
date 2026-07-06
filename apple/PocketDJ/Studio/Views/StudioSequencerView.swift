@@ -29,6 +29,10 @@ struct StudioSequencerView: View {
                 SequencerListView(open: { openPatternId = $0 })
             }
         }
+        // Claim the whole detail pane so the empty-state ContentUnavailableView centers in a
+        // full-size area instead of collapsing to a tiny box (the List-backed non-empty state
+        // already fills greedily; this matches every other sub-tab, e.g. StudioSamplesView).
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
     }
 }
