@@ -70,6 +70,11 @@ final class StudioMicRecorder {
     /// `endMonitoring()`; recording is a sub-window of it. While true the shared session is
     /// `.playAndRecord` and `AudioSessionPolicy.micCaptureActive` is set.
     private(set) var isMonitoring = false
+    /// How many mic-record SHEETS are currently on screen (multi-window). The sheet retains on
+    /// appear and releases on disappear; the shared single-session recorder is torn down only when
+    /// the LAST sheet leaves (see `releasePresenter()`), so a second window closing its sheet can't
+    /// kill a capture the first window still shows. Not observed — it drives no UI.
+    @ObservationIgnored private var presenterCount = 0
     /// True while a take is being written (drives the pulsing record button).
     private(set) var isRecording = false
     /// Mic permission was explicitly denied — the sheet shows the Settings hand-off instead of a
@@ -240,6 +245,23 @@ final class StudioMicRecorder {
         levels.peak = 0; levels.rms = 0     // freeze the meter at silence, not the last buffer
         restorePlaybackSession()
         dlog("mic: MONITOR end")
+    }
+
+    // MARK: Multi-window presenter tracking
+
+    /// A mic-record sheet appeared. Balances `releasePresenter()`; see `presenterCount`.
+    func retainPresenter() { presenterCount += 1 }
+
+    /// A mic-record sheet went away. Tears the shared session down ONLY when no other window still
+    /// shows a mic-record sheet — a second window closing its sheet must not silence/steal a capture
+    /// the first window is still driving. The LAST release runs the full `endMonitoring()`, which
+    /// files any in-flight take with a default name (audio is never silently lost — the exact
+    /// single-window dismissal contract). `endMonitoring()` stays the unconditional teardown used by
+    /// stop()/finalizeForExit()/writerDidFail(); those are NOT presenter-gated.
+    func releasePresenter() {
+        presenterCount = max(0, presenterCount - 1)
+        guard presenterCount == 0 else { return }
+        endMonitoring()
     }
 
     // MARK: Record / stop
