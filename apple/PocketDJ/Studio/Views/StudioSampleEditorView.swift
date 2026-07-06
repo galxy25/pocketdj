@@ -39,6 +39,10 @@ struct StudioSampleEditorView: View {
     @State private var renameDraft = ""
     /// True while a background render is writing the edit-baked cache (footnote spinner).
     @State private var renderInFlight = false
+    /// True while on-device beat detection is decoding + analysing the raw file.
+    @State private var detectInFlight = false
+    /// The last auto-detect couldn't lock a tempo (short/quiet/aperiodic) — surfaced in the caption.
+    @State private var detectFailed = false
 
     /// Always read the LIVE store row — edits stream through the store, and rename/delete can
     /// happen underneath (deleted ⇒ the "gone" state below).
@@ -338,6 +342,24 @@ struct StudioSampleEditorView: View {
             }
         } else {
             section("BEAT GRID") {
+                Button { detectBPM(s) } label: {
+                    HStack(spacing: 7) {
+                        if detectInFlight {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "waveform.badge.magnifyingglass")
+                        }
+                        Text(detectInFlight ? "Detecting tempo…" : "Auto-detect tempo")
+                    }
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Theme.accent.opacity(0.18), in: Capsule())
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.borderless).foregroundStyle(Theme.accent)
+                .disabled(detectInFlight)
+                .accessibilityIdentifier("sample-detect-bpm")
+
                 HStack(spacing: 10) {
                     Button { tapTempo() } label: {
                         Label(tapTimes.isEmpty || tapTimes.count >= 4
@@ -366,10 +388,46 @@ struct StudioSampleEditorView: View {
                         .accessibilityIdentifier("sample-bpm-set")
                     Spacer()
                 }
-                Text(s.grid != nil
-                     ? "Constant grid: \(Fmt.trim(s.grid!.bpm)) BPM — loops slice on this tempo."
-                     : "No grid yet — tap at least 4 beats or type a BPM to enable loop slicing.")
+                Text(gridCaption(s))
                     .font(.caption2).foregroundStyle(Theme.fgDim)
+            }
+        }
+    }
+
+    private func gridCaption(_ s: StudioSample) -> String {
+        if detectFailed { return "Couldn't detect a tempo — tap at least 4 beats or type a BPM." }
+        if s.grid != nil { return "Constant grid: \(Fmt.trim(s.grid!.bpm)) BPM — loops slice on this tempo." }
+        return "No grid yet — auto-detect, tap at least 4 beats, or type a BPM to enable slicing."
+    }
+
+    /// Analyse the sample's raw file ON-DEVICE and write back a constant grid. Decode + DSP run OFF
+    /// the main actor (blocking file read + FFTs); the security scope stays held until the read
+    /// completes. Failure leaves the sample grid-less — tap-tempo/manual entry stay available.
+    private func detectBPM(_ s: StudioSample) {
+        guard !detectInFlight else { return }
+        let bm = studio.bookmark(for: .samples)
+        guard let resolved = StudioFolders.fileURL(family: .samples, fileName: s.fileName,
+                                                   wasUserFolder: s.wasUserFolder, bookmark: bm) else {
+            detectFailed = true
+            return
+        }
+        detectInFlight = true
+        detectFailed = false
+        let url = resolved.url
+        let release = resolved.release
+        let id = s.id
+        Task {
+            let grid = await Task.detached(priority: .userInitiated) { () -> StudioGrid? in
+                defer { release?() }
+                guard let buf = try? StudioRender.decodeFileSync(url: url) else { return nil }
+                return BeatDetect.detectGrid(buf)
+            }.value
+            detectInFlight = false
+            if let grid {
+                studio.setSampleGrid(id, grid)
+                bpmText = Fmt.trim(grid.bpm)
+            } else {
+                detectFailed = true
             }
         }
     }
