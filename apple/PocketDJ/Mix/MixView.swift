@@ -473,6 +473,7 @@ private struct DeckView: View {
     @Environment(BurnStore.self) private var burns
     @Environment(RipsStore.self) private var rips
     @Environment(SettingsStore.self) private var settings
+    @Environment(StudioStore.self) private var studio   // positional cue points, keyed by songId
 
     let deck: MixEngine.Deck
     let engine: MixEngine
@@ -518,11 +519,13 @@ private struct DeckView: View {
             deckLabel
             header
             DeckSeekSlider(engine: engine, deck: deck)   // playback position scrubber (drag to seek)
+            cueJumpRow                                   // color-coded jump-to-cue buttons (if the track has cues)
             transportRow                                 // ↺ rewind · Sync to Lead
             tempoSlider                                  // live time-stretch (pitch preserved)
             pitchSlider                                  // live pitch shift (tempo preserved)
             effectsGrid                                  // tap = toggle · long-press / right-click = strength
             if engine.stemActive(deck) { stemGrid }      // 2×2 stem pads — only while in stem mode
+            DeckVUMeter(engine: engine, deck: deck, a11y: a11y)   // level; right-click/long-press → pre/post
             volSlider
             playButton
         }
@@ -730,6 +733,54 @@ private struct DeckView: View {
                           value: p,
                           range: MixEngine.pitchRange, step: 0.1,
                           a11y: "\(a11y)-pitch") { engine.setPitch($0, on: deck) }
+    }
+
+    /// Jump-to-cue buttons for the loaded track's positional cue points (set in the Performance ▸
+    /// Cues tab, keyed by songId in `StudioStore`). Up to 8 cues render as a 4-wide grid → at most
+    /// TWO rows, each chip stable-colored by slot (matching the Studio tab). Tapping seeks the deck
+    /// to the cue — `StudioCue.positionMs` is song-relative from 0:00, exactly what `seek(toSeconds:)`
+    /// wants. Absent entirely when the track has no cues, so it costs nothing for un-cued tracks.
+    @ViewBuilder private var cueJumpRow: some View {
+        if let songId = loaded?.songId {
+            let cues = studio.cues(forSong: songId)
+            if !cues.isEmpty {
+                // NO accessibilityIdentifier on this grid: an id on a button *container* merges the
+                // child cue buttons into one a11y element, hiding each `deck-X-cue-N` id/label (the
+                // toolbar-overflow lesson). The per-cue ids below are the targets.
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                    ForEach(cues) { cue in cueButton(cue) }
+                }
+            }
+        }
+    }
+
+    private func cueButton(_ cue: StudioCue) -> some View {
+        let color = StudioCuesView.slotColor(cue.slot)
+        return Button {
+            engine.seek(deck, toSeconds: Double(cue.positionMs) / 1000)
+        } label: {
+            VStack(spacing: 1) {
+                Text(cue.name ?? "\(cue.slot + 1)")
+                    .font(.caption2.weight(.bold)).lineLimit(1).minimumScaleFactor(0.6)
+                Text(Self.cueClock(cue.positionMs))
+                    .font(.system(size: 9).monospacedDigit()).opacity(0.85)
+            }
+            .frame(maxWidth: .infinity, minHeight: 26)
+            .padding(.vertical, 3).padding(.horizontal, 2)
+            .background(color.opacity(0.22), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(color, lineWidth: 1))
+            .foregroundStyle(color)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("\(a11y)-cue-\(cue.slot)")
+        .accessibilityLabel("Jump to cue \(cue.slot + 1)\(cue.name.map { ", \($0)" } ?? ""), \(StudioCuesView.stamp(cue.positionMs))")
+    }
+
+    /// Compact "m:ss" for a cue chip (the Studio tab's `stamp` carries millis — too wide here).
+    private static func cueClock(_ ms: Int) -> String {
+        let s = max(0, ms) / 1000
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // Gain to 200%. >100% is a boost (gold value + "+N dB" suffix, not color-only) backed by the
@@ -1058,6 +1109,105 @@ private struct DeckSlider: View {
                 StepButton(dir: .inc, value: value, range: range, step: step, tint: tint, a11y: a11y, onChange: onChange)
             }
         }
+    }
+}
+
+/// Per-deck VU meter — sits above the volume slider, below the FX grid. A `TimelineView`-polled
+/// bar off the engine's non-observable `MixDeckLevels` mirror (never touches Observation, so the
+/// ~20 Hz redraw can't invalidate the rest of the deck — the `PlayerClock` doctrine). The body is a
+/// blue→gold→pink gradient (RMS, one-pole-smoothed on the tap thread) with a fast peak-hold marker,
+/// dB-scaled over −48…+3 dBFS, plus a header rhyming with `DeckSlider` (source tag + live peak dB).
+/// RIGHT-CLICK (macOS) / LONG-PRESS (iOS) — both native via `.contextMenu` — switch the meter
+/// between PRE-fader (post-FX, before volume/crossfade) and POST-fader (after it).
+private struct DeckVUMeter: View {
+    let engine: MixEngine
+    let deck: MixEngine.Deck
+    let a11y: String
+
+    /// dB window the bar spans: floor (≈silence, left edge) → top (a hair above 0 dBFS, right edge).
+    private static let floorDb: Float = -48
+    private static let topDb: Float = 3
+
+    /// Linear amplitude → 0…1 bar position on a dBFS scale.
+    private static func norm(_ amp: Float) -> CGFloat {
+        let db = 20 * log10(max(amp, 1e-6))
+        return CGFloat(min(1, max(0, (db - floorDb) / (topDb - floorDb))))
+    }
+
+    /// Gradient stops pinned to dB ZONES (not to fill width): blue < −12 dB, gold −12…−3 dB,
+    /// pink > −3 dB. Locations are `norm(-12 dBFS)` ≈ 0.706 and `norm(-3 dBFS)` ≈ 0.882.
+    private static let zoneGradient = Gradient(stops: [
+        .init(color: Theme.accent,  location: 0.0),
+        .init(color: Theme.accent,  location: 0.706),
+        .init(color: Theme.accent2, location: 0.716),
+        .init(color: Theme.accent2, location: 0.882),
+        .init(color: Theme.danger,  location: 0.892),
+        .init(color: Theme.danger,  location: 1.0),
+    ])
+
+    var body: some View {
+        let source = engine.meterSource(deck)
+        return TimelineView(.periodic(from: .now, by: 0.05)) { _ in
+            let lv = engine.levels(deck)
+            let live = Date().timeIntervalSinceReferenceDate - lv.updatedAt < 0.3
+            let peak = live ? (source == .pre ? lv.prePeak : lv.postPeak) : 0
+            let rms  = live ? (source == .pre ? lv.preRMS  : lv.postRMS)  : 0
+            let peakDb = 20 * log10(max(peak, 1e-6))
+            VStack(alignment: .leading, spacing: 2) {
+                header(source: source, peakDb: peakDb)
+                bar(rms: rms, peak: peak, hot: peakDb >= -1)
+            }
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button { engine.setMeterSource(.pre, on: deck) } label: {
+                Label("Pre-fader", systemImage: source == .pre ? "checkmark.circle.fill" : "circle")
+            }
+            .accessibilityIdentifier("\(a11y)-vu-pre")
+            Button { engine.setMeterSource(.post, on: deck) } label: {
+                Label("Post-fader", systemImage: source == .post ? "checkmark.circle.fill" : "circle")
+            }
+            .accessibilityIdentifier("\(a11y)-vu-post")
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("\(a11y)-vu")
+        .accessibilityLabel("Level meter, \(source == .pre ? "pre" : "post") fader")
+    }
+
+    private func header(source: MixEngine.MeterSource, peakDb: Float) -> some View {
+        HStack(spacing: 6) {
+            Text("VU").font(.caption).foregroundStyle(Theme.fgDim)
+            Text(source == .pre ? "PRE" : "POST")
+                .font(.caption2.weight(.semibold)).foregroundStyle(Theme.accent)
+            Spacer()
+            Text(peakDb <= Self.floorDb ? "−∞" : String(format: "%+.0f dB", Double(peakDb)))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(peakDb >= -1 ? Theme.danger : Theme.fgDim)
+                .lineLimit(1)
+        }
+    }
+
+    private func bar(rms: Float, peak: Float, hot: Bool) -> some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let fill = Self.norm(rms) * w
+            let px = Self.norm(peak) * w
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.bgOverlay)
+                Capsule()
+                    .fill(LinearGradient(gradient: Self.zoneGradient, startPoint: .leading, endPoint: .trailing))
+                    // Reveal up to the RMS level; nothing at silence (no always-on nub), a clean
+                    // minimum once there's signal so a tiny fill isn't a degenerate capsule.
+                    .mask(alignment: .leading) { Capsule().frame(width: fill < 1 ? 0 : max(3, fill)) }
+                if peak > 0.001 {
+                    Capsule().fill(hot ? Theme.danger : Theme.fg)
+                        .frame(width: 2.5)
+                        .offset(x: min(w - 2.5, max(0, px - 1.25)))
+                }
+            }
+        }
+        .frame(height: 10)
+        .accessibilityHidden(true)
     }
 }
 

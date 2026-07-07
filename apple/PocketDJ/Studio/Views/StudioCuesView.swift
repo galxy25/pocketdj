@@ -226,6 +226,13 @@ struct StudioCuesView: View {
             CueTimeline(song: song, durationMs: durMs, cues: cues, isBurned: isBurned)
                 .frame(height: 64)
 
+            // Transport: play/pause + scrub, so you can audition the track and drop cues anywhere
+            // without listening start-to-finish. Starting playback routes through `startPlayback`
+            // (burned→local, else streaming) exactly like a cue tap.
+            CueTransport(song: song, durationMs: durMs, seekable: seekable) { atMs in
+                startPlayback(song: song, atMs: atMs)
+            }
+
             if !seekable {
                 // Rule 2's disabled-state hint: live/in-flight (or not-yet-started) rips
                 // resolve to HLS, which cannot seek — playing a cue would silently start at
@@ -244,7 +251,7 @@ struct StudioCuesView: View {
 
             slotGrid(song: song, cues: cues, seekable: seekable)
 
-            Text("Tap an empty slot to set a cue at the playhead · long-press a cue for rename / nudge / delete.")
+            Text("Play & scrub to find a spot, then tap an empty slot to drop a cue at the playhead · long-press a cue for rename / nudge / delete.")
                 .font(.caption2).foregroundStyle(Theme.fgDim)
         }
         .padding(12)
@@ -367,6 +374,13 @@ struct StudioCuesView: View {
     // MARK: Playback (routing rules 1–3, see the header comment)
 
     private func play(cue: StudioCue, song: IndexSong) {
+        startPlayback(song: song, atMs: cue.positionMs)
+    }
+
+    /// Start `song` at a song-relative offset (ms) — shared by cue-slot taps (`atMs = cue.positionMs`)
+    /// and the transport's play button (`atMs = 0` from the top, or the scrubbed position). Routing
+    /// rules 1–3 from the header comment.
+    private func startPlayback(song: IndexSong, atMs: Int) {
         cueNotice = nil
         // (1) BURNED first — sample-exact. `startMs` = the song's TRUE start (shared analog
         // album offset, nil for digital); the cue rides SEPARATELY as `atMs` so boundary math
@@ -382,24 +396,28 @@ struct StudioCuesView: View {
             }()
             playLocalFile(res.url, songId: song.id, title: song.name, artist: song.artist,
                           startMs: startMs, rips: rips, player: player,
-                          endBoundaryMs: endBoundaryMs, atMs: cue.positionMs,
+                          endBoundaryMs: endBoundaryMs, atMs: atMs,
                           release: res.release)
             return
         }
         // (2) STREAMING via the coordinator (Apple Music play-then-seek, or a durable S3 mp3).
-        // The slot is guarded/dimmed when un-seekable, so reaching here without support is a
-        // race — fall through to the same guard rather than playing from 0:00 silently.
-        guard coordinator.cueSeekSupported(for: song) else {
-            cueNotice = "Can’t jump to this cue yet — the track is still ripping."
+        // Playing from the TOP (atMs 0 — auditioning an in-flight rip to place cues live) is always
+        // allowed; a non-zero OFFSET needs seek support (else it would silently start at 0:00). When
+        // the offset can't be applied, still PLAY FROM THE TOP so the transport's play button never
+        // dead-ends — the notice explains the scrubbed position was dropped.
+        guard atMs == 0 || coordinator.cueSeekSupported(for: song) else {
+            cueNotice = "Can’t jump into this track yet — it’s still ripping. Playing from the top."
+            Task { await coordinator.play(song, atMs: 0) }
             return
         }
         Task {
-            await coordinator.play(song, atMs: cue.positionMs)
+            await coordinator.play(song, atMs: atMs)
             // (3) BACKSTOP: the rip went live between the check and the play — the provider
             // records the dropped cue. Scoped to the rip backend: `lastCueDropped` only resets
             // inside the RIP provider's tryPlay, so after an Apple Music win it (and a stale
-            // live nowPlaying) would be leftovers from an older play, not this one.
-            if coordinator.activeBackend == .ripServer,
+            // live nowPlaying) would be leftovers from an older play, not this one. Only a
+            // non-zero offset can be "dropped" — a top play losing its position is a no-op.
+            if atMs > 0, coordinator.activeBackend == .ripServer,
                coordinator.ripProvider.lastCueDropped || rips.nowPlaying?.live == true {
                 cueNotice = "Cue dropped — the rip is still in flight, so playback started from the top."
             }
@@ -429,6 +447,149 @@ struct StudioCuesView: View {
         let clamped = max(0, ms)
         let s = clamped / 1000
         return String(format: "%d:%02d.%03d", s / 60, s % 60, clamped % 1000)
+    }
+}
+
+// MARK: - Transport (play/pause + scrub for cue creation)
+
+/// Play/pause + a scrub bar under the waveform, so you can audition the track and drop cues
+/// ANYWHERE without listening start-to-finish (the whole point: set a cue, jump elsewhere, set
+/// another). Both playback backends are handled the same way the rest of this view does: the
+/// burned/rip path drives `PlayerEngine` (AVPlayer) directly; the streaming path drives the
+/// `PlaybackCoordinator` (Apple Music). Position + play state are SAMPLED on a `TimelineView` off
+/// the non-`@Observable` `PlayerClock` (the dropped-clicks doctrine) so the meter tick never
+/// invalidates the sibling cue slots. Scrubbing is gated on `seekable` (a live/in-flight HLS rip
+/// can't seek); play/pause is always available (auditioning an in-flight rip is legitimate — only
+/// the cue OFFSET is gated, per the parent's routing rules).
+private struct CueTransport: View {
+    @Environment(RipsStore.self) private var rips
+    @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
+
+    let song: IndexSong
+    let durationMs: Int
+    let seekable: Bool
+    /// Start `song` at a song-relative offset (ms) via the parent's shared `startPlayback` routing.
+    /// Called by the play button when this song isn't already the active player.
+    let start: (Int) -> Void
+
+    /// 0…1 scrub position WHILE dragging (auto-clears on release).
+    @GestureState private var dragFraction: Double?
+    /// When this song isn't the active player, the scrub bar sets the position PLAY starts from.
+    @State private var pendingStartMs: Int = 0
+
+    private var ripCurrent: Bool { rips.nowPlaying?.songId == song.id }
+    private var amCurrent: Bool { coordinator.isAppleMusicNowPlaying(song.id) }
+    /// Scrub is only meaningful when a seek would actually apply (live seek, or setting a start
+    /// position before playback). A live/in-flight HLS rip can't be scrubbed.
+    private var canScrub: Bool { seekable }
+
+    /// Song-relative live playhead (ms), nil when this song isn't the active player. Same derivation
+    /// as the parent's `playheadMs(forSong:)`: the rip clock is ABSOLUTE, so subtract the shared
+    /// analog album's `startMs`; Apple Music's `playbackTime` is already song-relative.
+    private func livePlayheadMs() -> Int? {
+        if ripCurrent, let np = rips.nowPlaying {
+            let base = np.live ? 0 : (np.startMs ?? 0)
+            return max(0, Int(player.clock.currentTime * 1000) - base)
+        }
+        if amCurrent { return max(0, Int(coordinator.appleMusic.positionSeconds * 1000)) }
+        return nil
+    }
+
+    private func isPlayingNow() -> Bool {
+        if ripCurrent { return player.isPlaying }
+        if amCurrent { return coordinator.isPlaying }
+        return false
+    }
+
+    /// Toggle when this song is loaded; otherwise START it from the scrubbed position.
+    private func togglePlay() {
+        if ripCurrent { player.toggle() }
+        else if amCurrent { coordinator.togglePlayPause() }
+        else { start(pendingStartMs) }
+    }
+
+    /// Seek to a song-relative ms — live when this song is the active player, else remembered as the
+    /// play-from position. Only reachable when `canScrub` (the bar is disabled otherwise).
+    private func seek(toMs ms: Int) {
+        let clamped = min(max(0, ms), durationMs)
+        if ripCurrent {
+            let base = rips.nowPlaying.map { $0.live ? 0 : ($0.startMs ?? 0) } ?? 0
+            player.seek(to: Double(base + clamped) / 1000)
+        } else if amCurrent {
+            coordinator.seekAppleMusic(to: Double(clamped) / 1000)
+        } else {
+            pendingStartMs = clamped
+        }
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            let baseMs = livePlayheadMs() ?? pendingStartMs
+            let dur = Double(max(durationMs, 1))
+            let liveFraction = min(max(Double(baseMs) / dur, 0), 1)
+            let shownFraction = dragFraction ?? liveFraction
+            let shownMs = Int(shownFraction * dur)
+            let playing = isPlayingNow()
+            HStack(spacing: 12) {
+                Button { togglePlay() } label: {
+                    Image(systemName: playing ? "pause.fill" : "play.fill")
+                        .font(.title3)
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(Theme.accent.opacity(0.18)))
+                        .overlay(Circle().strokeBorder(Theme.accent, lineWidth: 1))
+                        .foregroundStyle(Theme.accent)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("cue-transport-playpause")
+                .accessibilityLabel(playing ? "Pause" : "Play")
+
+                VStack(spacing: 2) {
+                    scrubBar(shownFraction: shownFraction)
+                    HStack {
+                        Text(StudioCuesView.stamp(shownMs))
+                            .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                        Spacer()
+                        Text(StudioCuesView.stamp(durationMs))
+                            .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    }
+                }
+            }
+        }
+        .onChange(of: song.id) { pendingStartMs = 0 }   // fresh selection → forget the old start pos
+    }
+
+    private func scrubBar(shownFraction: Double) -> some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.border).frame(height: 4)
+                Capsule().fill(Theme.accent2).frame(width: max(0, w * shownFraction), height: 4)
+                Circle().fill(Theme.accent2).frame(width: 16, height: 16)
+                    .offset(x: min(max(0, w * shownFraction - 8), w - 16))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($dragFraction) { value, frac, _ in
+                        frac = w > 0 ? min(max(value.location.x / w, 0), 1) : 0
+                    }
+                    .onEnded { value in
+                        guard w > 0 else { return }
+                        let frac = min(max(value.location.x / w, 0), 1)
+                        seek(toMs: Int(frac * Double(durationMs)))
+                    }
+            )
+        }
+        .frame(height: 20)
+        .opacity(canScrub ? 1 : 0.4)
+        .allowsHitTesting(canScrub)
+        .accessibilityElement()
+        .accessibilityIdentifier("cue-transport-scrub")
+        .accessibilityLabel("Scrub position")
+        .accessibilityValue(StudioCuesView.stamp(Int(shownFraction * Double(durationMs))))
     }
 }
 
