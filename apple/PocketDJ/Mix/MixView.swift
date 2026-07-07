@@ -55,6 +55,13 @@ struct MixView: View {
     @State private var renaming = false
     @State private var nameDraft = ""
     @State private var confirmingReset = false
+    #if os(iOS)
+    /// Single-deck layout only (`MixDeckLayout.single`): which deck (A/B) is currently showing.
+    @State private var visibleDeck: MixEngine.Deck = .a
+    /// iPhone landscape (compact height) always shows the two decks side-by-side — there's width for
+    /// the two-up board — so the Deck-layout setting only governs portrait. See `deckArea`.
+    @Environment(\.verticalSizeClass) private var vSizeClass
+    #endif
 
     var body: some View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
@@ -63,11 +70,7 @@ struct MixView: View {
                 if recorder.isRecording { recordingIndicator }  // ● Recording m:ss + Stop (reachable on iPhone)
                 if engine.autoEnabled && !engine.autoMixing { autoSetupBar }  // pick + Play/Shuffle
                 if engine.autoMixing { autoMixBanner }  // Auto-DJ status + Stop (visible on every size)
-                // Two decks side-by-side (A left, B right), equal width.
-                HStack(alignment: .top, spacing: 12) {
-                    DeckView(deck: .a, engine: engine, source: $sourceA) { loaderDeck = .a }
-                    DeckView(deck: .b, engine: engine, source: $sourceB) { loaderDeck = .b }
-                }
+                deckArea                                // side-by-side · stacked · single (iOS view-mode setting)
                 CrossfaderView(engine: engine)         // one crossfader spanning both decks
                 masterTransport                        // one big Play/Pause for both decks
                 if engine.autoMixing { skipButton }    // Auto-DJ only: advance to the next track
@@ -135,6 +138,97 @@ struct MixView: View {
             Text("The current session is saved to Sessions. The fresh session starts with no played tracks.")
         }
     }
+
+    // MARK: Deck layout (iOS "view mode" — Settings ▸ Mix ▸ Deck layout)
+
+    /// The two decks, arranged per the iOS Deck-layout setting: side-by-side, stacked, or a single
+    /// deck at a time with ‹ › switchers. Landscape (compact height = iPhone landscape) always uses
+    /// side-by-side — there's width for the two-up board, so the setting governs PORTRAIT only. macOS
+    /// is always side-by-side (there's room; the setting is hidden). The engine is app-scoped, so
+    /// single mode's HIDDEN deck keeps playing — only its view is unmounted, never its audio.
+    @ViewBuilder private var deckArea: some View {
+        #if os(iOS)
+        if vSizeClass == .compact {                     // iPhone landscape → always the two-up board
+            sideBySideDecks
+        } else {
+            switch settings.mixDeckLayout {
+            case .sideBySide: sideBySideDecks
+            case .stacked:    stackedDecks
+            case .single:     singleDeck
+            }
+        }
+        #else
+        sideBySideDecks
+        #endif
+    }
+
+    /// One deck view wired to its per-deck source binding + track-loader trigger.
+    private func deckView(_ deck: MixEngine.Deck) -> some View {
+        DeckView(deck: deck, engine: engine,
+                 source: deck == .a ? $sourceA : $sourceB) { loaderDeck = deck }
+    }
+
+    /// Classic two-up board: A left, B right, equal width.
+    private var sideBySideDecks: some View {
+        HStack(alignment: .top, spacing: 12) { deckView(.a); deckView(.b) }
+    }
+
+    /// Full-width decks, one above the other (the iOS default — roomy sliders in portrait).
+    private var stackedDecks: some View {
+        VStack(spacing: 12) { deckView(.a); deckView(.b) }
+    }
+
+    #if os(iOS)
+    /// Single-deck layout: one deck at a time, flanked by ‹ (left) and › (right) switch buttons.
+    /// With only two decks, EITHER chevron flips to the other — so whichever thumb is nearer flips
+    /// it (max convenience) — and a row of dots under the deck marks which of A/B is showing.
+    private var singleDeck: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                deckSwitchButton(isNext: false)         // ‹
+                deckView(visibleDeck)
+                    .frame(maxWidth: .infinity)
+                    .id(visibleDeck)                    // fresh per-deck identity (clean state + cross-fade)
+                    .transition(.opacity)
+                deckSwitchButton(isNext: true)          // ›
+            }
+            deckDots
+        }
+        .animation(.easeInOut(duration: 0.22), value: visibleDeck)
+    }
+
+    /// A tall ‹ / › switch button flanking the single deck; tapping flips to the OTHER deck.
+    private func deckSwitchButton(isNext: Bool) -> some View {
+        Button {
+            visibleDeck = (visibleDeck == .a) ? .b : .a
+        } label: {
+            Image(systemName: isNext ? "chevron.right" : "chevron.left")
+                .font(.title2.weight(.bold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 30)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+        .accessibilityIdentifier(isNext ? "mix-deck-next" : "mix-deck-prev")
+        .accessibilityLabel(isNext ? "Next deck" : "Previous deck")
+    }
+
+    /// Page dots (A · B) under the single deck marking which deck is showing.
+    private var deckDots: some View {
+        HStack(spacing: 7) {
+            ForEach([MixEngine.Deck.a, .b]) { d in
+                Circle()
+                    .fill(d == visibleDeck ? Theme.accent : Theme.border)
+                    .frame(width: 7, height: 7)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+    #endif
 
     // MARK: Sessions (name menu · history · reset)
 

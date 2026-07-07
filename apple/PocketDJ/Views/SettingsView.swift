@@ -374,11 +374,34 @@ struct SettingsView: View {
             Toggle("Beat pulse", isOn: $settings.beatPulseEnabled)
                 .accessibilityIdentifier("settings-mix-beat-pulse")
                 .onChange(of: settings.beatPulseEnabled) { settings.persist() }
+
+            // iOS-only "view mode": how the two decks are arranged in the Mix tab. macOS is always
+            // side-by-side (there's room), so the picker is hidden there.
+            #if os(iOS)
+            Picker(selection: $settings.mixDeckLayout) {
+                ForEach(MixDeckLayout.allCases) { layout in
+                    Label(layout.label, systemImage: layout.systemImage).tag(layout)
+                }
+            } label: {
+                Text("Deck layout")
+            }
+            .accessibilityIdentifier("settings-mix-deck-layout")
+            .onChange(of: settings.mixDeckLayout) { settings.persist() }
+            #endif
         } header: {
             Text("Mix")
         } footer: {
-            Text("In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length. Skip fade is how long the crossfade lasts when you tap the Skip button (double-tap always uses a fast 5 s sweep).\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.\n\nCue output channel routes a deck's pre-fade-listen (the headphones button on each deck) to one side of the stereo output, leaving the house mix on the other — for a booth where you monitor on a separate feed.\n\nBeat pulse flashes a ring around each deck on every beat (downbeats brighter) so you can feel the groove and eyeball-align the two decks while beat-matching.")
+            Text(mixSectionFooter)
         }
+    }
+
+    /// Copy for the Mix settings footer. The deck-layout paragraph is iOS-only (the picker is too).
+    private var mixSectionFooter: String {
+        var s = "In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length. Skip fade is how long the crossfade lasts when you tap the Skip button (double-tap always uses a fast 5 s sweep).\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.\n\nCue output channel routes a deck's pre-fade-listen (the headphones button on each deck) to one side of the stereo output, leaving the house mix on the other — for a booth where you monitor on a separate feed.\n\nBeat pulse flashes a ring around each deck on every beat (downbeats brighter) so you can feel the groove and eyeball-align the two decks while beat-matching."
+        #if os(iOS)
+        s += "\n\nDeck layout arranges the two Mix decks in portrait: Side by side (the classic two-up board), Stacked (full-width decks, one above the other), or Single (one deck at a time with ‹ › buttons on either side to flip to the other). Portrait defaults to Stacked so each deck's sliders stay finger-friendly; landscape always shows them side by side."
+        #endif
+        return s
     }
 
     // MARK: Rip server

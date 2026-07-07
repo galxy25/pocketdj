@@ -12,6 +12,9 @@ final class VUMeterAndCueUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
         app.launchEnvironment["PDJ_START_SECTION"] = "Mix"
+        // Pin the classic side-by-side board so BOTH deck VU meters sit at the top, deterministically
+        // (the iOS default is now the stacked layout). See MixDeckLayoutUITests for the layouts.
+        app.launchEnvironment["PDJ_MIX_DECK_LAYOUT"] = "sideBySide"
         app.launch()
 
         let vu = firstWith("deck-A-vu")
