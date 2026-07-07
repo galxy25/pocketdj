@@ -15,6 +15,24 @@ final class MixTapPulse: @unchecked Sendable {
     var lastAudibleAt: Double = 0
 }
 
+/// Per-deck VU-meter level mirror — the SAME non-observable doctrine as `MixTapPulse` /
+/// `StudioMicLevels`: written on the realtime tap thread (two taps: pre-fader `flanger`,
+/// post-fader `mainGain`), polled by a `TimelineView` in `MixView`. NEVER `@Observable` — fast
+/// meter writes must not invalidate SwiftUI (the proven dead-play-button bug). Each field has a
+/// single writer thread (pre* ← the flanger tap, post* ← the mainGain tap), so a torn read on
+/// main skews one meter frame at worst — invisible. `rms` is a one-pole-smoothed body level and
+/// `peak` is a fast-attack / slow-decay peak hold; BOTH ballistics run on the tap thread so the
+/// view stays a pure renderer.
+final class MixDeckLevels: @unchecked Sendable {
+    var prePeak: Float = 0
+    var preRMS: Float = 0
+    var postPeak: Float = 0
+    var postRMS: Float = 0
+    /// `Date.timeIntervalSinceReferenceDate` of the last tap write (0 = never) — lets the meter
+    /// decay to silence when the taps stop firing (engine parked by a route change / interruption).
+    var updatedAt: Double = 0
+}
+
 /// The in-app DEBUG-SESSION log behind Settings ▸ Debug: turn capture ON, reproduce the issue,
 /// turn it OFF, export the session (a remote TestFlight tester ships the file back via iCloud).
 /// Every `MixEngine` diagnostic line goes to os_log unconditionally; while capturing it is ALSO
@@ -101,6 +119,11 @@ final class MixEngine {
 
     /// The two decks. The rawValue ("A"/"B") labels the UI + namespaces node dictionaries.
     enum Deck: String, CaseIterable, Identifiable { case a = "A", b = "B"; var id: String { rawValue } }
+
+    /// Which tap the deck's VU meter shows: PRE-fader (post-FX, before the volume+crossfader gain —
+    /// gain-staging view, stays lit regardless of fader) or POST-fader (after volume×crossfade — what
+    /// the deck actually contributes to the master). Toggled per deck via the meter's context menu.
+    enum MeterSource: String, CaseIterable, Sendable { case pre, post }
 
     /// The four per-deck effects.
     enum Effect: String, CaseIterable, Identifiable {
@@ -251,6 +274,12 @@ final class MixEngine {
     private(set) var durationA: Double = 0
     private(set) var durationB: Double = 0
 
+    /// Per-deck VU-meter source (pre/post fader) — OBSERVABLE (rare user toggle; drives the context
+    /// menu check + which mirror field the meter reads). Default post-fader: the meter sits directly
+    /// above the volume slider, so it reads most intuitively as "what this fader is sending".
+    private(set) var meterSourceA: MeterSource = .post
+    private(set) var meterSourceB: MeterSource = .post
+
     // MARK: Auto-Mix (auto-DJ) — observable
 
     private(set) var autoEnabled = false
@@ -360,6 +389,11 @@ final class MixEngine {
         MixDiag.shared.append(s)     // no-op unless a Settings ▸ Debug capture session is running
     }
     @ObservationIgnored private let tapPulse = MixTapPulse()
+    /// Per-deck VU level mirrors — written by the pre/post-fader taps installed in `ensureEngine`,
+    /// read by the meter's `TimelineView`. Persist across a media-services rebuild (the taps are
+    /// re-installed onto fresh nodes but keep writing these same objects).
+    @ObservationIgnored private let levelsA = MixDeckLevels()
+    @ObservationIgnored private let levelsB = MixDeckLevels()
     @ObservationIgnored private var lastDiagHeartbeat: Date?
     @ObservationIgnored private var lastRenderingDiag: Bool?
     /// Wall-clock moment the tick watchdog first saw the engine stopped while the mix thinks it's
@@ -711,6 +745,31 @@ final class MixEngine {
                     if peak > 0.0005 { pulse.lastAudibleAt = now }
                 }
                 sink.write(buffer)
+            }
+        }
+        // Per-deck VU-meter taps — installed ONCE here, exactly like the recording tap above (never
+        // toggled at runtime: adding/removing a tap on a live node pauses the decks on-device). TWO
+        // taps per deck feed one `MixDeckLevels`: PRE-fader off `flanger` (post-FX, before the
+        // volume+crossfade gain) and POST-fader off `mainGain` (after it). The UI picks which to show,
+        // so both always run; the overhead (peak+RMS over ≤4096 frames, ~10 Hz) is trivial. These
+        // ride the `ensureEngine` rebuild (media-services reset) for free onto the fresh nodes.
+        for d in Deck.allCases {
+            let lv = d == .a ? levelsA : levelsB
+            if let pre = flangers[d] {
+                pre.installTap(onBus: 0, bufferSize: 4096, format: pre.outputFormat(forBus: 0)) { buffer, _ in
+                    let (p, r) = Self.vuMeter(buffer)
+                    lv.prePeak = max(p, lv.prePeak * Self.vuPeakDecay)
+                    lv.preRMS += (r - lv.preRMS) * (r > lv.preRMS ? Self.vuRmsAttack : Self.vuRmsRelease)
+                    lv.updatedAt = Date().timeIntervalSinceReferenceDate
+                }
+            }
+            if let post = mainGains[d] {
+                post.installTap(onBus: 0, bufferSize: 4096, format: post.outputFormat(forBus: 0)) { buffer, _ in
+                    let (p, r) = Self.vuMeter(buffer)
+                    lv.postPeak = max(p, lv.postPeak * Self.vuPeakDecay)
+                    lv.postRMS += (r - lv.postRMS) * (r > lv.postRMS ? Self.vuRmsAttack : Self.vuRmsRelease)
+                    lv.updatedAt = Date().timeIntervalSinceReferenceDate
+                }
             }
         }
         // Writer death (disk full / provider folder vanished) surfaces here: hop to the main actor
@@ -2113,6 +2172,44 @@ final class MixEngine {
     func strength(_ effect: Effect, on deck: Deck) -> Double { state(deck).strength(effect) }
     func position(_ deck: Deck) -> Double { deck == .a ? positionA : positionB }
     func duration(_ deck: Deck) -> Double { deck == .a ? durationA : durationB }
+
+    // MARK: - VU metering (pre/post fader)
+
+    /// The deck's non-observable level mirror — poll from a `TimelineView` (never triggers observation).
+    func levels(_ deck: Deck) -> MixDeckLevels { deck == .a ? levelsA : levelsB }
+    /// The deck's meter source (pre/post fader) — observable; the meter's context menu toggles it.
+    func meterSource(_ deck: Deck) -> MeterSource { deck == .a ? meterSourceA : meterSourceB }
+    func setMeterSource(_ source: MeterSource, on deck: Deck) {
+        switch deck { case .a: meterSourceA = source; case .b: meterSourceB = source }
+    }
+
+    /// Peak-hold decay + RMS one-pole coefficients, applied once per tap callback (~10 Hz at 4096
+    /// frames / 44.1 kHz). `vuPeakDecay` ≈ −1.4 dB/callback ≈ −15 dB/s peak fall; the RMS body rises
+    /// fast (attack) and falls slower (release) for a settled VU-style read.
+    private static let vuPeakDecay: Float = 0.85
+    private static let vuRmsAttack: Float = 0.5
+    private static let vuRmsRelease: Float = 0.2
+
+    /// Instantaneous peak + RMS of one tap buffer across all channels — runs ON the realtime tap
+    /// thread (a straight float loop over ≤4096 frames × ≤2 ch is microseconds). Peak across channels
+    /// (a hard-panned mix still meters), RMS over every sample.
+    private nonisolated static func vuMeter(_ buffer: AVAudioPCMBuffer) -> (peak: Float, rms: Float) {
+        guard let chans = buffer.floatChannelData, buffer.frameLength > 0 else { return (0, 0) }
+        let n = Int(buffer.frameLength)
+        let ch = Int(buffer.format.channelCount)
+        var peak: Float = 0
+        var sumSq: Float = 0
+        for c in 0..<ch {
+            let samples = chans[c]
+            for i in 0..<n {
+                let v = samples[i]
+                let a = abs(v)
+                if a > peak { peak = a }
+                sumSq += v * v
+            }
+        }
+        return (peak, sqrtf(sumSq / Float(n * max(ch, 1))))
+    }
 
     /// The TRUE audio playhead in source seconds, read from the deck's player render clock (NOT the
     /// ~10 Hz wall-clock accumulator), so a visual that wants sample-accuracy — the beat pulse — can
