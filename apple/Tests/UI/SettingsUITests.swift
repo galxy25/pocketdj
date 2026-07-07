@@ -144,6 +144,10 @@ final class SettingsUITests: XCTestCase {
                       "the cue-output-channel picker must render in the Mix section")
         XCTAssertTrue(reveal(app, app.switches["settings-mix-beat-pulse"]),
                       "the beat-pulse toggle must render in the Mix section")
+        #if os(iOS)
+        XCTAssertTrue(reveal(app, app.descendants(matching: .any)["settings-mix-deck-layout"]),
+                      "the iOS deck-layout (view-mode) picker must render in the Mix section")
+        #endif
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "settings-mix-section"; shot.lifetime = .keepAlways
         add(shot)

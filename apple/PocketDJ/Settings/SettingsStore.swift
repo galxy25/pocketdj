@@ -18,6 +18,32 @@ enum CueChannel: String, Codable, Hashable, Sendable, CaseIterable, Identifiable
     var onRight: Bool { self == .right }
 }
 
+/// How the two Mix decks are arranged (an iOS-only "view mode" — macOS always uses side-by-side,
+/// there's room). iPhone portrait crams two decks into a narrow width, so this lets you trade the
+/// two-up board for taller, finger-friendly controls:
+///   • `.sideBySide` — the classic two decks side by side (A left, B right).
+///   • `.stacked`    — full-width decks, one above the other. The DEFAULT (best in portrait).
+///   • `.single`     — one deck at a time, flanked by ‹ › buttons that flip to the other deck.
+/// Consumed by `MixView.deckArea`; the picker lives in Settings ▸ Mix (iOS only).
+enum MixDeckLayout: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
+    case sideBySide, stacked, single
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .sideBySide: return "Side by side"
+        case .stacked:    return "Stacked"
+        case .single:     return "Single deck"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .sideBySide: return "rectangle.split.2x1"
+        case .stacked:    return "rectangle.split.1x2"
+        case .single:     return "rectangle.portrait"
+        }
+    }
+}
+
 /// A configurable catalog source (name + index URL + whether it's shown).
 struct SourceConfig: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
@@ -81,6 +107,10 @@ final class SettingsStore {
     var cueOutputChannel: CueChannel
     /// Mix decks flash a ring on each beat when ON; OFF (default) ⇒ no pulse. See `BeatPulseView`.
     var beatPulseEnabled: Bool
+    /// iOS-only "view mode": how the two Mix decks are laid out — side-by-side, stacked (the
+    /// default, best in portrait), or one-at-a-time with ‹ › switchers. macOS ignores it (always
+    /// side-by-side). See `MixDeckLayout` + `MixView.deckArea`.
+    var mixDeckLayout: MixDeckLayout
     /// The last-visited section's rawValue ("" = the home menu) — iOS relaunches
     /// reopen there ("open to wherever you last left off"); macOS ignores it
     /// (always lands on Mix). Written by RootView on every section change.
@@ -140,6 +170,7 @@ final class SettingsStore {
         self.mixAutoHidePlayed = data.mixAutoHidePlayed ?? true
         self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         self.beatPulseEnabled = data.beatPulseEnabled ?? false
+        self.mixDeckLayout = data.mixDeckLayout.flatMap(MixDeckLayout.init(rawValue:)) ?? .stacked
         self.lastSection = data.lastSection
         self.storageSoftCapGB = data.storageSoftCapGB
         self.lastStoragePruneAt = data.lastStoragePruneAt
@@ -150,6 +181,14 @@ final class SettingsStore {
         self.studioTab = data.studioTab
         self.studioClickEnabled = data.studioClickEnabled ?? true
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
+
+        // UI-test seam: pin the Mix deck layout deterministically, independent of the persisted
+        // value, so a test can exercise a specific arrangement (or hold the classic side-by-side
+        // board while asserting on both decks). No-op in the shipping app (env unset).
+        if let forced = ProcessInfo.processInfo.environment["PDJ_MIX_DECK_LAYOUT"],
+           let layout = MixDeckLayout(rawValue: forced) {
+            self.mixDeckLayout = layout
+        }
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -233,6 +272,7 @@ final class SettingsStore {
             mixAutoHidePlayed: mixAutoHidePlayed,
             cueOutputChannel: cueOutputChannel.rawValue,
             beatPulseEnabled: beatPulseEnabled,
+            mixDeckLayout: mixDeckLayout.rawValue,
             lastSection: lastSection,
             storageSoftCapGB: storageSoftCapGB,
             lastStoragePruneAt: lastStoragePruneAt,
@@ -272,6 +312,7 @@ final class SettingsStore {
         mixAutoHidePlayed = d.mixAutoHidePlayed ?? true
         cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         beatPulseEnabled = d.beatPulseEnabled ?? false
+        mixDeckLayout = d.mixDeckLayout.flatMap(MixDeckLayout.init(rawValue:)) ?? .stacked
         lastSection = d.lastSection
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
@@ -326,6 +367,9 @@ struct SettingsData: Codable {
     var cueOutputChannel: String?
     /// Optional so older blobs still decode (coalesced to false at the read sites).
     var beatPulseEnabled: Bool?
+    /// Optional so older blobs still decode — the iOS Mix deck-layout "view mode". Stored as the
+    /// enum's raw string; coalesced to `.stacked` at the read sites.
+    var mixDeckLayout: String?
     /// Optional so older blobs still decode (nil = never persisted = home).
     var lastSection: String?
     /// Storage soft cap in decimal GB. Optional-by-design even when current: nil IS the
@@ -366,6 +410,7 @@ struct SettingsData: Codable {
         mixAutoHidePlayed: true,
         cueOutputChannel: CueChannel.right.rawValue,
         beatPulseEnabled: false,
+        mixDeckLayout: MixDeckLayout.stacked.rawValue,
         lastSection: nil,
         storageSoftCapGB: nil,
         lastStoragePruneAt: nil,

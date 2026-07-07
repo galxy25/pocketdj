@@ -198,6 +198,52 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(s.beatPulseEnabled)
     }
 
+    // MARK: Mix deck layout (iOS "view mode")
+
+    func testMixDeckLayoutDefaultsToStacked() {
+        let s = SettingsStore(defaults: freshDefaults())
+        XCTAssertEqual(s.mixDeckLayout, .stacked, "portrait default is the stacked layout")
+    }
+
+    func testMixDeckLayoutPersistsAndReloads() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        s.mixDeckLayout = .single
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).mixDeckLayout, .single)
+        s.mixDeckLayout = .sideBySide
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).mixDeckLayout, .sideBySide)
+    }
+
+    /// REGRESSION (Codable back-compat): a legacy blob predating the deck-layout key must still
+    /// decode (preserving other settings) and coalesce the missing key to the stacked default.
+    func testLegacyBlobWithoutMixDeckLayoutDefaultsStacked() {
+        let defaults = freshDefaults()
+        let legacy = """
+        {
+          "sources": [],
+          "ripServerURL": "https://legacy.test",
+          "ripToken": "",
+          "searchAccessKeyID": "",
+          "searchSecretKey": "",
+          "searchEndpoint": ""
+        }
+        """
+        defaults.set(Data(legacy.utf8), forKey: "pdj.settings.v1")
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.ripServerURL, "https://legacy.test", "legacy settings must survive")
+        XCTAssertEqual(s.mixDeckLayout, .stacked, "missing key coalesces to the stacked default")
+    }
+
+    func testResetRestoresMixDeckLayout() {
+        let s = SettingsStore(defaults: freshDefaults())
+        s.mixDeckLayout = .single
+        s.persist()
+        s.resetEverything()
+        XCTAssertEqual(s.mixDeckLayout, .stacked)
+    }
+
     // MARK: Storage soft cap (unset by default ⇒ the app never auto-manages storage)
 
     func testStorageCapDefaultsUnsetAndPersists() {
