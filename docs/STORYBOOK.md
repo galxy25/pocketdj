@@ -1379,10 +1379,17 @@ Under each deck's header sits its control stack:
 
 - a **seek scrubber** — drag to seek (sample-accurate), with **elapsed / duration** clocks at its
   ends,
+- **jump-to-cue buttons** — if the loaded track has cue points (dropped in the Performance ▸ Cues
+  tab — §71), they appear right under the scrubber as up to eight **colour-coded chips** (two rows of
+  four, each chip the cue's stable colour); tap one to **jump the deck straight to that cue**,
 - the **Lead · Sync · Reset** row (beat-matching — §53; the **Stems** toggle joins it for a stemmed
   track — §56),
 - a **Tempo** slider — live **time-stretch** from **0.5× to 2.0×** with **pitch preserved**,
 - a **Pitch** slider — **±12 semitones** with **tempo preserved** (independent of the tempo slider),
+- a **VU meter** — a level bar above the volume slider showing how hot the deck is running, with a
+  live peak-dB readout; **long-press** (iOS) / **right-click** (macOS) it to switch between a
+  **PRE-fader** reading (the deck's level *before* the volume/crossfader — for gain-staging) and a
+  **POST-fader** reading (what the deck actually sends to the mix, the default),
 - a **Vol** slider (0–100%),
 - a **per-deck play/pause** for cueing one side on its own.
 
@@ -2055,10 +2062,17 @@ can export as a PDF — or turn straight into a sample and slice into a loop for
 
 **Cues** let you mark up to **eight jump-to points on any track** and start playback from any of them
 with one tap. Pick a song and its **timeline** appears — a **digital** song draws its own **waveform**;
-an **analog** song's waveform is the **whole album side**, cropped to just this song's slice. **Tap a
-slot** to drop a cue at the playhead; **tap it again to jump there and play**. Long-press or ⋯ to
-**set-at-playhead**, **rename**, **nudge** a cue a hair earlier or later, or **delete** it — each of
-the eight **slots keeps its own stable color**.
+an **analog** song's waveform is the **whole album side**, cropped to just this song's slice. Below the
+timeline is a **transport — play/pause + a scrub bar** — so you can **audition and scrub the track to
+find each spot**, then drop a cue there: no more setting one cue at 0:00, playing from it, and having to
+listen through the whole song to place the next one. **Tap a slot** to drop a cue at the playhead;
+**tap it again to jump there and play**. Long-press or ⋯ to **set-at-playhead**, **rename**, **nudge**
+a cue a hair earlier or later, or **delete** it — each of the eight **slots keeps its own stable
+color**. (Scrubbing needs a seekable source — a burned file or a ready stream; a track that's still
+ripping can still be **played from the top** to audition, just not scrubbed into.)
+
+The cues you drop here also surface **in the Mix tab**: load that track onto a deck and its cue points
+appear as **jump-to-cue buttons** under the deck's scrubber (§50), in the same colours.
 
 A cue plays through the **same playback path** a row ▶ uses, so it behaves like the rest of the app:
 

@@ -745,6 +745,12 @@ Full spec: [Lock-screen Now Playing, Skip, slider & stem fixes](../design/mix-ta
    Real grid `beatsMs[]` when burned (tempo-drift accurate); else synth from gridBpm + firstDownbeatMs.
  Beat grid = burnable artifact (mirrors stems): analysis-<id>.json sidecar; burnCollectionBeatgrids on burn
    (idempotent · STOP-aware · best-effort · validate-before-cache); dynamic hydrate on load GATED on the pulse setting
+ Per-deck VU meter (above the Vol slider, below the FX grid): TWO install-once taps per deck (like the recording tap,
+   never toggled at runtime) — PRE-fader on flanger[d] (post-FX, pre Vol/crossfade) + POST-fader on mainGains[d] (channel fader).
+   peak + RMS + ballistics (peak-hold decay · RMS one-pole) computed ON the tap thread into a non-@Observable MixDeckLevels
+   mirror (StudioMicLevels/MixTapPulse doctrine — fast writes must NOT invalidate SwiftUI), polled by a TimelineView.
+   dB-scaled (−48…+3 dBFS) blue→gold→pink bar + peak-hold; meterSource (pre/post) is per-deck OBSERVABLE, toggled by a
+   .contextMenu (long-press iOS / right-click macOS). Taps ride the media-reset rebuild (re-installed in ensureEngine onto fresh nodes).
 ```
 
 **Reading it.** Cueing is a textbook **pre-fade listen (PFL)**: rather than a special case, each deck now
@@ -756,7 +762,15 @@ before bringing it in. With a stereo interface the two sends pan to opposite cha
 the other — chosen in Settings), and collapse back to centered stereo when nothing is cued. Each deck also
 shows the **measured beat-grid BPM** (the value beat-matching actually uses) beside its key, and a **beat
 pulse** ring that flashes on every beat — downbeats brighter — so you can feel the groove and eyeball-align
-the two decks while mixing. Full spec:
+the two decks while mixing. Each deck also carries a **VU meter** above its Vol slider, fed by **two
+install-once taps** — a **pre-fader** tap on `flanger[d]` (the post-FX signal, before Vol/crossfade) and a
+**post-fader** tap on `mainGains[d]` (after the channel fader) — that compute peak + RMS with meter
+ballistics **on the render thread** into a non-`@Observable` `MixDeckLevels` mirror (the same
+`StudioMicLevels`/`MixTapPulse` discipline that keeps fast meter writes from invalidating SwiftUI), which
+a `TimelineView` polls. A `.contextMenu` on the meter switches it between the two taps (pre for
+gain-staging, post for the contributed-to-mix level). The taps are installed once in `ensureEngine` beside
+the recording tap — never toggled at runtime (that would pause the decks on-device) — and are re-installed
+onto fresh nodes after a media-services reset. Full spec:
 [Cue/PFL, beat-grid BPM & beat pulse](../design/mix-tab-cue-beatgrid-pulse.md).
 
 ### 7.11 Auto-Mix glide — FX Glide + Mix Glide
@@ -1270,9 +1284,16 @@ into [`RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
 
 ```
  StudioCue { id, songId, slot 0–7, positionMs, name? }   max 8/song, store-enforced; slot-indexed stable colors
- CuesView:  track picker (burned first) · timeline waveform · 8 slot buttons (tap = play-from-cue · long-press = set/rename/nudge/delete)
+ CuesView:  track picker (burned first) · timeline waveform · TRANSPORT (play/pause + scrub) · 8 slot buttons (tap = play-from-cue · long-press = set/rename/nudge/delete)
    waveform:  digital → entry.waveform PNG as-is;  ANALOG PNG = whole album SIDE → crop/scale to [startMs, startMs+durationMs]
               (prefer local MixWaveform peak extraction when burned); none → plain timeline
+   TRANSPORT: play/pause + scrub bar → audition + seek to a spot to place cues WITHOUT listening start-to-finish.
+              play(cue:) refactored into shared startPlayback(song:atMs:); dual backend (PlayerEngine burned/rip · coordinator AM);
+              scrub gated on `seekable` (live HLS can't seek); play-from-TOP always allowed (auditioning an in-flight rip);
+              position/isPlaying SAMPLED on a TimelineView off the non-@Observable PlayerClock (never invalidates the slots)
+
+ MIX SURFACE (Ch.4 §7):  a loaded deck reads studio.cues(forSong: loaded.songId) → jump-to-cue chips under the deck scrubber
+              (≤8, 4-col = two rows, StudioCuesView.slotColor) → engine.seek(deck, toSeconds: positionMs/1000)  (song-relative; Mix loads burned only)
 
  startMs (cue offset) threads through PlaybackCoordinator.play → TrackPlaybackProvider.tryPlay into BOTH providers:
    RipServer → RipsStore.cueSeekMs(sharedFileStartMs: song.startMs, atMs: cue) → PlayerEngine.load(startMs:)  (EXACT on burned/analog)
@@ -1298,6 +1319,20 @@ Apple Music provider **plays-then-seeks** via `ApplicationMusicPlayer.playbackTi
 playback starts (a documented ~sub-second imprecision). A song whose rip is **in flight (live
 HLS)** can't seek, so its cue buttons show a disabled "still ripping" state. `CuePlumbingTests`
 cover the `cueSeekMs` math (plain play vs. cue play vs. shared-analog offset).
+
+**Placing cues without listening through the whole song.** The Cues view has a **transport under the
+timeline — play/pause + a scrub bar** — so you can audition and seek to a spot, then drop a cue there
+(rather than the old flow of setting one cue at 0:00, playing from it, and listening the whole way to
+place the next). `play(cue:)` is refactored into a shared **`startPlayback(song:atMs:)`** that both the
+cue-slot taps and the transport's play button use — same burned-vs-streaming routing — so there is one
+start path. `CueTransport` drives `PlayerEngine` directly for a burned/rip track (`toggle`/`seek`/`clock`)
+and the coordinator for Apple Music; its scrub is gated on the same `seekable` check as cue playback
+(a live/in-flight HLS rip can't seek), while **play-from-the-top stays available** so you can still
+audition an in-flight rip. Position and play-state are **sampled on a `TimelineView`** off the
+non-`@Observable` `PlayerClock`, so the ~10 Hz tick never invalidates the sibling cue slots (the
+dropped-clicks doctrine, Ch. 5). The **same cues surface in the Mix tab** (§7): a loaded deck reads
+`studio.cues(forSong:)` and renders jump-to-cue chips under its scrubber that `engine.seek` the deck to
+`positionMs` — `positionMs` is song-relative, exactly what `MixEngine.seek(toSeconds:)` expects.
 
 ### 8.6 Collections integration — namespaced ids, schema v5 lossy decode, and the consumer fence
 
