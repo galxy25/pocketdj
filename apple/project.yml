@@ -131,14 +131,13 @@ targets:
         # capability entitlements. Override only for the macOS SDK so iOS keeps the
         # empty file above (iOS's sandbox is implicit).
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": PocketDJ/PocketDJ-macOS.entitlements
-        # CarPlay: `com.apple.developer.carplay-audio` must be GRANTED by Apple on the
-        # App ID before a DEVICE/TestFlight build can sign with it (an ungranted
-        # entitlement breaks signing — "not found and could not be included in profile",
-        # the same rule as the empty base file). So it is scoped to the SIMULATOR SDK
-        # ONLY: the CarPlay Simulator (Xcode ▸ I/O ▸ External Displays ▸ CarPlay) reads
-        # it to show the app, while iOS device/TestFlight builds keep the empty base
-        # entitlements and sign green. Move this key into the base file once Apple grants
-        # the CarPlay-audio capability (see docs).
+        # CarPlay: `com.apple.developer.carplay-audio` is GRANTED + enabled on the App ID
+        # (com.levi.pocketdj) — verified in the Developer portal — so it ships on BOTH iOS
+        # SDKs: device/TestFlight (iphoneos) signs green because the capability is in the
+        # provisioning profile, and the simulator (iphonesimulator) reads it so the CarPlay
+        # Simulator shows the app. It is scoped to the iOS SDKs (not the base file) because
+        # the base also covers visionOS, which has no CarPlay and would reject the key.
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": PocketDJ/PocketDJ-CarPlay.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": PocketDJ/PocketDJ-CarPlay.entitlements
         # --- Apple Music build-time opt-in -------------------------------------
         # The flag lives in the base Info.plist (info: properties above) as

@@ -39,56 +39,41 @@ the correct source (a CarPlay playlist play shows as "Playlist · <name>").
   (verified: the phone app launches unchanged). Scene-manifest **generation is turned OFF**
   (`INFOPLIST_KEY_UIApplicationSceneManifest_Generation: NO`) so the two don't collide.
 
-## The entitlement (action required to ship to a real car)
+## The entitlement — ALREADY GRANTED ✅
 
-`com.apple.developer.carplay-audio` is required for the app to present CarPlay templates on a head
-unit. **Apple must grant the CarPlay App Service on the App ID** (`com.levi.pocketdj`, team
-EC27UF79GL) before a **device/TestFlight** build can sign with it — an ungranted entitlement breaks
-signing ("not found and could not be included in profile").
+`com.apple.developer.carplay-audio` is required to present CarPlay templates on a head unit.
+**The CarPlay Audio App capability is already GRANTED + enabled** on the App ID
+(`com.levi.pocketdj`, team EC27UF79GL) — verified in the Developer portal (Identifiers →
+com.levi.pocketdj → *CarPlay Audio App (CarPlay framework)* is checked). So there is **no Apple
+request to submit** — device/TestFlight builds can sign with CarPlay today.
 
-So today it is **scoped to the simulator SDK only**
-(`CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*] = PocketDJ-CarPlay.entitlements`); iOS device /
-TestFlight builds keep the empty base `PocketDJ.entitlements` and **sign green**.
-
-**To ship to a real car:**
-1. Request the CarPlay entitlement from Apple: <https://developer.apple.com/contact/carplay/>
-   (choose the **audio** app category).
-2. Once granted, enable the CarPlay capability on the App ID in the Developer portal.
-3. Move the `com.apple.developer.carplay-audio` key from `PocketDJ-CarPlay.entitlements` into the
-   base `PocketDJ.entitlements` (and drop the simulator-only override in `project.yml`).
+The entitlement is wired to **both iOS SDKs** (device + simulator) via
+`CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]` and `[sdk=iphonesimulator*]` → `PocketDJ-CarPlay.entitlements`.
+It's kept out of the **base** `PocketDJ.entitlements` because the base also covers **visionOS**,
+which has no CarPlay and would reject the key. macOS keeps its own sandbox entitlements (no CarPlay).
 
 ## Get it onto your iPhone (to test in your car)
 
-> **The gate:** CarPlay only appears on a **real head unit** once Apple has **granted** the
-> `com.apple.developer.carplay-audio` entitlement (step 1). You can install the app on your iPhone
-> before then, but the CarPlay screen won't show in the car until the grant *and* a build that
-> embeds the entitlement. (The **CarPlay Simulator** works today with no grant — see below.)
+Because the capability is already granted, this is just **build → install → drive** — no waiting on
+Apple.
 
-1. **Request the entitlement** (one-time; Apple grants it in ~days, not instant):
-   <https://developer.apple.com/contact/carplay/> → choose **Audio**. Use the bundle id
-   `com.levi.pocketdj`.
-2. **After Apple grants it:**
-   - In **Certificates, Identifiers & Profiles → Identifiers → `com.levi.pocketdj`**, enable the
-     **CarPlay** capability and save (regenerates provisioning).
-   - Move the `com.apple.developer.carplay-audio` key from `PocketDJ-CarPlay.entitlements` into the
-     base `PocketDJ.entitlements`, and delete the `[sdk=iphonesimulator*]` override in `project.yml`
-     (I can do this edit for you in one commit once you confirm the grant).
-3. **Build + install on the iPhone** (pick one):
+1. **Build + install on the iPhone** (pick one):
    - **TestFlight** (wireless — easiest for the car): `apple/scripts/testflight.sh` archives +
      uploads (see the `apple-publish` skill); install via the TestFlight app on your phone.
-   - **Direct install:** plug in the iPhone → `xcodegen generate` → open `PocketDJ.xcodeproj` →
-     pick your iPhone as the destination → **Run** (Xcode auto-provisions with
-     `-allowProvisioningUpdates`).
-4. **In the car:** connect (cable or wireless CarPlay) → **PocketDJ** appears on the CarPlay home.
+   - **Direct install:** plug in the iPhone → `xcodegen generate` (from `apple/`) → open
+     `PocketDJ.xcodeproj` → pick your iPhone as the destination → **Run** (Xcode auto-provisions
+     with `-allowProvisioningUpdates`; the profile already includes CarPlay).
+2. **In the car:** connect (cable or wireless CarPlay) → **PocketDJ** appears on the CarPlay home →
+   Playlists · Pockets · Albums · Search.
 
-### What I can / can't automate here
+### What I can / can't do from here
 
-- ✅ **Build / archive** (`xcodebuild`) and the entitlement/plist edits in step 2 — I can do these.
-- ⚠️ **Device signing** needs the CarPlay entitlement **provisioned on the App ID**, which doesn't
-  exist until Apple grants it — so a device/TestFlight build with CarPlay **can't sign** until then.
-  (That's exactly why the entitlement is simulator-gated today.)
-- ❌ **Enabling CarPlay is not self-serve** — it's a **manual request** Apple reviews (step 1), not a
-  checkbox I can toggle in the portal.
+- ✅ **Portal check** — done: confirmed CarPlay is granted + enabled, and flipped the entitlement on
+  for device builds.
+- ✅ **Build (simulator) + all the config/entitlement edits** — done.
+- ❌ **The signed device build / archive** — the login **keychain is locked** for my non-interactive
+  session, so my `xcodebuild` gets to `codesign` and fails with `errSecInternalComponent`. The final
+  archive/install is the one step that needs **your** interactive Xcode/Terminal session (step 1).
 - 🔐 The Apple Developer portal / the request form are **logged into your Apple ID** (2FA). I can
   drive them with browser automation to **fill the CarPlay request form** or **check whether the
   App ID already has CarPlay enabled**, but that acts on your account — I'll only do it if you say

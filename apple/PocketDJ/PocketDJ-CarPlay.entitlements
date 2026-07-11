@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  CarPlay entitlements — applied to the iOS SIMULATOR SDK ONLY (see project.yml).
+  CarPlay entitlements — applied to BOTH iOS SDKs (device + simulator) via project.yml
+  (CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] and [sdk=iphonesimulator*]).
 
-  `com.apple.developer.carplay-audio` is what lets an audio app present CarPlay
-  templates on a head unit. It requires Apple to GRANT the CarPlay App Service on the
-  App ID (com.levi.pocketdj) before a device/TestFlight build can sign with it, so it is
-  scoped to the simulator here (the CarPlay Simulator ignores code signing). When Apple
-  grants the capability, add this key to the base PocketDJ.entitlements instead.
+  `com.apple.developer.carplay-audio` lets an audio app present CarPlay templates on a
+  head unit. The CarPlay Audio App capability is GRANTED + enabled on the App ID
+  (com.levi.pocketdj) — verified in the Developer portal — so device/TestFlight builds
+  sign green with it (it's in the provisioning profile). It lives in this iOS-scoped file
+  rather than the base PocketDJ.entitlements because the base also covers visionOS, which
+  has no CarPlay and would reject the key.
 -->
 <plist version="1.0">
 <dict>
