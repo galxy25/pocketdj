@@ -127,8 +127,8 @@ Signing uses SigV4 service `aoss`, which is why the CloudFront proxy must preser
 
 ### 4.1 Pagination + server-side sort
 
-**Why.** Results used to be **capped at 60** — fine for a tight query, useless for
-"every soul song." So online search now **pages**: `from/size` offset windows that the
+**Why.** The offline filter **caps results at 60** — fine for a tight query, useless for
+"every soul song." So online search **pages**: `from/size` offset windows that the
 client **accumulates** as the user scrolls, with **`track_total_hits: true`** so aoss
 returns the **exact** total (not the 10k-capped default) and the UI shows the real count and
 knows when it's done. And because the client only ever holds the *loaded* pages, it **can't**
@@ -299,6 +299,98 @@ grows when the last rendered row appears (mirroring the online pager's `pageInIf
 the last of ~105k rows) can't drag the budget out to the whole catalog. Measured at **100k songs**:
 the default kind switch is **0.06 ms** and a warm memo hit **0.035 ms**, versus a **520 ms** cold
 sort and the **~15 ms/render** full-catalog map that was removed from the render path.
+
+## 8. Play history — the append-only per-play event log
+
+**Source of truth:**
+[`PlayHistoryStore.swift`](../../apple/PocketDJ/State/PlayHistoryStore.swift) (the durable log),
+[`HistoryView.swift`](../../apple/PocketDJ/Views/HistoryView.swift) (the timeline UI), and
+[`BrowseState.swift`](../../apple/PocketDJ/Browse/BrowseState.swift) (`historyMode` / `refreshExternal` reuse).
+User-facing counterpart: (STORYBOOK: [Play, Rip & Burn](../storybook/play-rip-burn.md)).
+
+```
+ record(songId, title, artist, context, at: nowMs)     ← every playback surface hooks here
+   guard !songId.isEmpty
+   dedupe: if lastPlayedIndex[songId], nowMs >= last, nowMs - last < recountWindowMs (30s) → return nil
+   append PlayEvent{ id: UUID, songId, playedAt(epoch ms), source: PlaySource,
+                     contextId?, contextName?, title?, artist? }  (snapshotted)
+   lastPlayedIndex[songId] = max(…, nowMs);  countIndex[songId] += 1
+   if events.count > maxEvents(20_000) → trimToCap() (removeFirst overflow)
+   revision &+= 1;  save()  → atomic write
+
+ Document{ schemaVersion, installId, events: [PlayEvent] }  → pocketdj-play-history.json
+                              │
+              ┌──────── HistoryView reuses ───────┐
+   BrowseState(persistenceKey:"pdj.history.v1", historyMode:true)
+     externalBase = buildItems()  (main actor: reads catalog)
+     refreshExternal(signature, baseKey)  → filterSort OFF main actor → displayItems (paged)
+```
+
+**Reading the diagram.** `PlayHistoryStore` is a durable, **append-only** event log — one `PlayEvent` per listen — persisted to Application Support `pocketdj-play-history.json` with the same durable-JSON contract as its siblings (`CollectionsStore` / `PlayStatsStore`): atomic write, decode-on-`init`, and the `PDJ_USE_FIXTURE` launch seam (`launchURL()` hands UI tests an isolated, pre-cleared file). It belongs to the same data-model family as the other durable stores (Ch. 3), and is **fed by every playback surface** — the `PlaySource` enum (`browser`, `playlist`, `pocket`, `album`, `setlist`, `mix`, `artist`) names them, and each hook site resolves a `PlayContext` describing where the play happened. The enum's raw values are the persisted tokens and must never be renamed.
+
+The critical design choice is that this is deliberately **not** `PlayStatsStore`. That store is an *aggregate* — one `playCount` + one `lastPlayedAt` per song, exactly what the storage manager's least-recently-played prune needs (Ch. 5 §9.2). History needs per-event granularity: the same song played three times in three sessions is three timeline rows, each carrying its own `playedAt` and the `contextName` of the set/mix it ran in. Do not conflate the two — they are separate stores fed by the same playback hooks, and the append-only shape exists precisely because *aggregate counters can't be merged idempotently* (you can't un-double a summed count).
+
+Each `PlayEvent` **snapshots** its `contextId`/`contextName` and `title`/`artist` at record time. This is what makes rows survive the world changing underneath them: the timeline stays readable as "Friday Night Mix" even after that set is renamed or deleted, and a played song that later leaves the catalog still renders its name and artist (in `makeRow`, `app.songsById[e.songId]` falls back to `IndexSong.minimal(id:name:artist:)` built from the snapshot).
+
+**The ~30 s same-song dedup window.** `record` collapses repeated plays of the *same* song inside `recountWindowMs` (30 000 ms) to a single event — a seek/restart, or the **burned-play double-hook** where the rip path and the coordinator both fire, is one listen, not two. The guard is `nowMs >= last, nowMs - last < recountWindowMs`: the `>=` is load-bearing — an *older* timestamp (out-of-order or clock-skewed play) has a negative delta that must not read as "within the window," so it is recorded as a genuinely distinct play. This constant is held equal to `PlayStatsStore.recountWindowMs` so the two stores agree on what counts as one listen.
+
+**The 20 000-event cap.** Unlike the aggregate stats (bounded by song count), an append-only log grows without bound, so `maxEvents` caps it at 20 000 and `trimToCap()` drops the **oldest** events past the cap (`removeFirst(overflow)`), rebuilding the `lastPlayedIndex`/`countIndex` derived maps. A monotonic `revision` (`&+=`) is bumped on every real mutation so the History view can key its recompute on the store even when `events.count` is pinned at the cap.
+
+**Shaped for a future cross-profile merge.** History is device-local, but every event carries a stable `UUID` and the `Document` carries an `installId` (minted once at first `init`, preserved across `clear()`). A merge is then just `union(events, by: id)` across installs re-sorted by `playedAt` — dedupe is by event id, so re-importing the same log twice is idempotent. `replaceAll` is the test/merge seam that swaps the whole log (re-caps, rebuilds indexes, persists).
+
+**How `HistoryView` reuses the Browser.** Rather than a bespoke filter/sort engine, `HistoryView` drives its **own** `BrowseState` in `historyMode: true` under the distinct persistence key `"pdj.history.v1"`, so its filters/sort never clobber the Browser's. `historyMode` pins the state to song-kind, exposes the `historyOnly` `lastPlayedAt` field, and drops the collection-membership filter (rows are per-event, not per-song). The view seeds a default **Last-played** sort (`SortKey(field: "lastPlayedAt", dir: .desc)`) — most-recently-played first — and the `lastPlayedAt` field (`kind: .number`, op `.between`) powers a **date-range filter** ("played between May and August 2026") rendered as DatePickers in the `FilterSheet`.
+
+The base rows come from the event log, not the catalog: `buildItems()` runs on the main actor (it reads the live catalog to resolve title/album/artwork), producing `[BrowseItem]` plus parallel search keys, which are handed to `BrowseState` via `externalBase`. `refreshExternal(signature:baseKey:)` then reuses that built base across query/filter/sort edits (rebuilding only when `baseKey` changes) and runs the actual **filter/sort off the main actor** (`Task.detached`, with a 180 ms debounce on an active text query). Rendering is **incrementally paged** — only a growing prefix (`liveVisible`) of the filtered+sorted result set is handed to `ForEach`, extended as the last visible row appears — because the log can reach tens of thousands of events. The paging key deliberately excludes `catalogRevision` so a catalog load (which re-resolves row metadata) doesn't strand a scrolled-in budget back at page one.
+
+**Timeline vs By-song.** The `groupBySong` segmented toggle switches the base shape: **Timeline** emits one `BrowseItem` per event (`makeRow(e, count: 1)`), while **By song** collapses to one row per song — the latest event as the representative plus a play `count` (`counts[e.songId]`) shown as "N plays." Each row's accessory line reads `<PlaySource.label> · <contextName> · <relative time>`.
+
+**Entry points and seams.** History is reachable from anywhere via **⌘H** (`RootView.navigationShortcuts`'s hidden `"History-shadow"` button, which intentionally overrides the macOS system "Hide" shortcut) switching `section = .history`. The `PDJ_SEED_HISTORY` launch seam (`seedDemoIfRequested`, invoked from `RootView`) populates a deterministic handful of varied plays when the log is empty — self-contained (snapshot title/artist render before the catalog loads) and bypassing the re-count window via distinct timestamps; `PDJ_SEED_HISTORY_COUNT=N` seeds N distinct plays for exercising incremental paging.
+
+---
+
+## 9. The Artists browse kind — a whole discography, shuffled
+
+**Source of truth:**
+[`AppModel.swift`](../../apple/PocketDJ/State/AppModel.swift) (`buildEffective` — the artist grouping),
+[`BrowseModel.swift`](../../apple/PocketDJ/Browse/BrowseModel.swift) (`BrowseItem.artist`, `ItemKind.artist`),
+[`ArtistDetailView.swift`](../../apple/PocketDJ/Views/ArtistDetailView.swift) (Play all / Shuffle all),
+[`CollectionsStore.swift`](../../apple/PocketDJ/State/CollectionsStore.swift) (`playNow(songIds:…, source:)`).
+
+```
+ ItemKind:  .album   .song   .artist          ← third browse kind (BrowseModel)
+                                │
+ AppModel.buildEffective (OFF main, once per catalog load):
+   albums sorted (artist ⟂ name, localizedCaseInsensitive)
+        │  single order-preserving pass, group CONSECUTIVE same-artist:
+        └─ while albums[j].artist ≈ᶜⁱ artist { songCount += trackList.count; j++ }
+              → .artist(name: albums[i].artist,           // FIRST casing wins
+                        albumCount: j-i, songCount:,
+                        artworkAlbumId: albums[i].id)
+        stored as app.artistBrowseItems  (+ artistSearchKeys)
+
+ BrowseView "Artists" tab ─tap─▶ Artist(name) ─▶ ArtistDetailView
+        albums = app.albums.filter { $0.artist ≈ᶜⁱ artistName }
+        allSongIds = albums.flatMap(\.trackList)
+        ▶ Play all / 🔀 Shuffle all
+              → CollectionsStore.playNow(songIds: allSongIds,
+                        name: artistName, shuffle:, source: .artist)
+                    → reserved Now Playing setlist (Ch. 4 §6)
+
+ Same app.artistBrowseItems ─▶ CarPlay Artists tab (Ch. 7)
+ Plays attribute to History as PlaySource .artist (Ch. 6 §8)
+```
+
+**Reading the diagram.** `ItemKind` (`BrowseModel.swift`) has three cases — `album`, `song`, and `artist` — and the Artists tab in `BrowseView` is a first-class peer of Albums and Songs, not a view onto them. Where an album row wraps an `IndexAlbum` and a song row wraps an `IndexSong`, an artist row is a pure grouping value: `BrowseItem.artist(name:, albumCount:, songCount:, artworkAlbumId:)` carries just the artist name, its two counts, and a representative album id for the thumbnail. There is no `Artist` record in the catalog — the row is synthesized, and the artist's actual content (their albums, their tracks) is resolved by name on tap.
+
+That synthesis is **always on-device**, and this is the load-bearing asymmetry with the other two kinds. `BrowseView.effectiveOnline` is `browse.searchOnline && browse.kind != .artist`: the online (OpenSearch/aoss) path covers albums and songs only, because the search index is built from those two corpora — there is no artist document to query. So while flipping the online toggle re-routes Albums and Songs to the server, the Artists kind silently stays on the local pipeline. A maintainer adding an online mode must not assume all three kinds have a server counterpart; artists are computed from the merged catalog every time, so they work identically offline and online.
+
+The grouping lives in `AppModel.buildEffective`, computed off the main actor once per catalog load alongside the album/song browse rows (and re-run by `applyEdits` when a local edit is saved). Because `albums` is already sorted by `artist` then `name` (via `localizedCaseInsensitiveCompare`), the grouping is a single dictionary-free, order-preserving pass: walk forward while the next album's artist matches, accumulating `songCount` from each `trackList.count`, and emit one `.artist` row per run. The match is deliberately **case-insensitive** — `localizedCaseInsensitiveCompare(artist) == .orderedSame`. This is a real review-fix invariant, not an incidental nicety: a merged catalog whose sources disagree on casing ("OutKast" from vinyl, "Outkast" from Apple Music) sorts those albums adjacent (the sort is also case-insensitive) but, under a case-*sensitive* group boundary, would split them into two artist rows sharing the same `artist:<name>`-shaped id. The insensitive boundary keeps the discography whole; the **first** album's casing becomes the row's display name. The grouping key and the sort must stay case-agnostic in lockstep — diverge them and you reintroduce split artists with colliding ids.
+
+Tapping an artist row pushes `Artist(name:)`, which `ArtistDetailView` resolves back into the discography with the *same* case-insensitive predicate: `app.albums.filter { $0.artist.localizedCaseInsensitiveCompare(artistName) == .orderedSame }`, then `allSongIds = albums.flatMap(\.trackList)` — every track, album by album, in catalog order. The header's **Play all** and **Shuffle all** both call `CollectionsStore.playNow(songIds: allSongIds, name: artistName, shuffle:, source: .artist)`, which snapshots those ids literally (no realize autofill or pocket sampling) into the reserved, reusable **Now Playing** setlist (Ch. 4 §6) and opens it autostarting — the same seam `AlbumDetailView` uses for a single album, just fed the whole discography. `shuffle` reorders the resolved tracks fresh on each call; **Shuffle all** is therefore a one-tap "play this artist's entire catalog on random," which is the kind's reason to exist.
+
+Two consumers ride the exact same grouping so the artist model stays single-sourced. **CarPlay** (Ch. 7) builds its Artists tab straight from `app.artistBrowseItems` (`CarPlayModel.artists()` unwraps the `.artist` cases), drills into an artist with the identical case-insensitive `app.albums.filter`, and plays via `playSongIds(…, source: .artist)` — the head-unit and the phone browse the same synthesized artists and never diverge. And every artist-initiated play is attributed to **Play history** as `PlaySource.artist` (Ch. 6 §8) — a distinct token (raw value `"artist"`, labelled "Artist", symbol `music.mic`) that sits beside `browser`/`playlist`/`pocket`/`album`/`setlist`/`mix`, so the timeline can tell "played from an artist's discography" apart from "played from an album." Because those raw values are the persisted history tokens, the `artist` case must never be renamed.
+
+---
 
 ## Next
 

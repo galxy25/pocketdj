@@ -809,6 +809,57 @@ the rip server off.
 
 ---
 
+## 9. CarPlay — the head-unit client
+
+**Source of truth:**
+[`CarPlayScene.swift`](../../apple/PocketDJ/CarPlay/CarPlayScene.swift) (the scene delegate + template controller),
+[`CarPlayModel.swift`](../../apple/PocketDJ/CarPlay/CarPlayModel.swift) (the template-agnostic browse/play/search model),
+[`IntentServices.swift`](../../apple/PocketDJ/Intents/IntentServices.swift) (the shared-store bridge), and
+[`PocketDJ-CarPlay.entitlements`](../../apple/PocketDJ/PocketDJ-CarPlay.entitlements).
+
+```
+ CPTemplateApplicationScene  ──didConnect──▶  CarPlaySceneDelegate
+                                                    │  (a SEPARATE UIScene: no SwiftUI environment)
+                                                    ▼
+                                              CarPlayController(interfaceController)
+                                                    │  reaches the SAME stores via ↓ (never its own)
+                                                    ▼
+                              IntentServices.shared ─┬─ app: AppModel
+                                                     ├─ collections: CollectionsStore
+                                                     ├─ setlistPlayer: SetlistPlayer   (Up Next lives here)
+                                                     └─ mix / burns / studio / rips …
+                                                    ▲
+                              CarPlayModel(services:) ─ turns those stores into [Row] / [UpNextItem]
+
+ CPTabBarTemplate
+   ├─ "Playlists"  music.note.list      → songs (Play all / Shuffle all) → song → CPActionSheet
+   ├─ "Pockets"    square.stack.fill     → songs (Play all / Shuffle all) → song → CPActionSheet
+   ├─ "Albums"     opticaldisc           A–Z sectionIndexTitle → songs …
+   ├─ "Artists"    music.mic             A–Z → artist's albums (Play all / Shuffle all) → album → songs
+   └─ "Search"     magnifyingglass       category menu (Songs/Albums/Artists/Playlists) + "ask Siri"
+
+ CPNowPlayingTemplate.shared  (system) ── MPNowPlayingInfoCenter set by the shared engines
+   └─ Up Next button → CarPlayController.showUpNext() → CPListTemplate  (Remove / Play next / Move to end)
+```
+
+**Reading the diagram.** CarPlay is a **thin template UI over the shared engines** — the same architectural stance as every other PocketDJ client. A head unit connects a *separate* `UIScene` (`CPTemplateApplicationScene`), so `CarPlaySceneDelegate` gets **no SwiftUI environment** and therefore none of the `@State` stores that `PocketDJApp` injects into its window. Rather than construct its own `AppModel`/`CollectionsStore` — which would silently **fork a second catalog/mix graph** — the controller reaches the one live instance through `IntentServices.shared`, the process-wide handle the app registers in `PocketDJApp.init()` (the same escape hatch App Intents use from outside the view hierarchy; Ch. 7 §7). `CarPlayModel` is deliberately `import CarPlay`-free: it maps the shared stores to plain `Row`/`UpNextItem` value types (so it unit-tests on the plain host and compiles on every platform), and the iOS-only scene file is the adapter that turns those into `CPListItem`/`CPListTemplate` and fetches thumbnails. Because playback always routes through `IntentServices` → the app-scoped `SetlistPlayer`, **the head unit's Now Playing is the phone's Now Playing** — one queue, one transport, no second copy.
+
+**Startup + the tab set.** `templateApplicationScene(_:didConnect:)` builds a `CarPlayController` and calls `start()`, which sets a "Loading…" placeholder root, then `await model.ensureReady()` (the offline-first catalog load — disk cache seeds fast) before swapping in the real root. The root is a `CPTabBarTemplate` of **five** tabs, in order: **Playlists · Pockets · Albums · Artists · Search** (confirmed at the `CPTabBarTemplate(templates:)` call — the file's older header comment omitting Artists is stale). Each tab is a `CPListTemplate` given an explicit SF Symbol `tabImage` + `tabTitle` rather than a `tabSystemItem`, whose fixed system icon/label would otherwise override them. Playlists merges the user's PocketDJ playlists with the catalog's **source** playlists (Apple Music / iTunes mirrors from `app.indexPlaylists`, id-prefixed `src:` and badged with the source name).
+
+**A–Z quick-scroll, Play/Shuffle all.** Albums and Artists build through `azListTemplate`, which sorts rows and groups them into `CPListSection`s each carrying a `sectionIndexTitle` (a single A–Z letter, else `#` via `indexLetter`) so the head unit renders the alphabet index-strip — the keyboard-free way to *find* while driving. Drilling a collection (`pushSongs`) or an artist (`pushArtistAlbums`) puts **▶ Play all** and **🔀 Shuffle all** rows on top; their handlers call the model's `playPlaylist`/`playPocket`/`playAlbum`/`playArtist` (all `try? await` into `services.play…`, i.e. the one unified sequencer) and then `showNowPlaying()`, which pushes `CPNowPlayingTemplate.shared` only if it isn't already the top template (no duplicate stacking).
+
+**The action sheet — CarPlay has no context menu.** A song row has no swipe or long-press affordance on a head unit, so a tap opens a `CPActionSheetTemplate` (`presentSongActions`) with **Play now** / **Add to pocket / playlist** / **Cancel**. "Add to…" pushes a destination list (`pushAddTargets`) built from `model.addTargets()` — pockets then playlists, each with a `pkt:`/`pls:`-prefixed target id — and `model.addSong(_:toTargetId:)` decodes that prefix to the right `AddTarget` and writes through `CollectionsStore` (playlists append to the default chapter), returning the target name for a small confirmation toast (itself an action sheet, since CarPlay has no transient toast).
+
+**Now Playing + editable Up Next.** The system `CPNowPlayingTemplate.shared` is what the driver sees for transport and artwork — it's populated by `MPNowPlayingInfoCenter`, set by the shared audio engines, not by CarPlay. `configureNowPlaying()` enables its **Up Next** button and registers a `CarPlayNowPlayingObserver`; the button tap routes to `showUpNext()`, which lists `services.setlistPlayer.upcoming` (keyed by `uid`, since a song can repeat in the queue — matching how `SetlistPlayer`'s live-queue edits identify rows). Because CarPlay offers no swipe-to-delete, editing an Up Next row opens another action sheet — **Remove from queue** / **Play next** / **Move to end** — mapping to `removeFromQueue`/`playNext`/`moveToEnd` on the shared `SetlistPlayer`, after which `refreshUpNext()` rebuilds the pushed list **in place** via `updateSections`.
+
+**Search — the category IS the mode; filtering off the main actor.** CarPlay's `CPSearchTemplate` can't host a scope/mode toggle, so the Search tab is a **category menu**: one row per `CarPlayModel.SearchCategory` (`songs`/`albums`/`artists`/`playlists`), each pushing a `CPSearchTemplate` whose `CarPlaySearchDelegate` is scoped to that category. The delegate is retained on the controller (`CPSearchTemplate.delegate` is `weak`). Per keystroke, `CarPlayModel.search(_:category:)` grabs the O(1) `browseItems`/`searchKeys` refs on the main actor, then runs `BrowseState.filterSort` inside a `Task.detached(.userInitiated)` — the filter runs **off the main actor over prebuilt folded keys**, so typing never folds the whole (~90k-song) catalog on the head-unit's UI thread and never freezes it (results are capped at 60). Playlists is a small name match handled inline. A selected result routes by category (song → play; album/artist/playlist → drill-in). Below the category rows sits a **"Hands-free: ask Siri"** row — a signpost, since keyboard entry is blocked in motion and the actual in-motion voice path is App Intents / Siri (Ch. 7 §7).
+
+**Artwork cache.** `listItem` kicks off async cover-art loading via `loadArtwork`, which serves from an in-memory `artCache` (albumId → `UIImage`) or walks the model's `artCandidates(albumId:)` URLs, taking the first that returns a valid image and caching it, so re-browsing a list doesn't refetch.
+
+**Entitlement + wiring.** `com.apple.developer.carplay-audio` lives in the iOS-scoped [`PocketDJ-CarPlay.entitlements`](../../apple/PocketDJ/PocketDJ-CarPlay.entitlements) — not the base `PocketDJ.entitlements`, because the base also covers visionOS, which has no CarPlay and would reject the key. `project.yml` applies it per-SDK for both device and simulator (`CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]` and `[sdk=iphonesimulator*]`), and declares an **explicit** `UIApplicationSceneManifest` that registers only the `CPTemplateApplicationSceneSessionRoleApplication` role bound to `CarPlaySceneDelegate` while `UIApplicationSupportsMultipleScenes: true` lets SwiftUI keep synthesizing the phone's own window scene (scene-manifest *generation* is turned off so the two don't collide). CarPlay UI isn't headless-testable in CI; the model is where the logic — and the tests — live.
+
+---
+
 ## End of the book
 
 Back to the [top-level overview & table of contents](../ARCHITECTURE.md).

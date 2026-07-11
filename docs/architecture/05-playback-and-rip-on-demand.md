@@ -904,15 +904,14 @@ on disk (a preserved take can't be truncated), and `recoverOrphans` carries the 
 
 **Studio content — the Performance tab's five families.** The Studio (Ch. 4 §8) adds its
 own storage, surfaced in the same screen. `StorageView` gains a **studio usage section**
-(per-family bytes) plus **three folder pickers** (`storage-samples-folder-choose`,
-`…-loops-…`, `…-sequences-…`) and a per-family **delete-all**. The app-managed roots are
-`Application Support/studio/{samples,loops,sequences,takes,instruments}/`, and **three of the
-five families are user-relocatable** via new optional security-scoped bookmarks in
-`SettingsStore` — `samplesFolderBookmark`, `loopsFolderBookmark`, `sequencesFolderBookmark`
-(optional `SettingsData` fields, back-compat decode, resolved by `StudioFolders`). **Takes
-and instrument packs are always app-managed** (under `studio/takes/` and `studio/instruments/`)
-— no bookmark, so there's never ambiguity about which root a take or a 32 MB bank resolves
-against. Usage/delete operate through `StudioStore` (samples/loops/sequences/takes, via
+(per-family bytes) plus **four folder pickers** (`storage-samples-folder-choose`,
+`…-loops-…`, `…-sequences-…`, `…-takes-…`) and a per-family **delete-all**. The app-managed roots are
+`Application Support/studio/{samples,loops,sequences,takes,instruments}/`, and **four of the
+five families are user-relocatable** via optional security-scoped bookmarks in
+`SettingsStore` — `samplesFolderBookmark`, `loopsFolderBookmark`, `sequencesFolderBookmark`,
+`takesFolderBookmark` (optional `SettingsData` fields, back-compat decode, resolved by `StudioFolders`).
+**Only instrument packs are always app-managed** (under `studio/instruments/`) — no bookmark, so
+there's never ambiguity about which root a 32 MB bank resolves against. Usage/delete operate through `StudioStore` (samples/loops/sequences/takes, via
 `StudioFolders.usageBytes(family:bookmark:knownIds:)`) and `InstrumentPackStore` (banks),
 filtering **strictly** by the family's exact filename shape **and** a document-known id (the
 same `BurnStore.ownsAuxFile` discipline in rule 2 above) so a co-located or user-authored file

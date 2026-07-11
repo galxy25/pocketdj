@@ -7,9 +7,10 @@
 > beat-matches and mixes them live** (§7), and the chapter where **AI-assisted
 > auto-building will land** (§4).
 
-The product story for these screens is Part II of
-[`STORYBOOK.md`](../STORYBOOK.md) (§18–§26). This chapter is the systems view of the
-same nouns and the engine that connects them.
+The product story for these screens is
+[Perform From the Crate](../storybook/perform-pockets-playlists-setlists.md) in the
+storybook. This chapter is the systems view of the same nouns and the engine that
+connects them.
 
 ---
 
@@ -280,10 +281,10 @@ for any referenced items). Refs to songs not in the loaded catalog are kept as c
 
 > **Status: deferred, but the schema and engine seams already exist so lighting it
 > up needs no migration.** This is the next major pillar of "Performance Playlists
-> Producer." Note the *mixing* half is no longer hypothetical — a first-party
-> two-deck DJ engine with beat-matching and a timed **Auto-Mix** auto-DJ now ships
-> (§7); what's still "coming" here is **AI-curated auto-*building*** of the set
-> itself (a smarter `realize()` ordering + populated `mixSuggestions`).
+> Producer." The *mixing* half is not hypothetical — a first-party two-deck DJ engine
+> with beat-matching and a timed **Auto-Mix** auto-DJ is built (§7). What remains
+> deferred here is **AI-curated auto-*building*** of the set itself (a smarter
+> `realize()` ordering + populated `mixSuggestions`).
 
 The architecture deliberately reserves three hooks so AI features slot in without
 breaking the data contract:
@@ -332,7 +333,7 @@ the `RealizeCtx` from `AppModel`'s catalog (its `candidates` pool = songs with b
 populate `mixSuggestions`; do **not** change the snapshot/provenance shape, or
 existing setlists, exports, and the rip/burn flows (Ch. 5) break.
 
-### 4.1 First consumer shipped — the Siri "Create Pocket" builder (native)
+### 4.1 The Siri "Create Pocket" builder — the AI seam's first consumer (native)
 
 The seam is no longer entirely dormant: the native app's **`CreatePocketIntent`**
 (*"Create a pocket in PocketDJ"*, Ch. 7 §7) builds a pocket from a natural-language
@@ -483,6 +484,15 @@ UI, transport, effect chips, stem grid, loader sheet),
 [`docs/design/mix-ondevice-tempo-pitch-beatmatch-spec.md`](../design/mix-ondevice-tempo-pitch-beatmatch-spec.md)
 (written as "research"; the shipped code has moved past it — where they disagree, the
 code's `connectChain()` wins).
+
+**Deck layout is a view-only concern.** `MixView` arranges the two decks three ways in
+portrait, chosen from **Settings ▸ Mix ▸ Deck layout** (`MixDeckLayout`: `sideBySide` /
+`stacked` (default) / `single`). `single` shows one deck at a time behind **‹ ›** switchers
+with `A · B` page dots; because the engine is **app-scoped** (below), the deck whose view is
+unmounted **keeps rendering audio** — only its SwiftUI subtree is torn down, never its
+`AVAudioPlayerNode`. The setting governs portrait only: iPhone landscape (compact height) and
+macOS always render side-by-side, so the picker is hidden there. Nothing about the DSP graph,
+transport, or `MixResolver` changes with layout.
 
 ### 7.1 The per-deck DSP graph
 
@@ -676,7 +686,7 @@ off-main. The corpus is designed to later **train an auto-mix model** (replay is
 re-driving the decks is the follow-up). Full spec:
 [Mix sessions, steppers & gain](../design/mix-sessions-and-controls-spec.md).
 
-### 7.9 Lock-screen Now Playing · Auto-Mix Skip · slider-freeze & stem-silence fixes
+### 7.9 Lock-screen transport & Now Playing arbitration — remote control · Auto-Mix Skip · seek & stem-mode
 
 ```
  MixEngine.nowPlayingDeck:  exactly one deck PLAYING → that deck; ambiguous (zero/both) → STICKY on the
@@ -976,7 +986,7 @@ unreadable stubs, and never adopt the **in-flight** take (root-aware, so a same-
 > A maintainer who greps `Performance` will hit **both**; the split is `Performance/` =
 > realize (this chapter §1–§6), `Studio/` = the tab (this §8). The full design record is
 > [`docs/design/performance-studio-spec.md`](../design/performance-studio-spec.md) (rev 2);
-> the product story is **STORYBOOK Part V (§66–§72)**. This §8 is the systems view.
+> the product story is the storybook's [The Studio](../storybook/studio.md) chapter. This §8 is the systems view.
 >
 > **Native-only, like Mix.** The Studio reads the same catalog/rips/collections as the rest
 > of the app but adds new device-local artifact classes (samples, loops, patterns, takes,
@@ -1007,7 +1017,7 @@ records against files.
    ids minted by StudioFactory:  smp_ · lp_ · ptn_ · tk_  (+ uuid);  cues use cue_ (NOT a collection id)
 
  StudioFamily (StudioFolders.swift):  samples · loops · sequences · takes · instruments
-   userRelocatable   samples/loops/sequences → TRUE      takes/instruments → FALSE (always app-managed)
+   userRelocatable   samples/loops/sequences/takes → TRUE   instruments → FALSE (packs always app-managed)
    filePrefix        sample- · loop- · pattern- · take- · instrument-
    fileExtension     m4a (samples/patterns/takes) · caf (loops) · sf2 (instruments)
    idPrefix          smp_ · lp_ · ptn_ · tk_ · nil (packs embed a bank SLUG, not an id)
@@ -1048,11 +1058,11 @@ strict-shape filename discipline.
 
 **Storage families.** `StudioFolders` generalizes `SessionFolders` (Ch. 4 §7.12): the
 app-managed roots are `Application Support/studio/{samples,loops,sequences,takes,
-instruments}/`. **Only samples / loops / sequences are user-relocatable** (via new optional
-security-scoped bookmarks in `SettingsStore` — §8.1 storage lives with the storage manager
+instruments}/`. **Samples / loops / sequences / takes (instrumentals) are user-relocatable**
+(via optional security-scoped bookmarks in `SettingsStore` — §8.1 storage lives with the storage manager
 in [Ch. 5 §9.2](./05-playback-and-rip-on-demand.md#92-the-storage-manager--settings--storage-delete-tools--the-soft-cap-lrp-prune)).
-**Takes and instrument packs are always app-managed** — no bookmark, no ambiguity about which
-root a take or a 32 MB bank resolves against. Deterministic names (`sample-<id>.m4a`,
+**Only the instrument packs are always app-managed** — no bookmark, no ambiguity about which
+root a 32 MB bank resolves against. Deterministic names (`sample-<id>.m4a`,
 `loop-<id>.caf`, `pattern-<id>.m4a`, `take-<id>.m4a`, `instrument-<slug>.sf2`) plus the
 `BurnStore.ownsAuxFile` discipline (filter by exact filename shape **and** a document-known
 id) mean a co-located user file is never counted or swept.
@@ -1183,6 +1193,20 @@ is live. Without it, a playback load or a setlist auto-advance (Ch. 5 §10) firi
 recording would reconfigure the shared session and break the input tap. The `project.yml`
 mic usage string (Ch. 7 §5.3) was reworded to cover sampling as well as Shazam.
 `StudioMicRecorderTests` cover the permission/`.denied` branches and the orphan-recovery paths.
+
+**External audio inputs — sample from AUDIO IN.** `StudioMicRecorder` isn't limited to the
+built-in mic: `refreshInputs()` maps `AVAudioSession.sharedInstance().availableInputs` into
+selectable `InputOption`s — `InputOption(id: port.uid, name: port.portName, isLineIn:
+port.portType != .builtInMic)` — so a **USB-C interface, a line-in, or a TX-6 mixer** shows up
+as a pickable source. It refreshes once the session is live (`availableInputs` is only
+trustworthy then) and again on every route change. `selectInput(uid:)` routes capture via
+`AVAudioSession.setPreferredInput` and re-taps at the new hardware format, and the recorded
+`StudioSample` stamps its **provenance** onto `captureSource` — `.mic` for the built-in mic,
+`.lineIn(inputName:)` for an external input (surfaced in the editor as *"Recorded from …"*).
+`StudioMicRecordView` always presents an input affordance on iOS (a menu when more than one
+input exists, else a static chip + a "connect a USB-C interface / TX-6" hint); macOS uses the
+system default input and shows no selector. It rides the same crash-safe writer and
+route-change/stall hardening as mic capture.
 
 ### 8.4 Instruments — sampler, MIDI, click/count-in, score & export, packs on S3
 
@@ -1420,7 +1444,7 @@ here and in the spec. Add-to paths reuse the string-id plumbing (`AddToCollectio
 a `.studio(id, title)` case) and `SetlistDetailView` rows show a Sample/Loop/Sequence badge from
 the id prefix.
 
-### 8.7 Round 4 — on-device beat detection, file/stem sampling, slicing→pads, editable + live score
+### 8.7 Advanced sampling & scoring — file/stem sources, on-device beat detection, slice-to-pads & the live score
 
 **Why.** The Studio round 4 removes four ceilings: a sample could only come from an indexed track or
 the mic; a grid-less sample needed manual tap-tempo; a sample couldn't be chopped into performance
@@ -1505,6 +1529,148 @@ as sample" is silent, a documented follow-up). New tests: `BeatDetectTests`, `Be
 from the flat icon so the straight-on composite is pixel-identical) beside the existing
 `AppIcon.appiconset` — actool resolves the right type per platform, injecting the
 `CFBundleIcons.CFBundlePrimaryIcon` key the visionOS TestFlight upload requires.
+
+### 8.8 On-device analysis & performance items as collection tracks
+
+**Source of truth:**
+[`KeyDetector.swift`](../../apple/PocketDJ/Studio/KeyDetector.swift) (KK key detection),
+[`StudioAnalyzer.swift`](../../apple/PocketDJ/Studio/StudioAnalyzer.swift) (burn-on-add + `ensureKey`),
+[`MixResolver.swift`](../../apple/PocketDJ/Mix/MixResolver.swift) (`studioLoadable`), and
+[`StudioRender.swift`](../../apple/PocketDJ/Studio/StudioRender.swift) (`renderTake`), with the
+schema in [`CollectionsSchema.swift`](../../apple/PocketDJ/Models/CollectionsSchema.swift) and the
+store in [`StudioStore.swift`](../../apple/PocketDJ/Studio/StudioStore.swift).
+
+A studio artifact — a sample (`smp_`), loop (`lp_`), sequence bounce (`ptn_`), or instrument take
+(`tk_`) — carries no server sidecar: no BPM from the audio indexer, no Camelot, no burned file in
+`BurnStore`. This section is how such an id becomes a *first-class, harmonically-mixable collection
+track* anyway: detect its key on-device, render/bounce it to a real file, freeze it into a setlist,
+and hand it to the Mix decks alongside catalog songs. (STORYBOOK:
+[The Studio](../storybook/studio.md).)
+
+```
+ "Add to…" a studio id ─► StudioAnalyzer.prepare(forStudioId:studio:packs:)   (fire-and-forget)
+        │
+        ├─ tk_  → StudioTakeRenderer.ensureRendered  (renderTake → real .m4a; needs the pack)
+        ├─ ptn_ → StudioPatternBouncer.ensureBounced (auto-bounce a dirty sequence)
+        │        (smp_ / lp_ already carry a rendered/raw file)
+        └─ ensureKey → KeyDetector ──► StudioStore.setCamelot(_:forStudioId:)   (keys[id])
+                          │
+      ┌───────────────────┴────────────────────┐
+   detect(noteEvents:)                     detect(audio:)
+   tk_: duration-weighted PC histogram     smp_/lp_/ptn_: chromagram of rendered PCM
+   (exact MIDI, no decode)                 (vDSP FFT 4096 · Hann · first 30 s → 12 PCs)
+      └────────────► detect(chroma:) ── KK correlate 24 keys ─► Camelot + 0…1 strength
+
+ Consumed by:  StudioCollectionRow (row) · SetlistPlayer (repeat playback) ·
+               MixResolver.studioLoadable (deck: file + bpm grid + Camelot)
+```
+
+**Reading the diagram.** `KeyDetector` is one Krumhansl-Kessler correlation engine behind two front
+doors. The shared back end is `detect(chroma:)`: given any 12-bin nonnegative pitch-class profile
+(index 0 = C), it rotates the profile to each of 12 candidate tonics and takes the Pearson
+`correlation` against the `majorProfile` and `minorProfile` KK weight vectors — 24 comparisons — then
+maps the best-correlating tonic/mode to its `majorCamelot`/`minorCamelot` code and returns a `0…1`
+`strength` (the winning correlation remapped from `[-1, 1]` via `(bestScore + 1) / 2`). The two
+front doors differ only in how they *build* that histogram. `detect(noteEvents:)` is the
+**instrumental** path: it walks the take's `StudioNoteEvent`s and accumulates each note's *sounding
+duration* (`offMs − onMs`) into `chroma[note % 12]` — an exact tonal profile straight from the played
+MIDI, no audio decode, so a long held tonic anchors the key more than a passing sixteenth.
+`detect(audio:)` is the **sampled** path: `chromagram(_:)` runs a `vDSP` real FFT (4096-point,
+`vDSP_HANN_NORM` window, 2048 hop) over the first `maxSeconds = 30` of decoded PCM, maps each bin in
+the 55–5000 Hz musical band to a pitch class via `69 + 12·log2(f/440)`, and folds `|X|` into the 12
+bins. Every symbol is a `nonisolated` static over value types, so the FFT runs off the main actor.
+This deliberately **mirrors the server's `analyze-one.py` `detect_key`** (Ch. 2 §5), ported from
+NumPy to Accelerate/vDSP so a performance item gets the *same* Camelot vocabulary the catalog carries.
+
+**`StudioAnalyzer.prepare` — the burn-on-add path.** When an item enters a collection (each Studio
+sub-tab's "Add to…" fires `StudioAnalyzer.prepare`), two things must be true before it can play and
+mix: it must have real audio on disk, and it must have a key. `prepare` does both, in order. First it
+*burns*: a `tk_` instrumental routes to `StudioTakeRenderer.ensureRendered` (its stored file is only
+a silent placeholder until the events are synthesized — see below), and a `ptn_` sequence routes to
+`StudioPatternBouncer.ensureBounced`, which auto-bounces a *dirty* pattern the same way the
+sequencer's "Bounce for offline" button does. This closes the "couldn't play until I bounced it by
+hand" gap: a dirty/never-bounced pattern resolves to `nil` in `localURLForPlayback`, so without the
+auto-bounce an added sequence would silently skip. Samples and loops already carry a rendered/raw
+file and skip straight to keying. Then `ensureKey` runs — guarded by `studio.camelot(forStudioId:)
+== nil`, so it is **lazy and idempotent** (a no-op once a key is stored). For a take it detects
+straight from `take.scoreEvents`; for an audio item it holds the file's security scope, decodes on a
+detached utility `Task` (`StudioRender.decodeFileSync` → `KeyDetector.detect(audio:)`), releases the
+scope, and stores the Camelot via `StudioStore.setCamelot`, which persists into `keys[id]` in
+`pocketdj-studio.json`.
+
+**`repeatCount` — one convention, three resting places.** A performance item usually *is* a loop, so
+membership carries a play count. `CollectionMembership` is the single home for the convention:
+`normalizedRepeat(_:)` clamps a stored optional to `[1, 99]` (nil/≤1 ⇒ once) and `storedRepeat(_:)`
+keeps the serialized form sparse (nil for a normal single play). It lives in three schema slots:
+a **pocket** keys it in the `Pocket.songRepeats: [String: Int]` sidecar map (pockets store members
+as a flat `[String]`, so the count rides parallel, like `notes`); a **playlist** stores
+`PlaylistNode.repeatCount`; and at ▶ Play both freeze into `SetlistTrack.repeatCount`. `SetlistPlayer`
+consumes it as `currentPlaysRemaining`: `playCurrent`/`adoptNowPlayingIfJumped` arm it to
+`normalizedRepeat(queue[pos].repeatCount)`, and `handleEnded` — *only* on a natural end, never an
+explicit skip or dead source — decrements and replays in place via `playCurrent(fresh: false)` while
+plays remain, advancing to the next track only when the count is spent (the `[1, 99]` clamp is why
+this can never spin forever). Totals agree through `SetlistTrack.shownMs` = `perPlayMs ×
+normalizedRepeat(repeatCount)`, so a 4-second loop set to `8×` contributes 32 seconds to a
+collection's runtime, not four.
+
+**`StudioCollectionRow` — a real track row for an `smp_`/`lp_`/`ptn_`/`tk_` id.** A studio id rides
+the collection's `songIds` but has no catalog `IndexSong`, so this row synthesizes a full track cell:
+`PocketDJArtwork` (the in-app `PocketDJIcon` imageset, since a performance item has no album cover),
+a kind badge derived from the id prefix (`Sample`/`Loop`/`Sequence`/`Instrumental`), the BPM, the
+item's own async waveform (loaded via `StudioWaveform.peaks(forStudioId:)` into a compact
+`MixWaveformView`), and its length — all resolved live from `StudioStore` through the
+`collections.studioLookup` seam. It also carries the **in-row repeat editor**: `repeatMenu`, an
+always-visible tappable capsule showing `N×` (a `Menu`, not a nested context submenu, so it works
+reliably inside a `List` row), plus the same presets (`[1, 2, 3, 4, 6, 8, 16]`) in the long-press
+context menu alongside Remove.
+
+**`performerName` / `studioArtist` — who "made" a performance item.** The user's identity for their
+own work is `SettingsStore.pocketDJName` (Settings ▸ "Your PocketDJ name"). `PocketDJApp` init pushes
+it into `CollectionsStore.performerName` (`collections.performerName = settings.pocketDJName`) and the
+Settings field re-pushes on change. Every consumer reads the resolved `CollectionsStore.studioArtist`,
+which is `performerName.isEmpty ? "Studio" : performerName` — so a blank name degrades to `"Studio"`
+rather than an empty artist line, and a named DJ sees their own name on their samples and takes.
+
+**`MixResolver.studioLoadable` — a studio id becomes a deck.** A `MixLoadable` is the picker/deck
+snapshot (title, artist, `bpm`, `camelot`, length). `MixResolver` special-cases studio ids: when
+`StudioFactory.isStudioId(id)` it calls `studioLoadable`, which confirms the item's local audio
+resolves (`studio.localURLForPlayback`, existence-only — it releases the scope immediately; the deck
+re-acquires a held handle when it actually loads), then builds the loadable from
+`studio.displayInfo` (title, length, **constant-BPM beat grid** derived from the item's *known* BPM,
+not re-detected) and `studio.camelot(forStudioId:)` (the detected Camelot), with the artist set to
+`collections.studioArtist`. That gives Auto-Mix and harmonic glide (`MixEngine.glideParams`) a beat
+grid and a key for a track that has no server analysis sidecar. For a **frozen setlist** studio
+track, `setlistLoadables` prefers this live resolution (`studioLoadable(t.songId)`); a studio track
+whose source item was deleted resolves to `nil` — unlike a catalog track it has no `BurnStore` file
+to fall back to (the snapshot's `camelot`/`bpm` survive on the `SetlistTrack`, but a deck still needs
+the live local file to open).
+
+**Instrumentals as real audio — `StudioRender.renderTake`.** A live-saved instrument take stores only
+a *silent placeholder* file; `renderTake(events:bankURL:program:to:)` is what turns its notes into an
+audible `.m4a`. It builds an offline `AVAudioEngine` in `.offline` manual-rendering mode, attaches an
+`AVAudioUnitSampler`, and — before starting the engine — loads the take's SoundFont at GM `program`
+via `loadSoundBankInstrument` (`bankURL` comes from `InstrumentPackStore.localBankURL`; a nil there is
+the "download the pack first" gate, never a silent fallback). `pumpSampler` then renders in
+`chunkFrames` blocks, firing each `startNote`/`stopNote` at its exact frame (`InstrumentEngine.
+replayActions` in time order), trimming the **AU priming-latency head** (`sampler` latency +
+`outputNode` latency, in canonical frames) so written frame 0 is *musical* frame 0, and finally
+draining the sampler's **release tail** until a 512-frame RMS window falls below −60 dBFS or a 3 s cap
+trips — so a note-off's decay is never truncated. Three consumers share this one render: the Score
+screen's "Export audio", "Sample from instrumental" (which files a self-contained
+`StudioSample(source: .take(...))` whose audio is the render, not a copy of the placeholder), and the
+playback render cache `StudioTakeRenderer.ensureRendered` (filed via `StudioStore.setTakeRendered`,
+which `localURLForPlayback` prefers over the raw placeholder). Takes are **user-relocatable**:
+`StudioStore.addTakeRelocating` moves a finished take into `settings.takesFolderBookmark` when one is
+configured, stamping `wasUserFolder` to match where the file actually lands.
+
+Finally, a studio id is a *partial* member by design (Ch. 4 §8.6): the per-consumer fence still
+**excludes** studio ids from rip, burn, stemify, CSV export, and autofill (there is no catalog row,
+rip source, or streamable track behind them), while **playback, counts/runtime, and realize
+node-placement include them** — which is exactly what makes them first-class enough to loop, total,
+harmonically mix, and freeze into a setlist, without leaking into pipelines that assume a catalog
+song.
+
+---
 
 ## Next
 
