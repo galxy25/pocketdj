@@ -117,13 +117,29 @@ final class CarPlayModelTests: XCTestCase {
 
     // MARK: Search (title/artist only)
 
-    func testSearchMatchesTitleAndArtistCaseInsensitively() async {
-        let (model, _, _) = await makeModel()
-        XCTAssertEqual(model.search("neon").map(\.id), ["sng_1"])          // by title, case-insensitive
-        XCTAssertEqual(Set(model.search("aria").map(\.id)), ["sng_1", "sng_2", "sng_3"])  // by artist
-        XCTAssertTrue(model.search("").isEmpty)                            // empty query → nothing
-        XCTAssertTrue(model.search("zzz-no-match").isEmpty)
-        XCTAssertTrue(model.search("aria", limit: 2).count <= 2)          // capped
+    func testSearchByCategory() async {
+        let (model, _, collections) = await makeModel()
+        _ = collections.createPlaylist("Roadtrip")
+        // Songs — by title and by artist, case-insensitive; empty/no-match → empty.
+        let neon = await model.search("neon", category: .songs)
+        XCTAssertEqual(neon.map(\.id), ["sng_1"])
+        let aria = await model.search("ARIA", category: .songs)
+        XCTAssertEqual(Set(aria.map(\.id)), ["sng_1", "sng_2", "sng_3"])
+        let empty = await model.search("", category: .songs)
+        XCTAssertTrue(empty.isEmpty)
+        let noMatch = await model.search("zzz-no-match", category: .songs)
+        XCTAssertTrue(noMatch.isEmpty)
+        // Albums / Artists / Playlists categories scope the results.
+        let albHits = await model.search("night", category: .albums)
+        XCTAssertEqual(albHits.map(\.id), ["alb_1"])
+        let artHits = await model.search("cobalt", category: .artists)
+        XCTAssertEqual(artHits.map(\.id), ["artist:Cobalt"])
+        let plHits = await model.search("road", category: .playlists)
+        XCTAssertTrue(plHits.contains { $0.title == "Roadtrip" })
+        let neonAsAlbum = await model.search("neon", category: .albums)
+        XCTAssertTrue(neonAsAlbum.isEmpty)   // a song title is not an album match
+        let capped = await model.search("aria", category: .songs, limit: 2)
+        XCTAssertTrue(capped.count <= 2)
     }
 
     // MARK: Play (routes through the shared sequencer)

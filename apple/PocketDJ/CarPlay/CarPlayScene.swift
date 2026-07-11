@@ -36,6 +36,8 @@ final class CarPlayController {
     /// The currently-pushed Up Next list, kept so an edit can refresh it in place.
     private var upNextTemplate: CPListTemplate?
     private lazy var nowPlayingObserver = CarPlayNowPlayingObserver(controller: self)
+    /// The active search delegate (CPSearchTemplate.delegate is weak — retain the current one).
+    private var searchDelegate: CarPlaySearchDelegate?
 
     init(interfaceController: CPInterfaceController) {
         self.interfaceController = interfaceController
@@ -70,10 +72,11 @@ final class CarPlayController {
         }
         let albums = albumsTemplate(model)
         let artists = artistsTemplate(model)
+        let search = searchTabTemplate()
 
-        // No free-text Search tab: CarPlay keyboard entry is blocked while driving (it froze the
-        // app on a real head unit). Finding without a keyboard is the A–Z index on Albums / Artists.
-        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums, artists])
+        // Search is a CATEGORY MENU (CarPlay's search template can't host mode toggles). The A–Z
+        // index on Albums / Artists is the keyboard-free find; the keyboard search works parked.
+        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums, artists, search])
         interfaceController.setRootTemplate(tabBar, animated: true, completion: nil)
         configureNowPlaying()
     }
@@ -271,6 +274,67 @@ final class CarPlayController {
         interfaceController.pushTemplate(CPNowPlayingTemplate.shared, animated: true, completion: nil)
     }
 
+    // MARK: - Search (category menu → scoped keyboard search; voice via Siri)
+
+    /// The Search tab: a menu of category "modes" (Songs / Albums / Artists / Playlists) — CarPlay's
+    /// search template can't host toggles, so the category IS the mode. A Siri row covers hands-free
+    /// voice search while driving (keyboard entry is blocked in motion).
+    private func searchTabTemplate() -> CPListTemplate {
+        var items = CarPlayModel.SearchCategory.allCases.map { cat -> CPListItem in
+            let item = CPListItem(text: "Search \(cat.label)", detailText: nil)
+            item.setImage(UIImage(systemName: cat.symbol))
+            item.handler = { [weak self] _, completion in self?.pushSearch(category: cat); completion() }
+            return item
+        }
+        let siri = CPListItem(text: "Hands-free: ask Siri", detailText: "e.g. “Play Aria in PocketDJ”")
+        siri.setImage(UIImage(systemName: "mic.fill"))
+        siri.handler = { _, completion in completion() }
+        items.append(siri)
+        let template = CPListTemplate(title: "Search", sections: [CPListSection(items: items)])
+        template.tabImage = UIImage(systemName: "magnifyingglass")
+        template.tabTitle = "Search"
+        return template
+    }
+
+    private func pushSearch(category: CarPlayModel.SearchCategory) {
+        let delegate = CarPlaySearchDelegate(controller: self, category: category)
+        searchDelegate = delegate
+        let template = CPSearchTemplate()
+        template.delegate = delegate
+        interfaceController.pushTemplate(template, animated: true, completion: nil)
+    }
+
+    /// Build result items for a query (called by the search delegate). The model runs the filter
+    /// OFF the main actor over prebuilt keys, so typing never blocks the head unit.
+    func searchItems(for query: String, category: CarPlayModel.SearchCategory) async -> [CPListItem] {
+        guard let model else { return [] }
+        return await model.search(query, category: category).map { row in
+            let item = CPListItem(text: row.title, detailText: row.subtitle)
+            loadArtwork(albumId: row.artworkAlbumId, into: item)
+            item.handler = { [weak self] _, completion in self?.handleSearchTap(row, category: category); completion() }
+            return item
+        }
+    }
+
+    /// Route a selected search result: a song plays; an album/artist/playlist drills in.
+    private func handleSearchTap(_ row: CarPlayModel.Row, category: CarPlayModel.SearchCategory) {
+        guard let model else { return }
+        switch category {
+        case .songs:
+            Task { await model.playSong(id: row.id); self.showNowPlaying() }
+        case .albums:
+            pushSongs(title: row.title, rows: model.songs(inAlbum: row.id),
+                      playAll: { await model.playAlbum(id: row.id) },
+                      shuffleAll: { await model.playAlbum(id: row.id, shuffle: true) })
+        case .artists:
+            pushArtistAlbums(name: row.title, model: model)
+        case .playlists:
+            pushSongs(title: row.title, rows: model.songs(inPlaylist: row.id),
+                      playAll: { await model.playPlaylist(id: row.id) },
+                      shuffleAll: { await model.playPlaylist(id: row.id, shuffle: true) })
+        }
+    }
+
     // MARK: - Up Next (queue view + edit)
 
     /// Push the upcoming-queue list (Now Playing "Up Next" button → here).
@@ -327,6 +391,31 @@ final class CarPlayController {
         }
         let alert = CPActionSheetTemplate(title: message, message: nil, actions: [ok])
         interfaceController.presentTemplate(alert, animated: true, completion: nil)
+    }
+}
+
+/// CPSearchTemplate delegate scoped to one category. The search runs OFF the main actor in the
+/// model, so a huge catalog never hangs the head unit while typing.
+final class CarPlaySearchDelegate: NSObject, CPSearchTemplateDelegate {
+    private weak var controller: CarPlayController?
+    private let category: CarPlayModel.SearchCategory
+    init(controller: CarPlayController, category: CarPlayModel.SearchCategory) {
+        self.controller = controller
+        self.category = category
+    }
+
+    func searchTemplate(_ searchTemplate: CPSearchTemplate, updatedSearchText searchText: String,
+                        completionHandler: @escaping ([CPListItem]) -> Void) {
+        Task { @MainActor in
+            let items = await controller?.searchItems(for: searchText, category: category) ?? []
+            completionHandler(items)
+        }
+    }
+
+    func searchTemplate(_ searchTemplate: CPSearchTemplate, selectedResult item: CPListItem,
+                        completionHandler: @escaping () -> Void) {
+        // The item carries its own tap handler (play / drill-in); fire it.
+        if let handler = item.handler { handler(item, completionHandler) } else { completionHandler() }
     }
 }
 

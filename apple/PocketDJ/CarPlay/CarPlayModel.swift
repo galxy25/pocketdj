@@ -107,21 +107,63 @@ final class CarPlayModel {
         return songRows(album.trackList)
     }
 
-    /// Free-text search over title + artist — the ONLY CarPlay search (no advanced filter/sort).
-    /// Capped: CarPlay lists are bounded and a car list shouldn't scroll thousands of rows.
-    func search(_ query: String, limit: Int = 100) -> [Row] {
-        let q = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-            .trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return [] }
-        var out: [Row] = []
-        for s in app.songs {
-            if (s.name + "\n" + s.artist)
-                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q) {
-                out.append(songRow(s))
-                if out.count >= limit { break }
+    // MARK: - Search (category-scoped, on-device)
+
+    /// The search "modes" the CarPlay search tab offers as a category menu (CarPlay's search
+    /// template can't host toggles). Songs/Albums/Artists map to a browse kind; Playlists is a
+    /// name match over the (few) playlists.
+    enum SearchCategory: String, CaseIterable {
+        case songs, albums, artists, playlists
+        var label: String {
+            switch self {
+            case .songs: return "Songs"; case .albums: return "Albums"
+            case .artists: return "Artists"; case .playlists: return "Playlists"
             }
         }
-        return out
+        var symbol: String {
+            switch self {
+            case .songs: return "music.note"; case .albums: return "opticaldisc"
+            case .artists: return "music.mic"; case .playlists: return "music.note.list"
+            }
+        }
+        var kind: ItemKind? {
+            switch self { case .songs: return .song; case .albums: return .album
+                          case .artists: return .artist; case .playlists: return nil }
+        }
+    }
+
+    /// On-device search within a category. Runs the filter OFF the main actor over the PREBUILT
+    /// folded search keys — it never folds the whole catalog on the main thread per keystroke,
+    /// which was the freeze on a large (~90k-song) catalog. Capped for a car list.
+    func search(_ query: String, category: SearchCategory, limit: Int = 60) async -> [Row] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return [] }
+        if category == .playlists { return searchPlaylistRows(q, limit: limit) }
+        guard let kind = category.kind else { return [] }
+        let base = app.browseItems(kind)          // O(1) array ref (main actor)
+        let keys = app.searchKeys(kind)
+        let filtered = await Task.detached(priority: .userInitiated) {
+            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: [], sortKeys: [])
+        }.value
+        return filtered.prefix(limit).compactMap { rowFrom($0) }
+    }
+
+    private func searchPlaylistRows(_ query: String, limit: Int) -> [Row] {
+        let q = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        return Array(playlists().filter {
+            $0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q)
+        }.prefix(limit))
+    }
+
+    private func rowFrom(_ item: BrowseItem) -> Row? {
+        switch item {
+        case .song(let s, _, _, _, _): return songRow(s)
+        case .album(let a, _): return Row(id: a.id, title: a.name, subtitle: a.artist, artworkAlbumId: a.id, isSong: false)
+        case .artist(let name, let ac, let sc, let albumId):
+            return Row(id: "artist:\(name)", title: name,
+                       subtitle: "\(ac) album\(ac == 1 ? "" : "s") · \(sc) songs",
+                       artworkAlbumId: albumId, isSong: false)
+        }
     }
 
     // MARK: - Play (all through the one unified sequencer)
