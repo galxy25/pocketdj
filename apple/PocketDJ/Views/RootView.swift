@@ -94,6 +94,7 @@ struct RootView: View {
                 detail
                     .navigationDestination(for: IndexAlbum.self) { AlbumDetailView(album: $0, path: $path) }
                     .navigationDestination(for: IndexSong.self) { SongDetailView(song: $0) }
+                    .navigationDestination(for: Artist.self) { ArtistDetailView(artistName: $0.name, path: $path) }
                     .navigationDestination(for: Pocket.self) { PocketDetailView(pocketId: $0.id, path: $path) }
                     .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlistId: $0.id, path: $path) }
                     .navigationDestination(for: SourcePlaylist.self) { IndexPlaylistDetailView(source: $0, path: $path) }

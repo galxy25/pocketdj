@@ -26,7 +26,7 @@ final class PlayHistoryStore {
 
     /// Which surface a play happened in. Raw values are the persisted tokens — never rename.
     enum PlaySource: String, Codable, CaseIterable, Hashable {
-        case browser, playlist, pocket, album, setlist, mix
+        case browser, playlist, pocket, album, setlist, mix, artist
 
         /// Human label for the timeline accessory ("in <label>").
         var label: String {
@@ -37,6 +37,7 @@ final class PlayHistoryStore {
             case .album:    return "Album"
             case .setlist:  return "Set list"
             case .mix:      return "Mix"
+            case .artist:   return "Artist"
             }
         }
 
@@ -49,6 +50,7 @@ final class PlayHistoryStore {
             case .album:    return "square.stack.fill"
             case .setlist:  return "music.note.list"
             case .mix:      return "slider.horizontal.3"
+            case .artist:   return "music.mic"
             }
         }
     }

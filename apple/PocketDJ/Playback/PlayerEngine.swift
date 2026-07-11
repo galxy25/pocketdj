@@ -374,6 +374,10 @@ final class PlayerEngine {
         if !isLive, duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
         if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // Also set the explicit playbackState: CarPlay (the head-unit Now Playing template + the
+        // system "Now Playing" app) and watchOS rely on it, not just the info dict's PlaybackRate.
+        // Without it a phone-started track shows on the CarPlay dashboard but not in Now Playing.
+        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
     }
 
     /// Resolve + fetch the current track's cover art and attach it to the Now Playing card.
@@ -410,6 +414,7 @@ final class PlayerEngine {
 
     private func clearNowPlayingInfo() {
         guard NowPlayingArbiter.shared.isActive(self) else { return }   // don't wipe the Mix's card
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         NowPlayingArbiter.shared.resign(self)                           // release so the Mix can reclaim
     }

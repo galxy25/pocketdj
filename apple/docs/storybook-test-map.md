@@ -27,6 +27,7 @@ server-side. Don't treat their absence as a coverage gap.
 | 11 Browser — songs | `BrowseUITests.testSwitchToSongsListsTracks` | `BrowseStateTests` | ✅ |
 | 12 Browser — filter & sort | `BrowseUITests.testFilterSheetOpens`, `testSortSheetOpens` | `FilterEngineTests`, `SortEngineTests` | ✅ |
 | 12a History mode (⌘H) — timeline + group-by-song, Browser filters + Last-played sort + date range | `HistoryUITests` (timeline, group-by-song count, Last-played sort, filter sheet, paging) | `PlayHistoryStoreTests`, `PlayHistoryContextTests`, `HistoryEngineTests`, `SetlistPlayerTests` (attribution) | ✅ native-only |
+| 12b CarPlay app — Browse (Playlists/Pockets/Albums→songs) · Play · Add-to · title/artist search | — *(CarPlay UI can't run headlessly — verify in the CarPlay Simulator; see `docs/carplay.md`)* | `CarPlayModelTests` (browse lists, songs, search, play routing, add-to) | ✅ iOS-only |
 | 13 Browser — albums (desktop) | `BrowseUITests.testLayoutToggleKeepsAlbumsVisible` | — | ✅ |
 | 14–16 Edit album / audio / song | `SettingsUITests.testEditsExportImportPresent` | `EditSchemaTests` | ✅ |
 | 18–19 Pockets — list / detail | `PocketsUITests` (create → open → rename → delete) | `CollectionsStoreTests` (pocket CRUD + cycle-guard + export/import) | ✅ |
@@ -72,6 +73,7 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 |---|---|---|
 | `PocketDJ/Browse/**`, `Views/BrowseView.swift` | `BrowseUITests` | `BrowseStateTests`, `FilterEngineTests`, `SortEngineTests` |
 | `Views/HistoryView.swift`, `State/PlayHistoryStore.swift` (History mode); its play-attribution touches `PocketDJApp.swift` hooks + `SetlistPlayer.swift` + `CollectionsStore.historyContext` | `HistoryUITests` | `PlayHistoryStoreTests`, `PlayHistoryContextTests`, `HistoryEngineTests`, `SetlistPlayerTests` |
+| `PocketDJ/CarPlay/**` (CarPlay app), `Intents/IntentServices.swift` (playAlbum + shared) | *(none headless — CarPlay Simulator, see `docs/carplay.md`)* | `CarPlayModelTests`, `IntentServicesTests` |
 | `Views/AlbumDetailView.swift`, `Views/SongDetailView.swift` | `BrowseUITests` | `DecodingTests` |
 | `Views/Edit*View.swift`, `Models/EditSchema.swift`, `State/EditsStore.swift` | `SettingsUITests` | `EditSchemaTests` |
 | `Views/SettingsView.swift`, `State/SettingsStore.swift` | `SettingsUITests`, `StorageUITests` | `SettingsStoreTests`, `CatalogMergeTests` |

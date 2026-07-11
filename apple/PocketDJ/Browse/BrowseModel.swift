@@ -3,7 +3,7 @@ import Foundation
 // Native port of the PWA browser's filter/sort model
 // (src/engine/fieldRegistry.ts · filterEngine.ts · sortEngine.ts).
 
-enum ItemKind: String, CaseIterable, Identifiable, Codable { case album, song; var id: String { rawValue } }
+enum ItemKind: String, CaseIterable, Identifiable, Codable { case album, song, artist; var id: String { rawValue } }
 
 /// A browsable row: an album, or a song (with its album name for display).
 /// `source` carries the origin source name (e.g. "My Vinyl") so the filter engine
@@ -31,6 +31,9 @@ enum BrowseItem: Identifiable, Hashable {
     /// reads it directly here just like the PWA reads `song.genre`.
     /// `play` is set only in History mode (see PlayRef).
     case song(IndexSong, albumName: String, source: String? = nil, genre: String? = nil, play: PlayRef? = nil)
+    /// An artist grouping (the Artists browse kind): the artist name + its album/song counts and a
+    /// representative album for the thumbnail. Detail (their albums) resolves by name on tap.
+    case artist(name: String, albumCount: Int, songCount: Int, artworkAlbumId: String? = nil)
 
     var id: String {
         switch self {
@@ -38,15 +41,17 @@ enum BrowseItem: Identifiable, Hashable {
         // History rows are per-EVENT: identify by the play event so repeats of one song
         // stay distinct. Normal Browser rows (play == nil) keep the stable songId.
         case .song(let s, _, _, _, let play): return play.map { "evt:\($0.eventId.uuidString)" } ?? s.id
+        case .artist(let name, _, _, _): return "artist:\(name)"
         }
     }
     var kind: ItemKind {
-        switch self { case .album: return .album; case .song: return .song }
+        switch self { case .album: return .album; case .song: return .song; case .artist: return .artist }
     }
     var source: String? {
         switch self {
         case .album(_, let s): return s
         case .song(_, _, let s, _, _): return s
+        case .artist: return nil
         }
     }
     /// The play-event reference for History rows (nil for Browser rows / albums).
@@ -95,7 +100,12 @@ struct Field: Identifiable, Hashable {
 enum Fields {
     static let all: [Field] = [
         Field(id: "artist", label: "Artist", kind: .string, numeric: false, sortable: true,
-              appliesTo: [.album, .song], ops: [.eq, .neq, .inList], hasOptions: false),
+              appliesTo: [.album, .song, .artist], ops: [.eq, .neq, .inList], hasOptions: false),
+        // Artist-kind only: the artist's album / song counts (sortable + range-filterable).
+        Field(id: "albumCount", label: "Albums", kind: .number, numeric: true, sortable: true,
+              appliesTo: [.artist], ops: [.eq, .neq, .between], hasOptions: false),
+        Field(id: "songCount", label: "Songs", kind: .number, numeric: true, sortable: true,
+              appliesTo: [.artist], ops: [.eq, .neq, .between], hasOptions: false),
         Field(id: "name", label: "Title", kind: .string, numeric: false, sortable: true,
               appliesTo: [.album, .song], ops: [.eq, .neq, .inList], hasOptions: false),
         Field(id: "year", label: "Year", kind: .number, numeric: true, sortable: true,
@@ -180,6 +190,13 @@ enum Fields {
             case "sentiment": return .strings(s.sentimentKeywords ?? [])
             // History: the play event's timestamp (nil for non-history rows → nulls-last).
             case "lastPlayedAt": return play.map { .number($0.playedAt) } ?? .none
+            default: return .none
+            }
+        case .artist(let name, let albumCount, let songCount, _):
+            switch fieldID {
+            case "artist", "name": return .string(name)
+            case "albumCount": return .number(Double(albumCount))
+            case "songCount": return .number(Double(songCount))
             default: return .none
             }
         }
