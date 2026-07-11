@@ -121,6 +121,42 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertEqual(collections.nowPlayingSource, .playlist)
     }
 
+    // MARK: Up Next (running-queue view + edit)
+
+    func testUpNextReflectsQueueAndRemoveEditsIt() async {
+        let (model, services, _) = await makeModel()
+        services.setlistPlayer.play([.init(id: "sng_1", title: "One", artist: "A"),
+                                     .init(id: "sng_2", title: "Two", artist: "A"),
+                                     .init(id: "sng_3", title: "Three", artist: "A")])
+        // Up Next is everything AFTER the current (index 0) track.
+        let up = model.upNext()
+        XCTAssertEqual(up.map(\.title), ["Two", "Three"])
+        XCTAssertEqual(up.first?.albumId, "alb_1")           // resolved from the catalog
+
+        model.removeFromQueue(uid: up[0].uid)                // remove "Two"
+        XCTAssertEqual(model.upNext().map(\.title), ["Three"])
+
+        model.moveToEnd(uid: model.upNext()[0].uid)          // no-op with one item, but exercises the path
+        XCTAssertEqual(model.upNext().map(\.title), ["Three"])
+        services.setlistPlayer.stop()
+        XCTAssertTrue(model.upNext().isEmpty)                 // nothing up next when idle
+    }
+
+    /// Playing a playlist/pocket in CarPlay rebuilds a FRESH snapshot from the collection's CURRENT
+    /// songs each time (into the reserved Now Playing setlist, overwriting the prior one), so a
+    /// playlist with no pre-existing setlist plays, and songs added since last play are included.
+    func testReplayingPlaylistPicksUpNewlyAddedSongs() async {
+        let (model, _, collections) = await makeModel()
+        let pl = collections.createPlaylist("Fresh")
+        collections.addSong("sng_1", toPlaylist: pl.id)
+        await model.playPlaylist(id: pl.id)
+        XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_1"])
+
+        collections.addSong("sng_2", toPlaylist: pl.id)     // update the playlist…
+        await model.playPlaylist(id: pl.id)                 // …replay → fresh snapshot includes it
+        XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_1", "sng_2"])
+    }
+
     // MARK: Add-to
 
     func testAddTargetsAndAddSong() async {

@@ -2276,6 +2276,9 @@ final class MixEngine {
             info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // Explicit playbackState so CarPlay (head-unit Now Playing + system Now Playing app) and
+        // watchOS reflect the deck's transport, not just the info dict's PlaybackRate.
+        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
     }
 
     /// Fetch cover art for the now-playing card ONLY when the song id actually changed since the

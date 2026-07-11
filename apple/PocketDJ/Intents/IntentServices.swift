@@ -125,13 +125,14 @@ final class IntentServices {
         return song.name
     }
 
-    /// ▶ an album: its tracks in order into the reserved Now Playing setlist. Mirrors
-    /// AlbumDetailView.play (source: .album). Returns the album name for dialogs.
+    /// ▶/🔀 an album: its tracks (in order, or shuffled) into the reserved Now Playing setlist.
+    /// Mirrors AlbumDetailView.play (source: .album). Returns the album name for dialogs.
     @discardableResult
-    func playAlbum(id: String) async throws -> String {
+    func playAlbum(id: String, shuffle: Bool = false) async throws -> String {
         await ensureReady()
         guard let album = app.albumsById[id] else { throw PocketDJIntentError.songNotFound }
-        guard let set = collections.playNow(songIds: album.trackList, name: album.name, source: .album),
+        guard let set = collections.playNow(songIds: album.trackList, name: album.name,
+                                            shuffle: shuffle, source: .album),
               !set.tracks.isEmpty else { throw PocketDJIntentError.emptyCollection(album.name) }
         startNowPlaying(set)
         return album.name

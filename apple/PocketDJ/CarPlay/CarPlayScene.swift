@@ -33,6 +33,9 @@ final class CarPlayController {
     private var model: CarPlayModel?
     /// Tiny artwork cache (albumId → image) so re-browsing doesn't refetch.
     private var artCache: [String: UIImage] = [:]
+    /// The currently-pushed Up Next list, kept so an edit can refresh it in place.
+    private var upNextTemplate: CPListTemplate?
+    private lazy var nowPlayingObserver = CarPlayNowPlayingObserver(controller: self)
 
     init(interfaceController: CPInterfaceController) {
         self.interfaceController = interfaceController
@@ -56,22 +59,31 @@ final class CarPlayController {
         let playlists = listTemplate(title: "Playlists", tabImageName: "music.note.list",
                                      rows: model.playlists()) { [weak self] row in
             self?.pushSongs(title: row.title, rows: model.songs(inPlaylist: row.id),
-                            playAll: { await model.playPlaylist(id: row.id) })
+                            playAll: { await model.playPlaylist(id: row.id) },
+                            shuffleAll: { await model.playPlaylist(id: row.id, shuffle: true) })
         }
         let pockets = listTemplate(title: "Pockets", tabImageName: "square.stack.fill",
                                    rows: model.pockets()) { [weak self] row in
             self?.pushSongs(title: row.title, rows: model.songs(inPocket: row.id),
-                            playAll: { await model.playPocket(id: row.id) })
+                            playAll: { await model.playPocket(id: row.id) },
+                            shuffleAll: { await model.playPocket(id: row.id, shuffle: true) })
         }
-        let albums = listTemplate(title: "Albums", tabImageName: "opticaldisc",
-                                  rows: model.albums()) { [weak self] row in
-            self?.pushSongs(title: row.title, rows: model.songs(inAlbum: row.id),
-                            playAll: { await model.playAlbum(id: row.id) })
-        }
-        let search = searchTabTemplate()
+        let albums = albumsTemplate(model)
 
-        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums, search])
+        // No free-text Search tab: CarPlay keyboard entry is blocked while driving (it froze the
+        // app on a real head unit). Finding without a keyboard is the A–Z index on the Albums list.
+        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums])
         interfaceController.setRootTemplate(tabBar, animated: true, completion: nil)
+        configureNowPlaying()
+    }
+
+    /// The shared Now Playing template is reachable via the system Now Playing button once audio is
+    /// playing (that's why we set MPNowPlayingInfoCenter.playbackState in the engines). Enable its
+    /// "Up Next" button and observe taps so the driver can see + edit the upcoming queue.
+    private func configureNowPlaying() {
+        let np = CPNowPlayingTemplate.shared
+        np.isUpNextButtonEnabled = true
+        np.add(nowPlayingObserver)
     }
 
     // MARK: - List templates
@@ -88,15 +100,56 @@ final class CarPlayController {
         return template
     }
 
-    /// Drill into a collection's songs, with a "Play all" row on top; a song opens the action sheet.
-    private func pushSongs(title: String, rows: [CarPlayModel.Row], playAll: @escaping () async -> Void) {
+    /// The Albums tab, grouped into A–Z sections with a `sectionIndexTitle` on each so the head
+    /// unit shows the alphabet quick-scroll — the keyboard-free way to "find" while driving.
+    private func albumsTemplate(_ model: CarPlayModel) -> CPListTemplate {
+        let rows = model.albums().sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        var sections: [CPListSection] = []
+        for row in rows {
+            let letter = Self.indexLetter(row.title)
+            let item = listItem(row, showsDisclosure: true) { [weak self] in
+                self?.pushSongs(title: row.title, rows: model.songs(inAlbum: row.id),
+                                playAll: { await model.playAlbum(id: row.id) },
+                                shuffleAll: { await model.playAlbum(id: row.id, shuffle: true) })
+            }
+            if let last = sections.last, last.sectionIndexTitle == letter {
+                sections[sections.count - 1] = CPListSection(items: last.items + [item],
+                                                             header: nil, sectionIndexTitle: letter)
+            } else {
+                sections.append(CPListSection(items: [item], header: nil, sectionIndexTitle: letter))
+            }
+        }
+        let template = CPListTemplate(title: "Albums",
+                                      sections: sections.isEmpty
+                                        ? [CPListSection(items: [CPListItem(text: "No albums", detailText: nil)])]
+                                        : sections)
+        template.tabImage = UIImage(systemName: "opticaldisc")
+        template.tabTitle = "Albums"
+        return template
+    }
+
+    /// First-letter index key: A–Z, else "#".
+    private static func indexLetter(_ s: String) -> String {
+        guard let c = s.trimmingCharacters(in: .whitespaces).first?.uppercased(),
+              c.range(of: "^[A-Z]$", options: .regularExpression) != nil else { return "#" }
+        return c
+    }
+
+    /// Drill into a collection's songs, with "Play all" + "Shuffle all" rows on top; a song opens
+    /// the action sheet.
+    private func pushSongs(title: String, rows: [CarPlayModel.Row],
+                           playAll: @escaping () async -> Void, shuffleAll: @escaping () async -> Void) {
         var sections: [CPListSection] = []
         if !rows.isEmpty {
             let playAllItem = CPListItem(text: "▶ Play all", detailText: nil)
             playAllItem.handler = { [weak self] _, completion in
                 Task { await playAll(); self?.showNowPlaying(); completion() }
             }
-            sections.append(CPListSection(items: [playAllItem]))
+            let shuffleItem = CPListItem(text: "🔀 Shuffle all", detailText: nil)
+            shuffleItem.handler = { [weak self] _, completion in
+                Task { await shuffleAll(); self?.showNowPlaying(); completion() }
+            }
+            sections.append(CPListSection(items: [playAllItem, shuffleItem]))
         }
         let songItems = rows.map { row -> CPListItem in
             listItem(row, showsDisclosure: false) { [weak self] in self?.presentSongActions(row) }
@@ -146,38 +199,6 @@ final class CarPlayController {
         interfaceController.pushTemplate(template, animated: true, completion: nil)
     }
 
-    // MARK: - Search
-
-    private func searchTabTemplate() -> CPListTemplate {
-        let searchRow = CPListItem(text: "Search library", detailText: "By title or artist")
-        searchRow.handler = { [weak self] _, completion in
-            self?.pushSearch(); completion()
-        }
-        let template = CPListTemplate(title: "Search", sections: [CPListSection(items: [searchRow])])
-        template.tabImage = UIImage(systemName: "magnifyingglass")
-        template.tabTitle = "Search"
-        return template
-    }
-
-    private lazy var searchDelegate = CarPlaySearchDelegate(controller: self)
-
-    private func pushSearch() {
-        let template = CPSearchTemplate()
-        template.delegate = searchDelegate
-        interfaceController.pushTemplate(template, animated: true, completion: nil)
-    }
-
-    /// Search results as list items (used by the search delegate).
-    func searchItems(for query: String) -> [CPListItem] {
-        guard let model else { return [] }
-        return model.search(query).map { row in
-            let item = listItem(row, showsDisclosure: false) { [weak self] in
-                Task { await model.playSong(id: row.id); self?.showNowPlaying() }
-            }
-            return item
-        }
-    }
-
     // MARK: - Helpers
 
     /// Build a CPListItem for a row, wiring its tap handler and kicking off async artwork.
@@ -186,13 +207,13 @@ final class CarPlayController {
         let item = CPListItem(text: row.title, detailText: row.subtitle)
         if showsDisclosure { item.accessoryType = .disclosureIndicator }
         item.handler = { _, completion in onTap(); completion() }
-        loadArtwork(for: row, into: item)
+        loadArtwork(albumId: row.artworkAlbumId, into: item)
         return item
     }
 
     /// Resolve the first working cover-art candidate → UIImage and set it on the item.
-    private func loadArtwork(for row: CarPlayModel.Row, into item: CPListItem) {
-        guard let albumId = row.artworkAlbumId else { return }
+    private func loadArtwork(albumId: String?, into item: CPListItem) {
+        guard let albumId else { return }
         if let cached = artCache[albumId] { item.setImage(cached); return }
         guard let model else { return }
         let urls = model.artCandidates(albumId: albumId)
@@ -216,6 +237,56 @@ final class CarPlayController {
         interfaceController.pushTemplate(CPNowPlayingTemplate.shared, animated: true, completion: nil)
     }
 
+    // MARK: - Up Next (queue view + edit)
+
+    /// Push the upcoming-queue list (Now Playing "Up Next" button → here).
+    func showUpNext() {
+        let template = CPListTemplate(title: "Up Next", sections: [upNextSection()])
+        upNextTemplate = template
+        interfaceController.pushTemplate(template, animated: true, completion: nil)
+    }
+
+    private func upNextSection() -> CPListSection {
+        guard let model else { return CPListSection(items: []) }
+        let items = model.upNext().map { item -> CPListItem in
+            let li = CPListItem(text: item.title, detailText: item.artist)
+            li.handler = { [weak self] _, completion in self?.presentUpNextActions(item); completion() }
+            loadArtwork(albumId: item.albumId, into: li)
+            return li
+        }
+        return CPListSection(items: items.isEmpty
+            ? [CPListItem(text: "Nothing up next", detailText: nil)] : items)
+    }
+
+    /// A tap on an Up Next row → Remove / Play next / Move to end (CarPlay has no swipe-to-delete).
+    private func presentUpNextActions(_ item: CarPlayModel.UpNextItem) {
+        guard let model else { return }
+        let remove = CPAlertAction(title: "Remove from queue", style: .destructive) { [weak self] _ in
+            self?.interfaceController.dismissTemplate(animated: true, completion: nil)
+            model.removeFromQueue(uid: item.uid)
+            self?.refreshUpNext()
+        }
+        let playNext = CPAlertAction(title: "Play next", style: .default) { [weak self] _ in
+            self?.interfaceController.dismissTemplate(animated: true, completion: nil)
+            model.playNext(uid: item.uid)
+            self?.refreshUpNext()
+        }
+        let toEnd = CPAlertAction(title: "Move to end", style: .default) { [weak self] _ in
+            self?.interfaceController.dismissTemplate(animated: true, completion: nil)
+            model.moveToEnd(uid: item.uid)
+            self?.refreshUpNext()
+        }
+        let cancel = CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            self?.interfaceController.dismissTemplate(animated: true, completion: nil)
+        }
+        let sheet = CPActionSheetTemplate(title: item.title, message: item.artist,
+                                          actions: [remove, playNext, toEnd, cancel])
+        interfaceController.presentTemplate(sheet, animated: true, completion: nil)
+    }
+
+    /// Rebuild the Up Next list in place after an edit.
+    private func refreshUpNext() { upNextTemplate?.updateSections([upNextSection()]) }
+
     private func toast(_ message: String) {
         let ok = CPAlertAction(title: "OK", style: .default) { [weak self] _ in
             self?.interfaceController.dismissTemplate(animated: true, completion: nil)
@@ -225,20 +296,14 @@ final class CarPlayController {
     }
 }
 
-/// CPSearchTemplate delegate — returns title/artist search results and plays the picked song.
-final class CarPlaySearchDelegate: NSObject, CPSearchTemplateDelegate {
+/// Observes the shared Now Playing template — routes the "Up Next" button tap to the controller so
+/// the driver can see + edit the upcoming queue.
+final class CarPlayNowPlayingObserver: NSObject, CPNowPlayingTemplateObserver {
     private weak var controller: CarPlayController?
     init(controller: CarPlayController) { self.controller = controller }
-
-    func searchTemplate(_ searchTemplate: CPSearchTemplate, updatedSearchText searchText: String,
-                        completionHandler: @escaping ([CPListItem]) -> Void) {
-        completionHandler(controller?.searchItems(for: searchText) ?? [])
-    }
-
-    func searchTemplate(_ searchTemplate: CPSearchTemplate, selectedResult item: CPListItem,
-                        completionHandler: @escaping () -> Void) {
-        // The item carries its own tap handler (plays the song); fire it.
-        item.handler?(item, completionHandler) ?? completionHandler()
+    func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
+        MainActor.assumeIsolated { controller?.showUpNext() }
     }
 }
+
 #endif

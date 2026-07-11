@@ -80,9 +80,9 @@ final class CarPlayModel {
 
     // MARK: - Play (all through the one unified sequencer)
 
-    func playPlaylist(id: String) async { try? await services.playPlaylist(id: id, shuffle: false) }
-    func playPocket(id: String) async { try? await services.playPocket(id: id, shuffle: false) }
-    func playAlbum(id: String) async { try? await services.playAlbum(id: id) }
+    func playPlaylist(id: String, shuffle: Bool = false) async { try? await services.playPlaylist(id: id, shuffle: shuffle) }
+    func playPocket(id: String, shuffle: Bool = false) async { try? await services.playPocket(id: id, shuffle: shuffle) }
+    func playAlbum(id: String, shuffle: Bool = false) async { try? await services.playAlbum(id: id, shuffle: shuffle) }
     func playSong(id: String) async { try? await services.playSong(id: id) }
 
     // MARK: - Add-to (pocket / playlist)
@@ -108,6 +108,29 @@ final class CarPlayModel {
         }
         return nil
     }
+
+    // MARK: - Up Next (the running sequencer's upcoming queue)
+
+    /// One upcoming row. Identified by `uid` (a song can repeat in the queue), matching how
+    /// SetlistPlayer's live-queue edits key rows.
+    struct UpNextItem: Identifiable, Equatable {
+        let uid: UUID
+        let title: String
+        let artist: String
+        let albumId: String?
+        var id: UUID { uid }
+    }
+
+    /// The tracks after the current one in the running set (empty when nothing/queue-less is playing).
+    func upNext() -> [UpNextItem] {
+        services.setlistPlayer.upcoming.map {
+            UpNextItem(uid: $0.uid, title: $0.title, artist: $0.artist, albumId: app.songsById[$0.id]?.albumId)
+        }
+    }
+
+    func removeFromQueue(uid: UUID) { services.setlistPlayer.removeUpcoming(uids: [uid]) }
+    func playNext(uid: UUID) { services.setlistPlayer.moveUpcomingNext(uid: uid) }
+    func moveToEnd(uid: UUID) { services.setlistPlayer.moveUpcomingToEnd(uid: uid) }
 
     // MARK: - Artwork (URLs; the CarPlay adapter fetches → UIImage)
 
