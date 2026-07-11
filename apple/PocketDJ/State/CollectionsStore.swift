@@ -156,7 +156,17 @@ final class CollectionsStore {
     func movePocketNotes(inPocket id: String, from: IndexSet, to: Int) {
         mutatePocket(id) { $0.notes.move(fromOffsets: from, toOffset: to) }
     }
-    func removeSong(_ songId: String, fromPocket id: String) { mutatePocket(id) { $0.songIds.removeAll { $0 == songId } } }
+    func removeSong(_ songId: String, fromPocket id: String) {
+        mutatePocket(id) { $0.songIds.removeAll { $0 == songId }; $0.songRepeats[songId] = nil }
+    }
+    /// Set a pocket member's repeat (loop) count. A count ≤ 1 clears the key.
+    func setSongRepeat(_ songId: String, count: Int, inPocket id: String) {
+        mutatePocket(id) { $0.songRepeats[songId] = CollectionMembership.storedRepeat(count) }
+    }
+    /// The stored repeat count for a pocket member (1 when none).
+    func repeatCount(forSong songId: String, inPocket id: String) -> Int {
+        CollectionMembership.normalizedRepeat(pocket(id)?.songRepeats[songId])
+    }
     func removeAlbum(_ albumId: String, fromPocket id: String) { mutatePocket(id) { $0.albumIds.removeAll { $0 == albumId } } }
     func removeChildPocket(_ childId: String, fromPocket id: String) { mutatePocket(id) { $0.childPocketIds.removeAll { $0 == childId } } }
 
@@ -196,8 +206,11 @@ final class CollectionsStore {
             pl.sequences[seqIdx].children = children
         }
     }
-    func addSong(_ songId: String, toPlaylist id: String, sequenceId: String? = nil) {
-        addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: songId), toPlaylist: id, sequenceId: sequenceId)
+    func addSong(_ songId: String, toPlaylist id: String, sequenceId: String? = nil,
+                 repeatCount: Int? = nil) {
+        addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: songId,
+                             repeatCount: CollectionMembership.storedRepeat(repeatCount ?? 1)),
+                toPlaylist: id, sequenceId: sequenceId)
     }
     func addAlbum(_ albumId: String, toPlaylist id: String, sequenceId: String? = nil) {
         addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .album, albumId: albumId), toPlaylist: id, sequenceId: sequenceId)
@@ -224,6 +237,25 @@ final class CollectionsStore {
         mutatePlaylist(id) { pl in for i in pl.sequences.indices {
             if let j = pl.sequences[i].children?.firstIndex(where: { $0.nodeId == nodeId }) { pl.sequences[i].children?[j].note = note }
         } }
+    }
+    /// Set a node's repeat (loop) count. A count ≤ 1 clears the field (persists as a normal
+    /// single play). Searches every chapter for the node id.
+    func setNodeRepeat(_ nodeId: String, count: Int, inPlaylist id: String) {
+        mutatePlaylist(id) { pl in for i in pl.sequences.indices {
+            if let j = pl.sequences[i].children?.firstIndex(where: { $0.nodeId == nodeId }) {
+                pl.sequences[i].children?[j].repeatCount = CollectionMembership.storedRepeat(count)
+            }
+        } }
+    }
+    /// The stored repeat count for a playlist node (1 when none / not found).
+    func repeatCount(forNode nodeId: String, inPlaylist id: String) -> Int {
+        guard let pl = playlist(id) else { return 1 }
+        for seq in pl.sequences {
+            if let n = seq.children?.first(where: { $0.nodeId == nodeId }) {
+                return CollectionMembership.normalizedRepeat(n.repeatCount)
+            }
+        }
+        return 1
     }
     func removeNode(_ nodeId: String, fromPlaylist id: String) {
         mutatePlaylist(id) { pl in for i in pl.sequences.indices { pl.sequences[i].children?.removeAll { $0.nodeId == nodeId } } }
@@ -395,10 +427,15 @@ final class CollectionsStore {
     /// The Add-to sheet's seam. Like `addSong(toPocket:)`, the id is prefix-agnostic:
     /// `AddToCollectionView.Item.studio` routes its `smp_`/`lp_`/`ptn_` ids straight
     /// through here (spec §8) — the string-array plumbing needs no studio-specific twin.
-    func addSong(_ songId: String, to target: AddTarget) {
+    func addSong(_ songId: String, to target: AddTarget, repeatCount: Int? = nil) {
         switch target.kind {
-        case .pocket:   addSong(songId, toPocket: target.id)
-        case .playlist: addSong(songId, toPlaylist: target.id, sequenceId: target.sequenceId)
+        case .pocket:
+            addSong(songId, toPocket: target.id)
+            if let r = CollectionMembership.storedRepeat(repeatCount ?? 1) {
+                setSongRepeat(songId, count: r, inPocket: target.id)
+            }
+        case .playlist:
+            addSong(songId, toPlaylist: target.id, sequenceId: target.sequenceId, repeatCount: repeatCount)
         }
         setLastAddTarget(target)
     }

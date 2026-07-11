@@ -77,6 +77,16 @@ struct PocketDetailView: View {
                                 InlinePlayerSlot(songId: song.id)
                             }
                             .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
+                        } else if StudioFactory.isStudioId(sid) {
+                            // Performance items (sample/loop/sequence/instrumental) ride songIds but
+                            // aren't in the catalog — render a studio-aware row with its repeat count
+                            // (previously rendered NOTHING, which also broke onMove's 1:1 mapping).
+                            StudioCollectionRow(
+                                id: sid,
+                                repeatCount: collections.repeatCount(forSong: sid, inPocket: pocketId),
+                                onSetRepeat: { collections.setSongRepeat(sid, count: $0, inPocket: pocketId) },
+                                onRemove: { collections.removeSong(sid, fromPocket: pocketId) })
+                            .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
                         }
                     }
                     .onMove { from, to in collections.movePocketSongs(inPocket: pocketId, from: from, to: to) }

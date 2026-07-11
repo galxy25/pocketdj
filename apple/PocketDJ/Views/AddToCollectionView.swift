@@ -16,6 +16,11 @@ struct AddToCollectionView: View {
 
     @State private var newPocket = ""
     @State private var newPlaylist = ""
+    /// Total plays for a performance item before the collection advances (spec: repeat count).
+    /// Studio items only; 1 = normal single play. Applied to whichever target is tapped.
+    @State private var repeatCount = 1
+
+    private var isStudio: Bool { if case .studio = item { return true }; return false }
 
     var body: some View {
         NavigationStack {
@@ -28,11 +33,25 @@ struct AddToCollectionView: View {
                     Section {
                         HStack(spacing: 8) {
                             Image(systemName: studioIcon).foregroundStyle(Theme.accent2)
-                            Text(title).foregroundStyle(Theme.fg)
+                            Text(title.isEmpty ? "Untitled \(studioKindLabel.lowercased())" : title)
+                                .foregroundStyle(Theme.fg)
                             Spacer()
                             Text(studioKindLabel).font(.caption).foregroundStyle(Theme.fgDim)
                         }
-                    } header: { Text("Adding") }
+                        Stepper(value: $repeatCount, in: 1...CollectionMembership.maxRepeat) {
+                            HStack {
+                                Text("Plays")
+                                Spacer()
+                                Text(repeatCount == 1 ? "once" : "\(repeatCount)×")
+                                    .font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                            }
+                        }
+                        .accessibilityIdentifier("add-repeat-stepper")
+                    } header: {
+                        Text("Adding")
+                    } footer: {
+                        Text("How many times this \(studioKindLabel.lowercased()) plays before the collection moves on.")
+                    }
                 }
 
                 if let last = collections.lastAddTarget, let label = collections.lastTargetLabel(last) {
@@ -114,7 +133,7 @@ struct AddToCollectionView: View {
         // Studio ids ride the SAME string-id plumbing as songs (spec §8's namespaced-id
         // mechanism): pockets keep them in `songIds`, playlists as `.song` nodes; every
         // consumer routes on the id prefix at resolve time.
-        case .studio(let id, _): collections.addSong(id, to: target)
+        case .studio(let id, _): collections.addSong(id, to: target, repeatCount: repeatCount)
         }
     }
 
@@ -132,14 +151,16 @@ struct AddToCollectionView: View {
         guard case .studio(let id, _) = item else { return "" }
         if id.hasPrefix("lp_") { return "Loop" }
         if id.hasPrefix("ptn_") { return "Sequence" }
+        if id.hasPrefix("tk_") { return "Instrumental" }
         return "Sample"
     }
 
-    /// The sub-tab's SF symbol per kind (spec §1: waveform / repeat / grid).
+    /// The sub-tab's SF symbol per kind (spec §1: waveform / repeat / grid / instrumental).
     private var studioIcon: String {
         guard case .studio(let id, _) = item else { return "waveform" }
         if id.hasPrefix("lp_") { return "repeat" }
         if id.hasPrefix("ptn_") { return "square.grid.4x3.fill" }
+        if id.hasPrefix("tk_") { return "pianokeys" }
         return "waveform"
     }
 
@@ -153,6 +174,23 @@ struct AddToCollectionView: View {
                 if !n.isEmpty { action(n); text.wrappedValue = "" }
             }
             .disabled(text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+}
+
+/// Identifiable box so a Studio list row can present `AddToCollectionView` for a studio item via
+/// `.sheet(item:)` (the row has no detail screen behind it, so it carries the resolved title).
+struct StudioAddRef: Identifiable, Hashable {
+    let id: String       // the studio id (smp_/lp_/ptn_/tk_)
+    let title: String
+}
+
+extension View {
+    /// Attach an "Add to playlist or pocket…" context-menu entry + its sheet to a Studio row.
+    /// `ref` is set by the button (captured id+title) and cleared on dismiss.
+    func studioAddToCollection(_ ref: Binding<StudioAddRef?>) -> some View {
+        sheet(item: ref) { r in
+            AddToCollectionView(item: .studio(id: r.id, title: r.title))
         }
     }
 }

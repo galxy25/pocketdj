@@ -739,3 +739,90 @@ private struct WaveformView: View {
             }
     }
 }
+
+// MARK: - Studio performance-item row (playlists + pockets)
+
+/// A collection row for a studio PERFORMANCE ITEM (sample/loop/sequence/instrumental) that rides
+/// the collection's `songIds` but has no catalog `IndexSong`. Title + length resolve live from
+/// `StudioStore` via `collections.studioLookup`; the kind comes from the id prefix. Shows a kind
+/// badge, a repeat-count badge when it loops, and a context menu to set the repeat count / remove —
+/// the in-collection editor (spec: repeat count via long-press / right-click). Playlists render
+/// this where they used to show "(missing song)"; pockets where they rendered nothing.
+struct StudioCollectionRow: View {
+    @Environment(CollectionsStore.self) private var collections
+    let id: String
+    let repeatCount: Int
+    var onSetRepeat: (Int) -> Void
+    var onRemove: () -> Void
+
+    static let repeatPresets = [1, 2, 3, 4, 6, 8, 16]
+
+    private var info: (title: String, lengthMs: Int, bpm: Double?, camelot: String?)? {
+        collections.studioLookup?(id)
+    }
+    private var kindLabel: String {
+        if id.hasPrefix("lp_") { return "Loop" }
+        if id.hasPrefix("ptn_") { return "Sequence" }
+        if id.hasPrefix("tk_") { return "Instrumental" }
+        return "Sample"
+    }
+    private var kindIcon: String {
+        if id.hasPrefix("lp_") { return "repeat" }
+        if id.hasPrefix("ptn_") { return "square.grid.4x3.fill" }
+        if id.hasPrefix("tk_") { return "pianokeys" }
+        return "waveform"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // Phase 3 swaps this glyph for the PocketDJ icon + the item's waveform.
+            ZStack {
+                LinearGradient(colors: [Theme.bgOverlay, Theme.bgRaised],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                Image(systemName: kindIcon).font(.system(size: 16)).foregroundStyle(Theme.accent2)
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(info?.title ?? "Studio item").font(.callout.weight(.medium))
+                    .foregroundStyle(Theme.fg).lineLimit(1)
+                HStack(spacing: 6) {
+                    badge(kindLabel, tint: Theme.accent2)
+                    if repeatCount > 1 { badge("↻ \(repeatCount)×", tint: Theme.accent) }
+                    if let bpm = info?.bpm { Text(Fmt.bpm(bpm) + " BPM").font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim) }
+                }
+            }
+            Spacer(minLength: 0)
+            if let ms = info?.lengthMs, ms > 0 {
+                Text(Fmt.duration(ms)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            }
+        }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .accessibilityIdentifier("studio-collection-row-\(id)")
+        .contextMenu {
+            Menu {
+                ForEach(StudioCollectionRow.repeatPresets, id: \.self) { n in
+                    Button { onSetRepeat(n) } label: {
+                        if n == repeatCount { Label(repeatLabel(n), systemImage: "checkmark") }
+                        else { Text(repeatLabel(n)) }
+                    }
+                }
+            } label: {
+                Label("Repeat count", systemImage: "repeat")
+            }
+            Button(role: .destructive) { onRemove() } label: { Label("Remove", systemImage: "trash") }
+        }
+    }
+
+    private func repeatLabel(_ n: Int) -> String { n == 1 ? "Play once" : "\(n)×" }
+
+    @ViewBuilder
+    private func badge(_ text: String, tint: Color) -> some View {
+        Text(text).font(.caption2.weight(.semibold)).foregroundStyle(tint)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(tint.opacity(0.15), in: Capsule())
+    }
+}

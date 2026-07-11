@@ -43,6 +43,8 @@ struct StudioSamplesView: View {
     @State private var deletingId: String?
     /// The store refused the delete (user root unreachable) — explain, never silently no-op.
     @State private var deleteBlocked = false
+    /// The sample whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
+    @State private var addRef: StudioAddRef?
 
     /// Newest first — this is a creation surface: the sample you just made is the one you want.
     private var samples: [StudioSample] { studio.samples.sorted { $0.createdAt > $1.createdAt } }
@@ -71,6 +73,7 @@ struct StudioSamplesView: View {
         .sheet(isPresented: $showMicRecord) { StudioMicRecordView() }
         .sheet(isPresented: $showInstrumentalPicker) { StudioInstrumentalPickerView() }
         .sheet(item: $editing) { ref in StudioSampleEditorView(sampleId: ref.id) }
+        .studioAddToCollection($addRef)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.audio],
                       allowsMultipleSelection: false) { result in handleImport(result) }
         .alert("Couldn’t import", isPresented: importErrorBinding) {
@@ -240,6 +243,10 @@ struct StudioSamplesView: View {
                 Label("Rename", systemImage: "pencil")
             }
             .accessibilityIdentifier("sample-rename-\(s.id)")
+            Button { addRef = StudioAddRef(id: s.id, title: s.name) } label: {
+                Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
+            }
+            .accessibilityIdentifier("sample-add-to-\(s.id)")
             Button(role: .destructive) { deletingId = s.id } label: {
                 Label("Delete", systemImage: "trash")
             }

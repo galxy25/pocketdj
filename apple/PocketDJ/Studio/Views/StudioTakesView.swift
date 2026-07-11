@@ -21,6 +21,8 @@ struct StudioTakesView: View {
     /// async) — drives the row spinner + disables a second tap mid-render.
     @State private var samplingIds: Set<String> = []
     @State private var errorText: String?
+    /// The instrumental whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
+    @State private var addRef: StudioAddRef?
 
     private var takesNewestFirst: [StudioTake] {
         studio.takes.sorted { $0.createdAt > $1.createdAt }
@@ -60,6 +62,7 @@ struct StudioTakesView: View {
                                              set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorText ?? "") }
+        .studioAddToCollection($addRef)
     }
 
     // MARK: Row
@@ -126,6 +129,9 @@ struct StudioTakesView: View {
             Button { beginRename(take) } label: { Label("Rename…", systemImage: "pencil") }
             Button { useAsSample(take) } label: { Label("Sample from instrumental", systemImage: "waveform.badge.plus") }
                 .disabled(samplingIds.contains(take.id) || take.scoreEvents.isEmpty)
+            Button { addRef = StudioAddRef(id: take.id, title: take.name) } label: {
+                Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
+            }
             Button(role: .destructive) { _ = studio.deleteTake(take.id) } label: {
                 Label("Delete instrumental", systemImage: "trash")
             }

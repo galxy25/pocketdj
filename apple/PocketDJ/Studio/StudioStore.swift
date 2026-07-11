@@ -636,6 +636,9 @@ final class StudioStore {
         if id.hasPrefix("ptn_"), let p = pattern(id) {
             return (p.name, StudioPattern.barMs(bpm: p.bpm), p.bpm, "Sequence")
         }
+        if id.hasPrefix("tk_"), let t = take(id) {
+            return (t.name, t.durationMs, t.bpm, "Instrumental")
+        }
         return nil
     }
 

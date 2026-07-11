@@ -803,6 +803,14 @@ struct PlaylistDetailView: View {
                     NavigationLink(value: song) { CollectionSongRow(song: song) }
                     InlinePlayerSlot(songId: song.id)
                 }
+            } else if let id = node.songId, StudioFactory.isStudioId(id) {
+                // Performance items (sample/loop/sequence/instrumental) — studio-aware row with its
+                // repeat count. Previously fell to "(missing song)" because they aren't in the catalog.
+                StudioCollectionRow(
+                    id: id,
+                    repeatCount: CollectionMembership.normalizedRepeat(node.repeatCount),
+                    onSetRepeat: { collections.setNodeRepeat(node.nodeId, count: $0, inPlaylist: playlistId) },
+                    onRemove: { collections.removeNode(node.nodeId, fromPlaylist: playlistId) })
             } else { missing("song") }
         case .album:
             if let id = node.albumId, let album = app.albumsById[id] {

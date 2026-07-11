@@ -394,4 +394,82 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(s2.pockets.first?.songIds, ["sng_1"])
         XCTAssertEqual(s2.playlists.first?.name, "Set")
     }
+
+    // MARK: - Repeat count (performance-item loop count)
+
+    func testRepeatCountNormalizationAndStorage() {
+        XCTAssertEqual(CollectionMembership.normalizedRepeat(nil), 1)
+        XCTAssertEqual(CollectionMembership.normalizedRepeat(0), 1)
+        XCTAssertEqual(CollectionMembership.normalizedRepeat(-4), 1)
+        XCTAssertEqual(CollectionMembership.normalizedRepeat(3), 3)
+        XCTAssertEqual(CollectionMembership.normalizedRepeat(9_999), CollectionMembership.maxRepeat)
+        XCTAssertNil(CollectionMembership.storedRepeat(1), "a single play persists no key")
+        XCTAssertNil(CollectionMembership.storedRepeat(0))
+        XCTAssertEqual(CollectionMembership.storedRepeat(4), 4)
+        XCTAssertEqual(CollectionMembership.storedRepeat(9_999), CollectionMembership.maxRepeat)
+    }
+
+    func testAddStudioItemWithRepeatToPlaylist() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        let seq = pl.sequences[0].nodeId
+        s.addSong("lp_a", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: seq), repeatCount: 3)
+        let node = s.playlist(pl.id)!.sequences[0].children!.first!
+        XCTAssertEqual(node.songId, "lp_a")
+        XCTAssertEqual(node.repeatCount, 3)
+        XCTAssertEqual(s.repeatCount(forNode: node.nodeId, inPlaylist: pl.id), 3)
+        // A single play stores no key (keeps the node byte-identical to a normal add).
+        s.addSong("lp_b", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: seq), repeatCount: 1)
+        XCTAssertNil(s.playlist(pl.id)!.sequences[0].children!.last!.repeatCount)
+    }
+
+    func testSetAndClearRepeatPlaylistNode() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        s.addSong("smp_a", toPlaylist: pl.id)
+        let nid = s.playlist(pl.id)!.sequences[0].children!.first!.nodeId
+        s.setNodeRepeat(nid, count: 5, inPlaylist: pl.id)
+        XCTAssertEqual(s.repeatCount(forNode: nid, inPlaylist: pl.id), 5)
+        s.setNodeRepeat(nid, count: 1, inPlaylist: pl.id)   // ≤1 clears the field
+        XCTAssertNil(s.playlist(pl.id)!.sequences[0].children!.first!.repeatCount)
+        XCTAssertEqual(s.repeatCount(forNode: nid, inPlaylist: pl.id), 1)
+    }
+
+    func testPocketSongRepeatSetGetAndRemoveClears() {
+        let s = store()
+        let p = s.createPocket("Pkt")
+        s.addSong("tk_a", to: AddTarget(kind: .pocket, id: p.id), repeatCount: 4)
+        XCTAssertEqual(s.repeatCount(forSong: "tk_a", inPocket: p.id), 4)
+        XCTAssertEqual(s.pocket(p.id)?.songRepeats["tk_a"], 4)
+        s.setSongRepeat("tk_a", count: 2, inPocket: p.id)
+        XCTAssertEqual(s.repeatCount(forSong: "tk_a", inPocket: p.id), 2)
+        // Removing the member clears its repeat sidecar (no orphan key).
+        s.removeSong("tk_a", fromPocket: p.id)
+        XCTAssertNil(s.pocket(p.id)?.songRepeats["tk_a"])
+        XCTAssertEqual(s.repeatCount(forSong: "tk_a", inPocket: p.id), 1)
+    }
+
+    func testRepeatCountPersistsAcrossReload() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-repeat-\(UUID().uuidString).json")
+        let s1 = CollectionsStore(fileURL: url)
+        let pl = s1.createPlaylist("Set")
+        s1.addSong("lp_a", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences[0].nodeId), repeatCount: 6)
+        let p = s1.createPocket("Pkt")
+        s1.addSong("smp_a", to: AddTarget(kind: .pocket, id: p.id), repeatCount: 3)
+        let s2 = CollectionsStore(fileURL: url)
+        XCTAssertEqual(s2.playlist(pl.id)?.sequences[0].children?.first?.repeatCount, 6)
+        XCTAssertEqual(s2.pocket(p.id)?.songRepeats["smp_a"], 3)
+    }
+
+    func testSetlistTrackShownMsMultipliesByRepeat() {
+        let once = SetlistTrack(songId: "lp_a", artist: "Studio", name: "Loop", bpm: 120, camelot: nil, lengthMs: 4_000)
+        XCTAssertEqual(once.shownMs, 4_000)
+        let thrice = SetlistTrack(songId: "lp_a", artist: "Studio", name: "Loop", bpm: 120, camelot: nil,
+                                  lengthMs: 4_000, repeatCount: 3)
+        XCTAssertEqual(thrice.shownMs, 12_000)
+        // A text cue contributes 0 regardless of a stray repeat.
+        let text = SetlistTrack(songId: "", artist: "", name: "cue", bpm: nil, camelot: nil,
+                                isText: true, repeatCount: 5)
+        XCTAssertEqual(text.shownMs, 0)
+    }
 }
