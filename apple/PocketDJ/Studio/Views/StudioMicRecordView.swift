@@ -90,15 +90,17 @@ struct StudioMicRecordView: View {
         return opt.isLineIn ? opt.name : "the microphone"
     }
 
-    /// Input picker — lists the built-in mic + any external audio inputs (USB-C / line / an
-    /// interface like the TX-6), so a user can SAMPLE FROM AUDIO IN. Shown only when there's a
-    /// choice (iOS; macOS uses the system default input).
+    /// Input selector — ALWAYS shown before recording (iOS): a tappable menu when there's more than
+    /// one input (built-in mic + external audio-in like a USB-C interface / the TX-6), or a static
+    /// chip + a "plug in an interface" hint when only the built-in mic is present. macOS uses the
+    /// system default input, so nothing is shown there.
     @ViewBuilder
     private var inputPicker: some View {
         #if os(iOS)
-        if micRecorder.availableInputs.count > 1 {
+        let inputs = micRecorder.availableInputs
+        if inputs.count > 1 {
             Menu {
-                ForEach(micRecorder.availableInputs) { opt in
+                ForEach(inputs) { opt in
                     Button {
                         micRecorder.selectInput(uid: opt.id)
                     } label: {
@@ -107,19 +109,34 @@ struct StudioMicRecordView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: selectedInputLabel == "the microphone" ? "mic" : "cable.connector")
-                    Text(micRecorder.availableInputs.first { $0.id == micRecorder.selectedInputUID }?.name ?? "Input")
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                }
-                .font(.callout.weight(.medium)).foregroundStyle(Theme.accent)
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Theme.accent.opacity(0.15), in: Capsule())
+                inputChip(name: inputs.first { $0.id == micRecorder.selectedInputUID }?.name ?? "Input",
+                          lineIn: selectedInputLabel != "the microphone", tappable: true)
             }
             .accessibilityIdentifier("mic-input-picker")
+        } else if let only = inputs.first {
+            VStack(spacing: 7) {
+                inputChip(name: only.name, lineIn: only.isLineIn, tappable: false)
+                if !only.isLineIn {
+                    Text("Connect a USB-C audio interface — like your TX-6 — to sample its output instead of the mic.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                        .multilineTextAlignment(.center).padding(.horizontal, 20)
+                        .accessibilityIdentifier("mic-audioin-hint")
+                }
+            }
         }
         #endif
+    }
+
+    private func inputChip(name: String, lineIn: Bool, tappable: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: lineIn ? "cable.connector" : "mic")
+            Text(name).lineLimit(1)
+            if tappable { Image(systemName: "chevron.up.chevron.down").font(.caption2) }
+        }
+        .font(.callout.weight(.medium))
+        .foregroundStyle(tappable ? Theme.accent : Theme.fgDim)
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background((tappable ? Theme.accent.opacity(0.15) : Theme.bgOverlay), in: Capsule())
     }
 
     // MARK: Content (denied → recorded → live)

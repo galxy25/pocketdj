@@ -269,6 +269,7 @@ final class StudioMicRecorder {
         } else {
             captureSource = .mic
         }
+        dlog("mic: inputs [\(ports.map { "\($0.portName)/\($0.portType.rawValue)" }.joined(separator: ", "))]")
         #endif
     }
 
