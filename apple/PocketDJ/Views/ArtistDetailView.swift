@@ -10,8 +10,12 @@ struct ArtistDetailView: View {
     @Binding var path: NavigationPath
     @State private var nowPlayingPushed = false
 
-    /// The artist's albums, in the catalog's (artist › name) order.
-    private var albums: [IndexAlbum] { app.albums.filter { $0.artist == artistName } }
+    /// The artist's albums, in the catalog's (artist › name) order. Case-INSENSITIVE match so a
+    /// merged catalog with inconsistent casing still gathers the whole discography (matches the
+    /// case-insensitive grouping in AppModel.buildEffective).
+    private var albums: [IndexAlbum] {
+        app.albums.filter { $0.artist.localizedCaseInsensitiveCompare(artistName) == .orderedSame }
+    }
     /// Every track by the artist, album by album, in order.
     private var allSongIds: [String] { albums.flatMap(\.trackList) }
 

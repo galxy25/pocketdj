@@ -302,7 +302,11 @@ final class AppModel {
         while i < albums.count {
             let artist = albums[i].artist
             var j = i, songCount = 0
-            while j < albums.count, albums[j].artist == artist {
+            // Group case-INSENSITIVELY to match the case-insensitive sort above — otherwise a
+            // merged catalog whose sources disagree on casing ("OutKast" vs "Outkast") would sort
+            // the albums adjacent but split them into multiple artist rows (with a duplicate
+            // `artist:<name>` id). The FIRST album's casing becomes the row's display name.
+            while j < albums.count, albums[j].artist.localizedCaseInsensitiveCompare(artist) == .orderedSame {
                 songCount += albums[j].trackList.count
                 j += 1
             }

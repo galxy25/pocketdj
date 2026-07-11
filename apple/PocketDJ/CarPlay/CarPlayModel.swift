@@ -79,9 +79,9 @@ final class CarPlayModel {
         }
     }
 
-    /// One artist's albums (drill-in from the Artists tab).
+    /// One artist's albums (drill-in from the Artists tab). Case-insensitive (see AppModel grouping).
     func albums(byArtist name: String) -> [Row] {
-        app.albums.filter { $0.artist == name }.map {
+        albumsByArtist(name).map {
             Row(id: $0.id, title: $0.name, subtitle: "\($0.trackList.count) tracks",
                 artworkAlbumId: $0.id, isSong: false)
         }
@@ -89,8 +89,12 @@ final class CarPlayModel {
 
     /// ▶/🔀 an artist's whole discography.
     func playArtist(name: String, shuffle: Bool = false) async {
-        let ids = app.albums.filter { $0.artist == name }.flatMap(\.trackList)
+        let ids = albumsByArtist(name).flatMap(\.trackList)
         try? await services.playSongIds(ids, name: name, shuffle: shuffle, source: .artist)
+    }
+
+    private func albumsByArtist(_ name: String) -> [IndexAlbum] {
+        app.albums.filter { $0.artist.localizedCaseInsensitiveCompare(name) == .orderedSame }
     }
 
     func songs(inPlaylist id: String) -> [Row] {

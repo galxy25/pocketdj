@@ -26,6 +26,28 @@ final class ArtistBrowseTests: XCTestCase {
         XCTAssertTrue(app.searchKeys(.artist).contains { $0.contains("aria") })   // folded lowercase
     }
 
+    /// A merged catalog whose sources disagree on artist-name casing must still collapse to ONE
+    /// artist row (case-insensitive grouping matches the case-insensitive album sort) — else the
+    /// artist splits into rows with a duplicate `artist:<name>` id.
+    func testArtistGroupingIsCaseInsensitive() throws {
+        let json = """
+        [ {"id":"a1","artist":"OutKast","name":"Aquemini","trackList":["s1"]},
+          {"id":"a2","artist":"Outkast","name":"Idlewild","trackList":["s2"]},
+          {"id":"a3","artist":"OUTKAST","name":"Stankonia","trackList":["s3","s4"]} ]
+        """.data(using: .utf8)!
+        let albums = try JSONDecoder().decode([IndexAlbum].self, from: json)
+        let eff = AppModel.buildEffective(rawAlbums: albums, rawSongs: [],
+                                          albumSourceById: [:], songSourceById: [:],
+                                          albumEdits: [:], songEdits: [:])
+        let artists = artistTuples(eff.artistBrowseItems)
+        XCTAssertEqual(artists.count, 1, "case-only variants must be ONE artist, not three rows")
+        XCTAssertEqual(artists.first?.albums, 3)
+        XCTAssertEqual(artists.first?.songs, 4)
+        // No duplicate artist ids.
+        let ids = eff.artistBrowseItems.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count)
+    }
+
     private func artist(_ name: String, _ albums: Int, _ songs: Int) -> BrowseItem {
         .artist(name: name, albumCount: albums, songCount: songs)
     }
