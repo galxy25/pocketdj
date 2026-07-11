@@ -644,15 +644,21 @@ struct StudioDocument: Codable, Sendable {
     var takes: [StudioTake] = []
     var cues: [StudioCue] = []
     var slices: [StudioSlice] = []
+    /// On-device DETECTED musical key (Camelot code) per performance item, keyed by studio id
+    /// (`smp_`/`lp_`/`ptn_`/`tk_`). Populated by `StudioAnalyzer` when an item is added to a
+    /// collection; consumed for harmonic mix-glide. A parallel map (not a per-model field) so it
+    /// rides one additive key across all four families. Absent ⇒ not analyzed yet.
+    var keys: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, samples, loops, patterns, takes, cues, slices
+        case schemaVersion, samples, loops, patterns, takes, cues, slices, keys
     }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
-         cues: [StudioCue] = [], slices: [StudioSlice] = []) {
+         cues: [StudioCue] = [], slices: [StudioSlice] = [], keys: [String: String] = [:]) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
         self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
+        self.keys = keys
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -669,6 +675,7 @@ struct StudioDocument: Codable, Sendable {
             .compactMap(\.value)
         slices = ((try? c.decode([StudioLossyBox<StudioSlice>].self, forKey: .slices)) ?? [])
             .compactMap(\.value)
+        keys = (try? c.decode([String: String].self, forKey: .keys)) ?? [:]
     }
 }
 

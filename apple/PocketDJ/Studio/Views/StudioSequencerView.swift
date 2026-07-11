@@ -173,7 +173,11 @@ private struct SequencerListView: View {
         .contextMenu {   // right-click (macOS) / long-press (iOS) parity for the swipe actions
             Button { beginRename(p) } label: { Label("Rename…", systemImage: "pencil") }
             Button { duplicate(p) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
-            Button { addRef = StudioAddRef(id: p.id, title: p.name) } label: {
+            Button {
+                addRef = StudioAddRef(id: p.id, title: p.name)
+                let pid = p.id
+                Task { await StudioAnalyzer.prepare(forStudioId: pid, studio: studio, packs: nil) }
+            } label: {
                 Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
             }
             Button(role: .destructive) { deletingId = p.id } label: { Label("Delete pattern", systemImage: "trash") }

@@ -303,6 +303,15 @@ final class MixEngine {
     /// picker is forgotten on tab switch, but the running mix — and this label — are not).
     private(set) var autoSourceLabel: String?
 
+    // MARK: Studio (performance-item) seams — wired at app init from StudioStore; nil in tests.
+
+    /// Resolve a performance item's local file (url + scope release + title + lengthMs). Lets a deck
+    /// load samples/loops/sequences/instrumentals, which have no BurnStore file.
+    @ObservationIgnored var studioResolve: ((String) -> (url: URL, release: (() -> Void)?, title: String, lengthMs: Int)?)?
+    /// The item's beat grid + key for the LoadedTrack (bpm/firstDownbeat/beatsMs/camelot). The grid
+    /// is derived from the item's KNOWN bpm; the key is on-device detected.
+    @ObservationIgnored var studioMixInfo: ((String) -> (bpm: Double?, firstDownbeatMs: Int, beatsMs: [Int]?, camelot: String?)?)?
+
     // MARK: Private — graph
 
     @ObservationIgnored private let burns: BurnStore
@@ -827,6 +836,20 @@ final class MixEngine {
 
     func load(songId: String, title: String, artist: String, bpm: Double?,
               camelot: String?, key: String?, albumId: String?, lengthMs: Int? = nil, on deck: Deck) {
+        // STUDIO performance items resolve via the studio seam (no BurnStore file). Their beat grid
+        // (from the item's known bpm) + detected key ride `studioMixInfo` into the LoadedTrack, so
+        // the pulse/beat-sync + harmonic glide work exactly like a burned song's.
+        if StudioFactory.isStudioId(songId), let resolve = studioResolve, let res = resolve(songId) {
+            let info = studioMixInfo?(songId)
+            loadFile(res.url, release: res.release, startMs: nil, lengthMs: nil,
+                     meta: LoadedTrack(songId: songId, title: title, artist: artist,
+                                       bpm: bpm ?? info?.bpm, camelot: camelot ?? info?.camelot, key: key,
+                                       albumId: nil,
+                                       gridBpm: info?.bpm, firstDownbeatMs: info?.firstDownbeatMs,
+                                       steady: true, beatsMs: info?.beatsMs, downbeatsMs: nil),
+                     on: deck)
+            return
+        }
         guard let handle = burns.localURLForPlaybackPreferringCut(forSong: songId) else { return }
         // A per-song CUT plays its whole file from 0:00; an analog shared-album fallback SEEKS to the
         // song's startMs AND bounds playback to the song's lengthMs window, so it stops at the song

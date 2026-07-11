@@ -26,8 +26,12 @@ final class CarPlayModelTests: XCTestCase {
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
         let sequencer = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
+        let studioURL = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-cp-studio-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: studioURL) }
+        let studio = StudioStore(fileURL: studioURL)
         let services = IntentServices(app: app, settings: settings, collections: collections,
-                                      setlistPlayer: sequencer, mix: MixEngine(burns: burns), burns: burns, rips: rips)
+                                      setlistPlayer: sequencer, mix: MixEngine(burns: burns), burns: burns,
+                                      studio: studio, rips: rips)
         return (CarPlayModel(services: services), services, collections)
     }
 

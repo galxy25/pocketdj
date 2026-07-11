@@ -301,8 +301,16 @@ struct PocketDJApp: App {
         // is a documented follow-up, and Harmonics drops nil axes safely.
         collections.studioLookup = { [weak studio] id in
             guard let info = studio?.displayInfo(forStudioId: id) else { return nil }
-            return (title: info.title, lengthMs: info.lengthMs, bpm: info.bpm, camelot: nil)
+            // The detected key (Camelot) rides the lookup so a performance item snapshots with its
+            // harmonic data — realize's Harmonics + Mix-glide can then see it.
+            return (title: info.title, lengthMs: info.lengthMs, bpm: info.bpm,
+                    camelot: studio?.camelot(forStudioId: id))
         }
+        // Mix decks resolve performance items (audio + beat grid + detected key) through the same
+        // studio store — so a sample/loop/sequence/instrumental in a pocket loads onto a deck with
+        // its pulse/beat-sync grid + harmonic key.
+        mix.studioResolve = { [weak studio] id in studio?.localURLForPlayback(id: id) }
+        mix.studioMixInfo = { [weak studio] id in studio?.mixInfo(forStudioId: id) }
         setlistPlayer.studioResolve = { [weak studio] id in
             studio?.localURLForPlayback(id: id)
         }
@@ -358,7 +366,8 @@ struct PocketDJApp: App {
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
         // One bridge instance carries the live stores to intents + entity queries.
         let intents = IntentServices(app: app, settings: settings, collections: collections,
-                                     setlistPlayer: setlistPlayer, mix: mix, burns: burns, rips: rips)
+                                     setlistPlayer: setlistPlayer, mix: mix, burns: burns,
+                                     studio: studio, rips: rips)
         _intents = State(initialValue: intents)
         AppDependencyManager.shared.add(dependency: intents)
         // Donations: keep Spotlight's entity index + Siri's speakable playlist/pocket

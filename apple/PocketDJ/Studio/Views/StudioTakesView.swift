@@ -131,10 +131,10 @@ struct StudioTakesView: View {
                 .disabled(samplingIds.contains(take.id) || take.scoreEvents.isEmpty)
             Button {
                 addRef = StudioAddRef(id: take.id, title: take.name)
-                // Render the real audio now so the instrumental is audible the moment it plays in a
-                // collection (idempotent — no-op when a fresh cache already exists).
+                // Prepare it for the collection: render the real audio (so it's audible the moment
+                // it plays) + detect its key for Mix glide. Idempotent.
                 let tid = take.id
-                Task { await StudioTakeRenderer.ensureRendered(takeId: tid, studio: studio, packs: packs) }
+                Task { await StudioAnalyzer.prepare(forStudioId: tid, studio: studio, packs: packs) }
             } label: {
                 Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
             }

@@ -43,6 +43,8 @@ final class StudioStore {
     private(set) var takes: [StudioTake] = []
     private(set) var cues: [StudioCue] = []
     private(set) var slices: [StudioSlice] = []
+    /// On-device detected key (Camelot) per performance item — see `StudioDocument.keys`.
+    private(set) var keys: [String: String] = [:]
 
     /// Source of the per-family folder bookmarks. Pushed in from the view layer / app (like
     /// `MixRecorder.settings`) so this never has to be wired at app-init time. Weak ⇒ no retain
@@ -71,6 +73,7 @@ final class StudioStore {
             takes = doc.takes
             cues = doc.cues
             slices = doc.slices
+            keys = doc.keys
         }
     }
 
@@ -664,6 +667,34 @@ final class StudioStore {
         saveNow()
     }
 
+    // MARK: - Analysis (on-device key) + Mix info
+
+    /// The on-device detected key (Camelot) for a performance item, or nil until analyzed.
+    func camelot(forStudioId id: String) -> String? { keys[id] }
+
+    /// Record (or clear, when nil/empty) a performance item's detected key (Camelot).
+    func setCamelot(_ camelot: String?, forStudioId id: String) {
+        if let c = camelot, !c.isEmpty { keys[id] = c } else { keys.removeValue(forKey: id) }
+        saveNow()
+    }
+
+    /// Beat grid + key for loading a performance item into a Mix deck: the item's own bpm (a
+    /// constant grid; a sample's MEASURED `StudioGrid` when it has one) plus the detected Camelot.
+    /// nil for a non-studio id or an unresolvable item. The grid is derived from the item's KNOWN
+    /// bpm (more accurate than re-detecting), so Mix pulse/beat-sync work with no analysis sidecar.
+    func mixInfo(forStudioId id: String)
+        -> (bpm: Double?, firstDownbeatMs: Int, beatsMs: [Int]?, camelot: String?)? {
+        let cam = keys[id]
+        if id.hasPrefix("smp_"), let s = sample(id) {
+            let beats = (s.grid?.beatsMs.isEmpty == false) ? s.grid?.beatsMs : nil
+            return (s.grid?.bpm, s.grid?.firstDownbeatMs ?? 0, beats, cam)
+        }
+        if id.hasPrefix("lp_"), let l = loop(id) { return (l.bpm, 0, nil, cam) }
+        if id.hasPrefix("ptn_"), let p = pattern(id) { return (p.bpm, 0, nil, cam) }
+        if id.hasPrefix("tk_"), let t = take(id) { return (t.bpm, 0, nil, cam) }
+        return nil
+    }
+
     /// Metadata for a studio id WITHOUT touching disk — collection stats/realize synthetic
     /// entries (title, real lengthMs, bpm when known) and the row kind badge read this.
     func displayInfo(forStudioId id: String)
@@ -931,7 +962,7 @@ final class StudioStore {
 
     private func snapshotDocument() -> StudioDocument {
         StudioDocument(schemaVersion: studioSchemaVersion, samples: samples, loops: loops,
-                       patterns: patterns, takes: takes, cues: cues, slices: slices)
+                       patterns: patterns, takes: takes, cues: cues, slices: slices, keys: keys)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.

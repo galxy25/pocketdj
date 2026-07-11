@@ -328,6 +328,26 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNotNil(store.take("tk_user"))       // unreachable instrumentals folder ⇒ never pruned
     }
 
+    /// The detected-key map (`keys`) round-trips, `mixInfo` surfaces the item's bpm + key for a
+    /// Mix deck, and clearing removes the entry.
+    func testStudioKeysRoundTripAndMixInfo() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_k", name: "Inst", fileName: "take-tk_k.m4a", bpm: 128,
+                                 events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 100)]))
+        XCTAssertNil(store.camelot(forStudioId: "tk_k"))
+        store.setCamelot("8A", forStudioId: "tk_k")
+        XCTAssertEqual(store.camelot(forStudioId: "tk_k"), "8A")
+        let mi = store.mixInfo(forStudioId: "tk_k")
+        XCTAssertEqual(mi?.bpm, 128)
+        XCTAssertEqual(mi?.firstDownbeatMs, 0)
+        XCTAssertEqual(mi?.camelot, "8A")
+        store.flush()
+        XCTAssertEqual(StudioStore(fileURL: storeURL).camelot(forStudioId: "tk_k"), "8A")
+        store.setCamelot(nil, forStudioId: "tk_k")   // clearing removes the key
+        XCTAssertNil(store.camelot(forStudioId: "tk_k"))
+        XCTAssertNil(store.mixInfo(forStudioId: "tk_k")?.camelot)
+    }
+
     /// Instrumental playback resolves the raw take file, and PREFERS the rendered-audio cache when
     /// one is present (the audible synth for a live-saved placeholder take).
     func testTakePlaybackResolvesFileAndPrefersRenderCache() throws {

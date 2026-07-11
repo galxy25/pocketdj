@@ -34,6 +34,7 @@ final class IntentServices {
     let setlistPlayer: SetlistPlayer
     let mix: MixEngine
     let burns: BurnStore
+    let studio: StudioStore
     let rips: RipsStore
     /// Async "Create pocket" builder — kept observable so UI can surface progress later.
     let pocketBuilder: PocketBuilderService
@@ -59,13 +60,15 @@ final class IntentServices {
     @MainActor static private(set) var shared: IntentServices?
 
     init(app: AppModel, settings: SettingsStore, collections: CollectionsStore,
-         setlistPlayer: SetlistPlayer, mix: MixEngine, burns: BurnStore, rips: RipsStore) {
+         setlistPlayer: SetlistPlayer, mix: MixEngine, burns: BurnStore, studio: StudioStore,
+         rips: RipsStore) {
         self.app = app
         self.settings = settings
         self.collections = collections
         self.setlistPlayer = setlistPlayer
         self.mix = mix
         self.burns = burns
+        self.studio = studio
         self.rips = rips
         self.pocketBuilder = PocketBuilderService(app: app, collections: collections)
         Self.shared = self
@@ -184,7 +187,7 @@ final class IntentServices {
         mix.setBeatPulseEnabled(settings.beatPulseEnabled)
         mix.setMixGlideSeconds(settings.mixGlideSeconds)
         mix.setSkipFadeSeconds(settings.skipFadeSeconds)
-        let loadables = MixResolver(app: app, collections: collections, burns: burns).loadables(for: source)
+        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
         guard !loadables.isEmpty else { throw PocketDJIntentError.noBurnedSongs(name) }
         let items = loadables.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000) }
         mix.startAutoMix(items, shuffled: shuffle,

@@ -138,7 +138,11 @@ struct StudioLoopsView: View {
                         }
                         .contextMenu {
                             Button { beginRename(loop) } label: { Label("Rename…", systemImage: "pencil") }
-                            Button { addRef = StudioAddRef(id: loop.id, title: loop.name) } label: {
+                            Button {
+                                addRef = StudioAddRef(id: loop.id, title: loop.name)
+                                let lid = loop.id
+                                Task { await StudioAnalyzer.prepare(forStudioId: lid, studio: studio, packs: nil) }
+                            } label: {
                                 Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
                             }
                             Button(role: .destructive) { pendingDelete = loop } label: {

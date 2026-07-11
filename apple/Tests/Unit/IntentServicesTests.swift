@@ -35,8 +35,13 @@ final class IntentServicesTests: XCTestCase {
             appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
         let sequencer = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
         let mix = MixEngine(burns: burns)
+        let studioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-studio-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: studioURL) }
+        let studio = StudioStore(fileURL: studioURL)
         let services = IntentServices(app: app, settings: settings, collections: collections,
-                                      setlistPlayer: sequencer, mix: mix, burns: burns, rips: rips)
+                                      setlistPlayer: sequencer, mix: mix, burns: burns,
+                                      studio: studio, rips: rips)
         return (services, collections, app)
     }
 

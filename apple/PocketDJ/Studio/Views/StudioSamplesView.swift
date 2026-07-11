@@ -243,7 +243,11 @@ struct StudioSamplesView: View {
                 Label("Rename", systemImage: "pencil")
             }
             .accessibilityIdentifier("sample-rename-\(s.id)")
-            Button { addRef = StudioAddRef(id: s.id, title: s.name) } label: {
+            Button {
+                addRef = StudioAddRef(id: s.id, title: s.name)
+                let sid = s.id
+                Task { await StudioAnalyzer.prepare(forStudioId: sid, studio: studio, packs: nil) }
+            } label: {
                 Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
             }
             .accessibilityIdentifier("sample-add-to-\(s.id)")
