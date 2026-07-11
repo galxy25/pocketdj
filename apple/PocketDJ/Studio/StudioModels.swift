@@ -45,10 +45,14 @@ enum StudioSource: Hashable, Sendable {
     /// the samples folder, so the external file never needs to exist again (like `.take`, and no
     /// grid until auto-detect/tap-tempo sets one).
     case file(originalName: String)
+    /// Captured from an EXTERNAL audio input (a USB-C / line / interface, e.g. a TX-6 mixer) rather
+    /// than the built-in mic — `inputName` is the port name for the "from <name>" label. Same
+    /// capture path as `.mic`; only the routed input + provenance differ.
+    case lineIn(inputName: String?)
 }
 
 extension StudioSource: Codable {
-    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId, originalName }
+    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId, originalName, inputName }
 
     /// Lenient: an unknown/missing `type` (a future source kind read by this build) degrades to
     /// `.mic` — generic "recorded audio" provenance. The sample's FILE is what matters and it
@@ -64,6 +68,8 @@ extension StudioSource: Codable {
             self = .take(takeId: (try? c?.decode(String.self, forKey: .takeId)) ?? "")
         case "file":
             self = .file(originalName: (try? c?.decode(String.self, forKey: .originalName)) ?? "")
+        case "lineIn":
+            self = .lineIn(inputName: try? c?.decode(String.self, forKey: .inputName))
         default:
             self = .mic
         }
@@ -85,6 +91,9 @@ extension StudioSource: Codable {
         case .file(let originalName):
             try c.encode("file", forKey: .type)
             try c.encode(originalName, forKey: .originalName)
+        case .lineIn(let inputName):
+            try c.encode("lineIn", forKey: .type)
+            try c.encodeIfPresent(inputName, forKey: .inputName)
         }
     }
 }

@@ -69,7 +69,8 @@ struct StudioMicRecordView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Record sample").font(.headline).foregroundStyle(Theme.fg)
-                Text("From the microphone").font(.caption2).foregroundStyle(Theme.fgDim)
+                Text("From \(selectedInputLabel)").font(.caption2).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("mic-source-label")
             }
             Spacer()
             Button("Cancel") { dismiss() }
@@ -77,6 +78,48 @@ struct StudioMicRecordView: View {
                 .font(.callout.weight(.semibold)).foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("mic-cancel")
         }
+    }
+
+    /// The selected input's name for the header ("the microphone" / "TX-6") — drives the
+    /// "sample from audio in" affordance's copy.
+    private var selectedInputLabel: String {
+        guard let uid = micRecorder.selectedInputUID,
+              let opt = micRecorder.availableInputs.first(where: { $0.id == uid }) else {
+            return "the microphone"
+        }
+        return opt.isLineIn ? opt.name : "the microphone"
+    }
+
+    /// Input picker — lists the built-in mic + any external audio inputs (USB-C / line / an
+    /// interface like the TX-6), so a user can SAMPLE FROM AUDIO IN. Shown only when there's a
+    /// choice (iOS; macOS uses the system default input).
+    @ViewBuilder
+    private var inputPicker: some View {
+        #if os(iOS)
+        if micRecorder.availableInputs.count > 1 {
+            Menu {
+                ForEach(micRecorder.availableInputs) { opt in
+                    Button {
+                        micRecorder.selectInput(uid: opt.id)
+                    } label: {
+                        Label(opt.name, systemImage: opt.id == micRecorder.selectedInputUID
+                              ? "checkmark" : (opt.isLineIn ? "cable.connector" : "mic"))
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: selectedInputLabel == "the microphone" ? "mic" : "cable.connector")
+                    Text(micRecorder.availableInputs.first { $0.id == micRecorder.selectedInputUID }?.name ?? "Input")
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                }
+                .font(.callout.weight(.medium)).foregroundStyle(Theme.accent)
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Theme.accent.opacity(0.15), in: Capsule())
+            }
+            .accessibilityIdentifier("mic-input-picker")
+        }
+        #endif
     }
 
     // MARK: Content (denied → recorded → live)
@@ -119,6 +162,7 @@ struct StudioMicRecordView: View {
 
     private var liveState: some View {
         VStack(spacing: 20) {
+            if !micRecorder.isRecording { inputPicker }   // pick mic vs audio-in before recording
             meter
             if micRecorder.isRecording {
                 elapsedClock
@@ -202,7 +246,7 @@ struct StudioMicRecordView: View {
             HStack(spacing: 12) {
                 Button("Record another") {
                     recordedSampleId = nil
-                    nameDraft = "Mic recording"
+                    nameDraft = micRecorder.defaultRecordingName
                     Task { await micRecorder.beginMonitoring() }   // stop() ended monitoring — re-arm
                 }
                 .buttonStyle(.borderless).foregroundStyle(Theme.accent)
@@ -227,14 +271,18 @@ struct StudioMicRecordView: View {
         if micRecorder.isRecording {
             // Clean stop hands the take back — the VIEW files it (the recorder owns the file, the
             // view owns naming; the recorder-doc contract).
+            let source = micRecorder.captureSource   // mic vs the selected audio-in — before stop() resets state
+            let fallbackName = micRecorder.defaultRecordingName
             guard let take = micRecorder.stop() else { return }
+            let trimmed = nameDraft.trimmingCharacters(in: .whitespaces)
+            let filedName = trimmed.isEmpty ? fallbackName : trimmed
             studio.addSample(StudioSample(
-                id: take.id, name: nameDraft.trimmingCharacters(in: .whitespaces).isEmpty
-                    ? "Mic recording" : nameDraft.trimmingCharacters(in: .whitespaces),
+                id: take.id, name: filedName,
                 fileName: take.fileName, wasUserFolder: take.wasUserFolder,
                 createdAt: Date().timeIntervalSince1970 * 1000,
-                durationMs: take.durationMs, source: .mic, grid: nil, edit: .neutral))
+                durationMs: take.durationMs, source: source, grid: nil, edit: .neutral))
             recordedSampleId = take.id
+            nameDraft = filedName   // the rename field opens on what was just filed
         } else {
             Task { await micRecorder.start() }
         }

@@ -328,6 +328,21 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNotNil(store.take("tk_user"))       // unreachable instrumentals folder ⇒ never pruned
     }
 
+    /// A sample captured from AUDIO IN (`.lineIn`) round-trips its provenance + port name, and an
+    /// unknown/older source still degrades to `.mic` (the lenient decoder is unaffected).
+    func testLineInSampleSourceRoundTrips() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(StudioSample(id: "smp_li", name: "TX-6 recording",
+                                     fileName: StudioFolders.fileName(.samples, id: "smp_li"),
+                                     durationMs: 1_000, source: .lineIn(inputName: "TX-6")))
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        guard case .lineIn(let name)? = reloaded.sample("smp_li")?.source else {
+            return XCTFail("expected a .lineIn source, got \(String(describing: reloaded.sample("smp_li")?.source))")
+        }
+        XCTAssertEqual(name, "TX-6")
+    }
+
     /// The detected-key map (`keys`) round-trips, `mixInfo` surfaces the item's bpm + key for a
     /// Mix deck, and clearing removes the entry.
     func testStudioKeysRoundTripAndMixInfo() throws {

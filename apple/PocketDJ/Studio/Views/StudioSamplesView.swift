@@ -272,6 +272,7 @@ struct StudioSamplesView: View {
         case .mic: return "mic.fill"
         case .take: return "pianokeys"
         case .file: return "waveform"
+        case .lineIn: return "cable.connector"
         }
     }
 
@@ -279,8 +280,9 @@ struct StudioSamplesView: View {
         switch source {
         case .track: return "track"
         case .mic: return "mic"
-        case .take: return "take"
+        case .take: return "instrumental"
         case .file: return "file"
+        case .lineIn(let name): return name ?? "audio in"
         }
     }
 

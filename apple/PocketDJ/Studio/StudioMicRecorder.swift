@@ -92,6 +92,23 @@ final class StudioMicRecorder {
     /// vanished) or media services reset. The sheet surfaces it once as an alert and clears it.
     var writerFailureMessage: String?
 
+    /// One selectable capture INPUT (iOS): the built-in mic OR an external audio input — a USB-C
+    /// interface / line / the TX-6 mixer (`isLineIn`). The record sheet lists these so a user can
+    /// SAMPLE FROM AUDIO IN, not just the mic. `id` is the port UID (`setPreferredInput` key).
+    struct InputOption: Identifiable, Hashable, Sendable {
+        let id: String          // AVAudioSessionPortDescription.uid
+        let name: String        // portName ("iPhone Microphone", "TX-6", …)
+        let isLineIn: Bool      // NOT the built-in mic ⇒ an external audio input
+    }
+    /// Available capture inputs, refreshed after the session goes live + on every route change
+    /// (plug/unplug the interface). Empty on macOS (no AVAudioSession — it uses the system default).
+    private(set) var availableInputs: [InputOption] = []
+    /// The chosen input's UID; the picker reads it. nil ⇒ the current route's default input.
+    private(set) var selectedInputUID: String?
+    /// The provenance stamped on a recorded sample — `.mic` for the built-in mic, `.lineIn` for an
+    /// external audio input (with its port name). Derived from the selected input.
+    private(set) var captureSource: StudioSource = .mic
+
     // MARK: Wiring (pushed from the view layer — the MixRecorder.settings pattern)
 
     /// Files auto-stopped takes + answers the orphan scan. Weak ⇒ no retain of the app graph;
@@ -225,9 +242,54 @@ final class StudioMicRecorder {
         }
         isMonitoring = true
         interruptionParked = false
+        refreshInputs()          // session is live ⇒ availableInputs is now trustworthy
         startTick()
         dlog("mic: MONITOR start hw=\(Int(tapSampleRate))Hz ch=\(tapChannels)")
         return true
+    }
+
+    // MARK: Input selection (sample from AUDIO IN — USB-C / line / interface)
+
+    /// Re-read the session's available inputs into `availableInputs` + resolve the current
+    /// selection's provenance. Called at monitor start + on every route change. No-op on macOS.
+    func refreshInputs() {
+        #if os(iOS)
+        let ports = AVAudioSession.sharedInstance().availableInputs ?? []
+        availableInputs = ports.map {
+            InputOption(id: $0.uid, name: $0.portName, isLineIn: $0.portType != .builtInMic)
+        }
+        // Keep/repair the selection: honor an explicit pick if still present, else follow the
+        // route's actual input (so plugging the interface auto-selects it when nothing was chosen).
+        let routeUID = AVAudioSession.sharedInstance().currentRoute.inputs.first?.uid
+        if selectedInputUID == nil || !availableInputs.contains(where: { $0.id == selectedInputUID }) {
+            selectedInputUID = routeUID ?? availableInputs.first?.id
+        }
+        if let sel = availableInputs.first(where: { $0.id == selectedInputUID }) {
+            captureSource = sel.isLineIn ? .lineIn(inputName: sel.name) : .mic
+        } else {
+            captureSource = .mic
+        }
+        #endif
+    }
+
+    /// Route capture to the input with `uid` (`setPreferredInput`) and re-tap at its hardware
+    /// format, so a live meter/recording switches source immediately. Stamps the sample provenance.
+    func selectInput(uid: String) {
+        selectedInputUID = uid
+        #if os(iOS)
+        guard let port = AVAudioSession.sharedInstance().availableInputs?.first(where: { $0.uid == uid }) else { return }
+        captureSource = port.portType != .builtInMic ? .lineIn(inputName: port.portName) : .mic
+        try? AVAudioSession.sharedInstance().setPreferredInput(port)
+        // A preferred-input change flips the input format; re-install the tap at the new format so
+        // the engine doesn't assert on the stale rate (same discipline as a route change).
+        if isMonitoring {
+            removeTap()
+            if installTapAtHardwareFormat() {
+                if !engine.isRunning { try? engine.start() }
+            }
+        }
+        dlog("mic: input → \(port.portName) (\(port.portType.rawValue))")
+        #endif
     }
 
     /// Tear the mic session down (sheet dismissed / capture finished): stop the engine, restore
@@ -354,9 +416,16 @@ final class StudioMicRecorder {
     /// isn't wired (tests), the file simply waits for the next launch's orphan recovery.
     private func fileSample(_ take: (id: String, fileName: String, durationMs: Int, wasUserFolder: Bool)) {
         guard let store else { return }
-        store.addSample(StudioSample(id: take.id, name: "Mic recording", fileName: take.fileName,
+        // Provenance follows the SELECTED input (mic vs an external audio-in); the default name too.
+        store.addSample(StudioSample(id: take.id, name: defaultRecordingName, fileName: take.fileName,
                                      wasUserFolder: take.wasUserFolder, createdAt: startedAtMs,
-                                     durationMs: take.durationMs, source: .mic))
+                                     durationMs: take.durationMs, source: captureSource))
+    }
+
+    /// The default name for a recording, reflecting its input ("Mic recording" / "<input> recording").
+    var defaultRecordingName: String {
+        if case .lineIn(let name) = captureSource { return (name ?? "Line in") + " recording" }
+        return "Mic recording"
     }
 
     /// The take's writer died permanently (latched by the sink — `startWriting` is never
@@ -624,7 +693,10 @@ final class StudioMicRecorder {
         routeChangeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.recoverFromEngineStop() }
+            MainActor.assumeIsolated {
+                self?.recoverFromEngineStop()
+                self?.refreshInputs()   // an interface was plugged/unplugged — update the picker
+            }
         }
     }
 
