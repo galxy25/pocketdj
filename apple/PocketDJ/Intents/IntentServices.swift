@@ -51,6 +51,13 @@ final class IntentServices {
     /// process (RootView.task does the same on a windowed launch — both are idempotent).
     private var kickedManifestRefresh = false
 
+    /// Process-wide handle to the live bridge, for scene delegates that run OUTSIDE the SwiftUI
+    /// environment and can't receive `.environment`-injected stores — specifically the CarPlay
+    /// scene (a separate `UIScene`). Set once in `init` (there is one instance, built in
+    /// `PocketDJApp.init`); mirrors the `TransferCoordinator.shared` escape hatch. Must not
+    /// construct its own stores — that would silently fork a second catalog/mix graph.
+    @MainActor static private(set) var shared: IntentServices?
+
     init(app: AppModel, settings: SettingsStore, collections: CollectionsStore,
          setlistPlayer: SetlistPlayer, mix: MixEngine, burns: BurnStore, rips: RipsStore) {
         self.app = app
@@ -61,6 +68,7 @@ final class IntentServices {
         self.burns = burns
         self.rips = rips
         self.pocketBuilder = PocketBuilderService(app: app, collections: collections)
+        Self.shared = self
     }
 
     /// Make the catalog usable before an intent acts. Store cross-wiring happens in
@@ -115,6 +123,18 @@ final class IntentServices {
         }
         startNowPlaying(set)
         return song.name
+    }
+
+    /// ▶ an album: its tracks in order into the reserved Now Playing setlist. Mirrors
+    /// AlbumDetailView.play (source: .album). Returns the album name for dialogs.
+    @discardableResult
+    func playAlbum(id: String) async throws -> String {
+        await ensureReady()
+        guard let album = app.albumsById[id] else { throw PocketDJIntentError.songNotFound }
+        guard let set = collections.playNow(songIds: album.trackList, name: album.name, source: .album),
+              !set.tracks.isEmpty else { throw PocketDJIntentError.emptyCollection(album.name) }
+        startNowPlaying(set)
+        return album.name
     }
 
     /// Start the sequencer on the freshly-upserted Now Playing setlist — the same

@@ -59,6 +59,20 @@ targets:
         # question on every upload. Lands in the built Info.plist (same reason as the
         # keys above), so apple/scripts/testflight.sh uploads are submit-ready immediately.
         ITSAppUsesNonExemptEncryption: false
+        # --- CarPlay scene ---------------------------------------------------------
+        # An EXPLICIT scene manifest that declares ONLY the CarPlay scene role + its
+        # delegate. `UIApplicationSupportsMultipleScenes: true` lets SwiftUI keep
+        # synthesizing the phone's window scene automatically (we deliberately do NOT
+        # list UIWindowSceneSessionRoleApplication — the SwiftUI `App`/`WindowGroup`
+        # provides it), while the head unit connects `CarPlaySceneDelegate`. Because
+        # this nested/array key can't be expressed via INFOPLIST_KEY_*, it lives here
+        # and scene-manifest GENERATION is turned off below so the two don't collide.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            CPTemplateApplicationSceneSessionRoleApplication:
+              - UISceneConfigurationName: CarPlay
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
     dependencies:
       - package: ZIPFoundation
       # The Mix tab's DJ engine is a first-party AVAudioEngine graph (MixEngine.swift) —
@@ -89,7 +103,10 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: PocketDJ
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
+        # Scene-manifest generation is OFF: we supply an explicit UIApplicationSceneManifest
+        # (info.properties above) to declare the CarPlay scene. SwiftUI still provides the
+        # window scene (UIApplicationSupportsMultipleScenes: true, no window role declared).
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "NO"
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         "INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad": "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSHumanReadableCopyright: "PocketDJ"
@@ -114,6 +131,15 @@ targets:
         # capability entitlements. Override only for the macOS SDK so iOS keeps the
         # empty file above (iOS's sandbox is implicit).
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": PocketDJ/PocketDJ-macOS.entitlements
+        # CarPlay: `com.apple.developer.carplay-audio` must be GRANTED by Apple on the
+        # App ID before a DEVICE/TestFlight build can sign with it (an ungranted
+        # entitlement breaks signing — "not found and could not be included in profile",
+        # the same rule as the empty base file). So it is scoped to the SIMULATOR SDK
+        # ONLY: the CarPlay Simulator (Xcode ▸ I/O ▸ External Displays ▸ CarPlay) reads
+        # it to show the app, while iOS device/TestFlight builds keep the empty base
+        # entitlements and sign green. Move this key into the base file once Apple grants
+        # the CarPlay-audio capability (see docs).
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": PocketDJ/PocketDJ-CarPlay.entitlements
         # --- Apple Music build-time opt-in -------------------------------------
         # The flag lives in the base Info.plist (info: properties above) as
         # PocketDJAppleMusicEnabled — INFOPLIST_KEY_* can't inject custom keys.
