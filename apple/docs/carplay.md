@@ -5,17 +5,26 @@ app-scoped stores as the phone (one shared Now Playing).
 
 ## What it does
 
-A **tab bar** (`CPTabBarTemplate`) with four tabs:
+A **tab bar** (`CPTabBarTemplate`) with five tabs:
 
-- **Playlists / Pockets / Albums** — each a `CPListTemplate`; tap a collection to drill into its
-  songs (a **▶ Play all** row on top). Tap a song → an action sheet: **Play now** / **Add to
-  pocket-or-playlist**.
-- **Search** — a `CPSearchTemplate` over **title + artist** only (no advanced filter/sort — that
-  stays in the full app / History mode).
+- **Playlists** — your PocketDJ playlists AND the catalog's Apple Music / source playlists
+  (source rows carry a source badge). **Pockets**. Each: tap a collection → its songs with
+  **▶ Play all** + **🔀 Shuffle all** on top; tap a song → **Play now** / **Add to pocket-or-playlist**.
+- **Albums** and **Artists** — an **A–Z index** (the keyboard-free way to find while driving).
+  An artist → their albums (Play all / Shuffle all the whole discography) → an album → its songs.
+- **Search** — a category menu (**Songs / Albums / Artists / Playlists**), each opening a scoped
+  keyboard search (works parked). A song result plays; album/artist/playlist results drill in. A
+  **"Hands-free: ask Siri"** row covers voice while driving ("Play … in PocketDJ" via App Intents).
+  Online (OpenSearch) search is deferred — its cold-start is a poor in-car experience.
+
+**Now Playing** (the head-unit card + system Now Playing app) reflects playback started ANYWHERE
+(phone or CarPlay) because the engines set `MPNowPlayingInfoCenter.playbackState`. Its **Up Next**
+button shows the running queue; tap a row to **Remove / Play next / Move to end**.
 
 Everything plays through the same unified sequencer the phone uses (via `IntentServices`), so the
-head unit's `CPNowPlayingTemplate` and the phone stay in sync. Plays are recorded to History with
-the correct source (a CarPlay playlist play shows as "Playlist · <name>").
+head unit's `CPNowPlayingTemplate` and the phone stay in sync. Playing any playlist/pocket/artist
+builds a FRESH snapshot from its current songs (no stored setlist needed; new songs picked up each
+play). Plays are recorded to History with the correct source (e.g. "Playlist · <name>", "Artist · <name>").
 
 ## Architecture
 
