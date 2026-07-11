@@ -21,8 +21,13 @@ struct StudioScoreView: View {
 
     @State private var showPDFExporter = false
     @State private var showMIDIExporter = false
+    @State private var showAudioExporter = false
     @State private var pdfDoc = ScorePDFFile(data: Data())
     @State private var midiDoc = ScoreMIDIFile(data: Data())
+    @State private var audioDoc = ScoreAudioFile(data: Data())
+    /// Rendering the instrumental's events → audio for export (async offline render) — drives the
+    /// Audio button's spinner + disables a second tap mid-render.
+    @State private var exportingAudio = false
     @State private var errorText: String?
 
     /// Edit mode (spec §7) — toggled by the action bar, passed to the shared ScoreEditorView.
@@ -36,8 +41,8 @@ struct StudioScoreView: View {
                 content(take)
             } else {
                 // The take was deleted while this screen was on the stack — degrade, never crash.
-                ContentUnavailableView("Take not found", systemImage: "questionmark.square.dashed",
-                                       description: Text("This take was deleted."))
+                ContentUnavailableView("Instrumental not found", systemImage: "questionmark.square.dashed",
+                                       description: Text("This instrumental was deleted."))
             }
         }
         .background(Theme.bg)
@@ -53,6 +58,9 @@ struct StudioScoreView: View {
         .fileExporter(isPresented: $showMIDIExporter, document: midiDoc,
                       contentType: ScoreMIDIFile.midiType,
                       defaultFilename: exportBaseName + ".mid") { _ in }
+        .fileExporter(isPresented: $showAudioExporter, document: audioDoc,
+                      contentType: ScoreAudioFile.audioType,
+                      defaultFilename: exportBaseName + ".m4a") { _ in }
         .alert("Score", isPresented: Binding(get: { errorText != nil },
                                              set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
@@ -108,6 +116,15 @@ struct StudioScoreView: View {
             .tint(editing ? Theme.accent2 : Theme.accent)
             .accessibilityIdentifier("score-edit")
             Spacer(minLength: 0)
+            Button { exportAudio(take) } label: {
+                if exportingAudio {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Audio", systemImage: "waveform")
+                }
+            }
+            .disabled(exportingAudio || take.scoreEvents.isEmpty)
+            .accessibilityIdentifier("score-export-audio")
             Button { exportPDF(take) } label: {
                 Label("PDF", systemImage: "doc.richtext")
             }
@@ -142,18 +159,53 @@ struct StudioScoreView: View {
         showMIDIExporter = true
     }
 
-    private func displayTitle(_ take: StudioTake) -> String {
-        take.name.isEmpty ? "Untitled take" : take.name
+    /// Render the instrumental's events → a real `.m4a` and hand the bytes to `.fileExporter`. The
+    /// render synthesizes the take's notes through its own instrument (the same audio Replay
+    /// plays) — so the export is audible even for a live-saved take whose stored file is a silent
+    /// placeholder. Needs the instrument pack downloaded (the bank the render loads).
+    private func exportAudio(_ take: StudioTake) {
+        guard !exportingAudio else { return }
+        guard !take.scoreEvents.isEmpty else {
+            errorText = "This instrumental has no notes to render."
+            return
+        }
+        guard let bankURL = packs.localBankURL(forInstrument: take.instrument) else {
+            errorText = "Download the \(take.instrument.displayName) pack to export this instrumental's audio."
+            return
+        }
+        let events = take.scoreEvents
+        let program = take.instrument.gmProgram
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("instrumental-\(UUID().uuidString).m4a")
+        exportingAudio = true
+        Task {
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            do {
+                _ = try await StudioRender.shared.renderTake(events: events, bankURL: bankURL,
+                                                             program: program, to: tmp)
+                let data = try Data(contentsOf: tmp)
+                audioDoc = ScoreAudioFile(data: data)
+                exportingAudio = false
+                showAudioExporter = true
+            } catch {
+                exportingAudio = false
+                errorText = "Couldn't render this instrumental's audio. Try again, or re-download the \(take.instrument.displayName) pack."
+            }
+        }
     }
 
-    /// Export base name: the take's name with filesystem-hostile separators stripped.
+    private func displayTitle(_ take: StudioTake) -> String {
+        take.name.isEmpty ? "Untitled instrumental" : take.name
+    }
+
+    /// Export base name: the instrumental's name with filesystem-hostile separators stripped.
     private var exportBaseName: String {
-        let raw = take.map(displayTitle) ?? "Take"
+        let raw = take.map(displayTitle) ?? "Instrumental"
         let cleaned = raw
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespaces)
-        return cleaned.isEmpty ? "Take" : cleaned
+        return cleaned.isEmpty ? "Instrumental" : cleaned
     }
 }
 
@@ -182,6 +234,25 @@ struct ScoreMIDIFile: FileDocument {
     /// "<name>.mid" default filename survives the exporter's type check.
     static let midiType: UTType = .midi
     static var readableContentTypes: [UTType] { [midiType] }
+
+    var data: Data
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// Rendered AAC `.m4a` bytes for `.fileExporter` (score-export-audio). `.mpeg4Audio` is
+/// `public.mpeg-4-audio`, whose registered extensions include `.m4a`, so the "<name>.m4a"
+/// default filename survives the exporter's type check.
+struct ScoreAudioFile: FileDocument {
+    static let audioType: UTType = .mpeg4Audio
+    static var readableContentTypes: [UTType] { [audioType] }
 
     var data: Data
     init(data: Data) { self.data = data }

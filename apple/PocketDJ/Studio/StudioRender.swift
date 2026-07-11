@@ -4,6 +4,7 @@ import Foundation
 // block trips Sendable warnings that are noise here — all this work is actor-serialized on one
 // thread. This is the compiler's own suggested fix.
 @preconcurrency import AVFoundation
+import AudioToolbox       // kAUSampler_DefaultMelodicBankMSB / kAUSampler_DefaultBankLSB (instrumental render)
 import Accelerate
 import os
 
@@ -26,6 +27,11 @@ enum StudioRenderError: Error {
     case cannotCreateBuffer
     /// The imported file is DRM-protected (a FairPlay `.m4p` / stream) — never a sample (spec §12).
     case protectedSource(URL)
+    /// An instrumental render was asked for with no note events — it would schedule zero frames.
+    case emptyTake
+    /// The instrument's SoundFont bank couldn't be loaded into the offline sampler (missing /
+    /// unreadable / not downloaded). The view points the user at the pack download.
+    case bankLoadFailed(URL)
 }
 
 // MARK: - StudioRender (offline bounce — spec §4)
@@ -343,6 +349,125 @@ actor StudioRender {
         let ms = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
         Self.rlog("import \(sourceURL.lastPathComponent) → \(frames)f/\(ms)ms")
         return (frames, ms)
+    }
+
+    // MARK: - Instrumental render (sampler note events → audio)
+
+    /// Synthesize an instrument take's note events into a REAL AAC `.m4a` at `destURL` by playing
+    /// them through an OFFLINE `AVAudioUnitSampler` loaded with the take's SoundFont bank at GM
+    /// `program`. This is the events→audio render that `InstrumentEngine.replayTake` does live, in
+    /// realtime — done offline, faster than realtime — so a take (recorded OR saved from the live
+    /// staff, whose stored file is only a silent placeholder) can become a real, audible file for
+    /// "Use as sample", "Sample from instrumental", and audio export.
+    ///
+    /// The caller passes `take.scoreEvents` (the edited stream once the score's been touched, else
+    /// the raw performance) so an edited take renders what the score shows. `bankURL` is resolved
+    /// by the caller via `InstrumentPackStore.localBankURL(forInstrument:)`; a nil there is the
+    /// "download the pack first" prompt (the same gate Replay uses), never a silent fallback.
+    ///
+    /// Timing mirrors the sample bakes: notes fire frame-accurately, the AU priming-latency head is
+    /// trimmed so written frame 0 is musical frame 0, and the sampler's release rings out into the
+    /// −60 dBFS / 3 s tail drain (a note-off's decay is never truncated).
+    func renderTake(events: [StudioNoteEvent], bankURL: URL, program: UInt8,
+                    to destURL: URL) async throws -> (frames: Int64, durationMs: Int) {
+        let actions = InstrumentEngine.replayActions(events: events)
+        guard !actions.isEmpty else { throw StudioRenderError.emptyTake }
+
+        let fmt = Self.canonicalFormat
+        let sr = Self.canonicalSampleRate
+        let engine = AVAudioEngine()
+        do { try engine.enableManualRenderingMode(.offline, format: fmt,
+                                                  maximumFrameCount: Self.chunkFrames) }
+        catch { throw StudioRenderError.engineStart(error) }
+        let sampler = AVAudioUnitSampler()
+        engine.attach(sampler)
+        engine.connect(sampler, to: engine.mainMixerNode, format: fmt)
+        // Parse the SoundFont BEFORE start (manual-mode setup needs the engine stopped). Synchronous
+        // here — one render, one parse, nothing else touches the sampler — so no engineReady gate is
+        // needed the way the live engine's background parse requires it.
+        do {
+            try sampler.loadSoundBankInstrument(at: bankURL, program: program,
+                                                bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
+                                                bankLSB: UInt8(kAUSampler_DefaultBankLSB))
+        } catch { throw StudioRenderError.bankLoadFailed(bankURL) }
+        do { try engine.start() } catch { throw StudioRenderError.engineStart(error) }
+        defer { engine.stop() }
+
+        // Musical length = last note-off. The priming head (AU + output-node latency, in frames) is
+        // dropped from the front so the first note lands at written-frame 0.
+        let lastMs = actions.map(\.ms).max() ?? 0
+        let nominal = Int64((Double(lastMs) / 1000 * sr).rounded())
+        let latencySec = sampler.auAudioUnit.latency + engine.outputNode.auAudioUnit.latency
+        let skipHead = max(0, Int64((latencySec * sr).rounded()))
+
+        let frames = try Self.writeAtomically(to: destURL, settings: Self.aacSettings) { out in
+            try Self.pumpSampler(engine: engine, sampler: sampler, actions: actions,
+                                 sampleRate: sr, skipHead: skipHead, nominal: nominal, to: out)
+        }
+        let durationMs = Int((Double(frames) / sr * 1000).rounded())
+        Self.rlog("take \(events.count) events → \(frames)f/\(durationMs)ms")
+        return (frames, durationMs)
+    }
+
+    /// Event-driven offline pump: render the sampler's output in blocks, firing each note on/off at
+    /// its frame, then drain the release tail (the same −60 dBFS / 3 s stop the sample bakes use).
+    /// The counterpart to `pullAndWrite`, but the source is MIDI actions instead of a scheduled
+    /// file — everything past the priming head is written; the head is dropped.
+    private static func pumpSampler(engine: AVAudioEngine, sampler: AVAudioUnitSampler,
+                                    actions: [(ms: Int, on: Bool, note: Int, velocity: Int)],
+                                    sampleRate: Double, skipHead: Int64, nominal: Int64,
+                                    to out: AVAudioFile) throws -> Int64 {
+        let fmt = engine.manualRenderingFormat
+        guard let render = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunkFrames),
+              let scratch = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunkFrames) else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        // Render-timeline frame of an event = musical frame + priming head.
+        func frameOf(_ ms: Int) -> Int64 {
+            skipHead + Int64((Double(max(0, ms)) / 1000 * sampleRate).rounded())
+        }
+        var pulled: Int64 = 0
+        var written: Int64 = 0
+        // Render forward to `target`, writing everything past the head (dropping the head's frames).
+        func pull(to target: Int64) throws {
+            while pulled < target {
+                let want = AVAudioFrameCount(min(Int64(chunkFrames), target - pulled))
+                let status = try engine.renderOffline(want, to: render)
+                guard status == .success, render.frameLength > 0 else { break }
+                let dropFront = Int(max(0, min(Int64(render.frameLength), skipHead - pulled)))
+                try writeSlice(render, from: dropFront, to: out, scratch: scratch)
+                written += Int64(render.frameLength) - Int64(dropFront)
+                pulled += Int64(render.frameLength)
+            }
+        }
+        // Fire events in time order, rendering up to each event's frame before applying it.
+        var idx = 0
+        while idx < actions.count {
+            try pull(to: frameOf(actions[idx].ms))
+            while idx < actions.count, frameOf(actions[idx].ms) <= pulled {
+                let a = actions[idx]; idx += 1
+                let n = UInt8(clamping: max(0, min(127, a.note)))
+                if a.on {
+                    sampler.startNote(n, withVelocity: UInt8(clamping: max(1, min(127, a.velocity))),
+                                      onChannel: 0)
+                } else {
+                    sampler.stopNote(n, onChannel: 0)
+                }
+            }
+        }
+        try pull(to: skipHead + nominal)   // out to the last note-off
+        // Release-tail drain: the last note-off's decay rings out here (same stop as sample bakes).
+        let cap = Int64(tailCapSeconds * sampleRate)
+        var tail: Int64 = 0
+        while tail < cap {
+            let status = try engine.renderOffline(tailWindowFrames, to: render)
+            guard status == .success, render.frameLength > 0 else { break }
+            try writeSlice(render, from: 0, to: out, scratch: scratch)
+            written += Int64(render.frameLength)
+            tail += Int64(render.frameLength)
+            if isBelowFloor(render, floorDb: tailFloorDb) { break }
+        }
+        return written
     }
 
     // MARK: - Sync decode (nonisolated — the engine's loop-audition path calls this directly)

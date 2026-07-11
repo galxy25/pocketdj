@@ -347,7 +347,8 @@ struct PocketDJApp: App {
                 case .samples: settings.samplesFolderBookmark = data
                 case .loops: settings.loopsFolderBookmark = data
                 case .sequences: settings.sequencesFolderBookmark = data
-                case .takes, .instruments: return   // always app-managed — no bookmark exists (spec §3)
+                case .takes: settings.takesFolderBookmark = data
+                case .instruments: return   // always app-managed — no bookmark exists (spec §3)
                 }
                 settings.persist()
             }

@@ -211,6 +211,37 @@ final class StudioRenderTests: XCTestCase {
         }
     }
 
+    // MARK: Instrumental (take) renders
+    //
+    // The event-driven sampler render is exercised end-to-end (real audio, non-silent waveform)
+    // in the simulator — the SoundFont bank it loads is a 32 MB download, not bundled for unit
+    // tests. Here we cover the two guards that need no bank: no-notes and an unloadable bank.
+
+    func testRenderTakeRejectsEmptyEvents() async throws {
+        do {
+            _ = try await StudioRender.shared.renderTake(events: [], bankURL: dir, program: 0,
+                                                         to: dir.appendingPathComponent("empty.m4a"))
+            XCTFail("no note events must throw")
+        } catch let e as StudioRenderError {
+            guard case .emptyTake = e else { return XCTFail("expected .emptyTake, got \(e)") }
+        }
+    }
+
+    func testRenderTakeWithUnloadableBankThrows() async throws {
+        // A non-SoundFont file: the offline sampler starts, but loadSoundBankInstrument rejects it
+        // → `.bankLoadFailed` (the "download the pack first" prompt), never a crash or silent file.
+        let bogus = dir.appendingPathComponent("not-a-bank.sf2")
+        try Data("nope".utf8).write(to: bogus)
+        do {
+            _ = try await StudioRender.shared.renderTake(
+                events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 100)],
+                bankURL: bogus, program: 0, to: dir.appendingPathComponent("bad.m4a"))
+            XCTFail("an unloadable bank must throw")
+        } catch let e as StudioRenderError {
+            guard case .bankLoadFailed = e else { return XCTFail("expected .bankLoadFailed, got \(e)") }
+        }
+    }
+
     // MARK: Pattern bounces
 
     func testBouncePatternRefusesZeroSoundingSteps() async throws {

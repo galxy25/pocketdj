@@ -13,10 +13,13 @@ struct StudioTakesView: View {
 
     @State private var renamingId: String?
     @State private var nameDraft = ""
-    /// Takes already copied into Samples THIS visit — flips the button to a checkmark so a
-    /// double-tap doesn't mint two identical samples by accident (a re-copy is still allowed
-    /// after leaving and returning; samples are cheap and explicitly user-owned).
+    /// Takes already sampled THIS visit — flips the button to a checkmark so a double-tap doesn't
+    /// mint two identical samples by accident (a re-sample is still allowed after leaving and
+    /// returning; samples are cheap and explicitly user-owned).
     @State private var sampledIds: Set<String> = []
+    /// Takes whose events are RENDERING into a sample right now (the offline sampler render is
+    /// async) — drives the row spinner + disables a second tap mid-render.
+    @State private var samplingIds: Set<String> = []
     @State private var errorText: String?
 
     private var takesNewestFirst: [StudioTake] {
@@ -26,8 +29,8 @@ struct StudioTakesView: View {
     var body: some View {
         Group {
             if takesNewestFirst.isEmpty {
-                ContentUnavailableView("No takes yet", systemImage: "pianokeys",
-                    description: Text("Record a take on the Instruments tab — it lands here with its score, replay, and export."))
+                ContentUnavailableView("No instrumentals yet", systemImage: "pianokeys",
+                    description: Text("Record an instrumental on the Instruments tab — it lands here with its score, replay, and export."))
             } else {
                 List {
                     ForEach(takesNewestFirst) { take in
@@ -39,11 +42,11 @@ struct StudioTakesView: View {
             }
         }
         .background(Theme.bg)
-        .navigationTitle("Takes")
+        .navigationTitle("Instrumentals")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .alert("Rename take", isPresented: Binding(get: { renamingId != nil },
+        .alert("Rename instrumental", isPresented: Binding(get: { renamingId != nil },
                                                    set: { if !$0 { renamingId = nil } })) {
             TextField("Name", text: $nameDraft).accessibilityIdentifier("take-rename-field")
             Button("Save") {
@@ -70,7 +73,7 @@ struct StudioTakesView: View {
                     .foregroundStyle(Theme.accent)
                     .frame(width: 26)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(take.name.isEmpty ? "Untitled take" : take.name)
+                    Text(take.name.isEmpty ? "Untitled instrumental" : take.name)
                         .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
                     Text("\(take.instrument.displayName) · \(Fmt.duration(take.durationMs)) · \(Fmt.bpm(take.bpm)) BPM · \(take.events.count) note\(take.events.count == 1 ? "" : "s")")
                         .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
@@ -92,12 +95,17 @@ struct StudioTakesView: View {
                 Button {
                     useAsSample(take)
                 } label: {
-                    Image(systemName: sampledIds.contains(take.id)
-                          ? "checkmark.circle" : "waveform.badge.plus")
-                        .font(.title3)
+                    if samplingIds.contains(take.id) {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: sampledIds.contains(take.id)
+                              ? "checkmark.circle" : "waveform.badge.plus")
+                            .font(.title3)
+                    }
                 }
                 .buttonStyle(.borderless)
-                .disabled(sampledIds.contains(take.id))
+                .disabled(sampledIds.contains(take.id) || samplingIds.contains(take.id)
+                          || take.scoreEvents.isEmpty)
                 .accessibilityIdentifier("take-as-sample-\(take.id)")
             }
             .padding(.vertical, 4)
@@ -116,9 +124,10 @@ struct StudioTakesView: View {
         }
         .contextMenu {   // right-click (macOS) / long-press (iOS) — swipe parity
             Button { beginRename(take) } label: { Label("Rename…", systemImage: "pencil") }
-            Button { useAsSample(take) } label: { Label("Use as sample", systemImage: "waveform.badge.plus") }
+            Button { useAsSample(take) } label: { Label("Sample from instrumental", systemImage: "waveform.badge.plus") }
+                .disabled(samplingIds.contains(take.id) || take.scoreEvents.isEmpty)
             Button(role: .destructive) { _ = studio.deleteTake(take.id) } label: {
-                Label("Delete take", systemImage: "trash")
+                Label("Delete instrumental", systemImage: "trash")
             }
         }
     }
@@ -128,48 +137,105 @@ struct StudioTakesView: View {
         renamingId = take.id
     }
 
-    // MARK: Use as sample (spec §2/§7 — the take → sample → loop path)
+    // MARK: Sample from instrumental (spec §2/§7 — the take → sample → loop path)
 
-    /// COPY the take's audio into the samples family and file a `StudioSample(source: .take)`.
-    /// A copy, never a reference (spec §2's load-bearing rule): the sample must keep playing
-    /// after the take is deleted. The new sample inherits a CONSTANT grid from the take's bpm
-    /// (`firstDownbeatMs = 0` — recording starts on beat 1 after the count-in).
+    /// RENDER the take's note events through its instrument's SoundFont into a real `.m4a` sample
+    /// and file a `StudioSample(source: .take)`. The rendered audio — never a copy of the take's
+    /// own file, which for a live-saved take is a SILENT placeholder — is what fixes the
+    /// flat-waveform bug: the sample now sounds like the instrumental's Replay. The audio is fully
+    /// self-contained (spec §2's load-bearing rule): the sample keeps playing after the take is
+    /// deleted. The new sample inherits a CONSTANT grid from the take's bpm.
+    ///
+    /// Requires the take's instrument pack downloaded (the bank the render loads) — a missing pack
+    /// points the user at the download, the same gate Replay uses, never a silent sample.
     private func useAsSample(_ take: StudioTake) {
-        guard !sampledIds.contains(take.id) else { return }
-        // Resolve the take's audio (always app-managed — no bookmark, no scope; spec §3).
-        guard let src = StudioFolders.fileURL(family: .takes, fileName: take.fileName,
-                                              wasUserFolder: false, bookmark: nil) else {
-            errorText = "The take's audio file is missing — it can't be used as a sample."
+        guard !sampledIds.contains(take.id), !samplingIds.contains(take.id) else { return }
+        guard !take.scoreEvents.isEmpty else {
+            errorText = "This instrumental has no notes to render into a sample."
             return
         }
-        defer { src.release?() }   // nil for app storage — kept for the resolver's contract symmetry
-        let sampleId = StudioFactory.newSampleId()
-        let fileName = StudioFolders.fileName(.samples, id: sampleId)
-        // The samples family WRITE root: the user-picked folder when configured (its security
-        // scope held for the copy), else the app-managed dir; `isUserFolder` is stamped onto
-        // the record so the file forever resolves against the root it was written to.
+        let takeId = take.id
+        samplingIds.insert(takeId)
+        Task {
+            do {
+                _ = try await StudioTakeSampler.makeSample(from: take, studio: studio, packs: packs)
+                samplingIds.remove(takeId)
+                sampledIds.insert(takeId)
+            } catch {
+                samplingIds.remove(takeId)
+                errorText = StudioTakeSampler.message(for: error)
+            }
+        }
+    }
+}
+
+// MARK: - Shared take → sample renderer (takes list + samples-view picker)
+
+/// Renders an instrumental take's note events through its instrument's SoundFont into a real
+/// `.m4a` sample and files it (`source: .take`). The ONE place the events→audio "burn a take to
+/// disc" happens for sampling, shared by `StudioTakesView`'s in-row button and the Samples view's
+/// "Sample from instrumental" picker so the two can't drift. The rendered audio is self-contained
+/// (never a copy of the take's own file, which for a live-saved take is a silent placeholder).
+@MainActor
+enum StudioTakeSampler {
+    enum SampleError: Error {
+        case noNotes
+        case noPack(String)      // instrument display name
+        case noFolder
+        case renderFailed(String)
+    }
+
+    /// Render `take` → a new sample in `studio`, returning the new sample id. Throws `SampleError`
+    /// (mapped to user copy by `message(for:)`). Requires the take's instrument pack downloaded.
+    @discardableResult
+    static func makeSample(from take: StudioTake, studio: StudioStore,
+                           packs: InstrumentPackStore) async throws -> String {
+        guard !take.scoreEvents.isEmpty else { throw SampleError.noNotes }
+        guard let bankURL = packs.localBankURL(forInstrument: take.instrument) else {
+            throw SampleError.noPack(take.instrument.displayName)
+        }
+        // The samples family WRITE root: the user-picked folder when configured (its security scope
+        // held across the render), else the app-managed dir; `isUserFolder` is stamped onto the
+        // record so the file forever resolves against the root it was written to.
         guard let dest = StudioFolders.folder(.samples, bookmark: studio.bookmark(for: .samples),
                                               requireWritable: true) else {
-            errorText = "Couldn't open the samples folder."
-            return
+            throw SampleError.noFolder
         }
         defer { dest.release?() }
+        let sampleId = StudioFactory.newSampleId()
+        let fileName = StudioFolders.fileName(.samples, id: sampleId)
+        let destURL = dest.url.appendingPathComponent(fileName)
         do {
-            try FileManager.default.copyItem(at: src.url,
-                                             to: dest.url.appendingPathComponent(fileName))
+            let rendered = try await StudioRender.shared.renderTake(
+                events: take.scoreEvents, bankURL: bankURL,
+                program: take.instrument.gmProgram, to: destURL)
+            studio.addSample(StudioSample(id: sampleId,
+                                          name: take.name.isEmpty ? "Instrumental sample" : take.name,
+                                          fileName: fileName, wasUserFolder: dest.isUserFolder,
+                                          createdAt: Date().timeIntervalSince1970 * 1000,
+                                          durationMs: rendered.durationMs,
+                                          source: .take(takeId: take.id),
+                                          grid: StudioGrid(bpm: take.bpm)))
+            return sampleId
         } catch {
-            errorText = "Couldn't copy the take's audio into Samples."
-            return
+            throw SampleError.renderFailed(take.instrument.displayName)
         }
-        studio.addSample(StudioSample(id: sampleId,
-                                      name: take.name.isEmpty ? "Take sample" : take.name,
-                                      fileName: fileName,
-                                      wasUserFolder: dest.isUserFolder,
-                                      createdAt: Date().timeIntervalSince1970 * 1000,
-                                      durationMs: take.durationMs,
-                                      source: .take(takeId: take.id),
-                                      grid: StudioGrid(bpm: take.bpm)))
-        sampledIds.insert(take.id)
+    }
+
+    /// User-facing copy for a `SampleError` (or any thrown error, defensively).
+    static func message(for error: Error) -> String {
+        switch error {
+        case SampleError.noNotes:
+            return "This instrumental has no notes to render into a sample."
+        case SampleError.noPack(let name):
+            return "Download the \(name) pack to make a sample from this instrumental."
+        case SampleError.noFolder:
+            return "Couldn't open the samples folder."
+        case SampleError.renderFailed(let name):
+            return "Couldn't render this instrumental into a sample. Try again, or re-download the \(name) pack."
+        default:
+            return "Couldn't make a sample from this instrumental."
+        }
     }
 }
 

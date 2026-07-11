@@ -55,18 +55,20 @@ final class StudioFoldersTests: XCTestCase {
         XCTAssertEqual(resolved.url.path, try StudioFolders.appRoot(.loops).path)
     }
 
-    /// Takes/instruments are ALWAYS app-managed — with no bookmark in play they resolve to the
-    /// app root (bookmarks for them are a caller bug, asserted in the resolver).
+    /// Instrument packs are ALWAYS app-managed — a bookmark for them is a caller bug (asserted in
+    /// the resolver). Every other family (samples/loops/sequences/takes) is user-relocatable, but
+    /// still falls back to the app root when no bookmark is set.
     func testAppManagedFamiliesResolveToAppRoot() throws {
-        for family in [StudioFamily.takes, .instruments] {
+        XCTAssertFalse(StudioFamily.instruments.supportsUserFolder)
+        for family in StudioFamily.allCases {
             let resolved = try XCTUnwrap(StudioFolders.resolveRoot(family: family, bookmark: nil,
                                                                    requireWritable: true))
-            XCTAssertFalse(resolved.isUserFolder)
-            XCTAssertFalse(family.supportsUserFolder)
+            XCTAssertFalse(resolved.isUserFolder)          // nil bookmark ⇒ app root for every family
         }
         XCTAssertTrue(StudioFamily.samples.supportsUserFolder)
         XCTAssertTrue(StudioFamily.loops.supportsUserFolder)
         XCTAssertTrue(StudioFamily.sequences.supportsUserFolder)
+        XCTAssertTrue(StudioFamily.takes.supportsUserFolder)
     }
 
     // MARK: Deterministic names — mint + strict parse

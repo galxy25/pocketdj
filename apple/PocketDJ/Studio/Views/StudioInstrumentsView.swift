@@ -62,7 +62,7 @@ struct StudioInstrumentsView: View {
         // Name-the-take prompt. EVERY dismissal path files the take (Save with the draft,
         // Cancel/outside with the default name) — a recorded take is data and is never
         // silently dropped (the MixRecorder auto-file doctrine).
-        .alert("Name this take", isPresented: Binding(
+        .alert("Name this instrumental", isPresented: Binding(
             get: { pendingTake != nil },
             set: { if !$0 { fileTakeIfPending(named: nil) } })) {
             TextField("Name", text: $takeNameDraft)
@@ -71,7 +71,7 @@ struct StudioInstrumentsView: View {
                 .accessibilityIdentifier("take-name-save")
             Button("Cancel", role: .cancel) { fileTakeIfPending(named: nil) }
         } message: {
-            Text("The take is kept either way — Cancel just uses the default name.")
+            Text("The instrumental is kept either way — Cancel just uses the default name.")
         }
     }
 
@@ -175,7 +175,7 @@ struct StudioInstrumentsView: View {
 
     private var recordBar: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Record a take").font(.headline).foregroundStyle(Theme.fg)
+            Text("Record an instrumental").font(.headline).foregroundStyle(Theme.fg)
             HStack(spacing: 10) {
                 TextField("BPM", text: $bpmText)
                     .pocketField()
@@ -266,14 +266,16 @@ struct StudioInstrumentsView: View {
         guard let r = pendingTake else { return }
         pendingTake = nil
         let trimmed = (name ?? "").trimmingCharacters(in: .whitespaces)
-        studio.addTake(StudioTake(id: r.takeId,
-                                  name: trimmed.isEmpty ? defaultTakeName() : trimmed,
-                                  instrument: r.instrument,
-                                  fileName: r.fileName,
-                                  bpm: r.bpm,
-                                  events: r.events,
-                                  durationMs: r.durationMs,
-                                  createdAt: Date().timeIntervalSince1970 * 1000))
+        // Relocating filer: the take recorded into app storage; move it into the user's
+        // instrumentals folder now if one is configured (Settings ▸ Storage).
+        studio.addTakeRelocating(StudioTake(id: r.takeId,
+                                            name: trimmed.isEmpty ? defaultTakeName() : trimmed,
+                                            instrument: r.instrument,
+                                            fileName: r.fileName,
+                                            bpm: r.bpm,
+                                            events: r.events,
+                                            durationMs: r.durationMs,
+                                            createdAt: Date().timeIntervalSince1970 * 1000))
     }
 
     private func defaultTakeName() -> String { "Take \(studio.takes.count + 1)" }
@@ -341,10 +343,10 @@ struct StudioInstrumentsView: View {
         let fileName = StudioFolders.fileName(.takes, id: takeId)
         let dur = max(500, live.map(\.offMs).max() ?? 500)
         writePlaceholderTakeAudio(to: takesDir.appendingPathComponent(fileName), durationMs: dur)
-        studio.addTake(StudioTake(id: takeId, name: defaultTakeName(),
-                                  instrument: instruments.currentInstrument ?? .piano,
-                                  fileName: fileName, bpm: 120, events: live, durationMs: dur,
-                                  createdAt: Date().timeIntervalSince1970 * 1000))
+        studio.addTakeRelocating(StudioTake(id: takeId, name: defaultTakeName(),
+                                            instrument: instruments.currentInstrument ?? .piano,
+                                            fileName: fileName, bpm: 120, events: live, durationMs: dur,
+                                            createdAt: Date().timeIntervalSince1970 * 1000))
         instruments.clearLiveEvents()
         liveEditing = false
         notice = "Saved to Takes."
@@ -371,7 +373,7 @@ struct StudioInstrumentsView: View {
             StudioTakesView()
         } label: {
             HStack {
-                Label("Takes", systemImage: "music.note.list").foregroundStyle(Theme.fg)
+                Label("Instrumentals", systemImage: "music.note.list").foregroundStyle(Theme.fg)
                 Spacer()
                 Text("\(studio.takes.count)")
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)

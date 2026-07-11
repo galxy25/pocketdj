@@ -56,6 +56,7 @@ struct StorageView: View {
                 studioFolderSection(.samples)
                 studioFolderSection(.loops)
                 studioFolderSection(.sequences)
+                studioFolderSection(.takes)
                 studioDeleteSection
             }
         }
@@ -427,14 +428,14 @@ struct StorageView: View {
                            count: studio.loops.count, unit: "loop")
             studioUsageRow(.sequences, label: "Sequences", icon: "square.grid.4x3.fill",
                            count: studio.patterns.count, unit: "sequence")
-            studioUsageRow(.takes, label: "Instrument takes", icon: "recordingtape",
-                           count: studio.takes.count, unit: "take")
+            studioUsageRow(.takes, label: "Instrumentals", icon: "recordingtape",
+                           count: studio.takes.count, unit: "instrumental")
             studioUsageRow(.instruments, label: "Instrument packs", icon: "pianokeys",
                            count: packStore.downloadedSlugs.count, unit: "bank")
         } header: {
             Text("Performance studio")
         } footer: {
-            Text("Samples, loops, sequences, and takes are things you made — the app never deletes them on its own (the soft cap above prunes burnt music only). Instrument packs are sound banks you can download again anytime.")
+            Text("Samples, loops, sequences, and instrumentals are things you made — the app never deletes them on its own (the soft cap above prunes burnt music only). Instrument packs are sound banks you can download again anytime.")
         }
     }
 
@@ -449,17 +450,17 @@ struct StorageView: View {
         }
     }
 
-    /// One user-pickable folder per relocatable studio family (samples / loops / sequences),
-    /// cloned from `sessionFolderSection`: choose → security-scoped bookmark persisted NOW;
-    /// "Use app storage" resets to the app-managed `studio/<family>/` dir. Takes and
-    /// instrument packs are always app-managed (spec §3) and get no picker.
+    /// One user-pickable folder per relocatable studio family (samples / loops / sequences /
+    /// instrumentals), cloned from `sessionFolderSection`: choose → security-scoped bookmark
+    /// persisted NOW; "Use app storage" resets to the app-managed `studio/<family>/` dir. Instrument
+    /// packs are always app-managed (spec §3) and get no picker.
     private func studioFolderSection(_ family: StudioFamily) -> some View {
         Section {
             Button {
                 studioPickerFamily = family
                 showStudioFolderPicker = true
             } label: {
-                Label("Choose \(family.rawValue) folder…", systemImage: "folder.badge.plus")
+                Label("Choose \(familyNoun(family)) folder…", systemImage: "folder.badge.plus")
             }
             .accessibilityIdentifier("storage-\(family.rawValue)-folder-choose")
             if let name = folderName(for: studioBookmark(family)) {
@@ -478,10 +479,16 @@ struct StorageView: View {
                 }
             }
         } header: {
-            Text("\(family.rawValue.capitalized) folder")
+            Text("\(familyNoun(family).capitalized) folder")
         } footer: {
-            Text("Where new \(family.rawValue) are saved (\(studioFileShape(family))). Pick a folder to browse the files yourself in \(browseAppName). Leave unset to keep them in the app’s private storage. Files already saved stay in the folder they were written to.")
+            Text("Where new \(familyNoun(family)) are saved (\(studioFileShape(family))). Pick a folder to browse the files yourself in \(browseAppName). Leave unset to keep them in the app’s private storage. Files already saved stay in the folder they were written to.")
         }
+    }
+
+    /// User-facing plural noun for a relocatable family — takes read as "instrumentals" per the
+    /// product naming (the internal `.takes` rawValue stays `take`/`takes`).
+    private func familyNoun(_ family: StudioFamily) -> String {
+        family == .takes ? "instrumentals" : family.rawValue
     }
 
     /// The deterministic file shape a family writes — shown in the folder footers so a user
@@ -490,14 +497,15 @@ struct StorageView: View {
         family.filePrefix + "…." + family.fileExtension
     }
 
-    /// The user-picked folder bookmark for a relocatable family. Takes/instruments are always
+    /// The user-picked folder bookmark for a relocatable family. Instrument packs are always
     /// app-managed (spec §3) — nil keeps `StudioFolders`' no-bookmark assert honest.
     private func studioBookmark(_ family: StudioFamily) -> Data? {
         switch family {
         case .samples: return settings.samplesFolderBookmark
         case .loops: return settings.loopsFolderBookmark
         case .sequences: return settings.sequencesFolderBookmark
-        case .takes, .instruments: return nil
+        case .takes: return settings.takesFolderBookmark
+        case .instruments: return nil
         }
     }
 
@@ -506,7 +514,8 @@ struct StorageView: View {
         case .samples: settings.samplesFolderBookmark = data
         case .loops: settings.loopsFolderBookmark = data
         case .sequences: settings.sequencesFolderBookmark = data
-        case .takes, .instruments: assertionFailure("takes/instruments are always app-managed")
+        case .takes: settings.takesFolderBookmark = data
+        case .instruments: assertionFailure("instrument packs are always app-managed")
         }
     }
 
@@ -518,7 +527,7 @@ struct StorageView: View {
             studioDeleteButton(.samples, title: "Delete all samples")
             studioDeleteButton(.loops, title: "Delete all loops")
             studioDeleteButton(.sequences, title: "Delete all sequences")
-            studioDeleteButton(.takes, title: "Delete all instrument takes")
+            studioDeleteButton(.takes, title: "Delete all instrumentals")
             studioDeleteButton(.instruments, title: "Delete instrument packs")
         } header: {
             Text("Delete studio content")
@@ -553,7 +562,7 @@ struct StorageView: View {
         case .samples: return "samples"
         case .loops: return "loops"
         case .sequences: return "sequences"
-        case .takes: return "instrument takes"
+        case .takes: return "instrumentals"
         case .instruments: return "instrument packs"
         }
     }
@@ -563,7 +572,7 @@ struct StorageView: View {
         case .samples: return "Delete samples"
         case .loops: return "Delete loops"
         case .sequences: return "Delete sequences"
-        case .takes: return "Delete takes"
+        case .takes: return "Delete instrumentals"
         case .instruments: return "Delete packs"
         }
     }
@@ -580,7 +589,7 @@ struct StorageView: View {
         case .sequences:
             return "Removes every sequencer pattern and its bounced audio. The samples and loops the patterns played are untouched."
         case .takes:
-            return "Removes every instrument take — the audio and the score that goes with it. Samples you made from a take are copies and are untouched."
+            return "Removes every instrumental — the audio and the score that goes with it. Samples you made from an instrumental are separate copies and are untouched."
         case .instruments:
             return "Removes downloaded sound banks from this device. Packs stay listed and can be downloaded again anytime."
         }

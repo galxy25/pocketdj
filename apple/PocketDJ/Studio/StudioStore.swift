@@ -94,7 +94,7 @@ final class StudioStore {
 
     private var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
 
-    /// The user-picked folder bookmark for a family (nil ⇒ app-managed). Takes/instruments are
+    /// The user-picked folder bookmark for a family (nil ⇒ app-managed). Instrument packs are
     /// ALWAYS app-managed (spec §3), so they short-circuit to nil — which also keeps
     /// `StudioFolders.resolveRoot`'s "no bookmark for app-managed families" assert honest.
     func bookmark(for family: StudioFamily) -> Data? {
@@ -102,7 +102,8 @@ final class StudioStore {
         case .samples: return settings?.samplesFolderBookmark
         case .loops: return settings?.loopsFolderBookmark
         case .sequences: return settings?.sequencesFolderBookmark
-        case .takes, .instruments: return nil
+        case .takes: return settings?.takesFolderBookmark
+        case .instruments: return nil
         }
     }
 
@@ -352,7 +353,7 @@ final class StudioStore {
 
     func take(_ id: String) -> StudioTake? { takes.first { $0.id == id } }
 
-    /// File a finished take (audio already under the app-managed takes root). Upserts by id.
+    /// File a finished take (audio already under the take's stamped root). Upserts by id.
     @discardableResult
     func addTake(_ take: StudioTake) -> StudioTake {
         if let i = takes.firstIndex(where: { $0.id == take.id }) {
@@ -362,6 +363,34 @@ final class StudioStore {
         }
         saveNow()
         return take
+    }
+
+    /// File a freshly-finished take, RELOCATING its audio into the user's instrumentals folder when
+    /// one is configured (Settings ▸ Storage). The recorder/live-save writes into app storage first
+    /// (durable even across a crash mid-take — no user folder ever holds a security scope for the
+    /// whole recording), and this MOVES it on clean finish. `wasUserFolder` is stamped to match
+    /// where the file actually ends up: a failed/absent move keeps app storage — honest, never a
+    /// record that points at a file that isn't there. The crash auto-file path deliberately does
+    /// NOT relocate (it stays app-managed — the simplest durable resting place).
+    @discardableResult
+    func addTakeRelocating(_ take: StudioTake) -> StudioTake {
+        var t = take
+        if let dest = StudioFolders.folder(.takes, bookmark: bookmark(for: .takes),
+                                           requireWritable: true), dest.isUserFolder {
+            defer { dest.release?() }
+            // Source is app storage at this point (recorder + live-save both write the app root).
+            if let src = StudioFolders.fileURL(family: .takes, fileName: take.fileName,
+                                               wasUserFolder: false, bookmark: nil) {
+                let target = dest.url.appendingPathComponent(take.fileName)
+                do {
+                    try? FileManager.default.removeItem(at: target)
+                    try FileManager.default.moveItem(at: src.url, to: target)
+                    t.wasUserFolder = true
+                } catch { /* move failed → keep app storage (t.wasUserFolder stays false) */ }
+                src.release?()
+            }
+        }
+        return addTake(t)
     }
 
     func renameTake(_ id: String, to name: String) {
@@ -390,14 +419,15 @@ final class StudioStore {
         saveNow()
     }
 
-    /// Delete a take (file + record). Takes are always app-managed — the root is always
-    /// reachable, so there is no keep-record branch. Samples created via "Use as sample" are
-    /// untouched (they COPIED the audio; their `.take` source is provenance only).
+    /// Delete a take (file + record). Resolves the file against the root it was WRITTEN to
+    /// (`wasUserFolder` + the instrumentals-folder bookmark). Samples made from an instrumental are
+    /// untouched (they RENDERED their own audio; the `.take` source is provenance only).
     @discardableResult
     func deleteTake(_ id: String) -> Bool {
         guard let i = takes.firstIndex(where: { $0.id == id }) else { return false }
         if let got = StudioFolders.fileURL(family: .takes, fileName: takes[i].fileName,
-                                           wasUserFolder: false, bookmark: nil) {
+                                           wasUserFolder: takes[i].wasUserFolder,
+                                           bookmark: bookmark(for: .takes)) {
             try? FileManager.default.removeItem(at: got.url)
             got.release?()
         }
@@ -665,7 +695,7 @@ final class StudioStore {
             changed = true
         }
         takes.removeAll { t in
-            let gone = provablyGone(.takes, t.fileName, false)
+            let gone = provablyGone(.takes, t.fileName, t.wasUserFolder)
             if gone { changed = true }
             return gone
         }
@@ -743,7 +773,7 @@ final class StudioStore {
         case .samples: samples.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
         case .loops: loops.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
         case .sequences: patterns.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
-        case .takes: takes.removeAll { !keepRecord($0.fileName, false) }
+        case .takes: takes.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
         case .instruments: break   // records belong to InstrumentPacks; only files were swept
         }
         saveNow()

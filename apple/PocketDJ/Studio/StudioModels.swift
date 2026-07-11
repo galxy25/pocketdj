@@ -496,16 +496,22 @@ struct StudioNoteEvent: Codable, Hashable, Sendable {
     }
 }
 
-/// A recorded instrument performance: the captured audio (`take-<id>.m4a`, ALWAYS app-managed —
-/// takes have no user folder, spec §3) plus the raw note-event log the score is quantized from
-/// and the replay/MIDI export read. No `wasUserFolder` on purpose: there is exactly one root a
-/// take can resolve against.
+/// A recorded instrument performance ("instrumental"): the captured audio (`take-<id>.m4a`) plus
+/// the raw note-event log the score is quantized from and the replay/MIDI/audio export read. The
+/// file is recorded into app storage and relocated into the user's instrumentals folder on clean
+/// finish (`wasUserFolder` stamps which root holds it — same discipline as `StudioSample`).
 struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     var id: String                    // "tk_…"
     var name: String
     var instrument: InstrumentKey = .piano
-    /// `take-<id>.m4a` under the app-managed takes root.
+    /// `take-<id>.m4a`. Recorded into app storage, then RELOCATED into the user's instrumentals
+    /// folder on clean finish when one is configured (`StudioStore.addTakeRelocating`).
     var fileName: String
+    /// Where the file was WRITTEN: true ⇒ the user-picked instrumentals folder (resolved via its
+    /// security-scoped bookmark), false ⇒ the app-managed root. Mirrors `StudioSample.wasUserFolder`
+    /// — an instrumental forever resolves against the root it was actually written to, never the
+    /// current setting. Additive (old takes decode false = app storage).
+    var wasUserFolder: Bool = false
     /// The click/quantize tempo the take was recorded at (ScoreQuantizer's grid).
     var bpm: Double = 120
     /// Raw UNQUANTIZED events (ms from beat 1 = end of count-in) — quantization happens at
@@ -523,14 +529,14 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     var scoreEvents: [StudioNoteEvent] { editedEvents ?? events }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, instrument, fileName, bpm, events, durationMs, createdAt, editedEvents
+        case id, name, instrument, fileName, wasUserFolder, bpm, events, durationMs, createdAt, editedEvents
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
-         bpm: Double = 120, events: [StudioNoteEvent] = [], durationMs: Int = 0,
-         createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil) {
+         wasUserFolder: Bool = false, bpm: Double = 120, events: [StudioNoteEvent] = [],
+         durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
-        self.bpm = bpm; self.events = events; self.durationMs = durationMs
-        self.createdAt = createdAt; self.editedEvents = editedEvents
+        self.wasUserFolder = wasUserFolder; self.bpm = bpm; self.events = events
+        self.durationMs = durationMs; self.createdAt = createdAt; self.editedEvents = editedEvents
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -538,6 +544,7 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         instrument = (try? c.decode(InstrumentKey.self, forKey: .instrument)) ?? .piano
         fileName = (try? c.decode(String.self, forKey: .fileName)) ?? ""
+        wasUserFolder = (try? c.decode(Bool.self, forKey: .wasUserFolder)) ?? false
         bpm = (try? c.decode(Double.self, forKey: .bpm)) ?? 120
         events = ((try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .events)) ?? [])
             .compactMap(\.value)

@@ -21,12 +21,15 @@ import UniformTypeIdentifiers
 struct StudioSamplesView: View {
     @Environment(StudioStore.self) private var studio
     @Environment(StudioMicRecorder.self) private var micRecorder
+    @Environment(InstrumentPackStore.self) private var packs
     @Environment(SettingsStore.self) private var settings
 
     @State private var showNewFromTrack = false
     @State private var showMicRecord = false
     /// "From downloaded track" — the offline-only track carve (restrictToDownloaded).
     @State private var showDownloadedTrack = false
+    /// The instrumental picker sheet ("Sample from instrumental") — pick a take, render its events.
+    @State private var showInstrumentalPicker = false
     /// The file browser (`.fileImporter`) for arbitrary audio files.
     @State private var showFileImporter = false
     /// A file import is transcoding in the background (spinner in the bar).
@@ -66,6 +69,7 @@ struct StudioSamplesView: View {
         .sheet(isPresented: $showNewFromTrack) { StudioNewSampleFromTrackView() }
         .sheet(isPresented: $showDownloadedTrack) { StudioNewSampleFromTrackView(restrictToDownloaded: true) }
         .sheet(isPresented: $showMicRecord) { StudioMicRecordView() }
+        .sheet(isPresented: $showInstrumentalPicker) { StudioInstrumentalPickerView() }
         .sheet(item: $editing) { ref in StudioSampleEditorView(sampleId: ref.id) }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.audio],
                       allowsMultipleSelection: false) { result in handleImport(result) }
@@ -149,6 +153,10 @@ struct StudioSamplesView: View {
                 Button { showDownloadedTrack = true } label: {
                     Label("From downloaded track", systemImage: "opticaldisc")
                 }
+                Button { showInstrumentalPicker = true } label: {
+                    Label("Sample from instrumental…", systemImage: "pianokeys")
+                }
+                .disabled(studio.takes.isEmpty)
             } label: {
                 Image(systemName: "square.and.arrow.down")
                     .font(.callout.weight(.semibold))
@@ -354,6 +362,93 @@ struct StudioSamplesView: View {
 /// Identifiable box so `sheet(item:)` can present the editor for a sample id.
 struct StudioSampleRef: Identifiable {
     let id: String
+}
+
+// MARK: - Instrumental picker ("Sample from instrumental")
+
+/// A sheet listing the saved instrumentals; picking one RENDERS its note events → a real `.m4a`
+/// sample (`StudioTakeSampler`) and dismisses. The reverse-direction entry point to the
+/// take→sample path — the forward one is the in-row button on the Instrumentals list — so a user
+/// building a sample library never has to leave the Samples tab. Needs the instrument pack
+/// downloaded (the bank the render loads); a missing pack surfaces the inline error.
+struct StudioInstrumentalPickerView: View {
+    @Environment(StudioStore.self) private var studio
+    @Environment(InstrumentPackStore.self) private var packs
+    @Environment(\.dismiss) private var dismiss
+
+    /// The take rendering right now (its row spinner) — nil when idle. Blocks a second pick.
+    @State private var renderingId: String?
+    @State private var errorText: String?
+
+    private var takes: [StudioTake] { studio.takes.sorted { $0.createdAt > $1.createdAt } }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if takes.isEmpty {
+                    ContentUnavailableView("No instrumentals", systemImage: "pianokeys",
+                        description: Text("Record an instrumental on the Instruments tab first."))
+                } else {
+                    List {
+                        ForEach(takes) { take in row(take) }
+                    }
+                    .scrollContentBackground(.hidden)
+                }
+            }
+            .background(Theme.bg)
+            .navigationTitle("Sample from instrumental")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.accessibilityIdentifier("instrumental-pick-cancel")
+                }
+            }
+            .alert("Couldn’t sample", isPresented: Binding(get: { errorText != nil },
+                                                           set: { if !$0 { errorText = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(errorText ?? "") }
+        }
+    }
+
+    private func row(_ take: StudioTake) -> some View {
+        Button { pick(take) } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "music.note").foregroundStyle(Theme.accent).frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(take.name.isEmpty ? "Untitled instrumental" : take.name)
+                        .foregroundStyle(Theme.fg).lineLimit(1)
+                    Text("\(take.instrument.displayName) · \(Fmt.duration(take.durationMs))")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                }
+                Spacer()
+                if renderingId == take.id {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "waveform.badge.plus").foregroundStyle(Theme.accent2)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(renderingId != nil || take.scoreEvents.isEmpty)
+        .accessibilityIdentifier("instrumental-pick-\(take.id)")
+    }
+
+    private func pick(_ take: StudioTake) {
+        guard renderingId == nil else { return }
+        renderingId = take.id
+        Task {
+            do {
+                _ = try await StudioTakeSampler.makeSample(from: take, studio: studio, packs: packs)
+                dismiss()
+            } catch {
+                renderingId = nil
+                errorText = StudioTakeSampler.message(for: error)
+            }
+        }
+    }
 }
 
 /// Studio-local formatting helpers (samples/loops are SHORT — `Fmt.duration`'s m:ss granularity

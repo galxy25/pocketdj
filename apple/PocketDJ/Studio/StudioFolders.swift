@@ -3,19 +3,22 @@ import Foundation
 // MARK: - Studio storage families + folder resolution
 
 /// The five Studio artifact FAMILIES, each with its own on-disk root under
-/// `Application Support/studio/<family>/` and (for the first three) an optional user-picked
+/// `Application Support/studio/<family>/` and (for all but instruments) an optional user-picked
 /// folder held as a security-scoped bookmark in SettingsStore (spec §3). `rawValue` doubles as
 /// the app-managed subdirectory name — never rename a case.
 enum StudioFamily: String, CaseIterable, Sendable {
     case samples, loops, sequences, takes, instruments
 
-    /// Only samples/loops/sequences are user-relocatable. Takes and instrument packs are ALWAYS
-    /// app-managed (spec §3) — no bookmark, no ambiguity about which root a take resolves
-    /// against, and the recorder/pack-downloader never race a folder setting change.
+    /// Samples/loops/sequences/takes are user-relocatable (each has its own folder setting in
+    /// Settings ▸ Storage). Instrument packs are ALWAYS app-managed — no bookmark, no ambiguity
+    /// about which root a bank resolves against, and the pack-downloader never races a folder
+    /// setting change. Takes join the relocatable set by recording into app storage and MOVING to
+    /// the user folder on clean finish (so the recorder never holds a scope for the whole take —
+    /// `StudioStore.addTakeRelocating`).
     var supportsUserFolder: Bool {
         switch self {
-        case .samples, .loops, .sequences: return true
-        case .takes, .instruments: return false
+        case .samples, .loops, .sequences, .takes: return true
+        case .instruments: return false
         }
     }
 
@@ -103,12 +106,12 @@ enum StudioFolders {
     /// WRITE path ONLY — read/playback paths pass false, because an offline-but-readable
     /// provider folder (e.g. offline iCloud Drive) must still satisfy a read (gating reads on
     /// writability was a real "burned songs won't play" bug — BurnStore's lesson).
-    /// Takes/instruments are always app-managed: a bookmark passed for them is a caller bug
-    /// (asserted) and ignored.
+    /// Instruments are always app-managed: a bookmark passed for them is a caller bug (asserted)
+    /// and ignored.
     static func resolveRoot(family: StudioFamily, bookmark: Data?, requireWritable: Bool)
         -> (url: URL, scoped: Bool, isUserFolder: Bool)? {
         assert(bookmark == nil || family.supportsUserFolder,
-               "takes/instruments are always app-managed — no bookmark applies")
+               "instrument packs are always app-managed — no bookmark applies")
         if family.supportsUserFolder, let data = bookmark {
             var stale = false
             #if os(macOS)

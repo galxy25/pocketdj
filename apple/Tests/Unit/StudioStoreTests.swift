@@ -309,6 +309,10 @@ final class StudioStoreTests: XCTestCase {
         // Take whose audio vanished → dropped.
         store.addTake(StudioTake(id: "tk_gone", name: "T",
                                  fileName: StudioFolders.fileName(.takes, id: "tk_gone")))
+        // USER-folder instrumental with no bookmark (relocated to an unplugged drive) → kept.
+        store.addTake(StudioTake(id: "tk_user", name: "T",
+                                 fileName: StudioFolders.fileName(.takes, id: "tk_user"),
+                                 wasUserFolder: true))
 
         store.reconcileOnLaunch()
 
@@ -321,6 +325,38 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNil(p.fileName)
         XCTAssertTrue(p.bounceDirty)
         XCTAssertNil(store.take("tk_gone"))
+        XCTAssertNotNil(store.take("tk_user"))       // unreachable instrumentals folder ⇒ never pruned
+    }
+
+    /// `StudioTake.wasUserFolder` survives the persistence round-trip (the instrumentals-folder
+    /// relocation stamp), and an OLDER blob with no such key decodes to app storage (false).
+    func testTakeWasUserFolderRoundTrips() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_u", name: "In a folder",
+                                 fileName: StudioFolders.fileName(.takes, id: "tk_u"),
+                                 wasUserFolder: true))
+        store.addTake(StudioTake(id: "tk_a", name: "App storage",
+                                 fileName: StudioFolders.fileName(.takes, id: "tk_a")))
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.take("tk_u")?.wasUserFolder, true)
+        XCTAssertEqual(reloaded.take("tk_a")?.wasUserFolder, false)   // default when absent
+    }
+
+    /// With no instrumentals folder configured (settings nil ⇒ no bookmark), `addTakeRelocating`
+    /// leaves the file in app storage and stamps `wasUserFolder: false` — a plain file (no move),
+    /// resolvable + deletable against the app root.
+    func testAddTakeRelocatingWithoutUserFolderKeepsAppStorage() throws {
+        let store = StudioStore(fileURL: storeURL)   // settings nil ⇒ bookmark(for: .takes) == nil
+        let name = try writeFile(.takes, id: "tk_r")
+        let filed = store.addTakeRelocating(StudioTake(id: "tk_r", name: "R", fileName: name))
+        XCTAssertFalse(filed.wasUserFolder)
+        XCTAssertEqual(store.take("tk_r")?.wasUserFolder, false)
+        // The file is still in the app root and the record resolves + deletes cleanly.
+        let appRoot = try StudioFolders.appRoot(.takes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appRoot.appendingPathComponent(name).path))
+        XCTAssertTrue(store.deleteTake("tk_r"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: appRoot.appendingPathComponent(name).path))
     }
 
     /// A stale render-cache reference (file gone, raw intact) is cleared without touching the
