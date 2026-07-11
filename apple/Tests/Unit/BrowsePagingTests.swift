@@ -41,7 +41,7 @@ final class BrowsePagingTests: XCTestCase {
         let app = await loadedApp()
         for item in app.browseItems(.album) { XCTAssertEqual(item.source, "Test Crate") }
         let sng1 = app.browseItems(.song).first { $0.id == "sng_1" }
-        guard case .song(_, _, let source, let genre)? = sng1 else { return XCTFail("sng_1 missing") }
+        guard case .song(_, _, let source, let genre, _)? = sng1 else { return XCTFail("sng_1 missing") }
         XCTAssertEqual(source, "Test Crate")
         XCTAssertEqual(genre, "electronic")
     }

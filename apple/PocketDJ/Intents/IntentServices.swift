@@ -110,7 +110,7 @@ final class IntentServices {
     func playSong(id: String) async throws -> String {
         await ensureReady()
         guard let song = app.songsById[id] else { throw PocketDJIntentError.songNotFound }
-        guard let set = collections.playNow(songIds: [id], name: song.name), !set.tracks.isEmpty else {
+        guard let set = collections.playNow(songIds: [id], name: song.name, source: .browser), !set.tracks.isEmpty else {
             throw PocketDJIntentError.songNotFound
         }
         startNowPlaying(set)

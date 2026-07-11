@@ -108,6 +108,31 @@ final class SetlistPlayerTests: XCTestCase {
         seq.stop()
     }
 
+    /// Play-History attribution seam: `inRunningQueue` recognizes ANY member of the running set
+    /// (so a member-row jump isn't mislabeled a Browser single), and `capturedHistoryContext` is
+    /// snapshotted at play() time from the wired provider (so a later playNow can't retag this run).
+    func testInRunningQueueAndCapturedHistoryContext() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.historyContextProvider = { id in id == "set_A" ? (.playlist, "Roadtrip") : (.setlist, nil) }
+
+        seq.play([.init(id: "t1", title: "T1", artist: "A"),
+                  .init(id: "t5", title: "T5", artist: "A")], sourceSetlistId: "set_A")
+        // Every member — not just the current track — attributes to the set.
+        XCTAssertTrue(seq.inRunningQueue("t1"))
+        XCTAssertTrue(seq.inRunningQueue("t5"))
+        XCTAssertFalse(seq.inRunningQueue("not_in_set"))
+        // Origin captured from the provider at play() time.
+        XCTAssertEqual(seq.capturedHistoryContext?.source, .playlist)
+        XCTAssertEqual(seq.capturedHistoryContext?.name, "Roadtrip")
+
+        seq.stop()
+        XCTAssertFalse(seq.inRunningQueue("t1"))         // nothing is "in the running queue" when idle
+        XCTAssertNil(seq.capturedHistoryContext)
+    }
+
     /// Stop clears the source id, so no detail screen mistakes itself for the one playing.
     func testStopClearsSourceSetlistId() {
         let rips = makeRips(); let burns = makeBurns(rips)

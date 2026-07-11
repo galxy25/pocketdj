@@ -46,6 +46,20 @@ final class SetlistPlayer {
     /// sequencer is app-scoped, so leaving a screen never tears it down — only starting a
     /// DIFFERENT collection (a fresh `play`) replaces it.
     private(set) var sourceSetlistId: String?
+    /// The song id of the track the sequencer is currently on, or nil when idle.
+    var currentSongId: String? { isRunning && index < queue.count ? queue[index].id : nil }
+    /// True when `songId` is a member of the RUNNING queue. The Play-History hook uses this (not
+    /// `currentSongId ==`) to attribute a play to the set: tapping a member row to jump ahead
+    /// fires the play BEFORE the deferred `adoptNowPlayingIfJumped` moves the index, so a
+    /// current-track equality check would mislabel that member play as a Browser single.
+    func inRunningQueue(_ songId: String) -> Bool { isRunning && queue.contains { $0.id == songId } }
+
+    /// Resolves the Play-History (source-kind, set name) for a run's `sourceSetlistId`. Wired at
+    /// app init to read `CollectionsStore.historyContext`. CAPTURED at `play()` time into
+    /// `capturedHistoryContext` so a play mid-run is attributed to THIS run's origin even after a
+    /// newer `playNow` has already mutated the shared now-playing source during a navigation gap.
+    @ObservationIgnored var historyContextProvider: ((String?) -> (source: PlayHistoryStore.PlaySource, name: String?))?
+    private(set) var capturedHistoryContext: (source: PlayHistoryStore.PlaySource, name: String?)?
     /// True when the current track is a live stream with no natural end — the UI shows a
     /// "Next" control so the set never silently freezes on it.
     private(set) var waitingForLive = false
@@ -94,6 +108,9 @@ final class SetlistPlayer {
     func play(_ items: [Item], sourceSetlistId: String? = nil) {
         guard !items.isEmpty else { return }
         self.sourceSetlistId = sourceSetlistId
+        // Snapshot THIS run's history origin now (before any later playNow can mutate the shared
+        // now-playing source), so every play in this run is attributed to the right set.
+        capturedHistoryContext = historyContextProvider?(sourceSetlistId)
         queue = items
         index = 0
         isRunning = true
@@ -122,6 +139,7 @@ final class SetlistPlayer {
         index = 0
         queue = []
         sourceSetlistId = nil
+        capturedHistoryContext = nil
     }
 
     /// Acknowledge + clear the one-shot device-unplayable banner (the surface calls this

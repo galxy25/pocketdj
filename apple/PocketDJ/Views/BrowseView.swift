@@ -138,7 +138,7 @@ struct BrowseView: View {
     private var visibleRowIds: [String] {
         visibleItems.compactMap { item in
             switch (browse.kind, item) {
-            case (.song, .song(let s, _, _, _)):  return s.id
+            case (.song, .song(let s, _, _, _, _)):  return s.id
             case (.album, .album(let a, _)):   return a.id
             default:                           return nil
             }
@@ -223,7 +223,7 @@ struct BrowseView: View {
     }
 
     private func focusedItemSong(_ id: String) -> IndexSong? {
-        for case .song(let s, _, _, _) in visibleItems where s.id == id { return s }
+        for case .song(let s, _, _, _, _) in visibleItems where s.id == id { return s }
         return app.songsById[id]
     }
 
@@ -460,7 +460,7 @@ struct BrowseView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(items) { item in
-                    if case .song(let song, let albumName, _, _) = item {
+                    if case .song(let song, let albumName, _, _, _) = item {
                         // The row's transport ▶/⤓ buttons must stay independently
                         // hit-testable. Wrapping the whole row in a NavigationLink
                         // (a Button on macOS) swallows those nested buttons — XCUITest

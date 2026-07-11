@@ -26,6 +26,7 @@ server-side. Don't treat their absence as a coverage gap.
 | 10 Browser — albums | `BrowseUITests.testBrowserLoadsAlbums`, `testLayoutToggleKeepsAlbumsVisible` | `BrowseStateTests` | ✅ |
 | 11 Browser — songs | `BrowseUITests.testSwitchToSongsListsTracks` | `BrowseStateTests` | ✅ |
 | 12 Browser — filter & sort | `BrowseUITests.testFilterSheetOpens`, `testSortSheetOpens` | `FilterEngineTests`, `SortEngineTests` | ✅ |
+| 12a History mode (⌘H) — timeline + group-by-song, Browser filters + Last-played sort + date range | `HistoryUITests` (timeline, group-by-song count, Last-played sort, filter sheet, paging) | `PlayHistoryStoreTests`, `PlayHistoryContextTests`, `HistoryEngineTests`, `SetlistPlayerTests` (attribution) | ✅ native-only |
 | 13 Browser — albums (desktop) | `BrowseUITests.testLayoutToggleKeepsAlbumsVisible` | — | ✅ |
 | 14–16 Edit album / audio / song | `SettingsUITests.testEditsExportImportPresent` | `EditSchemaTests` | ✅ |
 | 18–19 Pockets — list / detail | `PocketsUITests` (create → open → rename → delete) | `CollectionsStoreTests` (pocket CRUD + cycle-guard + export/import) | ✅ |
@@ -70,6 +71,7 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 | Changed path (glob) | UI classes to run | Unit classes |
 |---|---|---|
 | `PocketDJ/Browse/**`, `Views/BrowseView.swift` | `BrowseUITests` | `BrowseStateTests`, `FilterEngineTests`, `SortEngineTests` |
+| `Views/HistoryView.swift`, `State/PlayHistoryStore.swift` (History mode); its play-attribution touches `PocketDJApp.swift` hooks + `SetlistPlayer.swift` + `CollectionsStore.historyContext` | `HistoryUITests` | `PlayHistoryStoreTests`, `PlayHistoryContextTests`, `HistoryEngineTests`, `SetlistPlayerTests` |
 | `Views/AlbumDetailView.swift`, `Views/SongDetailView.swift` | `BrowseUITests` | `DecodingTests` |
 | `Views/Edit*View.swift`, `Models/EditSchema.swift`, `State/EditsStore.swift` | `SettingsUITests` | `EditSchemaTests` |
 | `Views/SettingsView.swift`, `State/SettingsStore.swift` | `SettingsUITests`, `StorageUITests` | `SettingsStoreTests`, `CatalogMergeTests` |

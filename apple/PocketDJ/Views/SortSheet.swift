@@ -6,7 +6,7 @@ struct SortSheet: View {
     @Bindable var browse: BrowseState
     @Environment(\.dismiss) private var dismiss
 
-    private var sortable: [Field] { Fields.forKind(browse.kind).filter { $0.sortable } }
+    private var sortable: [Field] { Fields.forKind(browse.kind, includeHistory: browse.historyMode).filter { $0.sortable } }
     private var unused: [Field] { sortable.filter { f in !browse.sortKeys.contains { $0.field == f.id } } }
 
     var body: some View {

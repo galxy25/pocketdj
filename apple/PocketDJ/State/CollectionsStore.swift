@@ -18,6 +18,11 @@ final class CollectionsStore {
     /// SetlistDetailView can `.onChange` it and re-snapshot the fresh order. Monotonic
     /// (not epoch-ms) so rapid taps never collide.
     private(set) var nowPlayingRevision = 0
+    /// The ORIGIN kind of whatever last populated the reserved Now Playing setlist (a playlist,
+    /// pocket, album, or single). The reserved setlist's id can't reveal what realized into it,
+    /// so `playNow` records the kind here for the Play-History hook to attribute the play. nil
+    /// ⇒ treat as a generic set list.
+    private(set) var nowPlayingSource: PlayHistoryStore.PlaySource?
     private let fileURL: URL
 
     /// The catalog the realize engine resolves ids against (wired at launch, like
@@ -659,8 +664,10 @@ final class CollectionsStore {
     /// reserved setlist (last-writer-wins) and bumps the monotonic restart token so an
     /// on-screen detail view re-snapshots the new order. Returns nil if the catalog isn't wired.
     @discardableResult
-    func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false) -> Setlist? {
+    func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
+                 source: PlayHistoryStore.PlaySource? = nil) -> Setlist? {
         guard let app else { return nil }
+        nowPlayingSource = source
         var tracks: [SetlistTrack] = songIds.compactMap { id in
             // STUDIO rows (spec §8 — playNow RESOLVES studio ids): synthesize the frozen
             // snapshot from the studio lookup — title + REAL lengthMs so `shownMs` never
@@ -699,14 +706,32 @@ final class CollectionsStore {
     @discardableResult
     func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPlaylist: playlistId),
-                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle)
+                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist)
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
     /// `playableIds` for the same reason as the playlist variant above.
     @discardableResult
     func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPocket: pocketId),
-                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle)
+                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket)
+    }
+
+    /// Resolve the Play-History source-kind + display name for a sequencer run tagged with
+    /// `sourceSetlistId`. For the reserved Now Playing setlist (album/playlist/pocket/single all
+    /// realize into it) the KIND comes from `nowPlayingSource`; the NAME is the setlist's own
+    /// name (which `playNow` sets to the album/playlist/pocket name). A real setlist resolves to
+    /// (.setlist, its name). A single-song play (`.browser`) carries no set name.
+    func historyContext(forSourceSetlistId id: String?) -> (source: PlayHistoryStore.PlaySource, name: String?) {
+        guard let id else { return (.setlist, nil) }
+        if id == nowPlayingSetlistId {
+            let src = nowPlayingSource ?? .setlist
+            return src == .browser ? (.browser, nil) : (src, setlist(id)?.name)
+        }
+        if let s = setlist(id) { return (.setlist, s.name) }
+        // Defensive: a real playlist/pocket id ever threaded directly.
+        if let p = playlist(id) { return (.playlist, p.name) }
+        if let pk = pocket(id) { return (.pocket, pk.name) }
+        return (.setlist, nil)
     }
 
     func deleteSetlist(_ id: String) { setlists.removeAll { $0.id == id }; save() }

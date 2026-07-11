@@ -45,17 +45,38 @@ final class BrowseState {
     }
 
     private let defaults: UserDefaults
-    private static let key = "pdj.browse.v1"
+    /// UserDefaults key for THIS instance's persisted snapshot. Parameterized so History mode
+    /// keeps its own filters/sort ("pdj.history.v1") without clobbering the Browser's.
+    private let persistenceKey: String
+
+    /// HISTORY mode: song-only, includes the `lastPlayedAt` field in the sheets, filters/sorts
+    /// an externally-supplied base (`externalBase`) instead of the catalog, and drops the
+    /// collection-membership filter (History rows are per-event, not per-song).
+    let historyMode: Bool
+
+    /// History supplies the base rows (built from the play-event log) + parallel search keys
+    /// here; when set, `refreshExternal` filter/sorts THESE instead of the catalog and bypasses
+    /// the AppModel results memo (history bases change without a catalogRevision bump).
+    @ObservationIgnored var externalBase: (() -> (base: [BrowseItem], keys: [String]))?
+    /// Memo of the last-built external base, keyed by the caller's `baseKey`. The base (per-event
+    /// rows resolved from the catalog) is O(events) to build, so it is reused across query /
+    /// filter / sort edits and rebuilt only when `baseKey` changes (a new play, mode toggle, or
+    /// catalog load) — mirroring how the catalog Browser hands off a precomputed base.
+    @ObservationIgnored private var externalBaseCache: (key: String, base: [BrowseItem], keys: [String])?
 
     /// Restores the last-used item kind, filters, sort, layout, and search mode so
     /// the user doesn't have to re-set them every launch (cleared only via "Clear All").
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, persistenceKey: String = "pdj.browse.v1",
+         historyMode: Bool = false) {
         self.defaults = defaults
-        if let data = defaults.data(forKey: Self.key),
+        self.persistenceKey = persistenceKey
+        self.historyMode = historyMode
+        if let data = defaults.data(forKey: persistenceKey),
            let s = try? JSONDecoder().decode(Snapshot.self, from: data) {
             kind = s.kind; clauses = s.clauses; sortKeys = s.sortKeys
             layout = s.layout; searchOnline = s.searchOnline ?? false
         }
+        if historyMode { kind = .song }   // History is inherently song-mode.
     }
 
     private struct Snapshot: Codable {
@@ -66,7 +87,7 @@ final class BrowseState {
     func persist() {
         let snap = Snapshot(kind: kind, clauses: clauses, sortKeys: sortKeys,
                             layout: layout, searchOnline: searchOnline)
-        if let data = try? JSONEncoder().encode(snap) { defaults.set(data, forKey: Self.key) }
+        if let data = try? JSONEncoder().encode(snap) { defaults.set(data, forKey: persistenceKey) }
     }
 
     var activeFilterCount: Int { clauses.filter { !$0.isIncomplete }.count }
@@ -179,6 +200,56 @@ final class BrowseState {
         app.storeBrowseResults(key, sorted)
         displayItems = sorted
         displayKey = key
+    }
+
+    /// HISTORY recompute: filter+sort the externally-supplied base (the play-event rows) OFF the
+    /// main actor and publish to `displayItems`. Mirrors `refreshResults` but sources its base
+    /// from `externalBase` and BYPASSES the AppModel catalog memo (history bases change with each
+    /// play, not with the catalog revision). Driven by the HistoryView's `.task(id:)` on a
+    /// signature that captures the event log + toggle + query/filters/sort.
+    func refreshExternal(signature: String, baseKey: String) async {
+        if displayKey == signature { return }
+        // Debounce an active text query FIRST so a burst of keystrokes coalesces BEFORE any
+        // expensive work (the base build below is O(events); doing it per-keystroke was the
+        // main-thread jank the Browser path was refactored to avoid).
+        if !query.isEmpty {
+            try? await Task.sleep(for: .milliseconds(180))
+            if Task.isCancelled { return }
+        }
+        // Reuse the built base across query/filter/sort edits; rebuild only when `baseKey` changed.
+        let base: [BrowseItem]; let keys: [String]
+        if let c = externalBaseCache, c.key == baseKey {
+            base = c.base; keys = c.keys
+        } else {
+            (base, keys) = externalBase?() ?? ([], [])
+            externalBaseCache = (baseKey, base, keys)
+        }
+        let (q, cl, sk) = (query, clauses, sortKeys)
+        let sorted = await Task.detached(priority: .userInitiated) {
+            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: cl, sortKeys: sk)
+        }.value
+        if Task.isCancelled { return }
+        displayItems = sorted
+        displayKey = signature
+    }
+
+    /// A stable signature of the filter/sort inputs (query + complete clauses + sort keys),
+    /// WITHOUT the catalog revision — History composes this with its own event-log revision to
+    /// drive the `.task(id:)` recompute. Same JSON-encoding rationale as `resultsKey`.
+    func filterSortSignature() -> String {
+        struct ClauseSig: Encodable { let f: String; let o: String; let v: String; let vs: [String]; let mn: Double?; let mx: Double? }
+        struct SortSig: Encodable { let f: String; let d: String }
+        struct Sig: Encodable { let q: String; let c: [ClauseSig]; let s: [SortSig] }
+        let sig = Sig(
+            q: query,
+            c: clauses.filter { !$0.isIncomplete }.map {
+                ClauseSig(f: $0.field, o: $0.op.rawValue, v: $0.value, vs: $0.values.sorted(), mn: $0.min, mx: $0.max)
+            },
+            s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) })
+        let enc = JSONEncoder()
+        enc.outputFormatting = .sortedKeys
+        guard let data = try? enc.encode(sig) else { return "\(query)-\(clauses.count)-\(sortKeys.count)" }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// The memoized portion: base rows → text query → clause filter → multi-key sort.

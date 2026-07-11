@@ -54,6 +54,7 @@ struct PocketDJApp: App {
     /// Device-local play stats (count + last-played per song) — every playback surface
     /// funnels in; the storage manager's soft-cap prune orders by least-recently-played.
     @State private var playStats: PlayStatsStore
+    @State private var playHistory: PlayHistoryStore
     /// The Settings ▸ Storage prune engine: when the user sets a soft cap, a once-a-day
     /// pass evicts least-recently-played burned media until the footprint fits. Cap unset
     /// (default) ⇒ never deletes anything on its own.
@@ -168,6 +169,9 @@ struct PocketDJApp: App {
         _mixRecorder = State(initialValue: mixRecorder)
         let playStats = PlayStatsStore(fileURL: PlayStatsStore.launchURL())
         _playStats = State(initialValue: playStats)
+        // Append-only play TIMELINE (History mode) — distinct from the aggregate playStats above.
+        let playHistory = PlayHistoryStore(fileURL: PlayHistoryStore.launchURL())
+        _playHistory = State(initialValue: playHistory)
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
         _storage = State(initialValue: storage)
         // ── Studio (Performance tab) stores + engines ──────────────────────────
@@ -194,6 +198,11 @@ struct PocketDJApp: App {
         collections.app = app     // give realize()/playNow() the catalog to resolve ids
         // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
         setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
+        // Let the sequencer snapshot each run's Play-History origin (source-kind + set name) at
+        // play() time, resolved from the collections' now-playing source.
+        setlistPlayer.historyContextProvider = { [weak collections] in
+            collections?.historyContext(forSourceSetlistId: $0) ?? (.setlist, nil)
+        }
         rips.settings = settings       // rip server URL + token come from settings
         musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
         // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum.
@@ -203,11 +212,45 @@ struct PocketDJApp: App {
         // catalog's per-id source map so an Apple Music (Local) track tries Apple Music
         // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
         coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
-        // Play-stats hooks — every surface that starts a song notes the play (the stats
-        // store's re-count window absorbs the burned-play overlap between rips+coordinator).
-        rips.onPlay = { [weak playStats] in playStats?.notePlayed($0) }
-        coordinator.onPlay = { [weak playStats] in playStats?.notePlayed($0) }
-        mix.onSongPlayed = { [weak playStats] in playStats?.notePlayed($0) }
+        // Play-tracking hooks — every surface that starts a song notes it to BOTH the aggregate
+        // playStats (for the storage prune) AND the append-only playHistory timeline (History
+        // mode). Both stores share a 30 s re-count window that absorbs the burned-play overlap
+        // between rips + coordinator (they both fire for one burned play).
+        //
+        // History needs the CONTEXT the collapsed songId-only seam drops, so it is resolved here:
+        //   • rips/coordinator (non-Mix): a play is attributed to the RUNNING sequencer's set
+        //     (source-kind + name via collections.historyContext) when the sequencer is on that
+        //     exact song; otherwise it's a standalone Browser single.
+        //   • mix: source is .mix; the name is the Auto-DJ source (autoSourceLabel) during an
+        //     auto-mix, else the current manual mix session's name.
+        let recordNonMixHistory: (String) -> Void = { [weak playHistory, weak setlistPlayer, weak app] songId in
+            guard let playHistory else { return }
+            let title = app?.songsById[songId]?.name
+            let artist = app?.songsById[songId]?.artist
+            let context: PlayHistoryStore.PlayContext
+            // A member of the RUNNING queue is attributed to that set (tapping a member row to
+            // jump ahead adopts it into the set); read the run's CAPTURED origin so a newer
+            // playNow mid-navigation can't retag it. Anything else is a standalone Browser play.
+            if let sp = setlistPlayer, sp.inRunningQueue(songId) {
+                let origin = sp.capturedHistoryContext
+                context = PlayHistoryStore.PlayContext(source: origin?.source ?? .setlist,
+                                                       contextId: sp.sourceSetlistId,
+                                                       contextName: origin?.name)
+            } else {
+                context = .browser
+            }
+            playHistory.record(songId: songId, title: title, artist: artist, context: context)
+        }
+        rips.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
+        coordinator.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
+        mix.onSongPlayed = { [weak playStats, weak playHistory, weak mix, weak mixSessions, weak app] songId in
+            playStats?.notePlayed(songId)
+            guard let playHistory else { return }
+            let name = (mix?.autoMixing == true ? mix?.autoSourceLabel : nil) ?? mixSessions?.currentName
+            let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId, contextName: name)
+            playHistory.record(songId: songId, title: app?.songsById[songId]?.name,
+                               artist: app?.songsById[songId]?.artist, context: context)
+        }
         // The prune must never delete a file an engine holds OPEN: both Mix decks, the
         // inline/now-playing track, and the sequencer's current queue item are off-limits.
         storage.protectedSongIds = { [weak mix, weak rips, weak setlistPlayer] in
@@ -359,6 +402,7 @@ struct PocketDJApp: App {
                 .environment(mixSessions)
                 .environment(mixRecorder)
                 .environment(playStats)
+                .environment(playHistory)
                 .environment(storage)
                 .environment(studio)
                 .environment(studioEngine)
