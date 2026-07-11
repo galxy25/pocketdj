@@ -33,6 +33,10 @@ final class AppModel {
     /// multi-second search hang the runloop hang reports captured.
     private(set) var albumSearchKeys: [String] = []
     private(set) var songSearchKeys: [String] = []
+    /// Artist-grouping browse rows (one per distinct album-artist) + their folded name keys —
+    /// the Artists browse kind. Built once in `buildEffective` like the album/song rows.
+    private(set) var artistBrowseItems: [BrowseItem] = []
+    private(set) var artistSearchKeys: [String] = []
     /// Bumped whenever the effective catalog changes (load / edit). Part of the browse
     /// results cache key, so a stale memo can never survive a catalog change.
     private(set) var catalogRevision = 0
@@ -229,6 +233,8 @@ final class AppModel {
         let songBrowseItems: [BrowseItem]
         let albumSearchKeys: [String]
         let songSearchKeys: [String]
+        let artistBrowseItems: [BrowseItem]
+        let artistSearchKeys: [String]
     }
 
     /// Merge source indexes → tag by source → overlay edits → sort → index → build browse rows.
@@ -287,9 +293,28 @@ final class AppModel {
             let albumName = song.albumId.flatMap { albumsById[$0]?.name } ?? ""
             return searchKey(song.name, song.artist, albumName)
         }
+        // Artist groupings (the Artists browse kind): one row per distinct album-artist, in the
+        // catalog's existing artist/name order. `albums` is already sorted by artist then name, so a
+        // single pass groups consecutive same-artist albums (dictionary-free, order-preserving).
+        var artistItems: [BrowseItem] = []
+        var artistKeys: [String] = []
+        var i = 0
+        while i < albums.count {
+            let artist = albums[i].artist
+            var j = i, songCount = 0
+            while j < albums.count, albums[j].artist == artist {
+                songCount += albums[j].trackList.count
+                j += 1
+            }
+            artistItems.append(.artist(name: artist, albumCount: j - i, songCount: songCount,
+                                       artworkAlbumId: albums[i].id))
+            artistKeys.append(searchKey(artist))
+            i = j
+        }
         return Effective(albums: albums, songs: songs, songsById: songsById, albumsById: albumsById,
                          albumBrowseItems: albumItems, songBrowseItems: songItems,
-                         albumSearchKeys: albumKeys, songSearchKeys: songKeys)
+                         albumSearchKeys: albumKeys, songSearchKeys: songKeys,
+                         artistBrowseItems: artistItems, artistSearchKeys: artistKeys)
     }
 
     /// One case- AND diacritic-insensitive haystack from an item's searchable fields, matched with a
@@ -328,6 +353,8 @@ final class AppModel {
         songBrowseItems = e.songBrowseItems
         albumSearchKeys = e.albumSearchKeys
         songSearchKeys = e.songSearchKeys
+        artistBrowseItems = e.artistBrowseItems
+        artistSearchKeys = e.artistSearchKeys
         catalogRevision &+= 1
         browseResultsCache.removeAll(keepingCapacity: true)
         browseResultsOrder.removeAll(keepingCapacity: true)
@@ -346,12 +373,20 @@ final class AppModel {
     /// The pre-built, unfiltered browse rows for a kind (album name / source / genre
     /// already resolved). O(1) — the array is built once in `buildEffective`.
     func browseItems(_ kind: ItemKind) -> [BrowseItem] {
-        kind == .album ? albumBrowseItems : songBrowseItems
+        switch kind {
+        case .album:  return albumBrowseItems
+        case .song:   return songBrowseItems
+        case .artist: return artistBrowseItems
+        }
     }
 
     /// The pre-built folded search keys parallel to `browseItems(kind)` (same order/count).
     func searchKeys(_ kind: ItemKind) -> [String] {
-        kind == .album ? albumSearchKeys : songSearchKeys
+        switch kind {
+        case .album:  return albumSearchKeys
+        case .song:   return songSearchKeys
+        case .artist: return artistSearchKeys
+        }
     }
 
     /// Return the memoized browse results for `key`, computing + caching on a miss. The

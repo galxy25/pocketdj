@@ -101,6 +101,20 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertEqual(collections.nowPlayingSetlist()?.name, "AM Faves")
     }
 
+    // MARK: Artists
+
+    func testArtistsTabListsAndPlaysDiscography() async {
+        let (model, _, collections) = await makeModel()
+        XCTAssertEqual(Set(model.artists().map(\.title)), ["Aria", "Bento", "Cobalt"])
+        XCTAssertEqual(model.albums(byArtist: "Aria").map(\.id), ["alb_1"])
+        XCTAssertEqual(model.artists().first { $0.title == "Aria" }?.subtitle, "1 album · 3 songs")
+
+        await model.playArtist(name: "Aria")
+        XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_1", "sng_2", "sng_3"])
+        XCTAssertEqual(collections.nowPlayingSource, .artist)     // History attributes as Artist
+        XCTAssertEqual(collections.nowPlayingSetlist()?.name, "Aria")
+    }
+
     // MARK: Search (title/artist only)
 
     func testSearchMatchesTitleAndArtistCaseInsensitively() async {

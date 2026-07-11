@@ -69,10 +69,11 @@ final class CarPlayController {
                             shuffleAll: { await model.playPocket(id: row.id, shuffle: true) })
         }
         let albums = albumsTemplate(model)
+        let artists = artistsTemplate(model)
 
         // No free-text Search tab: CarPlay keyboard entry is blocked while driving (it froze the
-        // app on a real head unit). Finding without a keyboard is the A–Z index on the Albums list.
-        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums])
+        // app on a real head unit). Finding without a keyboard is the A–Z index on Albums / Artists.
+        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums, artists])
         interfaceController.setRootTemplate(tabBar, animated: true, completion: nil)
         configureNowPlaying()
     }
@@ -100,18 +101,16 @@ final class CarPlayController {
         return template
     }
 
-    /// The Albums tab, grouped into A–Z sections with a `sectionIndexTitle` on each so the head
-    /// unit shows the alphabet quick-scroll — the keyboard-free way to "find" while driving.
-    private func albumsTemplate(_ model: CarPlayModel) -> CPListTemplate {
-        let rows = model.albums().sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    /// A tab grouped into A–Z sections with a `sectionIndexTitle` on each so the head unit shows the
+    /// alphabet quick-scroll — the keyboard-free way to "find" while driving (Albums, Artists).
+    private func azListTemplate(title: String, tabImageName: String, emptyText: String,
+                                rows: [CarPlayModel.Row],
+                                onSelect: @escaping (CarPlayModel.Row) -> Void) -> CPListTemplate {
+        let sorted = rows.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         var sections: [CPListSection] = []
-        for row in rows {
+        for row in sorted {
             let letter = Self.indexLetter(row.title)
-            let item = listItem(row, showsDisclosure: true) { [weak self] in
-                self?.pushSongs(title: row.title, rows: model.songs(inAlbum: row.id),
-                                playAll: { await model.playAlbum(id: row.id) },
-                                shuffleAll: { await model.playAlbum(id: row.id, shuffle: true) })
-            }
+            let item = listItem(row, showsDisclosure: true) { onSelect(row) }
             if let last = sections.last, last.sectionIndexTitle == letter {
                 sections[sections.count - 1] = CPListSection(items: last.items + [item],
                                                              header: nil, sectionIndexTitle: letter)
@@ -119,13 +118,48 @@ final class CarPlayController {
                 sections.append(CPListSection(items: [item], header: nil, sectionIndexTitle: letter))
             }
         }
-        let template = CPListTemplate(title: "Albums",
-                                      sections: sections.isEmpty
-                                        ? [CPListSection(items: [CPListItem(text: "No albums", detailText: nil)])]
-                                        : sections)
-        template.tabImage = UIImage(systemName: "opticaldisc")
-        template.tabTitle = "Albums"
+        let template = CPListTemplate(title: title, sections: sections.isEmpty
+            ? [CPListSection(items: [CPListItem(text: emptyText, detailText: nil)])] : sections)
+        template.tabImage = UIImage(systemName: tabImageName)
+        template.tabTitle = title
         return template
+    }
+
+    private func albumsTemplate(_ model: CarPlayModel) -> CPListTemplate {
+        azListTemplate(title: "Albums", tabImageName: "opticaldisc", emptyText: "No albums",
+                       rows: model.albums()) { [weak self] row in
+            self?.pushSongs(title: row.title, rows: model.songs(inAlbum: row.id),
+                            playAll: { await model.playAlbum(id: row.id) },
+                            shuffleAll: { await model.playAlbum(id: row.id, shuffle: true) })
+        }
+    }
+
+    private func artistsTemplate(_ model: CarPlayModel) -> CPListTemplate {
+        azListTemplate(title: "Artists", tabImageName: "music.mic", emptyText: "No artists",
+                       rows: model.artists()) { [weak self] row in
+            self?.pushArtistAlbums(name: row.title, model: model)   // row.title == artist name
+        }
+    }
+
+    /// An artist's albums, with Play all / Shuffle all (the whole discography) on top.
+    private func pushArtistAlbums(name: String, model: CarPlayModel) {
+        let playAll = CPListItem(text: "▶ Play all", detailText: nil)
+        playAll.handler = { [weak self] _, c in Task { await model.playArtist(name: name); self?.showNowPlaying(); c() } }
+        let shuffle = CPListItem(text: "🔀 Shuffle all", detailText: nil)
+        shuffle.handler = { [weak self] _, c in Task { await model.playArtist(name: name, shuffle: true); self?.showNowPlaying(); c() } }
+        let albums = model.albums(byArtist: name).map { album in
+            listItem(album, showsDisclosure: true) { [weak self] in
+                self?.pushSongs(title: album.title, rows: model.songs(inAlbum: album.id),
+                                playAll: { await model.playAlbum(id: album.id) },
+                                shuffleAll: { await model.playAlbum(id: album.id, shuffle: true) })
+            }
+        }
+        let template = CPListTemplate(title: name, sections: [
+            CPListSection(items: [playAll, shuffle]),
+            CPListSection(items: albums.isEmpty ? [CPListItem(text: "No albums", detailText: nil)] : albums,
+                          header: "Albums", sectionIndexTitle: nil),
+        ])
+        interfaceController.pushTemplate(template, animated: true, completion: nil)
     }
 
     /// First-letter index key: A–Z, else "#".

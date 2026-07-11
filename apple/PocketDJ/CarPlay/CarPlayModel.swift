@@ -69,6 +69,30 @@ final class CarPlayModel {
         app.albums.map { Row(id: $0.id, title: $0.name, subtitle: $0.artist, artworkAlbumId: $0.id, isSong: false) }
     }
 
+    /// Distinct artists (from the prebuilt artist groupings), for the CarPlay Artists tab.
+    func artists() -> [Row] {
+        app.artistBrowseItems.compactMap { item in
+            guard case .artist(let name, let albumCount, let songCount, let albumId) = item else { return nil }
+            return Row(id: "artist:\(name)", title: name,
+                       subtitle: "\(albumCount) album\(albumCount == 1 ? "" : "s") · \(songCount) songs",
+                       artworkAlbumId: albumId, isSong: false)
+        }
+    }
+
+    /// One artist's albums (drill-in from the Artists tab).
+    func albums(byArtist name: String) -> [Row] {
+        app.albums.filter { $0.artist == name }.map {
+            Row(id: $0.id, title: $0.name, subtitle: "\($0.trackList.count) tracks",
+                artworkAlbumId: $0.id, isSong: false)
+        }
+    }
+
+    /// ▶/🔀 an artist's whole discography.
+    func playArtist(name: String, shuffle: Bool = false) async {
+        let ids = app.albums.filter { $0.artist == name }.flatMap(\.trackList)
+        try? await services.playSongIds(ids, name: name, shuffle: shuffle, source: .artist)
+    }
+
     func songs(inPlaylist id: String) -> [Row] {
         if let sp = sourcePlaylist(id) { return songRows(sp.songIds) }
         return songRows(collections.playableIds(forPlaylist: id))

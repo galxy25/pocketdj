@@ -59,6 +59,7 @@ struct BrowseView: View {
             Picker("Show", selection: $browse.kind) {
                 Text("Albums").tag(ItemKind.album)
                 Text("Songs").tag(ItemKind.song)
+                Text("Artists").tag(ItemKind.artist)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 16).padding(.vertical, 8)
@@ -113,10 +114,13 @@ struct BrowseView: View {
         // run, giving free debounce while typing — the heavy filter+sort never blocks the main thread.
         // In online mode the id is a constant so the on-device recompute doesn't run per keystroke;
         // toggling back to on-device flips the id and recomputes for the current query.
-        .task(id: browse.searchOnline ? "online" : browse.recomputeSignature(app)) {
-            if !browse.searchOnline { await browse.refreshResults(app) }
+        .task(id: effectiveOnline ? "online" : browse.recomputeSignature(app)) {
+            if !effectiveOnline { await browse.refreshResults(app) }
         }
     }
+
+    /// Online (OpenSearch) search covers albums + songs only; the Artists kind is always on-device.
+    private var effectiveOnline: Bool { browse.searchOnline && browse.kind != .artist }
 
     /// Atomically take the pending intent search term into the search field (live
     /// re-read + clear, so multi-window consumers race safely — see RootView's
@@ -140,6 +144,7 @@ struct BrowseView: View {
             switch (browse.kind, item) {
             case (.song, .song(let s, _, _, _, _)):  return s.id
             case (.album, .album(let a, _)):   return a.id
+            case (.artist, .artist):           return item.id   // "artist:<name>"
             default:                           return nil
             }
         }
@@ -211,6 +216,8 @@ struct BrowseView: View {
             if let album = focusedItemAlbum(id) { path.append(album) }
         case .song:
             if let song = focusedItemSong(id) { path.append(song) }
+        case .artist:
+            if id.hasPrefix("artist:") { path.append(Artist(name: String(id.dropFirst("artist:".count)))) }
         }
     }
 
@@ -292,6 +299,7 @@ struct BrowseView: View {
         Group {
             Button("Albums-shadow") { browse.kind = .album }.keyboardShortcut("1", modifiers: .command)
             Button("Songs-shadow") { browse.kind = .song }.keyboardShortcut("2", modifiers: .command)
+            Button("Artists-shadow") { browse.kind = .artist }.keyboardShortcut("3", modifiers: .command)
             Button("Filter-shadow") { showFilter = true }.keyboardShortcut("f", modifiers: [.command, .option])
             Button("Sort-shadow") { showSort = true }.keyboardShortcut("s", modifiers: [.command, .option])
             Button("Layout-shadow") {
@@ -331,7 +339,7 @@ struct BrowseView: View {
         case .failed(let message):
             failureView(message)
         case .loaded:
-            if browse.searchOnline {
+            if effectiveOnline {
                 onlineContent
             } else {
                 // Full ordered set is memoized (cheap); render only a growing prefix so the
@@ -339,8 +347,11 @@ struct BrowseView: View {
                 let items = browse.visibleResults(collections)
                 let page = BrowsePaging.page(items, visible: liveVisible)
                 resultsHeader(items.count)
-                if browse.kind == .album { albumResults(page, fullCount: items.count) }
-                else { songResults(page, fullCount: items.count) }
+                switch browse.kind {
+                case .album:  albumResults(page, fullCount: items.count)
+                case .song:   songResults(page, fullCount: items.count)
+                case .artist: artistResults(page, fullCount: items.count)
+                }
             }
         }
     }
@@ -364,9 +375,13 @@ struct BrowseView: View {
         }
     }
 
+    private func kindNoun(_ kind: ItemKind) -> String {
+        switch kind { case .album: return "albums"; case .song: return "songs"; case .artist: return "artists" }
+    }
+
     private func resultsHeader(_ count: Int) -> some View {
         HStack {
-            Text("\(count) \(browse.kind == .album ? "albums" : "songs")")
+            Text("\(count) \(kindNoun(browse.kind))")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(Theme.fgDim)
             Spacer()
@@ -441,6 +456,27 @@ struct BrowseView: View {
             visibleCount = BrowsePaging.grow(liveVisible, upTo: fullCount)
             visibleKey = pagingKey
         }
+    }
+
+    /// Artists list — one row per distinct album-artist; tap opens the artist's albums.
+    /// Same incremental paging as the song list.
+    private func artistResults(_ items: [BrowseItem], fullCount: Int) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(items) { item in
+                    if case .artist(let name, let albumCount, let songCount, let albumId) = item {
+                        ArtistRow(name: name, albumCount: albumCount, songCount: songCount, albumId: albumId)
+                            .padding(.horizontal, 16)
+                            .contentShape(Rectangle())
+                            .onTapGesture { path.append(Artist(name: name)) }
+                            .onAppear { onRowAppear(item, rendered: items, fullCount: fullCount) }
+                        Divider().overlay(Theme.border).padding(.leading, 70)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .background(Theme.bg)
     }
 
     /// Bottom-of-list spinner shown while a NEXT page is paging in (online only).
@@ -579,6 +615,35 @@ struct SongRow: View {
     var body: some View {
         SongRowView(data: SongRowData(song: song, album: album))
             .padding(.horizontal, 2)
+    }
+}
+
+/// Navigation value for an artist (the Artists browse kind → ArtistDetailView).
+struct Artist: Hashable { let name: String }
+
+/// Browser artist row — thumbnail (a representative album's art) + name + album/song counts.
+struct ArtistRow: View {
+    @Environment(AppModel.self) private var app
+    let name: String
+    let albumCount: Int
+    let songCount: Int
+    let albumId: String?
+
+    private var album: IndexAlbum? { albumId.flatMap { app.albumsById[$0] } }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SongThumbnail(album: album).frame(width: 46, height: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(name).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                Text("\(albumCount) album\(albumCount == 1 ? "" : "s") · \(songCount) song\(songCount == 1 ? "" : "s")")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+        }
+        .padding(.vertical, 8)
+        .accessibilityIdentifier("artist-\(name)")
     }
 }
 
