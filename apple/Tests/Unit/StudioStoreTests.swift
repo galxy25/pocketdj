@@ -328,6 +328,27 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNotNil(store.take("tk_user"))       // unreachable instrumentals folder ⇒ never pruned
     }
 
+    /// `StudioPatternBouncer.ensureBounced` (auto-burn a sequence on add-to-collection) is a no-op
+    /// when the pattern is already bounced-fresh, and doesn't bounce a pattern with no sounding row.
+    /// (The full render is covered by StudioRenderTests; here we pin the orchestration guards.)
+    func testEnsureBouncedGuards() async {
+        let store = StudioStore(fileURL: storeURL)
+        // Already bounced + not dirty → left untouched (no re-render).
+        store.addPattern(StudioPattern(id: "ptn_fresh", name: "P", bpm: 120,
+                                       rows: [StudioPatternRow(targetId: "smp_x")],
+                                       fileName: StudioFolders.fileName(.sequences, id: "ptn_fresh"),
+                                       bounceDirty: false))
+        await StudioPatternBouncer.ensureBounced(patternId: "ptn_fresh", studio: store)
+        XCTAssertEqual(store.pattern("ptn_fresh")?.bounceDirty, false)
+        XCTAssertNotNil(store.pattern("ptn_fresh")?.fileName)
+
+        // Dirty, but its only row has no enabled steps (silent) ⇒ nothing to bounce.
+        store.addPattern(StudioPattern(id: "ptn_silent", name: "P", bpm: 120,
+                                       rows: [StudioPatternRow(targetId: "smp_x")], createdAt: 0))
+        await StudioPatternBouncer.ensureBounced(patternId: "ptn_silent", studio: store)
+        XCTAssertNil(store.pattern("ptn_silent")?.fileName, "no sounding row ⇒ no bounce")
+    }
+
     /// A sample captured from AUDIO IN (`.lineIn`) round-trips its provenance + port name, and an
     /// unknown/older source still degrades to `.mic` (the lenient decoder is unaffected).
     func testLineInSampleSourceRoundTrips() throws {

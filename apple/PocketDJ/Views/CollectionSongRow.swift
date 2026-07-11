@@ -784,7 +784,7 @@ struct StudioCollectionRow: View {
                     .foregroundStyle(Theme.fg).lineLimit(1)
                 HStack(spacing: 6) {
                     badge(kindLabel, tint: Theme.accent2)
-                    if repeatCount > 1 { badge("↻ \(repeatCount)×", tint: Theme.accent) }
+                    repeatMenu            // a TAPPABLE chip — the in-row repeat-count editor
                     if let bpm = info?.bpm { Text(Fmt.bpm(bpm) + " BPM").font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim) }
                     Spacer(minLength: 6)
                     // The item's own waveform (its playback audio) — a compact strip.
@@ -817,6 +817,33 @@ struct StudioCollectionRow: View {
     }
 
     private func repeatLabel(_ n: Int) -> String { n == 1 ? "Play once" : "\(n)×" }
+
+    /// The in-row repeat-count editor: an always-visible, tappable chip (a `Menu`, so it works
+    /// reliably inside a List row — unlike a nested submenu in a long-press context menu). Shows
+    /// the current count; tap to pick a new one.
+    private var repeatMenu: some View {
+        Menu {
+            Text("Repeat count")
+            ForEach(StudioCollectionRow.repeatPresets, id: \.self) { n in
+                Button { onSetRepeat(n) } label: {
+                    Label(repeatLabel(n), systemImage: n == repeatCount ? "checkmark" : "repeat")
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "repeat").font(.system(size: 8, weight: .bold))
+                Text("\(repeatCount)×").font(.caption2.weight(.semibold)).monospacedDigit()
+            }
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Theme.accent.opacity(0.16), in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.3), lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("studio-repeat-menu-\(id)")
+    }
 
     @ViewBuilder
     private func badge(_ text: String, tint: Color) -> some View {
