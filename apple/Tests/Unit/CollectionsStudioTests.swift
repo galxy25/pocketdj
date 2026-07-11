@@ -240,4 +240,19 @@ final class CollectionsStudioTests: XCTestCase {
         let set = s.playNow(pocketId: pkt.id)
         XCTAssertEqual(set?.tracks.first { $0.songId == "smp_a" }?.repeatCount, 2)
     }
+
+    // MARK: Performer name stamps the studio-item artist
+
+    func testStudioArtistUsesPerformerNameElseStudio() async {
+        let s = await wiredStore()
+        XCTAssertEqual(s.studioArtist, "Studio", "unset performer name ⇒ the generic label")
+        let set1 = s.playNow(songIds: ["smp_a"])
+        XCTAssertEqual(set1?.tracks.first?.artist, "Studio")
+
+        s.performerName = "Levi Schoen"
+        XCTAssertEqual(s.studioArtist, "Levi Schoen")
+        let set2 = s.playNow(songIds: ["smp_a"])
+        XCTAssertEqual(set2?.tracks.first?.artist, "Levi Schoen",
+                       "the performer name is stamped as the studio item's artist")
+    }
 }

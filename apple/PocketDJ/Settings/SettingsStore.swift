@@ -139,6 +139,10 @@ final class SettingsStore {
     /// (`take-<id>.m4a`). `nil` → app-managed Application Support `studio/takes/`. Instrument
     /// packs remain ALWAYS app-managed (no bookmark). See `StudioFolders`.
     var takesFolderBookmark: Data?
+    /// The user's "PocketDJ name" — the ARTIST shown on their performance items (samples, loops,
+    /// sequences, instrumentals) across collections + Now Playing, and written as the ID3 artist
+    /// when those items are burned. Empty ⇒ the generic "Studio" label.
+    var pocketDJName: String
     /// The last-visited Performance sub-tab's rawValue (Samples/Loops/Sequencer/Instruments/
     /// Cues) so the tab reopens where you left off — the Studio twin of `lastSection`.
     /// nil = never visited ⇒ the view's own default.
@@ -182,6 +186,7 @@ final class SettingsStore {
         self.loopsFolderBookmark = data.loopsFolderBookmark
         self.sequencesFolderBookmark = data.sequencesFolderBookmark
         self.takesFolderBookmark = data.takesFolderBookmark
+        self.pocketDJName = data.pocketDJName ?? ""
         self.studioTab = data.studioTab
         self.studioClickEnabled = data.studioClickEnabled ?? true
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
@@ -285,6 +290,7 @@ final class SettingsStore {
             loopsFolderBookmark: loopsFolderBookmark,
             sequencesFolderBookmark: sequencesFolderBookmark,
             takesFolderBookmark: takesFolderBookmark,
+            pocketDJName: pocketDJName,
             studioTab: studioTab,
             studioClickEnabled: studioClickEnabled,
             studioCountInEnabled: studioCountInEnabled)
@@ -326,6 +332,7 @@ final class SettingsStore {
         loopsFolderBookmark = d.loopsFolderBookmark
         sequencesFolderBookmark = d.sequencesFolderBookmark
         takesFolderBookmark = d.takesFolderBookmark
+        pocketDJName = d.pocketDJName ?? ""
         studioTab = d.studioTab
         studioClickEnabled = d.studioClickEnabled ?? true
         studioCountInEnabled = d.studioCountInEnabled ?? true
@@ -393,6 +400,8 @@ struct SettingsData: Codable {
     var sequencesFolderBookmark: Data?
     /// Optional so older blobs still decode — Studio instrumentals (takes) folder bookmark (nil = app-managed).
     var takesFolderBookmark: Data?
+    /// Optional so older blobs still decode — the user's PocketDJ (performer) name (nil/"" = "Studio").
+    var pocketDJName: String?
     /// Optional so older blobs still decode (nil = never visited ⇒ the view's default sub-tab).
     var studioTab: String?
     /// Optional so older blobs still decode (coalesced to true at the read sites).
@@ -427,6 +436,7 @@ struct SettingsData: Codable {
         loopsFolderBookmark: nil,
         sequencesFolderBookmark: nil,
         takesFolderBookmark: nil,
+        pocketDJName: nil,
         studioTab: nil,
         studioClickEnabled: nil,
         studioCountInEnabled: nil)

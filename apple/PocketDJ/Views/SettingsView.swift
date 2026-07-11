@@ -40,6 +40,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            identitySection
             sourcesSection
             streamingSection
             searchSection
@@ -162,6 +163,22 @@ struct SettingsView: View {
     }
 
     // MARK: Collections (import a pocket / playlist export)
+
+    // MARK: PocketDJ name (the performer artist for studio items)
+
+    private var identitySection: some View {
+        Section {
+            TextField("Your PocketDJ name", text: $settings.pocketDJName)
+                .pocketField()
+                .accessibilityIdentifier("settings-pocketdj-name")
+                // Keep the live snapshot artist in sync so the next Play stamps the new name.
+                .onChange(of: settings.pocketDJName) { _, new in collections.performerName = new }
+        } header: {
+            Text("PocketDJ name")
+        } footer: {
+            Text("Shown as the artist on your samples, loops, sequences, and instrumentals — in collections and Now Playing — and written as the artist tag when they’re burned. Leave blank to show “Studio”.")
+        }
+    }
 
     private var collectionsSection: some View {
         Section {

@@ -196,6 +196,7 @@ struct PocketDJApp: App {
         app.settings = settings   // the live multi-source config, read by loadIfNeeded()
         app.edits = edits         // overlay local metadata edits
         collections.app = app     // give realize()/playNow() the catalog to resolve ids
+        collections.performerName = settings.pocketDJName   // artist stamped on performance items
         // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
         setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
         // Let the sequencer snapshot each run's Play-History origin (source-kind + set name) at

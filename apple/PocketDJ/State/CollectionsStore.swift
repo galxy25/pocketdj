@@ -43,6 +43,12 @@ final class CollectionsStore {
     /// behavior it had before Studio existed (studio ids simply drop out).
     var studioLookup: ((String) -> (title: String, lengthMs: Int, bpm: Double?, camelot: String?)?)?
 
+    /// The artist label stamped on a performance item when it's snapshotted into a setlist / Now
+    /// Playing (the user's "PocketDJ name", `SettingsStore.pocketDJName`). Wired from settings at
+    /// app init + on change; falls back to "Studio" when unset. `studioArtist` resolves it.
+    var performerName: String = ""
+    var studioArtist: String { performerName.isEmpty ? "Studio" : performerName }
+
     init(fileURL: URL = CollectionsStore.defaultURL()) {
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL), let doc = try? CollectionsCodec.decode(data) {
@@ -616,7 +622,7 @@ final class CollectionsStore {
             for id in referencedStudioIds(in: playlist) where songsById[id] == nil {
                 guard let info = lookup(id) else { continue }   // unresolvable → node places nothing
                 songsById[id] = IndexSong.studioSynthetic(id: id, title: info.title,
-                                                          lengthMs: info.lengthMs,
+                                                          lengthMs: info.lengthMs, artist: studioArtist,
                                                           bpm: info.bpm, camelot: info.camelot)
             }
         }
@@ -717,7 +723,7 @@ final class CollectionsStore {
             // catalog id on the line below.
             if StudioFactory.isStudioId(id) {
                 guard let info = studioLookup?(id) else { return nil }
-                return SetlistTrack(songId: id, artist: "Studio", name: info.title,
+                return SetlistTrack(songId: id, artist: studioArtist, name: info.title,
                                     bpm: info.bpm, camelot: info.camelot, lengthMs: info.lengthMs,
                                     source: .explicit, repeatCount: rep)
             }

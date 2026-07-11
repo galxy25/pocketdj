@@ -151,10 +151,11 @@ extension IndexSong {
     /// default) plus `bpm`/`camelot` when known (they let realize's harmonic math
     /// see the item; they do NOT admit it to the autofill pool — candidates are
     /// assembled from the catalog before injection, see CollectionsStore.makeCtx).
-    /// Artist is the fixed "Studio" label every studio surface shows.
-    static func studioSynthetic(id: String, title: String, lengthMs: Int,
+    /// Artist is the performer label every studio surface shows (the user's "PocketDJ name",
+    /// defaulting to "Studio" — passed in by the caller from `CollectionsStore.studioArtist`).
+    static func studioSynthetic(id: String, title: String, lengthMs: Int, artist: String = "Studio",
                                 bpm: Double? = nil, camelot: String? = nil) -> IndexSong {
-        var obj: [String: Any] = ["id": id, "name": title, "artist": "Studio", "length": lengthMs]
+        var obj: [String: Any] = ["id": id, "name": title, "artist": artist, "length": lengthMs]
         if let bpm { obj["bpm"] = bpm }
         if let camelot { obj["camelot"] = camelot }
         // Force-unwrap is safe for the same reason as `IndexSong.minimal`: every key is
