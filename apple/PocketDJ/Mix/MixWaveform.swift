@@ -97,6 +97,19 @@ enum MixWaveform {
     }
 }
 
+/// StudioStore-aware waveform helper — the studio analog of `MixWaveform`. Resolves a performance
+/// item's local file (`localURLForPlayback`, holding its scope across the read) and extracts the
+/// same normalized peaks. [] when the item can't resolve (a placeholder instrumental that hasn't
+/// rendered yet, a deleted item). Used for the item's waveform in collection rows + Now Playing.
+enum StudioWaveform {
+    @MainActor
+    static func peaks(forStudioId id: String, studio: StudioStore) async -> [Float] {
+        guard let handle = studio.localURLForPlayback(id: id) else { return [] }
+        defer { handle.release?() }
+        return await WaveformExtractor.peaks(url: handle.url)
+    }
+}
+
 /// A compact deck waveform — `peaks` are ≈200 values in 0...1 (WaveformExtractor output). Draws a
 /// center-mirrored bar per peak via Canvas (cheap; redraws only when `peaks` changes). EMPTY
 /// `peaks` renders a flat baseline placeholder. (Named `MixWaveformView` to avoid colliding with

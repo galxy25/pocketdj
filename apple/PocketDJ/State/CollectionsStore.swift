@@ -43,6 +43,12 @@ final class CollectionsStore {
     /// behavior it had before Studio existed (studio ids simply drop out).
     var studioLookup: ((String) -> (title: String, lengthMs: Int, bpm: Double?, camelot: String?)?)?
 
+    /// The artist label stamped on a performance item when it's snapshotted into a setlist / Now
+    /// Playing (the user's "PocketDJ name", `SettingsStore.pocketDJName`). Wired from settings at
+    /// app init + on change; falls back to "Studio" when unset. `studioArtist` resolves it.
+    var performerName: String = ""
+    var studioArtist: String { performerName.isEmpty ? "Studio" : performerName }
+
     init(fileURL: URL = CollectionsStore.defaultURL()) {
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL), let doc = try? CollectionsCodec.decode(data) {
@@ -156,7 +162,17 @@ final class CollectionsStore {
     func movePocketNotes(inPocket id: String, from: IndexSet, to: Int) {
         mutatePocket(id) { $0.notes.move(fromOffsets: from, toOffset: to) }
     }
-    func removeSong(_ songId: String, fromPocket id: String) { mutatePocket(id) { $0.songIds.removeAll { $0 == songId } } }
+    func removeSong(_ songId: String, fromPocket id: String) {
+        mutatePocket(id) { $0.songIds.removeAll { $0 == songId }; $0.songRepeats[songId] = nil }
+    }
+    /// Set a pocket member's repeat (loop) count. A count ≤ 1 clears the key.
+    func setSongRepeat(_ songId: String, count: Int, inPocket id: String) {
+        mutatePocket(id) { $0.songRepeats[songId] = CollectionMembership.storedRepeat(count) }
+    }
+    /// The stored repeat count for a pocket member (1 when none).
+    func repeatCount(forSong songId: String, inPocket id: String) -> Int {
+        CollectionMembership.normalizedRepeat(pocket(id)?.songRepeats[songId])
+    }
     func removeAlbum(_ albumId: String, fromPocket id: String) { mutatePocket(id) { $0.albumIds.removeAll { $0 == albumId } } }
     func removeChildPocket(_ childId: String, fromPocket id: String) { mutatePocket(id) { $0.childPocketIds.removeAll { $0 == childId } } }
 
@@ -196,8 +212,11 @@ final class CollectionsStore {
             pl.sequences[seqIdx].children = children
         }
     }
-    func addSong(_ songId: String, toPlaylist id: String, sequenceId: String? = nil) {
-        addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: songId), toPlaylist: id, sequenceId: sequenceId)
+    func addSong(_ songId: String, toPlaylist id: String, sequenceId: String? = nil,
+                 repeatCount: Int? = nil) {
+        addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: songId,
+                             repeatCount: CollectionMembership.storedRepeat(repeatCount ?? 1)),
+                toPlaylist: id, sequenceId: sequenceId)
     }
     func addAlbum(_ albumId: String, toPlaylist id: String, sequenceId: String? = nil) {
         addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .album, albumId: albumId), toPlaylist: id, sequenceId: sequenceId)
@@ -224,6 +243,25 @@ final class CollectionsStore {
         mutatePlaylist(id) { pl in for i in pl.sequences.indices {
             if let j = pl.sequences[i].children?.firstIndex(where: { $0.nodeId == nodeId }) { pl.sequences[i].children?[j].note = note }
         } }
+    }
+    /// Set a node's repeat (loop) count. A count ≤ 1 clears the field (persists as a normal
+    /// single play). Searches every chapter for the node id.
+    func setNodeRepeat(_ nodeId: String, count: Int, inPlaylist id: String) {
+        mutatePlaylist(id) { pl in for i in pl.sequences.indices {
+            if let j = pl.sequences[i].children?.firstIndex(where: { $0.nodeId == nodeId }) {
+                pl.sequences[i].children?[j].repeatCount = CollectionMembership.storedRepeat(count)
+            }
+        } }
+    }
+    /// The stored repeat count for a playlist node (1 when none / not found).
+    func repeatCount(forNode nodeId: String, inPlaylist id: String) -> Int {
+        guard let pl = playlist(id) else { return 1 }
+        for seq in pl.sequences {
+            if let n = seq.children?.first(where: { $0.nodeId == nodeId }) {
+                return CollectionMembership.normalizedRepeat(n.repeatCount)
+            }
+        }
+        return 1
     }
     func removeNode(_ nodeId: String, fromPlaylist id: String) {
         mutatePlaylist(id) { pl in for i in pl.sequences.indices { pl.sequences[i].children?.removeAll { $0.nodeId == nodeId } } }
@@ -395,10 +433,15 @@ final class CollectionsStore {
     /// The Add-to sheet's seam. Like `addSong(toPocket:)`, the id is prefix-agnostic:
     /// `AddToCollectionView.Item.studio` routes its `smp_`/`lp_`/`ptn_` ids straight
     /// through here (spec §8) — the string-array plumbing needs no studio-specific twin.
-    func addSong(_ songId: String, to target: AddTarget) {
+    func addSong(_ songId: String, to target: AddTarget, repeatCount: Int? = nil) {
         switch target.kind {
-        case .pocket:   addSong(songId, toPocket: target.id)
-        case .playlist: addSong(songId, toPlaylist: target.id, sequenceId: target.sequenceId)
+        case .pocket:
+            addSong(songId, toPocket: target.id)
+            if let r = CollectionMembership.storedRepeat(repeatCount ?? 1) {
+                setSongRepeat(songId, count: r, inPocket: target.id)
+            }
+        case .playlist:
+            addSong(songId, toPlaylist: target.id, sequenceId: target.sequenceId, repeatCount: repeatCount)
         }
         setLastAddTarget(target)
     }
@@ -579,7 +622,7 @@ final class CollectionsStore {
             for id in referencedStudioIds(in: playlist) where songsById[id] == nil {
                 guard let info = lookup(id) else { continue }   // unresolvable → node places nothing
                 songsById[id] = IndexSong.studioSynthetic(id: id, title: info.title,
-                                                          lengthMs: info.lengthMs,
+                                                          lengthMs: info.lengthMs, artist: studioArtist,
                                                           bpm: info.bpm, camelot: info.camelot)
             }
         }
@@ -665,10 +708,13 @@ final class CollectionsStore {
     /// on-screen detail view re-snapshots the new order. Returns nil if the catalog isn't wired.
     @discardableResult
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
-                 source: PlayHistoryStore.PlaySource? = nil) -> Setlist? {
+                 source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:]) -> Setlist? {
         guard let app else { return nil }
         nowPlayingSource = source
         var tracks: [SetlistTrack] = songIds.compactMap { id in
+            // Per-item repeat (loop) count from the source collection — snapshotted so the
+            // player loops the row that many times before advancing.
+            let rep = CollectionMembership.storedRepeat(repeats[id] ?? 1)
             // STUDIO rows (spec §8 — playNow RESOLVES studio ids): synthesize the frozen
             // snapshot from the studio lookup — title + REAL lengthMs so `shownMs` never
             // invents the 210 s fallback for a 4 s loop, bpm/camelot when known, and a
@@ -677,14 +723,14 @@ final class CollectionsStore {
             // catalog id on the line below.
             if StudioFactory.isStudioId(id) {
                 guard let info = studioLookup?(id) else { return nil }
-                return SetlistTrack(songId: id, artist: "Studio", name: info.title,
+                return SetlistTrack(songId: id, artist: studioArtist, name: info.title,
                                     bpm: info.bpm, camelot: info.camelot, lengthMs: info.lengthMs,
-                                    source: .explicit)
+                                    source: .explicit, repeatCount: rep)
             }
             guard let s = app.songsById[id] else { return nil }   // drop unresolvable ids
             return SetlistTrack(songId: s.id, artist: s.artist, name: s.name,
                                 bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
-                                source: .explicit)
+                                source: .explicit, repeatCount: rep)
         }
         if shuffle { tracks.shuffle() }
         let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
@@ -706,14 +752,33 @@ final class CollectionsStore {
     @discardableResult
     func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPlaylist: playlistId),
-                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist)
+                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
+                repeats: playlistRepeatMap(playlistId))
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
     /// `playableIds` for the same reason as the playlist variant above.
     @discardableResult
     func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPocket: pocketId),
-                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket)
+                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
+                repeats: pocket(pocketId)?.songRepeats ?? [:])
+    }
+
+    /// Best-effort songId → repeat-count map for a playlist's `.song` nodes (recursing into
+    /// sub-chapters). Keyed by songId, so if the same item appears in two nodes with different
+    /// counts the later one wins — acceptable for a playback convenience, and the common case
+    /// (a performance item added once) is exact.
+    private func playlistRepeatMap(_ id: String) -> [String: Int] {
+        guard let pl = playlist(id) else { return [:] }
+        var map: [String: Int] = [:]
+        func walk(_ nodes: [PlaylistNode]) {
+            for n in nodes {
+                if n.kind == .song, let sid = n.songId, let r = n.repeatCount, r > 1 { map[sid] = r }
+                if let kids = n.children { walk(kids) }
+            }
+        }
+        for seq in pl.sequences { walk(seq.children ?? []) }
+        return map
     }
 
     /// Resolve the Play-History source-kind + display name for a sequencer run tagged with

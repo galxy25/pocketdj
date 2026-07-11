@@ -309,6 +309,10 @@ final class StudioStoreTests: XCTestCase {
         // Take whose audio vanished → dropped.
         store.addTake(StudioTake(id: "tk_gone", name: "T",
                                  fileName: StudioFolders.fileName(.takes, id: "tk_gone")))
+        // USER-folder instrumental with no bookmark (relocated to an unplugged drive) → kept.
+        store.addTake(StudioTake(id: "tk_user", name: "T",
+                                 fileName: StudioFolders.fileName(.takes, id: "tk_user"),
+                                 wasUserFolder: true))
 
         store.reconcileOnLaunch()
 
@@ -321,6 +325,133 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNil(p.fileName)
         XCTAssertTrue(p.bounceDirty)
         XCTAssertNil(store.take("tk_gone"))
+        XCTAssertNotNil(store.take("tk_user"))       // unreachable instrumentals folder ⇒ never pruned
+    }
+
+    /// `StudioPatternBouncer.ensureBounced` (auto-burn a sequence on add-to-collection) is a no-op
+    /// when the pattern is already bounced-fresh, and doesn't bounce a pattern with no sounding row.
+    /// (The full render is covered by StudioRenderTests; here we pin the orchestration guards.)
+    func testEnsureBouncedGuards() async {
+        let store = StudioStore(fileURL: storeURL)
+        // Already bounced + not dirty → left untouched (no re-render).
+        store.addPattern(StudioPattern(id: "ptn_fresh", name: "P", bpm: 120,
+                                       rows: [StudioPatternRow(targetId: "smp_x")],
+                                       fileName: StudioFolders.fileName(.sequences, id: "ptn_fresh"),
+                                       bounceDirty: false))
+        await StudioPatternBouncer.ensureBounced(patternId: "ptn_fresh", studio: store)
+        XCTAssertEqual(store.pattern("ptn_fresh")?.bounceDirty, false)
+        XCTAssertNotNil(store.pattern("ptn_fresh")?.fileName)
+
+        // Dirty, but its only row has no enabled steps (silent) ⇒ nothing to bounce.
+        store.addPattern(StudioPattern(id: "ptn_silent", name: "P", bpm: 120,
+                                       rows: [StudioPatternRow(targetId: "smp_x")], createdAt: 0))
+        await StudioPatternBouncer.ensureBounced(patternId: "ptn_silent", studio: store)
+        XCTAssertNil(store.pattern("ptn_silent")?.fileName, "no sounding row ⇒ no bounce")
+    }
+
+    /// A sample captured from AUDIO IN (`.lineIn`) round-trips its provenance + port name, and an
+    /// unknown/older source still degrades to `.mic` (the lenient decoder is unaffected).
+    func testLineInSampleSourceRoundTrips() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(StudioSample(id: "smp_li", name: "TX-6 recording",
+                                     fileName: StudioFolders.fileName(.samples, id: "smp_li"),
+                                     durationMs: 1_000, source: .lineIn(inputName: "TX-6")))
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        guard case .lineIn(let name)? = reloaded.sample("smp_li")?.source else {
+            return XCTFail("expected a .lineIn source, got \(String(describing: reloaded.sample("smp_li")?.source))")
+        }
+        XCTAssertEqual(name, "TX-6")
+    }
+
+    /// The detected-key map (`keys`) round-trips, `mixInfo` surfaces the item's bpm + key for a
+    /// Mix deck, and clearing removes the entry.
+    func testStudioKeysRoundTripAndMixInfo() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_k", name: "Inst", fileName: "take-tk_k.m4a", bpm: 128,
+                                 events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 100)]))
+        XCTAssertNil(store.camelot(forStudioId: "tk_k"))
+        store.setCamelot("8A", forStudioId: "tk_k")
+        XCTAssertEqual(store.camelot(forStudioId: "tk_k"), "8A")
+        let mi = store.mixInfo(forStudioId: "tk_k")
+        XCTAssertEqual(mi?.bpm, 128)
+        XCTAssertEqual(mi?.firstDownbeatMs, 0)
+        XCTAssertEqual(mi?.camelot, "8A")
+        store.flush()
+        XCTAssertEqual(StudioStore(fileURL: storeURL).camelot(forStudioId: "tk_k"), "8A")
+        store.setCamelot(nil, forStudioId: "tk_k")   // clearing removes the key
+        XCTAssertNil(store.camelot(forStudioId: "tk_k"))
+        XCTAssertNil(store.mixInfo(forStudioId: "tk_k")?.camelot)
+    }
+
+    /// Instrumental playback resolves the raw take file, and PREFERS the rendered-audio cache when
+    /// one is present (the audible synth for a live-saved placeholder take).
+    func testTakePlaybackResolvesFileAndPrefersRenderCache() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let raw = try writeFile(.takes, id: "tk_p")
+        store.addTake(StudioTake(id: "tk_p", name: "Inst", fileName: raw,
+                                 events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 100)],
+                                 durationMs: 800))
+        let r1 = store.localURLForPlayback(id: "tk_p")
+        XCTAssertEqual(r1?.url.lastPathComponent, raw)
+        XCTAssertEqual(r1?.title, "Inst")
+        XCTAssertEqual(r1?.lengthMs, 800)
+        r1?.release?()
+        // A render cache present ⇒ preferred.
+        let rendered = StudioFolders.renderedTakeFileName(id: "tk_p")
+        try Data(repeating: 0, count: 8).write(to: try StudioFolders.appRoot(.takes).appendingPathComponent(rendered))
+        store.setTakeRendered("tk_p", fileName: rendered, wasUserFolder: false)
+        let r2 = store.localURLForPlayback(id: "tk_p")
+        XCTAssertEqual(r2?.url.lastPathComponent, rendered)
+        r2?.release?()
+    }
+
+    /// Editing a take's score invalidates its rendered-audio cache (file removed + fields cleared),
+    /// so playback falls back to the raw file until it re-renders from the new notes.
+    func testTakeRenderCacheClearedOnEdit() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let raw = try writeFile(.takes, id: "tk_e")
+        let rendered = StudioFolders.renderedTakeFileName(id: "tk_e")
+        let renderedURL = try StudioFolders.appRoot(.takes).appendingPathComponent(rendered)
+        try Data(repeating: 0, count: 8).write(to: renderedURL)
+        store.addTake(StudioTake(id: "tk_e", name: "E", fileName: raw, durationMs: 500,
+                                 renderedFileName: rendered, renderedWasUserFolder: false))
+        XCTAssertEqual(store.localURLForPlayback(id: "tk_e")?.url.lastPathComponent, rendered)
+        store.setTakeEvents("tk_e", events: [StudioNoteEvent(onMs: 0, offMs: 300, note: 62, velocity: 90)])
+        XCTAssertNil(store.take("tk_e")?.renderedFileName)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: renderedURL.path))
+        XCTAssertEqual(store.localURLForPlayback(id: "tk_e")?.url.lastPathComponent, raw)
+    }
+
+    /// `StudioTake.wasUserFolder` survives the persistence round-trip (the instrumentals-folder
+    /// relocation stamp), and an OLDER blob with no such key decodes to app storage (false).
+    func testTakeWasUserFolderRoundTrips() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_u", name: "In a folder",
+                                 fileName: StudioFolders.fileName(.takes, id: "tk_u"),
+                                 wasUserFolder: true))
+        store.addTake(StudioTake(id: "tk_a", name: "App storage",
+                                 fileName: StudioFolders.fileName(.takes, id: "tk_a")))
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.take("tk_u")?.wasUserFolder, true)
+        XCTAssertEqual(reloaded.take("tk_a")?.wasUserFolder, false)   // default when absent
+    }
+
+    /// With no instrumentals folder configured (settings nil ⇒ no bookmark), `addTakeRelocating`
+    /// leaves the file in app storage and stamps `wasUserFolder: false` — a plain file (no move),
+    /// resolvable + deletable against the app root.
+    func testAddTakeRelocatingWithoutUserFolderKeepsAppStorage() throws {
+        let store = StudioStore(fileURL: storeURL)   // settings nil ⇒ bookmark(for: .takes) == nil
+        let name = try writeFile(.takes, id: "tk_r")
+        let filed = store.addTakeRelocating(StudioTake(id: "tk_r", name: "R", fileName: name))
+        XCTAssertFalse(filed.wasUserFolder)
+        XCTAssertEqual(store.take("tk_r")?.wasUserFolder, false)
+        // The file is still in the app root and the record resolves + deletes cleanly.
+        let appRoot = try StudioFolders.appRoot(.takes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appRoot.appendingPathComponent(name).path))
+        XCTAssertTrue(store.deleteTake("tk_r"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: appRoot.appendingPathComponent(name).path))
     }
 
     /// A stale render-cache reference (file gone, raw intact) is cleared without touching the

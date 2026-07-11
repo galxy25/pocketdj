@@ -193,6 +193,8 @@ struct StudioSampleEditorView: View {
             return "From an instrument take"
         case .file(let originalName):
             return originalName.isEmpty ? "Imported audio file" : "Imported from \(originalName)"
+        case .lineIn(let name):
+            return name.map { "Recorded from \($0)" } ?? "Recorded from audio in"
         case nil:
             return ""
         }

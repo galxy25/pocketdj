@@ -53,6 +53,8 @@ struct StudioLoopsView: View {
     /// can't race the same preview file / double-mint a loop from one tap.
     @State private var rendering = false
     @State private var builderError: String?
+    /// The loop whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
+    @State private var addRef: StudioAddRef?
 
     /// The synthetic id the preview auditions under. Deliberately NOT a minted uuid: stable, so
     /// "is the preview playing?" is a plain equality check against `engine.loadedLoopId`, and
@@ -66,6 +68,7 @@ struct StudioLoopsView: View {
         }
         .scrollContentBackground(.hidden)
         .background(Theme.bg)
+        .studioAddToCollection($addRef)
         .task {
             // Stores take their config pushed from the view layer (the MixRecorder.settings
             // pattern) — the per-family bookmark lookups need it, and this tab may be the
@@ -135,6 +138,13 @@ struct StudioLoopsView: View {
                         }
                         .contextMenu {
                             Button { beginRename(loop) } label: { Label("Rename…", systemImage: "pencil") }
+                            Button {
+                                addRef = StudioAddRef(id: loop.id, title: loop.name)
+                                let lid = loop.id
+                                Task { await StudioAnalyzer.prepare(forStudioId: lid, studio: studio, packs: nil) }
+                            } label: {
+                                Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
+                            }
                             Button(role: .destructive) { pendingDelete = loop } label: {
                                 Label("Delete loop", systemImage: "trash")
                             }

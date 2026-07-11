@@ -23,6 +23,9 @@ final class SetlistPlayer {
     struct Item: Equatable {
         let id: String; let title: String; let artist: String
         var lengthMs: Int? = nil
+        /// Total plays before advancing (a performance item's loop count). nil/≤1 ⇒ once.
+        /// Excluded from equality — it's a playback parameter, not row identity.
+        var repeatCount: Int? = nil
         /// Per-INSTANCE identity for live-queue rows (a song can repeat in a set, so
         /// `id` can't identify a row). Lets the Now Playing panel remove exactly the
         /// row the user tapped even when the queue shifts underneath the tap (a track
@@ -72,6 +75,10 @@ final class SetlistPlayer {
     /// Tracks (within the current run) whether ANY track has loaded a burned file — so a
     /// device-mode set that reaches the end with nothing loaded can raise the banner.
     private var loadedAnyDeviceTrack = false
+    /// Plays LEFT for the current track (a performance item's repeat count). Set fresh whenever
+    /// the index moves onto a new track; decremented on each natural end until it hits 1, at which
+    /// point `advance()` moves on. Always ≥ 1 (`normalizedRepeat`).
+    private var currentPlaysRemaining = 1
 
     private let player: PlayerEngine
     private let rips: RipsStore
@@ -147,7 +154,7 @@ final class SetlistPlayer {
     func clearDeviceUnplayable() { deviceQueueUnplayable = false }
 
     /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
-    func skipNext() { advance() }
+    func skipNext() { advanceToNext() }
 
     /// Manually go back one track (lock-screen PREVIOUS). No-op past the top of the set; never
     /// goes below index 0. Re-resolves + plays the (now) current track.
@@ -292,6 +299,9 @@ final class SetlistPlayer {
         guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
         index = pos
         waitingForLive = false
+        // Jumped onto a new track (a manual member play) — arm ITS repeat count, not the
+        // previous track's leftover, so it loops the right number of times on natural end.
+        currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[pos].repeatCount)
         if burns.localURL(forSong: queue[pos].id) != nil { loadedAnyDeviceTrack = true }
         player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs))
     }
@@ -303,10 +313,21 @@ final class SetlistPlayer {
     private func handleEnded() {
         guard isRunning, index < queue.count,
               rips.nowPlaying?.songId == queue[index].id else { return }
-        advance()
+        // REPEAT only on a NATURAL end: a track that played through loops in place while it has
+        // plays left (a performance item's repeat count) instead of advancing. `normalizedRepeat`
+        // clamps to [1, 99], so this can never spin forever; `fresh: false` keeps the counter.
+        // An explicit skip or a dead source does NOT go through here — it calls `advanceToNext`.
+        if currentPlaysRemaining > 1 {
+            currentPlaysRemaining -= 1
+            Task { await playCurrent(fresh: false) }
+            return
+        }
+        advanceToNext()
     }
 
-    private func advance() {
+    /// Move to the next track (or end the set) — the NON-repeating advance. Used by an explicit
+    /// skip, a dead/unresolvable source, and the end of a track's repeats.
+    private func advanceToNext() {
         guard isRunning else { return }
         waitingForLive = false
         index += 1
@@ -318,14 +339,17 @@ final class SetlistPlayer {
             stop()                          // reached the end — tear down cleanly
             if unplayable { deviceQueueUnplayable = true }
         } else {
-            Task { await playCurrent() }
+            Task { await playCurrent(fresh: true) }
         }
     }
 
     /// Resolve the SOURCE fresh each track (a burnt file may have been purged since the
     /// queue was built) and start it. Failure (no end event will ever fire) advances now.
-    private func playCurrent() async {
+    private func playCurrent(fresh: Bool = true) async {
         guard isRunning, index < queue.count else { return }
+        // A fresh track (index moved) arms its repeat counter; a repeat (fresh: false) keeps the
+        // already-decremented one so it counts down to a single remaining play.
+        if fresh { currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount) }
         // Testing seam (`PDJ_HOLD_PLAYBACK`): keep the set "running" WITHOUT resolving any
         // audio source. Fixture catalogs have no rips/burns, so every track would skip and
         // the set would stop() within a frame — a UI test could never see running-state
@@ -342,7 +366,7 @@ final class SetlistPlayer {
         // end. Unresolvable ⇒ skip forward like any dead source.
         if StudioFactory.isStudioId(it.id) {
             guard let res = studioResolve?(it.id) else {
-                advance()
+                advanceToNext()
                 return
             }
             // A playable studio row IS on-device audio: count it so a device-mode set
@@ -372,7 +396,7 @@ final class SetlistPlayer {
                               release: res.release)
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
-                advance()   // no on-device file for this track → skip it
+                advanceToNext()   // no on-device file for this track → skip it
             }
             return
         }
@@ -388,7 +412,7 @@ final class SetlistPlayer {
         } else {
             await coordinator.play(id: it.id, title: it.title, artist: it.artist)
             // Dead source (no server / rip error) → no end event will fire; advance now.
-            if coordinator.lastErrorMessage != nil { advance(); return }
+            if coordinator.lastErrorMessage != nil { advanceToNext(); return }
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".
             if player.isLive {
                 waitingForLive = true

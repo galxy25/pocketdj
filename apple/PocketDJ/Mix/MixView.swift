@@ -37,6 +37,7 @@ struct MixView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(BurnStore.self) private var burns
+    @Environment(StudioStore.self) private var studio
     @Environment(SettingsStore.self) private var settings
     @Environment(MixSessionStore.self) private var mixSessions
     @Environment(MixRecorder.self) private var recorder
@@ -500,7 +501,7 @@ struct MixView: View {
     private func startAuto(shuffled: Bool) {
         guard let src = autoSource else { return }
         sourceA = src; sourceB = src           // both decks browse the auto collection (for hand-loading on Pause)
-        let loadables = MixResolver(app: app, collections: collections, burns: burns).loadables(for: src)
+        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: src)
         let items = loadables.map { l in
             MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
         }
@@ -1746,6 +1747,7 @@ private struct TrackLoaderSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(BurnStore.self) private var burns
+    @Environment(StudioStore.self) private var studio
     @Environment(MixSessionStore.self) private var mixSessions
     @Environment(SettingsStore.self) private var settings
 
@@ -1762,7 +1764,7 @@ private struct TrackLoaderSheet: View {
     /// was read twice + `hiddenPlayedCount` once) re-walked the whole pocket on every keystroke.
     private func resolvedSource() -> [MixLoadable] {
         guard let source else { return [] }
-        return MixResolver(app: app, collections: collections, burns: burns).loadables(for: source)
+        return MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
     }
 
     /// Apply the search query to an already-resolved list (post-search, pre-played-drop).

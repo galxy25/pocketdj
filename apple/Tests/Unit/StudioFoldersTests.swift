@@ -55,18 +55,20 @@ final class StudioFoldersTests: XCTestCase {
         XCTAssertEqual(resolved.url.path, try StudioFolders.appRoot(.loops).path)
     }
 
-    /// Takes/instruments are ALWAYS app-managed — with no bookmark in play they resolve to the
-    /// app root (bookmarks for them are a caller bug, asserted in the resolver).
+    /// Instrument packs are ALWAYS app-managed — a bookmark for them is a caller bug (asserted in
+    /// the resolver). Every other family (samples/loops/sequences/takes) is user-relocatable, but
+    /// still falls back to the app root when no bookmark is set.
     func testAppManagedFamiliesResolveToAppRoot() throws {
-        for family in [StudioFamily.takes, .instruments] {
+        XCTAssertFalse(StudioFamily.instruments.supportsUserFolder)
+        for family in StudioFamily.allCases {
             let resolved = try XCTUnwrap(StudioFolders.resolveRoot(family: family, bookmark: nil,
                                                                    requireWritable: true))
-            XCTAssertFalse(resolved.isUserFolder)
-            XCTAssertFalse(family.supportsUserFolder)
+            XCTAssertFalse(resolved.isUserFolder)          // nil bookmark ⇒ app root for every family
         }
         XCTAssertTrue(StudioFamily.samples.supportsUserFolder)
         XCTAssertTrue(StudioFamily.loops.supportsUserFolder)
         XCTAssertTrue(StudioFamily.sequences.supportsUserFolder)
+        XCTAssertTrue(StudioFamily.takes.supportsUserFolder)
     }
 
     // MARK: Deterministic names — mint + strict parse
@@ -85,6 +87,11 @@ final class StudioFoldersTests: XCTestCase {
         XCTAssertEqual(StudioFolders.fileId(family: .instruments,
                                             name: "instrument-generaluser-gs-2.0.3.sf2"),
                        "generaluser-gs-2.0.3")
+        // The take render-cache name carries the `-r<digits>` stamp, stripped back to the take id
+        // (both the raw file and its render attribute to the same instrumental in usage/reconcile).
+        XCTAssertEqual(StudioFolders.renderedTakeFileName(id: "tk_abc"), "take-tk_abc-r0.m4a")
+        XCTAssertEqual(StudioFolders.fileId(family: .takes,
+                                            name: StudioFolders.renderedTakeFileName(id: "tk_abc")), "tk_abc")
     }
 
     /// The parser is STRICT — user files share these folders, so anything that isn't exactly

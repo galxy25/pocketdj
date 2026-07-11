@@ -55,7 +55,7 @@ struct SongRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SongThumbnail(album: data.album).frame(width: 42, height: 42)
+            SongThumbnail(album: data.album, studioId: data.songId).frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -272,9 +272,14 @@ struct BPMTier: View {
 /// catalog song is gone).
 struct SongThumbnail: View {
     let album: IndexAlbum?
+    /// The row's song id — when it's a STUDIO performance item (no album), the PocketDJ icon is
+    /// its default artwork instead of the generic music-note placeholder.
+    var studioId: String? = nil
     var body: some View {
         if let album {
             CoverImage(album: album, corner: 6)
+        } else if let studioId, StudioFactory.isStudioId(studioId) {
+            PocketDJArtwork(corner: 6)
         } else {
             ZStack {
                 LinearGradient(colors: [Theme.bgOverlay, Theme.bgRaised],
@@ -737,5 +742,129 @@ private struct WaveformView: View {
                     #endif
                 }
             }
+    }
+}
+
+// MARK: - Studio performance-item row (playlists + pockets)
+
+/// A collection row for a studio PERFORMANCE ITEM (sample/loop/sequence/instrumental) that rides
+/// the collection's `songIds` but has no catalog `IndexSong`. Title + length resolve live from
+/// `StudioStore` via `collections.studioLookup`; the kind comes from the id prefix. Shows a kind
+/// badge, a repeat-count badge when it loops, and a context menu to set the repeat count / remove —
+/// the in-collection editor (spec: repeat count via long-press / right-click). Playlists render
+/// this where they used to show "(missing song)"; pockets where they rendered nothing.
+struct StudioCollectionRow: View {
+    @Environment(CollectionsStore.self) private var collections
+    @Environment(StudioStore.self) private var studio
+    let id: String
+    let repeatCount: Int
+    var onSetRepeat: (Int) -> Void
+    var onRemove: () -> Void
+
+    static let repeatPresets = [1, 2, 3, 4, 6, 8, 16]
+
+    /// The item's waveform peaks (loaded async from its local file); empty ⇒ flat placeholder.
+    @State private var peaks: [Float] = []
+
+    private var info: (title: String, lengthMs: Int, bpm: Double?, camelot: String?)? {
+        collections.studioLookup?(id)
+    }
+    private var kindLabel: String {
+        if id.hasPrefix("lp_") { return "Loop" }
+        if id.hasPrefix("ptn_") { return "Sequence" }
+        if id.hasPrefix("tk_") { return "Instrumental" }
+        return "Sample"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            PocketDJArtwork().frame(width: 44, height: 44)   // default artwork for a studio item
+            VStack(alignment: .leading, spacing: 3) {
+                Text(info?.title ?? "Studio item").font(.callout.weight(.medium))
+                    .foregroundStyle(Theme.fg).lineLimit(1)
+                HStack(spacing: 6) {
+                    badge(kindLabel, tint: Theme.accent2)
+                    repeatMenu            // a TAPPABLE chip — the in-row repeat-count editor
+                    if let bpm = info?.bpm { Text(Fmt.bpm(bpm) + " BPM").font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim) }
+                    Spacer(minLength: 6)
+                    // The item's own waveform (its playback audio) — a compact strip.
+                    MixWaveformView(peaks: peaks, color: Theme.accent2, background: .clear)
+                        .frame(width: 96, height: 18)
+                }
+            }
+            Spacer(minLength: 0)
+            if let ms = info?.lengthMs, ms > 0 {
+                Text(Fmt.duration(ms)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            }
+        }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .accessibilityIdentifier("studio-collection-row-\(id)")
+        .task(id: id) { peaks = await StudioWaveform.peaks(forStudioId: id, studio: studio) }
+        .contextMenu {
+            Menu {
+                ForEach(StudioCollectionRow.repeatPresets, id: \.self) { n in
+                    Button { onSetRepeat(n) } label: {
+                        if n == repeatCount { Label(repeatLabel(n), systemImage: "checkmark") }
+                        else { Text(repeatLabel(n)) }
+                    }
+                }
+            } label: {
+                Label("Repeat count", systemImage: "repeat")
+            }
+            Button(role: .destructive) { onRemove() } label: { Label("Remove", systemImage: "trash") }
+        }
+    }
+
+    private func repeatLabel(_ n: Int) -> String { n == 1 ? "Play once" : "\(n)×" }
+
+    /// The in-row repeat-count editor: an always-visible, tappable chip (a `Menu`, so it works
+    /// reliably inside a List row — unlike a nested submenu in a long-press context menu). Shows
+    /// the current count; tap to pick a new one.
+    private var repeatMenu: some View {
+        Menu {
+            Text("Repeat count")
+            ForEach(StudioCollectionRow.repeatPresets, id: \.self) { n in
+                Button { onSetRepeat(n) } label: {
+                    Label(repeatLabel(n), systemImage: n == repeatCount ? "checkmark" : "repeat")
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "repeat").font(.system(size: 8, weight: .bold))
+                Text("\(repeatCount)×").font(.caption2.weight(.semibold)).monospacedDigit()
+            }
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Theme.accent.opacity(0.16), in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.3), lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("studio-repeat-menu-\(id)")
+    }
+
+    @ViewBuilder
+    private func badge(_ text: String, tint: Color) -> some View {
+        Text(text).font(.caption2.weight(.semibold)).foregroundStyle(tint)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(tint.opacity(0.15), in: Capsule())
+    }
+}
+
+/// The default cover art for a studio PERFORMANCE ITEM (which has no album): the PocketDJ app icon,
+/// loaded from the in-app `PocketDJIcon` imageset (the AppIcon sets aren't `Image()`-loadable).
+/// Used wherever a studio item needs artwork — collection rows + Now Playing.
+struct PocketDJArtwork: View {
+    var corner: CGFloat = 6
+    var body: some View {
+        Image("PocketDJIcon")
+            .resizable()
+            .aspectRatio(contentMode: .fill)
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1))
+            .accessibilityHidden(true)
     }
 }

@@ -45,10 +45,14 @@ enum StudioSource: Hashable, Sendable {
     /// the samples folder, so the external file never needs to exist again (like `.take`, and no
     /// grid until auto-detect/tap-tempo sets one).
     case file(originalName: String)
+    /// Captured from an EXTERNAL audio input (a USB-C / line / interface, e.g. a TX-6 mixer) rather
+    /// than the built-in mic — `inputName` is the port name for the "from <name>" label. Same
+    /// capture path as `.mic`; only the routed input + provenance differ.
+    case lineIn(inputName: String?)
 }
 
 extension StudioSource: Codable {
-    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId, originalName }
+    private enum CodingKeys: String, CodingKey { case type, songId, startMs, endMs, takeId, originalName, inputName }
 
     /// Lenient: an unknown/missing `type` (a future source kind read by this build) degrades to
     /// `.mic` — generic "recorded audio" provenance. The sample's FILE is what matters and it
@@ -64,6 +68,8 @@ extension StudioSource: Codable {
             self = .take(takeId: (try? c?.decode(String.self, forKey: .takeId)) ?? "")
         case "file":
             self = .file(originalName: (try? c?.decode(String.self, forKey: .originalName)) ?? "")
+        case "lineIn":
+            self = .lineIn(inputName: try? c?.decode(String.self, forKey: .inputName))
         default:
             self = .mic
         }
@@ -85,6 +91,9 @@ extension StudioSource: Codable {
         case .file(let originalName):
             try c.encode("file", forKey: .type)
             try c.encode(originalName, forKey: .originalName)
+        case .lineIn(let inputName):
+            try c.encode("lineIn", forKey: .type)
+            try c.encodeIfPresent(inputName, forKey: .inputName)
         }
     }
 }
@@ -496,16 +505,22 @@ struct StudioNoteEvent: Codable, Hashable, Sendable {
     }
 }
 
-/// A recorded instrument performance: the captured audio (`take-<id>.m4a`, ALWAYS app-managed —
-/// takes have no user folder, spec §3) plus the raw note-event log the score is quantized from
-/// and the replay/MIDI export read. No `wasUserFolder` on purpose: there is exactly one root a
-/// take can resolve against.
+/// A recorded instrument performance ("instrumental"): the captured audio (`take-<id>.m4a`) plus
+/// the raw note-event log the score is quantized from and the replay/MIDI/audio export read. The
+/// file is recorded into app storage and relocated into the user's instrumentals folder on clean
+/// finish (`wasUserFolder` stamps which root holds it — same discipline as `StudioSample`).
 struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     var id: String                    // "tk_…"
     var name: String
     var instrument: InstrumentKey = .piano
-    /// `take-<id>.m4a` under the app-managed takes root.
+    /// `take-<id>.m4a`. Recorded into app storage, then RELOCATED into the user's instrumentals
+    /// folder on clean finish when one is configured (`StudioStore.addTakeRelocating`).
     var fileName: String
+    /// Where the file was WRITTEN: true ⇒ the user-picked instrumentals folder (resolved via its
+    /// security-scoped bookmark), false ⇒ the app-managed root. Mirrors `StudioSample.wasUserFolder`
+    /// — an instrumental forever resolves against the root it was actually written to, never the
+    /// current setting. Additive (old takes decode false = app storage).
+    var wasUserFolder: Bool = false
     /// The click/quantize tempo the take was recorded at (ScoreQuantizer's grid).
     var bpm: Double = 120
     /// Raw UNQUANTIZED events (ms from beat 1 = end of count-in) — quantization happens at
@@ -522,15 +537,26 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     /// the score, else the raw performance.
     var scoreEvents: [StudioNoteEvent] { editedEvents ?? events }
 
+    /// Rendered-audio cache: the take's `scoreEvents` synthesized through its instrument into a real
+    /// `.m4a` (`take-<id>-r0.m4a`), so a live-saved take — whose raw `fileName` is a SILENT
+    /// placeholder — is audible in collection playback + Mix. Populated lazily by
+    /// `StudioTakeRenderer.ensureRendered`; CLEARED on a score edit (stale). Its own `wasUserFolder`
+    /// because the instrumentals folder setting may have changed since the raw capture.
+    var renderedFileName: String?
+    var renderedWasUserFolder: Bool?
+
     enum CodingKeys: String, CodingKey {
-        case id, name, instrument, fileName, bpm, events, durationMs, createdAt, editedEvents
+        case id, name, instrument, fileName, wasUserFolder, bpm, events, durationMs, createdAt, editedEvents
+        case renderedFileName, renderedWasUserFolder
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
-         bpm: Double = 120, events: [StudioNoteEvent] = [], durationMs: Int = 0,
-         createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil) {
+         wasUserFolder: Bool = false, bpm: Double = 120, events: [StudioNoteEvent] = [],
+         durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil,
+         renderedFileName: String? = nil, renderedWasUserFolder: Bool? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
-        self.bpm = bpm; self.events = events; self.durationMs = durationMs
-        self.createdAt = createdAt; self.editedEvents = editedEvents
+        self.wasUserFolder = wasUserFolder; self.bpm = bpm; self.events = events
+        self.durationMs = durationMs; self.createdAt = createdAt; self.editedEvents = editedEvents
+        self.renderedFileName = renderedFileName; self.renderedWasUserFolder = renderedWasUserFolder
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -538,6 +564,7 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         instrument = (try? c.decode(InstrumentKey.self, forKey: .instrument)) ?? .piano
         fileName = (try? c.decode(String.self, forKey: .fileName)) ?? ""
+        wasUserFolder = (try? c.decode(Bool.self, forKey: .wasUserFolder)) ?? false
         bpm = (try? c.decode(Double.self, forKey: .bpm)) ?? 120
         events = ((try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .events)) ?? [])
             .compactMap(\.value)
@@ -545,6 +572,8 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         editedEvents = (try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .editedEvents))?
             .compactMap(\.value)
+        renderedFileName = try? c.decode(String.self, forKey: .renderedFileName)
+        renderedWasUserFolder = try? c.decode(Bool.self, forKey: .renderedWasUserFolder)
     }
 }
 
@@ -624,15 +653,21 @@ struct StudioDocument: Codable, Sendable {
     var takes: [StudioTake] = []
     var cues: [StudioCue] = []
     var slices: [StudioSlice] = []
+    /// On-device DETECTED musical key (Camelot code) per performance item, keyed by studio id
+    /// (`smp_`/`lp_`/`ptn_`/`tk_`). Populated by `StudioAnalyzer` when an item is added to a
+    /// collection; consumed for harmonic mix-glide. A parallel map (not a per-model field) so it
+    /// rides one additive key across all four families. Absent ⇒ not analyzed yet.
+    var keys: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, samples, loops, patterns, takes, cues, slices
+        case schemaVersion, samples, loops, patterns, takes, cues, slices, keys
     }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
-         cues: [StudioCue] = [], slices: [StudioSlice] = []) {
+         cues: [StudioCue] = [], slices: [StudioSlice] = [], keys: [String: String] = [:]) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
         self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
+        self.keys = keys
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -649,6 +684,7 @@ struct StudioDocument: Codable, Sendable {
             .compactMap(\.value)
         slices = ((try? c.decode([StudioLossyBox<StudioSlice>].self, forKey: .slices)) ?? [])
             .compactMap(\.value)
+        keys = (try? c.decode([String: String].self, forKey: .keys)) ?? [:]
     }
 }
 

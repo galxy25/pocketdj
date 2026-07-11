@@ -24,26 +24,44 @@ struct MixResolver {
     let app: AppModel
     let collections: CollectionsStore
     let burns: BurnStore
+    /// Studio store — resolves PERFORMANCE ITEMS (`smp_`/`lp_`/`ptn_`/`tk_`), which have no
+    /// BurnStore file, into loadable decks with their on-device beat grid + detected key.
+    let studio: StudioStore
 
     /// Ordered LOADABLE items for a deck source. Pocket → DAG-resolved song ids; setlist →
-    /// frozen tracks (snapshot metadata). Keeps ONLY ids whose burned file exists on disk
-    /// (drops notes/text/un-burned). Deduped by songId, first-seen wins.
+    /// frozen tracks (snapshot metadata). Keeps ONLY ids whose burned file (or studio file) exists
+    /// on disk (drops notes/text/un-burned). Deduped by songId, first-seen wins.
     func loadables(for source: MixSource) -> [MixLoadable] {
         switch source {
-        case .pocket(let id):  return loadables(songIds: collections.songIds(forPocket: id))
+        case .pocket(let id):  return loadables(songIds: collections.playableIds(forPocket: id))
         case .setlist(let id): return setlistLoadables(id)
         }
     }
 
-    /// A pocket (or any ordered id list): resolve each id against the catalog, keep loadables.
+    /// A pocket (or any ordered id list): resolve each id against the catalog (or the studio store
+    /// for a performance item), keep loadables.
     private func loadables(songIds: [String]) -> [MixLoadable] {
         var seen = Set<String>()
         return songIds.compactMap { id -> MixLoadable? in
-            guard seen.insert(id).inserted, let song = app.songsById[id], isLoadable(id) else { return nil }
+            guard seen.insert(id).inserted else { return nil }
+            if StudioFactory.isStudioId(id) { return studioLoadable(id) }
+            guard let song = app.songsById[id], isLoadable(id) else { return nil }
             return MixLoadable(songId: id, title: song.name, artist: song.artist,
                                bpm: song.bpm, camelot: song.camelot, key: song.key, albumId: song.albumId,
                                lengthMs: song.length)
         }
+    }
+
+    /// A performance item → a MixLoadable carrying its bpm (constant beat grid) + detected key
+    /// (Camelot, for glide). Loadable iff its local audio resolves; artist is the user's PocketDJ
+    /// name (`collections.studioArtist`).
+    private func studioLoadable(_ id: String) -> MixLoadable? {
+        guard let h = studio.localURLForPlayback(id: id) else { return nil }
+        h.release?()   // existence check only — the deck re-acquires a held handle when it loads
+        guard let info = studio.displayInfo(forStudioId: id) else { return nil }
+        return MixLoadable(songId: id, title: info.title, artist: collections.studioArtist,
+                           bpm: info.bpm, camelot: studio.camelot(forStudioId: id),
+                           key: nil, albumId: nil, lengthMs: info.lengthMs)
     }
 
     /// A setlist: iterate FROZEN tracks in order (snapshots carry artist/name/bpm/camelot),
@@ -53,8 +71,14 @@ struct MixResolver {
         guard let setlist = collections.setlist(setlistId) else { return [] }
         var seen = Set<String>()
         return setlist.tracks.compactMap { t -> MixLoadable? in
-            guard t.isText != true, !t.songId.isEmpty, seen.insert(t.songId).inserted,
-                  isLoadable(t.songId) else { return nil }
+            guard t.isText != true, !t.songId.isEmpty, seen.insert(t.songId).inserted else { return nil }
+            if StudioFactory.isStudioId(t.songId) {
+                // Frozen studio track: prefer its live studio resolution; fall back to the snapshot
+                // camelot/bpm if the item was deleted but the snapshot survives.
+                if let l = studioLoadable(t.songId) { return l }
+                return nil
+            }
+            guard isLoadable(t.songId) else { return nil }
             let song = app.songsById[t.songId]
             return MixLoadable(songId: t.songId,
                                title: t.name.isEmpty ? (song?.name ?? t.songId) : t.name,

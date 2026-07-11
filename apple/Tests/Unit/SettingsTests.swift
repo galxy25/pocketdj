@@ -39,6 +39,18 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(s.ripFromCloud)
     }
 
+    /// The PocketDJ (performer) name defaults to "", round-trips, and resets to "".
+    func testPocketDJNamePersistsAndReloads() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.pocketDJName, "")
+        s.pocketDJName = "Levi Schoen"
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).pocketDJName, "Levi Schoen")
+        s.resetEverything()
+        XCTAssertEqual(s.pocketDJName, "")
+    }
+
     /// `lastSection` (the iOS "reopen where you left off" seam): defaults to nil
     /// (= the home menu), round-trips through persist/reload — including "" for an
     /// explicit home — and, being Optional in SettingsData, survives legacy blobs.

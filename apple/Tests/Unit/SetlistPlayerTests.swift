@@ -234,6 +234,57 @@ final class SetlistPlayerTests: XCTestCase {
         cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_2.mp3", "sng_2.txt"])
     }
 
+    // MARK: Repeat count — a track loops N times before advancing
+
+    /// A track with `repeatCount` loops IN PLACE on each natural end until its plays are used up,
+    /// then advances. The index logic is synchronous in `handleEnded`/`advanceToNext`, so the
+    /// per-end index is asserted deterministically (no timing).
+    func testRepeatCountLoopsTrackBeforeAdvancing() async {
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "rp_1")
+        await burn(rips, burns, songId: "rp_2")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "rp_1", title: "One", artist: "A", repeatCount: 3),   // plays 3×
+            .init(id: "rp_2", title: "Two", artist: "A"),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "rp_1" }
+        XCTAssertEqual(seq.index, 0)
+
+        player.onTrackEnded?(); XCTAssertEqual(seq.index, 0, "1st repeat — stays on the track")
+        player.onTrackEnded?(); XCTAssertEqual(seq.index, 0, "2nd repeat — stays on the track")
+        player.onTrackEnded?()                                             // 3rd play done → advance
+        await waitUntil("advanced after all 3 plays") { seq.index == 1 && rips.nowPlaying?.songId == "rp_2" }
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt"])
+    }
+
+    /// An explicit SKIP ignores the repeat count — a repeating track moves on immediately rather
+    /// than looping (only a NATURAL end repeats).
+    func testSkipNextIgnoresRepeatCount() async {
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "rp_1")
+        await burn(rips, burns, songId: "rp_2")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "rp_1", title: "One", artist: "A", repeatCount: 5),
+            .init(id: "rp_2", title: "Two", artist: "A"),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "rp_1" }
+        seq.skipNext()
+        XCTAssertEqual(seq.index, 1, "skip advances immediately, never repeats")
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt"])
+    }
+
     // MARK: SKIP an unplayable track
 
     /// An unplayable track (no burnt file, not cached, no rip server → the coordinator

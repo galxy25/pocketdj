@@ -43,6 +43,8 @@ final class StudioStore {
     private(set) var takes: [StudioTake] = []
     private(set) var cues: [StudioCue] = []
     private(set) var slices: [StudioSlice] = []
+    /// On-device detected key (Camelot) per performance item — see `StudioDocument.keys`.
+    private(set) var keys: [String: String] = [:]
 
     /// Source of the per-family folder bookmarks. Pushed in from the view layer / app (like
     /// `MixRecorder.settings`) so this never has to be wired at app-init time. Weak ⇒ no retain
@@ -71,6 +73,7 @@ final class StudioStore {
             takes = doc.takes
             cues = doc.cues
             slices = doc.slices
+            keys = doc.keys
         }
     }
 
@@ -94,7 +97,7 @@ final class StudioStore {
 
     private var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
 
-    /// The user-picked folder bookmark for a family (nil ⇒ app-managed). Takes/instruments are
+    /// The user-picked folder bookmark for a family (nil ⇒ app-managed). Instrument packs are
     /// ALWAYS app-managed (spec §3), so they short-circuit to nil — which also keeps
     /// `StudioFolders.resolveRoot`'s "no bookmark for app-managed families" assert honest.
     func bookmark(for family: StudioFamily) -> Data? {
@@ -102,7 +105,8 @@ final class StudioStore {
         case .samples: return settings?.samplesFolderBookmark
         case .loops: return settings?.loopsFolderBookmark
         case .sequences: return settings?.sequencesFolderBookmark
-        case .takes, .instruments: return nil
+        case .takes: return settings?.takesFolderBookmark
+        case .instruments: return nil
         }
     }
 
@@ -352,7 +356,7 @@ final class StudioStore {
 
     func take(_ id: String) -> StudioTake? { takes.first { $0.id == id } }
 
-    /// File a finished take (audio already under the app-managed takes root). Upserts by id.
+    /// File a finished take (audio already under the take's stamped root). Upserts by id.
     @discardableResult
     func addTake(_ take: StudioTake) -> StudioTake {
         if let i = takes.firstIndex(where: { $0.id == take.id }) {
@@ -362,6 +366,34 @@ final class StudioStore {
         }
         saveNow()
         return take
+    }
+
+    /// File a freshly-finished take, RELOCATING its audio into the user's instrumentals folder when
+    /// one is configured (Settings ▸ Storage). The recorder/live-save writes into app storage first
+    /// (durable even across a crash mid-take — no user folder ever holds a security scope for the
+    /// whole recording), and this MOVES it on clean finish. `wasUserFolder` is stamped to match
+    /// where the file actually ends up: a failed/absent move keeps app storage — honest, never a
+    /// record that points at a file that isn't there. The crash auto-file path deliberately does
+    /// NOT relocate (it stays app-managed — the simplest durable resting place).
+    @discardableResult
+    func addTakeRelocating(_ take: StudioTake) -> StudioTake {
+        var t = take
+        if let dest = StudioFolders.folder(.takes, bookmark: bookmark(for: .takes),
+                                           requireWritable: true), dest.isUserFolder {
+            defer { dest.release?() }
+            // Source is app storage at this point (recorder + live-save both write the app root).
+            if let src = StudioFolders.fileURL(family: .takes, fileName: take.fileName,
+                                               wasUserFolder: false, bookmark: nil) {
+                let target = dest.url.appendingPathComponent(take.fileName)
+                do {
+                    try? FileManager.default.removeItem(at: target)
+                    try FileManager.default.moveItem(at: src.url, to: target)
+                    t.wasUserFolder = true
+                } catch { /* move failed → keep app storage (t.wasUserFolder stays false) */ }
+                src.release?()
+            }
+        }
+        return addTake(t)
     }
 
     func renameTake(_ id: String, to name: String) {
@@ -380,6 +412,7 @@ final class StudioStore {
         if let maxOff = events.map(\.offMs).max(), maxOff > takes[i].durationMs {
             takes[i].durationMs = maxOff
         }
+        invalidateTakeRender(&takes[i])   // the score changed ⇒ the rendered audio is stale
         saveNow()
     }
 
@@ -387,20 +420,36 @@ final class StudioStore {
     func revertTakeEdits(_ id: String) {
         guard let i = takes.firstIndex(where: { $0.id == id }), takes[i].editedEvents != nil else { return }
         takes[i].editedEvents = nil
+        invalidateTakeRender(&takes[i])   // score reverted ⇒ re-render from the raw performance
         saveNow()
     }
 
-    /// Delete a take (file + record). Takes are always app-managed — the root is always
-    /// reachable, so there is no keep-record branch. Samples created via "Use as sample" are
-    /// untouched (they COPIED the audio; their `.take` source is provenance only).
+    /// Delete + forget a take's rendered-audio cache (its events changed, so the synth is stale).
+    private func invalidateTakeRender(_ take: inout StudioTake) {
+        if let rf = take.renderedFileName,
+           let got = StudioFolders.fileURL(family: .takes, fileName: rf,
+                                           wasUserFolder: take.renderedWasUserFolder ?? false,
+                                           bookmark: bookmark(for: .takes)) {
+            try? FileManager.default.removeItem(at: got.url)
+            got.release?()
+        }
+        take.renderedFileName = nil
+        take.renderedWasUserFolder = nil
+    }
+
+    /// Delete a take (file + record). Resolves the file against the root it was WRITTEN to
+    /// (`wasUserFolder` + the instrumentals-folder bookmark). Samples made from an instrumental are
+    /// untouched (they RENDERED their own audio; the `.take` source is provenance only).
     @discardableResult
     func deleteTake(_ id: String) -> Bool {
         guard let i = takes.firstIndex(where: { $0.id == id }) else { return false }
         if let got = StudioFolders.fileURL(family: .takes, fileName: takes[i].fileName,
-                                           wasUserFolder: false, bookmark: nil) {
+                                           wasUserFolder: takes[i].wasUserFolder,
+                                           bookmark: bookmark(for: .takes)) {
             try? FileManager.default.removeItem(at: got.url)
             got.release?()
         }
+        invalidateTakeRender(&takes[i])   // also drop the rendered-audio cache file
         takes.remove(at: i)
         saveNow()
         return true
@@ -590,6 +639,59 @@ final class StudioStore {
             else { return nil }
             return (got.url, got.release, p.name, StudioPattern.barMs(bpm: p.bpm))
         }
+        if id.hasPrefix("tk_") {
+            guard let t = take(id) else { return nil }
+            let bm = bookmark(for: .takes)
+            // Prefer the rendered-audio cache (real synth of the events — the only audible source
+            // for a live-saved take, whose raw file is a silent placeholder). Fall back to the raw
+            // file (a RECORDED take's real capture; a live placeholder resolves but is silent).
+            if let rf = t.renderedFileName,
+               let got = StudioFolders.fileURL(family: .takes, fileName: rf,
+                                               wasUserFolder: t.renderedWasUserFolder ?? false, bookmark: bm) {
+                return (got.url, got.release, t.name, t.durationMs)
+            }
+            guard let got = StudioFolders.fileURL(family: .takes, fileName: t.fileName,
+                                                  wasUserFolder: t.wasUserFolder, bookmark: bm)
+            else { return nil }
+            return (got.url, got.release, t.name, t.durationMs)
+        }
+        return nil
+    }
+
+    /// File an instrumental's rendered-audio cache (its `scoreEvents` synthesized to a real `.m4a`).
+    /// The render writer resolves the instrumentals folder + writes the file, then records it here.
+    func setTakeRendered(_ id: String, fileName: String, wasUserFolder: Bool) {
+        guard let i = takes.firstIndex(where: { $0.id == id }) else { return }
+        takes[i].renderedFileName = fileName
+        takes[i].renderedWasUserFolder = wasUserFolder
+        saveNow()
+    }
+
+    // MARK: - Analysis (on-device key) + Mix info
+
+    /// The on-device detected key (Camelot) for a performance item, or nil until analyzed.
+    func camelot(forStudioId id: String) -> String? { keys[id] }
+
+    /// Record (or clear, when nil/empty) a performance item's detected key (Camelot).
+    func setCamelot(_ camelot: String?, forStudioId id: String) {
+        if let c = camelot, !c.isEmpty { keys[id] = c } else { keys.removeValue(forKey: id) }
+        saveNow()
+    }
+
+    /// Beat grid + key for loading a performance item into a Mix deck: the item's own bpm (a
+    /// constant grid; a sample's MEASURED `StudioGrid` when it has one) plus the detected Camelot.
+    /// nil for a non-studio id or an unresolvable item. The grid is derived from the item's KNOWN
+    /// bpm (more accurate than re-detecting), so Mix pulse/beat-sync work with no analysis sidecar.
+    func mixInfo(forStudioId id: String)
+        -> (bpm: Double?, firstDownbeatMs: Int, beatsMs: [Int]?, camelot: String?)? {
+        let cam = keys[id]
+        if id.hasPrefix("smp_"), let s = sample(id) {
+            let beats = (s.grid?.beatsMs.isEmpty == false) ? s.grid?.beatsMs : nil
+            return (s.grid?.bpm, s.grid?.firstDownbeatMs ?? 0, beats, cam)
+        }
+        if id.hasPrefix("lp_"), let l = loop(id) { return (l.bpm, 0, nil, cam) }
+        if id.hasPrefix("ptn_"), let p = pattern(id) { return (p.bpm, 0, nil, cam) }
+        if id.hasPrefix("tk_"), let t = take(id) { return (t.bpm, 0, nil, cam) }
         return nil
     }
 
@@ -605,6 +707,9 @@ final class StudioStore {
         }
         if id.hasPrefix("ptn_"), let p = pattern(id) {
             return (p.name, StudioPattern.barMs(bpm: p.bpm), p.bpm, "Sequence")
+        }
+        if id.hasPrefix("tk_"), let t = take(id) {
+            return (t.name, t.durationMs, t.bpm, "Instrumental")
         }
         return nil
     }
@@ -664,8 +769,17 @@ final class StudioStore {
             patterns[i].bounceDirty = true
             changed = true
         }
+        // A take's rendered-audio cache vanished (raw events intact) → clear the cache fields;
+        // the instrumental re-renders on demand. Mirrors the sample render-cache reconcile above.
+        for i in takes.indices {
+            guard let rf = takes[i].renderedFileName,
+                  provablyGone(.takes, rf, takes[i].renderedWasUserFolder ?? false) else { continue }
+            takes[i].renderedFileName = nil
+            takes[i].renderedWasUserFolder = nil
+            changed = true
+        }
         takes.removeAll { t in
-            let gone = provablyGone(.takes, t.fileName, false)
+            let gone = provablyGone(.takes, t.fileName, t.wasUserFolder)
             if gone { changed = true }
             return gone
         }
@@ -743,7 +857,7 @@ final class StudioStore {
         case .samples: samples.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
         case .loops: loops.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
         case .sequences: patterns.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
-        case .takes: takes.removeAll { !keepRecord($0.fileName, false) }
+        case .takes: takes.removeAll { !keepRecord($0.fileName, $0.wasUserFolder) }
         case .instruments: break   // records belong to InstrumentPacks; only files were swept
         }
         saveNow()
@@ -848,7 +962,7 @@ final class StudioStore {
 
     private func snapshotDocument() -> StudioDocument {
         StudioDocument(schemaVersion: studioSchemaVersion, samples: samples, loops: loops,
-                       patterns: patterns, takes: takes, cues: cues, slices: slices)
+                       patterns: patterns, takes: takes, cues: cues, slices: slices, keys: keys)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.

@@ -306,6 +306,15 @@ final class InstrumentPackStore {
         return got.url
     }
 
+    /// The local SoundFont URL for an INSTRUMENT (its covering pack's downloaded bank), or nil
+    /// when no pack covers the instrument or its bank isn't downloaded. The one resolver the
+    /// instrumental render (`StudioRender.renderTake`) uses for export / "Use as sample" /
+    /// "Sample from instrumental"; a nil is the "download the pack first" prompt.
+    func localBankURL(forInstrument instrument: InstrumentKey) -> URL? {
+        guard let pack = packs.first(where: { $0.instrument == instrument }) else { return nil }
+        return localBankURL(pack)
+    }
+
     /// Re-scan the instruments root and rebuild the downloaded set (init; and after
     /// `StudioStore.deleteAll(.instruments)` swept the same files out from under us). Only
     /// exact-shape names count (the STRICT `StudioFolders.fileId` parser).

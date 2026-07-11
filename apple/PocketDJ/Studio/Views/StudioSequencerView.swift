@@ -50,6 +50,8 @@ private struct SequencerListView: View {
     @State private var renamingId: String?
     @State private var nameDraft = ""
     @State private var deletingId: String?
+    /// The pattern whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
+    @State private var addRef: StudioAddRef?
 
     private var patternsNewestFirst: [StudioPattern] {
         studio.patterns.sorted { $0.createdAt > $1.createdAt }
@@ -85,6 +87,7 @@ private struct SequencerListView: View {
             }
         }
         .background(Theme.bg)
+        .studioAddToCollection($addRef)
         .alert("Rename pattern", isPresented: Binding(get: { renamingId != nil },
                                                       set: { if !$0 { renamingId = nil } })) {
             TextField("Name", text: $nameDraft).accessibilityIdentifier("seq-rename-field")
@@ -170,6 +173,13 @@ private struct SequencerListView: View {
         .contextMenu {   // right-click (macOS) / long-press (iOS) parity for the swipe actions
             Button { beginRename(p) } label: { Label("Rename…", systemImage: "pencil") }
             Button { duplicate(p) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+            Button {
+                addRef = StudioAddRef(id: p.id, title: p.name)
+                let pid = p.id
+                Task { await StudioAnalyzer.prepare(forStudioId: pid, studio: studio, packs: nil) }
+            } label: {
+                Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
+            }
             Button(role: .destructive) { deletingId = p.id } label: { Label("Delete pattern", systemImage: "trash") }
         }
     }

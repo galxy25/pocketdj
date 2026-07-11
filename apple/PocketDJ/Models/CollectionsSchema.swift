@@ -89,6 +89,11 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var childPocketIds: [String] = []
     var notes: [PocketNote] = []         // v2: ordered free-text items (poetry/cues)
     var folderId: String?                // v4: optional ⇒ back-compat (nil = top level)
+    /// Per-song loop count (a performance item's repeat count), keyed by songId. Pockets store
+    /// members as a flat `[String]`, so the count rides a parallel sidecar map (the `notes`
+    /// precedent) rather than a per-item object. Absent/≤1 ⇒ play once. Membership is set-like
+    /// (`addSong` dedupes), so keying by songId is unambiguous.
+    var songRepeats: [String: Int] = [:]
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
@@ -97,14 +102,16 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var memberCount: Int { songIds.count + albumIds.count + childPocketIds.count }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, createdAt, updatedAt
+        case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats, createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
-         notes: [PocketNote] = [], folderId: String? = nil, createdAt: Double = 0, updatedAt: Double = 0) {
+         notes: [PocketNote] = [], folderId: String? = nil, songRepeats: [String: Int] = [:],
+         createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
-        self.notes = notes; self.folderId = folderId; self.createdAt = createdAt; self.updatedAt = updatedAt
+        self.notes = notes; self.folderId = folderId; self.songRepeats = songRepeats
+        self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -117,8 +124,32 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         childPocketIds = (try? c.decode([String].self, forKey: .childPocketIds)) ?? []
         notes = (try? c.decode([PocketNote].self, forKey: .notes)) ?? []
         folderId = try? c.decode(String.self, forKey: .folderId)
+        songRepeats = (try? c.decode([String: Int].self, forKey: .songRepeats)) ?? [:]
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
+}
+
+// MARK: - Repeat-count semantics (shared)
+
+/// The one place the repeat-count convention lives, so every consumer (add UI, in-collection
+/// editor, realize, playback, totals) agrees. A performance item's `repeatCount` is the TOTAL
+/// number of plays before the setlist advances: nil/≤1 ⇒ once; clamped to a sane ceiling so a
+/// fat-fingered value can't wedge playback.
+enum CollectionMembership {
+    static let maxRepeat = 99
+
+    /// Normalize a stored (optional, possibly out-of-range) repeat to a play count ≥ 1.
+    static func normalizedRepeat(_ raw: Int?) -> Int {
+        guard let raw else { return 1 }
+        return min(maxRepeat, max(1, raw))
+    }
+
+    /// The value to PERSIST for a chosen play count: nil for a normal single play (keeps the
+    /// serialized node/track free of the key), else the clamped count.
+    static func storedRepeat(_ count: Int) -> Int? {
+        let n = min(maxRepeat, max(1, count))
+        return n <= 1 ? nil : n
     }
 }
 
@@ -166,11 +197,16 @@ struct PlaylistNode: Codable, Identifiable, Hashable, Sendable {
     var children: [PlaylistNode]?
     // shared
     var note: String?            // performer cue
+    /// How many times a track PLAYS before the setlist advances (a performance item's loop
+    /// count — spec: repeat count). nil/absent ⇒ once. Additive + lenient: older apps ignore
+    /// the key, and a node without it decodes to nil = normal single play. Clamp/read via
+    /// `CollectionMembership.normalizedRepeat`.
+    var repeatCount: Int?
 
     var id: String { nodeId }
 
     enum CodingKeys: String, CodingKey {
-        case nodeId, kind, songId, albumId, pocketId, text, name, targetMs, children, note
+        case nodeId, kind, songId, albumId, pocketId, text, name, targetMs, children, note, repeatCount
     }
 
     /// Memberwise init, spelled out because the hand-written `init(from:)` below would
@@ -178,11 +214,12 @@ struct PlaylistNode: Codable, Identifiable, Hashable, Sendable {
     /// existing call site (factories, stores, tests) already relies on.
     init(nodeId: String, kind: Kind, songId: String? = nil, albumId: String? = nil,
          pocketId: String? = nil, text: String? = nil, name: String? = nil,
-         targetMs: Int? = nil, children: [PlaylistNode]? = nil, note: String? = nil) {
+         targetMs: Int? = nil, children: [PlaylistNode]? = nil, note: String? = nil,
+         repeatCount: Int? = nil) {
         self.nodeId = nodeId; self.kind = kind
         self.songId = songId; self.albumId = albumId; self.pocketId = pocketId; self.text = text
         self.name = name; self.targetMs = targetMs; self.children = children
-        self.note = note
+        self.note = note; self.repeatCount = repeatCount
     }
 
     /// v5 LOSSY decode. Field-for-field identical to the synthesized decoder for the
@@ -206,6 +243,7 @@ struct PlaylistNode: Codable, Identifiable, Hashable, Sendable {
         targetMs = try c.decodeIfPresent(Int.self, forKey: .targetMs)
         children = try c.decodeIfPresent(LossyDecodableArray<PlaylistNode>.self, forKey: .children)?.elements
         note = try c.decodeIfPresent(String.self, forKey: .note)
+        repeatCount = try c.decodeIfPresent(Int.self, forKey: .repeatCount)
     }
 }
 
@@ -311,29 +349,37 @@ struct SetlistTrack: Codable, Hashable, Sendable, Identifiable {
     var isText: Bool?        // true for a free-text cue with no backing item / audio
     var pocketId: String?    // set when source == .pocket
     var mixSuggestions: [MixSuggestion]?   // DEFERRED — per-track mix suggestions
+    /// Frozen loop count (a performance item's repeat count, snapshotted from the template
+    /// node / pocket at ▶ Play). nil/absent ⇒ once. Read via `CollectionMembership.normalizedRepeat`.
+    var repeatCount: Int?
 
     // Stable per-row id for SwiftUI (songId may repeat for cues / blanks).
     var id: String { "\(songId)#\(name)" }
 
-    /// Duration a row contributes to totals — mirrors the engine's DEFAULT_TRACK_MS
-    /// fallback so per-row display never disagrees with Setlist.totalMs.
-    var shownMs: Int {
+    /// The length of ONE play (pre-repeat) — mirrors the engine's DEFAULT_TRACK_MS fallback.
+    /// This is what the player arms as the per-track position boundary; the track then loops
+    /// `repeatCount` times, ending (and repeating) at each single play's end.
+    var perPlayMs: Int {
         if isText == true { return 0 }
-        if let l = lengthMs, l > 0 { return l }
-        return RealizeEngine.defaultTrackMs
+        return (lengthMs.map { $0 > 0 ? $0 : RealizeEngine.defaultTrackMs }) ?? RealizeEngine.defaultTrackMs
     }
 
+    /// Duration a row contributes to TOTALS — one play × the repeat count, so a looped
+    /// performance item counts for all its plays in Setlist.totalMs / the runtime label.
+    var shownMs: Int { perPlayMs * CollectionMembership.normalizedRepeat(repeatCount) }
+
     enum CodingKeys: String, CodingKey {
-        case songId, artist, name, bpm, camelot, lengthMs, source, sequenceName, note, isText, pocketId, mixSuggestions
+        case songId, artist, name, bpm, camelot, lengthMs, source, sequenceName, note, isText, pocketId, mixSuggestions, repeatCount
     }
     init(songId: String, artist: String, name: String, bpm: Double?, camelot: String?,
          lengthMs: Int? = nil, source: TrackSource = .explicit, sequenceName: String? = nil,
          note: String? = nil, isText: Bool? = nil, pocketId: String? = nil,
-         mixSuggestions: [MixSuggestion]? = nil) {
+         mixSuggestions: [MixSuggestion]? = nil, repeatCount: Int? = nil) {
         self.songId = songId; self.artist = artist; self.name = name
         self.bpm = bpm; self.camelot = camelot; self.lengthMs = lengthMs
         self.source = source; self.sequenceName = sequenceName; self.note = note
         self.isText = isText; self.pocketId = pocketId; self.mixSuggestions = mixSuggestions
+        self.repeatCount = repeatCount
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -349,6 +395,7 @@ struct SetlistTrack: Codable, Hashable, Sendable, Identifiable {
         isText = try? c.decode(Bool.self, forKey: .isText)
         pocketId = try? c.decode(String.self, forKey: .pocketId)
         mixSuggestions = try? c.decode([MixSuggestion].self, forKey: .mixSuggestions)
+        repeatCount = try? c.decode(Int.self, forKey: .repeatCount)
     }
 }
 
