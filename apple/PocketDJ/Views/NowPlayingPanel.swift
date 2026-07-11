@@ -269,7 +269,7 @@ struct NowPlayingPanel: View {
             VStack(spacing: 8) {
                 header
                 if !compactHeight {
-                    RecordPlayerView(album: currentAlbum, bpm: currentBpm,
+                    RecordPlayerView(album: currentAlbum, studioId: currentItem?.id, bpm: currentBpm,
                                      spinning: isPlayingNow, progress: playProgress)
                         .frame(width: recordSize, height: recordSize * 0.82)
                         // The record is the door to the current track's metadata:
@@ -500,6 +500,9 @@ struct NowPlayingPanel: View {
 /// continues from there — a real platter doesn't snap back to 12 o'clock.
 struct RecordPlayerView: View {
     let album: IndexAlbum?
+    /// The now-playing song id — when it's a STUDIO performance item (no album), the PocketDJ icon
+    /// is the record's center label instead of the generic disc placeholder.
+    var studioId: String? = nil
     let bpm: Double?
     let spinning: Bool
     /// Play-position fraction 0…1 — the tonearm starts at the record's OUTER edge
@@ -578,10 +581,13 @@ struct RecordPlayerView: View {
                     .inset(by: diameter * (0.06 + CGFloat(i) * 0.055))
                     .strokeBorder(Color.black.opacity(0.22), lineWidth: 1)
             }
-            // Center label = the album art (placeholder disc icon when unknown).
+            // Center label = the album art (the PocketDJ icon for a studio item; placeholder
+            // disc icon when neither is known).
             Group {
                 if let album {
                     CoverImage(album: album, corner: diameter * 0.21)
+                } else if let studioId, StudioFactory.isStudioId(studioId) {
+                    Image("PocketDJIcon").resizable().aspectRatio(contentMode: .fill)
                 } else {
                     Circle().fill(Theme.bgOverlay)
                         .overlay(Image(systemName: "opticaldisc")

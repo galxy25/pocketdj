@@ -55,7 +55,7 @@ struct SongRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SongThumbnail(album: data.album).frame(width: 42, height: 42)
+            SongThumbnail(album: data.album, studioId: data.songId).frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -272,9 +272,14 @@ struct BPMTier: View {
 /// catalog song is gone).
 struct SongThumbnail: View {
     let album: IndexAlbum?
+    /// The row's song id — when it's a STUDIO performance item (no album), the PocketDJ icon is
+    /// its default artwork instead of the generic music-note placeholder.
+    var studioId: String? = nil
     var body: some View {
         if let album {
             CoverImage(album: album, corner: 6)
+        } else if let studioId, StudioFactory.isStudioId(studioId) {
+            PocketDJArtwork(corner: 6)
         } else {
             ZStack {
                 LinearGradient(colors: [Theme.bgOverlay, Theme.bgRaised],
@@ -750,12 +755,16 @@ private struct WaveformView: View {
 /// this where they used to show "(missing song)"; pockets where they rendered nothing.
 struct StudioCollectionRow: View {
     @Environment(CollectionsStore.self) private var collections
+    @Environment(StudioStore.self) private var studio
     let id: String
     let repeatCount: Int
     var onSetRepeat: (Int) -> Void
     var onRemove: () -> Void
 
     static let repeatPresets = [1, 2, 3, 4, 6, 8, 16]
+
+    /// The item's waveform peaks (loaded async from its local file); empty ⇒ flat placeholder.
+    @State private var peaks: [Float] = []
 
     private var info: (title: String, lengthMs: Int, bpm: Double?, camelot: String?)? {
         collections.studioLookup?(id)
@@ -766,25 +775,10 @@ struct StudioCollectionRow: View {
         if id.hasPrefix("tk_") { return "Instrumental" }
         return "Sample"
     }
-    private var kindIcon: String {
-        if id.hasPrefix("lp_") { return "repeat" }
-        if id.hasPrefix("ptn_") { return "square.grid.4x3.fill" }
-        if id.hasPrefix("tk_") { return "pianokeys" }
-        return "waveform"
-    }
 
     var body: some View {
         HStack(spacing: 10) {
-            // Phase 3 swaps this glyph for the PocketDJ icon + the item's waveform.
-            ZStack {
-                LinearGradient(colors: [Theme.bgOverlay, Theme.bgRaised],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                Image(systemName: kindIcon).font(.system(size: 16)).foregroundStyle(Theme.accent2)
-            }
-            .frame(width: 44, height: 44)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
-
+            PocketDJArtwork().frame(width: 44, height: 44)   // default artwork for a studio item
             VStack(alignment: .leading, spacing: 3) {
                 Text(info?.title ?? "Studio item").font(.callout.weight(.medium))
                     .foregroundStyle(Theme.fg).lineLimit(1)
@@ -792,6 +786,10 @@ struct StudioCollectionRow: View {
                     badge(kindLabel, tint: Theme.accent2)
                     if repeatCount > 1 { badge("↻ \(repeatCount)×", tint: Theme.accent) }
                     if let bpm = info?.bpm { Text(Fmt.bpm(bpm) + " BPM").font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim) }
+                    Spacer(minLength: 6)
+                    // The item's own waveform (its playback audio) — a compact strip.
+                    MixWaveformView(peaks: peaks, color: Theme.accent2, background: .clear)
+                        .frame(width: 96, height: 18)
                 }
             }
             Spacer(minLength: 0)
@@ -802,6 +800,7 @@ struct StudioCollectionRow: View {
         .padding(.vertical, 3)
         .contentShape(Rectangle())
         .accessibilityIdentifier("studio-collection-row-\(id)")
+        .task(id: id) { peaks = await StudioWaveform.peaks(forStudioId: id, studio: studio) }
         .contextMenu {
             Menu {
                 ForEach(StudioCollectionRow.repeatPresets, id: \.self) { n in
@@ -824,5 +823,21 @@ struct StudioCollectionRow: View {
         Text(text).font(.caption2.weight(.semibold)).foregroundStyle(tint)
             .padding(.horizontal, 6).padding(.vertical, 1)
             .background(tint.opacity(0.15), in: Capsule())
+    }
+}
+
+/// The default cover art for a studio PERFORMANCE ITEM (which has no album): the PocketDJ app icon,
+/// loaded from the in-app `PocketDJIcon` imageset (the AppIcon sets aren't `Image()`-loadable).
+/// Used wherever a studio item needs artwork — collection rows + Now Playing.
+struct PocketDJArtwork: View {
+    var corner: CGFloat = 6
+    var body: some View {
+        Image("PocketDJIcon")
+            .resizable()
+            .aspectRatio(contentMode: .fill)
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1))
+            .accessibilityHidden(true)
     }
 }
