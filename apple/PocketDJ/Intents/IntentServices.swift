@@ -138,6 +138,19 @@ final class IntentServices {
         return album.name
     }
 
+    /// ▶/🔀 an arbitrary list of song ids into the reserved Now Playing setlist — for collections
+    /// that have NO stored setlist (e.g. an Apple Music / source playlist from the catalog). A
+    /// fresh snapshot is built each call, so replaying picks up the source's current songs.
+    @discardableResult
+    func playSongIds(_ ids: [String], name: String, shuffle: Bool = false,
+                     source: PlayHistoryStore.PlaySource) async throws -> String {
+        await ensureReady()
+        guard let set = collections.playNow(songIds: ids, name: name, shuffle: shuffle, source: source),
+              !set.tracks.isEmpty else { throw PocketDJIntentError.emptyCollection(name) }
+        startNowPlaying(set)
+        return name
+    }
+
     /// Start the sequencer on the freshly-upserted Now Playing setlist — the same
     /// track→item mapping SetlistDetailView.playableItems does (text cues stripped).
     private func startNowPlaying(_ set: Setlist) {

@@ -34,12 +34,27 @@ final class CarPlayModel {
 
     // MARK: - Browse lists
 
+    /// All browsable playlists: the user's PocketDJ playlists AND the catalog's source playlists
+    /// (Apple Music / iTunes mirrors, from `app.indexPlaylists`) — source rows are id-prefixed
+    /// "src:" and carry a source badge in the subtitle.
     func playlists() -> [Row] {
-        collections.playlists.map { pl in
+        let mine = collections.playlists.map { pl -> Row in
             let ids = collections.playableIds(forPlaylist: pl.id)
             return Row(id: pl.id, title: pl.name, subtitle: songsSubtitle(resolvedCount(ids)),
                        artworkAlbumId: firstAlbumId(ids), isSong: false)
         }
+        let source = app.indexPlaylists.map { sp -> Row in
+            Row(id: "src:\(sp.id)", title: sp.name,
+                subtitle: "\(songsSubtitle(resolvedCount(sp.songIds))) · \(sp.sourceName)",
+                artworkAlbumId: firstAlbumId(sp.songIds), isSong: false)
+        }
+        return mine + source
+    }
+
+    private func sourcePlaylist(_ rowId: String) -> SourcePlaylist? {
+        guard rowId.hasPrefix("src:") else { return nil }
+        let realId = String(rowId.dropFirst(4))
+        return app.indexPlaylists.first { $0.id == realId }
     }
 
     func pockets() -> [Row] {
@@ -54,7 +69,10 @@ final class CarPlayModel {
         app.albums.map { Row(id: $0.id, title: $0.name, subtitle: $0.artist, artworkAlbumId: $0.id, isSong: false) }
     }
 
-    func songs(inPlaylist id: String) -> [Row] { songRows(collections.playableIds(forPlaylist: id)) }
+    func songs(inPlaylist id: String) -> [Row] {
+        if let sp = sourcePlaylist(id) { return songRows(sp.songIds) }
+        return songRows(collections.playableIds(forPlaylist: id))
+    }
     func songs(inPocket id: String) -> [Row] { songRows(collections.playableIds(forPocket: id)) }
     func songs(inAlbum id: String) -> [Row] {
         guard let album = app.albumsById[id] else { return [] }
@@ -80,7 +98,13 @@ final class CarPlayModel {
 
     // MARK: - Play (all through the one unified sequencer)
 
-    func playPlaylist(id: String, shuffle: Bool = false) async { try? await services.playPlaylist(id: id, shuffle: shuffle) }
+    func playPlaylist(id: String, shuffle: Bool = false) async {
+        if let sp = sourcePlaylist(id) {
+            try? await services.playSongIds(sp.songIds, name: sp.name, shuffle: shuffle, source: .playlist)
+        } else {
+            try? await services.playPlaylist(id: id, shuffle: shuffle)
+        }
+    }
     func playPocket(id: String, shuffle: Bool = false) async { try? await services.playPocket(id: id, shuffle: shuffle) }
     func playAlbum(id: String, shuffle: Bool = false) async { try? await services.playAlbum(id: id, shuffle: shuffle) }
     func playSong(id: String) async { try? await services.playSong(id: id) }

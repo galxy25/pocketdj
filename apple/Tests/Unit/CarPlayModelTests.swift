@@ -83,6 +83,24 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertEqual(subtitle, "1 song")               // count matches the rendered rows, not raw playableIds
     }
 
+    /// CarPlay Playlists must include the catalog's Apple Music / source playlists (which have no
+    /// CollectionsStore setlist), and playing one builds a fresh Now Playing setlist from its ids.
+    func testPlaylistsIncludeAppleMusicSourcePlaylistsAndPlayThem() async {
+        let (model, services, collections) = await makeModel()
+        services.app.indexPlaylists = [
+            SourcePlaylist(playlist: IndexPlaylist(id: "ip_1", name: "AM Faves", songIds: ["sng_1", "sng_2"]),
+                           sourceName: "Apple Music")
+        ]
+        let rows = model.playlists()
+        XCTAssertTrue(rows.contains { $0.id == "src:ip_1" && $0.title == "AM Faves" },
+                      "Apple Music source playlists should appear in CarPlay Playlists")
+        XCTAssertEqual(model.songs(inPlaylist: "src:ip_1").map(\.id), ["sng_1", "sng_2"])
+
+        await model.playPlaylist(id: "src:ip_1")
+        XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_1", "sng_2"])
+        XCTAssertEqual(collections.nowPlayingSetlist()?.name, "AM Faves")
+    }
+
     // MARK: Search (title/artist only)
 
     func testSearchMatchesTitleAndArtistCaseInsensitively() async {
