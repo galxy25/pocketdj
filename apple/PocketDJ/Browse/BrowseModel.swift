@@ -8,18 +8,36 @@ enum ItemKind: String, CaseIterable, Identifiable, Codable { case album, song; v
 /// A browsable row: an album, or a song (with its album name for display).
 /// `source` carries the origin source name (e.g. "My Vinyl") so the filter engine
 /// can match on it; nil when unknown (e.g. online hits built before tagging).
+/// A play-event reference threaded onto a song row in HISTORY mode. Absent (nil) for
+/// normal Browser rows. Carries what a History row renders (which set/mix it played in +
+/// when) AND makes each timeline row uniquely identifiable — a song played three times is
+/// three rows with three distinct `eventId`s, so the filter/sort engine and SwiftUI's
+/// ForEach never collide on the shared songId.
+struct PlayRef: Hashable {
+    var eventId: UUID
+    /// Epoch ms — the value the `lastPlayedAt` field sorts / date-range-filters on.
+    var playedAt: Double
+    var source: PlayHistoryStore.PlaySource
+    var contextName: String?
+    /// Number of plays this row represents (1 in timeline mode; N in group-by-song mode).
+    var count: Int = 1
+}
+
 enum BrowseItem: Identifiable, Hashable {
     case album(IndexAlbum, source: String? = nil)
     /// `genre` is the song's top-tier CATEGORY, resolved from its owning album at
     /// construction time (IndexSong has no genre field of its own). Mirrors the PWA's
     /// `SongItem.genre`, which carries the derived category — so the genre filter/sort
     /// reads it directly here just like the PWA reads `song.genre`.
-    case song(IndexSong, albumName: String, source: String? = nil, genre: String? = nil)
+    /// `play` is set only in History mode (see PlayRef).
+    case song(IndexSong, albumName: String, source: String? = nil, genre: String? = nil, play: PlayRef? = nil)
 
     var id: String {
         switch self {
         case .album(let a, _): return a.id
-        case .song(let s, _, _, _): return s.id
+        // History rows are per-EVENT: identify by the play event so repeats of one song
+        // stay distinct. Normal Browser rows (play == nil) keep the stable songId.
+        case .song(let s, _, _, _, let play): return play.map { "evt:\($0.eventId.uuidString)" } ?? s.id
         }
     }
     var kind: ItemKind {
@@ -28,8 +46,13 @@ enum BrowseItem: Identifiable, Hashable {
     var source: String? {
         switch self {
         case .album(_, let s): return s
-        case .song(_, _, let s, _): return s
+        case .song(_, _, let s, _, _): return s
         }
+    }
+    /// The play-event reference for History rows (nil for Browser rows / albums).
+    var play: PlayRef? {
+        if case .song(_, _, _, _, let p) = self { return p }
+        return nil
     }
 }
 
@@ -60,6 +83,10 @@ struct Field: Identifiable, Hashable {
     let ops: [FilterOp]
     /// Closed value set drives a multi-select instead of free text (genre/key/camelot…).
     var hasOptions: Bool
+    /// True for fields that only make sense in HISTORY mode (e.g. Last played), so the normal
+    /// Browser filter/sort sheets don't surface them. Defaulted, so existing Field(...) inits
+    /// keep compiling unchanged.
+    var historyOnly: Bool = false
 
     static func == (l: Field, r: Field) -> Bool { l.id == r.id }
     func hash(into h: inout Hasher) { h.combine(id) }
@@ -104,10 +131,19 @@ enum Fields {
               appliesTo: [.song], ops: [.eq], hasOptions: false),
         Field(id: "sentiment", label: "Sentiment", kind: .stringArray, numeric: false, sortable: false,
               appliesTo: [.song], ops: [.inList, .eq, .neq], hasOptions: true),
+        // HISTORY-only. Epoch-ms of the play. `.between` powers the date-range filter ("played
+        // between May and August 2026"); sortable gives most/least-recently ordering. The
+        // FilterSheet renders DatePickers for this field (see its `.between` branch).
+        Field(id: "lastPlayedAt", label: "Last played", kind: .number, numeric: true, sortable: true,
+              appliesTo: [.song], ops: [.between], hasOptions: false, historyOnly: true),
     ]
 
     static let byID: [String: Field] = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
-    static func forKind(_ kind: ItemKind) -> [Field] { all.filter { $0.appliesTo.contains(kind) } }
+    /// Fields for a kind. History mode includes the `historyOnly` fields (Last played); the
+    /// normal Browser sheets pass the default (excluded).
+    static func forKind(_ kind: ItemKind, includeHistory: Bool = false) -> [Field] {
+        all.filter { $0.appliesTo.contains(kind) && (includeHistory || !$0.historyOnly) }
+    }
 
     /// Value extractor — album fields return `.none` for songs and vice-versa.
     static func value(_ item: BrowseItem, _ fieldID: String) -> FieldValue {
@@ -127,7 +163,7 @@ enum Fields {
             case "trackCount": return .number(Double(a.trackList.count))
             default: return .none
             }
-        case .song(let s, _, _, let genre):
+        case .song(let s, _, _, let genre, let play):
             switch fieldID {
             case "artist": return .string(s.artist)
             case "name": return .string(s.name)
@@ -142,6 +178,8 @@ enum Fields {
             case "camelot": return s.camelot.map { .string($0) } ?? .none
             case "explicit": return .bool(s.explicit ?? false)
             case "sentiment": return .strings(s.sentimentKeywords ?? [])
+            // History: the play event's timestamp (nil for non-history rows → nulls-last).
+            case "lastPlayedAt": return play.map { .number($0.playedAt) } ?? .none
             default: return .none
             }
         }

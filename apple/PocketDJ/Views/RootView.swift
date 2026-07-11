@@ -17,6 +17,7 @@ struct RootView: View {
     @Environment(MixRecorder.self) private var mixRecorder
     @Environment(StudioStore.self) private var studio
     @Environment(StudioMicRecorder.self) private var studioMic
+    @Environment(PlayHistoryStore.self) private var playHistory
     @Environment(IntentServices.self) private var intents
     // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
     // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
@@ -36,6 +37,7 @@ struct RootView: View {
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
         case browse = "Browser"
+        case history = "History"
         case playlists = "Playlists"
         case mix = "Mix"
         // The Studio tab (samples/loops/sequencer/instruments/cues). rawValue triple-duties
@@ -47,6 +49,7 @@ struct RootView: View {
         var icon: String {
             switch self {
             case .browse:      return "list.bullet"
+            case .history:     return "clock.arrow.circlepath"
             case .playlists:   return "music.note.list"
             case .mix:         return "slider.horizontal.3"
             case .performance: return "pianokeys"
@@ -130,6 +133,8 @@ struct RootView: View {
             studio.reconcileOnLaunch()
             studio.seedFixtureIfRequested()
             studioMic.recoverOrphans()
+            // History demo seed (PDJ_SEED_HISTORY) — populate the timeline for UI tests / demos.
+            playHistory.seedDemoIfRequested()
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
@@ -276,6 +281,10 @@ struct RootView: View {
         Group {
             Button("Browser-shadow") { section = .browse; path = NavigationPath() }
                 .keyboardShortcut("b", modifiers: .command)
+            // ⌘H → History from anywhere. On macOS this INTENTIONALLY overrides the system
+            // "Hide" shortcut (same deliberate override as ⌘M over "minimize" below).
+            Button("History-shadow") { section = .history; path = NavigationPath() }
+                .keyboardShortcut("h", modifiers: .command)
             Button("Settings-shadow") { section = .settings }
                 .keyboardShortcut(",", modifiers: .command)
             // ⌘P → Performance, ⇧⌘P → Playlists (spec §0's collision table): plain ⌘P
@@ -298,6 +307,7 @@ struct RootView: View {
     @ViewBuilder private var detail: some View {
         switch section {
         case .browse:      BrowseView(path: $path)
+        case .history:     HistoryView(path: $path)
         case .playlists:   PlaylistsView(path: $path)
         case .mix:         MixView(path: $path)
         case .performance: PerformanceView()

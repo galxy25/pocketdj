@@ -8,11 +8,13 @@ struct FilterSheet: View {
     let collections: CollectionsStore
     @Environment(\.dismiss) private var dismiss
 
-    private var fields: [Field] { Fields.forKind(browse.kind) }
+    private var fields: [Field] { Fields.forKind(browse.kind, includeHistory: browse.historyMode) }
     /// The membership filter is song-mode only and only meaningful when the user has
-    /// at least one collection (mirrors BrowserView.tsx's render gate).
+    /// at least one collection (mirrors BrowserView.tsx's render gate). Excluded in History
+    /// mode (its rows are per-event, so the song-id membership filter doesn't apply cleanly).
     private var showMembership: Bool {
-        browse.kind == .song && !(collections.playlists.isEmpty && collections.pockets.isEmpty)
+        browse.kind == .song && !browse.historyMode
+            && !(collections.playlists.isEmpty && collections.pockets.isEmpty)
     }
 
     var body: some View {
@@ -113,10 +115,14 @@ private struct ClauseEditor: View {
         default:
             switch clause.op {
             case .between:
-                HStack {
-                    numberField("Min", value: $clause.min)
-                    Text("–").foregroundStyle(.secondary)
-                    numberField("Max", value: $clause.max)
+                if field.id == "lastPlayedAt" {
+                    dateRangeEditor            // "played between May and August 2026"
+                } else {
+                    HStack {
+                        numberField("Min", value: $clause.min)
+                        Text("–").foregroundStyle(.secondary)
+                        numberField("Max", value: $clause.max)
+                    }
                 }
             // any-of (.inList) and none-of (.notInList) share the same multi-select
             // (chips/checkbox) UX over a Set<String>; only the predicate differs.
@@ -158,6 +164,42 @@ private struct ClauseEditor: View {
         .keyboardType(.numbersAndPunctuation)
         #endif
         .pocketField()
+    }
+
+    // MARK: Date-range (History "Last played")
+    // Clause.min/max hold epoch-MS (Double), matching PlayEvent.playedAt; FilterEngine's numeric
+    // `.between` filters inclusively (>= min && <= max). The pickers are day-granular: "From" maps
+    // to the START of the chosen day, "To" to the END of the chosen day, so an August "To" includes
+    // all of Aug 31.
+    @ViewBuilder private var dateRangeEditor: some View {
+        DatePicker("From", selection: dateBinding($clause.min, endOfDay: false),
+                   displayedComponents: .date)
+            .accessibilityIdentifier("daterange-from")
+        DatePicker("To", selection: dateBinding($clause.max, endOfDay: true),
+                   displayedComponents: .date)
+            .accessibilityIdentifier("daterange-to")
+        if clause.min != nil || clause.max != nil {
+            Button("Clear dates", role: .destructive) { clause.min = nil; clause.max = nil }
+                .accessibilityIdentifier("daterange-clear")
+        }
+    }
+
+    /// Bridge an epoch-ms `Double?` clause bound to a `Date` DatePicker. `endOfDay` stores the
+    /// last instant of the chosen day (inclusive upper bound), derived from the Calendar (start of
+    /// the NEXT day − 1 ms) so it's correct on DST-transition days (not every day is 24 h).
+    private func dateBinding(_ ms: Binding<Double?>, endOfDay: Bool) -> Binding<Date> {
+        Binding(
+            get: { ms.wrappedValue.map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date() },
+            set: { picked in
+                let cal = Calendar.current
+                let start = cal.startOfDay(for: picked)
+                if endOfDay {
+                    let nextDay = cal.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+                    ms.wrappedValue = nextDay.timeIntervalSince1970 * 1000 - 1
+                } else {
+                    ms.wrappedValue = start.timeIntervalSince1970 * 1000
+                }
+            })
     }
 }
 

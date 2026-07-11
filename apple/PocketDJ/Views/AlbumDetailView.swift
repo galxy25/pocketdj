@@ -79,7 +79,7 @@ struct AlbumDetailView: View {
     /// (literal order, or shuffled) and open it autostarting — the same mechanism the
     /// playlist ▶/🔀 use. Re-tapping while it's on screen re-snapshots instead of stacking.
     private func play(shuffle: Bool) {
-        collections.playNow(songIds: tracks.map(\.id), name: current.name, shuffle: shuffle)
+        collections.playNow(songIds: tracks.map(\.id), name: current.name, shuffle: shuffle, source: .album)
         if !nowPlayingPushed {
             nowPlayingPushed = true
             path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
