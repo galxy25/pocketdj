@@ -75,7 +75,10 @@ struct SetlistDetailView: View {
     private func playableItems(_ setlist: Setlist) -> [SetlistPlayer.Item] {
         setlist.tracks
             .filter { $0.isText != true && !$0.songId.isEmpty }
-            .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist, lengthMs: $0.shownMs) }
+            // `perPlayMs` (NOT `shownMs`) is the per-track boundary — the player loops the row
+            // `repeatCount` times, ending at each SINGLE play's end.
+            .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist,
+                                      lengthMs: $0.perPlayMs, repeatCount: $0.repeatCount) }
     }
 
     var body: some View {

@@ -528,15 +528,26 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     /// the score, else the raw performance.
     var scoreEvents: [StudioNoteEvent] { editedEvents ?? events }
 
+    /// Rendered-audio cache: the take's `scoreEvents` synthesized through its instrument into a real
+    /// `.m4a` (`take-<id>-r0.m4a`), so a live-saved take — whose raw `fileName` is a SILENT
+    /// placeholder — is audible in collection playback + Mix. Populated lazily by
+    /// `StudioTakeRenderer.ensureRendered`; CLEARED on a score edit (stale). Its own `wasUserFolder`
+    /// because the instrumentals folder setting may have changed since the raw capture.
+    var renderedFileName: String?
+    var renderedWasUserFolder: Bool?
+
     enum CodingKeys: String, CodingKey {
         case id, name, instrument, fileName, wasUserFolder, bpm, events, durationMs, createdAt, editedEvents
+        case renderedFileName, renderedWasUserFolder
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
          wasUserFolder: Bool = false, bpm: Double = 120, events: [StudioNoteEvent] = [],
-         durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil) {
+         durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil,
+         renderedFileName: String? = nil, renderedWasUserFolder: Bool? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
         self.wasUserFolder = wasUserFolder; self.bpm = bpm; self.events = events
         self.durationMs = durationMs; self.createdAt = createdAt; self.editedEvents = editedEvents
+        self.renderedFileName = renderedFileName; self.renderedWasUserFolder = renderedWasUserFolder
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -552,6 +563,8 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         editedEvents = (try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .editedEvents))?
             .compactMap(\.value)
+        renderedFileName = try? c.decode(String.self, forKey: .renderedFileName)
+        renderedWasUserFolder = try? c.decode(Bool.self, forKey: .renderedWasUserFolder)
     }
 }
 

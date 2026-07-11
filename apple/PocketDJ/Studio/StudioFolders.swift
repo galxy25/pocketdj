@@ -209,6 +209,11 @@ enum StudioFolders {
         "sample-\(id)-r\(revision).m4a"
     }
 
+    /// The rendered-audio cache name for an instrumental (its `scoreEvents` synthesized to a real
+    /// `.m4a`): `take-<id>-r0.m4a`. Carries the same `-r<digits>` stamp `fileId` strips, so both the
+    /// raw take file and its render attribute to the same take id in usage/reconcile scans.
+    static func renderedTakeFileName(id: String) -> String { "take-\(id)-r0.m4a" }
+
     /// STRICT parser: the id embedded in a family artifact's file name, or nil when `name` is
     /// not EXACTLY this family's deterministic shape. Loose prefix matches are forbidden —
     /// user files share these folders (spec §3), so `sample-of-my-mix.m4a` in a user's samples
@@ -226,7 +231,7 @@ enum StudioFolders {
         guard let idPrefix = family.idPrefix else {
             return core.isEmpty ? nil : core          // instruments: the bank slug
         }
-        if family == .samples,
+        if (family == .samples || family == .takes),
            let r = core.range(of: "-r", options: .backwards),
            r.upperBound < core.endIndex,
            core[r.upperBound...].allSatisfy({ $0.isNumber }) {

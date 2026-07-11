@@ -63,6 +63,7 @@ enum RealizeEngine {
         var pocketId: String?
         var sequenceName: String
         var note: String?
+        var repeatCount: Int?    // a performance item's loop count (from the placed node)
     }
 
     /// Duration a song contributes to the budget + totals.
@@ -70,7 +71,10 @@ enum RealizeEngine {
         if let l = song.length, l > 0 { return l }
         return defaultTrackMs
     }
-    private static func placedItemMs(_ p: Placed) -> Int { p.song.map(songMs) ?? 0 }
+    /// One play × the repeat count — so a looped performance item budgets/totals for all its plays.
+    private static func placedItemMs(_ p: Placed) -> Int {
+        (p.song.map(songMs) ?? 0) * CollectionMembership.normalizedRepeat(p.repeatCount)
+    }
     private static func placedMs(_ placed: [Placed]) -> Int { placed.reduce(0) { $0 + placedItemMs($1) } }
 
     // MARK: Pocket resolution — flatten the DAG to its effective songs
@@ -188,7 +192,8 @@ enum RealizeEngine {
         switch node.kind {
         case .song:
             if let id = node.songId, let song = ctx.songsById[id] {
-                addPlaced(&placed, &used, Placed(song: song, source: .explicit, sequenceName: sequenceName, note: node.note))
+                addPlaced(&placed, &used, Placed(song: song, source: .explicit, sequenceName: sequenceName,
+                                                 note: node.note, repeatCount: node.repeatCount))
             }
         case .text:
             // Free-text cue: no audio, always placed (never deduped), 0 ms.
@@ -298,7 +303,8 @@ enum RealizeEngine {
             songId: s.id, artist: s.artist, name: s.name,
             bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
             source: p.source, sequenceName: p.sequenceName, note: p.note,
-            isText: nil, pocketId: p.pocketId, mixSuggestions: nil
+            isText: nil, pocketId: p.pocketId, mixSuggestions: nil,
+            repeatCount: CollectionMembership.storedRepeat(p.repeatCount ?? 1)
         )
     }
 

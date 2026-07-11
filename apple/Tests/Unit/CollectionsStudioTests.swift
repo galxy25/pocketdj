@@ -218,4 +218,26 @@ final class CollectionsStudioTests: XCTestCase {
                        "the transient-playlist path injects explicit studio ids too")
         XCTAssertEqual(set.tracks.last?.lengthMs, 2_000)
     }
+
+    // MARK: Repeat count flows into the Now Playing snapshot
+
+    func testPlayNowPlaylistCarriesRepeatCount() async {
+        let s = await wiredStore()
+        let pl = s.createPlaylist("Set")
+        s.addSong("lp_b", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences[0].nodeId),
+                  repeatCount: 3)
+        let set = s.playNow(playlistId: pl.id)
+        let track = set?.tracks.first { $0.songId == "lp_b" }
+        XCTAssertEqual(track?.repeatCount, 3)
+        XCTAssertEqual(track?.perPlayMs, 4_000, "the per-play boundary is ONE play")
+        XCTAssertEqual(track?.shownMs, 12_000, "totals count all 3 plays")
+    }
+
+    func testPlayNowPocketCarriesRepeatCount() async {
+        let s = await wiredStore()
+        let pkt = s.createPocket("Pkt")
+        s.addSong("smp_a", to: AddTarget(kind: .pocket, id: pkt.id), repeatCount: 2)
+        let set = s.playNow(pocketId: pkt.id)
+        XCTAssertEqual(set?.tracks.first { $0.songId == "smp_a" }?.repeatCount, 2)
+    }
 }

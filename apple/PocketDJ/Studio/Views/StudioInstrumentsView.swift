@@ -347,6 +347,9 @@ struct StudioInstrumentsView: View {
                                             instrument: instruments.currentInstrument ?? .piano,
                                             fileName: fileName, bpm: 120, events: live, durationMs: dur,
                                             createdAt: Date().timeIntervalSince1970 * 1000))
+        // The saved file is a SILENT placeholder — render the real audio in the background so the
+        // instrumental is audible wherever it plays (collections / Mix), not just on Replay.
+        Task { await StudioTakeRenderer.ensureRendered(takeId: takeId, studio: studio, packs: packs) }
         instruments.clearLiveEvents()
         liveEditing = false
         notice = "Saved to Takes."

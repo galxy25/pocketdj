@@ -328,6 +328,45 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNotNil(store.take("tk_user"))       // unreachable instrumentals folder ⇒ never pruned
     }
 
+    /// Instrumental playback resolves the raw take file, and PREFERS the rendered-audio cache when
+    /// one is present (the audible synth for a live-saved placeholder take).
+    func testTakePlaybackResolvesFileAndPrefersRenderCache() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let raw = try writeFile(.takes, id: "tk_p")
+        store.addTake(StudioTake(id: "tk_p", name: "Inst", fileName: raw,
+                                 events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 100)],
+                                 durationMs: 800))
+        let r1 = store.localURLForPlayback(id: "tk_p")
+        XCTAssertEqual(r1?.url.lastPathComponent, raw)
+        XCTAssertEqual(r1?.title, "Inst")
+        XCTAssertEqual(r1?.lengthMs, 800)
+        r1?.release?()
+        // A render cache present ⇒ preferred.
+        let rendered = StudioFolders.renderedTakeFileName(id: "tk_p")
+        try Data(repeating: 0, count: 8).write(to: try StudioFolders.appRoot(.takes).appendingPathComponent(rendered))
+        store.setTakeRendered("tk_p", fileName: rendered, wasUserFolder: false)
+        let r2 = store.localURLForPlayback(id: "tk_p")
+        XCTAssertEqual(r2?.url.lastPathComponent, rendered)
+        r2?.release?()
+    }
+
+    /// Editing a take's score invalidates its rendered-audio cache (file removed + fields cleared),
+    /// so playback falls back to the raw file until it re-renders from the new notes.
+    func testTakeRenderCacheClearedOnEdit() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let raw = try writeFile(.takes, id: "tk_e")
+        let rendered = StudioFolders.renderedTakeFileName(id: "tk_e")
+        let renderedURL = try StudioFolders.appRoot(.takes).appendingPathComponent(rendered)
+        try Data(repeating: 0, count: 8).write(to: renderedURL)
+        store.addTake(StudioTake(id: "tk_e", name: "E", fileName: raw, durationMs: 500,
+                                 renderedFileName: rendered, renderedWasUserFolder: false))
+        XCTAssertEqual(store.localURLForPlayback(id: "tk_e")?.url.lastPathComponent, rendered)
+        store.setTakeEvents("tk_e", events: [StudioNoteEvent(onMs: 0, offMs: 300, note: 62, velocity: 90)])
+        XCTAssertNil(store.take("tk_e")?.renderedFileName)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: renderedURL.path))
+        XCTAssertEqual(store.localURLForPlayback(id: "tk_e")?.url.lastPathComponent, raw)
+    }
+
     /// `StudioTake.wasUserFolder` survives the persistence round-trip (the instrumentals-folder
     /// relocation stamp), and an OLDER blob with no such key decodes to app storage (false).
     func testTakeWasUserFolderRoundTrips() throws {

@@ -356,14 +356,17 @@ struct SetlistTrack: Codable, Hashable, Sendable, Identifiable {
     // Stable per-row id for SwiftUI (songId may repeat for cues / blanks).
     var id: String { "\(songId)#\(name)" }
 
-    /// Duration a row contributes to totals — mirrors the engine's DEFAULT_TRACK_MS
-    /// fallback so per-row display never disagrees with Setlist.totalMs. Multiplied by the
-    /// repeat count so a looped performance item counts for all its plays.
-    var shownMs: Int {
+    /// The length of ONE play (pre-repeat) — mirrors the engine's DEFAULT_TRACK_MS fallback.
+    /// This is what the player arms as the per-track position boundary; the track then loops
+    /// `repeatCount` times, ending (and repeating) at each single play's end.
+    var perPlayMs: Int {
         if isText == true { return 0 }
-        let once = (lengthMs.map { $0 > 0 ? $0 : RealizeEngine.defaultTrackMs }) ?? RealizeEngine.defaultTrackMs
-        return once * CollectionMembership.normalizedRepeat(repeatCount)
+        return (lengthMs.map { $0 > 0 ? $0 : RealizeEngine.defaultTrackMs }) ?? RealizeEngine.defaultTrackMs
     }
+
+    /// Duration a row contributes to TOTALS — one play × the repeat count, so a looped
+    /// performance item counts for all its plays in Setlist.totalMs / the runtime label.
+    var shownMs: Int { perPlayMs * CollectionMembership.normalizedRepeat(repeatCount) }
 
     enum CodingKeys: String, CodingKey {
         case songId, artist, name, bpm, camelot, lengthMs, source, sequenceName, note, isText, pocketId, mixSuggestions, repeatCount

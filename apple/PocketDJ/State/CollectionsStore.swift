@@ -702,10 +702,13 @@ final class CollectionsStore {
     /// on-screen detail view re-snapshots the new order. Returns nil if the catalog isn't wired.
     @discardableResult
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
-                 source: PlayHistoryStore.PlaySource? = nil) -> Setlist? {
+                 source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:]) -> Setlist? {
         guard let app else { return nil }
         nowPlayingSource = source
         var tracks: [SetlistTrack] = songIds.compactMap { id in
+            // Per-item repeat (loop) count from the source collection — snapshotted so the
+            // player loops the row that many times before advancing.
+            let rep = CollectionMembership.storedRepeat(repeats[id] ?? 1)
             // STUDIO rows (spec §8 — playNow RESOLVES studio ids): synthesize the frozen
             // snapshot from the studio lookup — title + REAL lengthMs so `shownMs` never
             // invents the 210 s fallback for a 4 s loop, bpm/camelot when known, and a
@@ -716,12 +719,12 @@ final class CollectionsStore {
                 guard let info = studioLookup?(id) else { return nil }
                 return SetlistTrack(songId: id, artist: "Studio", name: info.title,
                                     bpm: info.bpm, camelot: info.camelot, lengthMs: info.lengthMs,
-                                    source: .explicit)
+                                    source: .explicit, repeatCount: rep)
             }
             guard let s = app.songsById[id] else { return nil }   // drop unresolvable ids
             return SetlistTrack(songId: s.id, artist: s.artist, name: s.name,
                                 bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
-                                source: .explicit)
+                                source: .explicit, repeatCount: rep)
         }
         if shuffle { tracks.shuffle() }
         let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
@@ -743,14 +746,33 @@ final class CollectionsStore {
     @discardableResult
     func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPlaylist: playlistId),
-                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist)
+                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
+                repeats: playlistRepeatMap(playlistId))
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
     /// `playableIds` for the same reason as the playlist variant above.
     @discardableResult
     func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPocket: pocketId),
-                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket)
+                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
+                repeats: pocket(pocketId)?.songRepeats ?? [:])
+    }
+
+    /// Best-effort songId → repeat-count map for a playlist's `.song` nodes (recursing into
+    /// sub-chapters). Keyed by songId, so if the same item appears in two nodes with different
+    /// counts the later one wins — acceptable for a playback convenience, and the common case
+    /// (a performance item added once) is exact.
+    private func playlistRepeatMap(_ id: String) -> [String: Int] {
+        guard let pl = playlist(id) else { return [:] }
+        var map: [String: Int] = [:]
+        func walk(_ nodes: [PlaylistNode]) {
+            for n in nodes {
+                if n.kind == .song, let sid = n.songId, let r = n.repeatCount, r > 1 { map[sid] = r }
+                if let kids = n.children { walk(kids) }
+            }
+        }
+        for seq in pl.sequences { walk(seq.children ?? []) }
+        return map
     }
 
     /// Resolve the Play-History source-kind + display name for a sequencer run tagged with

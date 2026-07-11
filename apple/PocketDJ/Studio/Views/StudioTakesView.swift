@@ -129,7 +129,13 @@ struct StudioTakesView: View {
             Button { beginRename(take) } label: { Label("Rename…", systemImage: "pencil") }
             Button { useAsSample(take) } label: { Label("Sample from instrumental", systemImage: "waveform.badge.plus") }
                 .disabled(samplingIds.contains(take.id) || take.scoreEvents.isEmpty)
-            Button { addRef = StudioAddRef(id: take.id, title: take.name) } label: {
+            Button {
+                addRef = StudioAddRef(id: take.id, title: take.name)
+                // Render the real audio now so the instrumental is audible the moment it plays in a
+                // collection (idempotent — no-op when a fresh cache already exists).
+                let tid = take.id
+                Task { await StudioTakeRenderer.ensureRendered(takeId: tid, studio: studio, packs: packs) }
+            } label: {
                 Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
             }
             Button(role: .destructive) { _ = studio.deleteTake(take.id) } label: {
@@ -241,6 +247,41 @@ enum StudioTakeSampler {
             return "Couldn't render this instrumental into a sample. Try again, or re-download the \(name) pack."
         default:
             return "Couldn't make a sample from this instrumental."
+        }
+    }
+}
+
+// MARK: - Instrumental render cache (collection + Mix playback)
+
+/// Ensures an instrumental has a fresh RENDERED-AUDIO cache — its `scoreEvents` synthesized through
+/// its instrument into a real `.m4a` — so it's audible in collection playback + Mix even when its
+/// raw file is a silent placeholder (a live-saved take). The one place this render happens for
+/// PLAYBACK (the sample path renders into a new `smp_`; this renders into the take's own cache).
+@MainActor
+enum StudioTakeRenderer {
+    /// No-op when: no such take / no notes / a fresh cache already exists on disk / the instrument
+    /// pack isn't downloaded. On the pack-missing path the raw file still resolves — a RECORDED
+    /// take is its real capture (audible); a live placeholder stays silent until a later render.
+    static func ensureRendered(takeId: String, studio: StudioStore, packs: InstrumentPackStore) async {
+        guard let take = studio.take(takeId), !take.scoreEvents.isEmpty else { return }
+        let bm = studio.bookmark(for: .takes)
+        if let rf = take.renderedFileName,
+           let got = StudioFolders.fileURL(family: .takes, fileName: rf,
+                                           wasUserFolder: take.renderedWasUserFolder ?? false, bookmark: bm) {
+            got.release?()
+            return   // fresh cache already on disk
+        }
+        guard let bankURL = packs.localBankURL(forInstrument: take.instrument),
+              let dest = StudioFolders.folder(.takes, bookmark: bm, requireWritable: true) else { return }
+        defer { dest.release?() }
+        let fileName = StudioFolders.renderedTakeFileName(id: takeId)
+        let destURL = dest.url.appendingPathComponent(fileName)
+        do {
+            _ = try await StudioRender.shared.renderTake(events: take.scoreEvents, bankURL: bankURL,
+                                                         program: take.instrument.gmProgram, to: destURL)
+            studio.setTakeRendered(takeId, fileName: fileName, wasUserFolder: dest.isUserFolder)
+        } catch {
+            // Leave uncached — the raw file still resolves for playback (see the doc comment).
         }
     }
 }

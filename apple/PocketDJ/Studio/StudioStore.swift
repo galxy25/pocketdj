@@ -409,6 +409,7 @@ final class StudioStore {
         if let maxOff = events.map(\.offMs).max(), maxOff > takes[i].durationMs {
             takes[i].durationMs = maxOff
         }
+        invalidateTakeRender(&takes[i])   // the score changed ⇒ the rendered audio is stale
         saveNow()
     }
 
@@ -416,7 +417,21 @@ final class StudioStore {
     func revertTakeEdits(_ id: String) {
         guard let i = takes.firstIndex(where: { $0.id == id }), takes[i].editedEvents != nil else { return }
         takes[i].editedEvents = nil
+        invalidateTakeRender(&takes[i])   // score reverted ⇒ re-render from the raw performance
         saveNow()
+    }
+
+    /// Delete + forget a take's rendered-audio cache (its events changed, so the synth is stale).
+    private func invalidateTakeRender(_ take: inout StudioTake) {
+        if let rf = take.renderedFileName,
+           let got = StudioFolders.fileURL(family: .takes, fileName: rf,
+                                           wasUserFolder: take.renderedWasUserFolder ?? false,
+                                           bookmark: bookmark(for: .takes)) {
+            try? FileManager.default.removeItem(at: got.url)
+            got.release?()
+        }
+        take.renderedFileName = nil
+        take.renderedWasUserFolder = nil
     }
 
     /// Delete a take (file + record). Resolves the file against the root it was WRITTEN to
@@ -431,6 +446,7 @@ final class StudioStore {
             try? FileManager.default.removeItem(at: got.url)
             got.release?()
         }
+        invalidateTakeRender(&takes[i])   // also drop the rendered-audio cache file
         takes.remove(at: i)
         saveNow()
         return true
@@ -620,7 +636,32 @@ final class StudioStore {
             else { return nil }
             return (got.url, got.release, p.name, StudioPattern.barMs(bpm: p.bpm))
         }
+        if id.hasPrefix("tk_") {
+            guard let t = take(id) else { return nil }
+            let bm = bookmark(for: .takes)
+            // Prefer the rendered-audio cache (real synth of the events — the only audible source
+            // for a live-saved take, whose raw file is a silent placeholder). Fall back to the raw
+            // file (a RECORDED take's real capture; a live placeholder resolves but is silent).
+            if let rf = t.renderedFileName,
+               let got = StudioFolders.fileURL(family: .takes, fileName: rf,
+                                               wasUserFolder: t.renderedWasUserFolder ?? false, bookmark: bm) {
+                return (got.url, got.release, t.name, t.durationMs)
+            }
+            guard let got = StudioFolders.fileURL(family: .takes, fileName: t.fileName,
+                                                  wasUserFolder: t.wasUserFolder, bookmark: bm)
+            else { return nil }
+            return (got.url, got.release, t.name, t.durationMs)
+        }
         return nil
+    }
+
+    /// File an instrumental's rendered-audio cache (its `scoreEvents` synthesized to a real `.m4a`).
+    /// The render writer resolves the instrumentals folder + writes the file, then records it here.
+    func setTakeRendered(_ id: String, fileName: String, wasUserFolder: Bool) {
+        guard let i = takes.firstIndex(where: { $0.id == id }) else { return }
+        takes[i].renderedFileName = fileName
+        takes[i].renderedWasUserFolder = wasUserFolder
+        saveNow()
     }
 
     /// Metadata for a studio id WITHOUT touching disk — collection stats/realize synthetic
@@ -695,6 +736,15 @@ final class StudioStore {
                   provablyGone(.sequences, f, patterns[i].wasUserFolder) else { continue }
             patterns[i].fileName = nil
             patterns[i].bounceDirty = true
+            changed = true
+        }
+        // A take's rendered-audio cache vanished (raw events intact) → clear the cache fields;
+        // the instrumental re-renders on demand. Mirrors the sample render-cache reconcile above.
+        for i in takes.indices {
+            guard let rf = takes[i].renderedFileName,
+                  provablyGone(.takes, rf, takes[i].renderedWasUserFolder ?? false) else { continue }
+            takes[i].renderedFileName = nil
+            takes[i].renderedWasUserFolder = nil
             changed = true
         }
         takes.removeAll { t in
