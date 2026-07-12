@@ -205,14 +205,16 @@ ship() {
       --sources "$ES_SOURCES" \
       || log "⚠ OpenSearch reindex failed (non-fatal) — online search may lag until the next run"
   fi
-  # Stem backfill for freshly-ingested songs (background, conc-1, NON-FATAL). No confirmLarge:
-  # a candidate set over the server's cap returns needsConfirm and we DON'T force it — that
-  # avoids an accidental multi-hour full-corpus stem run; do a big backfill by hand instead.
+  # Stem backfill for freshly-ingested songs (background, conc-1, resumable, NON-FATAL). We
+  # PASS confirmLarge: this is an explicitly-configured auto-stems job, so the server's
+  # candidate cap (which exists to stop an ACCIDENTAL full-corpus run from a stray POST) must
+  # not gate us — otherwise a backlog over the cap would mean stems NEVER auto-run. Disable
+  # the whole step with POCKETDJ_DIGITAL_STEMS=0.
   if [ "${POCKETDJ_DIGITAL_STEMS:-1}" != "0" ]; then
     if [ "$DRY_RUN" = 1 ]; then
-      echo "DRYRUN: POST $RIP_SERVER/backfill-stems" | tee -a "$LOG"
+      echo "DRYRUN: POST $RIP_SERVER/backfill-stems {confirmLarge:true}" | tee -a "$LOG"
     else
-      local sr; sr="$(curl -sS -m 30 -XPOST "$RIP_SERVER/backfill-stems" -H 'content-type: application/json' -d '{}' 2>/dev/null || echo '{"ok":false}')"
+      local sr; sr="$(curl -sS -m 30 -XPOST "$RIP_SERVER/backfill-stems" -H 'content-type: application/json' -d '{"confirmLarge":true}' 2>/dev/null || echo '{"ok":false}')"
       log "stem backfill: $sr"
     fi
   fi
