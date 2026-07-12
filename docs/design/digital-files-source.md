@@ -297,3 +297,44 @@ deferred to a clean full re-index (a **future migration**, §11) rather than chu
   fields). The `mode:'local-root'|'s3'|'stream'` interface + `POST /ingest-digital` are the seams.
 - **iTunes art fallback.** 16/43 albums have no embedded/loose cover; an optional iTunes-Search
   artwork lookup (like the vinyl `mirror-art` path) could fill those.
+
+---
+
+## 12. Nightly incremental indexing (daily automation)
+
+Newly-burned CDs (and any other files dropped under the burn root) are picked up automatically
+by a **daily launchd job**, the direct sibling of the Apple Music nightly sync
+(`docs/apple-music-sync.md`) — same robustness harness, different "sync" source (a filesystem
+walk instead of a Music.app query).
+
+- **`scripts/digital-sync-nightly.sh`** — runs on the iMac (the machine with the volume, the
+  rip-server, Docker, and the persistent `~/.pocketdj/digital` work dir). It:
+  1. Re-execs from a dedicated always-`origin/main` clone (`~/.pocketdj/digital-sync-clone`) so
+     the dev checkout's branch is irrelevant; single-instance `mkdir` lock.
+  2. **Preconditions gate:** the burn root (`/Volumes/RipBurnMix/Pocket DJ`, override
+     `POCKETDJ_DIGITAL_ROOT`) must be mounted + non-empty and the rip-server healthy — else the
+     night is a harmless skip (drive unplugged recovers next night).
+  3. Runs `index-digital-files.mjs --root … --env dev --no-publish`. **Incremental by work dir:**
+     the index is rebuilt from a full walk, but transcode/analyze/upload SKIP already-done songs
+     (state in `~/.pocketdj/digital` + S3 existence), so only NEW album folders do heavy work;
+     existing songs re-emit with the SAME content-stable ids, so the git diff shows only additions.
+  4. **Change detection ignores `manifest.generatedAt`** (stamped fresh every run) via a normalized
+     hash, so an unchanged catalog is a true no-op (no commit, no publish). A **shrink circuit
+     breaker** aborts the ship if the song count collapses (half-mounted drive / partial walk);
+     override `POCKETDJ_ALLOW_DIGITAL_SHRINK=1`.
+  5. On real change: commit + push (**audit trail BEFORE S3**), publish `digital-index.json` to the
+     dev web bucket + invalidate dev CloudFront (cover art + audio already streamed to S3 during the
+     walk), refresh OpenSearch, and kick a `/backfill-stems` for the new songs (no `confirmLarge`, so
+     a candidate set over the server cap is left for a manual big backfill — never an accidental
+     multi-hour full-corpus run). A publish marker (`~/.pocketdj/digital-sync/last-published-index.sha256`)
+     closes the crash-between-commit-and-publish hole.
+
+- **Install / schedule:** `scripts/install-digital-sync-nightly.sh` bakes the stable launcher
+  (`~/.pocketdj/bin/digital-sync-nightly-launcher.sh`) + the **05:00 daily** timer
+  (`com.pocketdj.digital-sync-nightly`, one hour after the 04:00 AM sync so they never contend for
+  the clone lock). `RunAtLoad=false`. Preview any time with `scripts/digital-sync-nightly.sh --dry-run`.
+- **No `npm ci`:** the indexer, `audio-analyze`, and `es-index` use only Node built-ins; the heavy
+  lifting is ffmpeg/Docker/aws (system tools), so the clone bootstrap stays fast.
+- **Dev-only ship:** "My Digital" is served from the dev web bucket + dev CloudFront
+  (`Config.digitalIndexURL` → `catalogBase`), so there's no prod deploy / app rebuild — just the
+  data publish, the git audit commit, and the search refresh.
