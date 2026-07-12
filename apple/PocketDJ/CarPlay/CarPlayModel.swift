@@ -222,6 +222,20 @@ final class CarPlayModel {
         }
     }
 
+    /// The track the sequencer is currently ON (nil when idle). CarPlay's SYSTEM Now Playing
+    /// card is fed by whichever engine owns the audio (MusicKit for Apple Music, `PlayerEngine`
+    /// for rips/burns) — but PocketDJ's OWN CarPlay UI otherwise has no "now playing" cue: the
+    /// Up Next list starts at the NEXT track. So a set started from the phone (e.g. shuffling an
+    /// Apple Music playlist) shows a correct upcoming queue with no in-app marker of what's
+    /// playing right now. This pins that current track above the queue. Read straight off
+    /// `queue[index]` (not `rips.nowPlaying`, which the Apple Music path never sets).
+    func nowPlaying() -> UpNextItem? {
+        let p = services.setlistPlayer
+        guard p.isRunning, p.index < p.queue.count else { return nil }
+        let it = p.queue[p.index]
+        return UpNextItem(uid: it.uid, title: it.title, artist: it.artist, albumId: app.songsById[it.id]?.albumId)
+    }
+
     func removeFromQueue(uid: UUID) { services.setlistPlayer.removeUpcoming(uids: [uid]) }
     func playNext(uid: UUID) { services.setlistPlayer.moveUpcomingNext(uid: uid) }
     func moveToEnd(uid: UUID) { services.setlistPlayer.moveUpcomingToEnd(uid: uid) }

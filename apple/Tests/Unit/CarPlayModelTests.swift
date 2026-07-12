@@ -194,6 +194,24 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertTrue(model.upNext().isEmpty)                 // nothing up next when idle
     }
 
+    /// The current track is surfaced separately from the upcoming queue, so PocketDJ's own CarPlay
+    /// UI can pin a "Now Playing" row above Up Next — read straight off `queue[index]`, which is
+    /// correct even for an Apple Music set that never sets `rips.nowPlaying`.
+    func testNowPlayingReflectsCurrentTrackDistinctFromUpNext() async {
+        let (model, services, _) = await makeModel()
+        XCTAssertNil(model.nowPlaying())                 // nothing playing → nil
+        services.setlistPlayer.play([.init(id: "sng_1", title: "One", artist: "A"),
+                                     .init(id: "sng_2", title: "Two", artist: "A"),
+                                     .init(id: "sng_3", title: "Three", artist: "A")])
+        let now = model.nowPlaying()
+        XCTAssertEqual(now?.title, "One")                // the current (index 0) track…
+        XCTAssertEqual(now?.albumId, "alb_1")            // …with resolved artwork
+        XCTAssertFalse(model.upNext().contains { $0.title == "One" })   // …and NOT duplicated in Up Next
+        XCTAssertEqual(model.upNext().map(\.title), ["Two", "Three"])
+        services.setlistPlayer.stop()
+        XCTAssertNil(model.nowPlaying())                 // idle again → nil
+    }
+
     /// Playing a playlist/pocket in CarPlay rebuilds a FRESH snapshot from the collection's CURRENT
     /// songs each time (into the reserved Now Playing setlist, overwriting the prior one), so a
     /// playlist with no pre-existing setlist plays, and songs added since last play are included.
