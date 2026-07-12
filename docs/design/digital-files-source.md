@@ -324,9 +324,10 @@ walk instead of a Music.app query).
      override `POCKETDJ_ALLOW_DIGITAL_SHRINK=1`.
   5. On real change: commit + push (**audit trail BEFORE S3**), publish `digital-index.json` to the
      dev web bucket + invalidate dev CloudFront (cover art + audio already streamed to S3 during the
-     walk), refresh OpenSearch, and kick a `/backfill-stems` for the new songs (no `confirmLarge`, so
-     a candidate set over the server cap is left for a manual big backfill — never an accidental
-     multi-hour full-corpus run). A publish marker (`~/.pocketdj/digital-sync/last-published-index.sha256`)
+     walk), refresh OpenSearch, and kick a `/backfill-stems` for the new songs **with `confirmLarge`** — this
+     is an explicitly-configured auto-stems job, so the server's candidate cap (which only guards
+     against an accidental full-corpus run from a stray POST) must not gate it, else a backlog over
+     the cap would mean stems never auto-run (`POCKETDJ_DIGITAL_STEMS=0` disables the step). A publish marker (`~/.pocketdj/digital-sync/last-published-index.sha256`)
      closes the crash-between-commit-and-publish hole.
 
 - **Install / schedule:** `scripts/install-digital-sync-nightly.sh` bakes the stable launcher
