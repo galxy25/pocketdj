@@ -339,9 +339,25 @@ final class CarPlayController {
 
     /// Push the upcoming-queue list (Now Playing "Up Next" button → here).
     func showUpNext() {
-        let template = CPListTemplate(title: "Up Next", sections: [upNextSection()])
+        let template = CPListTemplate(title: "Up Next", sections: upNextSections())
         upNextTemplate = template
         interfaceController.pushTemplate(template, animated: true, completion: nil)
+    }
+
+    /// A "Now Playing" section (the current track, pinned on top) above the "Up Next" queue —
+    /// so PocketDJ's own CarPlay UI shows what's playing NOW, not just what's next (the system
+    /// Now Playing card is separate). Omitted when idle. Tapping the current row opens the full
+    /// Now Playing template.
+    private func upNextSections() -> [CPListSection] {
+        var sections: [CPListSection] = []
+        if let current = model?.nowPlaying() {
+            let li = CPListItem(text: current.title, detailText: current.artist)
+            li.handler = { [weak self] _, completion in self?.showNowPlaying(); completion() }
+            loadArtwork(albumId: current.albumId, into: li)
+            sections.append(CPListSection(items: [li], header: "Now Playing", sectionIndexTitle: nil))
+        }
+        sections.append(upNextSection())
+        return sections
     }
 
     private func upNextSection() -> CPListSection {
@@ -352,8 +368,12 @@ final class CarPlayController {
             loadArtwork(albumId: item.albumId, into: li)
             return li
         }
+        // Header only when there's a Now Playing section above it to distinguish the two;
+        // the single-section (idle-queue-view) case reads fine without one.
+        let header = model.nowPlaying() != nil ? "Up Next" : nil
         return CPListSection(items: items.isEmpty
-            ? [CPListItem(text: "Nothing up next", detailText: nil)] : items)
+            ? [CPListItem(text: "Nothing up next", detailText: nil)] : items,
+            header: header, sectionIndexTitle: nil)
     }
 
     /// A tap on an Up Next row → Remove / Play next / Move to end (CarPlay has no swipe-to-delete).
@@ -383,7 +403,7 @@ final class CarPlayController {
     }
 
     /// Rebuild the Up Next list in place after an edit.
-    private func refreshUpNext() { upNextTemplate?.updateSections([upNextSection()]) }
+    private func refreshUpNext() { upNextTemplate?.updateSections(upNextSections()) }
 
     private func toast(_ message: String) {
         let ok = CPAlertAction(title: "OK", style: .default) { [weak self] _ in
