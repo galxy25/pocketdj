@@ -335,6 +335,13 @@ walk instead of a Music.app query).
   the clone lock). `RunAtLoad=false`. Preview any time with `scripts/digital-sync-nightly.sh --dry-run`.
 - **No `npm ci`:** the indexer, `audio-analyze`, and `es-index` use only Node built-ins; the heavy
   lifting is ffmpeg/Docker/aws (system tools), so the clone bootstrap stays fast.
+- **Docker self-heal:** audio analysis runs in the `pocketdj-audio` Docker image. Before indexing,
+  the job **auto-starts Docker Desktop** if the daemon is down (`open -ga Docker`, polls up to
+  `POCKETDJ_DOCKER_WAIT_SECS`=150s; disable with `POCKETDJ_SKIP_DOCKER_START`). A LaunchAgent runs
+  in the user's GUI session, so `open` works unattended. If Docker still can't come up, it indexes
+  with **`--no-analyze`** — leaving new songs UNANALYZED (re-analyzed on a later run) rather than
+  caching `bpm=null`, which `analyzed.jsonl` would then SKIP forever. (Enabling Docker Desktop
+  "start at login" avoids the cold-start wait entirely.)
 - **Dev-only ship:** "My Digital" is served from the dev web bucket + dev CloudFront
   (`Config.digitalIndexURL` → `catalogBase`), so there's no prod deploy / app rebuild — just the
   data publish, the git audit commit, and the search refresh.

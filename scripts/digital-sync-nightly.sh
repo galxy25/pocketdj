@@ -44,6 +44,15 @@ STATE_DIR="$HOME/.pocketdj/digital-sync"
 MARKER="$STATE_DIR/last-published-index.sha256"
 PROFILE="${AWS_PROFILE:-levi}"
 REGION="${AWS_REGION:-us-west-2}"
+# Audio analysis (bpm/key/beat-grid) runs in the `pocketdj-audio` Docker image. The unattended
+# 05:00 run auto-starts Docker Desktop if the daemon is down (set POCKETDJ_SKIP_DOCKER_START to
+# disable). If it still can't come up in time we index with --no-analyze — leaving those songs
+# UNANALYZED (re-analyzed on a later run when Docker is up) rather than caching bpm=null, which
+# analyzed.jsonl would then SKIP forever. A LaunchAgent runs in the user's GUI session, so `open`
+# works unattended; enabling Docker Desktop "start at login" avoids the cold-start wait entirely.
+START_DOCKER=1
+[ -n "${POCKETDJ_SKIP_DOCKER_START:-}" ] && START_DOCKER=0
+DOCKER_WAIT_SECS="${POCKETDJ_DOCKER_WAIT_SECS:-150}"
 # Dev web bucket + CloudFront that serve "My Digital" (art uploaded during the walk; the
 # index published here in ship()). CF dev distribution = E123GKAO9JVETP.
 CF_DEV="E123GKAO9JVETP"
@@ -70,6 +79,24 @@ norm_hash() {
       if(j&&j.manifest)delete j.manifest.generatedAt;
       process.stdout.write(crypto.createHash("sha256").update(JSON.stringify(j)).digest("hex"));
     }catch(e){process.stdout.write("ERR")}' "$1"
+}
+# Ensure the Docker daemon is reachable (audio analysis needs the pocketdj-audio image).
+# Returns 0 if up, 1 if not. Best-effort: launches Docker Desktop in the background (‑g, no
+# foreground steal) and polls `docker info` up to $DOCKER_WAIT_SECS. Never aborts the run —
+# the caller falls back to --no-analyze on a non-zero return.
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 || { log "docker CLI not on PATH — cannot analyze"; return 1; }
+  if docker info >/dev/null 2>&1; then return 0; fi
+  if [ "$START_DOCKER" != 1 ]; then log "Docker daemon down and auto-start disabled (POCKETDJ_SKIP_DOCKER_START)"; return 1; fi
+  log "Docker daemon down — launching Docker Desktop…"
+  open -ga Docker >/dev/null 2>&1 || open -a Docker >/dev/null 2>&1 || { log "⚠ could not launch Docker Desktop"; return 1; }
+  local waited=0
+  while ! docker info >/dev/null 2>&1; do
+    if [ "$waited" -ge "$DOCKER_WAIT_SECS" ]; then log "⚠ Docker not ready after ${DOCKER_WAIT_SECS}s"; return 1; fi
+    sleep 5; waited=$((waited + 5))
+  done
+  log "✓ Docker ready after ~${waited}s"
+  return 0
 }
 song_count() {
   "$NODE" -e '
@@ -194,8 +221,18 @@ ship() {
 # ---- index (incremental: only new album folders do heavy work) --------------------
 log "indexing digital root: $ROOT"
 COMMITTED_SONGS="$(song_count "$REPO/$INDEX")"
+# Make sure Docker is up so the analysis stage works; else index without analysis (deferred,
+# NOT null-cached). Skipped in dry-run (starting Docker is a real side effect).
+ANALYZE_ARGS=()
+if [ "$DRY_RUN" = 1 ]; then
+  echo "DRYRUN: ensure Docker (audio analysis) is running before indexing" | tee -a "$LOG"
+elif ! ensure_docker; then
+  log "⚠ indexing WITHOUT analysis (--no-analyze) — bpm/key/beat-grid deferred to a run with Docker up"
+  ANALYZE_ARGS=(--no-analyze)
+fi
 run "$NODE" "$REPO/scripts/index-digital-files.mjs" \
   --root "$ROOT" --env dev --work "$WORK" --rip-server "$RIP_SERVER" --no-publish \
+  ${ANALYZE_ARGS[@]+"${ANALYZE_ARGS[@]}"} \
   2>&1 | tee -a "$LOG"
 
 if [ "$DRY_RUN" = 1 ]; then log "(dry-run) stop before change detection / commit"; exit 0; fi
