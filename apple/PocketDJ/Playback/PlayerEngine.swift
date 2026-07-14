@@ -341,6 +341,28 @@ final class PlayerEngine {
         }
     }
 
+    /// Idle our AVPlayer for an external streaming source (Apple Music) WITHOUT taking over the
+    /// system Now Playing card. Used on **macOS**, where MusicKit's `ApplicationMusicPlayer`
+    /// already publishes a full Control Center Now Playing entry (art / album / transport) — so
+    /// writing our OWN card too showed as a duplicate second "Now Playing" source. Auto-advance
+    /// (`onTrackEnded`) and the in-app deck read the coordinator directly, so no card takeover is
+    /// needed here; we only silence our AVPlayer (a prior local track) and drop our stale card.
+    func idleForExternalPlayback() {
+        endExternalNowPlaying()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
+        statusObservation?.invalidate(); statusObservation = nil
+        endBoundarySec = nil; trackEndSignaled = true
+        pendingSeekMs = nil
+        scopeRelease?(); scopeRelease = nil
+        isLive = false
+        isPlaying = false
+        // If WE still own the card from a prior local track, clear it so MusicKit's AM card
+        // isn't shadowed by our now-stale one (and resign so nothing double-writes).
+        if NowPlayingArbiter.shared.isActive(self) { clearNowPlayingInfo() }
+    }
+
     /// Leave external mode (a local track is loading, or playback stopped). Called by `load()`
     /// and `stop()`; safe to call when not external.
     private func endExternalNowPlaying() {

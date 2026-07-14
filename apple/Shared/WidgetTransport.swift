@@ -1,0 +1,116 @@
+import Foundation
+import AppIntents
+
+/// In-process bridge for the widget's transport buttons. An `AudioPlaybackIntent` triggered
+/// from a widget runs in the **app's** process whenever the app is alive (which it is while
+/// audio plays — the whole point of the widget), so the app wires these closures at launch
+/// and the button drives real playback DIRECTLY with no latency. In the widget-extension
+/// process (app fully quit) the closures are nil, and the intent falls back to the command
+/// channel below.
+@MainActor
+final class WidgetPlaybackController {
+    static let shared = WidgetPlaybackController()
+    private init() {}
+    /// Play/pause the current track (mirrors the lock-screen toggle command).
+    var toggle: (() -> Void)?
+    /// Advance / step back in the running set (mirrors the lock-screen ⏭/⏮).
+    var next: (() -> Void)?
+    var previous: (() -> Void)?
+}
+
+/// Cross-process fallback: when a transport intent runs in the widget-extension process (the
+/// app was fully quit), it can't reach the live `WidgetPlaybackController`, so it drops the
+/// command into the shared App Group and the app drains it the moment it next becomes active.
+enum WidgetCommandChannel {
+    enum Command: String { case toggle, next, previous }
+    private static let key = "pendingTransportCommand"
+    private static let atKey = "pendingTransportCommandAt"
+
+    static func send(_ c: Command) {
+        guard let d = NowPlayingShared.defaults else { return }
+        d.set(c.rawValue, forKey: key)
+        d.set(Date().timeIntervalSince1970, forKey: atKey)
+        // Wake the running app cross-process (works even when a widget click doesn't foreground
+        // the app — the App-Group write alone would sit undrained until the next scene-activation,
+        // which is why widget play/pause looked dead on macOS).
+        WidgetCommandBridge.post()
+    }
+
+    /// Pop the pending command if it's recent — a stale one (older than `maxAge`) is discarded
+    /// so a cold launch long after the tap doesn't jolt playback unexpectedly.
+    static func drain(now: TimeInterval, maxAge: TimeInterval = 30) -> Command? {
+        guard let d = NowPlayingShared.defaults, let raw = d.string(forKey: key) else { return nil }
+        let at = d.double(forKey: atKey)
+        d.removeObject(forKey: key); d.removeObject(forKey: atKey)
+        guard now - at <= maxAge, let c = Command(rawValue: raw) else { return nil }
+        return c
+    }
+}
+
+/// A cross-process Darwin notification that wakes the RUNNING app the instant a widget drops a
+/// transport command, so it drains immediately instead of waiting for the app to be foregrounded.
+/// Darwin notifications are process-global on both iOS and macOS, so the widget-extension process
+/// posts and the app process (which holds the audio) receives — no shared memory needed.
+enum WidgetCommandBridge {
+    private static let name = "com.levi.pocketdj.widget.command" as CFString
+
+    /// Posted by the widget when a transport button is tapped.
+    static func post() {
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFNotificationName(name), nil, nil, true)
+    }
+
+    /// Set by the app; invoked on the main actor whenever a widget command arrives.
+    @MainActor static var onCommand: (() -> Void)?
+
+    /// Start listening (app side). Idempotent-enough for one app launch.
+    static func observe() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let callback: CFNotificationCallback = { _, _, _, _, _ in
+            Task { @MainActor in WidgetCommandBridge.onCommand?() }
+        }
+        CFNotificationCenterAddObserver(center, nil, callback, name, nil, .deliverImmediately)
+    }
+}
+
+// MARK: - Widget transport intents (Button(intent:))
+
+/// Route a widget transport command to the in-process controller, or the App Group fallback.
+@MainActor
+private func dispatchWidgetTransport(_ command: WidgetCommandChannel.Command) {
+    let c = WidgetPlaybackController.shared
+    let inProcess: (() -> Void)?
+    switch command {
+    case .toggle:   inProcess = c.toggle
+    case .next:     inProcess = c.next
+    case .previous: inProcess = c.previous
+    }
+    if let inProcess { inProcess() } else { WidgetCommandChannel.send(command) }
+}
+
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingToggleIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "Play or Pause"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.toggle)
+        return .result()
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingNextIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "Next Track"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.next)
+        return .result()
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingPreviousIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "Previous Track"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.previous)
+        return .result()
+    }
+}

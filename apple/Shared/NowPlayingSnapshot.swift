@@ -1,0 +1,72 @@
+import Foundation
+
+/// The Now Playing state the app publishes and the widget reads — the ONLY thing that
+/// crosses the app↔widget process boundary (plus the cover PNG next to it). Deliberately
+/// tiny + `Codable` so it round-trips through the shared App Group `UserDefaults`.
+///
+/// Compiled into BOTH the app target (writer) and `PocketDJWidgets` (reader). The cover
+/// image is kept as a file (PNG bytes) rather than in the struct so the defaults blob stays
+/// small; `coverVersion` bumps whenever the file changes so the widget's timeline reloads.
+struct NowPlayingSnapshot: Codable, Equatable {
+    /// Whether audio is actually playing right now (drives the ▶/⏸ glyph).
+    var isPlaying: Bool
+    /// True when there IS a current track (a set is running or a single track plays); false
+    /// shows the widget's idle "Nothing playing" state.
+    var hasContent: Bool
+    var title: String
+    var artist: String
+    /// The current song id (for the widget's deep-link + cover correlation); nil when idle.
+    var songId: String?
+    /// Bumps each time the cover PNG file is rewritten, so the widget re-reads it.
+    var coverVersion: Int
+    /// The not-yet-played tail of the running set (empty for a single-track play or idle).
+    var upNext: [Track]
+
+    struct Track: Codable, Equatable, Identifiable {
+        /// Per-row identity (the setlist `Item.uid`), so repeats render as distinct rows.
+        var id: String
+        var songId: String
+        var title: String
+        var artist: String
+    }
+
+    static let empty = NowPlayingSnapshot(isPlaying: false, hasContent: false,
+                                          title: "", artist: "", songId: nil,
+                                          coverVersion: 0, upNext: [])
+}
+
+/// The shared App Group container the app writes and the widget reads. One place owns the
+/// group id, the keys, and the cover file path so the two targets can't drift.
+enum NowPlayingShared {
+    /// MUST match the App Group in every entitlements file (app + widget, all SDKs).
+    static let appGroup = "group.com.levi.pocketdj"
+    private static let snapshotKey = "nowPlayingSnapshot.v1"
+    static let coverFileName = "nowplaying-cover.png"
+
+    static var defaults: UserDefaults? { UserDefaults(suiteName: appGroup) }
+    static var containerURL: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+    }
+    /// The current track's cover PNG (written by the app, read by the widget). nil if the
+    /// shared container is unavailable (e.g. the App Group isn't provisioned yet).
+    static var coverURL: URL? { containerURL?.appendingPathComponent(coverFileName) }
+
+    static func write(_ snapshot: NowPlayingSnapshot) {
+        guard let d = defaults, let data = try? JSONEncoder().encode(snapshot) else { return }
+        d.set(data, forKey: snapshotKey)
+    }
+
+    /// The last-published snapshot, or `.empty` when nothing has been written / decode fails.
+    static func read() -> NowPlayingSnapshot {
+        guard let d = defaults, let data = d.data(forKey: snapshotKey),
+              let snap = try? JSONDecoder().decode(NowPlayingSnapshot.self, from: data)
+        else { return .empty }
+        return snap
+    }
+
+    /// Read the current cover PNG bytes (widget side), or nil if none has been written.
+    static func readCoverData() -> Data? {
+        guard let url = coverURL else { return nil }
+        return try? Data(contentsOf: url)
+    }
+}

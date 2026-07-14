@@ -1,7 +1,7 @@
 import Foundation
 
 /// The template-agnostic heart of the CarPlay app: it turns the shared stores into the row lists
-/// CarPlay browses (Playlists / Pockets / Albums → songs, plus a title/artist search) and routes
+/// CarPlay browses (Playlists / Pockets / Albums / Artists → songs) and routes
 /// the two write actions — play a collection/song, add a song to a pocket/playlist.
 ///
 /// Deliberately free of any `CarPlay` import, so it unit-tests on the plain test host and compiles
@@ -105,65 +105,6 @@ final class CarPlayModel {
     func songs(inAlbum id: String) -> [Row] {
         guard let album = app.albumsById[id] else { return [] }
         return songRows(album.trackList)
-    }
-
-    // MARK: - Search (category-scoped, on-device)
-
-    /// The search "modes" the CarPlay search tab offers as a category menu (CarPlay's search
-    /// template can't host toggles). Songs/Albums/Artists map to a browse kind; Playlists is a
-    /// name match over the (few) playlists.
-    enum SearchCategory: String, CaseIterable {
-        case songs, albums, artists, playlists
-        var label: String {
-            switch self {
-            case .songs: return "Songs"; case .albums: return "Albums"
-            case .artists: return "Artists"; case .playlists: return "Playlists"
-            }
-        }
-        var symbol: String {
-            switch self {
-            case .songs: return "music.note"; case .albums: return "opticaldisc"
-            case .artists: return "music.mic"; case .playlists: return "music.note.list"
-            }
-        }
-        var kind: ItemKind? {
-            switch self { case .songs: return .song; case .albums: return .album
-                          case .artists: return .artist; case .playlists: return nil }
-        }
-    }
-
-    /// On-device search within a category. Runs the filter OFF the main actor over the PREBUILT
-    /// folded search keys — it never folds the whole catalog on the main thread per keystroke,
-    /// which was the freeze on a large (~90k-song) catalog. Capped for a car list.
-    func search(_ query: String, category: SearchCategory, limit: Int = 60) async -> [Row] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return [] }
-        if category == .playlists { return searchPlaylistRows(q, limit: limit) }
-        guard let kind = category.kind else { return [] }
-        let base = app.browseItems(kind)          // O(1) array ref (main actor)
-        let keys = app.searchKeys(kind)
-        let filtered = await Task.detached(priority: .userInitiated) {
-            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: [], sortKeys: [])
-        }.value
-        return filtered.prefix(limit).compactMap { rowFrom($0) }
-    }
-
-    private func searchPlaylistRows(_ query: String, limit: Int) -> [Row] {
-        let q = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        return Array(playlists().filter {
-            $0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q)
-        }.prefix(limit))
-    }
-
-    private func rowFrom(_ item: BrowseItem) -> Row? {
-        switch item {
-        case .song(let s, _, _, _, _): return songRow(s)
-        case .album(let a, _): return Row(id: a.id, title: a.name, subtitle: a.artist, artworkAlbumId: a.id, isSong: false)
-        case .artist(let name, let ac, let sc, let albumId):
-            return Row(id: "artist:\(name)", title: name,
-                       subtitle: "\(ac) album\(ac == 1 ? "" : "s") · \(sc) songs",
-                       artworkAlbumId: albumId, isSong: false)
-        }
     }
 
     // MARK: - Play (all through the one unified sequencer)

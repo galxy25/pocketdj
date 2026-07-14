@@ -14,5 +14,13 @@
 -->
 <plist version="1.0">
 <dict>
+  <!-- App Group shared with the Now Playing widget extension (PocketDJWidgets) so the
+       app can write the now-playing + Up Next snapshot the widget reads. Applied to the
+       iOS-simulator/visionOS SDKs via this base file (iOS device uses the CarPlay file,
+       macOS the sandbox file — both carry the SAME group). -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.com.levi.pocketdj</string>
+  </array>
 </dict>
 </plist>

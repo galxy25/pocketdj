@@ -437,12 +437,17 @@ final class SetlistPlayer {
             await coordinator.play(id: it.id, title: it.title, artist: it.artist)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advanceToNext(); return }
-            // Apple Music STREAM: MusicKit owns the audio but writes NOTHING to the lock-screen /
-            // CarPlay card and swallows the system next button (its queue is one song). Hand the
-            // card + remote transport to PlayerEngine on MusicKit's behalf: it publishes
-            // title/artist/artwork + the live position, and its ⏭/⏮/play-pause drive THIS set +
-            // the stream. Auto-advance rides `coordinator.appleMusic.onTrackEnded` (wired in play()).
+            // Apple Music STREAM: MusicKit owns the audio. On iOS/CarPlay it writes NOTHING to
+            // the system card and swallows the next button (its queue is one song), so we hand the
+            // card + remote transport to PlayerEngine on MusicKit's behalf (title/artist/artwork +
+            // live position; ⏭/⏮/play-pause drive THIS set + the stream). On macOS, MusicKit's
+            // ApplicationMusicPlayer ALREADY publishes a full Control Center Now Playing entry, so
+            // taking over would show a DUPLICATE second source — there we only idle our AVPlayer.
+            // Auto-advance rides `coordinator.appleMusic.onTrackEnded` (wired in play()) either way.
             if coordinator.activeBackend == .appleMusic {
+                #if os(macOS)
+                player.idleForExternalPlayback()
+                #else
                 player.beginExternalNowPlaying(
                     title: it.title, artist: it.artist, songId: it.id,
                     durationSeconds: coordinator.appleMusic.durationSeconds > 0
@@ -452,6 +457,7 @@ final class SetlistPlayer {
                     isPlaying: { [weak coordinator] in coordinator?.appleMusic.isPlaying ?? false },
                     play: { [weak coordinator] in coordinator?.appleMusic.resume() },
                     pause: { [weak coordinator] in coordinator?.appleMusic.pausePlayback() })
+                #endif
                 return
             }
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".

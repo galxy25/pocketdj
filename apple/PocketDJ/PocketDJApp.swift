@@ -33,6 +33,10 @@ struct PocketDJApp: App {
     /// playing set keeps advancing after the user leaves the screen to build other collections.
     /// Only starting a different collection (a fresh `play`) stops it.
     @State private var setlistPlayer: SetlistPlayer
+    /// Publishes the Now Playing state into the App Group so the widget extension can render it,
+    /// and routes the widget's transport buttons back to real playback. Held app-scoped so its
+    /// state observation lives for the app's lifetime.
+    @State private var widgetSync: WidgetSync
     /// Lazily resolves streaming cover art (Apple Music) for albums lacking a bundled
     /// cover, keyed off the indexer's catalog id — fetched ONLY when an album is on-screen.
     @State private var albumArt: AlbumArtworkStore
@@ -144,6 +148,12 @@ struct PocketDJApp: App {
         // App-scoped Play-All sequencer (survives navigation — see the property comment).
         let setlistPlayer = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
         _setlistPlayer = State(initialValue: setlistPlayer)
+        // Bridge the Now Playing state to the widget extension (App Group snapshot + cover) and
+        // wire the widget's ⏮/⏯/⏭ buttons back to the sequencer + player. Uses the SAME art
+        // resolver as the lock-screen card. Constructed here so it publishes from first launch.
+        _widgetSync = State(initialValue: WidgetSync(
+            setlist: setlistPlayer, player: player, rips: rips, coordinator: coordinator,
+            artCandidates: { [weak app] in app?.album(forSongId: $0)?.artCandidates ?? [] }))
         // Lazy streaming cover art: resolve an album's art via the Apple Music provider
         // (recognize one of its tracks by catalog id → its artwork URL). Ready only when
         // the provider can resolve; both gated so the default build never hits the network.
@@ -430,6 +440,9 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
+                        // A widget transport tap that fired while the app was fully quit dropped a
+                        // command in the App Group — apply it now that playback stores are live.
+                        widgetSync.drainPendingCommand(now: Date().timeIntervalSince1970)
                         // Resume the background transfer reconcile on foreground (idempotent).
                         TransferCoordinator.shared.reconcileOnLaunch()
                         // Foreground fallback for the daily soft-cap prune (macOS has no

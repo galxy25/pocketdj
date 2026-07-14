@@ -28,6 +28,12 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
         var songId: String
         var title: String
         var artist: String
+        /// The MusicKit catalog track's artwork URL. Our "Apple Music (Local)" catalog carries
+        /// NO cover art (`IndexAlbum.artCandidates` is empty), so this — captured from the
+        /// resolved catalog `Song` — is the only cover source for a streamed track. The system
+        /// lock-screen/CarPlay card shows art because MusicKit auto-fills it; the app's OWN
+        /// surfaces (home deck + widget) need this URL to match.
+        var artworkURL: URL?
     }
     private(set) var nowPlaying: NowPlaying?
 
@@ -51,6 +57,14 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// The polling task that watches `ApplicationMusicPlayer` for end-of-track. Cancelled on
     /// stop / superseded on each new `tryPlay`.
     @ObservationIgnored private var endMonitor: Task<Void, Never>?
+
+    /// Wall-clock position smoothing. MusicKit's `playbackTime` is laggy/stale DURING playback
+    /// (it advances mainly on state changes), which froze the CarPlay/lock-screen progress bar
+    /// and the in-app deck — each ~1 Hz card update re-wrote elapsed with the same stale value,
+    /// defeating the OS's own extrapolation. We extrapolate `base + wall-elapsed` so the position
+    /// ticks smoothly, snapping forward whenever the real `playbackTime` jumps ahead of us.
+    @ObservationIgnored private var positionBase: Double = 0
+    @ObservationIgnored private var positionStartWall: Date?
 
     /// The wrapped account-link + recognizer. Held as the concrete type (not `any
     /// StreamingProvider`) so we can call `resolve(_:)`.
@@ -76,8 +90,27 @@ extension AppleMusicPlaybackProvider {
         AppleMusicCredentials.isEnabled && MusicAuthorization.currentStatus == .authorized
     }
 
-    /// Current playback position (seconds) — drives the inline scrubber for this backend.
-    var positionSeconds: Double { ApplicationMusicPlayer.shared.playbackTime }
+    /// Current playback position (seconds) — drives the CarPlay/lock-screen card, the home deck,
+    /// and the inline scrubber. Wall-clock-smoothed (see `positionBase`): while playing it's
+    /// `base + wall-elapsed`, re-anchored on every start/resume/seek. This deliberately does NOT
+    /// read the laggy `playbackTime` on each tick (that reset the OS's own extrapolation to a
+    /// stale value → the frozen CarPlay bar); playback advances 1:1 with the wall clock, so the
+    /// only divergence is a rare mid-song network stall, self-corrected on the next resume.
+    var positionSeconds: Double {
+        guard let start = positionStartWall else { return positionBase }
+        return positionBase + Date().timeIntervalSince(start)
+    }
+
+    /// (Re)start the smooth clock from `seconds` — playback just started/resumed/seeked.
+    private func startPositionClock(from seconds: Double) {
+        positionBase = max(0, seconds)
+        positionStartWall = Date()
+    }
+    /// Freeze the smooth clock at the current position — playback paused/stopped.
+    private func freezePositionClock() {
+        positionBase = positionSeconds
+        positionStartWall = nil
+    }
 
     /// `atMs` (spec §9 cue offset) is applied PLAY-THEN-SEEK: MusicKit exposes no "start
     /// at position" enqueue, so we start playback and then set
@@ -104,8 +137,13 @@ extension AppleMusicPlaybackProvider {
             //    sticks — a write before the queue item is ready would be ignored.
             if let atMs, atMs > 0 { seek(to: Double(atMs) / 1000) }
             isPlaying = true
+            startPositionClock(from: atMs.map { Double($0) / 1000 } ?? 0)
             durationSeconds = catalogSong.duration ?? 0
-            nowPlaying = NowPlaying(songId: song.id, title: song.name, artist: song.artist)
+            // Capture the catalog artwork URL — the app's own now-playing surfaces (home deck +
+            // widget) can't get a cover from our art-less AM-Local catalog, so this is it.
+            let artURL = catalogSong.artwork?.url(width: 600, height: 600)
+            nowPlaying = NowPlaying(songId: song.id, title: song.name, artist: song.artist,
+                                    artworkURL: artURL)
             // 4) Arm the end-of-track monitor so the setlist advances when this streaming song
             //    finishes (nothing else observes MusicKit's player).
             startEndMonitor()
@@ -123,8 +161,10 @@ extension AppleMusicPlaybackProvider {
         if player.state.playbackStatus == .playing {
             player.pause()
             isPlaying = false
+            freezePositionClock()
         } else {
             isPlaying = true
+            startPositionClock(from: positionSeconds)
             Task { try? await player.play() }
         }
     }
@@ -133,22 +173,27 @@ extension AppleMusicPlaybackProvider {
     /// which must land in a KNOWN state (not toggle blindly off a possibly-stale status).
     func resume() {
         isPlaying = true
+        startPositionClock(from: positionSeconds)
         Task { try? await ApplicationMusicPlayer.shared.play() }
     }
     func pausePlayback() {
         ApplicationMusicPlayer.shared.pause()
         isPlaying = false
+        freezePositionClock()
     }
 
     /// Seek the streaming player to an absolute position (seconds).
     func seek(to seconds: Double) {
         ApplicationMusicPlayer.shared.playbackTime = max(0, seconds)
+        if positionStartWall != nil { startPositionClock(from: seconds) }   // playing → re-anchor
+        else { positionBase = max(0, seconds) }                             // paused → hold
     }
 
     func stop() {
         endMonitor?.cancel(); endMonitor = nil
         ApplicationMusicPlayer.shared.stop()
         isPlaying = false
+        positionBase = 0; positionStartWall = nil
         nowPlaying = nil
     }
 
