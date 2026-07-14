@@ -72,6 +72,26 @@ final class PlayerEngine {
     /// nil for app-storage files (no scope needed).
     private var scopeRelease: (() -> Void)?
 
+    // MARK: External now-playing (Apple Music streaming)
+    //
+    // PlayerEngine can drive the lock-screen / CarPlay Now Playing card + remote commands for
+    // audio it does NOT itself play — MusicKit's `ApplicationMusicPlayer`. MusicKit writes
+    // nothing to `MPNowPlayingInfoCenter` and swallows the system next button (its queue is one
+    // song), so during a streamed setlist track PlayerEngine OWNS the arbiter, publishes the
+    // card (title/artist/artwork + elapsed pulled from `externalPosition`), and routes
+    // ⏭/⏮/play/pause to the set + the stream. Its own AVPlayer is idled so nothing double-plays.
+    /// True while impersonating an external streaming source's card.
+    private var externalActive = false
+    /// Pulls the streaming player's current position (seconds) for the card's elapsed time.
+    private var externalPosition: (() -> Double)?
+    /// Reflects the streaming player's real play/pause state into the card.
+    private var externalIsPlaying: (() -> Bool)?
+    /// Resume / pause the streaming player (driven by the remote play/pause commands).
+    private var externalPlay: (() -> Void)?
+    private var externalPause: (() -> Void)?
+    /// ~1 Hz ticker that refreshes the card's elapsed time + play state while external.
+    @ObservationIgnored private var externalTicker: Task<Void, Never>?
+
     /// Fired when the CURRENT item plays to its natural end (finite mp3 / burnt-local file).
     /// The setlist sequencer (Feature 3) owns this to auto-advance; nil means no consumer.
     /// A LIVE HLS stream has no natural end, so this never fires for `live` tracks — the
@@ -125,6 +145,9 @@ final class PlayerEngine {
             // "can not be mutated from a Sendable closure" warnings.
             MainActor.assumeIsolated {
                 guard let self else { return }
+                // External mode: the streaming player owns the clock (via the external ticker) and
+                // our AVPlayer is idle at 0 — skip so we don't stomp the card's elapsed time.
+                if self.externalActive { return }
                 // Position: plain clock only (NO Observation → no view invalidated).
                 self.clock.currentTime = time.seconds.isFinite ? time.seconds : 0
                 // Duration: publish to the observable when it first becomes known.
@@ -140,8 +163,12 @@ final class PlayerEngine {
         }
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
-                self?.isPlaying = player.rate != 0
-                self?.updateNowPlayingInfo()
+                guard let self else { return }
+                // In external mode our AVPlayer is idle (rate 0); the streaming player's state
+                // drives `isPlaying` via the external ticker — don't let the idle rate clobber it.
+                if self.externalActive { return }
+                self.isPlaying = player.rate != 0
+                self.updateNowPlayingInfo()
             }
         }
     }
@@ -157,6 +184,8 @@ final class PlayerEngine {
     /// file) so the sequencer advances at the track's own length inside a shared album mp3.
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "",
               songId: String? = nil, endBoundaryMs: Int? = nil, scopeRelease: (() -> Void)? = nil) {
+        // Loading a real item ends any external-source impersonation (Apple Music handoff).
+        endExternalNowPlaying()
         // Defensively re-arm the audio session: an interruption (call / other app) can
         // deactivate it, and a backgrounded set must keep playing across track boundaries.
         configureAudioSession()
@@ -212,15 +241,21 @@ final class PlayerEngine {
     }
 
     func play() {
+        // External mode: resume the streaming player, not our idle AVPlayer.
+        if externalActive { externalPlay?(); isPlaying = true; updateNowPlayingInfo(); return }
         NowPlayingArbiter.shared.claim(self)
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
-    func pause() { player.pause(); isPlaying = false; updateNowPlayingInfo() }
+    func pause() {
+        if externalActive { externalPause?(); isPlaying = false; updateNowPlayingInfo(); return }
+        player.pause(); isPlaying = false; updateNowPlayingInfo()
+    }
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
     /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
     func toggle() {
         toggleCount += 1
+        if externalActive { (externalIsPlaying?() ?? isPlaying) ? pause() : play(); return }
         player.timeControlStatus == .paused ? play() : pause()
     }
 
@@ -249,6 +284,72 @@ final class PlayerEngine {
         onTrackEnded?()
     }
 
+    /// Take over the Now Playing card + remote transport on behalf of an EXTERNAL streaming
+    /// player (Apple Music via MusicKit). Idles our own AVPlayer so only the stream sounds,
+    /// claims the arbiter (so ⏭/⏮/play/pause reach us), publishes the card, and starts a ~1 Hz
+    /// ticker that mirrors the stream's live position + play state. Auto-advance is handled by
+    /// the caller's own end observer, not here.
+    func beginExternalNowPlaying(title: String, artist: String, songId: String?,
+                                 durationSeconds: Double,
+                                 position: @escaping () -> Double,
+                                 isPlaying: @escaping () -> Bool,
+                                 play: @escaping () -> Void,
+                                 pause: @escaping () -> Void) {
+        // Idle our AVPlayer + drop any per-item end observer / boundary from a prior local track
+        // so it can't fire against the (now empty) item, and release its scoped-folder access.
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
+        statusObservation?.invalidate(); statusObservation = nil
+        endBoundarySec = nil; trackEndSignaled = true
+        pendingSeekMs = nil
+        scopeRelease?(); scopeRelease = nil
+        isLive = false
+
+        externalActive = true
+        externalPosition = position
+        externalIsPlaying = isPlaying
+        externalPlay = play
+        externalPause = pause
+
+        clock.currentTime = 0
+        clock.duration = durationSeconds
+        duration = durationSeconds
+        self.isPlaying = true                         // `isPlaying` param shadows the property here
+        nowPlayingTitle = title
+        nowPlayingArtist = artist
+        nowPlayingSongId = songId
+
+        NowPlayingArbiter.shared.claim(self)          // own the card + remote commands
+        setNextPreviousEnabled(onNext != nil)         // ⏭/⏮ advance the set
+        refreshArtwork(for: songId)                   // async cover fetch → re-pushes the card
+        updateNowPlayingInfo()
+        startExternalTicker()
+    }
+
+    /// Refresh the external card's elapsed time + play state ~1×/s from the live providers.
+    private func startExternalTicker() {
+        externalTicker?.cancel()
+        externalTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, self.externalActive, !Task.isCancelled else { return }
+                self.isPlaying = self.externalIsPlaying?() ?? self.isPlaying
+                self.clock.currentTime = self.externalPosition?() ?? self.clock.currentTime
+                self.updateNowPlayingInfo()
+            }
+        }
+    }
+
+    /// Leave external mode (a local track is loading, or playback stopped). Called by `load()`
+    /// and `stop()`; safe to call when not external.
+    private func endExternalNowPlaying() {
+        guard externalActive else { return }
+        externalActive = false
+        externalPosition = nil; externalIsPlaying = nil; externalPlay = nil; externalPause = nil
+        externalTicker?.cancel(); externalTicker = nil
+    }
+
     /// Seek to an absolute time (seconds). No-op for a live stream beyond its buffer.
     func seek(to seconds: Double) {
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
@@ -259,6 +360,7 @@ final class PlayerEngine {
 
     /// Stop playback and release the current item (used when the player panel closes).
     func stop() {
+        endExternalNowPlaying()
         player.pause()
         player.replaceCurrentItem(with: nil)
         statusObservation?.invalidate(); statusObservation = nil

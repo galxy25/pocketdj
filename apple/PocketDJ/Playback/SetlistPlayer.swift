@@ -129,6 +129,10 @@ final class SetlistPlayer {
         player.onNext = { [weak self] in self?.skipNext() }
         player.onPrevious = { [weak self] in self?.skipPrevious() }
         player.setNextPreviousEnabled(true)
+        // Apple Music STREAMS through MusicKit's own player, which the PlayerEngine end hook
+        // above never sees — so wire its end-of-track straight into the sequencer's advance,
+        // else the set freezes after the first streamed song.
+        coordinator.appleMusic.onTrackEnded = { [weak self] in self?.handleAppleMusicEnded() }
         Task { await playCurrent() }
     }
 
@@ -140,6 +144,7 @@ final class SetlistPlayer {
         player.onNext = nil
         player.onPrevious = nil
         player.setNextPreviousEnabled(false)
+        coordinator.appleMusic.onTrackEnded = nil
         player.stop()
         coordinator.stop()
         rips.setNowPlaying(nil)
@@ -325,6 +330,22 @@ final class SetlistPlayer {
         advanceToNext()
     }
 
+    /// Natural end of an Apple Music STREAMING track (MusicKit's player finished the song).
+    /// Mirrors `handleEnded` but guards on the Apple Music now-playing id (the streaming path
+    /// keys off `coordinator.appleMusic.nowPlaying`, never `rips.nowPlaying`, so the local
+    /// ownership guard wouldn't match). Honors the per-track repeat count, then advances.
+    private func handleAppleMusicEnded() {
+        guard isRunning, index < queue.count,
+              coordinator.activeBackend == .appleMusic,
+              coordinator.appleMusic.nowPlaying?.songId == queue[index].id else { return }
+        if currentPlaysRemaining > 1 {
+            currentPlaysRemaining -= 1
+            Task { await playCurrent(fresh: false) }
+            return
+        }
+        advanceToNext()
+    }
+
     /// Move to the next track (or end the set) — the NON-repeating advance. Used by an explicit
     /// skip, a dead/unresolvable source, and the end of a track's repeats.
     private func advanceToNext() {
@@ -372,6 +393,7 @@ final class SetlistPlayer {
             // A playable studio row IS on-device audio: count it so a device-mode set
             // made of loops never raises the "no burned files" banner (CRITIC-D).
             loadedAnyDeviceTrack = true
+            coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, release: res.release)
@@ -387,6 +409,7 @@ final class SetlistPlayer {
         if mode == .device {
             if let res = burns.localURLForPlayback(forSong: it.id) {
                 loadedAnyDeviceTrack = true
+                coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
                 // SHARED helper so nowPlaying + the inline player + the row toggle stay
                 // consistent with the single-row burned path. `res.release` keeps a user-folder
                 // file's security scope open through playback.
@@ -405,6 +428,7 @@ final class SetlistPlayer {
         // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
         if let res = burns.localURLForPlayback(forSong: it.id) {
             loadedAnyDeviceTrack = true
+            coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
                           endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
@@ -413,6 +437,23 @@ final class SetlistPlayer {
             await coordinator.play(id: it.id, title: it.title, artist: it.artist)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advanceToNext(); return }
+            // Apple Music STREAM: MusicKit owns the audio but writes NOTHING to the lock-screen /
+            // CarPlay card and swallows the system next button (its queue is one song). Hand the
+            // card + remote transport to PlayerEngine on MusicKit's behalf: it publishes
+            // title/artist/artwork + the live position, and its ⏭/⏮/play-pause drive THIS set +
+            // the stream. Auto-advance rides `coordinator.appleMusic.onTrackEnded` (wired in play()).
+            if coordinator.activeBackend == .appleMusic {
+                player.beginExternalNowPlaying(
+                    title: it.title, artist: it.artist, songId: it.id,
+                    durationSeconds: coordinator.appleMusic.durationSeconds > 0
+                        ? coordinator.appleMusic.durationSeconds
+                        : Double(it.lengthMs ?? 0) / 1000,
+                    position: { [weak coordinator] in coordinator?.appleMusic.positionSeconds ?? 0 },
+                    isPlaying: { [weak coordinator] in coordinator?.appleMusic.isPlaying ?? false },
+                    play: { [weak coordinator] in coordinator?.appleMusic.resume() },
+                    pause: { [weak coordinator] in coordinator?.appleMusic.pausePlayback() })
+                return
+            }
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".
             if player.isLive {
                 waitingForLive = true

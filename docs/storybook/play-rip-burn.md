@@ -122,7 +122,12 @@ mp3 to the spot you pick; cancel or an error just resets the button.
 **Lock screen & Control Center.** Native playback registers with the OS, so the
 current track shows on the **lock screen / Control Center** — **with its album cover**
 when the track's album is in the catalog — and working play / pause / scrub (AirPods
-and CarPlay drive it too); audio keeps playing in the background.
+and CarPlay drive it too); audio keeps playing in the background. **This now works for
+Apple Music tracks too:** an Apple Music song streams through Apple's own player, which
+used to leave the lock-screen / CarPlay card blank and made the set **stop after one
+song** — the ⏭ next button did nothing. A set of Apple Music songs now **auto-advances**
+on its own, the **card shows the title, artist and cover**, and **⏭/⏮/play-pause** on
+the lock screen and CarPlay drive the set the same as a ripped or burned set.
 
 **User story:** "I found the record — now let me actually hear it, right here, without
 leaving the list — and scrub to the drop."
