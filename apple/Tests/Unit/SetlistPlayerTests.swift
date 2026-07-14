@@ -475,6 +475,51 @@ final class SetlistPlayerTests: XCTestCase {
         cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_b.mp3","sng_b.txt","sng_c.mp3","sng_c.txt"])
     }
 
+    /// The SAME adoption for an APPLE MUSIC row ▶: a manual play of an in-set track that
+    /// streams via MusicKit stamps `coordinator.appleMusic.nowPlaying` (never
+    /// `rips.nowPlaying`), and the sequencer must reposition onto it all the same. This was
+    /// the trace-confirmed desync: the deck + widget stayed on the previous song, the deck's
+    /// toggle hit the idle engine ("engine.toggle REFUSED"), and the set would have silently
+    /// stopped at the track's end (the AM end guard compares against `queue[index]`).
+    func testAdoptsAppleMusicRowPlayAndKeepsAutoAdvancing() async {
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_c.mp3","sng_c.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_c")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_a", title: "A", artist: "A"),
+            .init(id: "sng_b", title: "B", artist: "A"),
+            .init(id: "sng_c", title: "C", artist: "A"),
+        ])
+        await waitUntil("track 0 (A) playing") { rips.nowPlaying?.songId == "sng_a" }
+        XCTAssertEqual(seq.index, 0)
+
+        // Simulate a manual row ▶ on B that WINS via Apple Music — the provider stamps its
+        // now-playing, then the coordinator records the backend, the same order
+        // `PlaybackCoordinator.play` produces (nowPlaying inside tryPlay, backend after).
+        coord.appleMusic.setNowPlayingForTests(.init(songId: "sng_b", title: "B", artist: "A"))
+        coord.setActiveBackendForTests(.appleMusic)
+
+        // The sequencer observes the coordinator jump and repositions onto B (index 1).
+        await waitUntil("sequencer adopted the Apple Music jump to B") { seq.index == 1 }
+        XCTAssertTrue(seq.isRunning)
+
+        // B's stream ending advances to C (burned → local) — the set did NOT stop.
+        coord.appleMusic.onTrackEnded?()
+        await waitUntil("advanced past the adopted AM track to C") { rips.nowPlaying?.songId == "sng_c" }
+        XCTAssertEqual(seq.index, 2)
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertNil(coord.activeBackend, "advancing to a burned local track silenced the AM backend")
+
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_c.mp3","sng_c.txt"])
+    }
+
     /// A manual play of a song that is NOT in the running set must NOT reposition the
     /// sequencer (its index/queue stay put) — only in-set jumps are adopted.
     func testManualPlayOfOutOfSetSongDoesNotReposition() async {
@@ -757,6 +802,32 @@ final class PlayerEngineExternalNowPlayingTests: XCTestCase {
         engine.stop()
         engine.pause()
         XCTAssertEqual(box.pauses, 0, "after stop, pause no longer routes to the stream")
+    }
+
+    /// An IDLE engine (no item loaded, not external) must REFUSE transport: a blind play()
+    /// used to re-claim the Now Playing card with the previous track's stale title (the macOS
+    /// "ghost second card" bug) and flip `isPlaying` with no audio behind it (the widget
+    /// play-state mismatch). The tap probe still counts (`toggleCount`).
+    func testIdleEngineTransportIsNoOp() {
+        let engine = PlayerEngine()
+        engine.play()
+        XCTAssertFalse(engine.isPlaying, "idle play() is refused")
+        engine.toggle()
+        XCTAssertFalse(engine.isPlaying, "idle toggle() is refused")
+        XCTAssertEqual(engine.toggleCount, 1, "the tap is still counted (test probe)")
+        engine.pause()
+        XCTAssertFalse(engine.isPlaying)
+    }
+
+    /// idleForExternalPlayback (the macOS Apple Music branch) leaves the engine inert: not
+    /// playing, and transport still refused afterward (no item was re-loaded).
+    func testIdleForExternalPlaybackLeavesEngineInert() {
+        let engine = PlayerEngine()
+        engine.load(url: localURL, live: false, startMs: nil, title: "Prev", artist: "A")
+        engine.idleForExternalPlayback()
+        XCTAssertFalse(engine.isPlaying)
+        engine.play()
+        XCTAssertFalse(engine.isPlaying, "post-idle play() is refused (no item)")
     }
 }
 

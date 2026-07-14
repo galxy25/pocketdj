@@ -188,15 +188,14 @@ struct NowPlayingPanel: View {
         return burns.beatGrid(forSong: id)?.bpm ?? app.songsById[id]?.bpm
     }
 
-    /// Unified play/pause across backends (CollectionSongRow's proven pattern): an
-    /// Apple-Music-backed track toggles the coordinator; every local/rip/burned
-    /// path toggles PlayerEngine directly (a burned file has NO coordinator
-    /// backend, so `coordinator.togglePlayPause()` would silently no-op).
-    private var isAppleMusicCurrent: Bool {
-        currentItem.map { coordinator.isAppleMusicNowPlaying($0.id) } ?? false
-    }
+    /// Unified play/pause across backends, routed by which engine OWNS the audio
+    /// (`activeBackend`) — NOT by whether the deck's current item matches it. Keying off the
+    /// item id let a stale deck (an unadopted manual jump) route the toggle to the idle
+    /// PlayerEngine: the click was refused, and the ▶/⏸ glyph contradicted what was audible.
+    /// When Apple Music is streaming it owns transport, period; every local/rip/burned path
+    /// (which has NO coordinator backend) toggles PlayerEngine directly.
     private var isPlayingNow: Bool {
-        isAppleMusicCurrent ? coordinator.isPlaying : player.isPlaying
+        coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying
     }
 
     /// Play-position fraction (0…1) for the tonearm sweep — sampled by the record
@@ -206,12 +205,23 @@ struct NowPlayingPanel: View {
     /// duration), falling back to PlayerEngine's decoded duration.
     private func playProgress() -> Double {
         guard let item = currentItem else { return 0 }
-        let elapsed = coordinator.isAppleMusicNowPlaying(item.id)
-            ? coordinator.appleMusic.positionSeconds
-            : player.currentTime
-        let length = item.lengthMs.map { Double($0) / 1000 } ?? player.duration
+        let am = coordinator.isAppleMusicNowPlaying(item.id)
+        let elapsed = am ? coordinator.appleMusic.positionSeconds : player.currentTime
+        // Length prefers the catalog snapshot; but an Apple Music (Local) track often has NO
+        // `lengthMs` AND the streaming player publishes no duration — so also fall back to the
+        // resolved MusicKit catalog duration, else the fraction stays 0 and the tonearm freezes.
+        let length = max(item.lengthMs.map { Double($0) / 1000 } ?? 0,
+                         player.duration,
+                         am ? coordinator.appleMusic.durationSeconds : 0)
         guard length > 0 else { return 0 }
         return min(1, max(0, elapsed / length))
+    }
+
+    /// The current track's cover URL when it's an Apple Music stream — our AM-Local catalog has
+    /// no `artCandidates`, so the deck falls back to the MusicKit artwork captured at play time.
+    private var currentArtworkURL: URL? {
+        guard let item = currentItem, coordinator.isAppleMusicNowPlaying(item.id) else { return nil }
+        return coordinator.appleMusic.nowPlaying?.artworkURL
     }
 
     private var recordSize: CGFloat {
@@ -259,7 +269,8 @@ struct NowPlayingPanel: View {
     }
 
     private func togglePlayPause() {
-        if isAppleMusicCurrent { coordinator.togglePlayPause() } else { player.toggle() }
+        if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
+        else { player.toggle() }
     }
 
     // MARK: - The deck row (scrolls away so Up Next can take the whole panel)
@@ -269,7 +280,8 @@ struct NowPlayingPanel: View {
             VStack(spacing: 8) {
                 header
                 if !compactHeight {
-                    RecordPlayerView(album: currentAlbum, studioId: currentItem?.id, bpm: currentBpm,
+                    RecordPlayerView(album: currentAlbum, artworkURL: currentArtworkURL,
+                                     studioId: currentItem?.id, bpm: currentBpm,
                                      spinning: isPlayingNow, progress: playProgress)
                         .frame(width: recordSize, height: recordSize * 0.82)
                         // The record is the door to the current track's metadata:
@@ -500,6 +512,10 @@ struct NowPlayingPanel: View {
 /// continues from there — a real platter doesn't snap back to 12 o'clock.
 struct RecordPlayerView: View {
     let album: IndexAlbum?
+    /// A direct cover URL that WINS over `album` — used for an Apple Music stream, whose
+    /// AM-Local catalog album carries no `artCandidates`, so the MusicKit artwork URL captured
+    /// at play time is the only cover. nil for every non-streaming track (uses `album`).
+    var artworkURL: URL? = nil
     /// The now-playing song id — when it's a STUDIO performance item (no album), the PocketDJ icon
     /// is the record's center label instead of the generic disc placeholder.
     var studioId: String? = nil
@@ -584,7 +600,15 @@ struct RecordPlayerView: View {
             // Center label = the album art (the PocketDJ icon for a studio item; placeholder
             // disc icon when neither is known).
             Group {
-                if let album {
+                if let artworkURL {
+                    // Apple Music stream: the catalog artwork URL (our AM-Local album has none).
+                    AsyncImage(url: artworkURL) { img in
+                        img.resizable().aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Circle().fill(Theme.bgOverlay)
+                            .overlay(Image(systemName: "opticaldisc").foregroundStyle(Theme.fgDim))
+                    }
+                } else if let album {
                     CoverImage(album: album, corner: diameter * 0.21)
                 } else if let studioId, StudioFactory.isStudioId(studioId) {
                     Image("PocketDJIcon").resizable().aspectRatio(contentMode: .fill)

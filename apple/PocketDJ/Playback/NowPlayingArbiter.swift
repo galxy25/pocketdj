@@ -20,12 +20,22 @@ final class NowPlayingArbiter {
     private weak var owner: AnyObject?
 
     /// Become the active Now Playing owner (call when this engine STARTS audio).
-    func claim(_ who: AnyObject) { owner = who }
+    func claim(_ who: AnyObject) {
+        if owner !== who {   // trace OWNERSHIP CHANGES only (claim is re-asserted on every play)
+            NPLog.trace("arbiter claim → \(String(describing: type(of: who))) (was \(owner.map { String(describing: type(of: $0)) } ?? "nil"))")
+        }
+        owner = who
+    }
 
     /// True if `who` may currently write the card / act on a remote command — i.e. it is the owner,
     /// or no one owns it yet (nothing has played, or the previous owner deallocated).
     func isActive(_ who: AnyObject) -> Bool { owner == nil || owner === who }
 
     /// Relinquish ownership if `who` holds it (lets the other engine reclaim the card immediately).
-    func resign(_ who: AnyObject) { if owner === who { owner = nil } }
+    func resign(_ who: AnyObject) {
+        if owner === who {
+            NPLog.trace("arbiter resign ← \(String(describing: type(of: who)))")
+            owner = nil
+        }
+    }
 }

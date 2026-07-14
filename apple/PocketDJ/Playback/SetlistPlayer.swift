@@ -284,6 +284,11 @@ final class SetlistPlayer {
     private func observeNowPlaying() {
         withObservationTracking {
             _ = rips.nowPlaying?.songId
+            // An Apple Music row ▶ never touches `rips.nowPlaying` — its identity lands on
+            // the coordinator instead. Track it (and the backend flip, which arrives one
+            // main-actor turn later) so AM jumps adopt exactly like rip/burned ones.
+            _ = coordinator.appleMusic.nowPlaying?.songId
+            _ = coordinator.activeBackend
         } onChange: { [weak self] in
             Task { @MainActor in self?.adoptNowPlayingIfJumped() }
         }
@@ -300,15 +305,51 @@ final class SetlistPlayer {
     private func adoptNowPlayingIfJumped() {
         observeNowPlaying()   // re-arm for the next change (always, even on the no-op paths)
         guard isRunning, index < queue.count else { return }
-        guard let npId = rips.nowPlaying?.songId, queue[index].id != npId else { return }
+        // The manual play's identity comes from whichever backend OWNS the audio: an Apple
+        // Music row ▶ sets `coordinator.appleMusic.nowPlaying`, never `rips.nowPlaying` —
+        // keying off the rip path alone left AM jumps unadopted (deck + widget stale on the
+        // old track, transport routed to the idle engine, end guard silently stopping the set).
+        let am = coordinator.activeBackend == .appleMusic
+        guard let npId = am ? coordinator.appleMusic.nowPlaying?.songId : rips.nowPlaying?.songId,
+              queue[index].id != npId else { return }
         guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
+        NPLog.trace("setlist ADOPT jump → index \(pos) id=\(npId) via \(am ? "appleMusic" : "rip")")
         index = pos
         waitingForLive = false
         // Jumped onto a new track (a manual member play) — arm ITS repeat count, not the
         // previous track's leftover, so it loops the right number of times on natural end.
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[pos].repeatCount)
-        if burns.localURL(forSong: queue[pos].id) != nil { loadedAnyDeviceTrack = true }
-        player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs))
+        if am {
+            // The row ▶ started the stream but knows nothing about cards — run the same
+            // handoff `playCurrent`'s AM branch does (macOS: abdicate; iOS: impersonate).
+            handOffCardToAppleMusic(for: queue[pos])
+        } else {
+            if burns.localURL(forSong: queue[pos].id) != nil { loadedAnyDeviceTrack = true }
+            player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs))
+        }
+    }
+
+    /// Hand the system Now Playing card to the Apple Music stream for `it` — the shared tail
+    /// of BOTH ways a set lands on an AM track (our own `playCurrent` and adopting a manual
+    /// row ▶). On iOS/CarPlay MusicKit writes NOTHING to the card and swallows ⏭ (its queue
+    /// is one song), so PlayerEngine impersonates it (title/artist/artwork + live position;
+    /// ⏭/⏮/play-pause drive THIS set + the stream). On macOS MusicKit's
+    /// ApplicationMusicPlayer ALREADY publishes a full Control Center entry, so a second
+    /// writer would show a DUPLICATE source — there our engine only goes inert.
+    private func handOffCardToAppleMusic(for it: Item) {
+        #if os(macOS)
+        player.idleForExternalPlayback()
+        #else
+        player.beginExternalNowPlaying(
+            title: it.title, artist: it.artist, songId: it.id,
+            durationSeconds: coordinator.appleMusic.durationSeconds > 0
+                ? coordinator.appleMusic.durationSeconds
+                : Double(it.lengthMs ?? 0) / 1000,
+            position: { [weak coordinator] in coordinator?.appleMusic.positionSeconds ?? 0 },
+            isPlaying: { [weak coordinator] in coordinator?.appleMusic.isPlaying ?? false },
+            play: { [weak coordinator] in coordinator?.appleMusic.resume() },
+            pause: { [weak coordinator] in coordinator?.appleMusic.pausePlayback() })
+        #endif
     }
 
     /// Natural end-of-track. OWNERSHIP GUARD: ignore a stray end-event from an unrelated /
@@ -437,21 +478,15 @@ final class SetlistPlayer {
             await coordinator.play(id: it.id, title: it.title, artist: it.artist)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advanceToNext(); return }
-            // Apple Music STREAM: MusicKit owns the audio but writes NOTHING to the lock-screen /
-            // CarPlay card and swallows the system next button (its queue is one song). Hand the
-            // card + remote transport to PlayerEngine on MusicKit's behalf: it publishes
-            // title/artist/artwork + the live position, and its ⏭/⏮/play-pause drive THIS set +
-            // the stream. Auto-advance rides `coordinator.appleMusic.onTrackEnded` (wired in play()).
+            // Apple Music STREAM: MusicKit owns the audio. On iOS/CarPlay it writes NOTHING to
+            // the system card and swallows the next button (its queue is one song), so we hand the
+            // card + remote transport to PlayerEngine on MusicKit's behalf (title/artist/artwork +
+            // live position; ⏭/⏮/play-pause drive THIS set + the stream). On macOS, MusicKit's
+            // ApplicationMusicPlayer ALREADY publishes a full Control Center Now Playing entry, so
+            // taking over would show a DUPLICATE second source — there we only idle our AVPlayer.
+            // Auto-advance rides `coordinator.appleMusic.onTrackEnded` (wired in play()) either way.
             if coordinator.activeBackend == .appleMusic {
-                player.beginExternalNowPlaying(
-                    title: it.title, artist: it.artist, songId: it.id,
-                    durationSeconds: coordinator.appleMusic.durationSeconds > 0
-                        ? coordinator.appleMusic.durationSeconds
-                        : Double(it.lengthMs ?? 0) / 1000,
-                    position: { [weak coordinator] in coordinator?.appleMusic.positionSeconds ?? 0 },
-                    isPlaying: { [weak coordinator] in coordinator?.appleMusic.isPlaying ?? false },
-                    play: { [weak coordinator] in coordinator?.appleMusic.resume() },
-                    pause: { [weak coordinator] in coordinator?.appleMusic.pausePlayback() })
+                handOffCardToAppleMusic(for: it)
                 return
             }
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".

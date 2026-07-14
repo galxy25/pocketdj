@@ -15,5 +15,12 @@
 <dict>
     <key>com.apple.developer.carplay-audio</key>
     <true/>
+    <!-- App Group shared with the Now Playing widget extension (PocketDJWidgets). This file
+         is the iOS-device/simulator entitlements, so the group must be declared HERE for iOS
+         (the base file only reaches visionOS). Same group id across all three app files. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+      <string>group.com.levi.pocketdj</string>
+    </array>
 </dict>
 </plist>

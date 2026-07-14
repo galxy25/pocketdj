@@ -4,8 +4,9 @@
 > where PocketDJ meets the rest of the phone and the operating system: the **"?♪?"
 > recognizer** that names the song in the room and maps it back to your crate,
 > **streaming-account** linking, **Siri / Shortcuts / Spotlight** voice and system
-> actions, **CarPlay** in the car, and the **Settings** utilities — the storage
-> manager and a remote-debug capture — plus one easter egg. They all read the same
+> actions, **CarPlay** in the car, the **Now Playing widgets** on the home screen /
+> desktop, and the **Settings** utilities — the storage manager and a remote-debug
+> capture — plus one easter egg. They all read the same
 > catalog, rips and collections as everything else. The systems-side complement is
 > [Distribution, Clients & the Edits Round-Trip](../architecture/07-distribution-and-clients.md).
 > These sections are prose-only — no screenshots captured yet.
@@ -107,9 +108,9 @@ and find ninety minutes of it waiting in the app."
 
 ## PocketDJ in CarPlay — the crate on the dashboard
 
-Plug the phone into a CarPlay head unit and PocketDJ appears as a native CarPlay app — not a mirrored phone screen, but its own tab-bar UI driving the exact same **library, collections, and player** as the phone. There's no separate car catalog to sync: whatever's in your pockets and playlists on the phone is what's in the car. The root is a five-tab bar — **Playlists · Pockets · Albums · Artists · Search** — sized for glance-and-tap use at the wheel. Playlists and Pockets list your collections and drill into their songs; **Albums** and **Artists** are A–Z-indexed lists with a quick alphabetical scroll index down the side, the keyboard-free way to jump straight to a name while driving instead of typing it. Tapping into a collection or album pushes its song list with **▶ Play all** and **🔀 Shuffle all** rows pinned above the tracks; tapping an artist plays their whole discography straight through. Tapping a song itself opens an action sheet — **Play now**, or **Add to pocket / playlist**, which lists destinations and confirms with "Added to \<name\>" — so building a collection is a two-tap job even at a stoplight.
+Plug the phone into a CarPlay head unit and PocketDJ appears as a native CarPlay app — not a mirrored phone screen, but its own tab-bar UI driving the exact same **library, collections, and player** as the phone. There's no separate car catalog to sync: whatever's in your pockets and playlists on the phone is what's in the car. The root is a four-tab bar — **Playlists · Pockets · Albums · Artists** — sized for glance-and-tap use at the wheel. Playlists and Pockets list your collections and drill into their songs; **Albums** and **Artists** are A–Z-indexed lists with a quick alphabetical scroll index down the side, the keyboard-free way to jump straight to a name while driving instead of typing it. Tapping into a collection or album pushes its song list with **▶ Play all** and **🔀 Shuffle all** rows pinned above the tracks; tapping an artist plays their whole discography straight through. Tapping a song itself opens an action sheet — **Play now**, or **Add to pocket / playlist**, which lists destinations and confirms with "Added to \<name\>" — so building a collection is a two-tap job even at a stoplight.
 
-Because CarPlay drives the shared player, the car's system **Now Playing** screen always matches what's on the phone, down to the **Up Next** button, which opens an editable queue with **Remove · Play next · Move to end** actions — CarPlay has no swipe gestures, so every queue edit is a tap-and-choose. **Search** trades a text-and-toggle UI for a category menu — **Songs · Albums · Artists · Playlists** — where picking the category IS choosing the search mode, since CarPlay's search screen can't host filter toggles alongside a keyboard. Below the categories sits a **"Hands-free: ask Siri"** row for voice search ("Play X in PocketDJ") when the keyboard is locked out because the car's in motion.
+Because CarPlay drives the shared player, the car's system **Now Playing** screen always matches what's on the phone, down to the **Up Next** button, which opens an editable queue with **Remove · Play next · Move to end** actions — CarPlay has no swipe gestures, so every queue edit is a tap-and-choose. There is deliberately **no Search tab**: head units block the keyboard while the car is moving (leaving the screen frozen), and the A–Z scroll indexes on Albums/Artists plus voice — "Play X in PocketDJ" via Siri — cover finding music hands-free far better than typing at the wheel ever could.
 
 **Affordances**
 - **Playlists / Pockets tabs** — list collections, drill into songs
@@ -117,10 +118,44 @@ Because CarPlay drives the shared player, the car's system **Now Playing** scree
 - **▶ Play all / 🔀 Shuffle all** — pinned rows atop any collection or album's song list
 - **Song action sheet** — Play now, or Add to pocket / playlist with a confirmation toast
 - **Up Next** — editable queue via Remove · Play next · Move to end
-- **Search category menu** — Songs · Albums · Artists · Playlists as the search mode itself
-- **Hands-free: ask Siri** — voice search row for driving without a keyboard
+- **Voice** — "Play X in PocketDJ" via Siri replaces typed search at the wheel
 
 **User story:** "I get in the car, my phone connects, and the same crate I built at home is right there on the dash — I can flick to an artist, shuffle a pocket, or just tell Siri to play something, without ever looking away from the road for long."
+
+---
+
+## Now Playing widgets — the deck on the home screen and desktop
+
+Add the **PocketDJ Now Playing widget** to the iPhone home screen, the Mac desktop /
+Notification Center, or (on visionOS 26) a room in the Vision Pro, and the current
+track lives outside the app: **album cover, title, artist**, and real
+**⏮ ⏯ ⏭ transport buttons** that drive the actual playback — pause on the widget
+and the music pauses, whichever engine (a burned file, a rip stream, or an Apple
+Music track) is sounding. Skip works too: it advances the same running set the
+in-app deck shows.
+
+Three sizes, one story:
+- **Small** — the cover with ⏯ and ⏭ underneath: the glanceable "what's on".
+- **Medium** — cover beside title/artist, the next track ("Up next: …"), and the
+  full transport row.
+- **Large** — everything above plus an **Up Next** preview of the next four tracks
+  in the queue, so you can see where the set is headed without opening the app.
+
+When nothing is playing the widget shows a calm "Nothing playing" placeholder
+instead of a blank tile. Artwork tracks the current song even for Apple Music
+streams (whose art lives in Apple's catalog, not ours), and the play/pause glyph
+mirrors the real audio state no matter where you pressed pause — the app, the
+lock screen, the menu-bar Now Playing, or the widget itself.
+
+**Affordances**
+- **Cover + title + artist** — always-current, all three sizes
+- **⏮ ⏯ ⏭** — real transport (medium/large; small keeps ⏯ + ⏭)
+- **Up next line** (medium) / **Up Next ×4 preview** (large)
+- **Idle placeholder** — "Nothing playing" instead of an empty tile
+
+**User story:** "The set runs while I'm in another app — or another *room* — and the
+widget is my remote: glance for what's on, tap to pause, tap to skip, never opening
+the app at all."
 
 ---
 

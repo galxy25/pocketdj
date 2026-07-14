@@ -32,6 +32,9 @@ targets:
     supportedDestinations: [iOS, macOS, visionOS]
     sources:
       - path: PocketDJ
+      # Shared with the widget extension: the NowPlayingSnapshot model + App Group store +
+      # the widget transport intents. Compiled into BOTH targets (no shared framework).
+      - path: Shared
     # A base Info.plist supplies the one key Xcode's INFOPLIST_KEY_* generation can't
     # express: UIBackgroundModes (an array). Xcode still LAYERS its generated keys +
     # the INFOPLIST_KEY_* settings below on top of this file, so we only declare the
@@ -75,6 +78,8 @@ targets:
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
     dependencies:
       - package: ZIPFoundation
+      # Embed the Now Playing widget extension into the app (all supported platforms).
+      - target: PocketDJWidgets
       # The Mix tab's DJ engine is a first-party AVAudioEngine graph (MixEngine.swift) —
       # no third-party audio SDK. (Tempo/pitch/seek/crossfader/effects/beat-match are all
       # AVFoundation nodes; the former Switchboard/Superpowered SDK was removed.)
@@ -142,6 +147,42 @@ targets:
         # --- Apple Music build-time opt-in -------------------------------------
         # The flag lives in the base Info.plist (info: properties above) as
         # PocketDJAppleMusicEnabled — INFOPLIST_KEY_* can't inject custom keys.
+
+  # --- Now Playing widget extension (iOS + macOS + visionOS) -------------------
+  # A WidgetKit extension showing the current track + Up Next, with play/pause/skip
+  # buttons (App Intents). It reads the shared App Group snapshot the app writes
+  # (Shared/NowPlayingSnapshot.swift) — the widget process can't touch the app's live
+  # stores. Deployment targets (iOS 18 / macOS 15 / visionOS 2) already exceed the
+  # interactive-widget minimums (iOS 17 / macOS 14).
+  PocketDJWidgets:
+    type: app-extension
+    supportedDestinations: [iOS, macOS, visionOS]
+    sources:
+      - path: PocketDJWidgets
+      - path: Shared
+    info:
+      path: PocketDJWidgets/Generated/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.levi.pocketdj.widgets
+        PRODUCT_NAME: PocketDJWidgets
+        # WidgetKit only reached visionOS in visionOS 26, so the extension raises ONLY its
+        # visionOS floor to 26 (the app stays at 2.0 — the widget just won't appear on older
+        # visionOS). iOS 18 / macOS 15 are inherited and already exceed the interactive-widget
+        # minimums (iOS 17 / macOS 14).
+        XROS_DEPLOYMENT_TARGET: "26.0"
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: PocketDJ
+        TARGETED_DEVICE_FAMILY: "1,2"
+        "TARGETED_DEVICE_FAMILY[sdk=xros*]": "7"
+        "TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]": "7"
+        # App Group shared with the app (all SDKs). macOS additionally needs App Sandbox,
+        # so it uses a sibling entitlements file that adds the sandbox key.
+        CODE_SIGN_ENTITLEMENTS: PocketDJWidgets/PocketDJWidgets.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": PocketDJWidgets/PocketDJWidgets-macOS.entitlements
 
   PocketDJTests:
     type: bundle.unit-test

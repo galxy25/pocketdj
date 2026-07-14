@@ -2298,6 +2298,7 @@ final class MixEngine {
         if let nowPlayingArtwork, nowPlayingArtworkSongId == track.songId {
             info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
         }
+        NPLog.trace("mix card WRITE title=\(track.title) playing=\(playing)")
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         // Explicit playbackState so CarPlay (head-unit Now Playing + system Now Playing app) and
         // watchOS reflect the deck's transport, not just the info dict's PlaybackRate.
