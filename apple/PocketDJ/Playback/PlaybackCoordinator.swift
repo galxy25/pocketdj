@@ -60,6 +60,12 @@ final class PlaybackCoordinator {
     /// branch (rip waveform vs. Apple Music position scrubber) + the "via …" badge.
     private(set) var activeBackend: PlaybackBackend?
 
+    #if DEBUG
+    /// Test seam — pairs with `AppleMusicPlaybackProvider.setNowPlayingForTests` so unit
+    /// tests can put the coordinator in the "Apple Music owns audio" state without MusicKit.
+    func setActiveBackendForTests(_ backend: PlaybackBackend?) { activeBackend = backend }
+    #endif
+
     /// A user-presentable failure from the last `play` (e.g. no rip server). UI binds an
     /// alert to it; cleared on dismiss / next successful play.
     var lastErrorMessage: String?

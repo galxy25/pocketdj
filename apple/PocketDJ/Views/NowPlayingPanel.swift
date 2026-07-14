@@ -188,15 +188,14 @@ struct NowPlayingPanel: View {
         return burns.beatGrid(forSong: id)?.bpm ?? app.songsById[id]?.bpm
     }
 
-    /// Unified play/pause across backends (CollectionSongRow's proven pattern): an
-    /// Apple-Music-backed track toggles the coordinator; every local/rip/burned
-    /// path toggles PlayerEngine directly (a burned file has NO coordinator
-    /// backend, so `coordinator.togglePlayPause()` would silently no-op).
-    private var isAppleMusicCurrent: Bool {
-        currentItem.map { coordinator.isAppleMusicNowPlaying($0.id) } ?? false
-    }
+    /// Unified play/pause across backends, routed by which engine OWNS the audio
+    /// (`activeBackend`) — NOT by whether the deck's current item matches it. Keying off the
+    /// item id let a stale deck (an unadopted manual jump) route the toggle to the idle
+    /// PlayerEngine: the click was refused, and the ▶/⏸ glyph contradicted what was audible.
+    /// When Apple Music is streaming it owns transport, period; every local/rip/burned path
+    /// (which has NO coordinator backend) toggles PlayerEngine directly.
     private var isPlayingNow: Bool {
-        isAppleMusicCurrent ? coordinator.isPlaying : player.isPlaying
+        coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying
     }
 
     /// Play-position fraction (0…1) for the tonearm sweep — sampled by the record
@@ -270,7 +269,8 @@ struct NowPlayingPanel: View {
     }
 
     private func togglePlayPause() {
-        if isAppleMusicCurrent { coordinator.togglePlayPause() } else { player.toggle() }
+        if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
+        else { player.toggle() }
     }
 
     // MARK: - The deck row (scrolls away so Up Next can take the whole panel)

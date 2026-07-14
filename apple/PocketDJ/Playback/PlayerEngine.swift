@@ -506,6 +506,14 @@ final class PlayerEngine {
             NPLog.trace("engine card SKIP (arbiter owned elsewhere)")
             return   // yield while the Mix owns the card
         }
+        // An IDLE engine must never touch the card: after stop() a straggling observer
+        // (rate/periodic draining out) re-published the stale previous track — the traced
+        // "engine card WRITE … pos=0 dur=0" ghost that put a dead second Now Playing entry
+        // in the macOS menu bar during the local → Apple Music handoff.
+        guard player.currentItem != nil || externalActive else {
+            NPLog.trace("engine card SKIP (idle)")
+            return
+        }
         guard !nowPlayingTitle.isEmpty || !nowPlayingArtist.isEmpty else { clearNowPlayingInfo(); return }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: nowPlayingTitle,

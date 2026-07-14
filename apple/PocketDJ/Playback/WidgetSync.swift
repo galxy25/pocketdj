@@ -128,10 +128,21 @@ final class WidgetSync {
         // Refresh the cover when the song OR its AM artwork URL changes. The AM URL arrives
         // AFTER the song id (the MusicKit resolve is async) — keying on the id alone fetched
         // too early, found no art, and never retried (the "no album art in the widget" bug).
-        let coverKey = (base.songId ?? "") + "|" + (amArtworkURL(for: base.songId)?.absoluteString ?? "")
+        let amURL = amArtworkURL(for: base.songId)
+        // While that resolve is still in flight (Apple Music owns audio but its now-playing
+        // hasn't landed on this song yet) there are NO candidates — clearing the cover then
+        // flashed the placeholder on every AM track change. DEFER instead: keep the previous
+        // art on screen; the resolve republishes with the real URL within ~1s and overwrites.
+        let amPending = coordinator.activeBackend == .appleMusic
+            && coordinator.appleMusic.nowPlaying?.songId != base.songId
+        let coverKey = (base.songId ?? "") + "|" + (amURL?.absoluteString ?? (amPending ? "pending" : ""))
         if lastCoverKey != coverKey {
             lastCoverKey = coverKey
-            refreshCover(for: base.songId)
+            if amPending, amURL == nil, let songId = base.songId, artCandidates(songId).isEmpty {
+                NPLog.trace("cover DEFER (AM resolve pending) songId=\(songId)")
+            } else {
+                refreshCover(for: base.songId)
+            }
         }
         let snap = NowPlayingSnapshot(isPlaying: playing, hasContent: base.hasContent,
                                       title: base.title, artist: base.artist, songId: base.songId,

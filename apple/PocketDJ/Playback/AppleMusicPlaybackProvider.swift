@@ -37,6 +37,12 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     }
     private(set) var nowPlaying: NowPlaying?
 
+    #if DEBUG
+    /// Test seam — unit tests can't drive MusicKit (no entitlement/authorization headless),
+    /// so the SetlistPlayer adoption tests stamp the streamed now-playing state directly.
+    func setNowPlayingForTests(_ np: NowPlaying?) { nowPlaying = np }
+    #endif
+
     /// Observable playback state for the inline panel's play/pause icon. Set synchronously
     /// in togglePlayPause / tryPlay / stop because `ApplicationMusicPlayer.state.playbackStatus`
     /// is NOT Observation-tracked — a computed property off it never re-renders the icon.
