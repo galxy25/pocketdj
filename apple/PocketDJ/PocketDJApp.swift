@@ -137,6 +137,9 @@ struct PocketDJApp: App {
         // Debug capture persists across launches: a relaunch mid-repro starts a fresh session
         // immediately (the buffer is memory-only — see MixDiag / Settings ▸ Debug).
         if settings.debugLoggingEnabled { MixDiag.shared.start() }
+        // Now Playing trace → the same Settings ▸ Debug capture buffer (os_log is unconditional;
+        // this mirror only adds the lines to the exportable session while capture is on).
+        NPLog.mirror = { MixDiag.shared.append($0) }
         _edits = State(initialValue: edits)
         _collections = State(initialValue: collections)
         _musicSync = State(initialValue: musicSync)

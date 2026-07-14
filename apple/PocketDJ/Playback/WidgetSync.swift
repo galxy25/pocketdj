@@ -57,6 +57,7 @@ final class WidgetSync {
     /// AVPlayer: no audible effect, a wrong `isPlaying`, and (before the engine's idle guard) a
     /// resurrected stale Now Playing card on macOS.
     private func transportToggle() {
+        NPLog.trace("widgetSync toggle → \(coordinator.activeBackend == .appleMusic ? "appleMusic" : "engine")")
         if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
         else { player.toggle() }
     }
@@ -65,6 +66,7 @@ final class WidgetSync {
     /// the app becomes active (`scenePhase == .active`). Stale commands are discarded by `drain`.
     func drainPendingCommand(now: TimeInterval) {
         guard let c = WidgetCommandChannel.drain(now: now) else { return }
+        NPLog.trace("widgetSync drain cmd=\(c.rawValue)")
         switch c {
         case .toggle:   transportToggle()
         case .next:     setlist.skipNext()
@@ -136,6 +138,7 @@ final class WidgetSync {
                                       coverVersion: coverVersion, upNext: base.upNext)
         guard snap != lastPublished else { return }
         lastPublished = snap
+        NPLog.trace("widgetSync publish title=\(snap.title) playing=\(snap.isPlaying) hasContent=\(snap.hasContent) upNext=\(snap.upNext.count) coverV=\(snap.coverVersion) groupOK=\(NowPlayingShared.defaults != nil)")
         NowPlayingShared.write(snap)
         // WidgetKit reached visionOS only in visionOS 26; the app itself targets visionOS 2.0,
         // so gate the reload there (always runs on iOS/macOS — the `*` covers them).
@@ -165,10 +168,19 @@ final class WidgetSync {
     private func refreshCover(for songId: String?) {
         coverToken += 1
         let token = coverToken
-        guard let url = NowPlayingShared.coverURL else { return }
-        guard let songId else { try? FileManager.default.removeItem(at: url); return }   // idle
+        guard let url = NowPlayingShared.coverURL else {
+            NPLog.trace("cover ABORT: shared container URL is nil (App Group entitlement missing?)")
+            return
+        }
+        guard let songId else {
+            NPLog.trace("cover clear (idle)")
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
         let urls = candidateArtURLs(for: songId)
+        NPLog.trace("cover refresh songId=\(songId) amURL=\(amArtworkURL(for: songId) != nil) candidates=\(urls.count) first=\(urls.first?.host() ?? "-")")
         guard !urls.isEmpty else {
+            NPLog.trace("cover NONE (no candidates) → clearing file")
             try? FileManager.default.removeItem(at: url)
             coverVersion += 1
             publish()
@@ -178,8 +190,14 @@ final class WidgetSync {
             let img = await PlayerEngine.loadFirstImage(urls)
             guard let self, self.coverToken == token else { return }   // song changed → drop
             if let img, let data = Self.pngData(img) {
-                try? data.write(to: url)
+                do {
+                    try data.write(to: url)
+                    NPLog.trace("cover WROTE \(data.count) bytes → \(url.path)")
+                } catch {
+                    NPLog.trace("cover WRITE FAILED: \(error.localizedDescription) → \(url.path)")
+                }
             } else {
+                NPLog.trace("cover FETCH FAILED (no decodable image from \(urls.count) candidates)")
                 try? FileManager.default.removeItem(at: url)
             }
             self.coverVersion += 1

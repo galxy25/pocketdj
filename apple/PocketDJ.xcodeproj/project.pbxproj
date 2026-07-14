@@ -197,6 +197,7 @@
 		B898F4FAE41F6E2A5E22D429 /* MultiWindowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2987181AC4CC69F7A55090A9 /* MultiWindowUITests.swift */; };
 		B9A7D3A3CE5FE4F3975EE67A /* StudioLoopsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E77A950E97B04B29A81DD77C /* StudioLoopsView.swift */; };
 		BAFA0D51A1849142E5E57539 /* StreamingTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E8C2DD561AF74400DBCC31D /* StreamingTokenStore.swift */; };
+		BC61F67B6639F106E90B6E94 /* NPLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40CC1845961FA5A883E7948 /* NPLog.swift */; };
 		BE0A68CB35D79D19E8F3BE19 /* CollectionEntities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062A71FEE25295D13FE6D0C5 /* CollectionEntities.swift */; };
 		C09542D7C94CA0F28546F0BC /* BeatDetect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DE2815FA8B5F6C9FF6963D7 /* BeatDetect.swift */; };
 		C1AB5B010C362B8302A08491 /* MixSessionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F55233022B55C3CC5A424C /* MixSessionsUITests.swift */; };
@@ -245,6 +246,7 @@
 		F3143165D3632F8653E1AF92 /* PlaylistZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7562C2EA3EFBDA57B609FB06 /* PlaylistZip.swift */; };
 		F41FA8D7BD914690A5157901 /* BrowseState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B035DC97A86BFB0627971DD2 /* BrowseState.swift */; };
 		F4E53957FC59E0EC7E18747F /* StorageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F889E5396B287E65AA5D0DE /* StorageView.swift */; };
+		F5274C56B73D14A4D351B6A4 /* NPLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40CC1845961FA5A883E7948 /* NPLog.swift */; };
 		F5F19BF690F2300C871BFCF9 /* CollectionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E03F079CBD183396624647B /* CollectionsStore.swift */; };
 		F7F0807994DDB805525579AB /* KeyChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25741D198A372D9021096109 /* KeyChip.swift */; };
 		F8772450A4B5E5BB58C7508F /* StudioFolders.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD092F0A0E9902C7C1C595C6 /* StudioFolders.swift */; };
@@ -511,6 +513,7 @@
 		D2029A228A8A050D0687E5F1 /* PocketDJWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = PocketDJWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2792CB4F9A27A1DD41CCA9C /* KeyDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyDetectorTests.swift; sourceTree = "<group>"; };
 		D3DD5E074598B689C0ADD443 /* FoundationModelPocketBrief.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelPocketBrief.swift; sourceTree = "<group>"; };
+		D40CC1845961FA5A883E7948 /* NPLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NPLog.swift; sourceTree = "<group>"; };
 		D45F7B87012D1D02032004AD /* ScoreModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreModel.swift; sourceTree = "<group>"; };
 		D7F55233022B55C3CC5A424C /* MixSessionsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixSessionsUITests.swift; sourceTree = "<group>"; };
 		D9B8DAE7F1A6BAD5DDE91D4B /* StudioRender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRender.swift; sourceTree = "<group>"; };
@@ -716,6 +719,7 @@
 			isa = PBXGroup;
 			children = (
 				5E68B627E11B43B6DA0FFC32 /* NowPlayingSnapshot.swift */,
+				D40CC1845961FA5A883E7948 /* NPLog.swift */,
 				CB67ACEBFBA39A524C4A44F1 /* WidgetTransport.swift */,
 			);
 			path = Shared;
@@ -1330,6 +1334,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BC61F67B6639F106E90B6E94 /* NPLog.swift in Sources */,
 				14E16C43AE31E8DAAA56FCB0 /* NowPlayingSnapshot.swift in Sources */,
 				1D87FE3C5DCC6914B83A7C30 /* NowPlayingWidget.swift in Sources */,
 				EADE0720310CF88B1EB5937C /* PocketDJWidgetBundle.swift in Sources */,
@@ -1409,6 +1414,7 @@
 				932BFB3E2F789C39750B8052 /* MushroomCloud.swift in Sources */,
 				8C8C7189D46D9E5852920B66 /* MusicLibraryContributor.swift in Sources */,
 				3CD4922BC584DAF75D116864 /* MusicSyncClient.swift in Sources */,
+				F5274C56B73D14A4D351B6A4 /* NPLog.swift in Sources */,
 				90BCD1BC6CBAB5CA623C2397 /* NowPlayingArbiter.swift in Sources */,
 				9DCC97376B351DA7CD092249 /* NowPlayingPanel.swift in Sources */,
 				785A2283E86AF6FBB36C7E97 /* NowPlayingSnapshot.swift in Sources */,

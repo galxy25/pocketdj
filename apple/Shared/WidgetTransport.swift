@@ -85,6 +85,10 @@ private func dispatchWidgetTransport(_ command: WidgetCommandChannel.Command) {
     case .next:     inProcess = c.next
     case .previous: inProcess = c.previous
     }
+    // Which PROCESS an intent ran in is the crux of widget-button debugging: in the app
+    // process the closure is wired (direct drive); in the widget process it's nil → the
+    // App-Group command channel + Darwin-notification wake-up.
+    NPLog.trace("intent \(command.rawValue) via \(inProcess != nil ? "in-process closure" : "command channel")")
     if let inProcess { inProcess() } else { WidgetCommandChannel.send(command) }
 }
 

@@ -18,21 +18,30 @@ struct NowPlayingEntry: TimelineEntry {
 }
 
 struct NowPlayingProvider: TimelineProvider {
+    /// Read the shared state + trace what THIS (widget) process actually sees — the app-side
+    /// trace shows what was written; diffing the two pins down container/entitlement gaps.
+    private func currentEntry() -> NowPlayingEntry {
+        NPLog.processTag = "widget"
+        let snap = NowPlayingShared.read()
+        let cover = NowPlayingShared.readCoverData()
+        NPLog.trace("timeline read title=\(snap.title) hasContent=\(snap.hasContent) playing=\(snap.isPlaying) coverV=\(snap.coverVersion) coverBytes=\(cover?.count ?? -1) groupOK=\(NowPlayingShared.defaults != nil) container=\(NowPlayingShared.containerURL?.path ?? "nil")")
+        return NowPlayingEntry(date: Date(), snapshot: snap, coverData: cover)
+    }
+
     func placeholder(in context: Context) -> NowPlayingEntry {
         NowPlayingEntry(date: Date(), snapshot: .sample, coverData: nil)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (NowPlayingEntry) -> Void) {
-        let snap = context.isPreview ? .sample : NowPlayingShared.read()
-        completion(NowPlayingEntry(date: Date(), snapshot: snap, coverData: NowPlayingShared.readCoverData()))
+        completion(context.isPreview
+            ? NowPlayingEntry(date: Date(), snapshot: .sample, coverData: nil)
+            : currentEntry())
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NowPlayingEntry>) -> Void) {
         // Single entry; the APP drives refreshes via WidgetCenter.reloadAllTimelines() whenever
         // the now-playing state changes, so there's no time-based schedule to keep.
-        let entry = NowPlayingEntry(date: Date(), snapshot: NowPlayingShared.read(),
-                                    coverData: NowPlayingShared.readCoverData())
-        completion(Timeline(entries: [entry], policy: .never))
+        completion(Timeline(entries: [currentEntry()], policy: .never))
     }
 }
 

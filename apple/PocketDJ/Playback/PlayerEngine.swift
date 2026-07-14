@@ -185,6 +185,7 @@ final class PlayerEngine {
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "",
               songId: String? = nil, endBoundaryMs: Int? = nil, scopeRelease: (() -> Void)? = nil) {
         // Loading a real item ends any external-source impersonation (Apple Music handoff).
+        NPLog.trace("engine.load title=\(title) live=\(live)")
         endExternalNowPlaying()
         // Defensively re-arm the audio session: an interruption (call / other app) can
         // deactivate it, and a backgrounded set must keep playing across track boundaries.
@@ -242,19 +243,19 @@ final class PlayerEngine {
 
     func play() {
         // External mode: resume the streaming player, not our idle AVPlayer.
-        if externalActive { externalPlay?(); isPlaying = true; updateNowPlayingInfo(); return }
+        if externalActive { NPLog.trace("engine.play → external stream"); externalPlay?(); isPlaying = true; updateNowPlayingInfo(); return }
         // IDLE GUARD: no item and not external ⇒ there is NO audio for this engine to start.
         // A blind play() here used to re-claim the arbiter and re-write the Now Playing card
         // with the PREVIOUS track's stale title (the macOS "ghost second card" bug) and flip
         // `isPlaying` with no sound behind it (the widget play-state mismatch). Refuse it.
-        guard player.currentItem != nil else { return }
+        guard player.currentItem != nil else { NPLog.trace("engine.play REFUSED (idle)"); return }
         NowPlayingArbiter.shared.claim(self)
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
-        if externalActive { externalPause?(); isPlaying = false; updateNowPlayingInfo(); return }
-        guard player.currentItem != nil else { return }   // idle ⇒ nothing to pause (see play())
+        if externalActive { NPLog.trace("engine.pause → external stream"); externalPause?(); isPlaying = false; updateNowPlayingInfo(); return }
+        guard player.currentItem != nil else { NPLog.trace("engine.pause REFUSED (idle)"); return }
         player.pause(); isPlaying = false; updateNowPlayingInfo()
     }
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
@@ -262,7 +263,7 @@ final class PlayerEngine {
     func toggle() {
         toggleCount += 1
         if externalActive { (externalIsPlaying?() ?? isPlaying) ? pause() : play(); return }
-        guard player.currentItem != nil else { return }   // idle ⇒ no-op (see play())
+        guard player.currentItem != nil else { NPLog.trace("engine.toggle REFUSED (idle)"); return }
         player.timeControlStatus == .paused ? play() : pause()
     }
 
@@ -313,6 +314,7 @@ final class PlayerEngine {
         scopeRelease?(); scopeRelease = nil
         isLive = false
 
+        NPLog.trace("engine → beginExternalNowPlaying title=\(title) dur=\(Int(durationSeconds)) (iOS AM: own the card for MusicKit)")
         externalActive = true
         externalPosition = position
         externalIsPlaying = isPlaying
@@ -355,6 +357,7 @@ final class PlayerEngine {
     /// (`onTrackEnded`) and the in-app deck read the coordinator directly, so no card takeover is
     /// needed here; we only silence our AVPlayer (a prior local track) and drop our stale card.
     func idleForExternalPlayback() {
+        NPLog.trace("engine → idleForExternalPlayback (macOS AM: scrub card, go inert)")
         endExternalNowPlaying()
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -499,7 +502,10 @@ final class PlayerEngine {
     /// Push current track metadata + playback position to the Now Playing card. Skipped
     /// for a live stream's duration (it has none); the card still shows title + artist.
     private func updateNowPlayingInfo() {
-        guard NowPlayingArbiter.shared.isActive(self) else { return }   // yield while the Mix owns the card
+        guard NowPlayingArbiter.shared.isActive(self) else {
+            NPLog.trace("engine card SKIP (arbiter owned elsewhere)")
+            return   // yield while the Mix owns the card
+        }
         guard !nowPlayingTitle.isEmpty || !nowPlayingArtist.isEmpty else { clearNowPlayingInfo(); return }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: nowPlayingTitle,
@@ -510,6 +516,7 @@ final class PlayerEngine {
         ]
         if !isLive, duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
         if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
+        NPLog.trace("engine card WRITE title=\(nowPlayingTitle) playing=\(isPlaying) pos=\(Int(currentTime)) dur=\(Int(duration)) art=\(nowPlayingArtwork != nil) external=\(externalActive)")
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         // Also set the explicit playbackState: CarPlay (the head-unit Now Playing template + the
         // system "Now Playing" app) and watchOS rely on it, not just the info dict's PlaybackRate.
@@ -551,6 +558,7 @@ final class PlayerEngine {
 
     private func clearNowPlayingInfo() {
         guard NowPlayingArbiter.shared.isActive(self) else { return }   // don't wipe the Mix's card
+        NPLog.trace("engine card CLEAR (+resign)")
         MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         NowPlayingArbiter.shared.resign(self)                           // release so the Mix can reclaim

@@ -142,6 +142,7 @@ extension AppleMusicPlaybackProvider {
             // Capture the catalog artwork URL — the app's own now-playing surfaces (home deck +
             // widget) can't get a cover from our art-less AM-Local catalog, so this is it.
             let artURL = catalogSong.artwork?.url(width: 600, height: 600)
+            NPLog.trace("AM play title=\(song.name) dur=\(Int(durationSeconds)) artURL=\(artURL != nil)")
             nowPlaying = NowPlaying(songId: song.id, title: song.name, artist: song.artist,
                                     artworkURL: artURL)
             // 4) Arm the end-of-track monitor so the setlist advances when this streaming song
@@ -220,10 +221,12 @@ extension AppleMusicPlaybackProvider {
                 if status == .playing {
                     everPlayed = true
                     if !self.isPlaying {              // resumed from OUTSIDE (MusicKit's card)
+                        NPLog.trace("AM monitor: external RESUME at \(Int(player.playbackTime))s")
                         self.isPlaying = true
                         self.startPositionClock(from: player.playbackTime)
                     }
                 } else if everPlayed, status == .paused, self.isPlaying {
+                    NPLog.trace("AM monitor: external PAUSE at \(Int(player.playbackTime))s")
                     self.isPlaying = false            // paused from OUTSIDE — freeze at the
                     self.positionBase = player.playbackTime   // exact (state-change) position
                     self.positionStartWall = nil
@@ -233,6 +236,7 @@ extension AppleMusicPlaybackProvider {
                     && player.playbackTime >= expected - 0.5
                     && status != .paused
                 if status == .stopped || reachedEnd {
+                    NPLog.trace("AM monitor: track ENDED (status=\(status == .stopped ? "stopped" : "past-duration"))")
                     self.isPlaying = false
                     self.freezePositionClock()
                     self.stateMonitor = nil
