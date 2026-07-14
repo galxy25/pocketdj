@@ -171,6 +171,16 @@ final class PlaybackCoordinator {
         activeBackend = nil
     }
 
+    /// Stop the Apple Music stream IF it's the active backend. Local files (burned/studio) play
+    /// through `PlayerEngine` directly, bypassing this coordinator, so when the setlist advances
+    /// from a streamed track to a local one nothing else stops MusicKit — without this the
+    /// previous song keeps playing underneath the new one.
+    func stopAppleMusicIfActive() {
+        guard activeBackend == .appleMusic else { return }
+        appleMusic.stop()
+        activeBackend = nil
+    }
+
     /// Is `songId` the Apple Music now-playing song? (The rip path keeps keying off
     /// `RipsStore.nowPlaying` directly — the coordinator doesn't duplicate that state — so
     /// this only answers the Apple Music branch. The row ▶ ORs the two together.)

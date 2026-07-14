@@ -453,6 +453,9 @@ struct IndexPlaylistDetailView: View {
                 Button { play() } label: { Label("Play", systemImage: "play.fill") }
                     .disabled(songs.isEmpty)
                     .accessibilityIdentifier("indexplaylist-play")
+                Button { shufflePlay() } label: { Label("Shuffle", systemImage: "shuffle") }
+                    .disabled(songs.isEmpty)
+                    .accessibilityIdentifier("indexplaylist-shuffle")
                 Button { duplicate() } label: { Label("Duplicate as editable playlist", systemImage: "plus.square.on.square") }
                     .accessibilityIdentifier("indexplaylist-duplicate")
                 Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
@@ -480,6 +483,13 @@ struct IndexPlaylistDetailView: View {
 
     private func play() {
         if let sl = collections.realize(songIds: source.songIds, name: source.name) { path.append(sl) }
+    }
+    /// Shuffle-play this read-only source playlist (e.g. an Apple Music user playlist) IN PLACE —
+    /// no longer requires duplicating it into an editable playlist first. Reuses the same
+    /// reserved Now-Playing setlist + autoplay path the editable playlist's Shuffle button uses.
+    private func shufflePlay() {
+        collections.playNow(songIds: source.songIds, name: source.name, shuffle: true, source: .playlist)
+        path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
     private func duplicate() {
         let pl = collections.createPlaylist(source.name, songIds: source.songIds)

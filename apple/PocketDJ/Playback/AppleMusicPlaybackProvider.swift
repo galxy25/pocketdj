@@ -36,6 +36,22 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// is NOT Observation-tracked — a computed property off it never re-renders the icon.
     private(set) var isPlaying: Bool = false
 
+    /// The resolved catalog track's length (seconds), captured at play time. Drives the
+    /// lock-screen / CarPlay Now Playing card's duration (the streaming player exposes no
+    /// duration the sequencer can read) and the end-monitor's completion backstop. 0 ⇒ unknown.
+    private(set) var durationSeconds: Double = 0
+
+    /// Fired when the CURRENT streaming track reaches its natural end, so the setlist
+    /// sequencer can advance. MusicKit's `ApplicationMusicPlayer` is a SEPARATE player the
+    /// sequencer doesn't observe, so WITHOUT this the set freezes after one Apple Music song
+    /// (the "plays one song then stops" bug). Owned by `SetlistPlayer` across its play()/stop()
+    /// lifecycle (mirroring `PlayerEngine.onTrackEnded`); nil ⇒ no consumer.
+    var onTrackEnded: (() -> Void)?
+
+    /// The polling task that watches `ApplicationMusicPlayer` for end-of-track. Cancelled on
+    /// stop / superseded on each new `tryPlay`.
+    @ObservationIgnored private var endMonitor: Task<Void, Never>?
+
     /// The wrapped account-link + recognizer. Held as the concrete type (not `any
     /// StreamingProvider`) so we can call `resolve(_:)`.
     private let provider: AppleMusicProvider
@@ -88,7 +104,11 @@ extension AppleMusicPlaybackProvider {
             //    sticks — a write before the queue item is ready would be ignored.
             if let atMs, atMs > 0 { seek(to: Double(atMs) / 1000) }
             isPlaying = true
+            durationSeconds = catalogSong.duration ?? 0
             nowPlaying = NowPlaying(songId: song.id, title: song.name, artist: song.artist)
+            // 4) Arm the end-of-track monitor so the setlist advances when this streaming song
+            //    finishes (nothing else observes MusicKit's player).
+            startEndMonitor()
             return true
         } catch {
             // A real playback failure (e.g. no active subscription) — don't claim the win,
@@ -109,15 +129,58 @@ extension AppleMusicPlaybackProvider {
         }
     }
 
+    /// Explicit resume/pause — used by the lock-screen / CarPlay remote play/pause commands,
+    /// which must land in a KNOWN state (not toggle blindly off a possibly-stale status).
+    func resume() {
+        isPlaying = true
+        Task { try? await ApplicationMusicPlayer.shared.play() }
+    }
+    func pausePlayback() {
+        ApplicationMusicPlayer.shared.pause()
+        isPlaying = false
+    }
+
     /// Seek the streaming player to an absolute position (seconds).
     func seek(to seconds: Double) {
         ApplicationMusicPlayer.shared.playbackTime = max(0, seconds)
     }
 
     func stop() {
+        endMonitor?.cancel(); endMonitor = nil
         ApplicationMusicPlayer.shared.stop()
         isPlaying = false
         nowPlaying = nil
+    }
+
+    /// Poll `ApplicationMusicPlayer` for end-of-track and fire `onTrackEnded` ONCE. MusicKit
+    /// gives no reliable end callback, so we watch its state: the single-item queue finishes
+    /// as `.stopped`, and — as a backstop when `.stopped` doesn't post — we also treat "played
+    /// past the known duration while not paused" as the end. The poll only runs while a
+    /// streaming track plays; it's superseded on the next `tryPlay` and cancelled on `stop`.
+    /// A ~0.4 s cadence is imperceptible for advancing between streamed songs.
+    private func startEndMonitor() {
+        endMonitor?.cancel()
+        let expected = durationSeconds
+        endMonitor = Task { [weak self] in
+            let player = ApplicationMusicPlayer.shared
+            var everPlayed = false
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard let self, !Task.isCancelled else { return }
+                let status = player.state.playbackStatus
+                if status == .playing { everPlayed = true }
+                guard everPlayed else { continue }   // ignore the pre-roll before audio starts
+                let reachedEnd = expected > 0
+                    && player.playbackTime >= expected - 0.5
+                    && status != .paused
+                if status == .stopped || reachedEnd {
+                    self.isPlaying = false
+                    self.endMonitor = nil
+                    self.onTrackEnded?()
+                    return
+                }
+            }
+        }
     }
 }
 
@@ -130,7 +193,9 @@ extension AppleMusicPlaybackProvider {
     var positionSeconds: Double { 0 }
     func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool { false }
     func togglePlayPause() {}
+    func resume() {}
+    func pausePlayback() {}
     func seek(to seconds: Double) {}
-    func stop() { nowPlaying = nil }
+    func stop() { endMonitor?.cancel(); endMonitor = nil; nowPlaying = nil }
 }
 #endif

@@ -676,6 +676,90 @@ final class PlayerEngineBoundaryTests: XCTestCase {
     }
 }
 
+/// EXTERNAL now-playing (Apple Music streaming). During a streamed setlist track MusicKit's
+/// `ApplicationMusicPlayer` produces the audio but writes nothing to the lock-screen / CarPlay
+/// card and swallows the system next button. `PlayerEngine.beginExternalNowPlaying` makes the
+/// engine OWN the card + remote transport on MusicKit's behalf: it publishes state, routes
+/// play/pause to the stream's closures, and its ⏭/⏮ still drive the set. These tests drive that
+/// surface directly (the real MusicKit path needs authorization + a live catalog, so it can't
+/// run headlessly).
+@MainActor
+final class PlayerEngineExternalNowPlayingTests: XCTestCase {
+    private let localURL = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-ext.mp3")
+
+    /// Handles to observe how the remote transport routes while external.
+    private struct ExternalProbe {
+        var plays = 0
+        var pauses = 0
+        var streamPlaying = true
+        var position = 12.0
+    }
+
+    private func beginExternal(_ engine: PlayerEngine, probe: @escaping () -> ExternalProbe,
+                               mutate: @escaping ((inout ExternalProbe) -> Void) -> Void,
+                               durationSeconds: Double = 200) {
+        engine.beginExternalNowPlaying(
+            title: "Streamed", artist: "AM", songId: "am:123", durationSeconds: durationSeconds,
+            position: { probe().position },
+            isPlaying: { probe().streamPlaying },
+            play: { mutate { $0.plays += 1; $0.streamPlaying = true } },
+            pause: { mutate { $0.pauses += 1; $0.streamPlaying = false } })
+    }
+
+    /// beginExternalNowPlaying publishes playing state + the stream's duration, and marks the
+    /// engine playing (so the card shows ▶ and the scrubber has a range).
+    func testBeginExternalPublishesPlayingStateAndDuration() {
+        let engine = PlayerEngine()
+        var box = ExternalProbe()
+        beginExternal(engine, probe: { box }, mutate: { $0(&box) }, durationSeconds: 200)
+        XCTAssertTrue(engine.isPlaying, "external track shows as playing")
+        XCTAssertEqual(engine.duration, 200, accuracy: 0.001, "the stream's duration drives the card range")
+    }
+
+    /// While external, the remote play/pause commands drive the STREAM's closures (not the idle
+    /// AVPlayer), and `toggle()` respects the stream's real play state.
+    func testExternalTransportRoutesToStreamClosures() {
+        let engine = PlayerEngine()
+        var box = ExternalProbe()
+        beginExternal(engine, probe: { box }, mutate: { $0(&box) })
+
+        engine.pause()
+        XCTAssertEqual(box.pauses, 1, "remote pause paused the STREAM")
+        XCTAssertFalse(engine.isPlaying)
+
+        engine.play()
+        XCTAssertEqual(box.plays, 1, "remote play resumed the STREAM")
+        XCTAssertTrue(engine.isPlaying)
+
+        // toggle() reads the stream's real state: now playing → toggle pauses it.
+        engine.toggle()
+        XCTAssertEqual(box.pauses, 2, "toggle paused the playing stream")
+    }
+
+    /// Loading a REAL local item ends external impersonation: transport goes back to the AVPlayer,
+    /// so the stream's pause closure is no longer called.
+    func testLoadingLocalItemEndsExternalMode() {
+        let engine = PlayerEngine()
+        var box = ExternalProbe()
+        beginExternal(engine, probe: { box }, mutate: { $0(&box) })
+
+        engine.load(url: localURL, live: false, startMs: nil)   // a real (local) track supersedes
+        engine.pause()
+        XCTAssertEqual(box.pauses, 0, "after loading a local track, pause no longer routes to the stream")
+    }
+
+    /// stop() ends external impersonation too (nothing routes to the stream afterward).
+    func testStopEndsExternalMode() {
+        let engine = PlayerEngine()
+        var box = ExternalProbe()
+        beginExternal(engine, probe: { box }, mutate: { $0(&box) })
+
+        engine.stop()
+        engine.pause()
+        XCTAssertEqual(box.pauses, 0, "after stop, pause no longer routes to the stream")
+    }
+}
+
 /// Minimal `URLProtocol` serving HTTP 200 + a fixed body (the durable mp3 bytes for the
 /// burn download, and any rip-server fetch in these tests resolves to a cached S3 mp3 that
 /// is never actually loaded by AVPlayer in a headless unit run).
