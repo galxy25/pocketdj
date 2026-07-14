@@ -987,13 +987,16 @@ setlist snapshot, `track.shownMs`) — `playableItems(_:)` maps it in.
             else → SKIP the track (advance NOW — un-burned, no file, no end event)
    mode == .cloud (else) :
         burns.localURLForPlayback(id) ≠ nil ?
-            → playLocalFile(url, startMs, endBoundaryMs: bound, release: res.release)  (BURNT)
+            → coordinator.stopAppleMusicIfActive() ; playLocalFile(url, …, endBoundaryMs: bound)  (BURNT)
             else → coordinator.play(id)   (Apple Music → rip fallback, §8)             (STREAM)
                   coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
+                  activeBackend == .appleMusic → player.beginExternalNowPlaying(…)  ← AM STREAM
+                       (PlayerEngine owns the card + ⏭/⏮/⏯ on MusicKit's behalf; advance
+                        rides coordinator.appleMusic.onTrackEnded → handleAppleMusicEnded)
                   player.isLive → waitingForLive = true ("Next" affordance, no auto-end)
                   else (cloud-analog = ONE shared mp3) → player.setEndBoundary(ms: bound)
-   ▼ handleEnded()  (natural end OR position boundary — §7 one-shot latch)
-   GUARD rips.nowPlaying?.songId == queue[index].id  → advance() ; index≥count → stop()
+   ▼ handleEnded() / handleAppleMusicEnded()  (natural end OR position boundary — §7 one-shot latch)
+   GUARD nowPlaying.songId == queue[index].id  → advance() ; index≥count → stop()
         on stop, if mode==.device && !loadedAnyDeviceTrack → deviceQueueUnplayable=true (banner)
 
  observeNowPlaying → adoptNowPlayingIfJumped()  (RipsStore.nowPlaying changed):
@@ -1019,6 +1022,22 @@ a cloud-analog stream resolves) and the **position observer advances at the trac
 even though `.AVPlayerItemDidPlayToEndTime` won't fire until the end of the **whole** album
 file. Both end signals funnel through §7's **one-shot latch**, so the shared boundary and a
 natural end can't double-advance.
+
+**Apple Music streaming — the external Now Playing handoff.** An Apple Music track streams
+through **MusicKit's `ApplicationMusicPlayer`**, a *separate* player the sequencer's
+`PlayerEngine.onTrackEnded` hook never sees. Two seams bridge it back into the sequencer:
+(1) **`AppleMusicPlaybackProvider`** polls MusicKit for end-of-track and fires a new
+**`onTrackEnded`**, which `SetlistPlayer.handleAppleMusicEnded` turns into an advance (mirroring
+`handleEnded`, but guarded on `coordinator.appleMusic.nowPlaying` since the streaming path never
+sets `RipsStore.nowPlaying`); and (2) **`PlayerEngine.beginExternalNowPlaying`** hands the
+lock-screen / CarPlay card + remote transport to `PlayerEngine` *on MusicKit's behalf* — it
+claims the `NowPlayingArbiter`, publishes title/artist/artwork + a live elapsed clock (pulled
+from `appleMusic.positionSeconds` on a ~1 Hz ticker), and routes **⏭/⏮** to the set and
+**⏯** to the stream (`resume`/`pausePlayback`) while idling its own AVPlayer so nothing
+double-plays. Without this the streamed set played one song then froze, the CarPlay card was
+blank, and the system next button (bound to MusicKit's one-song queue) did nothing. When the
+set later advances to a **local/burnt** track, `coordinator.stopAppleMusicIfActive()` silences
+the stream (local files bypass the coordinator, so nothing else would).
 
 **Mode branch.** In **`.cloud`** (today's default) it plays the burnt local file if present
 else streams via `PlaybackCoordinator` (§8). In **`.device`** it plays **only** the burnt

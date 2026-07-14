@@ -201,6 +201,13 @@ shared set** that's **reused** every time, hitting **▶ Play** or **🔀 Shuffl
 from your set-list history** and **cleared on launch**, so it never clutters the sets you've
 deliberately saved.
 
+**Read-only source playlists shuffle in place too.** A playlist that came from one of your
+sources — e.g. an **Apple Music** user playlist — is read-only, so it used to offer only **▶
+Play**; to shuffle it you first had to **Duplicate as editable playlist**. Now the read-only
+detail screen carries its own **🔀 Shuffle** button right next to **▶ Play**, so you can
+shuffle an Apple Music playlist **without duplicating it first** — it drops straight into
+Now Playing and starts.
+
 Landing in **Now Playing** drops you into the normal setlist screen ([Setlist ▸ ▶ Play — play the whole set in order](play-rip-burn.md#setlist---play--play-the-whole-set-in-order)), so you can **see
 what's next and reorder it on the fly** while it plays — exactly the controls you'd want with a
 set running.
