@@ -52,7 +52,7 @@ meets the phone and the operating system.
 | [**Play, Rip & Burn**](./storybook/play-rip-burn.md) | Playback & Rip-on-Demand | Making the catalog audible: the inline / mini **player**, **rip-on-demand** with live streaming, whole-set **Rip** and **Burn** for offline, the **device/cloud** toggle, the length-aware **transport**, the offline-first catalog, and the home **Now Playing** deck. |
 | [**Mix & Stems**](./storybook/mix-and-stems.md) | Performance Engine (Mix) | The two-deck **DJ console** — per-deck controls, effects, crossfader, beat-match **Sync**, the **Auto-Mix** auto-DJ with FX/Mix glide — plus **stems** (audition, mix decks, offline burn) and session recording + replay. |
 | [**The Studio**](./storybook/studio.md) | Performance Engine (Studio) | Make your own material: **samples** (from a track, the mic, a file, or an external input), **loops**, a 16-step **sequencer**, seven **virtual instruments** with sheet music, **instrumentals**, **cue points**, and how your creations live inside collections. |
-| [**Native & System Integration**](./storybook/native-and-system-integration.md) | Distribution & Clients | Where PocketDJ meets the OS: the **"?♪?" recognizer**, **streaming-account** linking, **Siri / Shortcuts / Spotlight**, **CarPlay**, and the Settings utilities — the storage manager and remote-debug capture. |
+| [**Native & System Integration**](./storybook/native-and-system-integration.md) | Distribution & Clients | Where PocketDJ meets the OS: the **"?♪?" recognizer**, **streaming-account** linking, **Siri / Shortcuts / Spotlight**, **CarPlay**, the **Now Playing widgets**, and the Settings utilities — the storage manager and remote-debug capture. |
 
 ---
 

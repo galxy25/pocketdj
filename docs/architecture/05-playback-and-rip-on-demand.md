@@ -990,19 +990,26 @@ setlist snapshot, `track.shownMs`) — `playableItems(_:)` maps it in.
             → coordinator.stopAppleMusicIfActive() ; playLocalFile(url, …, endBoundaryMs: bound)  (BURNT)
             else → coordinator.play(id)   (Apple Music → rip fallback, §8)             (STREAM)
                   coordinator.lastErrorMessage ≠ nil → advance NOW (dead source, no end event)
-                  activeBackend == .appleMusic → player.beginExternalNowPlaying(…)  ← AM STREAM
-                       (PlayerEngine owns the card + ⏭/⏮/⏯ on MusicKit's behalf; advance
-                        rides coordinator.appleMusic.onTrackEnded → handleAppleMusicEnded)
+                  activeBackend == .appleMusic → handOffCardToAppleMusic(it)       ← AM STREAM
+                       (iOS/CarPlay: player.beginExternalNowPlaying — PlayerEngine owns the
+                        card + ⏭/⏮/⏯ on MusicKit's behalf · macOS: player.idleForExternalPlayback
+                        — MusicKit's OWN Control Center entry is THE card, ours goes inert;
+                        advance rides coordinator.appleMusic.onTrackEnded → handleAppleMusicEnded)
                   player.isLive → waitingForLive = true ("Next" affordance, no auto-end)
                   else (cloud-analog = ONE shared mp3) → player.setEndBoundary(ms: bound)
    ▼ handleEnded() / handleAppleMusicEnded()  (natural end OR position boundary — §7 one-shot latch)
    GUARD nowPlaying.songId == queue[index].id  → advance() ; index≥count → stop()
         on stop, if mode==.device && !loadedAnyDeviceTrack → deviceQueueUnplayable=true (banner)
 
- observeNowPlaying → adoptNowPlayingIfJumped()  (RipsStore.nowPlaying changed):
-   re-arm observation ; guard isRunning ; nowPlaying.songId ≠ queue[index].id ?
+ observeNowPlaying → adoptNowPlayingIfJumped()  (RipsStore.nowPlaying OR
+                                     coordinator.appleMusic.nowPlaying / activeBackend changed):
+   re-arm observation ; npId = (activeBackend == .appleMusic ? coordinator.appleMusic
+                                                             : rips).nowPlaying.songId
+   guard isRunning ; npId ≠ queue[index].id ?
      pos = nearestOccurrence(of: npId, to: index)   (in-set? FORWARD-preferred on a tie)
-     index = pos ; player.setEndBoundary(ms: startMs(nowPlaying) + lengthMs)   ← ADOPT
+     index = pos                                                                   ← ADOPT
+       AM  → handOffCardToAppleMusic(queue[pos])   (same card handoff as playCurrent)
+       rip → player.setEndBoundary(ms: startMs(nowPlaying) + lengthMs)
 ```
 
 **Reading the diagram.** `play(items)` seeds the queue, flips `isRunning`, and takes
@@ -1039,6 +1046,29 @@ blank, and the system next button (bound to MusicKit's one-song queue) did nothi
 set later advances to a **local/burnt** track, `coordinator.stopAppleMusicIfActive()` silences
 the stream (local files bypass the coordinator, so nothing else would).
 
+**The macOS split — impersonate vs. abdicate (`handOffCardToAppleMusic`).** The handoff above
+is **per-platform**, extracted into `SetlistPlayer.handOffCardToAppleMusic(for:)` (shared by
+`playCurrent` *and* jump-adoption below). On **iOS/CarPlay** MusicKit writes *nothing* to the
+system card, so `beginExternalNowPlaying` impersonates it as described. On **macOS** MusicKit's
+`ApplicationMusicPlayer` **already publishes its own full Control Center / menu-bar Now Playing
+entry** — publishing ours too showed **two** entries — so there the engine calls
+**`idleForExternalPlayback()`** instead: it stops + empties its AVPlayer, **scrubs its
+now-playing metadata** (title/artist/songId/artwork), and clears the card if it holds the
+`NowPlayingArbiter`, making MusicKit's entry *the* card. Three robustness rules keep the two
+players from fighting: (1) **one audio owner** — every transport surface (the home deck, the
+widget, remote commands) routes play/pause by `coordinator.activeBackend`, never by comparing
+a possibly-stale row id; (2) an **idle engine refuses transport *and* card writes** —
+`play()/pause()/toggle()` and `updateNowPlayingInfo()` no-op when the AVPlayer has no item and
+no external session, killing the traced post-`stop()` straggler write that resurrected a stale
+second card; (3) an **AM state monitor** (a 0.4 s poll in `AppleMusicPlaybackProvider`)
+reconciles our `isPlaying` mirror and a **wall-clock position clock** (`positionBase` +
+`positionStartWall`, since MusicKit's `playbackTime` lags during playback) against the real
+`playbackStatus` — so a pause/resume from MusicKit's *own* macOS card, which never calls our
+code, still lands in every PocketDJ surface. All of it is traceable end-to-end: `NPLog`
+(`subsystem com.levi.pocketdj`, category `nowplaying`) logs every card write/clear/skip,
+arbiter claim/resign, handoff, adoption, and widget publish in both processes —
+`apple/scripts/np-trace.sh` captures the merged stream.
+
 **Mode branch.** In **`.cloud`** (today's default) it plays the burnt local file if present
 else streams via `PlaybackCoordinator` (§8). In **`.device`** it plays **only** the burnt
 local file and **skips** an un-burned track (advance immediately — no file, no end event);
@@ -1067,6 +1097,18 @@ and `handleEnded`'s guard then **passes** for the adopted track so it auto-advan
 **Duplicate songs** are disambiguated by **`nearestOccurrence(of:to:)`** — the occurrence
 nearest the current index, **preferring a forward occurrence on a tie** (the DJ usually taps a
 row later in the set), since the now-playing handoff carries no queue position.
+
+**Apple Music jumps adopt too.** An AM row ▶ never touches `RipsStore.nowPlaying` — its
+identity lands on `coordinator.appleMusic.nowPlaying` — so the original rip-only observation
+left AM jumps unadopted: the deck + widget stayed on the previous song, the deck toggle
+routed to the idle engine, and the AM end guard would have silently stopped the set (the
+trace-confirmed desync). The observation therefore also tracks
+`coordinator.appleMusic.nowPlaying` **and `activeBackend`** (the backend flip lands one
+main-actor turn after the now-playing stamp), and the adopted identity comes from **whichever
+backend owns the audio**. An adopted AM jump then runs the **same
+`handOffCardToAppleMusic`** the `playCurrent` AM branch uses (macOS abdicates, iOS
+impersonates) instead of arming a rip length boundary; advance rides the already-wired
+`onTrackEnded` hook, whose guard now passes.
 
 **Persistent prev/next transport.** `play()` enables the lock-screen `nextTrackCommand` /
 `previousTrackCommand` (via `setNextPreviousEnabled(true)`, §11.3) and wires the engine's

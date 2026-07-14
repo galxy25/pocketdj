@@ -835,8 +835,7 @@ the rip server off.
    ├─ "Playlists"  music.note.list      → songs (Play all / Shuffle all) → song → CPActionSheet
    ├─ "Pockets"    square.stack.fill     → songs (Play all / Shuffle all) → song → CPActionSheet
    ├─ "Albums"     opticaldisc           A–Z sectionIndexTitle → songs …
-   ├─ "Artists"    music.mic             A–Z → artist's albums (Play all / Shuffle all) → album → songs
-   └─ "Search"     magnifyingglass       category menu (Songs/Albums/Artists/Playlists) + "ask Siri"
+   └─ "Artists"    music.mic             A–Z → artist's albums (Play all / Shuffle all) → album → songs
 
  CPNowPlayingTemplate.shared  (system) ── MPNowPlayingInfoCenter set by the shared engines
    └─ Up Next button → CarPlayController.showUpNext() → CPListTemplate  (Remove / Play next / Move to end)
@@ -844,7 +843,7 @@ the rip server off.
 
 **Reading the diagram.** CarPlay is a **thin template UI over the shared engines** — the same architectural stance as every other PocketDJ client. A head unit connects a *separate* `UIScene` (`CPTemplateApplicationScene`), so `CarPlaySceneDelegate` gets **no SwiftUI environment** and therefore none of the `@State` stores that `PocketDJApp` injects into its window. Rather than construct its own `AppModel`/`CollectionsStore` — which would silently **fork a second catalog/mix graph** — the controller reaches the one live instance through `IntentServices.shared`, the process-wide handle the app registers in `PocketDJApp.init()` (the same escape hatch App Intents use from outside the view hierarchy; Ch. 7 §7). `CarPlayModel` is deliberately `import CarPlay`-free: it maps the shared stores to plain `Row`/`UpNextItem` value types (so it unit-tests on the plain host and compiles on every platform), and the iOS-only scene file is the adapter that turns those into `CPListItem`/`CPListTemplate` and fetches thumbnails. Because playback always routes through `IntentServices` → the app-scoped `SetlistPlayer`, **the head unit's Now Playing is the phone's Now Playing** — one queue, one transport, no second copy.
 
-**Startup + the tab set.** `templateApplicationScene(_:didConnect:)` builds a `CarPlayController` and calls `start()`, which sets a "Loading…" placeholder root, then `await model.ensureReady()` (the offline-first catalog load — disk cache seeds fast) before swapping in the real root. The root is a `CPTabBarTemplate` of **five** tabs, in order: **Playlists · Pockets · Albums · Artists · Search** (confirmed at the `CPTabBarTemplate(templates:)` call — the file's older header comment omitting Artists is stale). Each tab is a `CPListTemplate` given an explicit SF Symbol `tabImage` + `tabTitle` rather than a `tabSystemItem`, whose fixed system icon/label would otherwise override them. Playlists merges the user's PocketDJ playlists with the catalog's **source** playlists (Apple Music / iTunes mirrors from `app.indexPlaylists`, id-prefixed `src:` and badged with the source name).
+**Startup + the tab set.** `templateApplicationScene(_:didConnect:)` builds a `CarPlayController` and calls `start()`, which sets a "Loading…" placeholder root, then `await model.ensureReady()` (the offline-first catalog load — disk cache seeds fast) before swapping in the real root. The root is a `CPTabBarTemplate` of **four** tabs, in order: **Playlists · Pockets · Albums · Artists** (confirmed at the `CPTabBarTemplate(templates:)` call). Each tab is a `CPListTemplate` given an explicit SF Symbol `tabImage` + `tabTitle` rather than a `tabSystemItem`, whose fixed system icon/label would otherwise override them. Playlists merges the user's PocketDJ playlists with the catalog's **source** playlists (Apple Music / iTunes mirrors from `app.indexPlaylists`, id-prefixed `src:` and badged with the source name).
 
 **A–Z quick-scroll, Play/Shuffle all.** Albums and Artists build through `azListTemplate`, which sorts rows and groups them into `CPListSection`s each carrying a `sectionIndexTitle` (a single A–Z letter, else `#` via `indexLetter`) so the head unit renders the alphabet index-strip — the keyboard-free way to *find* while driving. Drilling a collection (`pushSongs`) or an artist (`pushArtistAlbums`) puts **▶ Play all** and **🔀 Shuffle all** rows on top; their handlers call the model's `playPlaylist`/`playPocket`/`playAlbum`/`playArtist` (all `try? await` into `services.play…`, i.e. the one unified sequencer) and then `showNowPlaying()`, which pushes `CPNowPlayingTemplate.shared` only if it isn't already the top template (no duplicate stacking).
 
@@ -852,11 +851,68 @@ the rip server off.
 
 **Now Playing + editable Up Next.** The system `CPNowPlayingTemplate.shared` is what the driver sees for transport and artwork — it's populated by `MPNowPlayingInfoCenter`, set by the shared audio engines, not by CarPlay. `configureNowPlaying()` enables its **Up Next** button and registers a `CarPlayNowPlayingObserver`; the button tap routes to `showUpNext()`, which lists `services.setlistPlayer.upcoming` (keyed by `uid`, since a song can repeat in the queue — matching how `SetlistPlayer`'s live-queue edits identify rows). Because CarPlay offers no swipe-to-delete, editing an Up Next row opens another action sheet — **Remove from queue** / **Play next** / **Move to end** — mapping to `removeFromQueue`/`playNext`/`moveToEnd` on the shared `SetlistPlayer`, after which `refreshUpNext()` rebuilds the pushed list **in place** via `updateSections`.
 
-**Search — the category IS the mode; filtering off the main actor.** CarPlay's `CPSearchTemplate` can't host a scope/mode toggle, so the Search tab is a **category menu**: one row per `CarPlayModel.SearchCategory` (`songs`/`albums`/`artists`/`playlists`), each pushing a `CPSearchTemplate` whose `CarPlaySearchDelegate` is scoped to that category. The delegate is retained on the controller (`CPSearchTemplate.delegate` is `weak`). Per keystroke, `CarPlayModel.search(_:category:)` grabs the O(1) `browseItems`/`searchKeys` refs on the main actor, then runs `BrowseState.filterSort` inside a `Task.detached(.userInitiated)` — the filter runs **off the main actor over prebuilt folded keys**, so typing never folds the whole (~90k-song) catalog on the head-unit's UI thread and never freezes it (results are capped at 60). Playlists is a small name match handled inline. A selected result routes by category (song → play; album/artist/playlist → drill-in). Below the category rows sits a **"Hands-free: ask Siri"** row — a signpost, since keyboard entry is blocked in motion and the actual in-motion voice path is App Intents / Siri (Ch. 7 §7).
+**No Search tab — removed on purpose.** CarPlay previously carried a fifth Search tab (a category menu over `CPSearchTemplate`s). It's gone: head units **block the search keyboard while the vehicle is in motion**, which in practice left the template stuck on a frozen screen until the app was force-quit — a non-functional feature that could wedge the whole CarPlay session. `SearchCategory`, the search delegate, and the model's `search(_:category:)` were deleted outright (not hidden). Finding music at the wheel is served by the A–Z index-strips on Albums/Artists and by voice — "Play X in PocketDJ" via App Intents / Siri (Ch. 7 §7), which is also the only path that works while driving anyway.
 
 **Artwork cache.** `listItem` kicks off async cover-art loading via `loadArtwork`, which serves from an in-memory `artCache` (albumId → `UIImage`) or walks the model's `artCandidates(albumId:)` URLs, taking the first that returns a valid image and caching it, so re-browsing a list doesn't refetch.
 
 **Entitlement + wiring.** `com.apple.developer.carplay-audio` lives in the iOS-scoped [`PocketDJ-CarPlay.entitlements`](../../apple/PocketDJ/PocketDJ-CarPlay.entitlements) — not the base `PocketDJ.entitlements`, because the base also covers visionOS, which has no CarPlay and would reject the key. `project.yml` applies it per-SDK for both device and simulator (`CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]` and `[sdk=iphonesimulator*]`), and declares an **explicit** `UIApplicationSceneManifest` that registers only the `CPTemplateApplicationSceneSessionRoleApplication` role bound to `CarPlaySceneDelegate` while `UIApplicationSupportsMultipleScenes: true` lets SwiftUI keep synthesizing the phone's own window scene (scene-manifest *generation* is turned off so the two don't collide). CarPlay UI isn't headless-testable in CI; the model is where the logic — and the tests — live.
+
+---
+
+## 10. Now Playing widgets — the WidgetKit client
+
+**Why.** The set keeps playing while the user lives in other apps (or other rooms, on
+visionOS) — the widget is the always-visible remote: cover, title/artist, ⏮⏯⏭, and an Up
+Next preview, on the iPhone home screen, the macOS desktop / Notification Center, and (on
+visionOS 26+) anchored in the room.
+
+**What.** A `PocketDJWidgets` **app-extension target** (bundle
+`com.levi.pocketdj.widgets`, embedded in the app by
+[`project.yml`](../../apple/project.yml)) with one `StaticConfiguration` widget kind,
+`PocketDJNowPlaying` ([`NowPlayingWidget.swift`](../../apple/PocketDJWidgets/NowPlayingWidget.swift)),
+in small/medium/large families plus an idle "Nothing playing" placeholder. The extension
+runs in its **own process** with no access to the app's live stores, so everything it
+renders crosses an **App Group** (`group.com.levi.pocketdj`, in the app's *and* the
+extension's per-SDK entitlements).
+
+**How — the one-way state bridge.**
+[`WidgetSync`](../../apple/PocketDJ/Playback/WidgetSync.swift) (app side, created in
+`PocketDJApp` after the stores) observes the playback graph via self-re-arming
+`withObservationTracking` — `SetlistPlayer` (current + queue), `PlayerEngine`,
+`RipsStore.nowPlaying`, `coordinator.activeBackend`, **and
+`coordinator.appleMusic.nowPlaying`/`isPlaying`** (Apple Music state lands async and can
+change from outside the app) — and on every change writes a small Codable
+[`NowPlayingSnapshot`](../../apple/Shared/NowPlayingSnapshot.swift) (isPlaying, title,
+artist, songId, coverVersion, up-next ×6) into the shared `UserDefaults` plus the current
+cover as a PNG file in the group container, then calls
+`WidgetCenter.reloadAllTimelines()`. Timelines are single-entry with `policy: .never` — the
+**app drives every refresh**, there is no time-based schedule. Play-state follows the engine
+that OWNS the audio (`activeBackend == .appleMusic ? coordinator.isPlaying :
+player.isPlaying`); the cover is re-fetched when the songId **or** the (late-arriving)
+MusicKit artwork URL changes, and a refresh that would only *clear* art while the AM resolve
+is still in flight is **deferred** (keep the previous art ~1 s rather than flash the
+placeholder). visionOS gates the reload behind `#available(visionOS 26.0, *)` — WidgetKit
+reached visionOS in 26, the extension sets `XROS_DEPLOYMENT_TARGET: "26.0"` while the app
+stays 2.0.
+
+**How — transport back.** The ⏮⏯⏭ buttons are `Button(intent:)` `AudioPlaybackIntent`s
+([`WidgetTransport.swift`](../../apple/Shared/WidgetTransport.swift), compiled into BOTH
+targets). While the app process is alive (the normal case — it's playing audio) the intent
+runs **in the app process** and drives the wired `WidgetPlaybackController` closures
+directly: toggle routes by `activeBackend` (the same one-audio-owner rule as every surface),
+next/previous call the shared `SetlistPlayer`. When the app is fully quit the intent runs in
+the widget process, drops the command into the App Group (`WidgetCommandChannel`, 30 s
+staleness window) and posts a **Darwin notification**
+(`com.levi.pocketdj.widget.command`) that the running-but-backgrounded app observes to drain
+immediately; a cold app also drains on `scenePhase == .active`.
+
+**Debuggability.** Both processes trace through `NPLog`
+([`Shared/NPLog.swift`](../../apple/Shared/NPLog.swift), `subsystem com.levi.pocketdj`,
+category `nowplaying`, `[app]`/`[widget]` process tags, mirrored into the in-app MixDiag
+capture): every `widgetSync publish`, cover write/fetch/defer/failure, widget-process
+`timeline read … coverBytes=…`, and intent routing (`in-process closure` vs `command
+channel`). [`apple/scripts/np-trace.sh`](../../apple/scripts/np-trace.sh) streams the merged
+two-process log — this trace is what pinned the Apple Music adoption desync (Ch. 5 §10).
 
 ---
 
