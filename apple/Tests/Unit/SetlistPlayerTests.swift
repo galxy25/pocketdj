@@ -758,6 +758,32 @@ final class PlayerEngineExternalNowPlayingTests: XCTestCase {
         engine.pause()
         XCTAssertEqual(box.pauses, 0, "after stop, pause no longer routes to the stream")
     }
+
+    /// An IDLE engine (no item loaded, not external) must REFUSE transport: a blind play()
+    /// used to re-claim the Now Playing card with the previous track's stale title (the macOS
+    /// "ghost second card" bug) and flip `isPlaying` with no audio behind it (the widget
+    /// play-state mismatch). The tap probe still counts (`toggleCount`).
+    func testIdleEngineTransportIsNoOp() {
+        let engine = PlayerEngine()
+        engine.play()
+        XCTAssertFalse(engine.isPlaying, "idle play() is refused")
+        engine.toggle()
+        XCTAssertFalse(engine.isPlaying, "idle toggle() is refused")
+        XCTAssertEqual(engine.toggleCount, 1, "the tap is still counted (test probe)")
+        engine.pause()
+        XCTAssertFalse(engine.isPlaying)
+    }
+
+    /// idleForExternalPlayback (the macOS Apple Music branch) leaves the engine inert: not
+    /// playing, and transport still refused afterward (no item was re-loaded).
+    func testIdleForExternalPlaybackLeavesEngineInert() {
+        let engine = PlayerEngine()
+        engine.load(url: localURL, live: false, startMs: nil, title: "Prev", artist: "A")
+        engine.idleForExternalPlayback()
+        XCTAssertFalse(engine.isPlaying)
+        engine.play()
+        XCTAssertFalse(engine.isPlaying, "post-idle play() is refused (no item)")
+    }
 }
 
 /// Minimal `URLProtocol` serving HTTP 200 + a fixed body (the durable mp3 bytes for the

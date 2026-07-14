@@ -26,7 +26,8 @@ final class WidgetSync {
     private let artCandidates: (String) -> [URL]
 
     private var lastPublished: NowPlayingSnapshot?
-    private var lastCoverSongId: String??      // nil = never set; .some(nil) = idle published
+    /// Cover identity = songId + its (late-arriving) AM artwork URL — see `publish()`.
+    private var lastCoverKey: String?
     private var coverVersion = 0
     private var coverToken = 0
 
@@ -38,7 +39,7 @@ final class WidgetSync {
         self.coordinator = coordinator
         self.artCandidates = artCandidates
         // Wire the widget's transport buttons → the SAME entry points the lock screen uses.
-        WidgetPlaybackController.shared.toggle = { [weak player] in player?.toggle() }
+        WidgetPlaybackController.shared.toggle = { [weak self] in self?.transportToggle() }
         WidgetPlaybackController.shared.next = { [weak setlist] in setlist?.skipNext() }
         WidgetPlaybackController.shared.previous = { [weak setlist] in setlist?.skipPrevious() }
         // Drain a widget transport command the INSTANT it arrives (a widget click doesn't
@@ -51,12 +52,21 @@ final class WidgetSync {
         publish()
     }
 
+    /// Route play/pause to whichever engine OWNS the audio right now (the in-app panel's proven
+    /// branch). Blindly toggling PlayerEngine while Apple Music owned playback toggled an IDLE
+    /// AVPlayer: no audible effect, a wrong `isPlaying`, and (before the engine's idle guard) a
+    /// resurrected stale Now Playing card on macOS.
+    private func transportToggle() {
+        if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
+        else { player.toggle() }
+    }
+
     /// Drain a transport command a widget tap dropped while the app was fully quit — call when
     /// the app becomes active (`scenePhase == .active`). Stale commands are discarded by `drain`.
     func drainPendingCommand(now: TimeInterval) {
         guard let c = WidgetCommandChannel.drain(now: now) else { return }
         switch c {
-        case .toggle:   player.toggle()
+        case .toggle:   transportToggle()
         case .next:     setlist.skipNext()
         case .previous: setlist.skipPrevious()
         }
@@ -73,6 +83,11 @@ final class WidgetSync {
             _ = player.isPlaying
             _ = rips.nowPlaying?.songId
             _ = coordinator.activeBackend
+            // Apple Music state lands ASYNC (after the MusicKit resolve) and can also change from
+            // OUTSIDE the app (MusicKit's own macOS card) — without these two reads the widget
+            // missed the artwork URL arriving and drifted out of sync on play/pause.
+            _ = coordinator.appleMusic.nowPlaying
+            _ = coordinator.appleMusic.isPlaying
         } onChange: { [weak self] in
             Task { @MainActor in self?.publish(); self?.arm() }
         }
@@ -104,11 +119,16 @@ final class WidgetSync {
 
     private func publish() {
         let base = currentBase()
-        let playing = player.isPlaying || coordinator.isPlaying
-        // Refresh the cover only when the current song id actually changes (async; it bumps
-        // coverVersion + republishes so the widget re-reads the new image).
-        if lastCoverSongId != .some(base.songId) {
-            lastCoverSongId = .some(base.songId)
+        // Play state follows the engine that OWNS the audio — OR-ing both let an idle
+        // PlayerEngine (or a stale AM mirror) contradict what's actually sounding.
+        let playing = coordinator.activeBackend == .appleMusic ? coordinator.isPlaying
+                                                               : player.isPlaying
+        // Refresh the cover when the song OR its AM artwork URL changes. The AM URL arrives
+        // AFTER the song id (the MusicKit resolve is async) — keying on the id alone fetched
+        // too early, found no art, and never retried (the "no album art in the widget" bug).
+        let coverKey = (base.songId ?? "") + "|" + (amArtworkURL(for: base.songId)?.absoluteString ?? "")
+        if lastCoverKey != coverKey {
+            lastCoverKey = coverKey
             refreshCover(for: base.songId)
         }
         let snap = NowPlayingSnapshot(isPlaying: playing, hasContent: base.hasContent,
@@ -124,16 +144,20 @@ final class WidgetSync {
         }
     }
 
+    /// The MusicKit catalog artwork URL for `songId`, when it IS the Apple Music now-playing
+    /// track. nil otherwise (idle, local playback, or the async resolve hasn't landed yet).
+    private func amArtworkURL(for songId: String?) -> URL? {
+        guard let songId, coordinator.activeBackend == .appleMusic,
+              coordinator.appleMusic.nowPlaying?.songId == songId else { return nil }
+        return coordinator.appleMusic.nowPlaying?.artworkURL
+    }
+
     /// Cover-art candidate URLs for `songId`. For an Apple Music stream the MusicKit catalog
     /// artwork comes FIRST — our AM-Local catalog carries no `artCandidates`, so it's the only
     /// cover the widget can show (the system card shows art only because MusicKit auto-fills it).
     private func candidateArtURLs(for songId: String) -> [URL] {
         var urls: [URL] = []
-        if coordinator.activeBackend == .appleMusic,
-           coordinator.appleMusic.nowPlaying?.songId == songId,
-           let amURL = coordinator.appleMusic.nowPlaying?.artworkURL {
-            urls.append(amURL)
-        }
+        if let amURL = amArtworkURL(for: songId) { urls.append(amURL) }
         urls.append(contentsOf: artCandidates(songId))
         return urls
     }

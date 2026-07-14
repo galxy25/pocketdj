@@ -243,12 +243,18 @@ final class PlayerEngine {
     func play() {
         // External mode: resume the streaming player, not our idle AVPlayer.
         if externalActive { externalPlay?(); isPlaying = true; updateNowPlayingInfo(); return }
+        // IDLE GUARD: no item and not external ⇒ there is NO audio for this engine to start.
+        // A blind play() here used to re-claim the arbiter and re-write the Now Playing card
+        // with the PREVIOUS track's stale title (the macOS "ghost second card" bug) and flip
+        // `isPlaying` with no sound behind it (the widget play-state mismatch). Refuse it.
+        guard player.currentItem != nil else { return }
         NowPlayingArbiter.shared.claim(self)
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
         if externalActive { externalPause?(); isPlaying = false; updateNowPlayingInfo(); return }
+        guard player.currentItem != nil else { return }   // idle ⇒ nothing to pause (see play())
         player.pause(); isPlaying = false; updateNowPlayingInfo()
     }
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
@@ -256,6 +262,7 @@ final class PlayerEngine {
     func toggle() {
         toggleCount += 1
         if externalActive { (externalIsPlaying?() ?? isPlaying) ? pause() : play(); return }
+        guard player.currentItem != nil else { return }   // idle ⇒ no-op (see play())
         player.timeControlStatus == .paused ? play() : pause()
     }
 
@@ -358,6 +365,12 @@ final class PlayerEngine {
         scopeRelease?(); scopeRelease = nil
         isLive = false
         isPlaying = false
+        // SCRUB the card metadata, not just the card: any later stray write (a remote command,
+        // a rate-observer tick) would otherwise resurrect the PREVIOUS track's title on a fresh
+        // card — the macOS "ghost second card frozen on the first song" bug. With empty
+        // title/artist, `updateNowPlayingInfo` clears instead of writing.
+        nowPlayingTitle = ""; nowPlayingArtist = ""; nowPlayingSongId = nil
+        artworkToken += 1; nowPlayingArtwork = nil
         // If WE still own the card from a prior local track, clear it so MusicKit's AM card
         // isn't shadowed by our now-stale one (and resign so nothing double-writes).
         if NowPlayingArbiter.shared.isActive(self) { clearNowPlayingInfo() }
