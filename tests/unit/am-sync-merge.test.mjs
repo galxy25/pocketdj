@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import {
   diffLibrary, partitionTrackRows, mergePlaylists,
   recordStrike, effectiveIgnoredPids, removalGuardTripped, playlistDumpLooksBroken, CONFIRM_STRIKES,
+  reconcileRemovals, deferPlaylistRemovals, membershipKey, REMOVAL_CONFIRM_STRIKES,
 } from '../../scripts/lib/am-sync-merge.mjs';
 import { nsFor, songIdFor, playlistIdFor } from '../../scripts/lib/am-ids.mjs';
 import { parsePlaylistRows, writeLibraryXml, nonMusicFlag, COLS } from '../../scripts/lib/am-music.mjs';
@@ -186,6 +187,116 @@ describe('mergePlaylists identity under partial read failures', () => {
       ns,
     });
     expect(out).toEqual([{ id: committed.id, name: 'Certified', songIds: [sid('P1')] }]);
+  });
+});
+
+describe('reconcileRemovals (multi-run removal confirmation)', () => {
+  const days = ['2026-07-16T04:00:00Z', '2026-07-17T04:00:00Z', '2026-07-18T04:00:00Z'];
+
+  it('confirms a removal only after REMOVAL_CONFIRM_STRIKES distinct days', () => {
+    const pending = {};
+    for (const [i, day] of days.entries()) {
+      const { confirmed, deferred } = reconcileRemovals({ pending, missing: ['A'], nowIso: day });
+      if (i < REMOVAL_CONFIRM_STRIKES - 1) {
+        expect(confirmed.size).toBe(0);
+        expect(deferred.has('A')).toBe(true);
+      } else {
+        expect(confirmed.has('A')).toBe(true);
+        expect(pending.A).toBeUndefined(); // cleared once shipped
+      }
+    }
+  });
+
+  it('does not double-strike a manual rerun on the same day', () => {
+    const pending = {};
+    reconcileRemovals({ pending, missing: ['A'], nowIso: '2026-07-16T04:00:00Z' });
+    reconcileRemovals({ pending, missing: ['A'], nowIso: '2026-07-16T09:00:00Z' });
+    expect(pending.A.strikes).toBe(1);
+  });
+
+  it('resets strikes when the item reappears (transient snapshot self-heals)', () => {
+    const pending = {};
+    reconcileRemovals({ pending, missing: ['A'], nowIso: days[0] });
+    reconcileRemovals({ pending, missing: ['A'], nowIso: days[1] });
+    expect(pending.A.strikes).toBe(2);
+    reconcileRemovals({ pending, missing: [], nowIso: days[2] }); // A is back
+    expect(pending.A).toBeUndefined();
+    const { confirmed } = reconcileRemovals({ pending, missing: ['A'], nowIso: '2026-07-19T04:00:00Z' });
+    expect(confirmed.size).toBe(0); // back to strike 1
+  });
+
+  it('honors a custom confirmStrikes (1 = ship same run)', () => {
+    const pending = {};
+    const { confirmed } = reconcileRemovals({ pending, missing: ['A'], nowIso: days[0], confirmStrikes: 1 });
+    expect(confirmed.has('A')).toBe(true);
+  });
+});
+
+describe('deferPlaylistRemovals', () => {
+  const plId = playlistIdFor(ns, 'PL1');
+  const goneId = playlistIdFor(ns, 'GONE');
+  const finalSongIds = new Set([sid('P1'), sid('P2'), sid('P3')]);
+  const day = (n) => `2026-07-${16 + n}T04:00:00Z`;
+
+  it('retains a dump-absent playlist (pruned) until confirmed, then drops it', () => {
+    const pending = {};
+    const oldPlaylists = [
+      { id: plId, name: 'Keep', songIds: [sid('P1')] },
+      { id: goneId, name: 'Deleted', songIds: [sid('P2'), sid('NOT_IN_LIB')] },
+    ];
+    const merged = [{ id: plId, name: 'Keep', songIds: [sid('P1')] }];
+    for (const n of [0, 1]) {
+      const out = deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso: day(n) });
+      expect(out.map((p) => p.name)).toEqual(['Keep', 'Deleted']); // reinserted at old index (end)
+      expect(out[1].songIds).toEqual([sid('P2')]); // pruned to live songs
+    }
+    const out3 = deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso: day(2) });
+    expect(out3.map((p) => p.name)).toEqual(['Keep']);
+    expect(pending.playlists[goneId]).toBeUndefined();
+  });
+
+  it('reinserts a membership-removed song at its old index until confirmed', () => {
+    const pending = {};
+    const oldPlaylists = [{ id: plId, name: 'Mix', songIds: [sid('P1'), sid('P2'), sid('P3')] }];
+    const merged = [{ id: plId, name: 'Mix', songIds: [sid('P1'), sid('P3')] }]; // P2 removed in Music
+    const out1 = deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso: day(0) });
+    expect(out1[0].songIds).toEqual([sid('P1'), sid('P2'), sid('P3')]); // retained in place
+    deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso: day(1) });
+    const out3 = deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso: day(2) });
+    expect(out3[0].songIds).toEqual([sid('P1'), sid('P3')]); // confirmed — ships
+    expect(pending.memberships[membershipKey(plId, sid('P2'))]).toBeUndefined();
+  });
+
+  it('membership reappearing resets its pending strike', () => {
+    const pending = {};
+    const oldPlaylists = [{ id: plId, name: 'Mix', songIds: [sid('P1'), sid('P2')] }];
+    const removedOnce = [{ id: plId, name: 'Mix', songIds: [sid('P1')] }];
+    deferPlaylistRemovals({ merged: removedOnce, oldPlaylists, pending, finalSongIds, nowIso: day(0) });
+    expect(pending.memberships[membershipKey(plId, sid('P2'))].strikes).toBe(1);
+    const backAgain = [{ id: plId, name: 'Mix', songIds: [sid('P1'), sid('P2')] }];
+    deferPlaylistRemovals({ merged: backAgain, oldPlaylists, pending, finalSongIds, nowIso: day(1) });
+    expect(pending.memberships[membershipKey(plId, sid('P2'))]).toBeUndefined();
+  });
+
+  it('does not treat a library-wide song removal as a membership edit', () => {
+    const pending = {};
+    const oldPlaylists = [{ id: plId, name: 'Mix', songIds: [sid('P1'), sid('LIBGONE')] }];
+    const merged = [{ id: plId, name: 'Mix', songIds: [sid('P1')] }];
+    deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso: day(0) });
+    expect(Object.keys(pending.memberships)).toEqual([]); // LIBGONE ∉ finalSongIds — not a playlist edit
+  });
+
+  it('a new playlist and an unchanged playlist pass through untouched', () => {
+    const pending = {};
+    const oldPlaylists = [{ id: plId, name: 'Mix', songIds: [sid('P1')] }];
+    const merged = [
+      { id: plId, name: 'Mix', songIds: [sid('P1')] },
+      { id: playlistIdFor(ns, 'NEW'), name: 'Brand New', songIds: [sid('P2')] },
+    ];
+    const out = deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso: day(0) });
+    expect(out).toEqual(merged);
+    expect(pending.playlists).toEqual({});
+    expect(pending.memberships).toEqual({});
   });
 });
 

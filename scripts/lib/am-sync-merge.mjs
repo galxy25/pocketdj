@@ -104,6 +104,98 @@ export function playlistDumpLooksBroken(dumpCount, oldCount) {
 }
 
 /**
+ * Removal confirmation — a removal (library song gone, playlist gone from the dump,
+ * song gone from a playlist's membership) only ships after being observed missing on
+ * REMOVAL_CONFIRM_STRIKES distinct days. A transient bad snapshot/dump therefore defers
+ * a removal instead of shipping it; the item reappearing on any later run resets its
+ * strikes entirely. Same distinct-day accounting as the ghost ignore list.
+ */
+export const REMOVAL_CONFIRM_STRIKES = 3;
+
+/**
+ * One reconcile pass over a pending-strike map for a set of currently-missing keys.
+ * Mutates `pending`: keys no longer missing are cleared (reappeared or moot), missing
+ * keys get a distinct-day strike. Returns { confirmed, deferred } (Sets of keys) —
+ * confirmed keys are also cleared from `pending` (the removal ships now).
+ */
+export function reconcileRemovals({ pending, missing, nowIso, confirmStrikes = REMOVAL_CONFIRM_STRIKES }) {
+  const missingSet = new Set(missing);
+  for (const k of Object.keys(pending)) if (!missingSet.has(k)) delete pending[k];
+  const confirmed = new Set();
+  const deferred = new Set();
+  for (const k of missingSet) {
+    recordStrike(pending, k, 'removed', nowIso);
+    if ((pending[k].strikes ?? 1) >= confirmStrikes) { confirmed.add(k); delete pending[k]; }
+    else deferred.add(k);
+  }
+  return { confirmed, deferred };
+}
+
+export const membershipKey = (playlistId, songId) => `${playlistId}|${songId}`;
+
+/**
+ * Layer removal confirmation on top of mergePlaylists' output. Two levels:
+ *  - playlist-level: a committed playlist absent from `merged` (deleted in Music) is
+ *    retained (membership pruned to live songs) until its deletion is confirmed on
+ *    `confirmStrikes` distinct days; it is reinserted at its old index to avoid churn.
+ *  - membership-level: a song present in the committed playlist but missing from the
+ *    fresh dump membership (and still in the library) is reinserted at its old index
+ *    until confirmed. Library-wide song removals are NOT membership edits — callers
+ *    pass `finalSongIds` so those prune via the normal path with their own confirmation.
+ * Mutates pending.playlists / pending.memberships (created if absent).
+ */
+export function deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSongIds, nowIso,
+  confirmStrikes = REMOVAL_CONFIRM_STRIKES, log = () => {} }) {
+  pending.playlists = pending.playlists || {};
+  pending.memberships = pending.memberships || {};
+  const old = oldPlaylists || [];
+  const mergedById = new Map(merged.map((p) => [p.id, p]));
+  const oldById = new Map(old.map((p) => [p.id, p]));
+
+  // Playlist-level: absent from the merge output = deleted in Music this run.
+  const missingPl = old.filter((p) => !mergedById.has(p.id)).map((p) => p.id);
+  const { confirmed: plConfirmed, deferred: plDeferred } =
+    reconcileRemovals({ pending: pending.playlists, missing: missingPl, nowIso, confirmStrikes });
+
+  // Membership-level: playlists present in both — diff committed membership vs fresh.
+  const missingMem = [];
+  for (const p of merged) {
+    const prev = oldById.get(p.id);
+    if (!prev) continue;
+    const cur = new Set(p.songIds || []);
+    for (const sidX of prev.songIds || []) {
+      if (!cur.has(sidX) && finalSongIds.has(sidX)) missingMem.push(membershipKey(p.id, sidX));
+    }
+  }
+  const { deferred: memDeferred } =
+    reconcileRemovals({ pending: pending.memberships, missing: missingMem, nowIso, confirmStrikes });
+
+  // Rebuild: reinsert deferred members at their committed index…
+  const out = merged.map((p) => {
+    const prev = oldById.get(p.id);
+    if (!prev) return p;
+    const prevIds = prev.songIds || [];
+    const deferredSids = prevIds.filter((sidX) => memDeferred.has(membershipKey(p.id, sidX)));
+    if (!deferredSids.length) return p;
+    const songIds = [...(p.songIds || [])];
+    for (const sidX of deferredSids) songIds.splice(Math.min(prevIds.indexOf(sidX), songIds.length), 0, sidX);
+    log(`  ⏳ playlist "${p.name}": ${deferredSids.length} member removal(s) pending confirmation ` +
+      `(${confirmStrikes} distinct days) — retained for now`);
+    return { ...p, songIds };
+  });
+  // …then reinsert deletion-deferred playlists at their committed index.
+  for (const [i, p] of old.entries()) {
+    if (plDeferred.has(p.id)) {
+      log(`  ⏳ playlist "${p.name}" missing from dump — deletion pending confirmation (${confirmStrikes} distinct days), retained`);
+      out.splice(Math.min(i, out.length), 0, { ...p, songIds: (p.songIds || []).filter((sidX) => finalSongIds.has(sidX)) });
+    } else if (plConfirmed.has(p.id)) {
+      log(`  ✂ playlist "${p.name}" deletion confirmed on ${confirmStrikes} distinct days — dropped`);
+    }
+  }
+  return out;
+}
+
+/**
  * Rebuild the index's playlists from a fresh Music.app dump.
  * Presence in the dump governs existence: a playlist that Music still has stays in the
  * index even when none of its members resolve (songIds: []) — an empty playlist is a
