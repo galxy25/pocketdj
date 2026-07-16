@@ -25,6 +25,12 @@
 #
 set -euo pipefail
 
+# Load ASC credentials from the durable config unless already exported.
+# ~/.config/pocketdj/asc.env holds ASC_KEY_ID (Admin role) + ASC_ISSUER_ID.
+if [ -z "${ASC_KEY_ID:-}" ] && [ -f "$HOME/.config/pocketdj/asc.env" ]; then
+  . "$HOME/.config/pocketdj/asc.env"
+fi
+
 # --- resolve paths -----------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
