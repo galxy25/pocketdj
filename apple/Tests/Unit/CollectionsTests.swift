@@ -308,7 +308,7 @@ final class CollectionsStoreTests: XCTestCase {
         let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"]))
         s.setSongRepeat("sng_2", count: 3, inPocket: p.id)
         // Source changed upstream: sng_2 removed, sng_3 added.
-        let changed = s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_3"])])
+        let changed = s.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_3"])])
         XCTAssertEqual(changed, 1)
         let after = s.pocket(p.id)!
         XCTAssertEqual(after.songIds, ["sng_1", "sng_3"])
@@ -323,7 +323,7 @@ final class CollectionsStoreTests: XCTestCase {
         s.addSong("sng_mine", toPocket: p.id)          // user's own addition
         s.removeSong("sng_1", fromPocket: p.id)        // user's own removal
         // Source adds sng_3 (sng_1 still there upstream — but the user removed it here).
-        let changed = s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2", "sng_3"])])
+        let changed = s.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2", "sng_3"])])
         XCTAssertEqual(changed, 1)
         let after = s.pocket(p.id)!
         XCTAssertEqual(after.songIds, ["sng_2", "sng_mine", "sng_3"])  // mine kept, sng_1 NOT resurrected
@@ -333,15 +333,15 @@ final class CollectionsStoreTests: XCTestCase {
         let s = store()
         let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1"]))
         s.setSourceSyncEnabled(false, forPocket: p.id)
-        XCTAssertEqual(s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])]), 0)
+        XCTAssertEqual(s.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])]), 0)
         XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1"])   // untouched while off
         s.setSourceSyncEnabled(true, forPocket: p.id)
         // Source playlist missing from this refresh (source disabled / deleted upstream):
         // the pocket must be left alone, never wiped.
-        XCTAssertEqual(s.syncConvertedPockets(with: []), 0)
+        XCTAssertEqual(s.syncConvertedCollections(with: []), 0)
         XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1"])
         // Same playlist id under a DIFFERENT source name must not match.
-        XCTAssertEqual(s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_9"], source: "My Digital")]), 0)
+        XCTAssertEqual(s.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_9"], source: "My Digital")]), 0)
         XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1"])
     }
 
@@ -349,7 +349,7 @@ final class CollectionsStoreTests: XCTestCase {
         let s = store()
         let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"]))
         let before = s.pocket(p.id)!
-        XCTAssertEqual(s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])]), 0)
+        XCTAssertEqual(s.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])]), 0)
         let after = s.pocket(p.id)!
         XCTAssertEqual(after.updatedAt, before.updatedAt)    // no save churn
         XCTAssertNil(after.sourceSyncedAt)
@@ -360,7 +360,7 @@ final class CollectionsStoreTests: XCTestCase {
             .appendingPathComponent("pdj-test-\(UUID().uuidString).json")
         let s1 = CollectionsStore(fileURL: url)
         let p = s1.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1"]))
-        s1.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])])
+        s1.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])])
         let s2 = CollectionsStore(fileURL: url)
         let back = s2.pocket(p.id)!
         XCTAssertEqual(back.songIds, ["sng_1", "sng_2"])
@@ -369,8 +369,65 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertNotNil(back.sourceSyncedAt)
         // A hand-made pocket never participates.
         let hand = s2.createPocket("Hand-made")
-        XCTAssertEqual(s2.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_9"])]), 1)
+        XCTAssertEqual(s2.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_9"])]), 1)
         XCTAssertTrue(s2.pocket(hand.id)!.songIds.isEmpty)
+    }
+
+    // MARK: Source sync — duplicated PLAYLISTS (the "Duplicate as editable playlist" path)
+
+    private func playlistSongIds(_ s: CollectionsStore, _ id: String) -> [String] {
+        (s.playlist(id)?.sequences ?? []).flatMap { ($0.children ?? []).compactMap(\.songId) }
+    }
+
+    func testDuplicateFromSourceStampsProvenance() {
+        let s = store()
+        let pl = s.createPlaylist("001", songIds: ["sng_1", "sng_2"],
+                                  source: sourcePL("pl_1", "001", ["sng_1", "sng_2"]))
+        XCTAssertEqual(pl.sourcePlaylistId, "pl_1")
+        XCTAssertEqual(pl.sourceName, "Apple Music (Local)")
+        XCTAssertEqual(pl.sourceSongIds, ["sng_1", "sng_2"])
+        XCTAssertTrue(pl.syncsWithSource)
+        // A plain create (no source) stays provenance-free.
+        XCTAssertFalse(s.createPlaylist("Hand", songIds: ["sng_9"]).hasSource)
+    }
+
+    func testPlaylistSyncAppendsAndRemoves() {
+        let s = store()
+        let pl = s.createPlaylist("001", songIds: ["sng_1", "sng_2"],
+                                  source: sourcePL("pl_1", "001", ["sng_1", "sng_2"]))
+        // Source changed upstream: sng_2 removed, sng_3 added.
+        XCTAssertEqual(s.syncConvertedCollections(with: [sourcePL("pl_1", "001", ["sng_1", "sng_3"])]), 1)
+        XCTAssertEqual(playlistSongIds(s, pl.id), ["sng_1", "sng_3"])   // node removed + appended
+        let after = s.playlist(pl.id)!
+        XCTAssertEqual(after.sourceSongIds, ["sng_1", "sng_3"])
+        XCTAssertNotNil(after.sourceSyncedAt)
+    }
+
+    func testPlaylistSyncPreservesUserEditsAndChapters() {
+        let s = store()
+        let pl = s.createPlaylist("001", songIds: ["sng_1", "sng_2"],
+                                  source: sourcePL("pl_1", "001", ["sng_1", "sng_2"]))
+        // User adds their own chapter + song, removes sng_1 themselves.
+        s.addSequence("Encore", toPlaylist: pl.id)
+        let chapter = s.playlist(pl.id)!.sequences.last!
+        s.addSong("sng_mine", toPlaylist: pl.id, sequenceId: chapter.nodeId)
+        s.removeNode(s.playlist(pl.id)!.sequences[0].children![0].nodeId, fromPlaylist: pl.id)
+        // Source adds sng_3 (sng_1 still there upstream — user's removal must stand).
+        XCTAssertEqual(s.syncConvertedCollections(with: [sourcePL("pl_1", "001", ["sng_1", "sng_2", "sng_3"])]), 1)
+        XCTAssertEqual(playlistSongIds(s, pl.id), ["sng_2", "sng_3", "sng_mine"])
+        XCTAssertEqual(s.playlist(pl.id)!.sequences.map(\.name), ["Default", "Encore"])  // chapters intact
+    }
+
+    func testPlaylistSyncTogglesAndNoOp() {
+        let s = store()
+        let pl = s.createPlaylist("001", songIds: ["sng_1"], source: sourcePL("pl_1", "001", ["sng_1"]))
+        s.setSourceSyncEnabled(false, forPlaylist: pl.id)
+        XCTAssertEqual(s.syncConvertedCollections(with: [sourcePL("pl_1", "001", ["sng_1", "sng_2"])]), 0)
+        XCTAssertEqual(playlistSongIds(s, pl.id), ["sng_1"])            // frozen while off
+        s.setSourceSyncEnabled(true, forPlaylist: pl.id)
+        XCTAssertEqual(s.syncConvertedCollections(with: [sourcePL("pl_1", "001", ["sng_1"])]), 0)  // in sync ⇒ no-op
+        XCTAssertNil(s.playlist(pl.id)?.sourceSyncedAt)
+        XCTAssertEqual(s.syncConvertedCollections(with: []), 0)         // source missing ⇒ untouched
     }
 
     func testExportImportPlaylistMintsFreshIds() throws {

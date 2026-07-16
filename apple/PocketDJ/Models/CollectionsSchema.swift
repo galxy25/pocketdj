@@ -43,12 +43,13 @@ import Foundation
 //   (samples `smp_` / loops `lp_` / patterns `ptn_`) ride the EXISTING string arrays
 //   (`Pocket.songIds` + `.song` nodes) as namespaced ids — deliberately NO new Kind case
 //   — so a v4 app still decodes a v5 doc (studio rows just degrade at resolution time).
-// v5 → v6: pockets gained optional SOURCE PROVENANCE — `sourcePlaylistId` + `sourceName`
-//   identify the catalog ("From your sources") playlist a Convert created the pocket from,
-//   `sourceSongIds` snapshots the source membership at the last sync (the three-way-merge
-//   base, so the user's own edits survive source add/remove), `sourceSyncEnabled` is the
-//   per-pocket opt-out (nil ⇒ enabled), `sourceSyncedAt` stamps the last applied sync.
-//   Additive + lenient: a v5 doc migrates forward (all nil ⇒ a hand-made pocket, never
+// v5 → v6: pockets AND playlists gained optional SOURCE PROVENANCE — `sourcePlaylistId` +
+//   `sourceName` identify the catalog ("From your sources") playlist that Convert-to-pocket /
+//   Duplicate-as-editable-playlist created the item from, `sourceSongIds` snapshots the
+//   source membership at the last sync (the three-way-merge base, so the user's own edits
+//   survive source add/remove), `sourceSyncEnabled` is the per-item opt-out (nil ⇒ enabled),
+//   `sourceSyncedAt` stamps the last applied sync.
+//   Additive + lenient: a v5 doc migrates forward (all nil ⇒ a hand-made item, never
 //   synced); a v6 doc loads degraded on a v5 app (unknown keys ignored, members intact).
 let collectionsSchemaVersion = 6
 
@@ -311,19 +312,39 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var sequences: [PlaylistNode]      // each .kind == .sequence; sequences[0] is default
     var targetMs: Int?
     var folderId: String?              // v3: optional ⇒ back-compat (nil = top level)
+    // v6: SOURCE PROVENANCE — set only by Duplicate-as-editable-playlist; nil on hand-made
+    // playlists. Same shape + semantics as Pocket's (see there for the field-by-field docs).
+    var sourcePlaylistId: String?
+    var sourceName: String?
+    var sourceSongIds: [String]?
+    var sourceSyncEnabled: Bool?
+    var sourceSyncedAt: Double?
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
+    /// Was duplicated from a source playlist (provenance present) — the sync UI shows only then.
+    var hasSource: Bool { sourcePlaylistId != nil }
+    /// Participates in AUTO sync: has a source and the per-playlist toggle isn't off.
+    var syncsWithSource: Bool { hasSource && (sourceSyncEnabled ?? true) }
+
     enum CodingKeys: String, CodingKey {
-        case id, name, description, sequences, targetMs, folderId, createdAt, updatedAt
+        case id, name, description, sequences, targetMs, folderId,
+             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt,
+             createdAt, updatedAt
     }
 
     /// Memberwise init, spelled out because the hand-written `init(from:)` below would
     /// otherwise suppress the compiler's (same parameters/defaults every call site uses).
     init(id: String, name: String, description: String? = nil, sequences: [PlaylistNode],
-         targetMs: Int? = nil, folderId: String? = nil, createdAt: Double = 0, updatedAt: Double = 0) {
+         targetMs: Int? = nil, folderId: String? = nil,
+         sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
+         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
+         createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.description = description
         self.sequences = sequences; self.targetMs = targetMs; self.folderId = folderId
+        self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
+        self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
+        self.sourceSyncedAt = sourceSyncedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
@@ -340,6 +361,11 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
         sequences = try c.decode(LossyDecodableArray<PlaylistNode>.self, forKey: .sequences).elements
         targetMs = try c.decodeIfPresent(Int.self, forKey: .targetMs)
         folderId = try c.decodeIfPresent(String.self, forKey: .folderId)
+        sourcePlaylistId = try c.decodeIfPresent(String.self, forKey: .sourcePlaylistId)
+        sourceName = try c.decodeIfPresent(String.self, forKey: .sourceName)
+        sourceSongIds = try c.decodeIfPresent([String].self, forKey: .sourceSongIds)
+        sourceSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .sourceSyncEnabled)
+        sourceSyncedAt = try c.decodeIfPresent(Double.self, forKey: .sourceSyncedAt)
         createdAt = try c.decode(Double.self, forKey: .createdAt)
         updatedAt = try c.decode(Double.self, forKey: .updatedAt)
     }
@@ -543,12 +569,12 @@ enum CollectionsMigration {
         //   decoder/consumer behaviour, not stored shape, so the mapping forward is the
         //   no-op identity. Kept explicit so the version bump is visible + the seam
         //   exists for any future studio-shape transform.
-        // v5 → v6: pockets gained optional source provenance (`sourcePlaylistId` /
-        //   `sourceName` / `sourceSongIds` / `sourceSyncEnabled` / `sourceSyncedAt`).
-        //   Older pockets simply have none — lenient decode already defaults them all to
-        //   nil (hand-made pocket, never synced), so the mapping forward is the no-op
-        //   identity. Kept explicit so the version bump is visible + the seam exists for
-        //   any future provenance-shape transform.
+        // v5 → v6: pockets AND playlists gained optional source provenance
+        //   (`sourcePlaylistId` / `sourceName` / `sourceSongIds` / `sourceSyncEnabled` /
+        //   `sourceSyncedAt`). Older items simply have none — lenient decode already
+        //   defaults them all to nil (hand-made item, never synced), so the mapping
+        //   forward is the no-op identity. Kept explicit so the version bump is visible +
+        //   the seam exists for any future provenance-shape transform.
         doc.schemaVersion = collectionsSchemaVersion
         return doc
     }

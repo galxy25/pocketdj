@@ -151,6 +151,11 @@ struct PocketDetailView: View {
                 Menu {
                     Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
                         .accessibilityIdentifier("add-pocket-note")
+                    #if os(iOS)
+                    // Inside the ⋯ menu (not a 5th toolbar item) so the compact-width
+                    // iPhone toolbar stays at 4 items and never nests a system "More".
+                    EditButton().accessibilityIdentifier("pocket-edit-order")
+                    #endif
                     Button { nameDraft = pocket?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
                         .accessibilityIdentifier("rename-pocket")
                     Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
@@ -164,11 +169,6 @@ struct PocketDetailView: View {
                 } label: { Image(systemName: "ellipsis.circle") }
                     .accessibilityIdentifier("pocket-menu")
             }
-            #if os(iOS)
-            ToolbarItem(placement: .primaryAction) {
-                EditButton().accessibilityIdentifier("pocket-edit-order")
-            }
-            #endif
         }
         .alert("Add note", isPresented: $addingNote) {
             TextField("Note (a line of poetry, a cue…)", text: $noteDraft)

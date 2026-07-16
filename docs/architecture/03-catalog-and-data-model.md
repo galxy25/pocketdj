@@ -307,10 +307,10 @@ The native app persists the whole collections graph as **one versioned, lenient-
              (b) studio namespaced ids (smp_/lp_/ptn_) riding the EXISTING songIds / SongNode arrays
              (both are behaviour, so the mapping forward is again the no-op identity; the bump just
               makes the version visible + reserves the seam for a future studio-shape transform)
-   v5 → v6   pockets gain SOURCE PROVENANCE (all optional ⇒ nil on hand-made pockets; no-op remap):
-             sourcePlaylistId? + sourceName?   which catalog playlist Convert created the pocket from
+   v5 → v6   pockets AND playlists gain SOURCE PROVENANCE (all optional ⇒ nil on hand-made items):
+             sourcePlaylistId? + sourceName?   which catalog playlist Convert / Duplicate created it from
              sourceSongIds?                    the source membership at the last sync (3-way-merge base)
-             sourceSyncEnabled?                per-pocket opt-out (nil ⇒ enabled) · sourceSyncedAt?
+             sourceSyncEnabled?                per-item opt-out (nil ⇒ enabled) · sourceSyncedAt?
 ```
 
 **Reading it.** `schemaVersion` is bumped on any shape change and
@@ -349,21 +349,26 @@ stays device-local (documented in [Ch. 4 §8.6](./04-performance-engine.md#86-co
 The full per-consumer resolution policy (which consumers *resolve* a studio id vs. *fence* it
 out of rip/burn/CSV/autofill) lives there.
 
-**The v5→v6 step — converted pockets follow their source playlist.** `convertToPocket(source:)`
-now stamps **provenance** on the pocket it creates (`sourcePlaylistId` + `sourceName` identify
-the catalog playlist, `sourceSongIds` snapshots the deduped membership) and every **catalog
-assign** (cache seed + network refresh, `AppModel.onCatalogAssigned` → wired in
-`PocketDJApp.init`) runs `CollectionsStore.syncConvertedPockets(with:)` — a **three-way merge**
-per sync-enabled pocket against its source playlist using the snapshot as the base: source
-*adds* (in source, not in snapshot) append; source *removals* (in snapshot, not in source)
-drop from the pocket (their `songRepeats` too); everything else — the user's own adds,
-removes, reorders — lives outside both sets and **survives**. The snapshot then advances, and
-a no-change refresh persists nothing (no `save()`/`updatedAt` churn). Gates: the **global**
-`SettingsStore.syncConvertedPockets` toggle (default ON, checked at the wiring site), the
-**per-pocket** `sourceSyncEnabled` (the pocket ⋯ menu's "Sync with source"), and the manual
-"Sync from source now" menu action (`syncPocketFromSourceNow`) which ignores both. A pocket
-whose source playlist is **missing** from a refresh (source disabled, playlist deleted
-upstream) is left untouched — a vanished source never silently wipes a pocket.
+**The v5→v6 step — converted collections follow their source playlist.**
+`convertToPocket(source:)` and `createPlaylist(_:songIds:source:)` (the Duplicate-as-editable-
+playlist path) now stamp **provenance** on the item they create (`sourcePlaylistId` +
+`sourceName` identify the catalog playlist, `sourceSongIds` snapshots the membership) and
+every **catalog assign** (cache seed + network refresh, `AppModel.onCatalogAssigned` → wired
+in `PocketDJApp.init`) runs `CollectionsStore.syncConvertedCollections(with:)` — a **three-way
+merge** per sync-enabled item against its source playlist using the snapshot as the base:
+source *adds* (in source, not in snapshot) append — to the pocket's `songIds` / the playlist's
+DEFAULT chapter (`sequences[0]`); source *removals* (in snapshot, not in source) drop — from
+the pocket (their `songRepeats` too) / every matching `.song` node recursively (chapters, text
+cues, albums, nested pockets untouched); everything else — the user's own adds, removes,
+reorders, extra chapters — lives outside both sets and **survives**. The snapshot then
+advances, and a no-change refresh persists nothing (no `save()`/`updatedAt` churn). Gates: the
+**global** `SettingsStore.syncConvertedPockets` toggle (default ON, checked at the wiring
+site; surfaced in **Settings ▸ Sync**, `SyncSettingsView`, alongside the Apple Music library
+re-index and a manual "Sync from sources now" pass), the **per-item** `sourceSyncEnabled` (the
+⋯ menus' "Sync with source"), and the manual "Sync from source now" menu actions
+(`syncPocketFromSourceNow` / `syncPlaylistFromSourceNow`) which ignore both. An item whose
+source playlist is **missing** from a refresh (source disabled, playlist deleted upstream) is
+left untouched — a vanished source never silently wipes the user's copy.
 
 **Folders survive import / merge / backup.** Because a folder is pure id+name, it carries
 cleanly through every transfer path (`CollectionsStore.importCollection` + the backup zip):

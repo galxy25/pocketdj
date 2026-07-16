@@ -153,11 +153,13 @@ final class SettingsStore {
     /// Studio ▸ Instruments: 1-bar COUNT-IN before take recording starts (beat 1 = end of
     /// count-in = the score quantizer's anchor). ON by default.
     var studioCountInEnabled: Bool
-    /// GLOBAL gate for converted-pocket source sync (ON by default): when on, every catalog
-    /// refresh reconciles each source-converted pocket with its source playlist (adds/removals
-    /// propagate; the user's own edits survive). Per-pocket opt-out lives on the pocket
-    /// (`Pocket.sourceSyncEnabled`, the detail ⋯ menu); the manual "Sync from source now"
-    /// action ignores both gates. See `CollectionsStore.syncConvertedPockets`.
+    /// GLOBAL gate for converted-collection source sync (ON by default): when on, every
+    /// catalog refresh reconciles each source-converted pocket AND source-duplicated
+    /// playlist with its source playlist (adds/removals propagate; the user's own edits
+    /// survive). Per-item opt-outs live on the items (`sourceSyncEnabled`, the detail ⋯
+    /// menus); the manual "Sync from source now" actions ignore both gates. See
+    /// `CollectionsStore.syncConvertedCollections`. (Field name predates playlist support —
+    /// kept for the persisted-blob key.)
     var syncConvertedPockets: Bool
 
     private let defaults: UserDefaults

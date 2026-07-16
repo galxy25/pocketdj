@@ -306,7 +306,7 @@ carries its *own* `schemaVersion` (the `EditsDocument`, currently 2) independent
 zip's. The **collections** payload likewise versions independently (`collectionsSchemaVersion`,
 now **6** — pockets gained free-text `notes` (v2) then `folderId` (v4), playlists gained
 `folderId` + `folders` (v3), v5 turned on lossy per-element decode + studio ids riding
-`songIds`, and v6 added optional source provenance on pockets for converted-pocket sync
+`songIds`, and v6 added optional source provenance on pockets + playlists for converted-collection sync
 (Ch. 3 §3.1)); additive + lenient throughout, so e.g. a v2 pocket's `notes` simply
 degrade to "ignored" on a v1 reader and members stay intact.
 

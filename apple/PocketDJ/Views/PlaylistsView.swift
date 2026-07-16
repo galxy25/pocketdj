@@ -558,7 +558,9 @@ struct IndexPlaylistDetailView: View {
         path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
     private func duplicate() {
-        let pl = collections.createPlaylist(source.name, songIds: source.songIds)
+        // Provenance-stamped: the duplicate follows this source playlist as the catalog
+        // refreshes (toggle/manual-sync live in the editable playlist's ⋯ menu).
+        let pl = collections.createPlaylist(source.name, songIds: source.songIds, source: source)
         // Replace the read-only detail with the new editable one.
         path.removeLast()
         path.append(pl)
@@ -598,6 +600,8 @@ struct PlaylistDetailView: View {
     /// live SetlistDetailView for the same reserved id. Cleared when this view reappears
     /// (the user popped back) so a fresh Play pushes again.
     @State private var nowPlayingPushed = false
+    /// Feedback for the manual "Sync from source now" action (nil = no alert showing).
+    @State private var syncResult: String?
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
@@ -670,6 +674,7 @@ struct PlaylistDetailView: View {
                     Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
                         .disabled(itemCount == 0)
                         .accessibilityIdentifier("convert-to-pocket")
+                    if playlist?.hasSource == true { sourceSyncMenuItems }
                     Divider()
                     CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPlaylist: playlistId) }, noun: "playlist")
                     Divider()
@@ -680,6 +685,11 @@ struct PlaylistDetailView: View {
             }
         }
         .modifier(playlistAlerts)
+        .alert("Sync from source", isPresented: syncResultShowing) {
+            Button("OK") { syncResult = nil }
+        } message: {
+            Text(syncResult ?? "")
+        }
         .collectionRipBurn(ripBurn)
         .confirmationDialog("Delete this playlist?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete playlist", role: .destructive) {
@@ -724,6 +734,41 @@ struct PlaylistDetailView: View {
             renaming: $renaming, nameDraft: $nameDraft,
             renamingChapter: $renamingChapter, chapterDraft: $chapterDraft,
             addingNoteChapter: $addingNoteChapter, noteDraft: $noteDraft)
+    }
+
+    /// Presented-state for the sync-result alert (computed OUTSIDE body — see the
+    /// PocketDetailView type-checker note; same medicine here).
+    private var syncResultShowing: Binding<Bool> {
+        Binding(get: { syncResult != nil }, set: { if !$0 { syncResult = nil } })
+    }
+
+    /// Source-sync ⋯-menu items — shown only for a playlist duplicated from a source
+    /// playlist (provenance present). Mirrors PocketDetailView's.
+    @ViewBuilder private var sourceSyncMenuItems: some View {
+        let syncBinding = Binding<Bool>(
+            get: { playlist?.syncsWithSource ?? false },
+            set: { collections.setSourceSyncEnabled($0, forPlaylist: playlistId) })
+        Divider()
+        Toggle(isOn: syncBinding) {
+            Label("Sync with source", systemImage: "arrow.triangle.2.circlepath")
+        }
+        .accessibilityIdentifier("playlist-sync-toggle")
+        Button(action: syncFromSourceNow) {
+            Label("Sync from source now", systemImage: "arrow.clockwise")
+        }
+        .accessibilityIdentifier("playlist-sync-now")
+    }
+
+    /// Manual sync + user feedback (runs regardless of the auto-sync toggles).
+    private func syncFromSourceNow() {
+        if collections.syncPlaylistFromSourceNow(playlistId) {
+            let source = playlist?.sourceName ?? "source"
+            syncResult = "Updated from \(source)."
+        } else if collections.sourcePlaylist(forPlaylist: playlistId) == nil {
+            syncResult = "Source playlist not available (check the source is enabled and loaded)."
+        } else {
+            syncResult = "Already in sync."
+        }
     }
 
     /// `<sanitized name>.playlist.pocketdj` — the `.fileExporter` appends the `.zip`
