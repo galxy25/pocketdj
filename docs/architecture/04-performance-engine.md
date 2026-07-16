@@ -458,7 +458,12 @@ toolbar button (SF Symbol **`list.bullet.clipboard`**), so both flows coexist: �
 immediate literal play, `list.bullet.clipboard` for rolling a saved, autofilled take. (In
 the Playlists list, **your** editable playlists also now render **above** the read-only
 "From your sources" index playlists, organized into the optional collapsible
-folders of [Ch. 3 §3.1](./03-catalog-and-data-model.md#31-the-collectionsdocument-envelope-schema-versioning-and-folders-native).)
+folders of [Ch. 3 §3.1](./03-catalog-and-data-model.md#31-the-collectionsdocument-envelope-schema-versioning-and-folders-native).
+A **`.searchable` name filter** (mirroring the Browser) sits atop the list: a non-empty query
+does a case/diacritic-insensitive substring match over the names of `collections.playlists`,
+`collections.pockets`, and `app.indexPlaylists`, and **flattens the folder hierarchy** into
+three result sections — a pure client-side view filter over the already-loaded stores, no new
+state or persistence.)
 
 ---
 

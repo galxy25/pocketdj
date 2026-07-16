@@ -247,8 +247,16 @@ you left it collapsed** — so a long shelf of sets stays tidy. Folders ride alo
 **import/merge** and the **backup zip**, so the way you've organized your sets travels with them
 to another device.
 
-**User story:** "I've got a lot of sets — let me file them into folders I can fold shut, and keep
-the ones I made up top where I actually look."
+**Search by name.** At the top of the Playlists screen is a **search bar** (the same one the
+Browser uses). Type any part of a name and the list narrows to matching **playlists, pockets,
+and "From your sources" playlists** — a case-insensitive substring match. While you're searching
+the **folders flatten away**: a match shows up under its section header no matter which folder
+holds it, so you never have to remember where you filed something to find it. Clear the field and
+your folders and sections snap back; a search that matches nothing shows a plain "No Results".
+
+**User story:** "I've got a lot of sets — let me file them into folders I can fold shut, keep the
+ones I made up top where I actually look, and just type a few letters to pull up any set by name
+without digging through folders."
 
 ---
 
