@@ -32,8 +32,38 @@ struct PlaylistsView: View {
     @State private var deletingFolderId: String?
     /// Collapsed folder ids, persisted across launches (UserDefaults).
     @State private var collapsed: Set<String> = PlaylistsView.loadCollapsed()
+    /// Live name filter (the `.searchable` field). Substring, case/diacritic-insensitive,
+    /// matched against playlist / pocket / source-playlist NAMES — see `matchesQuery`.
+    @State private var query = ""
 
     private var indexPlaylists: [SourcePlaylist] { app.indexPlaylists }
+
+    /// The trimmed search term; empty ⇒ not searching (the folder hierarchy shows as normal).
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var isSearching: Bool { !trimmedQuery.isEmpty }
+
+    /// Case- and diacritic-insensitive substring match of the live query against `name`.
+    private func matchesQuery(_ name: String) -> Bool {
+        name.range(of: trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    // Filtered, name-ordered result lists — computed only while searching. Search FLATTENS
+    // the folder hierarchy: a match surfaces regardless of which folder holds it, so finding
+    // a playlist by name never means expanding folders first.
+    private var matchingPlaylists: [Playlist] {
+        collections.playlists.filter { matchesQuery($0.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    private var matchingPockets: [Pocket] {
+        collections.pockets.filter { matchesQuery($0.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    private var matchingSources: [SourcePlaylist] {
+        indexPlaylists.filter { matchesQuery($0.name) }
+    }
+    private var hasAnyMatch: Bool {
+        !matchingPlaylists.isEmpty || !matchingPockets.isEmpty || !matchingSources.isEmpty
+    }
 
     /// The Siri "Create Pocket" build status — the async build's ONLY user-visible
     /// surface after the intent's "on it" dialog (the build may have been kicked off
@@ -84,16 +114,21 @@ struct PlaylistsView: View {
                 emptyState
             } else {
                 List {
-                    yourPlaylistsSection
-                    yourPocketsSection
-                    ForEach(collections.foldersOrdered()) { folder in
-                        folderSection(folder)
+                    if isSearching {
+                        searchResultsSections
+                    } else {
+                        yourPlaylistsSection
+                        yourPocketsSection
+                        ForEach(collections.foldersOrdered()) { folder in
+                            folderSection(folder)
+                        }
+                        sourcesSection
                     }
-                    sourcesSection
                 }
             }
         }
         .navigationTitle("Playlists")
+        .searchable(text: $query, prompt: "Search playlists and pockets")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar { toolbarContent }
@@ -224,30 +259,61 @@ struct PlaylistsView: View {
     @ViewBuilder private var sourcesSection: some View {
         if !indexPlaylists.isEmpty {
             Section {
-                ForEach(indexPlaylists) { sp in
-                    NavigationLink(value: sp) {
-                        HStack {
-                            Image(systemName: "music.note.list").foregroundStyle(Theme.accent2)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(sp.name).foregroundStyle(Theme.fg)
-                                HStack(spacing: 6) {
-                                    Text(sp.sourceName)
-                                        .font(.caption2.weight(.semibold))
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Theme.accent2.opacity(0.18), in: Capsule())
-                                        .foregroundStyle(Theme.accent2)
-                                    Text("\(sp.songIds.count) song\(sp.songIds.count == 1 ? "" : "s")")
-                                        .font(.caption).foregroundStyle(Theme.fgDim)
-                                }
-                            }
-                        }
-                    }
-                    .accessibilityIdentifier("indexplaylist-\(sp.id)")
-                }
+                ForEach(indexPlaylists) { sp in sourceRow(sp) }
             } header: {
                 Text("From your sources")
             } footer: {
                 Text("Read-only playlists from your enabled sources. Play one, or duplicate it into an editable playlist.")
+            }
+        }
+    }
+
+    /// One read-only source-playlist row (shared by the sources section and search results).
+    @ViewBuilder private func sourceRow(_ sp: SourcePlaylist) -> some View {
+        NavigationLink(value: sp) {
+            HStack {
+                Image(systemName: "music.note.list").foregroundStyle(Theme.accent2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(sp.name).foregroundStyle(Theme.fg)
+                    HStack(spacing: 6) {
+                        Text(sp.sourceName)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Theme.accent2.opacity(0.18), in: Capsule())
+                            .foregroundStyle(Theme.accent2)
+                        Text("\(sp.songIds.count) song\(sp.songIds.count == 1 ? "" : "s")")
+                            .font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("indexplaylist-\(sp.id)")
+    }
+
+    /// Flattened, name-filtered results shown WHILE searching — matching playlists, pockets,
+    /// and source playlists, each under its own header, folder nesting collapsed away. An
+    /// empty match set shows a "No matches" placeholder so the list is never a blank void.
+    @ViewBuilder private var searchResultsSections: some View {
+        if !hasAnyMatch {
+            Section {
+                ContentUnavailableView.search(text: trimmedQuery)
+                    .accessibilityIdentifier("playlists-search-empty")
+            }
+        } else {
+            if !matchingPlaylists.isEmpty {
+                Section("Your playlists") {
+                    ForEach(matchingPlaylists) { pl in playlistRow(pl) }
+                }
+            }
+            if !matchingPockets.isEmpty {
+                Section("Pockets") {
+                    ForEach(matchingPockets) { pk in pocketRow(pk) }
+                }
+            }
+            if !matchingSources.isEmpty {
+                Section("From your sources") {
+                    ForEach(matchingSources) { sp in sourceRow(sp) }
+                }
             }
         }
     }
