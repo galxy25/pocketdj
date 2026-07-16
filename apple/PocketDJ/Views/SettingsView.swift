@@ -182,6 +182,8 @@ struct SettingsView: View {
 
     private var collectionsSection: some View {
         Section {
+            Toggle("Sync converted pockets with their source", isOn: $settings.syncConvertedPockets)
+                .accessibilityIdentifier("collections-source-sync")
             Button { showCollectionsImporter = true } label: {
                 Label("Import pocket / playlist…", systemImage: "square.and.arrow.down")
             }
@@ -189,7 +191,7 @@ struct SettingsView: View {
         } header: {
             Text("Collections")
         } footer: {
-            Text("\(collections.pockets.count) pocket\(collections.pockets.count == 1 ? "" : "s"), \(collections.playlists.count) playlist\(collections.playlists.count == 1 ? "" : "s"). Import a single pocket or playlist exported from another device — fresh ids are minted so it never overwrites an existing one. Export from an item’s detail-view ▸ menu.")
+            Text("\(collections.pockets.count) pocket\(collections.pockets.count == 1 ? "" : "s"), \(collections.playlists.count) playlist\(collections.playlists.count == 1 ? "" : "s"). When sync is on, a pocket converted from a source playlist (e.g. Apple Music) follows that playlist as the catalog updates — songs added there appear here, songs removed there are removed here; your own edits stay. Turn a single pocket off from its detail-view ▸ menu. Import a single pocket or playlist exported from another device — fresh ids are minted so it never overwrites an existing one. Export from an item’s detail-view ▸ menu.")
         }
     }
 

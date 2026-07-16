@@ -67,6 +67,40 @@ final class CollectionsSchemaTests: XCTestCase {
         XCTAssertEqual(notes[1].position, 5)
     }
 
+    // v5 → v6: pockets gained source provenance. An old (v5) pocket with none of the
+    // keys must migrate forward with all-nil provenance (hand-made pocket, never synced).
+    func testV5PocketMigratesToV6WithNilProvenance() throws {
+        let v5 = """
+        { "schemaVersion": 5, "pockets": [
+            { "id": "pkt_old", "name": "Soul", "songIds": ["sng_1"] }
+        ], "playlists": [] }
+        """
+        let doc = try CollectionsCodec.decode(Data(v5.utf8))
+        XCTAssertEqual(doc.schemaVersion, collectionsSchemaVersion)
+        let p = try XCTUnwrap(doc.pockets.first)
+        XCTAssertNil(p.sourcePlaylistId)
+        XCTAssertNil(p.sourceSongIds)
+        XCTAssertFalse(p.hasSource)
+        XCTAssertFalse(p.syncsWithSource)      // no source ⇒ never auto-syncs
+    }
+
+    // v6 provenance survives a full round-trip; nil sourceSyncEnabled means enabled.
+    func testV6ProvenanceRoundTrip() throws {
+        var doc = CollectionsDocument()
+        doc.pockets = [Pocket(id: "pkt_1", name: "My AM Mix", songIds: ["sng_1"],
+                              sourcePlaylistId: "pl_abc", sourceName: "Apple Music (Local)",
+                              sourceSongIds: ["sng_1"], sourceSyncEnabled: nil, sourceSyncedAt: nil)]
+        let back = try CollectionsCodec.decode(CollectionsCodec.encode(doc))
+        let p = try XCTUnwrap(back.pockets.first)
+        XCTAssertEqual(p.sourcePlaylistId, "pl_abc")
+        XCTAssertEqual(p.sourceName, "Apple Music (Local)")
+        XCTAssertEqual(p.sourceSongIds, ["sng_1"])
+        XCTAssertTrue(p.hasSource)
+        XCTAssertTrue(p.syncsWithSource)       // nil toggle ⇒ enabled
+        var off = p; off.sourceSyncEnabled = false
+        XCTAssertFalse(off.syncsWithSource)
+    }
+
     // A newer (v2) doc degrades gracefully when decoded — members survive even if a
     // hypothetical older app ignores `notes` (here we just confirm members intact when
     // notes is present, mirroring the lenient-decode contract).
@@ -250,6 +284,93 @@ final class CollectionsStoreTests: XCTestCase {
         let s = store()
         XCTAssertNil(s.convertToPocket(playlistId: "pls_nope"))
         XCTAssertTrue(s.pockets.isEmpty)
+    }
+
+    // MARK: Source sync (v6 — converted pockets follow their source playlist)
+
+    private func sourcePL(_ id: String, _ name: String, _ songIds: [String],
+                          source: String = "Apple Music (Local)") -> SourcePlaylist {
+        SourcePlaylist(playlist: IndexPlaylist(id: id, name: name, songIds: songIds), sourceName: source)
+    }
+
+    func testConvertFromSourceStampsProvenanceAndSnapshot() {
+        let s = store()
+        let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2", "sng_1"]))
+        XCTAssertEqual(p.sourcePlaylistId, "pl_1")
+        XCTAssertEqual(p.sourceName, "Apple Music (Local)")
+        XCTAssertEqual(p.sourceSongIds, ["sng_1", "sng_2"])   // deduped snapshot = initial membership
+        XCTAssertTrue(p.syncsWithSource)                      // enabled by default
+        XCTAssertNil(p.sourceSyncedAt)                        // stamped only by a CHANGING sync
+    }
+
+    func testSyncAppendsSourceAdditionsAndRemovesSourceRemovals() {
+        let s = store()
+        let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"]))
+        s.setSongRepeat("sng_2", count: 3, inPocket: p.id)
+        // Source changed upstream: sng_2 removed, sng_3 added.
+        let changed = s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_3"])])
+        XCTAssertEqual(changed, 1)
+        let after = s.pocket(p.id)!
+        XCTAssertEqual(after.songIds, ["sng_1", "sng_3"])
+        XCTAssertEqual(after.sourceSongIds, ["sng_1", "sng_3"])   // snapshot advanced
+        XCTAssertNil(after.songRepeats["sng_2"])                  // removed song's repeat dropped
+        XCTAssertNotNil(after.sourceSyncedAt)
+    }
+
+    func testSyncPreservesUserEdits() {
+        let s = store()
+        let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"]))
+        s.addSong("sng_mine", toPocket: p.id)          // user's own addition
+        s.removeSong("sng_1", fromPocket: p.id)        // user's own removal
+        // Source adds sng_3 (sng_1 still there upstream — but the user removed it here).
+        let changed = s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2", "sng_3"])])
+        XCTAssertEqual(changed, 1)
+        let after = s.pocket(p.id)!
+        XCTAssertEqual(after.songIds, ["sng_2", "sng_mine", "sng_3"])  // mine kept, sng_1 NOT resurrected
+    }
+
+    func testSyncSkipsDisabledPocketAndUnknownSource() {
+        let s = store()
+        let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1"]))
+        s.setSourceSyncEnabled(false, forPocket: p.id)
+        XCTAssertEqual(s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])]), 0)
+        XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1"])   // untouched while off
+        s.setSourceSyncEnabled(true, forPocket: p.id)
+        // Source playlist missing from this refresh (source disabled / deleted upstream):
+        // the pocket must be left alone, never wiped.
+        XCTAssertEqual(s.syncConvertedPockets(with: []), 0)
+        XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1"])
+        // Same playlist id under a DIFFERENT source name must not match.
+        XCTAssertEqual(s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_9"], source: "My Digital")]), 0)
+        XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1"])
+    }
+
+    func testSyncNoChangeIsANoOp() {
+        let s = store()
+        let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"]))
+        let before = s.pocket(p.id)!
+        XCTAssertEqual(s.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])]), 0)
+        let after = s.pocket(p.id)!
+        XCTAssertEqual(after.updatedAt, before.updatedAt)    // no save churn
+        XCTAssertNil(after.sourceSyncedAt)
+    }
+
+    func testSyncedPocketPersistsProvenanceAcrossReload() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-test-\(UUID().uuidString).json")
+        let s1 = CollectionsStore(fileURL: url)
+        let p = s1.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1"]))
+        s1.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])])
+        let s2 = CollectionsStore(fileURL: url)
+        let back = s2.pocket(p.id)!
+        XCTAssertEqual(back.songIds, ["sng_1", "sng_2"])
+        XCTAssertEqual(back.sourcePlaylistId, "pl_1")
+        XCTAssertEqual(back.sourceSongIds, ["sng_1", "sng_2"])
+        XCTAssertNotNil(back.sourceSyncedAt)
+        // A hand-made pocket never participates.
+        let hand = s2.createPocket("Hand-made")
+        XCTAssertEqual(s2.syncConvertedPockets(with: [sourcePL("pl_1", "AM Mix", ["sng_9"])]), 1)
+        XCTAssertTrue(s2.pocket(hand.id)!.songIds.isEmpty)
     }
 
     func testExportImportPlaylistMintsFreshIds() throws {

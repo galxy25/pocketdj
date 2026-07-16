@@ -334,11 +334,20 @@ final class CollectionsStore {
     /// Convert a read-only "From your sources" playlist (e.g. an Apple Music user
     /// playlist carried in the catalog) into a NEW Pocket of its songs (order
     /// preserved, deduped). Always succeeds — even an empty source yields a pocket.
+    /// PROVENANCE (v6): the pocket remembers which source playlist it came from and
+    /// snapshots the membership, so catalog refreshes can keep it in sync (source
+    /// adds/removals propagate; the user's own edits survive). See `syncConvertedPockets`.
     @discardableResult
     func convertToPocket(source: SourcePlaylist) -> Pocket {
         var seen = Set<String>(); var ids: [String] = []
         for sid in source.songIds where seen.insert(sid).inserted { ids.append(sid) }
-        return makeAndSavePocket(named: source.name, songIds: ids)
+        let p = makeAndSavePocket(named: source.name, songIds: ids)
+        mutatePocket(p.id) {
+            $0.sourcePlaylistId = source.id
+            $0.sourceName = source.sourceName
+            $0.sourceSongIds = ids
+        }
+        return pocket(p.id) ?? p
     }
 
     /// Walk a playlist's nodes (recursing into sub-sequences) and collect its DIRECT
@@ -377,6 +386,86 @@ final class CollectionsStore {
                             notes: notes, createdAt: ts, updatedAt: ts)
         pockets.append(pocket); save()
         return pocket
+    }
+
+    // MARK: Source sync (converted pockets follow their source playlist — v6)
+
+    /// The CURRENT catalog copy of the source playlist a pocket was converted from,
+    /// or nil when the pocket has no provenance / the playlist is gone from the catalog
+    /// / the catalog hasn't loaded. Matches by playlist id + source name (a legacy
+    /// pocket with a nil sourceName matches by id alone).
+    func sourcePlaylist(forPocket id: String) -> SourcePlaylist? {
+        guard let p = pocket(id), let plId = p.sourcePlaylistId else { return nil }
+        return (app?.indexPlaylists ?? []).first {
+            $0.id == plId && (p.sourceName == nil || $0.sourceName == p.sourceName)
+        }
+    }
+
+    /// Per-pocket sync opt-out (the ⋯ menu toggle). nil-provenance pockets are ignored.
+    func setSourceSyncEnabled(_ enabled: Bool, forPocket id: String) {
+        guard pocket(id)?.hasSource == true else { return }
+        mutatePocket(id) { $0.sourceSyncEnabled = enabled }
+    }
+
+    /// AUTO sync pass — reconcile every sync-enabled converted pocket against the
+    /// freshly-refreshed catalog playlists. Called on catalog assign (see PocketDJApp
+    /// wiring; the GLOBAL Settings toggle gates the call there). A pocket whose source
+    /// playlist is missing from this refresh is left untouched — a source that
+    /// disappeared (source disabled, playlist deleted upstream) must never silently
+    /// wipe the user's pocket. Returns the number of pockets changed.
+    @discardableResult
+    func syncConvertedPockets(with sourcePlaylists: [SourcePlaylist]) -> Int {
+        var byId: [String: [SourcePlaylist]] = [:]
+        for sp in sourcePlaylists { byId[sp.id, default: []].append(sp) }
+        var changed = 0
+        for p in pockets where p.syncsWithSource {
+            guard let plId = p.sourcePlaylistId,
+                  let sp = (byId[plId] ?? []).first(where: { p.sourceName == nil || $0.sourceName == p.sourceName })
+            else { continue }
+            if reconcilePocket(p.id, from: sp) { changed += 1 }
+        }
+        return changed
+    }
+
+    /// MANUAL "Sync from source now" — reconciles one pocket immediately, regardless of
+    /// the global/per-pocket auto-sync toggles (an explicit user action). Returns true
+    /// when the pocket changed (false = already in sync, or the source is unavailable).
+    @discardableResult
+    func syncPocketFromSourceNow(_ id: String) -> Bool {
+        guard let sp = sourcePlaylist(forPocket: id) else { return false }
+        return reconcilePocket(id, from: sp)
+    }
+
+    /// Three-way merge of one pocket against its source playlist, using the stored
+    /// snapshot (`sourceSongIds`) as the base:
+    ///   • source ADDS   (in source, not in snapshot)  → appended (unless already present —
+    ///     the user may have added the song themselves);
+    ///   • source REMOVES (in snapshot, not in source) → removed from the pocket (their
+    ///     repeat counts too);
+    ///   • the user's OWN adds/removes/reorders live outside both sets and survive.
+    /// The snapshot then advances to the fresh source membership. Persists only when
+    /// something actually differs, so a no-change catalog refresh never churns save()/
+    /// updatedAt. Returns true when the pocket (or its snapshot) changed.
+    @discardableResult
+    private func reconcilePocket(_ id: String, from sp: SourcePlaylist) -> Bool {
+        guard let p = pocket(id) else { return false }
+        var seen = Set<String>(); var srcIds: [String] = []
+        for sid in sp.songIds where seen.insert(sid).inserted { srcIds.append(sid) }
+        let snapshot = p.sourceSongIds ?? []
+        let snapSet = Set(snapshot)
+        let removals = snapSet.subtracting(srcIds)
+        let current = Set(p.songIds)
+        let additions = srcIds.filter { !snapSet.contains($0) && !current.contains($0) }
+        var newSongIds = p.songIds.filter { !removals.contains($0) }
+        newSongIds.append(contentsOf: additions)
+        guard newSongIds != p.songIds || srcIds != snapshot else { return false }
+        mutatePocket(id) {
+            $0.songIds = newSongIds
+            $0.sourceSongIds = srcIds
+            $0.sourceSyncedAt = now
+            for gone in removals { $0.songRepeats.removeValue(forKey: gone) }
+        }
+        return true
     }
 
     // MARK: Playlist folders (FLAT — v3)

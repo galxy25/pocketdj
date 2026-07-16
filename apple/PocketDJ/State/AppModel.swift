@@ -332,6 +332,11 @@ final class AppModel {
         fields.joined(separator: "\n").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 
+    /// Fired after every full catalog assign (cache seed + network refresh) — the one
+    /// choke point where a fresh `indexPlaylists` goes live. Wired at app init to the
+    /// collections' converted-pocket source sync (gated there by the Settings toggle).
+    var onCatalogAssigned: (() -> Void)?
+
     /// Assign a fully-derived catalog to `@MainActor` state in one atomic step.
     private func assign(_ d: Derived) {
         manifest = d.manifest
@@ -344,6 +349,7 @@ final class AppModel {
         rawAlbumsById = d.rawAlbumsById
         rawSongsById = d.rawSongsById
         assign(effective: d.effective)
+        onCatalogAssigned?()
     }
 
     /// Assign the effective (edit-overlaid) catalog + browse rows, bump the revision, and clear the

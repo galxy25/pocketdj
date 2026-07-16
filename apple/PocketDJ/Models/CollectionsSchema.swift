@@ -43,7 +43,14 @@ import Foundation
 //   (samples `smp_` / loops `lp_` / patterns `ptn_`) ride the EXISTING string arrays
 //   (`Pocket.songIds` + `.song` nodes) as namespaced ids — deliberately NO new Kind case
 //   — so a v4 app still decodes a v5 doc (studio rows just degrade at resolution time).
-let collectionsSchemaVersion = 5
+// v5 → v6: pockets gained optional SOURCE PROVENANCE — `sourcePlaylistId` + `sourceName`
+//   identify the catalog ("From your sources") playlist a Convert created the pocket from,
+//   `sourceSongIds` snapshots the source membership at the last sync (the three-way-merge
+//   base, so the user's own edits survive source add/remove), `sourceSyncEnabled` is the
+//   per-pocket opt-out (nil ⇒ enabled), `sourceSyncedAt` stamps the last applied sync.
+//   Additive + lenient: a v5 doc migrates forward (all nil ⇒ a hand-made pocket, never
+//   synced); a v6 doc loads degraded on a v5 app (unknown keys ignored, members intact).
+let collectionsSchemaVersion = 6
 
 enum PocketKind: String, Codable, Hashable, Sendable { case harmonic, performance }
 
@@ -94,23 +101,45 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     /// precedent) rather than a per-item object. Absent/≤1 ⇒ play once. Membership is set-like
     /// (`addSong` dedupes), so keying by songId is unambiguous.
     var songRepeats: [String: Int] = [:]
+    // v6: SOURCE PROVENANCE — set only by Convert-from-source; all nil on hand-made pockets.
+    /// The catalog playlist id this pocket was converted from (e.g. "pl_…"). nil ⇒ no source.
+    var sourcePlaylistId: String?
+    /// The source's name (e.g. "Apple Music (Local)") — disambiguates playlist ids across sources.
+    var sourceName: String?
+    /// The source playlist's membership (deduped, ordered) as of the LAST applied sync — the
+    /// three-way-merge base: source adds = current − snapshot; source removals = snapshot − current.
+    var sourceSongIds: [String]?
+    /// Per-pocket sync opt-out. nil ⇒ enabled (a converted pocket syncs unless turned off).
+    var sourceSyncEnabled: Bool?
+    /// Epoch ms of the last sync that CHANGED the pocket (or refreshed the snapshot). nil = never.
+    var sourceSyncedAt: Double?
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
     // Notes never count toward "members" (songs/albums/pockets) for count/runtime.
     var isEmpty: Bool { songIds.isEmpty && albumIds.isEmpty && childPocketIds.isEmpty && notes.isEmpty }
     var memberCount: Int { songIds.count + albumIds.count + childPocketIds.count }
+    /// Was converted from a source playlist (provenance present) — the sync UI shows only then.
+    var hasSource: Bool { sourcePlaylistId != nil }
+    /// Participates in AUTO sync: has a source and the per-pocket toggle isn't off.
+    var syncsWithSource: Bool { hasSource && (sourceSyncEnabled ?? true) }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats, createdAt, updatedAt
+        case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats,
+             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
          notes: [PocketNote] = [], folderId: String? = nil, songRepeats: [String: Int] = [:],
+         sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
+         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
         self.notes = notes; self.folderId = folderId; self.songRepeats = songRepeats
+        self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
+        self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
+        self.sourceSyncedAt = sourceSyncedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
@@ -125,6 +154,11 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         notes = (try? c.decode([PocketNote].self, forKey: .notes)) ?? []
         folderId = try? c.decode(String.self, forKey: .folderId)
         songRepeats = (try? c.decode([String: Int].self, forKey: .songRepeats)) ?? [:]
+        sourcePlaylistId = try? c.decode(String.self, forKey: .sourcePlaylistId)
+        sourceName = try? c.decode(String.self, forKey: .sourceName)
+        sourceSongIds = try? c.decode([String].self, forKey: .sourceSongIds)
+        sourceSyncEnabled = try? c.decode(Bool.self, forKey: .sourceSyncEnabled)
+        sourceSyncedAt = try? c.decode(Double.self, forKey: .sourceSyncedAt)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -509,6 +543,12 @@ enum CollectionsMigration {
         //   decoder/consumer behaviour, not stored shape, so the mapping forward is the
         //   no-op identity. Kept explicit so the version bump is visible + the seam
         //   exists for any future studio-shape transform.
+        // v5 → v6: pockets gained optional source provenance (`sourcePlaylistId` /
+        //   `sourceName` / `sourceSongIds` / `sourceSyncEnabled` / `sourceSyncedAt`).
+        //   Older pockets simply have none — lenient decode already defaults them all to
+        //   nil (hand-made pocket, never synced), so the mapping forward is the no-op
+        //   identity. Kept explicit so the version bump is visible + the seam exists for
+        //   any future provenance-shape transform.
         doc.schemaVersion = collectionsSchemaVersion
         return doc
     }
