@@ -374,13 +374,19 @@ concurrency-1, so it's a long unattended job (`scripts/rip-server.mjs` must be r
 **Why.** The PWA ships by syncing static files to S3 (§4); the native app ships through
 **App Store Connect / TestFlight**. It's a **local-archive** path — no Xcode Cloud — so a
 single command on the iMac builds, signs for distribution, and uploads a build that
-auto-shares to the beta testers.
+auto-shares to the beta testers. Since 2026-07-16 the pipeline is **fully headless**:
+credentials auto-source from `~/.config/pocketdj/asc.env`, and the archive signs with the
+dedicated **`pocketdj-ci` keychain** (an "Apple Development: Created via API" identity
+minted through the ASC API — helper: `apple/scripts/asc-api.mjs` — with a non-interactive
+key ACL, unlocked by each script from `~/.config/pocketdj/ci-keychain-pass`), so a
+detached/automated shell can ship all three platforms with zero keychain prompts.
 
 **Source of truth:** the `apple-publish` skill + [`apple/scripts/testflight.sh`](../../apple/scripts/testflight.sh)
 (sibling of the `apple-build` skill §2.1, which makes local/simulator/Mac builds).
 
 ```
- cd apple ; ASC_KEY_ID=… ASC_ISSUER_ID=… ./scripts/testflight.sh
+ apple/scripts/testflight.sh        (also: testflight-macos.sh · testflight-visionos.sh)
+   source ~/.config/pocketdj/asc.env ; security unlock-keychain pocketdj-ci
    xcodegen generate
    xcodebuild -scheme PocketDJ -configuration Release -destination 'generic/platform=iOS'
        -authenticationKeyPath/ID/IssuerID  -allowProvisioningUpdates   clean archive
@@ -401,8 +407,10 @@ number** so successive uploads never clash, then `-exportArchive`s with an
 Connect. Because **`ITSAppUsesNonExemptEncryption: false`** is baked into the Info.plist
 (§5.3), the build lands **"Ready to Submit"** with no per-build export-compliance prompt, and
 the **"Alphas"** internal testing group (set "Automatic for Xcode Builds") distributes every
-upload **over the air**. A one-time GUI archive bootstraps the Apple Distribution cert +
-grants the key headless keychain access; the App ID still needs its **MusicKit App Service**
+upload **over the air**. The local archive signs with the `pocketdj-ci` keychain's development identity and the
+export **re-signs via cloud signing** (the Apple Distribution / Mac Installer certs live
+Apple-side), so nothing touches the login keychain — the old one-time-GUI-archive
+bootstrap is obsolete. The App ID still needs its **MusicKit App Service**
 enabled (§5.3). For tight on-device iteration *without* the Connect round-trip, the dev-device
 helper `apple/scripts/deploy-iphone.sh` (§6.1) builds → installs → launches straight onto a
 tethered iPhone.
