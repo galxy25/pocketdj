@@ -126,19 +126,17 @@ device and Mac testers run the same code — PocketDJ ships a native iOS app **a
 sandboxed macOS app (two separate platforms / build-number sequences in App Store Connect):
 
 ```bash
-cd apple
-# iOS:
-ASC_KEY_ID=C2G2V625FZ ASC_ISSUER_ID=69a6de86-a921-47e3-e053-5b8c7c11a4d1 ./scripts/testflight.sh
-# macOS (native, sandboxed):
-ASC_KEY_ID=C2G2V625FZ ASC_ISSUER_ID=69a6de86-a921-47e3-e053-5b8c7c11a4d1 ./scripts/testflight-macos.sh
+apple/scripts/testflight.sh            # iOS
+apple/scripts/testflight-macos.sh      # macOS (native, sandboxed)
+apple/scripts/testflight-visionos.sh   # visionOS (when the change reaches Vision Pro)
 ```
 
-- **These require an INTERACTIVE session.** Both uploads codesign with the login keychain's
-  distribution key, which Claude's automated/detached shell **cannot** unlock (`codesign` →
-  `errSecInternalComponent`; `security show-keychain-info` → "passphrase not correct"). So
-  **prompt Levi to run both** (his Terminal, or the `!`-prefixed in-session command), or — most
-  reliable for macOS — Xcode ▸ Archive ▸ Distribute App ▸ App Store Connect. Don't claim a
-  build shipped that you couldn't actually sign.
+- **Fully headless — just run them.** Credentials auto-source from
+  `~/.config/pocketdj/asc.env`; signing uses the dedicated `pocketdj-ci` keychain (no
+  login-keychain access, no GUI prompts) — see the `apple-publish` skill's "Headless
+  signing" section. The old "requires an interactive session / prompt Levi" caveat is
+  obsolete (fixed 2026-07-16). Verify each script prints `Upload succeeded` — don't
+  claim a build shipped that didn't.
 - **Scope:** ship both only when the change touches the **app** (`apple/…`). Skip for pure
   server (`scripts/`), web (`src/`), or docs/tooling changes — same judgment as the test step.
 - Build numbers default to a unix timestamp (`CURRENT_PROJECT_VERSION`), so uploads never
