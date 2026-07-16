@@ -306,11 +306,19 @@ final class CollectionsStore {
 
     /// Create a fresh, editable local Playlist seeded with `songIds` in its default
     /// chapter (the "Duplicate as editable playlist" action on an index playlist).
+    /// PROVENANCE (v6): pass `source` when duplicating a "From your sources" playlist —
+    /// the playlist then remembers where it came from and snapshots the membership, so
+    /// catalog refreshes keep it in sync (see `syncConvertedCollections`).
     @discardableResult
-    func createPlaylist(_ name: String, songIds: [String]) -> Playlist {
+    func createPlaylist(_ name: String, songIds: [String], source: SourcePlaylist? = nil) -> Playlist {
         var pl = CollectionsFactory.makePlaylist(name, now: now)
         pl.sequences[0].children = songIds.map {
             PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: $0)
+        }
+        if let source {
+            pl.sourcePlaylistId = source.id
+            pl.sourceName = source.sourceName
+            pl.sourceSongIds = source.songIds
         }
         playlists.append(pl); save(); return pl
     }
@@ -334,11 +342,20 @@ final class CollectionsStore {
     /// Convert a read-only "From your sources" playlist (e.g. an Apple Music user
     /// playlist carried in the catalog) into a NEW Pocket of its songs (order
     /// preserved, deduped). Always succeeds — even an empty source yields a pocket.
+    /// PROVENANCE (v6): the pocket remembers which source playlist it came from and
+    /// snapshots the membership, so catalog refreshes can keep it in sync (source
+    /// adds/removals propagate; the user's own edits survive). See `syncConvertedPockets`.
     @discardableResult
     func convertToPocket(source: SourcePlaylist) -> Pocket {
         var seen = Set<String>(); var ids: [String] = []
         for sid in source.songIds where seen.insert(sid).inserted { ids.append(sid) }
-        return makeAndSavePocket(named: source.name, songIds: ids)
+        let p = makeAndSavePocket(named: source.name, songIds: ids)
+        mutatePocket(p.id) {
+            $0.sourcePlaylistId = source.id
+            $0.sourceName = source.sourceName
+            $0.sourceSongIds = ids
+        }
+        return pocket(p.id) ?? p
     }
 
     /// Walk a playlist's nodes (recursing into sub-sequences) and collect its DIRECT
@@ -377,6 +394,158 @@ final class CollectionsStore {
                             notes: notes, createdAt: ts, updatedAt: ts)
         pockets.append(pocket); save()
         return pocket
+    }
+
+    // MARK: Source sync (converted pockets + duplicated playlists follow their source — v6)
+
+    /// Find the CURRENT catalog copy of a provenance-stamped item's source playlist.
+    /// Matches by playlist id + source name (a legacy item with a nil sourceName matches
+    /// by id alone). nil when the catalog hasn't loaded or the playlist is gone.
+    private func liveSourcePlaylist(id plId: String, sourceName: String?) -> SourcePlaylist? {
+        (app?.indexPlaylists ?? []).first {
+            $0.id == plId && (sourceName == nil || $0.sourceName == sourceName)
+        }
+    }
+    func sourcePlaylist(forPocket id: String) -> SourcePlaylist? {
+        guard let p = pocket(id), let plId = p.sourcePlaylistId else { return nil }
+        return liveSourcePlaylist(id: plId, sourceName: p.sourceName)
+    }
+    func sourcePlaylist(forPlaylist id: String) -> SourcePlaylist? {
+        guard let pl = playlist(id), let plId = pl.sourcePlaylistId else { return nil }
+        return liveSourcePlaylist(id: plId, sourceName: pl.sourceName)
+    }
+
+    /// Per-item sync opt-out (the ⋯ menu toggles). nil-provenance items are ignored.
+    func setSourceSyncEnabled(_ enabled: Bool, forPocket id: String) {
+        guard pocket(id)?.hasSource == true else { return }
+        mutatePocket(id) { $0.sourceSyncEnabled = enabled }
+    }
+    func setSourceSyncEnabled(_ enabled: Bool, forPlaylist id: String) {
+        guard playlist(id)?.hasSource == true else { return }
+        mutatePlaylist(id) { $0.sourceSyncEnabled = enabled }
+    }
+
+    /// AUTO sync pass — reconcile every sync-enabled converted pocket AND duplicated
+    /// playlist against the freshly-refreshed catalog playlists. Called on catalog
+    /// assign (see PocketDJApp wiring; the GLOBAL Settings toggle gates the call there).
+    /// An item whose source playlist is missing from this refresh is left untouched — a
+    /// source that disappeared (source disabled, playlist deleted upstream) must never
+    /// silently wipe the user's copy. Returns the number of items changed.
+    @discardableResult
+    func syncConvertedCollections(with sourcePlaylists: [SourcePlaylist]) -> Int {
+        var byId: [String: [SourcePlaylist]] = [:]
+        for sp in sourcePlaylists { byId[sp.id, default: []].append(sp) }
+        func match(_ plId: String?, _ sourceName: String?) -> SourcePlaylist? {
+            guard let plId else { return nil }
+            return (byId[plId] ?? []).first { sourceName == nil || $0.sourceName == sourceName }
+        }
+        var changed = 0
+        for p in pockets where p.syncsWithSource {
+            guard let sp = match(p.sourcePlaylistId, p.sourceName) else { continue }
+            if reconcilePocket(p.id, from: sp) { changed += 1 }
+        }
+        for pl in playlists where pl.syncsWithSource {
+            guard let sp = match(pl.sourcePlaylistId, pl.sourceName) else { continue }
+            if reconcilePlaylist(pl.id, from: sp) { changed += 1 }
+        }
+        return changed
+    }
+
+    /// MANUAL "Sync from source now" — reconciles one item immediately, regardless of
+    /// the global/per-item auto-sync toggles (an explicit user action). Returns true
+    /// when the item changed (false = already in sync, or the source is unavailable).
+    @discardableResult
+    func syncPocketFromSourceNow(_ id: String) -> Bool {
+        guard let sp = sourcePlaylist(forPocket: id) else { return false }
+        return reconcilePocket(id, from: sp)
+    }
+    @discardableResult
+    func syncPlaylistFromSourceNow(_ id: String) -> Bool {
+        guard let sp = sourcePlaylist(forPlaylist: id) else { return false }
+        return reconcilePlaylist(id, from: sp)
+    }
+
+    /// Three-way merge of one pocket against its source playlist, using the stored
+    /// snapshot (`sourceSongIds`) as the base:
+    ///   • source ADDS   (in source, not in snapshot)  → appended (unless already present —
+    ///     the user may have added the song themselves);
+    ///   • source REMOVES (in snapshot, not in source) → removed from the pocket (their
+    ///     repeat counts too);
+    ///   • the user's OWN adds/removes/reorders live outside both sets and survive.
+    /// The snapshot then advances to the fresh source membership. Persists only when
+    /// something actually differs, so a no-change catalog refresh never churns save()/
+    /// updatedAt. Returns true when the pocket (or its snapshot) changed.
+    @discardableResult
+    private func reconcilePocket(_ id: String, from sp: SourcePlaylist) -> Bool {
+        guard let p = pocket(id) else { return false }
+        var seen = Set<String>(); var srcIds: [String] = []
+        for sid in sp.songIds where seen.insert(sid).inserted { srcIds.append(sid) }
+        let snapshot = p.sourceSongIds ?? []
+        let snapSet = Set(snapshot)
+        let removals = snapSet.subtracting(srcIds)
+        let current = Set(p.songIds)
+        let additions = srcIds.filter { !snapSet.contains($0) && !current.contains($0) }
+        var newSongIds = p.songIds.filter { !removals.contains($0) }
+        newSongIds.append(contentsOf: additions)
+        guard newSongIds != p.songIds || srcIds != snapshot else { return false }
+        mutatePocket(id) {
+            $0.songIds = newSongIds
+            $0.sourceSongIds = srcIds
+            $0.sourceSyncedAt = now
+            for gone in removals { $0.songRepeats.removeValue(forKey: gone) }
+        }
+        return true
+    }
+
+    /// The playlist twin of `reconcilePocket` — same three-way merge, applied to the
+    /// template's song NODES: source removals drop every `.song` node carrying that id
+    /// (recursing into nested sub-sequences); source adds append fresh song nodes to the
+    /// DEFAULT chapter (`sequences[0]`). Chapters, text cues, albums, pockets, and the
+    /// user's own song nodes are untouched.
+    @discardableResult
+    private func reconcilePlaylist(_ id: String, from sp: SourcePlaylist) -> Bool {
+        guard let pl = playlist(id) else { return false }
+        var seen = Set<String>(); var srcIds: [String] = []
+        for sid in sp.songIds where seen.insert(sid).inserted { srcIds.append(sid) }
+        let snapshot = pl.sourceSongIds ?? []
+        let removals = Set(snapshot).subtracting(srcIds)
+
+        var currentSongIds = Set<String>()
+        func collect(_ nodes: [PlaylistNode]) {
+            for n in nodes {
+                if n.kind == .song, let sid = n.songId { currentSongIds.insert(sid) }
+                if let kids = n.children { collect(kids) }
+            }
+        }
+        collect(pl.sequences)
+        let additions = srcIds.filter { !Set(snapshot).contains($0) && !currentSongIds.contains($0) }
+
+        var removedCount = 0
+        func prune(_ nodes: [PlaylistNode]) -> [PlaylistNode] {
+            nodes.compactMap { n in
+                if n.kind == .song, let sid = n.songId, removals.contains(sid) { removedCount += 1; return nil }
+                var copy = n
+                if let kids = n.children { copy.children = prune(kids) }
+                return copy
+            }
+        }
+        let pruned = prune(pl.sequences)
+
+        guard removedCount > 0 || !additions.isEmpty || srcIds != snapshot else { return false }
+        mutatePlaylist(id) {
+            var seqs = pruned
+            if !additions.isEmpty {
+                if seqs.isEmpty { seqs = [CollectionsFactory.makeSequence("Default")] }
+                let newNodes = additions.map {
+                    PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: $0)
+                }
+                seqs[0].children = (seqs[0].children ?? []) + newNodes
+            }
+            $0.sequences = seqs
+            $0.sourceSongIds = srcIds
+            $0.sourceSyncedAt = now
+        }
+        return true
     }
 
     // MARK: Playlist folders (FLAT — v3)

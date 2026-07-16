@@ -26,11 +26,20 @@ struct PocketDetailView: View {
     @State private var ripBurn = CollectionRipBurnController()
     /// CRITIC-B: don't stack a duplicate Now Playing SetlistDetailView (see PlaylistDetailView).
     @State private var nowPlayingPushed = false
+    /// Feedback for the manual "Sync from source now" action (nil = no alert showing).
+    @State private var syncResult: String?
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
     private var hasSongs: Bool { !collections.songIds(forPocket: pocketId).isEmpty }
 
+    // Split into memberList (the List) + chromeApplied (the toolbar/alert/dialog chain):
+    // one combined expression exceeded the type-checker's budget once the source-sync
+    // menu + alert joined the toolbar.
     var body: some View {
+        chromeApplied
+    }
+
+    private var memberList: some View {
         List {
             if let pocket {
                 Section {
@@ -113,6 +122,10 @@ struct PocketDetailView: View {
                 }
             }
         }
+    }
+
+    private var chromeApplied: some View {
+        memberList
         .navigationTitle(pocket?.name ?? "Pocket")
         .accessibilityIdentifier("pocket-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
@@ -138,10 +151,16 @@ struct PocketDetailView: View {
                 Menu {
                     Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
                         .accessibilityIdentifier("add-pocket-note")
+                    #if os(iOS)
+                    // Inside the ⋯ menu (not a 5th toolbar item) so the compact-width
+                    // iPhone toolbar stays at 4 items and never nests a system "More".
+                    EditButton().accessibilityIdentifier("pocket-edit-order")
+                    #endif
                     Button { nameDraft = pocket?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
                         .accessibilityIdentifier("rename-pocket")
                     Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                         .accessibilityIdentifier("export-pocket")
+                    if pocket?.hasSource == true { sourceSyncMenuItems }
                     Divider()
                     CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPocket: pocketId) }, noun: "pocket")
                     Divider()
@@ -150,11 +169,6 @@ struct PocketDetailView: View {
                 } label: { Image(systemName: "ellipsis.circle") }
                     .accessibilityIdentifier("pocket-menu")
             }
-            #if os(iOS)
-            ToolbarItem(placement: .primaryAction) {
-                EditButton().accessibilityIdentifier("pocket-edit-order")
-            }
-            #endif
         }
         .alert("Add note", isPresented: $addingNote) {
             TextField("Note (a line of poetry, a cue…)", text: $noteDraft)
@@ -181,6 +195,11 @@ struct PocketDetailView: View {
             }
             Button("Cancel", role: .cancel) { editingNoteId = nil }
         }
+        .alert("Sync from source", isPresented: syncResultShowing) {
+            Button("OK") { syncResult = nil }
+        } message: {
+            Text(syncResult ?? "")
+        }
         .alert("Rename pocket", isPresented: $renaming) {
             TextField("Name", text: $nameDraft)
             Button("Save") { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePocket(pocketId, n) } }
@@ -202,6 +221,42 @@ struct PocketDetailView: View {
             Button("CSV (tracklist)") { exportCSV() }.accessibilityIdentifier("export-format-csv")
         } message: {
             Text("PocketDJ keeps everything (re-importable). CSV is a universal tracklist (title, artist, album, year, genre).")
+        }
+    }
+
+    /// Presented-state for the sync-result alert (a computed Binding INSIDE body blew
+    /// the type-checker budget for the whole List expression).
+    private var syncResultShowing: Binding<Bool> {
+        Binding(get: { syncResult != nil }, set: { if !$0 { syncResult = nil } })
+    }
+
+    /// Source-sync ⋯-menu items — shown only for a pocket converted from a source
+    /// playlist (provenance present). Split out of the Menu builder: the inline
+    /// Binding + ternary blew the type-checker's budget in the big toolbar expression.
+    @ViewBuilder private var sourceSyncMenuItems: some View {
+        let syncBinding = Binding<Bool>(
+            get: { pocket?.syncsWithSource ?? false },
+            set: { collections.setSourceSyncEnabled($0, forPocket: pocketId) })
+        Divider()
+        Toggle(isOn: syncBinding) {
+            Label("Sync with source", systemImage: "arrow.triangle.2.circlepath")
+        }
+        .accessibilityIdentifier("pocket-sync-toggle")
+        Button(action: syncFromSourceNow) {
+            Label("Sync from source now", systemImage: "arrow.clockwise")
+        }
+        .accessibilityIdentifier("pocket-sync-now")
+    }
+
+    /// Manual sync + user feedback (runs regardless of the auto-sync toggles).
+    private func syncFromSourceNow() {
+        if collections.syncPocketFromSourceNow(pocketId) {
+            let source = pocket?.sourceName ?? "source"
+            syncResult = "Updated from \(source)."
+        } else if collections.sourcePlaylist(forPocket: pocketId) == nil {
+            syncResult = "Source playlist not available (check the source is enabled and loaded)."
+        } else {
+            syncResult = "Already in sync."
         }
     }
 

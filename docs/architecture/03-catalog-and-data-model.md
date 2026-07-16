@@ -293,7 +293,7 @@ The native app persists the whole collections graph as **one versioned, lenient-
 ```
  CollectionsDocument { schemaVersion, pockets[], playlists[], setlists[],
                        folders:[PlaylistFolder]  (v3),  lastAddTarget? }
-   collectionsSchemaVersion = 5      additive-only · lenient (missing version ⇒ v0; missing lists ⇒ [])
+   collectionsSchemaVersion = 6      additive-only · lenient (missing version ⇒ v0; missing lists ⇒ [])
 
  CollectionsMigration.migrate(doc):                      runs when doc.schemaVersion < current
    v1 → v2   pockets gain ordered notes:[PocketNote]    (each older pocket gets notes:[])
@@ -307,6 +307,10 @@ The native app persists the whole collections graph as **one versioned, lenient-
              (b) studio namespaced ids (smp_/lp_/ptn_) riding the EXISTING songIds / SongNode arrays
              (both are behaviour, so the mapping forward is again the no-op identity; the bump just
               makes the version visible + reserves the seam for a future studio-shape transform)
+   v5 → v6   pockets AND playlists gain SOURCE PROVENANCE (all optional ⇒ nil on hand-made items):
+             sourcePlaylistId? + sourceName?   which catalog playlist Convert / Duplicate created it from
+             sourceSongIds?                    the source membership at the last sync (3-way-merge base)
+             sourceSyncEnabled?                per-item opt-out (nil ⇒ enabled) · sourceSyncedAt?
 ```
 
 **Reading it.** `schemaVersion` is bumped on any shape change and
@@ -344,6 +348,27 @@ handling; the import-remint leaves unknown-prefix ids untouched, and the referen
 stays device-local (documented in [Ch. 4 §8.6](./04-performance-engine.md#86-collections-integration--namespaced-ids-schema-v5-lossy-decode-and-the-consumer-fence)).
 The full per-consumer resolution policy (which consumers *resolve* a studio id vs. *fence* it
 out of rip/burn/CSV/autofill) lives there.
+
+**The v5→v6 step — converted collections follow their source playlist.**
+`convertToPocket(source:)` and `createPlaylist(_:songIds:source:)` (the Duplicate-as-editable-
+playlist path) now stamp **provenance** on the item they create (`sourcePlaylistId` +
+`sourceName` identify the catalog playlist, `sourceSongIds` snapshots the membership) and
+every **catalog assign** (cache seed + network refresh, `AppModel.onCatalogAssigned` → wired
+in `PocketDJApp.init`) runs `CollectionsStore.syncConvertedCollections(with:)` — a **three-way
+merge** per sync-enabled item against its source playlist using the snapshot as the base:
+source *adds* (in source, not in snapshot) append — to the pocket's `songIds` / the playlist's
+DEFAULT chapter (`sequences[0]`); source *removals* (in snapshot, not in source) drop — from
+the pocket (their `songRepeats` too) / every matching `.song` node recursively (chapters, text
+cues, albums, nested pockets untouched); everything else — the user's own adds, removes,
+reorders, extra chapters — lives outside both sets and **survives**. The snapshot then
+advances, and a no-change refresh persists nothing (no `save()`/`updatedAt` churn). Gates: the
+**global** `SettingsStore.syncConvertedPockets` toggle (default ON, checked at the wiring
+site; surfaced in **Settings ▸ Sync**, `SyncSettingsView`, alongside the Apple Music library
+re-index and a manual "Sync from sources now" pass), the **per-item** `sourceSyncEnabled` (the
+⋯ menus' "Sync with source"), and the manual "Sync from source now" menu actions
+(`syncPocketFromSourceNow` / `syncPlaylistFromSourceNow`) which ignore both. An item whose
+source playlist is **missing** from a refresh (source disabled, playlist deleted upstream) is
+left untouched — a vanished source never silently wipes the user's copy.
 
 **Folders survive import / merge / backup.** Because a folder is pure id+name, it carries
 cleanly through every transfer path (`CollectionsStore.importCollection` + the backup zip):

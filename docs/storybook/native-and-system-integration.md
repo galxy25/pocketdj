@@ -171,6 +171,26 @@ itself runs normally underneath.
 
 ---
 
+## Settings ▸ Sync — one panel for staying current
+
+Two kinds of "keep me up to date" used to live in different places; now Settings has a single
+**Sync** row (the Storage-panel pattern — a navigable page with a back button) gathering both:
+
+- **Apple Music library** — the **Sync Apple Music library** button asks your Mac (via the rip
+  server) to check for newly-added music right now, with the result inline ("Library up to
+  date", or "12 new — applies after deploy"). The same check also runs automatically every
+  day at 04:00.
+- **Converted playlists & pockets** — the global **"Sync converted playlists & pockets"**
+  toggle (on by default) plus a **"Sync from sources now"** button that runs one reconcile
+  pass over every linked item immediately and reports how many changed. The footer counts how
+  many of your collections are linked to a source ([Converted pockets & duplicated playlists
+  stay in sync with their source](perform-pockets-playlists-setlists.md#converted-pockets--duplicated-playlists-stay-in-sync-with-their-source)).
+
+**User story:** "When I wonder 'is the app caught up with my library?', I want one place to
+look — and one button to press."
+
+---
+
 ## Settings ▸ Storage — the storage manager
 
 Burned music, stems, beat grids, and mix recordings all live on your device. Settings has a

@@ -33,6 +33,7 @@ import { buildTrackScript, buildPlaylistScript, runOsascript, parsePlaylistRows,
 import {
   diffLibrary, partitionTrackRows, mergePlaylists,
   recordStrike, effectiveIgnoredPids, removalGuardTripped, playlistDumpLooksBroken, CONFIRM_STRIKES,
+  reconcileRemovals, deferPlaylistRemovals, REMOVAL_CONFIRM_STRIKES,
 } from './lib/am-sync-merge.mjs';
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 ? process.argv[i + 1] : def; }
@@ -55,6 +56,21 @@ function loadIgnoredPids() {
 function saveIgnoredPids(pids) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.writeFileSync(IGNORE_FILE, JSON.stringify({ version: 1, pids }, null, 2));
+}
+
+// Pending-removal strike file: a removal only ships after REMOVAL_STRIKES sightings on
+// distinct days (reappearance resets). POCKETDJ_REMOVAL_STRIKES=1 restores ship-same-run.
+const PENDING_FILE = path.join(STATE_DIR, 'pending-removals.json');
+const REMOVAL_STRIKES = Math.max(1, parseInt(process.env.POCKETDJ_REMOVAL_STRIKES || '', 10) || REMOVAL_CONFIRM_STRIKES);
+function loadPendingRemovals() {
+  try {
+    const p = JSON.parse(fs.readFileSync(PENDING_FILE, 'utf8'));
+    return { songs: p.songs || {}, playlists: p.playlists || {}, memberships: p.memberships || {} };
+  } catch { return { songs: {}, playlists: {}, memberships: {} }; }
+}
+function savePendingRemovals(p) {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.writeFileSync(PENDING_FILE, JSON.stringify({ version: 1, ...p }, null, 2));
 }
 
 const ns = nsFor(SOURCE);
@@ -93,9 +109,21 @@ if (removalGuardTripped(removed.size, oldSongs.length) && process.env.POCKETDJ_A
 }
 
 if (DRY) {
-  log(`(dry-run) would add up to ${newPositions.length} new tracks and drop ${removed.size} removed.`);
+  log(`(dry-run) would add up to ${newPositions.length} new tracks; ${removed.size} removal candidate(s), ` +
+    `each ships only after ${REMOVAL_STRIKES} distinct-day sightings (${PENDING_FILE}).`);
   cleanup();
   process.exit(0);
+}
+
+// Removal confirmation: strike today's missing songs, ship only the confirmed ones.
+// (Breakers above still abort on implausible snapshots BEFORE any strikes are recorded.)
+const pendingRemovals = loadPendingRemovals();
+const nowIsoRun = new Date().toISOString();
+const { confirmed: confirmedRemoved, deferred: deferredRemoved } =
+  reconcileRemovals({ pending: pendingRemovals.songs, missing: [...removed], nowIso: nowIsoRun, confirmStrikes: REMOVAL_STRIKES });
+if (removed.size) {
+  log(`  removals: ${confirmedRemoved.size} confirmed (${REMOVAL_STRIKES} distinct days), ` +
+    `${deferredRemoved.size} pending (${PENDING_FILE})`);
 }
 
 // 3 + 4. enriched-fetch only the new tracks → small Library.xml → index-apple-music
@@ -173,14 +201,14 @@ if (playlistRows && playlistDumpLooksBroken(playlistRows.length, (idx.playlists 
 }
 
 // 6. merge
-// 6a. songs: drop removed, append new (existing songs preserved verbatim)
-const finalSongs = oldSongs.filter((s) => !removed.has(s.id)).concat(partial.songs || []);
+// 6a. songs: drop CONFIRMED removed (deferred ones stay until confirmed), append new
+const finalSongs = oldSongs.filter((s) => !confirmedRemoved.has(s.id)).concat(partial.songs || []);
 const finalSongIds = new Set(finalSongs.map((s) => s.id));
 
 // 6b. albums: keep untouched verbatim; rebuild touched (gained/lost a song) from final songs
 const touched = new Set();
 for (const s of (partial.songs || [])) touched.add(s.albumId);
-for (const sid of removed) { const s = oldById.get(sid); if (s) touched.add(s.albumId); }
+for (const sid of confirmedRemoved) { const s = oldById.get(sid); if (s) touched.add(s.albumId); }
 const touchedSongs = new Map(); // albumId -> [song]
 for (const s of finalSongs) {
   if (!touched.has(s.albumId)) continue;
@@ -207,13 +235,21 @@ for (const a of (partial.albums || [])) {                    // brand-new albums
 // Presence in the dump governs existence — an empty playlist ships EMPTY, it is not a
 // deletion. (The old zero-members-means-drop rule shipped the deletion of "OTG" on
 // 2026-06-30 while its contents were mid-swap in Music.)
+// Removal confirmation applies here too: a playlist deletion or a member removal only
+// ships after REMOVAL_STRIKES distinct-day sightings; until then the committed shape is
+// retained. A failed/broken dump leaves pending playlist strikes untouched entirely.
 let finalPlaylists;
 if (playlistRows) {
-  finalPlaylists = mergePlaylists({ playlistRows, oldPlaylists: idx.playlists, finalSongIds, ns, log });
+  const mergedPl = mergePlaylists({ playlistRows, oldPlaylists: idx.playlists, finalSongIds, ns, log });
+  finalPlaylists = deferPlaylistRemovals({
+    merged: mergedPl, oldPlaylists: idx.playlists, pending: pendingRemovals,
+    finalSongIds, nowIso: nowIsoRun, confirmStrikes: REMOVAL_STRIKES, log,
+  });
 } else {
   finalPlaylists = (idx.playlists || [])
     .map((p) => ({ ...p, songIds: (p.songIds || []).filter((sid) => finalSongIds.has(sid)) }));
 }
+savePendingRemovals(pendingRemovals);
 
 // 6d. assemble (preserve key order: manifest, albums, playlists, songs) + refresh counts
 const out = { ...idx, albums: finalAlbums, playlists: finalPlaylists, songs: finalSongs };
@@ -221,7 +257,7 @@ const out = { ...idx, albums: finalAlbums, playlists: finalPlaylists, songs: fin
 // the nightly job's `cmp` then skips the commit/deploy entirely. (A pure playlist reorder still
 // ships: the playlists array itself differs, which cmp catches regardless of generatedAt.)
 const addedSongs = (partial.songs || []).length;
-const changed = addedSongs > 0 || removed.size > 0 ||
+const changed = addedSongs > 0 || confirmedRemoved.size > 0 ||
   JSON.stringify(finalPlaylists) !== JSON.stringify(idx.playlists || []);
 if (out.manifest) {
   out.manifest.counts = {
@@ -236,6 +272,7 @@ fs.writeFileSync(OUT, JSON.stringify(out));
 cleanup();
 
 console.error(`✓ am-incremental-sync → ${OUT}${changed ? '' : ' (no change)'}`);
-console.error(`  songs ${oldSongs.length} → ${finalSongs.length} (+${addedSongs} added, -${removed.size} removed)`);
+console.error(`  songs ${oldSongs.length} → ${finalSongs.length} (+${addedSongs} added, -${confirmedRemoved.size} removed` +
+  (deferredRemoved.size ? `, ${deferredRemoved.size} removal(s) pending confirmation` : '') + ')');
 console.error(`  albums ${(idx.albums || []).length} → ${finalAlbums.length} | playlists ${(idx.playlists || []).length} → ${finalPlaylists.length}`);
 console.error(`  explicit ${finalSongs.filter((s) => s.explicit).length} | appleMusicId ${finalSongs.filter((s) => s.appleMusicId).length} (existing tracks keep theirs)`);

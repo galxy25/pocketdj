@@ -3,7 +3,7 @@ name: create-pr
 description: "PocketDJ's local 'PR' flow — NOT a GitHub PR. Push the current branch, ask the user if it's OK to merge, then merge into main locally and push. Use when the user says 'create a pr', 'open a pr', 'pr this branch', 'push and merge', or runs /create-pr."
 ---
 
-# create-pr (local push → update docs → test → ask → merge → ship TestFlight)
+# create-pr (push → docs → test → preview TestFlight → ask → merge → ship all platforms)
 
 For this repo, "PR" means a **local** review-and-merge flow, **not** a GitHub pull
 request (the GitHub API isn't reliably reachable here; SSH push works). The flow:
@@ -14,10 +14,14 @@ request (the GitHub API isn't reliably reachable here; SSH push works). The flow
    the branch's changes. **This is a required gate: do not skip it.**
 3. **Run the tests** — the targeted set that maps to what changed; **judgment call**
    to escalate to the full matrix for broad/risky changes (CI always runs all).
-4. **Ask** the user if it's OK to merge.
-5. On yes, **merge into `main`** and push `main`. On no, stop (branch stays pushed).
-6. **Ship the TestFlight builds — BOTH iOS and macOS** (when the change touches the app),
-   so device and Mac testers stay on the same code.
+4. **Ship PREVIEW TestFlight builds from the branch — iOS and macOS** (when the change
+   touches the app), so the user can try the change on real devices BEFORE approving
+   the merge.
+5. **Ask** the user if it's OK to merge (they may want to test the preview builds first).
+6. On yes, **merge into `main`** and push `main`. On no, stop (branch stays pushed).
+7. **Ship the post-merge TestFlight builds from `main` — EVERY platform with a target**:
+   iOS, macOS, visionOS today; watchOS and tvOS the day those targets exist. All testers
+   on every platform end up on the same merged code.
 
 PocketDJ keeps two living docs that MUST stay current on `main`:
 - **`docs/STORYBOOK.md`** — the outside-in product/customer view (screens, user
@@ -96,12 +100,28 @@ git diff --name-only origin/main...HEAD     # what changed → which test rows
 State which set you ran (and why) when you ask to merge. If anything fails, stop and
 surface it — don't merge red.
 
-### 4. Ask for merge approval
+### 4. Ship PREVIEW TestFlight builds from the branch (iOS + macOS)
+When the change touches the app (`apple/…`), ship **preview** builds of the BRANCH —
+before asking to merge — so the user can try the change on a real iPhone/iPad and Mac
+while deciding:
+
+```bash
+apple/scripts/testflight.sh            # iOS  (from the branch checkout)
+apple/scripts/testflight-macos.sh      # macOS (from the branch checkout)
+```
+
+Both are fully headless (see Step 7's notes — same credentials/keychain). Verify each
+prints `Upload succeeded`, and tell the user the two preview build numbers. Skip this
+step for pure server (`scripts/`), web (`src/`), or docs/tooling changes.
+
+### 5. Ask for merge approval
 Use the **AskUserQuestion** tool: "Merge `$BRANCH` into `main`?" with options
 **Merge** / **Not yet**. Do not merge without an explicit yes. (Confirm the books are
-updated — or that no update was needed — and report the test set run, as part of this ask.)
+updated — or that no update was needed — report the test set run, and point at the
+preview TestFlight builds from Step 4, as part of this ask. "Not yet" often means
+"let me try the preview builds first" — the branch stays pushed, resume later.)
 
-### 5. Merge into main (worktree-aware)
+### 6. Merge into main (worktree-aware)
 This project uses git worktrees (`.claude/worktrees/…`), so `main` is checked out
 in a **different** worktree and can't be checked out here. Merge in the worktree
 that owns `main`:
@@ -120,16 +140,22 @@ echo "✓ merged $BRANCH into main and pushed"
 - If the merge conflicts, stop and surface the conflict to the user (don't force).
 - If the main worktree has uncommitted changes, stop and ask the user to resolve first.
 
-### 6. Ship the TestFlight builds (iOS + macOS)
-After `main` has the merge, push a fresh TestFlight build for **both** Apple platforms so
-device and Mac testers run the same code — PocketDJ ships a native iOS app **and** a native
-sandboxed macOS app (two separate platforms / build-number sequences in App Store Connect):
+### 7. Ship the post-merge TestFlight builds (ALL platforms)
+After `main` has the merge, push a fresh TestFlight build **from `main`** for **every
+Apple platform that has a target**, so testers on every platform run the same merged
+code. Today that is iOS + macOS + visionOS (each a separate ASC platform with its own
+build-number sequence — an iOS ship does NOT reach Vision Pro); add watchOS and tvOS
+here the day those targets exist:
 
 ```bash
 apple/scripts/testflight.sh            # iOS
 apple/scripts/testflight-macos.sh      # macOS (native, sandboxed)
-apple/scripts/testflight-visionos.sh   # visionOS (when the change reaches Vision Pro)
+apple/scripts/testflight-visionos.sh   # visionOS
+# watchOS / tvOS: no targets yet — extend this list when they land
 ```
+
+Run them from the `main` worktree (or after fast-forwarding this checkout to the merge)
+so the shipped bytes are the merged code, not the pre-merge branch.
 
 - **Fully headless — just run them.** Credentials auto-source from
   `~/.config/pocketdj/asc.env`; signing uses the dedicated `pocketdj-ci` keychain (no
@@ -137,10 +163,11 @@ apple/scripts/testflight-visionos.sh   # visionOS (when the change reaches Visio
   signing" section. The old "requires an interactive session / prompt Levi" caveat is
   obsolete (fixed 2026-07-16). Verify each script prints `Upload succeeded` — don't
   claim a build shipped that didn't.
-- **Scope:** ship both only when the change touches the **app** (`apple/…`). Skip for pure
+- **Scope:** ship only when the change touches the **app** (`apple/…`). Skip for pure
   server (`scripts/`), web (`src/`), or docs/tooling changes — same judgment as the test step.
 - Build numbers default to a unix timestamp (`CURRENT_PROJECT_VERSION`), so uploads never
-  collide; iOS and macOS sequence independently. See the `apple-publish` skill for prerequisites.
+  collide (the Step-4 preview builds and these post-merge builds coexist fine); each
+  platform sequences independently. See the `apple-publish` skill for prerequisites.
 - The native macOS build is why we **disable "iPhone/iPad apps on Mac"** for the iOS app in
   App Store Connect — Mac users get the real sandboxed app, not the iOS-on-Mac variant (which
   can't `MusicLibrary.add` and crashed on it).

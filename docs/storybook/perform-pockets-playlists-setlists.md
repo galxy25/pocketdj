@@ -217,6 +217,35 @@ to shuffle it — and still see and nudge what's coming up next."
 
 ---
 
+## Converted pockets & duplicated playlists stay in sync with their source
+
+**Convert once, follow forever.** When you **Convert** a read-only source playlist (say, an
+Apple Music playlist) into a pocket — or **Duplicate** it **as an editable playlist** — the
+copy now **remembers where it came from**, and as the catalog refreshes it **follows the
+source**: songs you add to that playlist in Apple Music show up in your copy; songs you remove
+there disappear from it. Your **own edits are safe** — tracks you added yourself stay put,
+tracks you removed yourself don't come back, your reordering and your extra chapters are
+preserved (source additions land in a playlist's first chapter). Sync happens automatically
+whenever the app picks up a fresh catalog (including right at launch from the offline cache).
+
+**You're in control, three ways:**
+
+- **Globally** — Settings ▸ **Sync** ▸ "Sync converted playlists & pockets" (on by default)
+  turns the automatic follow on or off for everything at once; the same panel's **"Sync from
+  sources now"** button runs one pass immediately and reports how many items changed.
+- **Per item** — the pocket's or playlist's **⋯ menu** has a **"Sync with source"** toggle, so
+  one item can freeze while the rest keep following.
+- **On demand** — the same menu's **"Sync from source now"** pulls the latest source membership
+  immediately, even when automatic sync is off, and tells you whether anything changed.
+
+Items made by hand (or converted before this shipped) have no source and are never touched.
+
+**User story:** "I built this pocket from my Apple Music party playlist. I keep adding songs to
+that playlist on my phone — I want the pocket to just keep up, without flattening the tweaks
+I've made to it, and I want one switch to freeze it before a gig."
+
+---
+
 ## Make a set list — freeze a take from a playlist
 
 **Realizing** a playlist into a frozen, saved take — expanding albums, sampling over-budget

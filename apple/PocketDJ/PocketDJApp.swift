@@ -210,6 +210,14 @@ struct PocketDJApp: App {
         app.edits = edits         // overlay local metadata edits
         collections.app = app     // give realize()/playNow() the catalog to resolve ids
         collections.performerName = settings.pocketDJName   // artist stamped on performance items
+        // Converted-collection source sync: every catalog assign (cache seed + refresh)
+        // reconciles source-converted pockets + source-duplicated playlists with their
+        // source playlists, gated by the global Settings toggle (per-item opt-outs live
+        // on the items themselves).
+        app.onCatalogAssigned = { [weak app, weak collections, weak settings] in
+            guard let app, let collections, settings?.syncConvertedPockets == true else { return }
+            collections.syncConvertedCollections(with: app.indexPlaylists)
+        }
         // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
         setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
         // Let the sequencer snapshot each run's Play-History origin (source-kind + set name) at

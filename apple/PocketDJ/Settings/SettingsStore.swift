@@ -153,6 +153,14 @@ final class SettingsStore {
     /// Studio ▸ Instruments: 1-bar COUNT-IN before take recording starts (beat 1 = end of
     /// count-in = the score quantizer's anchor). ON by default.
     var studioCountInEnabled: Bool
+    /// GLOBAL gate for converted-collection source sync (ON by default): when on, every
+    /// catalog refresh reconciles each source-converted pocket AND source-duplicated
+    /// playlist with its source playlist (adds/removals propagate; the user's own edits
+    /// survive). Per-item opt-outs live on the items (`sourceSyncEnabled`, the detail ⋯
+    /// menus); the manual "Sync from source now" actions ignore both gates. See
+    /// `CollectionsStore.syncConvertedCollections`. (Field name predates playlist support —
+    /// kept for the persisted-blob key.)
+    var syncConvertedPockets: Bool
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -190,6 +198,7 @@ final class SettingsStore {
         self.studioTab = data.studioTab
         self.studioClickEnabled = data.studioClickEnabled ?? true
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
+        self.syncConvertedPockets = data.syncConvertedPockets ?? true
 
         // UI-test seam: pin the Mix deck layout deterministically, independent of the persisted
         // value, so a test can exercise a specific arrangement (or hold the classic side-by-side
@@ -293,7 +302,8 @@ final class SettingsStore {
             pocketDJName: pocketDJName,
             studioTab: studioTab,
             studioClickEnabled: studioClickEnabled,
-            studioCountInEnabled: studioCountInEnabled)
+            studioCountInEnabled: studioCountInEnabled,
+            syncConvertedPockets: syncConvertedPockets)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -336,6 +346,7 @@ final class SettingsStore {
         studioTab = d.studioTab
         studioClickEnabled = d.studioClickEnabled ?? true
         studioCountInEnabled = d.studioCountInEnabled ?? true
+        syncConvertedPockets = d.syncConvertedPockets ?? true
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -408,6 +419,9 @@ struct SettingsData: Codable {
     var studioClickEnabled: Bool?
     /// Optional so older blobs still decode (coalesced to true at the read sites).
     var studioCountInEnabled: Bool?
+    /// Optional so older blobs still decode (coalesced to TRUE at the read sites — converted
+    /// pockets sync with their source unless turned off).
+    var syncConvertedPockets: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -439,5 +453,6 @@ struct SettingsData: Codable {
         pocketDJName: nil,
         studioTab: nil,
         studioClickEnabled: nil,
-        studioCountInEnabled: nil)
+        studioCountInEnabled: nil,
+        syncConvertedPockets: nil)
 }

@@ -128,6 +128,18 @@ pid), while positive-evidence non-music rows (`media kind` → `Has Video`/`Podc
 ignored immediately. Pure diff/merge decisions live in `scripts/lib/am-sync-merge.mjs`
 (unit-tested in `tests/unit/am-sync-merge.test.mjs`).
 
+**Removal confirmation (2026-07-16).** Removals get the same distinct-day strike treatment
+as the ghost list: a **library song gone**, a **playlist absent from the dump**, or a **song
+missing from a playlist's fresh membership** is *deferred* — recorded in
+`~/.pocketdj/am-sync/pending-removals.json` (`reconcileRemovals` / `deferPlaylistRemovals`
+in `am-sync-merge.mjs`) and retained in the shipped index at its committed position — until
+it has been observed missing on **3 distinct days** (`POCKETDJ_REMOVAL_STRIKES` tunes it;
+`1` restores ship-same-run). An item that reappears on any later run resets its entry, so a
+transient AppleScript/Library.xml flake can never ship a bad removal; the empty-snapshot and
+mass-removal/playlist-shrink circuit breakers still abort *before* any strike is recorded. A
+deferral-only night leaves the index byte-identical, so the nightly's `cmp` gate correctly
+skips the ship.
+
 ---
 
 ## 3. AppleScript / Shortcuts "API" — capturing what can't be copied
