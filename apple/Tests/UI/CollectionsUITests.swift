@@ -166,6 +166,57 @@ final class PlaylistsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["new-playlist"].waitForExistence(timeout: 5))
     }
 
+    /// The name search bar (mirrors the Browser's `.searchable`): a substring query filters
+    /// the list to matching playlists / pockets by NAME and flattens the folder hierarchy, so
+    /// a match surfaces without expanding folders. Seeds "Seeded Set", creates "BBQ Ribs",
+    /// then proves each query shows only its match.
+    #if !os(macOS)
+    func testNameSearchFiltersPlaylists() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_SEED_COLLECTIONS"] = "1"   // seeds "Seeded Set"
+        app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
+        app.launch()
+
+        // Add a second, distinctly-named playlist so the filter has something to exclude.
+        XCTAssertTrue(app.buttons["new-playlist"].waitForExistence(timeout: 15))
+        app.buttons["new-playlist"].tap()
+        let nameField = app.textFields.firstMatch
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5))
+        nameField.tap(); nameField.typeText("BBQ Ribs")
+        app.alerts.buttons["Create"].tap()
+
+        XCTAssertTrue(app.staticTexts["Seeded Set"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 5))
+
+        // Search "seeded" (case-insensitive) → only "Seeded Set" remains.
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 8), "native search field should be in the bar")
+        field.tap()
+        if !app.keyboards.firstMatch.waitForExistence(timeout: 2) { field.tap() }
+        field.typeText("seeded")
+        XCTAssertTrue(app.staticTexts["Seeded Set"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 2),
+                       "a non-matching playlist is filtered out")
+
+        // Swap the query → the other one shows, the first is gone.
+        field.buttons["Clear text"].tap()
+        field.typeText("ribs")
+        XCTAssertTrue(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Seeded Set"].waitForExistence(timeout: 2))
+
+        // A no-match query shows the empty-results placeholder.
+        field.buttons["Clear text"].tap()
+        field.typeText("zzzznope")
+        XCTAssertTrue(app.any("playlists-search-empty").waitForExistence(timeout: 5))
+
+        // Clearing the field restores the full, unfiltered list.
+        field.buttons["Clear text"].tap()
+        XCTAssertTrue(app.staticTexts["Seeded Set"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 5))
+    }
+    #endif
+
     /// Convert a playlist into a pocket from the same ⋯ menu that holds Rip/Burn/Delete,
     /// then assert we land on the NEW pocket's detail (its `pocket-menu` is unique to
     /// PocketDetailView, so it disambiguates from the same-named playlist screen).
