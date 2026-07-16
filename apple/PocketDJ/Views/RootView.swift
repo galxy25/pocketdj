@@ -44,6 +44,7 @@ struct RootView: View {
         // as sidebar label + settings.lastSection token + PDJ_START_SECTION seam — never
         // rename it (spec §0's collision table pins the string).
         case performance = "Performance"
+        case jukebox = "Jukebox Hero"
         case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
@@ -53,6 +54,7 @@ struct RootView: View {
             case .playlists:   return "music.note.list"
             case .mix:         return "slider.horizontal.3"
             case .performance: return "pianokeys"
+            case .jukebox:     return "qrcode"
             case .settings:    return "gearshape"
             }
         }
@@ -102,6 +104,7 @@ struct RootView: View {
                     .navigationDestination(for: SetlistLaunch.self) { SetlistDetailView(setlistId: $0.setlistId, autoplay: $0.autoplay, path: $path) }
                     .navigationDestination(for: MixSessionsRoute.self) { _ in MixSessionsView() }
                     .navigationDestination(for: MixSessionRoute.self) { MixSessionDetailView(sessionId: $0.sessionId) }
+                    .navigationDestination(for: JukeboxRoute.self) { _ in JukeboxView() }
             }
         }
         .background { navigationShortcuts }
@@ -301,6 +304,9 @@ struct RootView: View {
             // (the user asked for it); the Mix tab exists on iPhone, iPad, AND Mac.
             Button("Mix-shadow") { section = .mix }
                 .keyboardShortcut("m", modifiers: .command)
+            // ⌘J → Jukebox Hero (free key — nothing else claims J in the collision table).
+            Button("Jukebox-shadow") { section = .jukebox; path = NavigationPath() }
+                .keyboardShortcut("j", modifiers: .command)
         }
         .frame(width: 1, height: 1).opacity(0.01)
     }
@@ -312,6 +318,7 @@ struct RootView: View {
         case .playlists:   PlaylistsView(path: $path)
         case .mix:         MixView(path: $path)
         case .performance: PerformanceView()
+        case .jukebox:     JukeboxView()
         case .settings:    SettingsView(settings: settings)
         case .none:
             // No section = the iPhone HOME menu (the sidebar owns the screen; this detail isn't

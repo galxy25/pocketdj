@@ -23,6 +23,12 @@ enum Config {
     /// iMac rip server exposed over Tailscale (rip-on-demand + live HLS). Tailnet-only.
     static let ripServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net")!
 
+    /// Jukebox Hero session broker (scripts/jukebox-server.mjs). Unlike the rip server
+    /// this must be PUBLICLY reachable — guests submit requests from their own phones —
+    /// so the iMac exposes it via Tailscale Funnel at the `/jukebox` path mount. (The
+    /// planned Lambda + API Gateway move changes only this base URL.)
+    static let jukeboxServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net/jukebox")!
+
     /// The catalog index document (vinyl, the default source).
     static var indexURL: URL { catalogBase.appendingPathComponent("current-index.json") }
 

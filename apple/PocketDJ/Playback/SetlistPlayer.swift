@@ -227,6 +227,17 @@ final class SetlistPlayer {
         queue.insert(contentsOf: items, at: min(index + 1, queue.count))
     }
 
+    /// Insert tracks at a RANDOM slot in the upcoming tail (Jukebox Hero's "Surprise
+    /// Slot"): anywhere from right after the current track to the very end, uniformly.
+    /// Same contract as the other live edits — only the tail moves, never `queue[index]`.
+    /// The slot is injectable so tests pin it; production uses the full-range default.
+    func insertRandomInQueue(_ items: [Item],
+                             slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) {
+        guard isRunning, !items.isEmpty else { return }
+        let lo = min(index + 1, queue.count)
+        queue.insert(contentsOf: items, at: slot(lo...queue.count))
+    }
+
     /// Bump an upcoming row (by identity) to right after the current track
     /// ("Play next"). Unknown/played uids are ignored.
     func moveUpcomingNext(uid: UUID) {

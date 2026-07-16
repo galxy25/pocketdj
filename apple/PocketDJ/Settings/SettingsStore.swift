@@ -64,6 +64,11 @@ final class SettingsStore {
     var sources: [SourceConfig]
     var ripServerURL: String
     var ripToken: String
+    /// Jukebox Hero session broker base URL (Tailscale Funnel path mount — PUBLIC, unlike
+    /// the rip server, since guests post requests from their own phones). See JukeboxClient.
+    var jukeboxServerURL: String
+    /// Optional server-level bearer for creating jukeboxes (JUKEBOX_TOKEN on the server).
+    var jukeboxToken: String
     /// When on, every rip the app requests asks the server to try capturing the song from
     /// the Apple Music library on the iMac (cloud), falling back to the analog (vinyl)
     /// source when there's no Apple Music match or the capture fails. No-op for songs that
@@ -171,6 +176,8 @@ final class SettingsStore {
         self.sources = data.sources
         self.ripServerURL = data.ripServerURL
         self.ripToken = data.ripToken
+        self.jukeboxServerURL = data.jukeboxServerURL ?? Config.jukeboxServerBase.absoluteString
+        self.jukeboxToken = data.jukeboxToken ?? ""
         self.ripFromCloud = data.ripFromCloud ?? false
         self.playbackMode = data.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         self.searchAccessKeyID = data.searchAccessKeyID
@@ -281,6 +288,7 @@ final class SettingsStore {
     func persist() {
         let snapshot = SettingsData(
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
+            jukeboxServerURL: jukeboxServerURL, jukeboxToken: jukeboxToken,
             ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
@@ -320,6 +328,8 @@ final class SettingsStore {
         let d = SettingsData.default
         sources = d.sources
         ripServerURL = d.ripServerURL; ripToken = d.ripToken
+        jukeboxServerURL = d.jukeboxServerURL ?? Config.jukeboxServerBase.absoluteString
+        jukeboxToken = d.jukeboxToken ?? ""
         ripFromCloud = d.ripFromCloud ?? false
         playbackMode = d.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
@@ -362,6 +372,10 @@ struct SettingsData: Codable {
     var sources: [SourceConfig]
     var ripServerURL: String
     var ripToken: String
+    /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode —
+    /// Jukebox Hero server base (nil ⇒ `Config.jukeboxServerBase`) + creation token.
+    var jukeboxServerURL: String?
+    var jukeboxToken: String?
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — a
     /// non-optional Bool would fail decode and silently reset ALL settings to defaults
     /// (load() falls back to .default via `try?`). Coalesced to false at the read sites.
@@ -427,6 +441,8 @@ struct SettingsData: Codable {
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
         ripServerURL: Config.ripServerBase.absoluteString,
         ripToken: "",
+        jukeboxServerURL: Config.jukeboxServerBase.absoluteString,
+        jukeboxToken: "",
         ripFromCloud: false,
         playbackMode: PlaybackMode.cloud.rawValue,
         searchAccessKeyID: "",

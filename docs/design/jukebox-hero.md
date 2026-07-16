@@ -58,7 +58,10 @@ deploys don't prune live jukeboxes.
   "name": "Levi's Garage Party",
   "updatedAt": 1789600000000,
   "ended": false,
-  "nowPlaying": { "title": "…", "artist": "…", "lengthMs": 214000, "positionMs": 63000 },
+  "expiresAt": 1789686400000,
+  "hear": false,
+  "nowPlaying": { "title": "…", "artist": "…", "lengthMs": 214000, "positionMs": 63000,
+                  "streamUrl": "https://pocketdj-rips-….s3….amazonaws.com/rips/<id>.mp3" },
   "upNext": [ { "title": "…", "artist": "…" } ],
   "requests": [ { "id": "rq_…", "title": "…", "artist": "…", "status": "pending|queued|denied|played" } ]
 }
@@ -66,6 +69,28 @@ deploys don't prune live jukeboxes.
 
 Guests poll it every ~4 s. `positionMs` is snapshot-time; the page animates a
 progress bar locally between polls.
+
+### View-only vs View + Hear
+
+A session is **view-only by default** — a crowd-sourced request line: guests see the
+music and request, they don't hear it. The DJ can flip **View + Hear** on the live
+session (a toggle in the tab): snapshots then carry the current track's **public S3
+rip mp3** as `nowPlaying.streamUrl`, and the guest page shows a "Listen in" button
+(user-gesture-gated — mobile autoplay rules) that plays the track position-synced
+(`positionMs + (now − updatedAt)`, re-seek on >3 s drift). Only rips-bucket audio is
+ever distributed — a DRM'd Apple Music stream never leaves the host; once its
+stream-through-rip lands in the manifest, a later snapshot picks the URL up
+automatically. Tracks with no public rip stay view-only even in hear mode.
+
+### Session lifecycle (server-owned)
+
+Default sessions **expire 24 h** after creation (sweeper publishes a final
+`ended: true` state; host endpoints answer **410**, and the app folds its local
+session) and are **deleted at 7 days** (S3 `jukebox/<id>/` recursively removed +
+server session dir purged; endpoints answer **404**). A session created with —
+or later flipped to — **timeless** mode opts out of both. The sweeper runs every
+10 minutes in jukebox-server; the app only displays expiry and offers the toggle
+(`POST /jukebox/:id/config { timeless }`).
 
 ## jukebox-server (scripts/jukebox-server.mjs)
 
@@ -83,7 +108,8 @@ Durable session state under `~/.pocketdj/jukebox/<id>/` (`session.json`,
 | Route | Who | Body → Result |
 |---|---|---|
 | `GET /health` | anyone | `{ ok, service: "jukebox", version }` |
-| `POST /jukebox` | host (token) | `{ name, env? }` → `{ jukeboxId, hostKey, url }`; renders + uploads page, seeds state.json |
+| `POST /jukebox` | host (token) | `{ name, timeless }` → `{ jukeboxId, hostKey, url, timeless, expiresAt }`; renders + uploads page, seeds state.json |
+| `POST /jukebox/:id/config` | host key | `{ timeless }` → `{ timeless, expiresAt }` — flips the lifecycle mode |
 | `POST /jukebox/:id/end` | host key | marks ended, publishes final state (`ended: true`) |
 | `POST /jukebox/:id/state` | host key | player snapshot `{ nowPlaying, upNext }` → merged with request statuses, written to S3 (debounced ≥1 s) |
 | `POST /jukebox/:id/request` | guest (public) | `{ title, artist, clientId }` → `{ requestId }`; rate-limited per clientId+IP (1/15 s, ≤5 pending), lengths capped |
@@ -139,6 +165,32 @@ base URL.
   and Deny / Play Next / Play Last / Surprise Slot actions, End Jukebox.
 - **Settings ▸ Jukebox**: server base URL (default the Funnel base) + token,
   health check — mirroring the rip-server rows.
+
+## Broadcast — the Mix tie-in (live DJ'ing with a digital request line)
+
+The full feature set: a physical party, the DJ on the Mix tab, the crowd on the QR
+code. **The setlist is the shared concept.**
+
+- The Mix toolbar gets a **Broadcast** button (antenna, next to Record): one tap
+  creates a jukebox session (if none is live) and pushes the Jukebox view onto the
+  Mix stack — Back returns to the decks. The antenna glows while broadcasting.
+- **Guests see the mix**: the state snapshot is composed by who OWNS the audio —
+  a running/auto Mix first (the on-air deck's track + the auto queue's tail as
+  "up next"), then the app-scoped SetlistPlayer, then a standalone single play.
+- **Requests feed the Auto-DJ**: while auto-mixing, an accepted request is inserted
+  into the auto queue (`MixEngine.autoQueueInsert`) — never before `autoNextToLoad`,
+  so tracks already loaded/preloaded on a deck are never displaced. **In-mix actions
+  always take precedence** over the jukebox: manual deck loads, skips, and pauses
+  behave exactly as without a broadcast.
+- **Burn gate**: a Mix deck can only load a BURNED file, so accepting an unburned
+  request during a broadcast kicks the existing rip+burn pipeline
+  (`BurnStore.startRipAndBurn`; Apple-Music-only matches under their `amrec_` id)
+  and parks a pending insert that lands the moment the file exists (15 min cap;
+  if the mix ended meanwhile, a running sequencer inherits the request).
+- **Hear mode during a broadcast** streams the *unmixed* track from S3 (same rule
+  as always: public rips only). A future **live radio mode** — streaming the actual
+  broadcast mix output, or replaying recorded mix sessions — is the planned
+  follow-up, not v1.
 
 ## Later: Lambda migration (out of scope for v1)
 

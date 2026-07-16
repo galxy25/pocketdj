@@ -83,6 +83,11 @@ struct PocketDJApp: App {
     /// Instrument sound-bank pack downloads (S3 manifest + file-based downloadTask). App-scoped
     /// so an in-flight 32 MB bank download survives tab switches.
     @State private var instrumentPacks: InstrumentPackStore
+    /// APP-SCOPED Jukebox Hero session engine — while a jukebox is live it publishes
+    /// player-state snapshots (via the jukebox server → S3, for the guests' pages) and
+    /// polls guest song requests into the host's inbox. App-scoped so the party survives
+    /// navigation; its session persists so it survives relaunches too.
+    @State private var jukebox: JukeboxStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -384,6 +389,23 @@ struct PocketDJApp: App {
             }
         }
 
+        // ── Jukebox Hero ───────────────────────────────────────────────────────
+        // The session engine reads/edits the SAME app-scoped sequencer the Now Playing
+        // panel drives; its matcher searches the Apple Music catalog through the SAME
+        // provider instance streaming uses (guarded — silent empty results when the
+        // account isn't linked). Seams wired BEFORE resumePersistedSession so a jukebox
+        // that survived a relaunch comes back fully functional.
+        let jukebox = JukeboxStore(app: app, sequencer: setlistPlayer, player: player,
+                                   coordinator: coordinator, rips: rips,
+                                   mix: mix, burns: burns)
+        jukebox.settings = settings
+        jukebox.searchAppleMusic = { [weak amProvider] term in
+            guard let amProvider, amProvider.canSearch else { return [] }
+            return (try? await amProvider.search(term, limit: 5)) ?? []
+        }
+        jukebox.resumePersistedSession()
+        _jukebox = State(initialValue: jukebox)
+
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
         // One bridge instance carries the live stores to intents + entity queries.
         let intents = IntentServices(app: app, settings: settings, collections: collections,
@@ -441,6 +463,7 @@ struct PocketDJApp: App {
                 .environment(studioMic)
                 .environment(instrumentEngine)
                 .environment(instrumentPacks)
+                .environment(jukebox)
                 .environment(intents)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
