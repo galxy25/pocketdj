@@ -142,14 +142,17 @@ terminal/host — otherwise it errors `could not create image from display`.
 ## Publishing (TestFlight)
 
 Distribution is the **local-archive** path (no Xcode Cloud) via the **apple-publish**
-skill → `scripts/testflight.sh`:
+skill → `scripts/testflight.sh` (iOS) / `testflight-macos.sh` / `testflight-visionos.sh`.
+All three are **fully headless** — no env vars (credentials auto-source from
+`~/.config/pocketdj/asc.env`), no keychain prompts (archive signs with the dedicated
+`pocketdj-ci` keychain's "Apple Development: Created via API" identity; export re-signs
+via cloud signing):
 
 ```bash
-cd apple
-ASC_KEY_ID=… ASC_ISSUER_ID=… ./scripts/testflight.sh   # or export them once in config.fish
+apple/scripts/testflight.sh
 ```
 
-It runs `xcodegen generate` → `xcodebuild archive` (Release, iOS, **cloud-signed** via
+It runs `xcodegen generate` → `xcodebuild archive` (Release, **cloud-signed** via
 an App Store Connect API key — role **must be Admin**) → `-exportArchive`
 `destination=upload`. The build number defaults to a unix timestamp, so uploads never
 collide. Signing team **EC27UF79GL**; `ITSAppUsesNonExemptEncryption: false` (base

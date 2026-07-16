@@ -28,6 +28,14 @@ if [ -z "${ASC_KEY_ID:-}" ] && [ -f "$HOME/.config/pocketdj/asc.env" ]; then
   . "$HOME/.config/pocketdj/asc.env"
 fi
 
+# Unlock the dedicated CI signing keychain (headless codesign). The login
+# keychain's keys are ACL'd to require GUI prompts, which fails with
+# errSecInternalComponent in headless sessions; pocketdj-ci holds an
+# "Apple Development: Created via API" identity with a non-interactive ACL.
+if [ -f "$HOME/.config/pocketdj/ci-keychain-pass" ]; then
+  security unlock-keychain -p "$(cat "$HOME/.config/pocketdj/ci-keychain-pass")" pocketdj-ci.keychain-db 2>/dev/null || true
+fi
+
 # --- resolve paths -----------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
