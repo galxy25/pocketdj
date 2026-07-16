@@ -115,7 +115,8 @@ per-field cloud precedence).
 ### Ch. 3 — Catalog & Data Model
 **Built:** the index-JSON indexer↔app contract; the internal on-device model; collections
 schema versioning (v2→v3 playlist folders, v3→v4 pocket folders, v4→v5 lossy
-`[PlaylistNode]` decode + studio ids); the rips-manifest cut / beat-grid / stem fields;
+`[PlaylistNode]` decode + studio ids, v5→v6 converted-pocket source provenance + the
+catalog-refresh three-way sync); the rips-manifest cut / beat-grid / stem fields;
 the explicit offline catalog disk cache (`CatalogService`).
 
 ### Ch. 4 — Performance Engine

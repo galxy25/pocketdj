@@ -217,6 +217,33 @@ to shuffle it — and still see and nudge what's coming up next."
 
 ---
 
+## Converted pockets stay in sync with their source
+
+**Convert once, follow forever.** When you **Convert** a read-only source playlist (say, an
+Apple Music playlist) into a pocket, the pocket now **remembers where it came from** — and as
+the catalog refreshes, it **follows the source**: songs you add to that playlist in Apple Music
+show up in your pocket; songs you remove there disappear from it. Your **own edits are safe** —
+tracks you added to the pocket yourself stay put, tracks you removed yourself don't come back,
+and your reordering is preserved. Sync happens automatically whenever the app picks up a fresh
+catalog (including right at launch from the offline cache).
+
+**You're in control, three ways:**
+
+- **Globally** — Settings ▸ Collections ▸ **"Sync converted pockets with their source"**
+  (on by default) turns the automatic follow on or off for everything at once.
+- **Per pocket** — the pocket's **⋯ menu** has a **"Sync with source"** toggle, so one pocket
+  can freeze while the rest keep following.
+- **On demand** — the same menu's **"Sync from source now"** pulls the latest source membership
+  immediately, even when automatic sync is off, and tells you whether anything changed.
+
+Pockets made by hand (or converted before this shipped) have no source and are never touched.
+
+**User story:** "I built this pocket from my Apple Music party playlist. I keep adding songs to
+that playlist on my phone — I want the pocket to just keep up, without flattening the tweaks
+I've made to it, and I want one switch to freeze it before a gig."
+
+---
+
 ## Make a set list — freeze a take from a playlist
 
 **Realizing** a playlist into a frozen, saved take — expanding albums, sampling over-budget
