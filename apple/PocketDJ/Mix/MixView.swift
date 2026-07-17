@@ -41,6 +41,7 @@ struct MixView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(MixSessionStore.self) private var mixSessions
     @Environment(MixRecorder.self) private var recorder
+    @Environment(JukeboxStore.self) private var jukebox
 
     /// The detail NavigationStack's path (owned by RootView) — so the Sessions button can push.
     @Binding var path: NavigationPath
@@ -292,12 +293,41 @@ struct MixView: View {
             .accessibilityIdentifier("mix-reset")
     }
 
+    /// BROADCAST — the Mix side of Jukebox Hero. No session yet: one tap CREATES the
+    /// jukebox (default name) and pushes its view (QR + requests); Back returns here.
+    /// Session live: the antenna glows accent and the tap just opens the jukebox.
+    private var broadcastButton: some View {
+        Button {
+            if jukebox.session == nil {
+                Task {
+                    await jukebox.start(name: JukeboxView.defaultName(settings))
+                    path.append(JukeboxRoute())
+                }
+            } else {
+                path.append(JukeboxRoute())
+            }
+        } label: {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .foregroundStyle(jukebox.session != nil ? Theme.accent : Theme.fg)
+        }
+        .disabled(jukebox.starting)
+        .help(jukebox.session != nil
+              ? "Broadcasting — open the jukebox (requests + QR code)"
+              : "Broadcast — start a jukebox so guests can see the mix and request songs")
+        .accessibilityIdentifier("mix-broadcast")
+    }
+
     // MARK: Auto-Mix (auto-DJ)
 
     /// Toolbar: a Manual/Auto toggle button, then (in Auto) the global-collection picker + ▶ Play /
     /// 🔀 Shuffle / ⏹ Stop — mirroring the Playlists tab's menu-bar play/shuffle.
     @ToolbarContentBuilder private var autoMixToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            // BROADCAST (Jukebox Hero): one tap starts a jukebox session (if none is live)
+            // and pushes its view onto THIS stack — Back returns to the decks. The mix and
+            // the jukebox share the setlist: guests see the on-air track + the auto queue,
+            // and accepted requests feed the Auto-DJ (in-mix actions take precedence).
+            broadcastButton
             // Record the mix audio into the current session's folder — pulses purple→red while live.
             RecordButton(recorder: recorder)
             // ONE-TAP mode toggle: shows the current mode and flips to the other on tap (no dropdown).

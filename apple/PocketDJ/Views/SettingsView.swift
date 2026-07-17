@@ -13,6 +13,8 @@ struct SettingsView: View {
     @Environment(StreamingStore.self) var streaming
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
+    @State private var jukeboxTesting = false
+    @State private var jukeboxStatus: RipStatus?
     @State private var confirmingReset = false
     /// Easter egg: the mushroom-cloud overlay playing after a confirmed reset.
     @State private var nuking = false
@@ -40,6 +42,7 @@ struct SettingsView: View {
             streamingSection
             searchSection
             ripSection
+            jukeboxSection
             mixSection
             syncSection
             storageSection
@@ -478,6 +481,66 @@ struct SettingsView: View {
         case nil:
             EmptyView()
         }
+    }
+
+    // MARK: Jukebox Hero
+
+    private var jukeboxSection: some View {
+        Section {
+            TextField("Jukebox server URL", text: $settings.jukeboxServerURL)
+                .pocketField()
+                .font(.caption.monospaced())
+                #if os(iOS)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                #endif
+                .accessibilityIdentifier("settings-jukebox-url")
+            TextField("Token (optional)", text: $settings.jukeboxToken)
+                .pocketField()
+                .accessibilityIdentifier("settings-jukebox-token")
+            HStack {
+                Button {
+                    settings.persist()
+                    Task { await testJukebox() }
+                } label: {
+                    if jukeboxTesting { ProgressView() } else { Text("Test connection") }
+                }
+                .disabled(jukeboxTesting)
+                .accessibilityIdentifier("settings-jukebox-test")
+                Spacer()
+                jukeboxStatusView
+            }
+        } header: {
+            Text("Jukebox Hero")
+        } footer: {
+            Text("The jukebox session broker guests' phones talk to (public — exposed with Tailscale Funnel, unlike the Tailnet-only rip server). Start a jukebox from the Jukebox Hero tab (⌘J); guests scan its QR code to see what's playing and request songs.")
+        }
+    }
+
+    @ViewBuilder private var jukeboxStatusView: some View {
+        switch jukeboxStatus {
+        case .ok(let msg):
+            Label(msg, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+                .accessibilityIdentifier("settings-jukebox-status")
+        case .bad(let msg):
+            Label(msg, systemImage: "xmark.circle.fill").foregroundStyle(Theme.danger).font(.caption)
+                .accessibilityIdentifier("settings-jukebox-status")
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func testJukebox() async {
+        jukeboxTesting = true; jukeboxStatus = nil
+        let client = JukeboxClient(baseURL: settings.jukeboxServerURL, token: settings.jukeboxToken)
+        do {
+            let h = try await client.health()
+            var parts = ["Online"]
+            if let v = h.version { parts.append("v\(v)") }
+            jukeboxStatus = .ok(parts.joined(separator: " · "))
+        } catch {
+            jukeboxStatus = .bad((error as? URLError)?.code == .timedOut ? "Timed out" : "Unreachable")
+        }
+        jukeboxTesting = false
     }
 
     // MARK: Apple Music (Local) sync

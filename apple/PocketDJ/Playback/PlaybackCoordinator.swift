@@ -88,7 +88,11 @@ final class PlaybackCoordinator {
     /// (Another streaming backend would insert ahead of the rip server here later.)
     func providers(for song: IndexSong) -> [any TrackPlaybackProvider] {
         var ordered: [any TrackPlaybackProvider] = []
-        if sourceOfSong(song.id) == Config.appleMusicSourceName, appleMusic.isReady {
+        // A namespaced `am:<storeID>` id (a Jukebox request matched only in the Apple
+        // Music catalog — no indexed source) resolves directly via MusicKit, so it gets
+        // the Apple Music provider on the same terms as an Apple Music (Local) song.
+        let amNamespaced = AppleMusicCatalog.storeID(fromSongID: song.id) != nil
+        if sourceOfSong(song.id) == Config.appleMusicSourceName || amNamespaced, appleMusic.isReady {
             ordered.append(appleMusic)
         }
         ordered.append(ripProvider)   // terminal fallback
@@ -121,7 +125,10 @@ final class PlaybackCoordinator {
                 // ZERO playback latency. Fire-and-forget (unawaited, never blocks/delays
                 // playback; failures are silent). A plain `Task` inherits this @MainActor —
                 // `requestRipIfNeeded` is idempotent and suspends (not blocks) on the POST.
-                if provider.backend == .appleMusic {
+                // (Not for a namespaced `am:` id: the rip server indexes no such song and
+                // has no ad-hoc descriptor here — the POST could only 404.)
+                if provider.backend == .appleMusic,
+                   AppleMusicCatalog.storeID(fromSongID: song.id) == nil {
                     Task { await self.ripProvider.requestAsyncRip(song.id) }
                 }
                 return

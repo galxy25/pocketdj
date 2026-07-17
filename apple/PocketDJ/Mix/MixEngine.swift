@@ -2184,6 +2184,50 @@ final class MixEngine {
         stemsScheduled[deck] = false
     }
 
+    // MARK: - Jukebox Hero seams (docs/design/jukebox-hero.md)
+    //
+    // While a jukebox BROADCAST rides an auto-mix, the setlist is the shared concept:
+    // guests see the mix's on-air track + the auto queue's tail, and accepted requests
+    // are INSERTED into the auto queue. In-mix actions always take precedence — inserts
+    // never land before `autoNextToLoad`, so a track already loaded/preloaded on a deck
+    // is never displaced, and manual deck moves keep working exactly as without a jukebox.
+
+    /// What's ON AIR for jukebox guests: the auto-mix live deck's track, else whichever
+    /// deck is audibly playing (manual mixing), else nil.
+    var onAirTrack: LoadedTrack? {
+        if autoMixing { return state(autoLiveDeck).loaded }
+        if state(.a).isPlaying { return state(.a).loaded }
+        if state(.b).isPlaying { return state(.b).loaded }
+        return nil
+    }
+
+    /// The auto queue's not-yet-reached tail (position order) — the guests' "up next".
+    /// Empty when not auto-mixing (a manual mix has no knowable next).
+    var autoUpcoming: [MixLoadable] {
+        guard autoMixing, autoLivePos + 1 < autoQueue.count else { return [] }
+        return autoQueue[(autoLivePos + 1)...].map(\.loadable)
+    }
+
+    /// Insert a track into the RUNNING auto queue for the jukebox request line.
+    /// `slot` semantics mirror SetlistPlayer's live edits, but the low bound is
+    /// `autoNextToLoad` — the first index no deck has committed to yet — so the
+    /// in-flight transition and the preloaded on-deck track always win (the
+    /// in-mix-precedence rule). No-op when not auto-mixing.
+    func autoQueueInsert(_ item: AutoMixItem, placement: JukeboxDecisionAction,
+                         slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) {
+        guard autoMixing else { return }
+        let lo = min(max(autoNextToLoad, autoLivePos + 1), autoQueue.count)
+        let at: Int
+        switch placement {
+        case .next:   at = lo
+        case .end:    at = autoQueue.count
+        case .random: at = slot(lo...autoQueue.count)
+        case .denied: return
+        }
+        autoQueue.insert(item, at: at)
+        refreshAutoStatus()   // the "x / count" readout grew by one
+    }
+
     // MARK: - Readers (for the UI)
 
     func loaded(_ deck: Deck) -> LoadedTrack? { state(deck).loaded }

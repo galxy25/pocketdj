@@ -925,6 +925,208 @@ two-process log — this trace is what pinned the Apple Music adoption desync (C
 
 ---
 
+## 11. Jukebox Hero — the crowd-request line
+
+**Why.** A party wants a request line, and the crowd shouldn't have to install anything or
+join the host's Wi-Fi to use it. That's the same distribution problem the whole chapter
+answers — **guests are thin, public, offline-tolerant clients** — so Jukebox Hero reuses the
+book's spine: **S3 is the distribution** (guests only ever GET static objects, so any number
+of phones cost the host nothing), a small **iMac session broker** owns lifecycle and holds the
+AWS write credentials (the app has none, §1), and **the app is the DJ** — it matches requests
+and applies host decisions to the *same* `SetlistPlayer` / `MixEngine` queues everything else
+plays through. No new playback or rip code; no application server the guest talks to.
+
+**Source of truth:** [`scripts/jukebox-server.mjs`](../../scripts/jukebox-server.mjs) (the
+broker, sibling of `rip-server.mjs` §6), [`scripts/jukebox-site/template.html`](../../scripts/jukebox-site/template.html)
+(the guest page rendered per session), the native
+[`apple/PocketDJ/Jukebox/`](../../apple/PocketDJ/Jukebox/) module (`JukeboxStore.swift` engine,
+`JukeboxClient.swift` HTTP, `JukeboxMatcher.swift` + `JukeboxFoundationModel.swift` request
+matching, `JukeboxModels.swift`), [`apple/PocketDJ/Views/JukeboxView.swift`](../../apple/PocketDJ/Views/JukeboxView.swift),
+and the design doc [`docs/design/jukebox-hero.md`](../design/jukebox-hero.md).
+
+### 11.1 The three roles
+
+```
+ guests' phones                    iMac (later: Lambda)              host's PocketDJ app
+┌────────────────┐   requests   ┌──────────────────────┐   poll    ┌────────────────────┐
+│ static site    │ ───────────▶ │   jukebox-server     │ ◀──────── │ JukeboxStore       │
+│ (S3+CloudFront)│              │  (session broker)    │  decide   │  · match (FM+AM)   │
+│  · now playing │              │  · sessions          │ ────────▶ │  · queue edits     │
+│  · up next     │              │  · request queue     │           │  · state snapshots │
+│  · request box │              │  · S3 state writer   │ ◀──────── │                    │
+└────────────────┘              └──────────────────────┘   state   └────────────────────┘
+        ▲                                  │ renders page,                  │
+        │  poll state.json (~4s)           │ writes state.json              │ SetlistPlayer /
+        └──────────── S3 web bucket ◀──────┘                                ▼ PlaybackCoordinator
+                                                                    Apple Music ▸ rip server
+```
+
+**Reading the diagram.** Three parties, one shared radio station. **Guests** hold nothing but
+a URL: their page GETs a static `state.json` from the web bucket every ~4 s and POSTs a
+free-text request to the broker — that's the entire guest surface, so a whole venue is just
+cache reads. The **jukebox-server** is *only* a session broker — it owns session lifecycle, the
+durable request queue, and is the AWS-credentialed S3 writer; it does **no** ripping and **no**
+matching. The **app is the DJ**: `JukeboxStore` polls the broker for new requests, matches each
+against the catalog (§11.4), applies the host's decision to the live `SetlistPlayer` queue (or,
+while broadcasting, the `MixEngine` auto queue, §11.6), and posts a fresh player snapshot back.
+The app plays through the *existing* provider chain — Apple Music first, rip-server
+stream/rip fallback (Ch. 5 §8) — so Jukebox Hero adds no playback path of its own.
+
+### 11.2 S3 object layout + the `state.json` schema
+
+Guest-facing objects live under a per-session prefix in the **web** bucket (§1), behind
+CloudFront for the TLS a phone browser needs:
+
+```
+ jukebox/<id>/index.html   ← rendered by jukebox-server at create time (session name baked in)
+ jukebox/<id>/state.json   ← no-cache; rewritten by the broker on every host snapshot
+```
+
+The QR / share URL is `https://<cloudfront-domain>/jukebox/<id>/` (dev
+`djictbz9w796r…`, prod `d2p4cubg6se03u…`). Because these objects are **written by the broker at
+runtime, not by `deploy.sh`**, the deploy sync must not treat them as stale build output —
+`scripts/deploy.sh` gains **`--exclude "jukebox/*"`** on its `--delete` sync (alongside the
+existing `art/*` / `lyrics/*` excludes, §1) so a routine PWA deploy never prunes a live
+jukebox out from under its guests.
+
+`state.json` is the single document every guest polls. The broker composes it by merging the
+host's latest player snapshot with the server-side request statuses, then writes it **no-cache**:
+
+```json
+{
+  "v": 1, "jukeboxId": "jb7k3q9d", "name": "Levi's Garage Party",
+  "updatedAt": 1789600000000, "ended": false, "expiresAt": 1789686400000, "hear": false,
+  "nowPlaying": { "title": "…", "artist": "…", "lengthMs": 214000, "positionMs": 63000,
+                  "streamUrl": "https://pocketdj-rips-….s3….amazonaws.com/rips/<id>.mp3" },
+  "upNext":   [ { "title": "…", "artist": "…" } ],
+  "requests": [ { "id": "rq_…", "title": "…", "artist": "…",
+                  "status": "pending|queued|denied|played" } ]
+}
+```
+
+`positionMs` is snapshot-time only; the guest page animates its progress bar locally between
+4-second polls. **`hear` is the view-only-vs-View+Hear gate** (§11.3): while `false` no audio
+URL is published; while `true` the broker carries the current track's **public rips-bucket mp3**
+as `nowPlaying.streamUrl`, and the page shows a user-gesture-gated **Listen in** button that
+plays position-synced (`positionMs + (now − updatedAt)`, re-seeking on >3 s drift).
+
+### 11.3 View-only vs View + Hear — only public rips ever leave the host
+
+A session is **view-only by default**: a crowd-sourced request line where guests see the music
+and ask for songs but don't hear it. The DJ can flip **View + Hear** on the live session
+(a toggle in the tab); the host's snapshots then set `hear:true` and attach
+`nowPlaying.streamUrl` — it rides the state POST (§11.5), not the lifecycle `config` route. The invariant that keeps this safe: **only rips-bucket audio is ever
+distributed.** A DRM'd Apple Music stream never leaves the host, so a track playing from Apple
+Music stays view-only *even in hear mode* — until its stream-through-rip (Ch. 5 §8) lands in the
+manifest, at which point a later snapshot picks the public URL up automatically. This is the
+same public-rips-only rule the offline stem/burn surfaces obey (Ch. 5 §15).
+
+### 11.4 Matching — on-device, catalog-first
+
+`JukeboxStore` runs each free-text request through `JukeboxMatcher` before it reaches the
+inbox, reusing the recognizer's normalizer and the browser's search keys:
+
+1. `ShazamCatalogMatch.norm`-exact match against the catalog (§5.2);
+2. folded-`contains` over `AppModel.searchKeys` → scored top-N candidates;
+3. an **on-device Foundation Models** pick over that candidate list
+   (`JukeboxFoundationModel`, a `@Generable` choice behind a protocol seam + availability
+   gate, the `FoundationModelPocketBrief` pattern of Ch. 4 §4.1 — graceful fallback to the top
+   fuzzy candidate when FM is unavailable);
+4. no catalog hit → `AppleMusicProvider.search` (§5.1) → an Apple-Music-only match
+   (`am:<storeID>`), playable via the existing coordinator chain + stream-through-rip.
+
+A host **decision** then edits the live queue directly: **Play Next** → `insertNextInQueue`,
+**Play Last** → `appendToQueue`, **Surprise Slot** → the new `insertRandomInQueue` (a uniform
+slot in the upcoming tail) — all on the app-scoped `SetlistPlayer` (Ch. 5) — after which the
+app POSTs the decision so the guest's request status flips.
+
+### 11.5 The broker — endpoints, auth, rate limits
+
+`jukebox-server.mjs` is a dependency-free `node:http` service on port **8788**, a structural
+sibling of the rip server (§6): launchd `KeepAlive`
+([`com.pocketdj.jukeboxserver.plist`](../../scripts/launchd/com.pocketdj.jukeboxserver.plist)),
+logs to `~/.pocketdj/jukebox-server.log`, S3 writes via the `aws` CLI (profile `levi`)
+serialized per jukebox. Durable session state lives under `~/.pocketdj/jukebox/<id>/`
+(`session.json`, `requests/<reqId>.json`) and **reloads on boot**, so a restart never drops a
+live party.
+
+| Route | Who | Body → Result |
+|---|---|---|
+| `GET /health` | anyone | `{ ok, service:"jukebox", version }` |
+| `POST /jukebox` | host (**server token**) | `{ name, timeless }` → `{ jukeboxId, hostKey, url, timeless, expiresAt }`; renders + uploads the page, seeds `state.json` |
+| `POST /jukebox/:id/config` | host (**hostKey**) | `{ timeless }` → `{ timeless, expiresAt }` — flips lifecycle mode |
+| `POST /jukebox/:id/end` | host (**hostKey**) | marks ended, publishes final `ended:true` state |
+| `POST /jukebox/:id/state` | host (**hostKey**) | `{ nowPlaying, upNext }` → merged with request statuses, written to S3 (debounced ≥1 s) |
+| `POST /jukebox/:id/request` | **guest (public)** | `{ title, artist, clientId }` → `{ requestId }`; rate-limited, lengths capped (120 chars) |
+| `GET /jukebox/:id/requests?since=<seq>` | host (**hostKey**) | `{ requests, seq }` — pending + recently-decided |
+| `POST /jukebox/:id/requests/:reqId/decision` | host (**hostKey**) | `{ action:"denied"\|"next"\|"end"\|"random", matchedTitle?, matchedArtist? }` |
+
+**Two-tier auth.** *Creating* a jukebox needs the process-wide **`JUKEBOX_TOKEN`** bearer (empty
+= open, local-dev only) — the gate on who may spin up sessions on this broker at all. Every
+*per-session* host action then authenticates with the **`hostKey`** minted at create time (a
+128-bit secret, accepted as a bearer or `?hostKey=`), so possessing the token to make one
+jukebox never grants control of another's. Guest endpoints (`/request`) take **no** auth — they
+must be reachable by strangers — and are instead **rate-limited two ways**: a **per-client 15 s
+gap** (`minGapMs`, keyed on `clientId`) throttles a single phone, and a **per-IP sliding
+window** of **12 requests / 60 s** (`ipWindowMax`/`ipWindowMs`) caps abuse *without* throttling
+the whole room — a venue's crowd typically NATs to one public IP, so a per-IP *gap* would
+punish everyone; the window lets a busy party request freely while still bounding a flood. A
+client also can't stack more than a handful of **pending** requests at once.
+
+### 11.6 Broadcast — the Mix tie-in
+
+The full feature is a physical party: the DJ on the **Mix** tab (Ch. 4 §7), the crowd on the QR
+code, **the setlist the shared concept.** The Mix toolbar gains a **Broadcast** button (antenna,
+next to Record, [`MixView.swift`](../../apple/PocketDJ/Mix/MixView.swift)): one tap creates a
+session if none is live and pushes the Jukebox view onto the Mix stack. The state snapshot is
+composed **by who OWNS the audio** — a running/auto Mix first (the on-air deck's track + the
+auto queue's tail as "up next"), then the app-scoped `SetlistPlayer`, then a standalone single
+play — the same one-audio-owner rule the widgets and lock-screen card follow (§10, Ch. 5).
+
+While auto-mixing, an accepted request is inserted into the auto queue via
+**`MixEngine.autoQueueInsert`** — never before `autoNextToLoad`, so a track already
+loaded/preloaded on a deck is never displaced. **In-mix actions always win:** manual deck loads,
+skips, and pauses behave exactly as they do without a broadcast; the jukebox only fills slots the
+DJ hasn't committed to. One constraint bridges to the burn store: a Mix deck can only load a
+**burned** file, so accepting an unburned request during a broadcast kicks the existing
+rip+burn pipeline (`BurnStore.startRipAndBurn`, Apple-Music-only matches under their `amrec_`
+id) and parks a pending insert that lands the moment the file exists (15 min cap). Hear mode
+during a broadcast streams the **unmixed** track from S3 (public rips only, §11.3); streaming
+the actual mix output — a **live radio mode** — is the planned follow-up, not v1.
+
+### 11.7 Public exposure — Tailscale Funnel, not the Tailnet
+
+The rip server (§6) is **Tailnet-only** — its clients are the host's own devices. Jukebox Hero
+inverts that: **guests are strangers on the open internet**, so the broker must be *publicly*
+reachable. The interim answer (before the Lambda migration) is a **Tailscale Funnel** path-mount
+on the iMac ([`scripts/setup-jukebox-funnel.sh`](../../scripts/setup-jukebox-funnel.sh)):
+
+```
+ tailscale funnel --bg --set-path /jukebox http://127.0.0.1:8788
+   → public base  https://levis-imac.tail2e2bdf.ts.net/jukebox
+```
+
+**Reading it.** Funnel exposes *only* the `/jukebox` path of the local `:8788` service to the
+public internet over TLS — the rest of the machine (and the Tailnet-only rip server on its own
+host name) stays private. The rendered guest page bakes this base in (`JUKEBOX_PUBLIC_BASE`) for
+its POSTs, and the app targets the same base (`Config.jukeboxServerBase`, default
+`https://levis-imac.tail2e2bdf.ts.net/jukebox`; Settings ▸ Jukebox Hero overrides it). Because
+that base is the *one* externally-visible coupling, the Lambda migration below is a single
+URL swap.
+
+### 11.8 Deferred — the Lambda migration
+
+The broker's handlers are written as **pure `(ctx, params, body) → {status, json}` functions
+over a small storage interface** (filesystem today), precisely so the same module drops into a
+Lambda handler behind an **HTTP API Gateway** later — mirroring the search-proxy pattern
+(`scripts/lambda/deploy-search-proxy.sh`; this account blocks public Lambda **Function URLs**, so
+HTTP API + a CloudFront `/jukebox-api/*` behavior is the path, as with the search proxy). A
+future `scripts/lambda/deploy-jukebox.sh` would pair that handler with a **DynamoDB/S3 storage
+adapter** and move the public base off Funnel — the interim `jukebox-server.mjs` process on the
+iMac is v1. This is tracked in the top-level [Status ▸ Ch. 7](../ARCHITECTURE.md#ch-7--distribution-clients--edits) deferred list.
+
+---
+
 ## End of the book
 
 Back to the [top-level overview & table of contents](../ARCHITECTURE.md).

@@ -1,0 +1,376 @@
+import SwiftUI
+import CoreImage.CIFilterBuiltins
+
+/// Pushed-navigation route to the Jukebox view — the Mix tab's Broadcast button pushes
+/// this onto ITS NavigationStack, so Back lands the DJ right back on the decks.
+struct JukeboxRoute: Hashable {}
+
+/// The JUKEBOX HERO tab (⌘J): turn the room into a request line. Start a jukebox and a
+/// QR code appears — guests scan it, land on the S3-hosted page (now playing + up next,
+/// live), and type in requests. Each request arrives here matched against the catalog
+/// (FM pick / Apple Music search — see JukeboxMatcher); the host DJ decides: Deny,
+/// Play Next, Play Last, or Surprise Slot (a random spot in the queue). Queue and
+/// playback are the same app-scoped SetlistPlayer the Now Playing panel drives.
+struct JukeboxView: View {
+    @Environment(JukeboxStore.self) private var jukebox
+    @Environment(SettingsStore.self) private var settings
+    @Environment(SetlistPlayer.self) private var sequencer
+
+    @State private var name = ""
+    @State private var timeless = false
+    @State private var confirmEnd = false
+
+    var body: some View {
+        Group {
+            if let session = jukebox.session {
+                liveView(session)
+            } else {
+                createView
+            }
+        }
+        .navigationTitle("Jukebox Hero")
+        .background(Theme.bg)
+    }
+
+    // MARK: - Create (no session)
+
+    private var createView: some View {
+        VStack(spacing: 18) {
+            Spacer()
+            Image(systemName: "qrcode.viewfinder")
+                .font(.system(size: 56))
+                .foregroundStyle(Theme.accent)
+            Text("Start a jukebox")
+                .font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
+            Text("Guests scan a QR code, see what's playing, and request songs.\nYou stay the DJ — every request is yours to place or deny.")
+                .font(.callout).foregroundStyle(Theme.fgDim)
+                .multilineTextAlignment(.center)
+            TextField("Jukebox name", text: $name, prompt: Text(defaultName))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 320)
+                .accessibilityIdentifier("jukebox-name")
+                .onSubmit { start() }
+            Toggle("Timeless — never expires", isOn: $timeless)
+                .font(.caption).foregroundStyle(Theme.fgDim)
+                .frame(maxWidth: 320)
+                .accessibilityIdentifier("jukebox-timeless")
+            Button {
+                start()
+            } label: {
+                if jukebox.starting {
+                    ProgressView().frame(minWidth: 120)
+                } else {
+                    Text("Start Jukebox").frame(minWidth: 120)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(jukebox.starting)
+            .accessibilityIdentifier("jukebox-start")
+            if let err = jukebox.lastError {
+                Label(err, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(Theme.danger)
+                    .accessibilityIdentifier("jukebox-error")
+            }
+            Text("Sessions run for 24 hours and clean themselves up after 7 days — timeless ones stay until you end them. Uses the jukebox server in Settings ▸ Jukebox Hero.")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+            Spacer()
+            Spacer()
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var defaultName: String { Self.defaultName(settings) }
+
+    /// Shared with the Mix tab's Broadcast button (which creates a session directly).
+    static func defaultName(_ settings: SettingsStore) -> String {
+        let dj = settings.pocketDJName.trimmingCharacters(in: .whitespaces)
+        return dj.isEmpty ? "PocketDJ Jukebox" : "\(dj)'s Jukebox"
+    }
+
+    private func start() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { await jukebox.start(name: trimmed.isEmpty ? defaultName : trimmed, timeless: timeless) }
+    }
+
+    // MARK: - Live session
+
+    private func liveView(_ session: JukeboxSessionInfo) -> some View {
+        List {
+            qrSection(session)
+            modeSection(session)
+            nowPlayingSection
+            requestsSection
+            endSection
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .confirmationDialog("End this jukebox?", isPresented: $confirmEnd, titleVisibility: .visible) {
+            Button("End Jukebox", role: .destructive) {
+                Task { await jukebox.end() }
+            }
+        } message: {
+            Text("Guests' pages will show the jukebox as ended. Playback keeps going.")
+        }
+    }
+
+    @ViewBuilder private func qrSection(_ session: JukeboxSessionInfo) -> some View {
+        Section {
+            VStack(spacing: 10) {
+                Text(session.name)
+                    .font(.headline).foregroundStyle(Theme.fg)
+                    .accessibilityIdentifier("jukebox-live-name")
+                // White card + quiet zone are load-bearing: phone cameras need the
+                // contrast against the app's near-black background.
+                JukeboxQRView(text: session.url)
+                    .frame(width: 220, height: 220)
+                Text("Scan to see what's playing and request a song")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                HStack(spacing: 12) {
+                    if let url = URL(string: session.url) {
+                        ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
+                            .accessibilityIdentifier("jukebox-share")
+                    }
+                    Button {
+                        copyToPasteboard(session.url)
+                    } label: {
+                        Label("Copy link", systemImage: "doc.on.doc")
+                    }
+                    .accessibilityIdentifier("jukebox-copy")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                if let err = jukebox.lastError {
+                    Label(err, systemImage: "wifi.exclamationmark")
+                        .font(.caption2).foregroundStyle(Theme.danger)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .listRowBackground(Theme.bg)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    /// The DJ's session controls: View + Hear (guests may play the current track's
+    /// public S3 rip on their phones — off by default: a pure request line) and
+    /// Timeless (opt out of the 24 h / 7 d server lifecycle), plus the expiry readout.
+    @ViewBuilder private func modeSection(_ session: JukeboxSessionInfo) -> some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { jukebox.hearEnabled },
+                set: { jukebox.hearEnabled = $0 })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("View + Hear").font(.caption).foregroundStyle(Theme.fg)
+                    Text(jukebox.hearEnabled
+                         ? "Guests can play along on their phones (ripped tracks)."
+                         : "View only — guests see the music, they don't hear it.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+            .accessibilityIdentifier("jukebox-hear")
+            .listRowBackground(Theme.bg)
+            Toggle(isOn: Binding(
+                get: { session.timeless ?? false },
+                set: { on in Task { await jukebox.setTimeless(on) } })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Timeless").font(.caption).foregroundStyle(Theme.fg)
+                    Text(expiryText(session)).font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+            .accessibilityIdentifier("jukebox-timeless-live")
+            .listRowBackground(Theme.bg)
+        } header: {
+            Text("Session").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    private func expiryText(_ session: JukeboxSessionInfo) -> String {
+        if session.timeless == true { return "Stays up until you end it." }
+        guard let ms = session.expiresAt else { return "Ends 24 hours after start; cleaned up in 7 days." }
+        let date = Date(timeIntervalSince1970: ms / 1000)
+        let rel = date.formatted(.relative(presentation: .named))
+        return "Ends \(rel); cleaned up 7 days after start."
+    }
+
+    @ViewBuilder private var nowPlayingSection: some View {
+        Section {
+            HStack(spacing: 8) {
+                Image(systemName: sequencer.isRunning ? "waveform" : "waveform.slash")
+                    .foregroundStyle(sequencer.isRunning ? Theme.accent : Theme.fgDim)
+                if sequencer.isRunning, sequencer.index < sequencer.queue.count {
+                    let it = sequencer.queue[sequencer.index]
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(it.title).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
+                        Text(it.artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                    }
+                    Spacer()
+                    Text("\(sequencer.upcoming.count) up next")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                } else {
+                    Text("Nothing playing — the first accepted request starts the music.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+            }
+            .listRowBackground(Theme.bg)
+            .accessibilityIdentifier("jukebox-now-playing")
+        } header: {
+            Text("On air").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    @ViewBuilder private var requestsSection: some View {
+        Section {
+            if jukebox.inbox.isEmpty {
+                Text("No requests yet — they'll appear here as guests send them.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                    .listRowBackground(Theme.bg)
+                    .accessibilityIdentifier("jukebox-no-requests")
+            }
+            ForEach(jukebox.inbox) { item in
+                JukeboxRequestRow(item: item)
+                    .listRowBackground(Theme.bg)
+            }
+        } header: {
+            Text("Requests (\(jukebox.inbox.count))")
+                .font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    @ViewBuilder private var endSection: some View {
+        Section {
+            Button(role: .destructive) {
+                confirmEnd = true
+            } label: {
+                if jukebox.ending { ProgressView() } else { Label("End Jukebox", systemImage: "stop.circle") }
+            }
+            .disabled(jukebox.ending)
+            .accessibilityIdentifier("jukebox-end")
+            .listRowBackground(Theme.bg)
+        }
+    }
+
+    private func copyToPasteboard(_ s: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #else
+        UIPasteboard.general.string = s
+        #endif
+    }
+}
+
+// MARK: - One request row
+
+/// A guest request: what they typed, what the matcher found, and the verdict buttons.
+/// Deny is always available; placements need a playable match.
+private struct JukeboxRequestRow: View {
+    @Environment(JukeboxStore.self) private var jukebox
+    let item: JukeboxStore.InboxItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "person.wave.2")
+                    .font(.caption).foregroundStyle(Theme.accent2)
+                Text("\(item.request.title) — \(item.request.artist.isEmpty ? "?" : item.request.artist)")
+                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.fg).lineLimit(1)
+            }
+            matchLine
+            HStack(spacing: 10) {
+                Button(role: .destructive) {
+                    jukebox.deny(item)
+                } label: {
+                    Text("Deny").font(.caption)
+                }
+                .accessibilityIdentifier("jukebox-deny-\(item.request.id)")
+                Spacer()
+                placementButton(.next, icon: "text.line.first.and.arrowtriangle.forward")
+                placementButton(.end, icon: "text.append")
+                placementButton(.random, icon: "dice")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("jukebox-request-\(item.request.id)")
+    }
+
+    @ViewBuilder private var matchLine: some View {
+        switch item.match {
+        case nil:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Matching…").font(.caption2).foregroundStyle(Theme.fgDim)
+            }
+        case .some(.catalog(let song)):
+            Label("\(song.name) — \(song.artist)", systemImage: "checkmark.circle")
+                .font(.caption2).foregroundStyle(Theme.accent).lineLimit(1)
+        case .some(.appleMusic(_, let title, let artist)):
+            Label("\(title) — \(artist) (Apple Music)", systemImage: "music.note")
+                .font(.caption2).foregroundStyle(Theme.accent).lineLimit(1)
+        case .some(.none):
+            Label("No match found", systemImage: "questionmark.circle")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    @ViewBuilder private func placementButton(_ action: JukeboxDecisionAction, icon: String) -> some View {
+        Button {
+            jukebox.accept(item, placement: action)
+        } label: {
+            Label(action.label, systemImage: icon)
+                .font(.caption)
+                .labelStyle(.titleAndIcon)
+        }
+        .disabled(!playable)
+        .accessibilityIdentifier("jukebox-\(action.rawValue)-\(item.request.id)")
+    }
+
+    private var playable: Bool {
+        switch item.match {
+        case .catalog, .appleMusic: return true
+        default: return false
+        }
+    }
+}
+
+// MARK: - QR code
+
+/// The scannable code: CoreImage's QR generator, rendered crisp (no interpolation) on a
+/// white rounded card whose padding doubles as the spec's quiet zone. First QR use in
+/// the app — kept tiny and self-contained.
+struct JukeboxQRView: View {
+    let text: String
+
+    var body: some View {
+        Group {
+            if let cg = Self.qrImage(for: text) {
+                Image(decorative: cg, scale: 1)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(14)
+            } else {
+                Image(systemName: "qrcode")
+                    .font(.system(size: 80)).foregroundStyle(Theme.bg)
+            }
+        }
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .accessibilityLabel("Jukebox QR code")
+        .accessibilityIdentifier("jukebox-qr")
+    }
+
+    static func qrImage(for string: String) -> CGImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        // Integer-scale the ~30px module grid up so each module stays a sharp square.
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 12, y: 12))
+        return CIContext().createCGImage(scaled, from: scaled.extent)
+    }
+}
