@@ -79,6 +79,28 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     init(provider: AppleMusicProvider) {
         self.provider = provider
     }
+
+    /// The end-monitor's per-tick "is the current track OVER?" verdict, extracted pure so
+    /// it's unit-testable (MusicKit itself can't run headless).
+    ///
+    /// `paused` alone is NOT ended — the listener can pause from MusicKit's own system card
+    /// (the monitor's external-pause sync). But iOS routes the lock-screen / CarPlay ⏭ to
+    /// MusicKit ITSELF (never our `MPRemoteCommandCenter` handler): it "skips" past its
+    /// ONE-SONG queue and parks the player PAUSED with the position reset to ~0 (or pinned
+    /// at the track's end) — a state a real listener pause never lands in mid-song
+    /// (`playbackTime` is exact on state changes, and a pause anchors AT the pause point).
+    /// Those parked-paused shapes must count as ended, else the set freezes on the old
+    /// track — the "system ⏭ stops the song but never advances" bug.
+    nonisolated static func trackEnded(stopped: Bool, paused: Bool,
+                                       playbackTime: Double, expectedDuration: Double) -> Bool {
+        if stopped { return true }
+        let atEnd = expectedDuration > 0 && playbackTime >= expectedDuration - 0.5
+        // Paused parked at the very top (≤1 s) = the system-skip artifact, not a listener
+        // pause — a pause in the first second of a track is the one (vanishingly rare)
+        // false positive, and its cost is only an early advance.
+        if paused { return playbackTime <= 1.0 || atEnd }
+        return atEnd
+    }
 }
 
 // ============================================================================
@@ -159,6 +181,7 @@ extension AppleMusicPlaybackProvider {
             // A real playback failure (e.g. no active subscription) — don't claim the win,
             // let the rip server fall back. The coordinator surfaces no error for this
             // (the fallback will), matching "first attempt is Apple Music; else rip".
+            NPLog.trace("AM tryPlay FAILED title=\(song.name): \(error.localizedDescription)")
             return false
         }
     }
@@ -238,11 +261,12 @@ extension AppleMusicPlaybackProvider {
                     self.positionStartWall = nil
                 }
                 guard everPlayed else { continue }   // ignore the pre-roll before audio starts
-                let reachedEnd = expected > 0
-                    && player.playbackTime >= expected - 0.5
-                    && status != .paused
-                if status == .stopped || reachedEnd {
-                    NPLog.trace("AM monitor: track ENDED (status=\(status == .stopped ? "stopped" : "past-duration"))")
+                // `trackEnded` covers .stopped, played-past-duration, AND the system-skip
+                // artifact (lock-screen/CarPlay ⏭ goes to MusicKit, which exhausts its
+                // one-song queue and parks PAUSED at ~0 / the end — see the func doc).
+                if Self.trackEnded(stopped: status == .stopped, paused: status == .paused,
+                                   playbackTime: player.playbackTime, expectedDuration: expected) {
+                    NPLog.trace("AM monitor: track ENDED (status=\(status) t=\(Int(player.playbackTime)) expected=\(Int(expected)))")
                     self.isPlaying = false
                     self.freezePositionClock()
                     self.stateMonitor = nil
