@@ -5,8 +5,9 @@
 > recognizer** that names the song in the room and maps it back to your crate,
 > **streaming-account** linking, **Siri / Shortcuts / Spotlight** voice and system
 > actions, **CarPlay** in the car, the **Now Playing widgets** on the home screen /
-> desktop, and the **Settings** utilities — the storage manager and a remote-debug
-> capture — plus one easter egg. They all read the same
+> desktop, **Jukebox Hero** — a QR-code request line the whole room can scan — and the
+> **Settings** utilities — the storage manager and a remote-debug capture — plus one
+> easter egg. They all read the same
 > catalog, rips and collections as everything else. The systems-side complement is
 > [Distribution, Clients & the Edits Round-Trip](../architecture/07-distribution-and-clients.md).
 > These sections are prose-only — no screenshots captured yet.
@@ -156,6 +157,86 @@ lock screen, the menu-bar Now Playing, or the widget itself.
 **User story:** "The set runs while I'm in another app — or another *room* — and the
 widget is my remote: glance for what's on, tap to pause, tap to skip, never opening
 the app at all."
+
+---
+
+## Jukebox Hero — a QR-code request line for the room
+
+Open the **Jukebox Hero** tab (**⌘J** on iPad / Mac) and tap **Start** — name it *"Levi's
+Garage Party"* — and the screen fills with a **QR code**. That's the whole setup: anyone in
+the room points a phone camera at it and lands on a tiny web page showing what's playing now,
+what's up next, and a text box to ask for a song. There's nothing to install, no account, and
+no being on your Wi-Fi — the guest page is just a public web page, so any number of people can
+open it at once.
+
+### What a guest sees
+
+The guest's page is a live radio dashboard for your set:
+
+- **Now playing** — the current track's title and artist, with a progress bar that ticks along
+  on its own between refreshes.
+- **Up next** — the next few tracks in your queue.
+- **Request a song** — type a title and artist, hit send, and it goes straight to the host's
+  inbox. The page refreshes every few seconds, so a guest watches their request move from
+  *pending* to *queued* (or *played*, or *denied*) through small **status chips**. It gently
+  rate-limits — one request every fifteen seconds, only a handful pending at a time — so one
+  over-eager guest can't flood the line for the room.
+
+By default guests **see** the music but don't **hear** it — it's a request line, not a
+broadcast. Flip **View + Hear** on the live session and each guest page grows a **Listen in**
+button: tap it (phones require that tap before they'll start audio) and the guest hears the
+current track, kept in sync with your deck. Only songs that already have a public rip stream
+out — a track without one stays view-only even in hear mode, and a copy-protected Apple Music
+stream never leaves your device.
+
+### The host's inbox — you're still the DJ
+
+Requests appear in the tab as they arrive, each already **matched against your whole crate**:
+PocketDJ reads the free-text ask, finds the closest song in your catalog on-device (falling
+back to an Apple Music search when it isn't in your crate), and shows you the match. Four
+buttons decide its fate:
+
+- **Deny** — not tonight; the guest sees it declined.
+- **Play Next** — jump it to the top of the queue.
+- **Play Last** — append it to the end.
+- **Surprise Slot** — drop it somewhere random in the upcoming tail, so the crowd's picks
+  sprinkle in without you hand-placing each one.
+
+Accept it and the song joins the same **Now Playing** queue you already play, rip, and burn
+from — nothing new to learn.
+
+### Broadcast — the request line, live on the decks
+
+The jukebox pairs with the **Mix** tab. Its toolbar gains a **Broadcast** button (an antenna,
+next to Record): one tap starts a session and drops the Jukebox view right onto the Mix stack,
+so you can run the crowd's line without leaving the decks — the antenna glows while you're on
+air. Now the guests see **your mix** — the track on the live deck, and the Auto-DJ's queue as
+"up next." Accepted requests feed the **Auto-DJ**: they slot into its automatic queue and play
+themselves in — *except* that **your own moves always win.** A manual deck load, a skip, a
+pause behaves exactly as it would with no crowd watching, and the jukebox never reaches past a
+track you've already cued up. (Because a Mix deck only plays burned files, accepting a
+not-yet-burned request quietly kicks off its rip-and-burn and lands it the moment it's ready.)
+
+### It cleans up after itself
+
+A session **lasts 24 hours** and then quietly ends — the guest page shows it's over and the app
+folds it away — with a week's grace before the page is deleted entirely. If you're running a
+residency or a room you want live indefinitely, flip it **timeless** and it never expires.
+Ending it yourself is always one tap. Settings ▸ **Jukebox Hero** holds the server address and a
+health check, mirroring the rip-server rows.
+
+**Affordances**
+- **Start / End Jukebox** — name a session, get a QR code; End closes it
+- **⌘J / Broadcast antenna** — open the tab, or start-and-broadcast from the Mix toolbar
+- **QR code + share link** — how guests join, no install, no sign-in
+- **Request inbox** — Deny · Play Next · Play Last · Surprise Slot, each on a matched song
+- **View + Hear toggle** — let guests listen in (public rips only), position-synced
+- **Timeless toggle** — opt out of the 24-hour expiry
+
+**User story:** "It's my party and I'm on the decks. I throw a QR code up on the TV, and the
+room starts feeding me requests from their phones — I skim them, tap Play Next on the good
+ones, deny the chaos, and the Auto-DJ works them in between my own picks. If I want, I let
+everyone listen in on their own headphones too."
 
 ---
 
