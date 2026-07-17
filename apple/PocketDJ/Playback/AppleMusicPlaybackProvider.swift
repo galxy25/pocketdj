@@ -60,6 +60,17 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// lifecycle (mirroring `PlayerEngine.onTrackEnded`); nil ⇒ no consumer.
     var onTrackEnded: (() -> Void)?
 
+    /// Fired when the streaming track was RESTARTED from outside (the system remote ⏮, which
+    /// iOS delivers to MusicKit itself — it rewinds its one-song queue to 0:00 and tells nobody).
+    /// The setlist sequencer turns this into a step BACK, mirroring the in-app ⏮. Owned by
+    /// `SetlistPlayer` alongside `onTrackEnded`; nil ⇒ no consumer.
+    var onTrackRestarted: (() -> Void)?
+
+    /// The highest `playbackTime` the end-monitor has observed for the CURRENT track — the
+    /// baseline for the backward-jump (system ⏮) detection. Reset by `tryPlay`, re-based by
+    /// our own `seek(to:)` so an in-app scrub can never read as a restart.
+    @ObservationIgnored private var monitorMaxPlaybackTime: Double = 0
+
     /// The polling task that watches `ApplicationMusicPlayer` for end-of-track. Cancelled on
     /// stop / superseded on each new `tryPlay`.
     @ObservationIgnored private var stateMonitor: Task<Void, Never>?
@@ -78,6 +89,39 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
 
     init(provider: AppleMusicProvider) {
         self.provider = provider
+    }
+
+    /// The end-monitor's per-tick "is the current track OVER?" verdict, extracted pure so
+    /// it's unit-testable (MusicKit itself can't run headless).
+    ///
+    /// `paused` alone is NOT ended — the listener can pause from MusicKit's own system card
+    /// (the monitor's external-pause sync). But iOS routes the lock-screen / CarPlay ⏭ to
+    /// MusicKit ITSELF (never our `MPRemoteCommandCenter` handler): it "skips" past its
+    /// ONE-SONG queue and parks the player PAUSED with the position reset to ~0 (or pinned
+    /// at the track's end) — a state a real listener pause never lands in mid-song
+    /// (`playbackTime` is exact on state changes, and a pause anchors AT the pause point).
+    /// Those parked-paused shapes must count as ended, else the set freezes on the old
+    /// track — the "system ⏭ stops the song but never advances" bug.
+    nonisolated static func trackEnded(stopped: Bool, paused: Bool,
+                                       playbackTime: Double, expectedDuration: Double) -> Bool {
+        if stopped { return true }
+        let atEnd = expectedDuration > 0 && playbackTime >= expectedDuration - 0.5
+        // Paused parked at the very top (≤1 s) = the system-skip artifact, not a listener
+        // pause — a pause in the first second of a track is the one (vanishingly rare)
+        // false positive, and its cost is only an early advance.
+        if paused { return playbackTime <= 1.0 || atEnd }
+        return atEnd
+    }
+
+    /// Whether a still-PLAYING track was restarted from outside — the system remote ⏮,
+    /// which iOS delivers to MusicKit itself: it rewinds its one-song queue to 0:00 with no
+    /// state change we could observe. The signal is `playbackTime` (monotonic per item apart
+    /// from seeks, all of which route through our `seek(to:)` and re-base `maxObserved`)
+    /// making a hard backward jump to the top. Undetectable inside the first ~10 s —
+    /// indistinguishable from MusicKit's laggy position reads — so an early ⏮ just restarts
+    /// the song (Apple's own near-the-top ⏮ behavior anyway).
+    nonisolated static func trackRestarted(playbackTime: Double, maxObserved: Double) -> Bool {
+        playbackTime < 2.0 && maxObserved > 10.0
     }
 }
 
@@ -144,6 +188,7 @@ extension AppleMusicPlaybackProvider {
             if let atMs, atMs > 0 { seek(to: Double(atMs) / 1000) }
             isPlaying = true
             startPositionClock(from: atMs.map { Double($0) / 1000 } ?? 0)
+            monitorMaxPlaybackTime = atMs.map { Double($0) / 1000 } ?? 0
             durationSeconds = catalogSong.duration ?? 0
             // Capture the catalog artwork URL — the app's own now-playing surfaces (home deck +
             // widget) can't get a cover from our art-less AM-Local catalog, so this is it.
@@ -159,6 +204,7 @@ extension AppleMusicPlaybackProvider {
             // A real playback failure (e.g. no active subscription) — don't claim the win,
             // let the rip server fall back. The coordinator surfaces no error for this
             // (the fallback will), matching "first attempt is Apple Music; else rip".
+            NPLog.trace("AM tryPlay FAILED title=\(song.name): \(error.localizedDescription)")
             return false
         }
     }
@@ -194,6 +240,9 @@ extension AppleMusicPlaybackProvider {
         ApplicationMusicPlayer.shared.playbackTime = max(0, seconds)
         if positionStartWall != nil { startPositionClock(from: seconds) }   // playing → re-anchor
         else { positionBase = max(0, seconds) }                             // paused → hold
+        // Re-base the ⏮-restart baseline: OUR OWN backward scrub must never read as a
+        // system-⏮ backward jump (which would spuriously step the set back).
+        monitorMaxPlaybackTime = max(0, seconds)
     }
 
     func stop() {
@@ -238,11 +287,26 @@ extension AppleMusicPlaybackProvider {
                     self.positionStartWall = nil
                 }
                 guard everPlayed else { continue }   // ignore the pre-roll before audio starts
-                let reachedEnd = expected > 0
-                    && player.playbackTime >= expected - 0.5
-                    && status != .paused
-                if status == .stopped || reachedEnd {
-                    NPLog.trace("AM monitor: track ENDED (status=\(status == .stopped ? "stopped" : "past-duration"))")
+                let t = player.playbackTime
+                if t > self.monitorMaxPlaybackTime { self.monitorMaxPlaybackTime = t }
+                // System remote ⏮ also lands in MusicKit (never our handler): it rewinds its
+                // one-song queue to 0:00 while STAYING .playing — no state change to observe,
+                // only the backward jump of the otherwise-monotonic playbackTime. Mirror the
+                // in-app ⏮: step the set back one track.
+                if status == .playing,
+                   Self.trackRestarted(playbackTime: t, maxObserved: self.monitorMaxPlaybackTime) {
+                    NPLog.trace("AM monitor: RESTART detected (t=\(Int(t)) max=\(Int(self.monitorMaxPlaybackTime))) → previous")
+                    self.monitorMaxPlaybackTime = t
+                    self.startPositionClock(from: t)
+                    self.onTrackRestarted?()
+                    continue
+                }
+                // `trackEnded` covers .stopped, played-past-duration, AND the system-skip
+                // artifact (lock-screen/CarPlay ⏭ goes to MusicKit, which exhausts its
+                // one-song queue and parks PAUSED at ~0 / the end — see the func doc).
+                if Self.trackEnded(stopped: status == .stopped, paused: status == .paused,
+                                   playbackTime: t, expectedDuration: expected) {
+                    NPLog.trace("AM monitor: track ENDED (status=\(status) t=\(Int(t)) expected=\(Int(expected)))")
                     self.isPlaying = false
                     self.freezePositionClock()
                     self.stateMonitor = nil

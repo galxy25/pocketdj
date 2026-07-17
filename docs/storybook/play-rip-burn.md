@@ -127,7 +127,12 @@ Apple Music tracks too:** an Apple Music song streams through Apple's own player
 used to leave the lock-screen / CarPlay card blank and made the set **stop after one
 song** — the ⏭ next button did nothing. A set of Apple Music songs now **auto-advances**
 on its own, the **card shows the title, artist and cover**, and **⏭/⏮/play-pause** on
-the lock screen and CarPlay drive the set the same as a ripped or burned set.
+the lock screen and CarPlay drive the set the same as a ripped or burned set. Skipping
+from the lock screen or the car works too: iOS actually hands that ⏭ to Apple's own
+player (which just stops its one-song queue), and PocketDJ notices within half a second
+and moves the set to the next track — instead of freezing paused on the old song. **⏮
+goes back a track** the same way once you're past the first ~10 seconds of a song
+(before that it restarts the current song — the classic near-the-top ⏮ behavior).
 
 **User story:** "I found the record — now let me actually hear it, right here, without
 leaving the list — and scrub to the drop."

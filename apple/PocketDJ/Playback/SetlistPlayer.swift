@@ -133,6 +133,9 @@ final class SetlistPlayer {
         // above never sees — so wire its end-of-track straight into the sequencer's advance,
         // else the set freezes after the first streamed song.
         coordinator.appleMusic.onTrackEnded = { [weak self] in self?.handleAppleMusicEnded() }
+        // The system remote ⏮ during a stream also lands in MusicKit (it rewinds its one-song
+        // queue to 0:00); the provider detects the rewind and fires this so ⏮ steps the SET back.
+        coordinator.appleMusic.onTrackRestarted = { [weak self] in self?.handleAppleMusicRestarted() }
         Task { await playCurrent() }
     }
 
@@ -145,6 +148,7 @@ final class SetlistPlayer {
         player.onPrevious = nil
         player.setNextPreviousEnabled(false)
         coordinator.appleMusic.onTrackEnded = nil
+        coordinator.appleMusic.onTrackRestarted = nil
         player.stop()
         coordinator.stop()
         rips.setNowPlaying(nil)
@@ -396,6 +400,17 @@ final class SetlistPlayer {
             return
         }
         advanceToNext()
+    }
+
+    /// The system remote ⏮ during an Apple Music stream (detected as MusicKit's one-song-queue
+    /// rewind — see `AppleMusicPlaybackProvider.trackRestarted`). Same ownership guard as
+    /// `handleAppleMusicEnded`, then the in-app ⏮ semantics: step the set back one track.
+    private func handleAppleMusicRestarted() {
+        guard isRunning, index < queue.count,
+              coordinator.activeBackend == .appleMusic,
+              coordinator.appleMusic.nowPlaying?.songId == queue[index].id else { return }
+        NPLog.trace("setlist AM restart → skipPrevious from index \(index)")
+        skipPrevious()
     }
 
     /// Move to the next track (or end the set) — the NON-repeating advance. Used by an explicit
