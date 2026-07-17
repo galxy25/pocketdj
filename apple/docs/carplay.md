@@ -19,7 +19,8 @@ A **tab bar** (`CPTabBarTemplate`) with five tabs:
 
 **Now Playing** (the head-unit card + system Now Playing app) reflects playback started ANYWHERE
 (phone or CarPlay) because the engines set `MPNowPlayingInfoCenter.playbackState`. Its **Up Next**
-button shows the running queue; tap a row to **Remove / Play next / Move to end**.
+button shows the running queue; tap a row to **Play now / Remove / Play next / Move to end**
+("Play now" shifts playback straight to that exact queue row and returns to the Now Playing card).
 
 Everything plays through the same unified sequencer the phone uses (via `IntentServices`), so the
 head unit's `CPNowPlayingTemplate` and the phone stay in sync. Playing any playlist/pocket/artist

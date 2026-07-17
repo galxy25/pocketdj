@@ -365,6 +365,127 @@ final class SetlistPlayerTests: XCTestCase {
         cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_2.mp3", "sng_2.txt"])
     }
 
+    // MARK: JUMP to an upcoming row (CarPlay Up-Next "Play now")
+
+    /// `jumpToUpcoming(uid:)` shifts playback straight onto the tapped row: the index moves to
+    /// that exact position, the row starts playing through the same play-current path a skip
+    /// uses, jumped-over rows land in the played region (`queue[0..<index]`), and the queue's
+    /// order is untouched (a jump repositions the needle, it never reorders).
+    func testJumpToUpcomingMovesToExactRowAndPlaysIt() async {
+        cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_3.mp3", "sng_3.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_1")
+        await burn(rips, burns, songId: "sng_3")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_1", title: "One", artist: "A"),
+            .init(id: "sng_2", title: "Two", artist: "A"),
+            .init(id: "sng_3", title: "Three", artist: "A"),
+            .init(id: "sng_4", title: "Four", artist: "A"),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_1" }
+
+        seq.jumpToUpcoming(uid: seq.queue[2].uid)                 // tap "Three" in Up Next
+        XCTAssertEqual(seq.index, 2, "index moves straight onto the tapped row")
+        await waitUntil("jumped row becomes now-playing") { rips.nowPlaying?.songId == "sng_3" }
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertEqual(rips.nowPlaying?.url, burns.localURL(forSong: "sng_3"),
+                       "the jump routes through the same burned-file play path a skip uses")
+        XCTAssertEqual(seq.queue.map(\.id), ["sng_1", "sng_2", "sng_3", "sng_4"],
+                       "a jump repositions the needle — it never reorders the queue")
+        XCTAssertEqual(seq.queue[0..<seq.index].map(\.id), ["sng_1", "sng_2"],
+                       "jumped-over rows land in the played region")
+        XCTAssertEqual(seq.upcoming.map(\.id), ["sng_4"])
+        seq.stop()
+        cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_3.mp3", "sng_3.txt"])
+    }
+
+    /// The jump targets the EXACT tapped row by uid, never a songId nearest-occurrence: with the
+    /// CURRENT track's songId repeated later in the queue, tapping the later duplicate must land
+    /// on IT (a songId-based resolution would stay put on the nearer occurrence at index 0) —
+    /// and the adopt observer must not yank the index back afterwards.
+    func testJumpToUpcomingTargetsExactUidWithDuplicateSongIds() async {
+        cleanBurnedFiles(["sng_dup.mp3", "sng_dup.txt", "sng_x.mp3", "sng_x.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_dup")
+        await burn(rips, burns, songId: "sng_x")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_dup", title: "Dup (first)", artist: "A"),
+            .init(id: "sng_x", title: "Filler", artist: "A"),
+            .init(id: "sng_dup", title: "Dup (second)", artist: "A"),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_dup" }
+
+        seq.jumpToUpcoming(uid: seq.queue[2].uid)                 // tap the SECOND "sng_dup"
+        XCTAssertEqual(seq.index, 2, "lands on the exact tapped row, not the nearest songId match")
+        // Let the async play + the now-playing adopt observer settle — the index must HOLD.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(seq.index, 2, "the adopt observer must not reposition a uid-exact jump")
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertTrue(seq.upcoming.isEmpty, "everything before the tapped row is now played")
+        seq.stop()
+        cleanBurnedFiles(["sng_dup.mp3", "sng_dup.txt", "sng_x.mp3", "sng_x.txt"])
+    }
+
+    /// A vanished uid (the queue was edited/advanced under the tap) — and the current row's own
+    /// uid, which is not "upcoming" — are safe no-ops: no index move, no restart, still running.
+    func testJumpToUpcomingUnknownOrCurrentUidIsNoOp() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([.init(id: "sng_1", title: "One", artist: "A"),
+                  .init(id: "sng_2", title: "Two", artist: "A")])
+
+        seq.jumpToUpcoming(uid: UUID())                           // vanished row
+        XCTAssertEqual(seq.index, 0)
+        XCTAssertTrue(seq.isRunning)
+
+        seq.jumpToUpcoming(uid: seq.queue[0].uid)                 // the CURRENT row isn't upcoming
+        XCTAssertEqual(seq.index, 0)
+        XCTAssertEqual(seq.queue.map(\.id), ["sng_1", "sng_2"])
+        seq.stop()
+    }
+
+    /// A jump arms the LANDED row's repeat count (like any fresh track start): a repeatCount-3
+    /// row jumped onto loops in place on its natural ends before advancing.
+    func testJumpToUpcomingArmsRepeatCount() async {
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt", "rp_3.mp3", "rp_3.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "rp_1")
+        await burn(rips, burns, songId: "rp_2")
+        await burn(rips, burns, songId: "rp_3")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "rp_1", title: "One", artist: "A"),
+            .init(id: "rp_2", title: "Two", artist: "A", repeatCount: 3),
+            .init(id: "rp_3", title: "Three", artist: "A"),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "rp_1" }
+
+        seq.jumpToUpcoming(uid: seq.queue[1].uid)
+        await waitUntil("jumped onto the repeating row") { rips.nowPlaying?.songId == "rp_2" }
+        player.onTrackEnded?(); XCTAssertEqual(seq.index, 1, "1st repeat — stays on the row")
+        player.onTrackEnded?(); XCTAssertEqual(seq.index, 1, "2nd repeat — stays on the row")
+        player.onTrackEnded?()                                    // 3rd play done → advance
+        await waitUntil("advanced after all 3 plays") { seq.index == 2 && rips.nowPlaying?.songId == "rp_3" }
+        seq.stop()
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt", "rp_3.mp3", "rp_3.txt"])
+    }
+
     // MARK: Item 7 — DEVICE mode skips streamable-only tracks + advances
 
     /// In DEVICE mode a track with NO burned file is SKIPPED (even though it WOULD stream in

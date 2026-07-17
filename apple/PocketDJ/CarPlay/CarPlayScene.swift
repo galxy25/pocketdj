@@ -314,9 +314,22 @@ final class CarPlayController {
             header: header, sectionIndexTitle: nil)
     }
 
-    /// A tap on an Up Next row → Remove / Play next / Move to end (CarPlay has no swipe-to-delete).
+    /// A tap on an Up Next row → Play now / Remove / Play next / Move to end (CarPlay has no
+    /// swipe-to-delete or row context menu).
     private func presentUpNextActions(_ item: CarPlayModel.UpNextItem) {
         guard let model else { return }
+        let playNow = CPAlertAction(title: "Play now", style: .default) { [weak self] _ in
+            model.jump(uid: item.uid)
+            self?.refreshUpNext()
+            self?.interfaceController.dismissTemplate(animated: true) { _, _ in
+                // Land on the Now Playing card (same outcome as presentSongActions's Play now).
+                // Up Next is only ever pushed FROM the shared CPNowPlayingTemplate (its Up Next
+                // button), so that template sits directly beneath us — POP back to it. Pushing
+                // `CPNowPlayingTemplate.shared` again would put the one-instance-only template
+                // in the hierarchy twice (CarPlay rejects that).
+                self?.interfaceController.popTemplate(animated: true, completion: nil)
+            }
+        }
         let remove = CPAlertAction(title: "Remove from queue", style: .destructive) { [weak self] _ in
             self?.interfaceController.dismissTemplate(animated: true, completion: nil)
             model.removeFromQueue(uid: item.uid)
@@ -336,7 +349,7 @@ final class CarPlayController {
             self?.interfaceController.dismissTemplate(animated: true, completion: nil)
         }
         let sheet = CPActionSheetTemplate(title: item.title, message: item.artist,
-                                          actions: [remove, playNext, toEnd, cancel])
+                                          actions: [playNow, remove, playNext, toEnd, cancel])
         interfaceController.presentTemplate(sheet, animated: true, completion: nil)
     }
 

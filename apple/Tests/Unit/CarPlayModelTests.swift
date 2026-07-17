@@ -167,6 +167,26 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertTrue(model.upNext().isEmpty)                 // nothing up next when idle
     }
 
+    /// "Play now" on an Up Next row: `jump(uid:)` shifts playback to EXACTLY the tapped queue
+    /// row — it becomes `nowPlaying()`, rows before it leave the Up Next view (played region),
+    /// and rows after it remain upcoming. A stale uid (row removed under the tap) is a no-op.
+    func testJumpStartsTappedUpNextRowPlaying() async {
+        let (model, services, _) = await makeModel()
+        services.setlistPlayer.play([.init(id: "sng_1", title: "One", artist: "A"),
+                                     .init(id: "sng_2", title: "Two", artist: "A"),
+                                     .init(id: "sng_3", title: "Three", artist: "A")])
+        let up = model.upNext()                          // ["Two", "Three"]
+        model.jump(uid: up[1].uid)                       // tap "Three"
+        XCTAssertEqual(model.nowPlaying()?.title, "Three", "the tapped row is now the current track")
+        XCTAssertEqual(model.nowPlaying()?.uid, up[1].uid, "…and it's the exact tapped ROW (uid)")
+        XCTAssertTrue(model.upNext().isEmpty, "jumped-over rows left the Up Next view")
+        XCTAssertTrue(services.setlistPlayer.isRunning)
+
+        model.jump(uid: up[0].uid)                       // "Two" is now PLAYED — stale tap no-ops
+        XCTAssertEqual(model.nowPlaying()?.title, "Three")
+        services.setlistPlayer.stop()
+    }
+
     /// The current track is surfaced separately from the upcoming queue, so PocketDJ's own CarPlay
     /// UI can pin a "Now Playing" row above Up Next — read straight off `queue[index]`, which is
     /// correct even for an Apple Music set that never sets `rips.nowPlaying`.

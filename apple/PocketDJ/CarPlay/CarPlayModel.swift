@@ -180,6 +180,8 @@ final class CarPlayModel {
     func removeFromQueue(uid: UUID) { services.setlistPlayer.removeUpcoming(uids: [uid]) }
     func playNext(uid: UUID) { services.setlistPlayer.moveUpcomingNext(uid: uid) }
     func moveToEnd(uid: UUID) { services.setlistPlayer.moveUpcomingToEnd(uid: uid) }
+    /// "Play now" on an Up Next row — shift playback to exactly that queue row.
+    func jump(uid: UUID) { services.setlistPlayer.jumpToUpcoming(uid: uid) }
 
     // MARK: - Artwork (URLs; the CarPlay adapter fetches → UIImage)
 
