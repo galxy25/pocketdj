@@ -330,10 +330,22 @@ function deleteSession(s) {
 function sweep() {
   const now = Date.now();
   for (const s of [...sessions.values()]) {
-    if (s.timeless) continue;
-    if (now > s.createdAt + CFG.deleteMs) { deleteSession(s); continue; }
-    if (!s.ended && s.expiresAt != null && now > s.expiresAt) {
-      s.ended = true; persistSession(s); publishState(s); log(`swept-expired ${s.id}`);
+    if (!s.timeless) {
+      if (now > s.createdAt + CFG.deleteMs) { deleteSession(s); continue; }
+      if (!s.ended && s.expiresAt != null && now > s.expiresAt) {
+        s.ended = true; persistSession(s); publishState(s); log(`swept-expired ${s.id}`);
+      }
+    }
+    // SELF-HEAL the guest page for every live session. The page normally uploads once
+    // at create — but an external pruner can delete it (lesson: nightly catalog deploys
+    // run `deploy.sh --delete` from main-branch clones that predate the jukebox/*
+    // exclude, wiping live pages overnight; state.json self-healed via the host
+    // heartbeat, index.html silently 404'd guests into the PWA shell). Re-putting each
+    // sweep (boot + every 10 min) is one tiny idempotent upload per live session and
+    // makes the page survive ANY future prune, not just that one.
+    if (!s.ended) {
+      s3Put(`jukebox/${s.id}/index.html`, renderPage(s), 'text/html')
+        .catch((e) => log(`page re-put ${s.id} failed:`, e.message));
     }
   }
 }
