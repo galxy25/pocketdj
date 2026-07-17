@@ -125,15 +125,19 @@ Function URLs — HTTP API + CloudFront is the path, as with the search proxy).
 ### Public exposure (interim, iMac)
 
 Guests are **not** on the Tailnet, so unlike the rip server this service must be
-publicly reachable. Interim answer: **Tailscale Funnel** path-mount —
+publicly reachable. Interim answer: **Tailscale Funnel** path-mount on Funnel's
+second HTTPS port — **8443, not 443**, because Funnel is per-PORT and this
+machine's 443 already serves the Tailnet-only rip server at `/` (funneling 443
+would expose the rip server to the public internet):
 
 ```
-tailscale funnel --bg --set-path /jukebox http://127.0.0.1:8788
+tailscale funnel --bg --https=8443 --set-path /jukebox http://127.0.0.1:8788
 ```
 
-→ public base `https://levis-imac.tail2e2bdf.ts.net/jukebox`. The rendered page
-bakes this base in (`JUKEBOX_PUBLIC_BASE` env) for its POSTs; the app uses the
-same base (Settings ▸ Jukebox). The Lambda migration later just changes this one
+→ public base `https://levis-imac.tail2e2bdf.ts.net:8443/jukebox`
+(`scripts/setup-jukebox-funnel.sh`). The rendered page bakes this base in
+(`JUKEBOX_PUBLIC_BASE` env) for its POSTs; the app uses the same base
+(Settings ▸ Jukebox Hero). The Lambda migration later just changes this one
 base URL.
 
 ## Native app

@@ -25,9 +25,11 @@ enum Config {
 
     /// Jukebox Hero session broker (scripts/jukebox-server.mjs). Unlike the rip server
     /// this must be PUBLICLY reachable — guests submit requests from their own phones —
-    /// so the iMac exposes it via Tailscale Funnel at the `/jukebox` path mount. (The
+    /// so the iMac exposes it via Tailscale Funnel at the `:8443/jukebox` path mount.
+    /// Port 8443 (not 443) is load-bearing: Funnel is per-PORT and 443 already serves
+    /// the TAILNET-ONLY rip server — funneling 443 would expose it publicly. (The
     /// planned Lambda + API Gateway move changes only this base URL.)
-    static let jukeboxServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net/jukebox")!
+    static let jukeboxServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net:8443/jukebox")!
 
     /// The catalog index document (vinyl, the default source).
     static var indexURL: URL { catalogBase.appendingPathComponent("current-index.json") }

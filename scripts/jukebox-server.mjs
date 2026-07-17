@@ -36,7 +36,10 @@ const CFG = {
   region: process.env.AWS_REGION || 'us-west-2',
   bucket: process.env.JUKEBOX_WEB_BUCKET || 'pocketdj-dev-web-011183829623', // per-env web bucket
   siteBase: (process.env.JUKEBOX_SITE_BASE || 'https://djictbz9w796r.cloudfront.net').replace(/\/$/, ''), // CloudFront (guest URL + state.json)
-  publicBase: (process.env.JUKEBOX_PUBLIC_BASE || 'https://levis-imac.tail2e2bdf.ts.net/jukebox').replace(/\/$/, ''), // API base baked into the page
+  // :8443 — Funnel is per-PORT, and 443 already serves the Tailnet-only rip server;
+  // funneling /jukebox on 443 would expose the rip server publicly too. The jukebox
+  // gets Funnel's second HTTPS port so the rip server's boundary is untouched.
+  publicBase: (process.env.JUKEBOX_PUBLIC_BASE || 'https://levis-imac.tail2e2bdf.ts.net:8443/jukebox').replace(/\/$/, ''), // API base baked into the page
   home: (process.env.JUKEBOX_HOME || join(homedir(), '.pocketdj', 'jukebox')).replace(/^~/, homedir()),
   dryRun: process.env.JUKEBOX_DRY_RUN === '1',       // tests: write what WOULD upload under home/dry-run/<key> instead of calling aws
   template: process.env.JUKEBOX_TEMPLATE || join(__dirname, 'jukebox-site', 'template.html'),
