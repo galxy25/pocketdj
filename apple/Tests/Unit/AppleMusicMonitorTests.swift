@@ -78,4 +78,39 @@ final class AppleMusicMonitorTests: XCTestCase {
         XCTAssertFalse(AppleMusicPlaybackProvider.trackEnded(
             stopped: false, paused: true, playbackTime: 1.5, expectedDuration: 180))
     }
+
+    // MARK: - The system-⏮ rewind (trackRestarted) — playbackTime's backward jump
+
+    func testRestartDetectedAfterDeepPlayback() {
+        // System ⏮ rewound MusicKit's one-song queue to 0:00 from 90s in.
+        XCTAssertTrue(AppleMusicPlaybackProvider.trackRestarted(
+            playbackTime: 0, maxObserved: 90))
+    }
+
+    func testNormalPlaybackIsNotARestart() {
+        XCTAssertFalse(AppleMusicPlaybackProvider.trackRestarted(
+            playbackTime: 91, maxObserved: 91))
+    }
+
+    func testEarlyRewindIsNotDetected() {
+        // Inside the first ~10s a rewind is indistinguishable from MusicKit's laggy
+        // position reads — an early ⏮ just restarts the song (no set step-back).
+        XCTAssertFalse(AppleMusicPlaybackProvider.trackRestarted(
+            playbackTime: 0, maxObserved: 8))
+    }
+
+    func testLaggyPositionReadIsNotARestart() {
+        // A stale read a few seconds behind the high-water mark must not fire.
+        XCTAssertFalse(AppleMusicPlaybackProvider.trackRestarted(
+            playbackTime: 84, maxObserved: 90))
+    }
+
+    func testRestartWindowBoundaries() {
+        XCTAssertTrue(AppleMusicPlaybackProvider.trackRestarted(
+            playbackTime: 1.9, maxObserved: 10.1))
+        XCTAssertFalse(AppleMusicPlaybackProvider.trackRestarted(
+            playbackTime: 2.0, maxObserved: 10.1))   // not near the top → no fire
+        XCTAssertFalse(AppleMusicPlaybackProvider.trackRestarted(
+            playbackTime: 1.9, maxObserved: 10.0))   // baseline too shallow → no fire
+    }
 }

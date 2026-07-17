@@ -1062,6 +1062,17 @@ anchors **mid-song at the pause position** (`playbackTime` is exact on state cha
 still freezes the clock and waits. The one accepted false positive — an external pause within
 the first second of a track — costs only an early advance.
 
+The system remote **⏮** lands in MusicKit the same way — it **rewinds its one-song queue to
+0:00 while staying `.playing`**, with no state change to observe. The monitor detects the
+rewind as a hard **backward jump** of the otherwise-monotonic `playbackTime`
+(**`trackRestarted(playbackTime:maxObserved:)`**: position back under 2 s after a high-water
+mark past 10 s; the mark is kept in `monitorMaxPlaybackTime`, reset by `tryPlay` and re-based
+by our own `seek(to:)` so an in-app scrub can't false-fire) and fires **`onTrackRestarted`**,
+which `SetlistPlayer.handleAppleMusicRestarted` (same ownership guard) turns into
+`skipPrevious()` — the in-app ⏮ semantics. Inside the first ~10 s a rewind is
+indistinguishable from MusicKit's laggy position reads, so an early ⏮ just restarts the song
+— Apple's own near-the-top ⏮ behavior.
+
 **The macOS split — impersonate vs. abdicate (`handOffCardToAppleMusic`).** The handoff above
 is **per-platform**, extracted into `SetlistPlayer.handOffCardToAppleMusic(for:)` (shared by
 `playCurrent` *and* jump-adoption below). On **iOS/CarPlay** MusicKit writes *nothing* to the
