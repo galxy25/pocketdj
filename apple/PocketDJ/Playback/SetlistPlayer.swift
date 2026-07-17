@@ -259,6 +259,22 @@ final class SetlistPlayer {
         queue.append(item)
     }
 
+    /// Shift playback to an upcoming row (by identity) — an Up-Next "Play now". Moves the
+    /// index straight onto EXACTLY the tapped row (uid, not songId — a song can repeat in a
+    /// set) and starts it through the SAME play-current path a skip uses, so source routing
+    /// (burned file vs stream vs Apple Music), history recording, and the system card all
+    /// behave identically to a normal ⏭. `playCurrent(fresh:)` arms the row's repeat count +
+    /// end boundary. Rows jumped over simply land in the played region (`queue[0..<index]`)
+    /// — NOT recorded as played (history records on track start). An unknown/played uid is a
+    /// safe no-op: the tap races playback by design (the queue can shift underneath it).
+    func jumpToUpcoming(uid: UUID) {
+        guard isRunning, index + 1 < queue.count,
+              let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        waitingForLive = false
+        index = pos
+        Task { await playCurrent() }
+    }
+
     // MARK: - Internals
 
     /// The absolute position (ms) at which a track that SHARES a multi-song file should
