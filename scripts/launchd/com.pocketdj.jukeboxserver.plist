@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the PocketDJ Jukebox Hero session broker (the iMac). Auto-starts at login
+  and restarts if it exits, so guest requests + state publishing never hit a stale / down server.
+
+  Install:
+    cp scripts/launchd/com.pocketdj.jukeboxserver.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.pocketdj.jukeboxserver.plist 2>/dev/null
+    launchctl load   ~/Library/LaunchAgents/com.pocketdj.jukeboxserver.plist
+  Verify:  curl -s localhost:8788/health   (expect "service":"jukebox","version":1)
+  Logs:    ~/.pocketdj/jukebox-server.log
+  Stop:    launchctl unload ~/Library/LaunchAgents/com.pocketdj.jukeboxserver.plist
+
+  launchd runs with a minimal PATH, so the node/aws dirs are set below. Runs from the main
+  checkout (stable) — not a throwaway worktree. To require a bearer token on the host/create
+  endpoints, add a JUKEBOX_TOKEN entry under EnvironmentVariables and set it in Settings ▸ Jukebox.
+  Guests are NOT on the Tailnet — expose this publicly with scripts/setup-jukebox-funnel.sh.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.jukeboxserver</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/deepspacenine/forges/levi/pocketdj/scripts/jukebox-server.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <key>HOME</key>
+    <string>/Users/deepspacenine</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/Users/deepspacenine/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/deepspacenine/forges/levi/pocketdj</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/deepspacenine/.pocketdj/jukebox-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/deepspacenine/.pocketdj/jukebox-server.log</string>
+</dict>
+</plist>
