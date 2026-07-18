@@ -557,7 +557,7 @@ struct SettingsView: View {
         } header: {
             Text("Jukebox Hero")
         } footer: {
-            Text("The jukebox session broker guests' phones talk to (public — exposed with Tailscale Funnel, unlike the Tailnet-only rip server). Start a jukebox from the Jukebox Hero tab (⌘J); guests scan its QR code to see what's playing and request songs.")
+            Text("The jukebox session broker guests' phones talk to (public — exposed with Tailscale Funnel, like the rip server). Start a jukebox from the Jukebox Hero tab (⌘J); guests scan its QR code to see what's playing and request songs.")
         }
     }
 

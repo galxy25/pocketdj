@@ -40,7 +40,7 @@ manifest in memory.
 
 | Method · Path | Purpose | Response |
 |---|---|---|
-| `GET /health` | version handshake + stats | `{ ok, host, version, hls, stems, analogBase, bucket, catalog:{songs,albums}, cached, auth }` |
+| `GET /health` | version handshake + stats | `{ ok, host, version, hls, stems, analogBase, bucket, catalog:{songs,albums}, cached, auth, public, rateLimit }` |
 | `GET /status/:songId` | is it ripped? | `{ ready:true, url, entry }` or `{ ready:false, job }` |
 | `POST /rip` `{songId}` | start/join a rip | `JobView` |
 | `POST /rip-collection` `{songIds[]}` | batch-enqueue a whole collection (reuses the durable queue) | `{ results:[{songId,status,jobId,url}], counts }` |

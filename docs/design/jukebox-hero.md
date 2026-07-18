@@ -124,10 +124,11 @@ Function URLs — HTTP API + CloudFront is the path, as with the search proxy).
 
 ### Public exposure (interim, iMac)
 
-Guests are **not** on the Tailnet, so unlike the rip server this service must be
-publicly reachable. Interim answer: **Tailscale Funnel** path-mount on Funnel's
+Guests are **not** on the Tailnet, so this service must be publicly reachable (the
+first public mount on this machine — the rip server later followed on `:10000` for
+the beta distribution). Interim answer: **Tailscale Funnel** path-mount on Funnel's
 second HTTPS port — **8443, not 443**, because Funnel is per-PORT and this
-machine's 443 already serves the Tailnet-only rip server at `/` (funneling 443
+machine's 443 already serves the Tailnet-only rip server `serve` mount at `/` (funneling 443
 would expose the rip server to the public internet):
 
 ```

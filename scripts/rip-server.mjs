@@ -32,15 +32,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
 
 // Optional machine-local env file (~/.pocketdj/rip-server.env, chmod 600). The launchd
-// plist is checked into the repo, so secrets (RIP_TOKEN / RIP_ADMIN_TOKEN) and the
-// RIP_PUBLIC switch live here instead — written by scripts/setup-rip-funnel.sh, and it
-// survives a plist reinstall. Real environment variables always win.
+// plist is checked into the repo, so secrets (RIP_TOKEN / RIP_ADMIN_TOKEN) plus any
+// optional flags (RIP_PUBLIC=0 opt-out, RIP_RATE_LIMIT=1) live here instead — the
+// tokens are written by scripts/setup-rip-funnel.sh, and the file survives a plist
+// reinstall. Real environment variables always win.
 try {
   for (const line of readFileSync(join(homedir(), '.pocketdj', 'rip-server.env'), 'utf8').split('\n')) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
     if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
   }
-} catch { /* no env file — Tailnet-only defaults */ }
+} catch { /* no env file — tokenless defaults (public posture, auth off) */ }
 
 const CFG = {
   port: parseInt(process.env.RIP_PORT || '8787', 10),
@@ -49,9 +50,15 @@ const CFG = {
   // machine's library tooling (backfills, ingest, analysis, am-sync). Unset ⇒ those
   // endpoints fall back to the global RIP_TOKEN gate (Tailnet-only deployments).
   adminToken: process.env.RIP_ADMIN_TOKEN || '',
-  // PUBLIC (Tailscale Funnel) mode — scripts/setup-rip-funnel.sh. The Tailnet boundary
-  // is gone, so tokens become mandatory and user-tier requests are rate-limited.
-  public: process.env.RIP_PUBLIC === '1',
+  // PUBLIC (Tailscale Funnel) posture is the DEFAULT — beta doctrine: the server is
+  // meant to be internet-reachable (scripts/setup-rip-funnel.sh mounts :10000 and
+  // provisions the tokens). RIP_PUBLIC=0 opts a local experiment out. Public never
+  // refuses to boot; missing/collapsed tokens warn loudly instead (high-trust beta,
+  // simplicity first).
+  public: process.env.RIP_PUBLIC !== '0',
+  // Per-IP rate limiting is a FEATURE FLAG, default OFF (beta doctrine again: a handful
+  // of high-trust testers should never see a 429). RIP_RATE_LIMIT=1 arms it.
+  rateLimit: process.env.RIP_RATE_LIMIT === '1',
   // Browse ▸ Discover search proxy target (env-overridable so tests can stub it).
   searchBase: process.env.RIP_SEARCH_BASE || 'https://itunes.apple.com/search',
   profile: process.env.AWS_PROFILE || 'levi',
@@ -96,18 +103,25 @@ const CFG = {
   stemDeadlineMs: process.env.POCKETDJ_STEM_DEADLINE_MS ? parseInt(process.env.POCKETDJ_STEM_DEADLINE_MS, 10) : 30 * 60_000, // one value; watchdog = +30s
   stemCollectionCap: process.env.POCKETDJ_STEM_COLLECTION_CAP ? parseInt(process.env.POCKETDJ_STEM_COLLECTION_CAP, 10) : 60, // guard against an accidental huge job
 };
-// PUBLIC mode refuses to boot open: without a token every write endpoint (rip, ingest,
-// analysis, backfills) would be internet-reachable, and the two tiers must actually be
-// two tiers — a shared value would make a leaked beta-user token the admin token.
+// PUBLIC posture always boots (simplicity wins during beta — setup-rip-funnel.sh
+// provisions tokens before the Funnel port is ever mounted), but a missing or collapsed
+// tier is still worth shouting about in the log:
 if (CFG.public) {
-  if (!CFG.token || !CFG.adminToken) {
-    console.error('RIP_PUBLIC=1 requires both RIP_TOKEN and RIP_ADMIN_TOKEN — refusing to start open.');
-    process.exit(1);
+  if (!CFG.token) {
+    console.warn('⚠ public posture with NO RIP_TOKEN — every endpoint is open if the Funnel is mounted; run scripts/setup-rip-funnel.sh to provision tokens.');
+  } else if (!CFG.adminToken) {
+    console.warn('⚠ public posture with no RIP_ADMIN_TOKEN — admin endpoints fall back to the user token.');
+  } else if (CFG.token === CFG.adminToken) {
+    console.warn('⚠ RIP_TOKEN equals RIP_ADMIN_TOKEN — the tiers are collapsed; every beta-user token holder is admin.');
   }
-  if (CFG.token === CFG.adminToken) {
-    console.error('RIP_TOKEN and RIP_ADMIN_TOKEN must differ (user tier ≠ admin tier).');
-    process.exit(1);
-  }
+}
+// An armed rate limit exempts the admin tier via adminAuthed(), which deliberately
+// falls back to the user token (or everyone, tokenless) when no distinct admin token
+// exists — configs where the armed limiter is partially or fully inert. Warn rather
+// than silently report rateLimit:true in /health while nothing limits.
+if (CFG.rateLimit && (!CFG.token || !CFG.adminToken || CFG.token === CFG.adminToken)) {
+  console.warn('⚠ RIP_RATE_LIMIT=1 needs BOTH tokens set and distinct to bite — in this config the admin-tier exemption covers ' +
+    (CFG.token || CFG.adminToken ? 'every token holder' : 'everyone') + ', so the limiter is inert.');
 }
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
@@ -1581,7 +1595,8 @@ function adminAuthed(req) {
   if (!admin) return true; // tokenless local dev
   return bearerOf(req) === admin;
 }
-// Per-IP sliding-window rate limiting — enforced only in PUBLIC mode and only for
+// Per-IP sliding-window rate limiting — FEATURE-FLAGGED, default OFF (RIP_RATE_LIMIT=1
+// arms it; beta doctrine: high-trust testers, no 429s). When armed it applies only to
 // user-tier requests (admin automation like the nightly indexers is exempt). GETs are
 // chatty by design (HLS segments + 2s job polls) so they get a much wider window than
 // POSTs, which enqueue real capture/transcode work on this machine. Env-tunable so the
@@ -1621,11 +1636,11 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname;
   if (req.method === 'OPTIONS') return send(res, 204, '');
-  if (CFG.public && !adminAuthed(req) && rateLimited(req)) return send(res, 429, { error: 'rate limited' });
+  if (CFG.rateLimit && !adminAuthed(req) && rateLimited(req)) return send(res, 429, { error: 'rate limited' });
 
   if (path === '/health') {
     return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, stems: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
-      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token, public: CFG.public });
+      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token, public: CFG.public, rateLimit: CFG.rateLimit });
   }
   // GET /hls/<songId>/<index.m3u8|seg_N.ts> — live HLS (iOS-native). Same ?token= auth.
   const hm = path.match(/^\/hls\/([^/]+)\/([A-Za-z0-9_.-]+)$/);

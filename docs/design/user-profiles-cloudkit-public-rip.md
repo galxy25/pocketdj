@@ -8,7 +8,7 @@ Tailnet so testers' devices can reach it, hardened for the open internet.
 The release bundles four features:
 
 1. **User profiles + iCloud session sync** (CloudKit private DB)
-2. **Public rip server** (Tailscale Funnel `:10000`, tiered tokens, rate limits)
+2. **Public rip server** (Tailscale Funnel `:10000`, tiered tokens; rate limits off behind a flag)
 3. **Browse ▸ Discover** — search all of Apple Music, one-tap Add → shared rip catalog
 4. **Up Next ▸ collection button** — the durable-session ghost-state fix
 
@@ -107,8 +107,10 @@ implementation (`PocketDJTests/CloudSyncServiceTests.swift`) — no account, no 
 
 ## 2. Public rip server (Tailscale Funnel `:10000`)
 
-The rip server leaves the Tailnet so beta testers can rip/stream/Discover. Its many
-write endpoints made "just funnel it" unacceptable — public mode is a hardened mode.
+The rip server leaves the Tailnet so beta testers can rip/stream/Discover. Public
+posture is the server's **default** (beta doctrine: simplicity first, high-trust
+testers); the hardening below rides along, with the parts that could get in a tester's
+way (rate limits) feature-flagged **off**.
 
 ### Ports on the iMac (Funnel is per-PORT — all three HTTPS ports now in use)
 
@@ -120,8 +122,10 @@ write endpoints made "just funnel it" unacceptable — public mode is a hardened
 
 ### Server hardening (`scripts/rip-server.mjs`)
 
-- **`RIP_PUBLIC=1`** refuses to boot without BOTH tokens, and refuses equal tokens
-  (a leaked user token must not be the admin token).
+- **Public by default.** `RIP_PUBLIC` defaults **on** (`RIP_PUBLIC=0` opts a local
+  experiment out). The server always boots — missing or equal tokens produce loud log
+  warnings, never a refusal (`setup-rip-funnel.sh` provisions distinct tokens before
+  the Funnel port is ever mounted, so the open window is theoretical).
 - **Two tiers.** `RIP_TOKEN` (user — beta testers): `/rip`, `/rip-collection`,
   `/stemify`, `/stemify-cancel`, `/rip-cancel`, `/status`, `/jobs`, `/hls` (+ `?token=`),
   `/search`, `GET /am-sync/<id>`. `RIP_ADMIN_TOKEN` (admin — Levi only; a superset
@@ -129,10 +133,12 @@ write endpoints made "just funnel it" unacceptable — public mode is a hardened
   `/retag-cuts`, `/backfill-beatgrids`, `/stemify-collection`, `/backfill-stems`,
   `/analysis`, `/ingest-digital`, `POST /am-sync`. Wrong tier → 403 (authenticated,
   wrong tier — distinct from 401).
-- **Rate limits** (public mode, user tier only — admin automation like the nightly
-  indexers is exempt): per-IP sliding windows, GET 600/min (HLS segments + 2 s job
-  polls are chatty by design), POST 30/min (POSTs enqueue real capture work).
-  `x-forwarded-for`-aware (Funnel proxies). Plus a 32 MB request-body cap.
+- **Rate limits — feature flag, default OFF** (`RIP_RATE_LIMIT=1` arms them; beta
+  testers are few and trusted, so nobody should ever see a 429). When armed: user tier
+  only (admin automation like the nightly indexers is exempt), per-IP sliding windows,
+  GET 600/min (HLS segments + 2 s job polls are chatty by design), POST 30/min (POSTs
+  enqueue real capture work), `x-forwarded-for`-aware (Funnel proxies). The 32 MB
+  request-body cap is always on.
 - **Secrets** live in `~/.pocketdj/rip-server.env` (chmod 600; the server reads it at
   boot, real env wins) — never in the repo or the checked-in launchd plist.
 
@@ -141,8 +147,9 @@ write endpoints made "just funnel it" unacceptable — public mode is a hardened
 ```
 scripts/setup-rip-funnel.sh
 ```
-Idempotent: generates + persists both tokens (re-runs keep existing ones), writes
-`RIP_PUBLIC=1`, kickstarts the launchd agent, verifies `/health` shows `auth+public`,
+Idempotent: generates + persists both tokens (re-runs keep existing ones — rate
+limiting is NOT enabled), kickstarts the launchd agent, verifies `/health` shows
+`auth+public`,
 mounts `tailscale funnel --bg --https=10000 http://127.0.0.1:8787`, prints the public
 base + both tokens (distribute the USER token to testers; the admin token goes only in
 Levi's own Settings ▸ Rip server).
@@ -156,16 +163,18 @@ working with no token at all.
 
 ### Verification
 
-`scripts/test/rip-auth-e2e.mjs` (hermetic; stubbed iTunes) — boot refusals, tier map
-(401/403/200), rate-limit trip + admin exemption, `/search` mapping. Plus
+`scripts/test/rip-auth-e2e.mjs` (hermetic; stubbed iTunes) — posture defaults
+(public-on by default, `RIP_PUBLIC=0` opt-out, tokenless boot allowed), tier map
+(401/403/200), rate limit off-by-default + trip/admin-exemption when armed, `/search`
+mapping. Plus
 `stream-e2e.mjs` still green (HLS + `?token=`), and a live iTunes proxy spot-check.
 
 ---
 
 ## 3. Browse ▸ Discover (search Apple Music, Add → shared catalog)
 
-- Server: `GET /search?q=` — an iTunes Search API proxy on the rip server (user tier,
-  rate-limited). Hits are annotated against the live rip manifest: each carries the
+- Server: `GET /search?q=` — an iTunes Search API proxy on the rip server (user
+  tier). Hits are annotated against the live rip manifest: each carries the
   `amrec_<storeId>` songId the add flow rips under, plus `ripped`/`url` when the capture
   already exists. The iMac proxies so clients need one base URL + token, and so
   annotation is server-side.

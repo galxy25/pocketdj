@@ -244,9 +244,10 @@ the agent for Apple Music captures.
 - **Tailscale HTTPS** via `tailscale serve` gives the iMac a real cert at `*.ts.net`
   — required because the PWA is HTTPS and browsers block HTTPS→HTTP (mixed content).
 - **2026‑07 beta‑distribution promotion:** the server is ALSO public via Tailscale
-  **Funnel `:10000`** (`scripts/setup-rip-funnel.sh`) with mandatory tiered tokens
-  (`RIP_TOKEN` user / `RIP_ADMIN_TOKEN` admin — admin gates the corpus‑scale mutators),
-  per‑IP rate limits, and a `GET /search` Discover proxy. See
+  **Funnel `:10000`** (`scripts/setup-rip-funnel.sh`) — public posture is the default —
+  with tiered tokens (`RIP_TOKEN` user / `RIP_ADMIN_TOKEN` admin — admin gates the
+  corpus‑scale mutators), optional per‑IP rate limits (`RIP_RATE_LIMIT=1`, default off),
+  and a `GET /search` Discover proxy. See
   [user-profiles-cloudkit-public-rip.md](user-profiles-cloudkit-public-rip.md) §2.
 - Off‑tailnet without a token: can't *create* rips, but anything already public in S3
   still plays.

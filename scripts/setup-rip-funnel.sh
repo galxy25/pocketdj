@@ -10,12 +10,14 @@
 #   8443 → Funnel /jukebox (guest request line)
 # so the public rip server rides Funnel's THIRD HTTPS port, 10000.
 #
-# Going public makes tokens mandatory (rip-server.mjs refuses RIP_PUBLIC=1 without them).
-# This script generates + persists them in ~/.pocketdj/rip-server.env (chmod 600, NEVER
-# in the repo — the launchd plist stays secret-free; the server reads the env file):
+# Public posture is the server's DEFAULT (beta doctrine: simplicity first, high-trust
+# testers — it always boots, warning if tokens are missing). This script provisions the
+# tokens in ~/.pocketdj/rip-server.env (chmod 600, NEVER in the repo — the launchd plist
+# stays secret-free; the server reads the env file):
 #   RIP_TOKEN        user tier — beta testers (rip/stream/status/search)
 #   RIP_ADMIN_TOKEN  admin tier — Levi only (backfills, ingest, analysis, am-sync)
 # Existing tokens are kept (idempotent), so re-running never invalidates distributed ones.
+# Per-IP rate limiting ships OFF; add RIP_RATE_LIMIT=1 to the env file if it's ever needed.
 #
 # NOTE: this changes machine network state — run it ON the iMac yourself; CI never invokes it.
 set -euo pipefail
