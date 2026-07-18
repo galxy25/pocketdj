@@ -48,6 +48,10 @@ struct PocketDJApp: App {
     /// On-demand lyrics: fetches `{catalogBase}/lyrics/<songId>.txt` when a song detail
     /// opens and caches the text on disk for instant + offline re-opens.
     @State private var lyrics: LyricsStore
+    /// The Producer tab's Demuxer documents (on-device transcript + chord timeline per audio
+    /// source), persisted under `demux-cache/` — app-scoped so an analysis keeps running
+    /// across tab switches.
+    @State private var demux: DemuxStore
     /// APP-SCOPED DJ mix engine (AVAudioEngine two-deck graph) — owned here, NOT by MixView, so a
     /// running mix keeps playing across tab switches (mirrors SetlistPlayer's app-scoping). Built
     /// from the SAME BurnStore so each deck loads ONLY locally-burned files (`localURLForPlayback`).
@@ -103,6 +107,12 @@ struct PocketDJApp: App {
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
     /// the environment so RootView can consume intent navigation (`pendingRoute`).
     @State private var intents: IntentServices
+    /// The user's synced identity (PocketDJ name + durable id) — see ProfileStore.
+    @State private var profile: ProfileStore
+    /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
+    /// launch task awaits its launch pass BEFORE the durable-session restores so a fresh
+    /// device restores cloud session files, not empty ones.
+    @State private var cloudSync: CloudSyncService
     @Environment(\.scenePhase) private var scenePhase
 
     // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
@@ -184,6 +194,7 @@ struct PocketDJApp: App {
             ready: { amProvider.canResolve },
             resolve: { song in await amProvider.resolve(song)?.artworkURL }))
         _lyrics = State(initialValue: LyricsStore())
+        _demux = State(initialValue: DemuxStore())
         // App-scoped two-deck AVAudioEngine mix engine. Shares `burns` so a deck resolves the on-disk
         // burned file (+ holds its security scope) for the song it loads. Its `recorder` is the
         // app-side session store, wired here so every deck action is logged into the current session.
@@ -250,6 +261,11 @@ struct PocketDJApp: App {
         // play() time, resolved from the collections' now-playing source.
         setlistPlayer.historyContextProvider = { [weak collections] in
             collections?.historyContext(forSourceSetlistId: $0) ?? (.setlist, nil)
+        }
+        // …and the NAVIGABLE origin (kind + collection id) — the Up Next header's
+        // collection button target, captured per run + persisted in the durable session.
+        setlistPlayer.originProvider = { [weak collections] in
+            collections?.originCollection(forSourceSetlistId: $0)
         }
         rips.settings = settings       // rip server URL + token come from settings
         musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
@@ -427,6 +443,47 @@ struct PocketDJApp: App {
         jukebox.resumePersistedSession()
         _jukebox = State(initialValue: jukebox)
 
+        // ── User profile + iCloud session sync ─────────────────────────────────
+        // The profile is the SYNCED identity (ProfileStore's NAME OWNERSHIP doctrine);
+        // the sync service mirrors the session-data documents through the user's private
+        // CloudKit DB so a beta tester's data follows their Apple ID across devices.
+        let profile = ProfileStore(fileURL: ProfileStore.launchURL())
+        profile.migrateIfNeeded(settingsName: settings.pocketDJName)
+        profile.onNameApplied = { [weak settings, weak collections] name in
+            settings?.pocketDJName = name
+            settings?.persist()
+            collections?.performerName = name
+        }
+        // A device whose profile already pulled a name (second device of the same Apple ID)
+        // mirrors it into settings/collections now, before the first frame renders.
+        if !profile.name.isEmpty, settings.pocketDJName != profile.name {
+            settings.pocketDJName = profile.name
+            settings.persist()
+            collections.performerName = profile.name
+        }
+        _profile = State(initialValue: profile)
+        // Fixture guard lives HERE (not inside the service): UI-test runs must never
+        // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
+        // globally and the sync engine itself must stay drivable by tests.
+        let fixtureRun = ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil
+        let cloudSync = CloudSyncService(database: CKCloudDocDatabase(),
+                                         enabled: { [weak settings] in
+                                             !fixtureRun && (settings?.cloudSyncEnabled ?? true)
+                                         })
+        // The synced-document registry: each entry is (record key, the SAME file URL the
+        // store was constructed with, post-pull reload). playback-session/mix-decks are
+        // file-only (no reload) — their snapshots are pulled BEFORE RootView's restore
+        // calls read them (syncAtLaunch is awaited first).
+        cloudSync.register("profile", fileURL: profile.syncFileURL) { [weak profile] in profile?.reloadFromDisk() }
+        cloudSync.register("collections", fileURL: collections.syncFileURL) { [weak collections] in collections?.reloadFromDisk() }
+        cloudSync.register("edits", fileURL: edits.syncFileURL) { [weak edits] in edits?.reloadFromDisk() }
+        cloudSync.register("play-stats", fileURL: playStats.syncFileURL) { [weak playStats] in playStats?.reloadFromDisk() }
+        cloudSync.register("play-history", fileURL: playHistory.syncFileURL) { [weak playHistory] in playHistory?.reloadFromDisk() }
+        cloudSync.register("mix-sessions", fileURL: mixSessions.syncFileURL) { [weak mixSessions] in mixSessions?.reloadFromDisk() }
+        cloudSync.register("playback-session", fileURL: playbackSession.syncFileURL)
+        cloudSync.register("mix-decks", fileURL: mixDeckSession.syncFileURL)
+        _cloudSync = State(initialValue: cloudSync)
+
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
         // One bridge instance carries the live stores to intents + entity queries.
         let intents = IntentServices(app: app, settings: settings, collections: collections,
@@ -473,6 +530,7 @@ struct PocketDJApp: App {
                 .environment(setlistPlayer)
                 .environment(albumArt)
                 .environment(lyrics)
+                .environment(demux)
                 .environment(mix)
                 .environment(mixSessions)
                 .environment(mixRecorder)
@@ -486,6 +544,8 @@ struct PocketDJApp: App {
                 .environment(instrumentPacks)
                 .environment(jukebox)
                 .environment(intents)
+                .environment(profile)
+                .environment(cloudSync)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -495,6 +555,8 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
+                        // Cross-device freshness beyond launch (throttled inside).
+                        cloudSync.syncOnForeground()
                         // A widget transport tap that fired while the app was fully quit dropped a
                         // command in the App Group — apply it now that playback stores are live.
                         widgetSync.drainPendingCommand(now: Date().timeIntervalSince1970)
@@ -515,6 +577,9 @@ struct PocketDJApp: App {
                         // Mix-deck session: same doctrine — the decks' latest playheads (and any
                         // debounced slider value still in memory) land before a suspension→kill.
                         mixDeckSession.flush()
+                        // Push any session documents whose files advanced since the last
+                        // sync — AFTER the flushes above so the freshest bytes upload.
+                        cloudSync.pushOnBackground()
                         // Submit/re-submit the BGTasks (burn-drain + rip-reconcile) so a
                         // backgrounded burn/rip keeps advancing/reconciling. iOS-only.
                         #if os(iOS)

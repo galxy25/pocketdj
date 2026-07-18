@@ -13,9 +13,14 @@
   Stop:    launchctl unload ~/Library/LaunchAgents/com.pocketdj.ripserver.plist
 
   launchd runs with a minimal PATH, so node/ffmpeg/aws/tail/claude dirs are set below.
-  Runs from the main checkout (stable) — not a throwaway worktree. To require a bearer
-  token, add a RIP_TOKEN entry under EnvironmentVariables and set it in Settings ▸ Rip
-  server. (Tailnet-only by default; the rips S3 bucket is public per the design.)
+  Runs from the main checkout (stable) — not a throwaway worktree.
+
+  Secrets do NOT go here (this file is checked into the repo): the server also reads
+  ~/.pocketdj/rip-server.env (RIP_TOKEN, RIP_ADMIN_TOKEN, and optional flags like
+  RIP_PUBLIC=0 / RIP_RATE_LIMIT=1), which scripts/setup-rip-funnel.sh writes when
+  mounting Tailscale Funnel :10000 for beta testers. Public posture is the server's
+  default; tokens are enforced once the env file provides them. (The rips S3 bucket is
+  public per the design.)
 -->
 <plist version="1.0">
 <dict>

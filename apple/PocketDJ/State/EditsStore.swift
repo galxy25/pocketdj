@@ -12,6 +12,9 @@ import UIKit
 final class EditsStore {
     private(set) var doc: EditsDocument
     private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
 
     init(fileURL: URL = EditsStore.defaultURL()) {
         self.fileURL = fileURL
@@ -77,6 +80,14 @@ final class EditsStore {
     private func save() {
         doc.schemaVersion = editsSchemaVersion
         if let data = try? EditsCodec.encode(doc) { try? data.write(to: fileURL, options: .atomic) }
+    }
+
+    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
+    /// (whole-document LWW — the overlay simply re-applies on the next catalog read).
+    func reloadFromDisk() {
+        guard let data = try? Data(contentsOf: fileURL),
+              let loaded = try? EditsCodec.decode(data) else { return }
+        doc = loaded
     }
 
     static var platform: String {

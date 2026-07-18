@@ -19,6 +19,9 @@ struct RootView: View {
     @Environment(StudioMicRecorder.self) private var studioMic
     @Environment(PlayHistoryStore.self) private var playHistory
     @Environment(IntentServices.self) private var intents
+    @Environment(CloudSyncService.self) private var cloudSync
+    @Environment(JukeboxStore.self) private var jukebox
+    @Environment(PlaybackCoordinator.self) private var coordinator
     // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
     // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
     // button so it self-hides exactly where ⌘N does (see NewWindowCommands in PocketDJApp).
@@ -40,13 +43,19 @@ struct RootView: View {
         case history = "History"
         case playlists = "Playlists"
         case mix = "Mix"
-        // The Studio tab (samples/loops/sequencer/instruments/cues). rawValue triple-duties
-        // as sidebar label + settings.lastSection token + PDJ_START_SECTION seam — never
-        // rename it (spec §0's collision table pins the string).
+        // The Studio tab (samples/loops/sequencer/instruments/cues/demuxer). rawValue
+        // triple-duties as settings.lastSection token + PDJ_START_SECTION seam + shadow-button
+        // name — never rename it (spec §0's collision table pins the string). The USER-VISIBLE
+        // name is `title` ("Producer" — renamed 2026-07; the token stays "Performance" forever).
         case performance = "Performance"
         case jukebox = "Jukebox Hero"
         case settings = "Settings"
         var id: String { rawValue }
+        /// User-visible sidebar/menu label. Diverges from `rawValue` only where a tab was
+        /// renamed after its token was pinned (Performance → Producer).
+        var title: String {
+            self == .performance ? "Producer" : rawValue
+        }
         var icon: String {
             switch self {
             case .browse:      return "list.bullet"
@@ -139,6 +148,12 @@ struct RootView: View {
             studioMic.recoverOrphans()
             // History demo seed (PDJ_SEED_HISTORY) — populate the timeline for UI tests / demos.
             playHistory.seedDemoIfRequested()
+            // iCloud session sync: pull any NEWER cloud session documents BEFORE the two
+            // durable-session restores below read their files — a fresh device (a beta
+            // tester's second install) restores the cloud session, not an empty one.
+            // Deadline-bounded inside (8 s): a slow/absent network can never hang launch;
+            // a late pull still lands for next launch. No-op when disabled / no account.
+            await cloudSync.syncAtLaunch()
             // Durable playback session: rehydrate the Now Playing deck from the last run's
             // snapshot — HELD (never auto-plays; the first ▶ resumes at the saved position).
             // Self-contained (title/artist ride the snapshot), so it renders before the
@@ -155,8 +170,9 @@ struct RootView: View {
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
+            // Accepts either the pinned token ("Performance") or the visible title ("Producer").
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
-               let s = Section(rawValue: raw) {
+               let s = Section(rawValue: raw) ?? Section.allCases.first(where: { $0.title == raw }) {
                 section = s
             } else {
                 #if os(iOS)
@@ -208,26 +224,41 @@ struct RootView: View {
 
     private var newWindowButton: some View {
         Button { openWindow(id: "main") } label: { Image(systemName: "plus") }
-            .help("New Window — run another surface (Mix, Performance…) alongside this one")
+            .help("New Window — run another surface (Mix, Producer…) alongside this one")
             .accessibilityIdentifier("new-window")
     }
 
     /// Menu row: every section uses its SF Symbol except MIX, which wears Apple
-    /// Music's AutoMix mark (two overlapping records — one solid, one open ring).
-    /// No public SF Symbol exists for it, so it's drawn as a tiny vector that
-    /// follows `.tint` exactly like the surrounding symbol icons.
+    /// Music's AutoMix mark (two overlapping records — one solid, one open ring),
+    /// and JUKEBOX HERO, which wears the pride jukebox (colors wander while a
+    /// session is live, breathes while the music is audible — see JukeboxIcon).
+    /// Neither exists as a public SF Symbol, so both are tiny vectors.
     @ViewBuilder private func rowLabel(_ item: Section) -> some View {
         if item == .mix {
             // No explicit foreground style: the Canvas inherits the Label icon
             // slot's, so it colors exactly like the sibling SF Symbol icons on
             // every platform (white here, accent when the platform tints them).
-            Label { Text(item.rawValue) } icon: {
+            Label { Text(item.title) } icon: {
                 AutoMixIcon()
                     .frame(width: 25, height: 15)
             }
+        } else if item == .jukebox {
+            Label { Text(item.rawValue) } icon: {
+                JukeboxIcon(mode: jukeboxIconMode)
+                    .frame(width: 16, height: 20)
+            }
         } else {
-            Label(item.rawValue, systemImage: item.icon)
+            Label(item.title, systemImage: item.icon)
         }
+    }
+
+    /// The jukebox mark's animation state. "Playing" is the NowPlayingPanel routing
+    /// rule (whichever backend owns the audio), gated on a running set — the same
+    /// music the jukebox's guests are hearing.
+    private var jukeboxIconMode: JukeboxIconMode {
+        let audible = sequencer.isRunning &&
+            (coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying)
+        return JukeboxIconMode.resolve(sessionActive: jukebox.session != nil, isPlaying: audible)
     }
 
     /// Consume a pending intent route on a FRESH stack (Spotlight/Siri asked for
@@ -237,16 +268,42 @@ struct RootView: View {
         guard let route else { return }
         intents.pendingRoute = nil
         path = NavigationPath()
+        // Section lands NOW; the PUSH is staged onto a later runloop pass. Setting both
+        // in one update drops the push whenever the stack re-roots underneath it — the
+        // collapsed (iPhone) split view swapping detail columns, or a presenting sheet
+        // (the platter's song-detail hotlinks) still mid-dismiss — leaving the user at
+        // the section's home instead of the destination.
+        var push: (() -> Void)?
         switch route {
         case .playlist(let id):
             section = .playlists
-            if let pl = collections.playlist(id) { path.append(pl) }
+            if let pl = collections.playlist(id) { push = { path.append(pl) } }
         case .pocket(let id):
             section = .playlists
-            if let p = collections.pocket(id) { path.append(p) }
+            if let p = collections.pocket(id) { push = { path.append(p) } }
+        case .setlist(let id):
+            section = .playlists
+            if let s = collections.setlist(id) { push = { path.append(s) } }
+        case .album(let id):
+            section = .browse
+            if let a = app.albumsById[id] { push = { path.append(a) } }
+        case .artist(let name):
+            section = .browse
+            push = { path.append(Artist(name: name)) }
+        case .sourcePlaylist(let id):
+            section = .playlists
+            if let sp = app.indexPlaylists.first(where: { $0.id == id }) { push = { path.append(sp) } }
         case .browseSearch:
             // The search term itself rides `pendingBrowseQuery`, consumed by BrowseView.
             section = .browse
+        }
+        if let push {
+            Task { @MainActor in
+                // Long enough for the sheet-dismiss/section-swap animations to settle
+                // (sheet dismissal is ~400 ms on iOS — racing it re-drops the push).
+                try? await Task.sleep(for: .milliseconds(450))
+                push()
+            }
         }
     }
 

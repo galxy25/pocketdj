@@ -15,6 +15,8 @@ struct JukeboxView: View {
     @Environment(JukeboxStore.self) private var jukebox
     @Environment(SettingsStore.self) private var settings
     @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
 
     @State private var name = ""
     @State private var timeless = false
@@ -37,9 +39,8 @@ struct JukeboxView: View {
     private var createView: some View {
         VStack(spacing: 18) {
             Spacer()
-            Image(systemName: "qrcode.viewfinder")
-                .font(.system(size: 56))
-                .foregroundStyle(Theme.accent)
+            JukeboxIcon(mode: .staticIcon)
+                .frame(width: 84, height: 110)
             Text("Start a jukebox")
                 .font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
             Text("Guests scan a QR code, see what's playing, and request songs.\nYou stay the DJ — every request is yours to place or deny.")
@@ -116,12 +117,24 @@ struct JukeboxView: View {
         }
     }
 
+    /// The live mark: colors wander while the session is up; breathes while the
+    /// guests can actually hear something (same audibility rule as the sidebar row).
+    private var liveIconMode: JukeboxIconMode {
+        let audible = sequencer.isRunning &&
+            (coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying)
+        return JukeboxIconMode.resolve(sessionActive: true, isPlaying: audible)
+    }
+
     @ViewBuilder private func qrSection(_ session: JukeboxSessionInfo) -> some View {
         Section {
             VStack(spacing: 10) {
-                Text(session.name)
-                    .font(.headline).foregroundStyle(Theme.fg)
-                    .accessibilityIdentifier("jukebox-live-name")
+                HStack(spacing: 10) {
+                    JukeboxIcon(mode: liveIconMode)
+                        .frame(width: 34, height: 44)
+                    Text(session.name)
+                        .font(.headline).foregroundStyle(Theme.fg)
+                        .accessibilityIdentifier("jukebox-live-name")
+                }
                 // White card + quiet zone are load-bearing: phone cameras need the
                 // contrast against the app's near-black background.
                 JukeboxQRView(text: session.url)

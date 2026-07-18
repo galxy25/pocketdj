@@ -39,6 +39,12 @@ LOG="${POCKETDJ_NIGHTLY_LOG:-$HOME/.pocketdj/digital-sync-nightly.log}"
 INDEX="public/digital-index.json"
 ROOT="${POCKETDJ_DIGITAL_ROOT:-/Volumes/RipBurnMix/Pocket DJ}"
 RIP_SERVER="${POCKETDJ_RIP_SERVER:-http://127.0.0.1:8787}"
+# Admin bearer for the rip server's ADMIN-tier endpoints (/backfill-stems here; the
+# indexer's /ingest-digital reads the same file itself). Public-promotion era: the
+# local server enforces tokens once ~/.pocketdj/rip-server.env provisions them.
+RIP_ADMIN_TOKEN="${RIP_ADMIN_TOKEN:-$(sed -n 's/^RIP_ADMIN_TOKEN=//p' "$HOME/.pocketdj/rip-server.env" 2>/dev/null | tail -1)}"
+AUTH_ARGS=()
+[ -n "$RIP_ADMIN_TOKEN" ] && AUTH_ARGS=(-H "Authorization: Bearer $RIP_ADMIN_TOKEN")
 WORK="${POCKETDJ_DIGITAL_WORK:-$HOME/.pocketdj/digital}"
 STATE_DIR="$HOME/.pocketdj/digital-sync"
 MARKER="$STATE_DIR/last-published-index.sha256"
@@ -214,7 +220,7 @@ ship() {
     if [ "$DRY_RUN" = 1 ]; then
       echo "DRYRUN: POST $RIP_SERVER/backfill-stems {confirmLarge:true}" | tee -a "$LOG"
     else
-      local sr; sr="$(curl -sS -m 30 -XPOST "$RIP_SERVER/backfill-stems" -H 'content-type: application/json' -d '{"confirmLarge":true}' 2>/dev/null || echo '{"ok":false}')"
+      local sr; sr="$(curl -sS -m 30 -XPOST "$RIP_SERVER/backfill-stems" ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} -H 'content-type: application/json' -d '{"confirmLarge":true}' 2>/dev/null || echo '{"ok":false}')"
       log "stem backfill: $sr"
     fi
   fi

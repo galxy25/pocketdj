@@ -10,8 +10,8 @@ import Observation
 /// the overlap between those hooks (a burned play fires both 1 and 2) and seek/restarts.
 ///
 /// Persists to Application Support `pocketdj-play-stats.json` (mirrors CollectionsStore
-/// durable-JSON: atomic save, decode-on-init, PDJ_USE_FIXTURE test seam). App storage only
-/// — play stats are device-local and never sync.
+/// durable-JSON: atomic save, decode-on-init, PDJ_USE_FIXTURE test seam). Syncs across the
+/// user's devices via CloudSyncService (whole-document LWW; `reloadFromDisk` applies pulls).
 @MainActor
 @Observable
 final class PlayStatsStore {
@@ -31,6 +31,9 @@ final class PlayStatsStore {
 
     private(set) var stats: [String: Stat] = [:]
     @ObservationIgnored private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
 
     /// Repeated notes for the SAME song inside this window refresh `lastPlayedAt` but don't
     /// re-count — a seek/restart (or the burned-play double-hook) isn't a second listen.
@@ -78,6 +81,14 @@ final class PlayStatsStore {
     /// Epoch ms of the last play, or nil if never played (⇒ pruned first).
     func lastPlayedAt(_ songId: String) -> Double? { stats[songId]?.lastPlayedAt }
     func playCount(_ songId: String) -> Int { stats[songId]?.playCount ?? 0 }
+
+    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
+    /// (whole-document LWW — see the sync design doc).
+    func reloadFromDisk() {
+        guard let data = try? Data(contentsOf: fileURL),
+              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
+        stats = doc.stats
+    }
 
     private func save() {
         let doc = Document(stats: stats)

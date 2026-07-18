@@ -36,5 +36,15 @@
   <array>
     <string>group.com.levi.pocketdj</string>
   </array>
+  <!-- CloudKit (user profiles + session-data sync, CloudSyncService) — works under the
+       App Sandbox; same container id as the iOS/visionOS entitlement files. -->
+  <key>com.apple.developer.icloud-services</key>
+  <array>
+    <string>CloudKit</string>
+  </array>
+  <key>com.apple.developer.icloud-container-identifiers</key>
+  <array>
+    <string>iCloud.com.levi.pocketdj</string>
+  </array>
 </dict>
 </plist>

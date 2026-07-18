@@ -18,7 +18,7 @@
 //   curl localhost:8787/health
 import http from 'node:http';
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync, copyFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync, copyFileSync, createWriteStream } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -31,9 +31,36 @@ import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
 
+// Optional machine-local env file (~/.pocketdj/rip-server.env, chmod 600). The launchd
+// plist is checked into the repo, so secrets (RIP_TOKEN / RIP_ADMIN_TOKEN) plus any
+// optional flags (RIP_PUBLIC=0 opt-out, RIP_RATE_LIMIT=1) live here instead — the
+// tokens are written by scripts/setup-rip-funnel.sh, and the file survives a plist
+// reinstall. Real environment variables always win.
+try {
+  for (const line of readFileSync(join(homedir(), '.pocketdj', 'rip-server.env'), 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
+  }
+} catch { /* no env file — tokenless defaults (public posture, auth off) */ }
+
 const CFG = {
   port: parseInt(process.env.RIP_PORT || '8787', 10),
-  token: process.env.RIP_TOKEN || '', // bearer; empty = no auth (local dev)
+  token: process.env.RIP_TOKEN || '', // bearer; empty = no auth (local dev / Tailnet-only)
+  // ADMIN tier: gates the endpoints that mutate the corpus at scale or drive this
+  // machine's library tooling (backfills, ingest, analysis, am-sync). Unset ⇒ those
+  // endpoints fall back to the global RIP_TOKEN gate (Tailnet-only deployments).
+  adminToken: process.env.RIP_ADMIN_TOKEN || '',
+  // PUBLIC (Tailscale Funnel) posture is the DEFAULT — beta doctrine: the server is
+  // meant to be internet-reachable (scripts/setup-rip-funnel.sh mounts :10000 and
+  // provisions the tokens). RIP_PUBLIC=0 opts a local experiment out. Public never
+  // refuses to boot; missing/collapsed tokens warn loudly instead (high-trust beta,
+  // simplicity first).
+  public: process.env.RIP_PUBLIC !== '0',
+  // Per-IP rate limiting is a FEATURE FLAG, default OFF (beta doctrine again: a handful
+  // of high-trust testers should never see a 429). RIP_RATE_LIMIT=1 arms it.
+  rateLimit: process.env.RIP_RATE_LIMIT === '1',
+  // Browse ▸ Discover search proxy target (env-overridable so tests can stub it).
+  searchBase: process.env.RIP_SEARCH_BASE || 'https://itunes.apple.com/search',
   profile: process.env.AWS_PROFILE || 'levi',
   region: process.env.AWS_REGION || 'us-west-2',
   bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
@@ -76,6 +103,26 @@ const CFG = {
   stemDeadlineMs: process.env.POCKETDJ_STEM_DEADLINE_MS ? parseInt(process.env.POCKETDJ_STEM_DEADLINE_MS, 10) : 30 * 60_000, // one value; watchdog = +30s
   stemCollectionCap: process.env.POCKETDJ_STEM_COLLECTION_CAP ? parseInt(process.env.POCKETDJ_STEM_COLLECTION_CAP, 10) : 60, // guard against an accidental huge job
 };
+// PUBLIC posture always boots (simplicity wins during beta — setup-rip-funnel.sh
+// provisions tokens before the Funnel port is ever mounted), but a missing or collapsed
+// tier is still worth shouting about in the log:
+if (CFG.public) {
+  if (!CFG.token) {
+    console.warn('⚠ public posture with NO RIP_TOKEN — every endpoint is open if the Funnel is mounted; run scripts/setup-rip-funnel.sh to provision tokens.');
+  } else if (!CFG.adminToken) {
+    console.warn('⚠ public posture with no RIP_ADMIN_TOKEN — admin endpoints fall back to the user token.');
+  } else if (CFG.token === CFG.adminToken) {
+    console.warn('⚠ RIP_TOKEN equals RIP_ADMIN_TOKEN — the tiers are collapsed; every beta-user token holder is admin.');
+  }
+}
+// An armed rate limit exempts the admin tier via adminAuthed(), which deliberately
+// falls back to the user token (or everyone, tokenless) when no distinct admin token
+// exists — configs where the armed limiter is partially or fully inert. Warn rather
+// than silently report rateLimit:true in /health while nothing limits.
+if (CFG.rateLimit && (!CFG.token || !CFG.adminToken || CFG.token === CFG.adminToken)) {
+  console.warn('⚠ RIP_RATE_LIMIT=1 needs BOTH tokens set and distinct to bite — in this config the admin-tier exemption covers ' +
+    (CFG.token || CFG.adminToken ? 'every token holder' : 'everyone') + ', so the limiter is inert.');
+}
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -403,6 +450,9 @@ function setPhase(job, phase, extra = {}) {
 function jobView(job) {
   if (!job) return null;
   const v = { jobId: job.jobId, songId: job.songId, phase: job.phase, message: job.message || null, url: job.url || null, error: job.error || null };
+  // Custom (uploaded-audio) stem jobs have no manifest entry — the S3 stem keys ride the job.
+  if (job.stems) v.stems = job.stems;
+  if (job.stemFormat) v.stemFormat = job.stemFormat;
   const live = job.phase === 'ripping' || job.phase === 'streaming' || job.phase === 'stemming';
   if (live && job.realtime && job.ripStartedAt && job.totalMs) {
     const elapsedMs = Math.min(Date.now() - job.ripStartedAt, job.totalMs);
@@ -1150,6 +1200,34 @@ function resumeAnalysis() {
 // with a durable per-songId intent (user intent isn't re-derivable from the manifest), an
 // async-spawn child the watchdog/cancel can group-kill, and an attempt cap for poison inputs.
 // Mirrors the rip queue's durability + the analysis queue's off-critical-path shape.
+// CUSTOM (uploaded-audio) stem jobs — the Demuxer's "stem ANY audio" path. The app STREAMS
+// the device-local file (imported audio / studio sample / loop / instrumental) to
+// /stemify-custom; Demucs runs here and the 4 stems upload to the public bucket under
+// `rips/stems/<id>/` exactly like song stems — but NOTHING is stamped into the manifest
+// (custom ids aren't songs; the S3 keys ride the JOB, see jobView). One shot, no durable
+// want (a crashed upload is simply re-sent by the app). STRICT id shape — these ids become
+// S3 key path segments and a tmp filename, so no dot/slash can ever ride through
+// (the amrec_ ADHOC_ID doctrine; hyphens allowed — studio ids carry UUIDs).
+const CUSTOM_STEM_ID = /^(?:dmx|smp|lp|ptn|tk|slc)_[A-Za-z0-9-]+$/;
+const customStemSrc = new Map();      // id -> uploaded local file (deleted after the run)
+const CUSTOM_STEM_MAX_BYTES = 512 * 1024 * 1024;   // generous: lossless captures upload too
+
+/// Stream a request body to `dest`, rejecting past `maxBytes` (never buffer audio in RAM).
+function readBodyToFile(req, dest, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const out = createWriteStream(dest);
+    let bytes = 0;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > maxBytes) { req.destroy(); out.destroy(); reject(new Error(`body over ${maxBytes} bytes`)); }
+    });
+    req.pipe(out);
+    out.on('finish', () => resolve(bytes));
+    out.on('error', reject);
+    req.on('error', reject);
+  });
+}
+
 const stemQ = [];                     // songIds queued for separation
 let stemming = false;                 // conc-1 guard
 const stemInflight = new Map();       // songId -> stemJobId (ALWAYS per-songId)
@@ -1265,7 +1343,9 @@ async function pumpStems() {
         CFG.stemDeadlineMs + 30_000);                            // > the lib budget; never fights it
       timer.unref?.();
     });
-    await Promise.race([stemManifestSong(songId), watchdog]);
+    await Promise.race([
+      customStemSrc.has(songId) ? stemCustomAudio(songId) : stemManifestSong(songId),
+      watchdog]);
   } catch (e) {
     const n = (stemAttempts.get(songId) || 0) + 1;
     stemAttempts.set(songId, n);
@@ -1313,6 +1393,38 @@ async function stemManifestSong(songId) {
     stemAttempts.delete(songId); clearStemWant(songId); finishStem(songId);
     console.error(`  ✓ stemmed ${songId} (${r.model}, ${r.stemBytes || '?'} bytes)`);
   } finally { try { rmSync(local); } catch { /* ignore */ } }
+}
+
+// Separate an UPLOADED custom-audio file (see CUSTOM_STEM_ID). Mirrors stemManifestSong
+// minus the manifest: the source is the uploaded temp file (no S3 download), and on success
+// the stem keys ride the JOB — nothing is stamped anywhere. One shot: the upload is deleted
+// win or lose (a failure surfaces on the job; the app re-uploads to retry).
+async function stemCustomAudio(id) {
+  const job = jobs.get(stemInflight.get(id));
+  const local = customStemSrc.get(id);
+  try {
+    if (!local || !existsSync(local)) { if (job) setPhase(job, 'error', { error: 'uploaded audio missing' }); return; }
+    if (job?.canceled) return;
+    if (job) setPhase(job, 'stemming', { message: 'separating stems' });
+    const r = await separateStems({                               // async spawn; watchdog-killable
+      file: local, songId: id, bucket: CFG.bucket, region: CFG.region, profile: CFG.profile,
+      model: CFG.demucsModel, runtime: CFG.demucsRuntime, device: CFG.demucsDevice,
+      image: CFG.stemImage, format: CFG.stemFormat, bitrate: CFG.stemBitrate,
+      tmp: CFG.tmp, child: activeStemChild,
+    });
+    if (job?.canceled || job?.phase === 'error') return;          // orphaned-continuation guard
+    if (!r.ok) throw new Error('demucs failed');
+    stemAttempts.delete(id);
+    if (job) {
+      job.stems = r.stems;                                        // rides jobView (no manifest entry)
+      job.stemFormat = r.format || CFG.stemFormat;
+      setPhase(job, 'ready', { message: 'stems ready' });
+    }
+    console.error(`  ✓ stemmed custom ${id} (${r.model}, ${r.stemBytes || '?'} bytes)`);
+  } finally {
+    customStemSrc.delete(id);
+    if (local) { try { rmSync(local); } catch { /* ignore */ } }
+  }
 }
 
 function finishStem(songId) {
@@ -1530,33 +1642,85 @@ function send(res, status, body) {
   });
   res.end(payload);
 }
+function bearerOf(req) {
+  const h = req.headers['authorization'] || '';
+  return h.startsWith('Bearer ') ? h.slice(7) : '';
+}
+// USER tier: the global gate. The admin token is a superset credential — a client
+// configured with it (Levi's own devices) passes every gate.
 function authed(req) {
   if (!CFG.token) return true;
-  const h = req.headers['authorization'] || '';
-  return h === `Bearer ${CFG.token}`;
+  const t = bearerOf(req);
+  return t === CFG.token || (!!CFG.adminToken && t === CFG.adminToken);
 }
-async function readJson(req) {
-  return new Promise((res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { res(b ? JSON.parse(b) : {}); } catch { res({}); } }); });
+// ADMIN tier: corpus-scale mutation + library tooling. With no dedicated admin token
+// this collapses to the global gate (Tailnet-only deployments keep today's behavior).
+function adminAuthed(req) {
+  const admin = CFG.adminToken || CFG.token;
+  if (!admin) return true; // tokenless local dev
+  return bearerOf(req) === admin;
+}
+// Per-IP sliding-window rate limiting — FEATURE-FLAGGED, default OFF (RIP_RATE_LIMIT=1
+// arms it; beta doctrine: high-trust testers, no 429s). When armed it applies only to
+// user-tier requests (admin automation like the nightly indexers is exempt). GETs are
+// chatty by design (HLS segments + 2s job polls) so they get a much wider window than
+// POSTs, which enqueue real capture/transcode work on this machine. Env-tunable so the
+// auth e2e can shrink them.
+const RL = {
+  windowMs: parseInt(process.env.RIP_RL_WINDOW_MS || '60000', 10),
+  getMax: parseInt(process.env.RIP_RL_GET_MAX || '600', 10),
+  postMax: parseInt(process.env.RIP_RL_POST_MAX || '30', 10),
+};
+const rlHits = new Map(); // `${ip} ${get|post}` → [timestamps]
+function rateLimited(req) {
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
+    .split(',')[0].trim();
+  const kind = req.method === 'GET' ? 'get' : 'post';
+  const key = `${ip} ${kind}`;
+  const now = Date.now();
+  const hits = (rlHits.get(key) || []).filter((t) => now - t < RL.windowMs);
+  hits.push(now);
+  if (rlHits.size > 10_000) rlHits.clear(); // memory backstop under IP churn
+  rlHits.set(key, hits);
+  return hits.length > (kind === 'get' ? RL.getMax : RL.postMax);
+}
+// Endpoints behind the ADMIN tier. Everything else (rip/rip-collection/stemify/cancel/
+// status/jobs/hls) is a first-class app feature beta users are meant to reach. GET
+// /am-sync/<id> stays user-tier (read-only poll; ids are unguessable job handles).
+const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgrids',
+  '/stemify-collection', '/backfill-stems', '/analysis', '/ingest-digital', '/am-sync']);
+async function readJson(req, maxBytes = 32 * 1024 * 1024) {
+  return new Promise((res) => {
+    let b = ''; let over = false;
+    req.on('data', (c) => { if (over) return; b += c; if (b.length > maxBytes) { over = true; b = ''; } });
+    req.on('end', () => { try { res(!over && b ? JSON.parse(b) : {}); } catch { res({}); } });
+  });
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname;
   if (req.method === 'OPTIONS') return send(res, 204, '');
+  if (CFG.rateLimit && !adminAuthed(req) && rateLimited(req)) return send(res, 429, { error: 'rate limited' });
 
   if (path === '/health') {
     return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, stems: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
-      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token });
+      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token, public: CFG.public, rateLimit: CFG.rateLimit });
   }
   // GET /hls/<songId>/<index.m3u8|seg_N.ts> — live HLS (iOS-native). Same ?token= auth.
   const hm = path.match(/^\/hls\/([^/]+)\/([A-Za-z0-9_.-]+)$/);
   if (hm && req.method === 'GET') {
-    const qok = !CFG.token || url.searchParams.get('token') === CFG.token;
+    const qt = url.searchParams.get('token');
+    const qok = !CFG.token || qt === CFG.token || (!!CFG.adminToken && qt === CFG.adminToken);
     if (!authed(req) && !qok) return send(res, 401, { error: 'unauthorized' });
     return serveHls(res, decodeURIComponent(hm[1]), hm[2]);
   }
 
   if (!authed(req)) return send(res, 401, { error: 'unauthorized' });
+  // ADMIN tier — corpus-scale mutation (mass backfills, manifest ingest/analysis) and
+  // this machine's library tooling (am-sync). 403 (not 401): the caller IS authenticated,
+  // just at the wrong tier.
+  if (ADMIN_PATHS.has(path) && !adminAuthed(req)) return send(res, 403, { error: 'admin token required' });
 
   // GET /status/:songId
   let m = path.match(/^\/status\/(.+)$/);
@@ -1576,6 +1740,45 @@ const server = http.createServer(async (req, res) => {
     let st = job;
     try { st = { ...job, ...JSON.parse(readFileSync(jobFile(id), 'utf8')) }; } catch { /* in-memory only */ }
     return send(res, 200, jobView(st));
+  }
+  // GET /search?q=&limit= — Apple-Music catalog search (iTunes Search API proxy) for the
+  // app's Browse ▸ Discover mode. The iMac proxies so beta clients need ONE base URL +
+  // token, and so results are annotated against the live rip manifest: each hit carries
+  // the amrec_ songId the add flow would rip under (see ADHOC_ID / the recognizer flow)
+  // plus ripped/url when that capture already happened. Adding = the existing POST /rip
+  // with the ad-hoc descriptor — it rides the durable conc-1 FIFO queue, so multiple
+  // beta users are served fairly by arrival order.
+  if (path === '/search' && req.method === 'GET') {
+    const q = (url.searchParams.get('q') || '').trim();
+    if (!q) return send(res, 400, { error: 'q required' });
+    const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '25', 10) || 25, 1), 50);
+    try {
+      const it = new URL(CFG.searchBase);
+      it.searchParams.set('term', q);
+      it.searchParams.set('entity', 'song');
+      it.searchParams.set('limit', String(limit));
+      const r = await fetch(it, { signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) return send(res, 502, { error: `itunes search ${r.status}` });
+      const data = await r.json();
+      const results = (data.results || []).filter((t) => t.trackId).map((t) => {
+        const songId = `amrec_${t.trackId}`;
+        const entry = manifest[songId];
+        return {
+          appleMusicId: String(t.trackId),
+          title: t.trackName || '',
+          artist: t.artistName || '',
+          album: t.collectionName || '',
+          artworkUrl: t.artworkUrl100 || null,
+          durationMs: t.trackTimeMillis || null,
+          songId,
+          ripped: !!entry,
+          url: entry ? publicUrl(entry.key) : null,
+        };
+      });
+      return send(res, 200, { results });
+    } catch (e) {
+      return send(res, 502, { error: `search failed: ${String(e?.message || e)}` });
+    }
   }
   // POST /rip {songId} — single-song rip-on-demand (also the F1 stream-through
   // fire-and-forget target: idempotent + durable + non-blocking). Response shape is
@@ -1663,6 +1866,32 @@ const server = http.createServer(async (req, res) => {
     if (r.status === 'ineligible') return send(res, 200, { jobId: null, songId, phase: 'ineligible' });
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', stems: manifest[songId].stems });
     return send(res, 200, jobView(r.job));
+  }
+  // POST /stemify-custom?id=<dmx_|smp_|lp_|ptn_|tk_|slc_...>&ext=<m4a|...> (raw audio body) —
+  // separate DEVICE-LOCAL audio the catalog has never seen (the Demuxer's imported files +
+  // performance media). The body streams to a temp file (size-capped), the job rides the
+  // SAME conc-1 stem queue (defers behind live captures), and the stems land on the public
+  // bucket under rips/stems/<id>/ with the keys returned ON THE JOB — no manifest stamp.
+  // NOTE this deliberately BYPASSES the studio-id fence: that fence exists because /stemify
+  // would chain into a rip (live-searching a garbage title); here the audio is uploaded, so
+  // there is nothing to rip and studio ids are exactly the intended clients.
+  if (path === '/stemify-custom' && req.method === 'POST') {
+    const id = String(url.searchParams.get('id') || '');
+    if (!CUSTOM_STEM_ID.test(id)) return send(res, 400, { error: 'bad custom stem id' });
+    const extRaw = String(url.searchParams.get('ext') || 'm4a').toLowerCase();
+    const ext = /^[a-z0-9]{1,5}$/.test(extRaw) ? extRaw : 'm4a';
+    const existingId = stemInflight.get(id);
+    if (existingId && jobs.has(existingId)) return send(res, 200, jobView(jobs.get(existingId)));
+    const local = join(CFG.tmp, `custom-${id}.${ext}`);
+    try { await readBodyToFile(req, local, CUSTOM_STEM_MAX_BYTES); }
+    catch (e) { try { rmSync(local); } catch { /* ignore */ } return send(res, 413, { error: e.message }); }
+    const job = { jobId: randomUUID(), songId: id, kind: 'stem-custom', phase: 'queued', createdAt: Date.now() };
+    jobs.set(job.jobId, job);
+    stemInflight.set(id, job.jobId);
+    customStemSrc.set(id, local);
+    setPhase(job, 'queued');
+    enqueueStem(id);
+    return send(res, 200, jobView(job));
   }
   // POST /stemify-collection {songIds:[...], ripFromCloud?, confirmLarge?} — batch Stemify,
   // mirroring /rip-collection with the rip/cut→stem chain in acceptStem. Size-capped (a Pocket

@@ -376,13 +376,29 @@ async function main() {
   console.error('✓ done');
 }
 
+/// /ingest-digital sits behind the rip server's ADMIN tier since the public (Funnel)
+/// promotion. Unattended runs (digital-sync-nightly) read the same machine-local env
+/// file the server does; explicit env vars win. No token (fresh dev box) ⇒ no header,
+/// which a tokenless local server accepts.
+function authHeader() {
+  let token = process.env.RIP_ADMIN_TOKEN || process.env.RIP_TOKEN || '';
+  if (!token) {
+    try {
+      const env = readFileSync(join(homedir(), '.pocketdj', 'rip-server.env'), 'utf8');
+      token = env.match(/^RIP_ADMIN_TOKEN=(.+)$/m)?.[1]?.trim()
+        || env.match(/^RIP_TOKEN=(.+)$/m)?.[1]?.trim() || '';
+    } catch { /* no env file — tokenless local dev */ }
+  }
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function ingest(entries) {
   // Chunk so a giant body doesn't strain the server; each chunk saves once.
   const out = { added: 0, updated: 0, skipped: 0 };
   for (let i = 0; i < entries.length; i += 200) {
     const chunk = entries.slice(i, i + 200);
     const res = await fetch(`${ARGS.ripServer}/ingest-digital`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeader() },
       body: JSON.stringify({ entries: chunk }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

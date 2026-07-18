@@ -46,6 +46,11 @@ final class PlaybackSessionStore {
         var kind: String
         var id: String?
         var name: String?
+        /// NAVIGABLE origin collection (the Up Next header's collection button target):
+        /// a `PlaySource` rawValue + the origin collection's id. Optional so pre-existing
+        /// snapshots (which lack the keys) still decode and restore.
+        var originKind: String?
+        var originId: String?
     }
 
     /// One queue row — a self-contained snapshot of `SetlistPlayer.Item` (fresh `uid`s are
@@ -78,6 +83,9 @@ final class PlaybackSessionStore {
     var positionWriteInterval: TimeInterval = 5
 
     private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
     private let writer = PlaybackSessionWriter()
     /// The in-memory truth of the current run's snapshot (nil = no active session).
     private var current: Snapshot?

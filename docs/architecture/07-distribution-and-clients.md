@@ -111,7 +111,11 @@ converging on the shared backends.
 **Native endpoint config** (`apple/PocketDJ/Support/Config.swift`):
 - dev `https://djictbz9w796r.cloudfront.net`, prod `https://d2p4cubg6se03u.cloudfront.net`
 - rips `https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com`
-- rip server `https://levis-imac.tail2e2bdf.ts.net` (Tailnet-only)
+- rip server `https://levis-imac.tail2e2bdf.ts.net:10000` (PUBLIC via Tailscale Funnel
+  since the beta-distribution promotion — tokened; rate limits exist behind
+  `RIP_RATE_LIMIT=1`, default off; 443 remains the
+  Tailnet-only `tailscale serve` mount. See
+  [user-profiles-cloudkit-public-rip.md](../design/user-profiles-cloudkit-public-rip.md) §2)
 
 ### 2.1 The native target — one universal SwiftUI app (XcodeGen)
 
@@ -631,8 +635,11 @@ where those raw rips live on an **external drive**, the agent's `EnvironmentVari
 If unset, **every analog rip fails** `analog file not found` (Ch. 5 §3.2). Reading
 `/Volumes/*` from a launchd-spawned `node` also requires macOS **removable-volume /
 Files & Folders TCC** access granted to `node` (System Settings ▸ Privacy & Security),
-or the read fails even with the base set. (To require a bearer token, add `RIP_TOKEN`
-to the same block and set it in Settings ▸ Rip server — tailnet-only by default; the
+or the read fails even with the base set. (Tokens do NOT live in the plist: the server
+also reads `~/.pocketdj/rip-server.env` — `RIP_TOKEN` user tier, `RIP_ADMIN_TOKEN`
+admin tier, plus optional flags (`RIP_PUBLIC=0` opt-out, `RIP_RATE_LIMIT=1`) — written
+by `scripts/setup-rip-funnel.sh` for the public Funnel `:10000` promotion. Public
+posture is the server's default; without the env file it simply boots tokenless. The
 rips S3 bucket is public per the design.)
 
 ### 6.1 The device-deploy helper — `apple/scripts/deploy-iphone.sh`
@@ -1096,10 +1103,15 @@ the actual mix output — a **live radio mode** — is the planned follow-up, no
 
 ### 11.7 Public exposure — Tailscale Funnel, not the Tailnet
 
-The rip server (§6) is **Tailnet-only** — its clients are the host's own devices. Jukebox Hero
-inverts that: **guests are strangers on the open internet**, so the broker must be *publicly*
-reachable. The interim answer (before the Lambda migration) is a **Tailscale Funnel** path-mount
-on the iMac ([`scripts/setup-jukebox-funnel.sh`](../../scripts/setup-jukebox-funnel.sh)):
+The rip server (§6) was **Tailnet-only** until the beta-distribution promotion (2026-07,
+[user-profiles-cloudkit-public-rip.md](../design/user-profiles-cloudkit-public-rip.md)) —
+it now ALSO rides Funnel on `:10000` with tiered tokens (+ per-IP rate limits behind
+the `RIP_RATE_LIMIT=1` flag, default off)
+([`scripts/setup-rip-funnel.sh`](../../scripts/setup-rip-funnel.sh)); 443 keeps the
+Tailnet-only `serve` mount. Jukebox Hero was public first: **guests are strangers on the
+open internet**, so the broker must be *publicly* reachable. The interim answer (before
+the Lambda migration) is a **Tailscale Funnel** path-mount on the iMac
+([`scripts/setup-jukebox-funnel.sh`](../../scripts/setup-jukebox-funnel.sh)):
 
 ```
  tailscale funnel --bg --set-path /jukebox http://127.0.0.1:8788

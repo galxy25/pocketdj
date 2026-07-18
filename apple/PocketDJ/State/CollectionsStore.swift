@@ -23,7 +23,14 @@ final class CollectionsStore {
     /// so `playNow` records the kind here for the Play-History hook to attribute the play. nil
     /// ⇒ treat as a generic set list.
     private(set) var nowPlayingSource: PlayHistoryStore.PlaySource?
+    /// The COLLECTION id the reserved Now Playing setlist was built from (playlist/pocket/
+    /// album/artist per `nowPlayingSource`) — what the Up Next header's collection button
+    /// re-opens. nil for browser singles / direct songIds plays with no origin threaded.
+    private(set) var nowPlayingOriginId: String?
     private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
 
     /// The catalog the realize engine resolves ids against (wired at launch, like
     /// AppModel.settings/edits). Weak so the store never retains the app graph.
@@ -877,9 +884,11 @@ final class CollectionsStore {
     /// on-screen detail view re-snapshots the new order. Returns nil if the catalog isn't wired.
     @discardableResult
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
-                 source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:]) -> Setlist? {
+                 source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:],
+                 originId: String? = nil) -> Setlist? {
         guard let app else { return nil }
         nowPlayingSource = source
+        nowPlayingOriginId = originId
         var tracks: [SetlistTrack] = songIds.compactMap { id in
             // Per-item repeat (loop) count from the source collection — snapshotted so the
             // player loops the row that many times before advancing.
@@ -915,6 +924,37 @@ final class CollectionsStore {
         return set
     }
 
+    /// The Up Next header's SETLIST button target: the reserved Now Playing setlist if
+    /// it still exists, else MATERIALIZED from the live queue. A durable-session restore
+    /// drops the stale Now Playing doc at launch (init/reloadFromDisk cleanup), so a
+    /// restored run's queue lives only in the player until the user asks for the setlist
+    /// view — this rebuilds the document that queue represents. Rows carry their own
+    /// snapshot (title/artist/length rode the durable session); bpm/camelot re-attach
+    /// from the catalog when the id still resolves.
+    @discardableResult
+    func materializeNowPlayingSetlist(
+        name: String?,
+        queue: [(id: String, title: String, artist: String, lengthMs: Int?, repeatCount: Int?)]
+    ) -> Setlist? {
+        if let existing = setlist(nowPlayingSetlistId) { return existing }
+        guard !queue.isEmpty else { return nil }
+        let tracks: [SetlistTrack] = queue.map { row in
+            let s = app?.songsById[row.id]
+            return SetlistTrack(songId: row.id, artist: row.artist, name: row.title,
+                                bpm: s?.bpm, camelot: s?.camelot,
+                                lengthMs: row.lengthMs ?? s?.length,
+                                source: .explicit,
+                                repeatCount: CollectionMembership.storedRepeat(row.repeatCount ?? 1))
+        }
+        let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
+        let set = Setlist(id: nowPlayingSetlistId, playlistId: nowPlayingPlaylistId,
+                          name: name ?? "Now Playing", seed: "now-playing",
+                          generatedAt: now, totalMs: totalMs, tracks: tracks)
+        setlists.append(set)
+        save()
+        return set
+    }
+
     /// ▶ Play a playlist into the reusable Now Playing setlist (literal resolved order).
     /// Resolves via `playableIds` — studio rows are PLAYABLE and belong in Now Playing
     /// (spec §8), unlike the rip/CSV-facing `songIds(forPlaylist:)`.
@@ -922,7 +962,7 @@ final class CollectionsStore {
     func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPlaylist: playlistId),
                 name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
-                repeats: playlistRepeatMap(playlistId))
+                repeats: playlistRepeatMap(playlistId), originId: playlistId)
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
     /// `playableIds` for the same reason as the playlist variant above.
@@ -930,7 +970,7 @@ final class CollectionsStore {
     func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPocket: pocketId),
                 name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
-                repeats: pocket(pocketId)?.songRepeats ?? [:])
+                repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId)
     }
 
     /// Best-effort songId → repeat-count map for a playlist's `.song` nodes (recursing into
@@ -966,6 +1006,24 @@ final class CollectionsStore {
         if let p = playlist(id) { return (.playlist, p.name) }
         if let pk = pocket(id) { return (.pocket, pk.name) }
         return (.setlist, nil)
+    }
+
+    /// Resolve the NAVIGABLE origin collection for a sequencer run tagged with
+    /// `sourceSetlistId` — the Up Next header's collection button target. For the reserved
+    /// Now Playing setlist the origin is whatever `playNow` recorded (playlist/pocket/
+    /// album/artist + its id); a REAL setlist is its own origin. nil (⇒ button hidden)
+    /// for browser singles and origins that no longer resolve.
+    func originCollection(forSourceSetlistId id: String?) -> (kind: PlayHistoryStore.PlaySource, id: String)? {
+        guard let id else { return nil }
+        if id == nowPlayingSetlistId {
+            guard let src = nowPlayingSource, let oid = nowPlayingOriginId else { return nil }
+            return (src, oid)
+        }
+        if setlist(id) != nil { return (.setlist, id) }
+        // Defensive twins of historyContext's fallbacks.
+        if playlist(id) != nil { return (.playlist, id) }
+        if pocket(id) != nil { return (.pocket, id) }
+        return nil
     }
 
     func deleteSetlist(_ id: String) { setlists.removeAll { $0.id == id }; save() }
@@ -1273,6 +1331,21 @@ final class CollectionsStore {
                                       playlists: playlists, setlists: setlists,
                                       folders: folders, lastAddTarget: lastAddTarget)
         if let data = try? CollectionsCodec.encode(doc) { try? data.write(to: fileURL, options: .atomic) }
+        onChange?()
+    }
+
+    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
+    /// (whole-document LWW). Mirrors init's decode + stale Now Playing cleanup, then fires
+    /// `onChange` so Spotlight/Siri donations reindex against the pulled collections.
+    func reloadFromDisk() {
+        guard let data = try? Data(contentsOf: fileURL),
+              let doc = try? CollectionsCodec.decode(data) else { return }
+        pockets = doc.pockets
+        playlists = doc.playlists
+        setlists = doc.setlists
+        folders = doc.folders
+        lastAddTarget = doc.lastAddTarget
+        setlists.removeAll { $0.id == nowPlayingSetlistId || $0.playlistId == nowPlayingPlaylistId }
         onChange?()
     }
 }

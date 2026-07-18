@@ -54,6 +54,9 @@ final class MixSessionStore: MixSessionRecorder {
     @ObservationIgnored private var resumePendingReanchor = false   // resumed non-empty session awaiting rebase
 
     @ObservationIgnored private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
     @ObservationIgnored private let writer = MixSessionWriter()
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var saveVersion = 0
@@ -414,6 +417,32 @@ final class MixSessionStore: MixSessionRecorder {
             guard !Task.isCancelled else { return }
             self?.saveNow()
         }
+    }
+
+    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
+    /// (whole-document LWW). Mirrors init's resume logic — the pass runs at launch /
+    /// foreground, when the pulled current session should resume exactly as init would
+    /// have. Guarded: an actively-recording session is never clobbered mid-take (the
+    /// local file would be newer than the cloud copy in that case anyway).
+    func reloadFromDisk() {
+        guard !hasActivity || recEvents.isEmpty else { return }
+        guard let data = try? Data(contentsOf: fileURL),
+              let doc = try? JSONDecoder().decode(MixSessionsDocument.self, from: data) else { return }
+        sessions = doc.sessions
+        counter = doc.counter
+        if let cid = doc.currentId, let cur = sessions.first(where: { $0.id == cid }) {
+            currentId = cur.id
+            currentName = cur.name
+            recEvents = cur.events
+            recPlayed = cur.playedSongIds
+            recStartedAt = cur.startedAt
+            recSeq = cur.events.count
+            hasActivity = !cur.events.isEmpty
+            resumePendingReanchor = hasActivity
+        } else if currentId.isEmpty || !sessions.contains(where: { $0.id == currentId }) {
+            startNewSession(save: false)
+        }
+        playedRevision &+= 1
     }
 
     /// Immediate, off-main, versioned write (cancels any pending debounce).

@@ -90,6 +90,9 @@ final class PlayHistoryStore {
     private(set) var revision = 0
 
     @ObservationIgnored private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
     /// O(1) dedupe + last-played reads: songId → most-recent playedAt. Rebuilt from `events`.
     @ObservationIgnored private var lastPlayedIndex: [String: Double] = [:]
     /// songId → number of events (History's group-by-song count). Rebuilt from `events`.
@@ -255,6 +258,18 @@ final class PlayHistoryStore {
     private func save() {
         let doc = Document(installId: installId, events: events)
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }
+    }
+
+    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
+    /// (whole-document LWW). Adopts the cloud doc's installId too — post-pull, this
+    /// device continues the pulled timeline.
+    func reloadFromDisk() {
+        guard let data = try? Data(contentsOf: fileURL),
+              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
+        events = doc.events
+        installId = doc.installId
+        rebuildIndexes()
+        revision &+= 1
     }
 }
 

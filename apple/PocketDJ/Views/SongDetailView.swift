@@ -6,9 +6,18 @@ struct SongDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(LyricsStore.self) private var lyricsStore: LyricsStore?
     @Environment(RipsStore.self) private var rips
+    @Environment(StreamingStore.self) private var streaming
+    @Environment(IntentServices.self) private var intents
+    @Environment(\.dismiss) private var dismiss
     let song: IndexSong
     @State private var showEdit = false
     @State private var showAdd = false
+    /// Apple Music LIBRARY affordance (the platter long-press ask): resolved
+    /// membership for AM-backed tracks → "in your library" / ＋ Add / open-in-Music.
+    @State private var libraryResolution: AppleMusicResolution?
+    @State private var addingToLibrary = false
+    @State private var addedToLibrary = false
+    @State private var libraryError: String?
     /// Lazily-loaded, on-disk-cached lyrics (nil until loaded / when absent).
     @State private var lyrics: String?
     /// Stem-audition panel (SongDetail-ONLY): toggled by the stem glyph, owns the synced
@@ -35,6 +44,7 @@ struct SongDetailView: View {
                 if let kw = current.sentimentKeywords, !kw.isEmpty { sentiment(kw) }
                 if let lyrics, !lyrics.isEmpty { lyricsSection(lyrics) }
                 playback
+                appleMusicLibrary
             }
             .padding(20)
             .frame(maxWidth: 760, alignment: .leading)
@@ -62,19 +72,98 @@ struct SongDetailView: View {
         .task(id: current.id) { await rips.refreshManifest() }
         // Tear down stem playback when leaving the detail screen.
         .onDisappear { stemPlayer.stop(); showStems = false }
+        // Apple Music library membership — storeID when the catalog (or an amrec_ ad-hoc
+        // id) knows it, else a title/artist catalog search. Provider-unavailable (offline,
+        // unit/UI fixtures) simply resolves nothing and the section stays hidden.
+        .task(id: current.id) {
+            libraryResolution = nil; addedToLibrary = false; libraryError = nil
+            guard streaming.appleMusicProvider?.isAvailable == true,
+                  let contributor = streaming.providers.libraryContributors.first else { return }
+            let storeID = current.appleMusicId ?? SongLibraryAffordance.adHocStoreID(current.id)
+            libraryResolution = await contributor.resolveForLibrary(
+                storeID: storeID, title: current.name, artist: current.artist)
+        }
+    }
+
+    /// The library row: membership state or the ＋ Add affordance (macOS, where MusicKit
+    /// can't add, deep-links to Music instead — the recognizer flow's rule).
+    @ViewBuilder private var appleMusicLibrary: some View {
+        let affordance = SongLibraryAffordance.decide(
+            resolution: libraryResolution,
+            canAdd: streaming.providers.libraryContributors.first?.canAddToLibrary ?? false)
+        if affordance != .none {
+            Divider().overlay(Theme.border)
+            HStack(spacing: 10) {
+                if addedToLibrary || affordance == .inLibrary {
+                    Label("In your Apple Music library", systemImage: "checkmark.circle")
+                        .font(.callout).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("song-am-in-library")
+                } else if case .add(let storeID) = affordance {
+                    Button {
+                        addToLibrary(storeID: storeID)
+                    } label: {
+                        if addingToLibrary { ProgressView().controlSize(.small) }
+                        else { Label("Add to Apple Music Library", systemImage: "plus.circle") }
+                    }
+                    .disabled(addingToLibrary)
+                    .accessibilityIdentifier("song-add-to-am-library")
+                } else if case .openLink(let url) = affordance {
+                    Link(destination: url) {
+                        Label("Add in Apple Music…", systemImage: "arrow.up.forward.app")
+                    }
+                    .accessibilityIdentifier("song-open-in-am")
+                }
+                if let libraryError {
+                    Text(libraryError).font(.caption).foregroundStyle(Theme.danger)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private func addToLibrary(storeID: String) {
+        guard let contributor = streaming.providers.libraryContributors.first else { return }
+        addingToLibrary = true; libraryError = nil
+        Task {
+            do {
+                try await contributor.addSongToLibrary(storeID: storeID)
+                addedToLibrary = true
+            } catch {
+                libraryError = "Couldn't add: \(error.localizedDescription)"
+            }
+            addingToLibrary = false
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(current.name).font(.title2.bold()).foregroundStyle(Theme.fg)
-            Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
+            // Artist + album are HOTLINKS into the Browser (Levi 2026-07-18). They route
+            // via IntentRoute (not NavigationLink) so they work from EVERY presentation —
+            // the browser push, the platter long-press sheet, the mix-session sheet —
+            // where an ad-hoc NavigationStack has no destinations registered. dismiss()
+            // closes a sheet first (a no-op-ish pop in the pushed context, whose stack
+            // the route consumption resets anyway).
+            Button {
+                let artist = current.artist
+                dismiss()
+                intents.pendingRoute = .artist(artist)
+            } label: {
+                Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("artist-hotlink")
             KeyChip(key: current.key, camelot: current.camelot)
             if let src = app.source(ofSong: current.id) {
                 Tag(text: src, color: Theme.fgDim)
                     .accessibilityIdentifier("source-tag")
             }
             if let album {
-                NavigationLink(value: album) {
+                Button {
+                    let id = album.id
+                    dismiss()
+                    intents.pendingRoute = .album(id)
+                } label: {
                     Label(album.name, systemImage: "rectangle.stack")
                         .font(.callout)
                 }
@@ -176,5 +265,31 @@ struct FlowTags: View {
                   alignment: .leading, spacing: 6) {
             ForEach(tags, id: \.self) { Tag(text: $0, color: Theme.accent2) }
         }
+    }
+}
+
+/// Pure decision for the Apple Music LIBRARY row (unit-tested) — the recognizer
+/// reducer's shape, minus album deep-links: membership wins, then ＋ Add where the
+/// platform can write the library, then the Music deep link (macOS), else nothing.
+enum SongLibraryAffordance: Equatable {
+    case none
+    case inLibrary
+    case add(storeID: String)
+    case openLink(URL)
+
+    static func decide(resolution: AppleMusicResolution?, canAdd: Bool) -> SongLibraryAffordance {
+        guard let r = resolution else { return .none }
+        if r.inLibrary { return .inLibrary }
+        if canAdd { return .add(storeID: r.songStoreID) }
+        if let url = r.songURL { return .openLink(url) }
+        return .none
+    }
+
+    /// `amrec_<storeId>` ad-hoc rip ids carry their Apple Music store id in the name
+    /// (the recognizer/Discover convention) — recover it for membership resolution.
+    static func adHocStoreID(_ songId: String) -> String? {
+        guard songId.hasPrefix("amrec_") else { return nil }
+        let raw = String(songId.dropFirst("amrec_".count))
+        return !raw.isEmpty && raw.allSatisfy(\.isNumber) ? raw : nil
     }
 }

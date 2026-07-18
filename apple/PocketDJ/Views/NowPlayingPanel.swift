@@ -24,6 +24,8 @@ struct NowPlayingPanel: View {
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
     @Environment(BurnStore.self) private var burns
+    @Environment(CollectionsStore.self) private var collections
+    @Environment(IntentServices.self) private var intents
     #if os(iOS)
     // Size classes are iOS-only (unavailable on plain macOS) — guard the env read.
     @Environment(\.verticalSizeClass) private var vSize
@@ -309,8 +311,34 @@ struct NowPlayingPanel: View {
         }
     }
 
+    /// The header's SETLIST button: a run tagged to a still-existing setlist routes
+    /// straight to it; otherwise (the reserved Now Playing run — its doc is dropped at
+    /// every launch — or an unlinked queue) the document is re-materialized from the
+    /// live queue and then opened. Edits there drive the live queue (the uid-verified
+    /// Now Playing edit path), so this is the full-power view of the running session.
+    private func openSetlistView() {
+        if let sid = sequencer.sourceSetlistId, collections.setlist(sid) != nil {
+            intents.pendingRoute = .setlist(sid)
+            return
+        }
+        let rows = sequencer.queue.map {
+            (id: $0.id, title: $0.title, artist: $0.artist,
+             lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+        }
+        if let set = collections.materializeNowPlayingSetlist(
+            name: sequencer.capturedHistoryContext?.name, queue: rows) {
+            intents.pendingRoute = .setlist(set.id)
+        }
+    }
+
     private func openCurrentSongDetail() {
-        detailSong = currentItem.flatMap { app.songsById[$0.id] }
+        guard let item = currentItem else { return }
+        // Catalog songs open their full metadata; anything else — a Discover amrec_
+        // rip, a jukebox Apple Music insert, a studio row — still opens, synthesized
+        // from the queue row, so the long-press always answers (and the detail's
+        // Apple Music library section can offer ＋ Add for AM-backed tracks).
+        detailSong = app.songsById[item.id]
+            ?? IndexSong.minimal(id: item.id, name: item.title, artist: item.artist)
     }
 
     /// iPhone closes the detail with a nav-bar Back; iPad + macOS get the ✕ overlay.
@@ -381,6 +409,27 @@ struct NowPlayingPanel: View {
             HStack {
                 Text("Up next (\(sequencer.upcoming.count))")
                     .font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                // The collection button — re-opens the collection this run is playing from
+                // (its editable setlist/playlist/pocket view). The ghost-state fix: after a
+                // durable-session restore the queue was only editable from this widget; the
+                // origin now rides the snapshot, so the richer view is one tap away.
+                // ONE pill (Levi 2026-07-18; replaced the origin + setlist icon pair):
+                // "Collection" opens the SETLIST of this playback session — the richer
+                // editable view of the exact queue. A restored session's Now Playing doc
+                // was dropped at launch, so the tap re-materializes it from the live
+                // queue first; its id matches the run's sourceSetlistId, so reorder/
+                // add/remove there drive the live queue and ride the durable session.
+                Button { openSetlistView() } label: {
+                    Text("Collection")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 10).padding(.vertical, 3)
+                        .background(Capsule().fill(Theme.bgOverlay))
+                        .overlay(Capsule().stroke(Theme.border))
+                }
+                .buttonStyle(.borderless)
+                .help("Open this session's setlist")
+                .accessibilityIdentifier("np-open-setlist")
                 Spacer()
                 #if os(iOS)
                 // .onMove drag handles need edit mode on iOS (macOS drags directly).

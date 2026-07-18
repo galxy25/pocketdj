@@ -50,11 +50,15 @@ final class RipsStore {
     enum StemPhase: String, Decodable { case queued, ripping, stemming, ready, error, ineligible }
 
     /// The `/stemify` + `/jobs/<id>` response shape for a stem job (extra fields ignored).
+    /// `stems`/`stemFormat` ride only CUSTOM (uploaded-audio) jobs, whose S3 keys have no
+    /// manifest entry to live in (see `stemifyCustom`).
     struct StemJob: Decodable, Equatable {
         var jobId: String? = nil
         var songId: String? = nil
         var phase: StemPhase
         var error: String? = nil
+        var stems: [String: String]? = nil
+        var stemFormat: String? = nil
     }
 
     /// One public-S3 manifest entry (mirrors the PWA's `ManifestEntry`). Only the
@@ -409,7 +413,10 @@ final class RipsStore {
                 guard let v = try? await self.fetchJob(jobId, base: base, token: tok) else { continue }
                 self.jobs[songId] = v
                 if v.phase == .ready, v.url != nil { await self.refreshManifest(); return }
-                if v.phase == .error { return }
+                // Do NOT stop on .error: the server's auto-heal re-queues failed
+                // captures (retry N/6 with backoff), flipping error → queued — a poll
+                // that bailed here left the row stuck on ＋ Add while the server was
+                // still working. The 1-hour cap above is the terminal condition.
             }
         }
     }
@@ -635,6 +642,113 @@ final class RipsStore {
             return view.phase == .queued ? .queued : .inflight
         } catch {
             return .failed
+        }
+    }
+
+    // MARK: Discover — full-Apple-Music-catalog search (the rip server's /search proxy)
+
+    /// One `GET /search` result: an Apple Music catalog hit the rip server can capture on
+    /// demand. `songId` is the ad-hoc rip id (`amrec_<storeId>`); `ripped`/`url` reflect
+    /// the public rips manifest at search time (the capture may already exist).
+    struct DiscoverHit: Decodable, Identifiable, Equatable {
+        var appleMusicId: String
+        var title: String
+        var artist: String
+        var album: String? = nil
+        var artworkUrl: String? = nil
+        var durationMs: Int? = nil
+        var songId: String
+        var ripped: Bool? = nil
+        var url: String? = nil
+        var id: String { songId }
+    }
+
+    /// The `/search` response envelope.
+    private struct DiscoverResponse: Decodable { var results: [DiscoverHit] }
+
+    /// Why the last Discover search/add failed (nil = healthy) — the Browse ▸ Discover
+    /// inline notice. Strings already name the Settings pane to fix (URL vs token).
+    private(set) var discoverError: String?
+
+    /// Search the ENTIRE Apple Music catalog via the rip server's `/search` proxy.
+    /// Returns [] on ANY failure, surfacing the reason via `discoverError` (a 401/403
+    /// points at Settings ▸ Rip server token) — Discover is a browse surface, so errors
+    /// inform rather than throw. An empty/whitespace query is a no-op.
+    func discoverSearch(_ query: String, limit: Int = 25) async -> [DiscoverHit] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { discoverError = nil; return [] }
+        guard hasServer else {
+            discoverError = "No rip server configured (Settings ▸ Rip server)."
+            return []
+        }
+        guard var comps = URLComponents(string: "\(serverUrl)/search") else {
+            discoverError = "Invalid rip server URL (Settings ▸ Rip server)."
+            return []
+        }
+        comps.queryItems = [URLQueryItem(name: "q", value: q),
+                            URLQueryItem(name: "limit", value: String(limit))]
+        guard let url = comps.url else {
+            discoverError = "Invalid rip server URL (Settings ▸ Rip server)."
+            return []
+        }
+        var req = URLRequest(url: url)
+        // Same short timeout as `ensureURL`'s POST: an unreachable Tailscale server must
+        // fail in seconds, not URLSession's 60 s default, so the notice appears promptly.
+        req.timeoutInterval = 12
+        applyAuth(&req, token: token)
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                discoverError = "Search failed."; return []
+            }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                discoverError = "Rip server rejected the request — check Settings ▸ Rip server token."
+                return []
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                discoverError = "Search failed (\(http.statusCode))."; return []
+            }
+            let hits = try JSONDecoder().decode(DiscoverResponse.self, from: data).results
+            discoverError = nil
+            return hits
+        } catch {
+            discoverError = "Rip server unreachable (Settings ▸ Rip server)."
+            return []
+        }
+    }
+
+    /// "＋ Add" for a Discover hit: enqueue the server's ad-hoc `amrec_` capture via the
+    /// EXISTING metadata-carrying `/rip` path (`requestRip`), then follow the job with the
+    /// same background poll single-song rips use (`pollToReady`) so the manifest — and the
+    /// row — flips to ripped when the capture lands. In-flight state is readable per song
+    /// via `jobs[hit.songId]?.phase`. Never throws; failures land in `discoverError`.
+    ///
+    /// `library`: the iMac captures by PLAYING the track in Music.app, and a track
+    /// outside the DJ's Apple Music library usually can't produce audio there (the
+    /// recognizer flow's lesson — its ＋ adds to the library BEFORE ripping). When this
+    /// device can write the library, add first: the library sync reaches the iMac in
+    /// time for one of the server's capture retries.
+    func discoverAdd(_ hit: DiscoverHit, library: (any MusicLibraryContributor)? = nil) async {
+        if let library, library.canAddToLibrary {
+            try? await library.addSongToLibrary(storeID: hit.appleMusicId)
+        }
+        await discoverAddRip(hit)
+    }
+
+    /// The rip-request half of `discoverAdd` (split so tests can drive it without a
+    /// library contributor).
+    private func discoverAddRip(_ hit: DiscoverHit) async {
+        let outcome = await requestRip(songId: hit.songId, title: hit.title, artist: hit.artist,
+                                       appleMusicId: hit.appleMusicId, lengthMs: hit.durationMs)
+        switch outcome {
+        case .ready:
+            await refreshManifest()
+        case .queued, .inflight:
+            if let jobId = jobs[hit.songId]?.jobId { pollToReady(songId: hit.songId, jobId: jobId) }
+        case .noServer:
+            discoverError = "No rip server configured (Settings ▸ Rip server)."
+        case .unknown, .failed:
+            discoverError = "Add failed — the rip server didn’t accept the request."
         }
     }
 
@@ -879,6 +993,53 @@ final class RipsStore {
             default: break   // queued / ripping / stemming — keep polling
             }
         }
+    }
+
+    /// Stem DEVICE-LOCAL audio the catalog has never seen (the Demuxer's imported files and
+    /// performance media): STREAM the file to the rip server's `/stemify-custom`, await the
+    /// Demucs job, and return the four public-S3 stem URLs. Deliberately NOT behind the
+    /// studio-id fence — that fence stops /stemify's rip chain (live-searching a garbage
+    /// title); here the audio is uploaded, so studio ids are exactly the intended clients.
+    /// Returns nil on any failure (no server / upload rejected / job error / timeout).
+    func stemifyCustom(id: String, fileURL: URL) async -> [String: URL]? {
+        guard hasServer else { return nil }
+        let base = serverUrl, tok = token
+        var comps = URLComponents(string: "\(base)/stemify-custom")
+        comps?.queryItems = [URLQueryItem(name: "id", value: id),
+                             URLQueryItem(name: "ext", value: fileURL.pathExtension.lowercased())]
+        guard let url = comps?.url else { return nil }
+        var post = URLRequest(url: url)
+        post.httpMethod = "POST"
+        post.setValue("application/octet-stream", forHTTPHeaderField: "content-type")
+        applyAuth(&post, token: tok)
+        guard let (data, response) = try? await session.upload(for: post, fromFile: fileURL),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let view = try? JSONDecoder().decode(StemJob.self, from: data) else { return nil }
+        if view.phase == .ready, let keys = view.stems { return Self.urls(fromKeys: keys, ripsBase: ripsBase) }
+        if view.phase == .error || view.phase == .ineligible { return nil }
+        guard let jobId = view.jobId else { return nil }
+        // Poll to a terminal phase (the pollStemReady cadence; custom jobs skip the manifest).
+        let deadline = Date().addingTimeInterval(4 * 60 * 60)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            var req = URLRequest(url: URL(string: "\(base)/jobs/\(jobId)")!)
+            applyAuth(&req, token: tok)
+            guard let (d, r) = try? await session.data(for: req),
+                  let h = r as? HTTPURLResponse, (200..<300).contains(h.statusCode),
+                  let v = try? JSONDecoder().decode(StemJob.self, from: d) else { continue }
+            switch v.phase {
+            case .ready:
+                guard let keys = v.stems else { return nil }
+                return Self.urls(fromKeys: keys, ripsBase: ripsBase)
+            case .error, .ineligible: return nil
+            default: break   // queued / stemming — keep polling
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func urls(fromKeys keys: [String: String], ripsBase: URL) -> [String: URL] {
+        keys.mapValues { ripsBase.appendingPathComponent($0) }
     }
 
     /// One song's outcome from a batch Stemify (server per-song result).
