@@ -19,6 +19,7 @@ struct RootView: View {
     @Environment(StudioMicRecorder.self) private var studioMic
     @Environment(PlayHistoryStore.self) private var playHistory
     @Environment(IntentServices.self) private var intents
+    @Environment(CloudSyncService.self) private var cloudSync
     // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
     // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
     // button so it self-hides exactly where ⌘N does (see NewWindowCommands in PocketDJApp).
@@ -139,6 +140,12 @@ struct RootView: View {
             studioMic.recoverOrphans()
             // History demo seed (PDJ_SEED_HISTORY) — populate the timeline for UI tests / demos.
             playHistory.seedDemoIfRequested()
+            // iCloud session sync: pull any NEWER cloud session documents BEFORE the two
+            // durable-session restores below read their files — a fresh device (a beta
+            // tester's second install) restores the cloud session, not an empty one.
+            // Deadline-bounded inside (8 s): a slow/absent network can never hang launch;
+            // a late pull still lands for next launch. No-op when disabled / no account.
+            await cloudSync.syncAtLaunch()
             // Durable playback session: rehydrate the Now Playing deck from the last run's
             // snapshot — HELD (never auto-plays; the first ▶ resumes at the saved position).
             // Self-contained (title/artist ride the snapshot), so it renders before the

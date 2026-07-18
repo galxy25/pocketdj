@@ -20,8 +20,14 @@ enum Config {
     /// Public S3 rips bucket: `rips/manifest.json` + `rips/<songId>.mp3`.
     static let ripsBase = URL(string: "https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com")!
 
-    /// iMac rip server exposed over Tailscale (rip-on-demand + live HLS). Tailnet-only.
-    static let ripServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net")!
+    /// iMac rip server (rip-on-demand + live HLS + Discover search). PUBLIC since the
+    /// beta-distribution promotion: Tailscale Funnel serves it on HTTPS port 10000
+    /// (scripts/setup-rip-funnel.sh), so beta testers off the Tailnet reach it too — with
+    /// a mandatory bearer token (Settings ▸ Rip server ▸ token; RIP_TOKEN user tier,
+    /// RIP_ADMIN_TOKEN admin tier). Port note: 443 stays the Tailnet-only `tailscale
+    /// serve` mount (Levi's original path) and 8443 is the jukebox Funnel — Funnel is
+    /// per-PORT, so the rip server rides the third HTTPS port.
+    static let ripServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net:10000")!
 
     /// Jukebox Hero session broker (scripts/jukebox-server.mjs). Unlike the rip server
     /// this must be PUBLICLY reachable — guests submit requests from their own phones —

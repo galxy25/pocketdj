@@ -22,5 +22,17 @@
     <array>
       <string>group.com.levi.pocketdj</string>
     </array>
+    <!-- CloudKit (user profiles + session-data sync, CloudSyncService). The ICLOUD
+         capability is enabled on the App ID (done via the ASC API); the container is
+         registered by Xcode automatic signing (-allowProvisioningUpdates) on first
+         device/archive build. Same container id in all three app entitlement files. -->
+    <key>com.apple.developer.icloud-services</key>
+    <array>
+      <string>CloudKit</string>
+    </array>
+    <key>com.apple.developer.icloud-container-identifiers</key>
+    <array>
+      <string>iCloud.com.levi.pocketdj</string>
+    </array>
 </dict>
 </plist>

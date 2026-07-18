@@ -14,6 +14,8 @@ struct SettingsView: View {
     @Environment(MixEngine.self) private var mix
     // Not private: read by the streamingSection in SettingsView+Streaming.swift.
     @Environment(StreamingStore.self) var streaming
+    @Environment(ProfileStore.self) private var profile
+    @Environment(CloudSyncService.self) private var cloudSync
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
     @State private var jukeboxTesting = false
@@ -180,20 +182,60 @@ struct SettingsView: View {
 
     // MARK: Collections (import a pocket / playlist export)
 
-    // MARK: PocketDJ name (the performer artist for studio items)
+    // MARK: Profile (identity + iCloud session sync)
 
     private var identitySection: some View {
         Section {
-            TextField("Your PocketDJ name", text: $settings.pocketDJName)
+            // Edits flow through the PROFILE (the synced identity); setName persists +
+            // mirrors into settings.pocketDJName / collections.performerName, so every
+            // existing consumer (studio artist, jukebox DJ line) sees it unchanged.
+            TextField("Your PocketDJ name", text: Binding(
+                get: { profile.name },
+                set: { profile.setName($0) }))
                 .pocketField()
                 .accessibilityIdentifier("settings-pocketdj-name")
-                // Keep the live snapshot artist in sync so the next Play stamps the new name.
-                .onChange(of: settings.pocketDJName) { _, new in collections.performerName = new }
+            Toggle("Sync with iCloud", isOn: Binding(
+                get: { settings.cloudSyncEnabled },
+                set: { on in
+                    settings.cloudSyncEnabled = on
+                    settings.persist()
+                    if on { Task { await cloudSync.syncNow() } }
+                }))
+                .accessibilityIdentifier("profile-cloud-sync-toggle")
+            if settings.cloudSyncEnabled {
+                HStack {
+                    Button {
+                        Task { await cloudSync.syncNow() }
+                    } label: {
+                        if cloudSync.syncing {
+                            Label("Syncing…", systemImage: "arrow.triangle.2.circlepath")
+                        } else {
+                            Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                    .disabled(cloudSync.syncing)
+                    .accessibilityIdentifier("profile-sync-now")
+                    Spacer()
+                    Text(syncStatusLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("profile-sync-status")
+                }
+            }
         } header: {
-            Text("PocketDJ name")
+            Text("Profile")
         } footer: {
-            Text("Shown as the artist on your samples, loops, sequences, and instrumentals — in collections and Now Playing — and written as the artist tag when they’re burned. Leave blank to show “Studio”.")
+            Text("Your PocketDJ name shows as the artist on your samples, loops, sequences, and instrumentals (leave blank for “Studio”). iCloud sync keeps your profile, collections, history, and playback sessions in step across your devices — last writer wins per document.")
         }
+    }
+
+    private var syncStatusLine: String {
+        if cloudSync.accountAvailable == false { return "iCloud unavailable" }
+        if let err = cloudSync.lastError { return err }
+        guard let at = cloudSync.lastSyncAt else { return "Not synced yet" }
+        let time = at.formatted(date: .omitted, time: .shortened)
+        if let summary = cloudSync.lastSummary { return "\(summary) · \(time)" }
+        return time
     }
 
     private var collectionsSection: some View {

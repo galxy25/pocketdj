@@ -24,6 +24,9 @@ final class CollectionsStore {
     /// ⇒ treat as a generic set list.
     private(set) var nowPlayingSource: PlayHistoryStore.PlaySource?
     private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
 
     /// The catalog the realize engine resolves ids against (wired at launch, like
     /// AppModel.settings/edits). Weak so the store never retains the app graph.
@@ -1273,6 +1276,21 @@ final class CollectionsStore {
                                       playlists: playlists, setlists: setlists,
                                       folders: folders, lastAddTarget: lastAddTarget)
         if let data = try? CollectionsCodec.encode(doc) { try? data.write(to: fileURL, options: .atomic) }
+        onChange?()
+    }
+
+    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
+    /// (whole-document LWW). Mirrors init's decode + stale Now Playing cleanup, then fires
+    /// `onChange` so Spotlight/Siri donations reindex against the pulled collections.
+    func reloadFromDisk() {
+        guard let data = try? Data(contentsOf: fileURL),
+              let doc = try? CollectionsCodec.decode(data) else { return }
+        pockets = doc.pockets
+        playlists = doc.playlists
+        setlists = doc.setlists
+        folders = doc.folders
+        lastAddTarget = doc.lastAddTarget
+        setlists.removeAll { $0.id == nowPlayingSetlistId || $0.playlistId == nowPlayingPlaylistId }
         onChange?()
     }
 }

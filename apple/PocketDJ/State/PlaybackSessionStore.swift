@@ -78,6 +78,9 @@ final class PlaybackSessionStore {
     var positionWriteInterval: TimeInterval = 5
 
     private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
     private let writer = PlaybackSessionWriter()
     /// The in-memory truth of the current run's snapshot (nil = no active session).
     private var current: Snapshot?

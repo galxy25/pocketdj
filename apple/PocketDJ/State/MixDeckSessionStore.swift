@@ -135,6 +135,9 @@ final class MixDeckSessionStore {
     var controlDebounceInterval: TimeInterval = 1
 
     private let fileURL: URL
+    /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
+    /// store was constructed with — never re-derives it, so fixture seams stay intact).
+    var syncFileURL: URL { fileURL }
     private let writer = MixDeckSessionWriter()
     /// The in-memory truth of the current mix's snapshot (nil = no active mix).
     private var current: Snapshot?

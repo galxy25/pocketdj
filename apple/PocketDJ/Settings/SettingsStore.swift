@@ -166,6 +166,10 @@ final class SettingsStore {
     /// `CollectionsStore.syncConvertedCollections`. (Field name predates playlist support —
     /// kept for the persisted-blob key.)
     var syncConvertedPockets: Bool
+    /// iCloud sync of profile + session data (CloudSyncService) — ON by default; the
+    /// service still degrades to a no-op without a signed-in iCloud account. The toggle
+    /// lives in Settings ▸ Profile.
+    var cloudSyncEnabled: Bool
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -206,6 +210,7 @@ final class SettingsStore {
         self.studioClickEnabled = data.studioClickEnabled ?? true
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
         self.syncConvertedPockets = data.syncConvertedPockets ?? true
+        self.cloudSyncEnabled = data.cloudSyncEnabled ?? true
 
         // UI-test seam: pin the Mix deck layout deterministically, independent of the persisted
         // value, so a test can exercise a specific arrangement (or hold the classic side-by-side
@@ -311,7 +316,8 @@ final class SettingsStore {
             studioTab: studioTab,
             studioClickEnabled: studioClickEnabled,
             studioCountInEnabled: studioCountInEnabled,
-            syncConvertedPockets: syncConvertedPockets)
+            syncConvertedPockets: syncConvertedPockets,
+            cloudSyncEnabled: cloudSyncEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -357,6 +363,7 @@ final class SettingsStore {
         studioClickEnabled = d.studioClickEnabled ?? true
         studioCountInEnabled = d.studioCountInEnabled ?? true
         syncConvertedPockets = d.syncConvertedPockets ?? true
+        cloudSyncEnabled = d.cloudSyncEnabled ?? true
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -436,6 +443,9 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced to TRUE at the read sites — converted
     /// pockets sync with their source unless turned off).
     var syncConvertedPockets: Bool?
+    /// Optional so older blobs still decode (coalesced to TRUE at the read sites — iCloud
+    /// profile/session sync is on unless turned off in Settings ▸ Profile).
+    var cloudSyncEnabled: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -470,5 +480,6 @@ struct SettingsData: Codable {
         studioTab: nil,
         studioClickEnabled: nil,
         studioCountInEnabled: nil,
-        syncConvertedPockets: nil)
+        syncConvertedPockets: nil,
+        cloudSyncEnabled: nil)
 }
