@@ -356,26 +356,6 @@ struct NowPlayingPanel: View {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// The Up Next header's collection-button target — the running run's CAPTURED origin
-    /// (persisted in the durable snapshot, so restores keep it), re-validated against the
-    /// live stores at render time: a deleted collection hides the button rather than
-    /// dead-ending the tap.
-    private var originRoute: IntentRoute? {
-        guard let origin = sequencer.capturedOrigin else { return nil }
-        switch origin.kind {
-        case .playlist:
-            if collections.playlist(origin.id) != nil { return .playlist(origin.id) }
-            // A read-only source playlist (e.g. Apple Music) shuffled in place.
-            if app.indexPlaylists.contains(where: { $0.id == origin.id }) { return .sourcePlaylist(origin.id) }
-            return nil
-        case .pocket:  return collections.pocket(origin.id) != nil ? .pocket(origin.id) : nil
-        case .setlist: return collections.setlist(origin.id) != nil ? .setlist(origin.id) : nil
-        case .album:   return app.albumsById[origin.id] != nil ? .album(origin.id) : nil
-        case .artist:  return .artist(origin.id)
-        case .browser, .mix: return nil
-        }
-    }
-
     @ViewBuilder private var upNextSection: some View {
         // Snapshot ONCE per body: rows are identified by Item.uid (a song can repeat
         // in a set, and the queue can advance underneath an in-flight tap — a stale
@@ -433,27 +413,22 @@ struct NowPlayingPanel: View {
                 // (its editable setlist/playlist/pocket view). The ghost-state fix: after a
                 // durable-session restore the queue was only editable from this widget; the
                 // origin now rides the snapshot, so the richer view is one tap away.
-                if let route = originRoute {
-                    Button { intents.pendingRoute = route } label: {
-                        Image(systemName: "music.note.list")
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.accent)
-                    .help("Open the collection this session is playing from")
-                    .accessibilityIdentifier("np-open-collection")
-                }
-                // The SETLIST version of this run — the richer editable view of the
-                // exact queue (vs the origin button's source collection). A restored
-                // session's Now Playing doc was dropped at launch, so the tap
-                // re-materializes it from the live queue first.
+                // ONE pill (Levi 2026-07-18; replaced the origin + setlist icon pair):
+                // "Collection" opens the SETLIST of this playback session — the richer
+                // editable view of the exact queue. A restored session's Now Playing doc
+                // was dropped at launch, so the tap re-materializes it from the live
+                // queue first; its id matches the run's sourceSetlistId, so reorder/
+                // add/remove there drive the live queue and ride the durable session.
                 Button { openSetlistView() } label: {
-                    Image(systemName: "list.bullet.rectangle")
+                    Text("Collection")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 10).padding(.vertical, 3)
+                        .background(Capsule().fill(Theme.bgOverlay))
+                        .overlay(Capsule().stroke(Theme.border))
                 }
-                .buttonStyle(.plain)
-                .font(.caption2)
-                .foregroundStyle(Theme.accent)
-                .help("Open this session as a setlist")
+                .buttonStyle(.borderless)
+                .help("Open this session's setlist")
                 .accessibilityIdentifier("np-open-setlist")
                 Spacer()
                 #if os(iOS)
