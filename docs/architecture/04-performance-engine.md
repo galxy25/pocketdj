@@ -970,6 +970,80 @@ scan is hardened to run at launch from **any** tab, retry a user root that faile
 unreadable stubs, and never adopt the **in-flight** take (root-aware, so a same-named crash orphan in the
 *other* root is still recovered).
 
+### 7.13 Durable mix-deck sessions — the decks survive a force-quit (`MixDeckSessionStore`)
+
+**Why.** Everything above — the loaded decks, the mixer, the Auto-DJ queue with its jukebox
+inserts — was purely in-memory: a force-quit or a phone restart lost the whole board. Phase 2
+of durable playback sessions (phase 1 is the sequencer's, Ch. 5 §10.2) applies the same
+doctrine to the Mix engine: persist **in real time as state changes** (never at exit),
+rehydrate at launch **held** — audio never auto-plays.
+
+**Source of truth:**
+[`apple/PocketDJ/State/MixDeckSessionStore.swift`](../../apple/PocketDJ/State/MixDeckSessionStore.swift)
+(the store) + the "Durable mix-deck session" section of
+[`apple/PocketDJ/Mix/MixEngine.swift`](../../apple/PocketDJ/Mix/MixEngine.swift).
+
+- **The snapshot** — ONE overwrite-in-place file, Application Support
+  `pocketdj-mix-decks.json` (~KBs): `{ schemaVersion, deckA?, deckB?, crossfader, leadDeck?,
+  auto?, wasRunning, updatedAt }`. Each deck: `{ track { songId, title, artist, bpm, camelot,
+  key, albumId, lengthMs }, positionMs, volume, rate, pitch, 4× effect on/off + strength,
+  stemMode, stemMuted, stemVol }` — the track ref is exactly `MixEngine.load(songId:…)`'s
+  inputs (≙ `MixLoadable`), so a restore re-loads through the SAME path a user tap does
+  (BurnStore cut/analog resolution, the studio-item seam, grid hydration). `auto` is the
+  Auto-DJ machine: the queue in FINAL order (shuffle already applied; jukebox
+  `autoQueueInsert`s included), `livePos` / `nextToLoad` / `liveDeck`, `sourceLabel`,
+  lead/fade seconds, and the two glide flags. Writes ride the same off-main
+  versioned-watermark actor pattern as phase 1 (`MixDeckSessionWriter`) — a stale async write
+  can never clobber a newer one, including `clear()`'s delete.
+- **Deliberately NOT persisted:** recording state (`MixRecorder` §7.12 has its own
+  fragmented-file crash-orphan recovery); cue/PFL routing + cue volumes (transient monitoring
+  state — rehydrating a hard-panned house/cue split after a reboot would be a surprise); VU
+  meters / `truePlayhead` / render taps (runtime derivations); beat grids + cue points
+  (derivable — the burned `analysis-<id>.json` sidecars and the studio store re-hydrate them
+  through the normal load path); and **in-flight transition state** (pre-roll/fade/post-roll
+  wall clocks, `GlideContext`) — a kill mid-crossfade restores in the suspended idle state and
+  the existing Resume re-arms against live playback.
+- **Write triggers** (`persistMixDeckSession` in MixEngine): IMMEDIATE on structural changes —
+  `loadFile` (every deck load: manual, auto-DJ, studio item), `clearDeck`, `resetDeck`,
+  `setStemMode`, `toggleStemMute`, `setEffect`, `setLead`, `startAutoMix`, `endAutoLoop`,
+  `finishAutoCrossfade` (auto or Skip — the cursor moved), `autoQueueInsert` (a guest request
+  survives), `pauseAuto`/`resumeAuto`. DEBOUNCED (~1 s trailing edge — a drag's final value
+  always lands, 60 Hz never hits disk) on the slider surfaces — `setVolume`, `setCrossfader`,
+  `setRate`, `setPitch`, `setEffectStrength`, `setStemVolume`, `seek`. Playheads:
+  `persistMixPositions` from the ~10 Hz tick + every `setPlaying` transition →
+  `updatePosition(aMs:bMs:isRunning:)`, throttled ~5 s while running, immediate on a
+  run/pause transition. Scene `.background` → `flush()` (synchronous, next to the other three
+  flushes in `PocketDJApp`). CLEAR when the mix is genuinely over: both decks ejected with no
+  auto queue (the snapshot builder returns nil → `clear()`), which `ejectAll()` — the Settings
+  nuclear reset's hook — drives explicitly.
+- **Restore — two phases (the lazy-materialize rule).** (1) RootView's launch task calls
+  `restorePersistedMixIfIdle()`: lenient `load()` (decode failure / schema mismatch / empty →
+  nil), then the snapshot is **parked** on the engine (`pendingMixRestore`) — NO audio, no
+  graph build, no disk-in-init. Skipped when the engine is already in use (an intent-started
+  mix won the race) and under `PDJ_DISABLE_SESSION_RESTORE`. (2) The Mix tab's `.task` calls
+  `materializePendingRestoreIfNeeded()`: decks re-load through the normal `load` path and
+  `seek` to their saved playheads (CUED, `play()` never called), plain-value controls
+  re-apply, crossfader/lead restore, and the Auto-DJ machine rebuilds **SUSPENDED**
+  (`autoMixing = true, autoPaused = true`, end-clocks unarmed — the silent-fades invariant: it
+  must NOT self-resume; the banner's Resume / `resumeAuto` re-stamps the clocks from live
+  positions). Because macOS lands on Mix, MixView's `.task` can run BEFORE the launch task —
+  `materializeWanted` remembers the request and the launch task finishes the handoff.
+  Materialization detaches the session-log `recorder` (a restore is not a user gesture — no
+  phantom events in the replay corpus) and suppresses `updateSystemNowPlaying`
+  (`isRestoringMixSession`): **no Now Playing card is claimed** — at cold launch the arbiter
+  is unowned, so the loads/seeks would otherwise write a paused card for audio nobody
+  started. Both the phase-1 setlist session AND a mix snapshot may restore held side by side;
+  whichever the user plays first claims the card via the normal `NowPlayingArbiter` paths. A
+  track whose file vanished (purged burn, deleted studio item) simply leaves THAT deck empty —
+  restore what's loadable, drop what isn't (the post-materialize re-sync drops it from the
+  file too), never crash or block. A real `loadFile`/intent action while a restore is still
+  parked drops the pending snapshot (the new mix supersedes it).
+- **Testing seams**: `PDJ_USE_FIXTURE` isolates the file (`launchURL()`),
+  `PDJ_SEED_MIX_DECK_SESSION` writes a canned mid-mix snapshot built on the `PDJ_SEED_STUDIO`
+  fixture items (whose audio actually exists, so the UI test exercises real materialization —
+  `MixDeckRestoreUITests`), and `PDJ_DISABLE_SESSION_RESTORE` is shared with phase 1. Unit
+  coverage: `MixDeckSessionStoreTests` + `MixEngineSessionTests`.
+
 ---
 
 ## 8. The Performance TAB (Studio) — distinct from the realize engine above
