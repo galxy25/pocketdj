@@ -100,20 +100,42 @@ final class DemuxStore {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    // MARK: - Carved-song audio cache (analog shared-album sides)
+
+    /// Where a song CARVED OUT of a shared analog album side lands (`audio/<songId>.m4a`).
+    /// Digital rips and per-song cuts play their burned file directly and never use this; a
+    /// shared side must be carved once so playback, analysis, and the timeline all start at
+    /// the song's 0:00 (the analog-offset contract, demux edition).
+    func carvedSongDestination(for songId: String) -> URL? {
+        guard let dir = Self.audioDir(under: cacheDir) else { return nil }
+        let safe = songId.replacingOccurrences(of: ":", with: "_").replacingOccurrences(of: "/", with: "_")
+        return dir.appendingPathComponent("\(safe).m4a")
+    }
+
+    /// The already-carved audio for a song, or nil if never carved.
+    func carvedSongURL(for songId: String) -> URL? {
+        guard let url = carvedSongDestination(for: songId),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
     // MARK: - Analysis kickoff
 
     /// Detect the chord timeline of `url` and land it on the source's document. No-op while a
     /// run for the same key is already in flight. `force` re-analyzes over a done result.
-    func analyzeChords(source: DemuxSource, url: URL, durationMs: Int, force: Bool = false) {
+    /// `release` (a held security scope on `url`) is invoked when the run finishes.
+    func analyzeChords(source: DemuxSource, url: URL, durationMs: Int, force: Bool = false,
+                       release: (() -> Void)? = nil) {
         let key = source.key
-        guard !chordRuns.contains(key) else { return }
-        if !force, documentCreating(for: source).chordStatus == .done { return }
+        guard !chordRuns.contains(key) else { release?(); return }
+        if !force, documentCreating(for: source).chordStatus == .done { release?(); return }
         chordRuns.insert(key)
         var doc = documentCreating(for: source)
         doc.durationMs = max(doc.durationMs, durationMs)
         save(doc)
         Task {
             let segments = await Task.detached(priority: .utility) { ChordDetector.detect(url: url) }.value
+            release?()
             var doc = self.documentCreating(for: source)
             doc.chords = segments
             doc.chordStatus = segments.isEmpty ? .failed : .done
@@ -123,15 +145,18 @@ final class DemuxStore {
     }
 
     /// Transcribe `url` (callers pass the VOCALS STEM when burned — far better than the full
-    /// mix) and land the timed words on the source's document.
-    func analyzeTranscript(source: DemuxSource, url: URL, durationMs: Int, force: Bool = false) {
+    /// mix) and land the timed words on the source's document. `release` (a held security
+    /// scope on `url`) is invoked when the run finishes.
+    func analyzeTranscript(source: DemuxSource, url: URL, durationMs: Int, force: Bool = false,
+                           release: (() -> Void)? = nil) {
         let key = source.key
-        guard !transcriptRuns.contains(key) else { return }
-        if !force, documentCreating(for: source).transcriptStatus == .done { return }
+        guard !transcriptRuns.contains(key) else { release?(); return }
+        if !force, documentCreating(for: source).transcriptStatus == .done { release?(); return }
         guard DemuxTranscriber.isSupported else {
             var doc = documentCreating(for: source)
             doc.transcriptStatus = .unavailable
             save(doc)
+            release?()
             return
         }
         transcriptRuns.insert(key)
@@ -149,6 +174,7 @@ final class DemuxStore {
             } catch {
                 status = .failed
             }
+            release?()
             var doc = self.documentCreating(for: source)
             doc.words = words
             doc.transcriptStatus = status

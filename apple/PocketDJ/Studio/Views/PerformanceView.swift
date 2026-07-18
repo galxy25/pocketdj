@@ -2,16 +2,16 @@ import SwiftUI
 
 // MARK: - Sub-tabs (spec §1)
 
-/// The five Studio sub-tabs. `rawValue` is the persistence token in `SettingsStore.studioTab`
+/// The six Studio sub-tabs. `rawValue` is the persistence token in `SettingsStore.studioTab`
 /// AND the shadow-button name fragment (`studio-tab-<rawValue>-shadow`) — it is stable forever,
 /// never rename a case (the RootView.Section rawValue doctrine, one level down).
 enum StudioSubTab: String, CaseIterable, Identifiable {
-    case samples, loops, sequencer, instruments, cues
+    case samples, loops, sequencer, instruments, cues, demuxer
 
     var id: String { rawValue }
 
     /// User-facing segment title — shown only at REGULAR width (compact is symbol-only,
-    /// because five text segments truncate into unreadable mush on an iPhone in portrait).
+    /// because six text segments truncate into unreadable mush on an iPhone in portrait).
     var label: String {
         switch self {
         case .samples:     return "Samples"
@@ -19,10 +19,12 @@ enum StudioSubTab: String, CaseIterable, Identifiable {
         case .sequencer:   return "Sequencer"
         case .instruments: return "Instruments"
         case .cues:        return "Cues"
+        case .demuxer:     return "Demuxer"
         }
     }
 
-    /// SF Symbols per spec §1: waveform / repeat / square.grid.4x3.fill / pianokeys / flag.
+    /// SF Symbols per spec §1: waveform / repeat / square.grid.4x3.fill / pianokeys / flag,
+    /// + the Demuxer's inspect-the-waveform glass.
     var icon: String {
         switch self {
         case .samples:     return "waveform"
@@ -30,10 +32,11 @@ enum StudioSubTab: String, CaseIterable, Identifiable {
         case .sequencer:   return "square.grid.4x3.fill"
         case .instruments: return "pianokeys"
         case .cues:        return "flag"
+        case .demuxer:     return "waveform.badge.magnifyingglass"
         }
     }
 
-    /// ⌘1…⌘5 in declaration order (spec §1). These keys are ALSO Browse's Albums/Songs
+    /// ⌘1…⌘6 in declaration order (spec §1). These keys are ALSO Browse's Albums/Songs
     /// toggle — safe only because both registrations are view-scoped shadow buttons that
     /// are never mounted simultaneously (the spec §0 scoping rule).
     var shortcutKey: KeyEquivalent {
@@ -43,6 +46,7 @@ enum StudioSubTab: String, CaseIterable, Identifiable {
         case .sequencer:   return "3"
         case .instruments: return "4"
         case .cues:        return "5"
+        case .demuxer:     return "6"
         }
     }
 }
@@ -115,6 +119,7 @@ struct PerformanceView: View {
         case .sequencer:   StudioSequencerView()
         case .instruments: StudioInstrumentsView()
         case .cues:        StudioCuesView()
+        case .demuxer:     StudioDemuxView()
         }
     }
 

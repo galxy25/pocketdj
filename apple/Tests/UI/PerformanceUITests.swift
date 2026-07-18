@@ -58,10 +58,11 @@ final class PerformanceUITests: XCTestCase {
         return app.any("studio-tab-picker")
     }
 
-    /// Switch to sub-tab `index` (0 Samples … 4 Cues) by a COORDINATE tap on the segment's
-    /// horizontal centre. On iPhone-portrait (compact) the segments are symbol-only and carry no
-    /// individual a11y id/label to address, so a positional tap is the robust cross-width driver.
-    private func switchTab(_ index: Int, count: Int = 5) {
+    /// Switch to sub-tab `index` (0 Samples … 4 Cues, 5 Demuxer) by a COORDINATE tap on the
+    /// segment's horizontal centre. On iPhone-portrait (compact) the segments are symbol-only and
+    /// carry no individual a11y id/label to address, so a positional tap is the robust
+    /// cross-width driver. `count` MUST track `StudioSubTab.allCases.count`.
+    private func switchTab(_ index: Int, count: Int = 6) {
         let picker = studioPicker()
         XCTAssertTrue(picker.waitForExistence(timeout: 8), "the studio sub-tab picker must exist")
         let dx = (Double(index) + 0.5) / Double(count)
@@ -144,6 +145,12 @@ final class PerformanceUITests: XCTestCase {
         XCTAssertTrue(app.textFields["cue-search"].waitForExistence(timeout: 10)
                       || app.any("cue-search").waitForExistence(timeout: 2),
                       "Cues sub-tab should show the track-search field")
+        // Demuxer (5)
+        switchTab(5)
+        XCTAssertTrue(app.any("demux-source-search").waitForExistence(timeout: 10),
+                      "Demuxer sub-tab should show the source picker's search field")
+        XCTAssertTrue(app.any("demux-import").waitForExistence(timeout: 4),
+                      "Demuxer source picker should offer the Import entry point")
         // Back to Samples — the picker round-trips.
         switchTab(0)
         XCTAssertTrue(app.el("sample-new-from-track").waitForExistence(timeout: 10))
