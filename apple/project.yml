@@ -125,6 +125,10 @@ targets:
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "PocketDJ uses the microphone to record samples and to identify songs that are playing."
         #   • Apple Music — MusicKit catalog search + playback when linked.
         INFOPLIST_KEY_NSAppleMusicUsageDescription: "PocketDJ uses Apple Music to play and search tracks from your subscription."
+        #   • Speech recognition — the Producer tab's Demuxer transcribes lyrics
+        #     ON DEVICE (requiresOnDeviceRecognition; audio never leaves the
+        #     device). The prompt fires only when the user runs a transcription.
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "PocketDJ transcribes song lyrics on this device so they can be shown in time with the music."
         # --- MusicKit + ShazamKit entitlements ---------------------------------
         # Both app-service entitlements live in one .entitlements file. They are
         # only ENFORCED when signing for a device/distribution (the App ID must

@@ -50,11 +50,15 @@ final class RipsStore {
     enum StemPhase: String, Decodable { case queued, ripping, stemming, ready, error, ineligible }
 
     /// The `/stemify` + `/jobs/<id>` response shape for a stem job (extra fields ignored).
+    /// `stems`/`stemFormat` ride only CUSTOM (uploaded-audio) jobs, whose S3 keys have no
+    /// manifest entry to live in (see `stemifyCustom`).
     struct StemJob: Decodable, Equatable {
         var jobId: String? = nil
         var songId: String? = nil
         var phase: StemPhase
         var error: String? = nil
+        var stems: [String: String]? = nil
+        var stemFormat: String? = nil
     }
 
     /// One public-S3 manifest entry (mirrors the PWA's `ManifestEntry`). Only the
@@ -971,6 +975,53 @@ final class RipsStore {
             default: break   // queued / ripping / stemming — keep polling
             }
         }
+    }
+
+    /// Stem DEVICE-LOCAL audio the catalog has never seen (the Demuxer's imported files and
+    /// performance media): STREAM the file to the rip server's `/stemify-custom`, await the
+    /// Demucs job, and return the four public-S3 stem URLs. Deliberately NOT behind the
+    /// studio-id fence — that fence stops /stemify's rip chain (live-searching a garbage
+    /// title); here the audio is uploaded, so studio ids are exactly the intended clients.
+    /// Returns nil on any failure (no server / upload rejected / job error / timeout).
+    func stemifyCustom(id: String, fileURL: URL) async -> [String: URL]? {
+        guard hasServer else { return nil }
+        let base = serverUrl, tok = token
+        var comps = URLComponents(string: "\(base)/stemify-custom")
+        comps?.queryItems = [URLQueryItem(name: "id", value: id),
+                             URLQueryItem(name: "ext", value: fileURL.pathExtension.lowercased())]
+        guard let url = comps?.url else { return nil }
+        var post = URLRequest(url: url)
+        post.httpMethod = "POST"
+        post.setValue("application/octet-stream", forHTTPHeaderField: "content-type")
+        applyAuth(&post, token: tok)
+        guard let (data, response) = try? await session.upload(for: post, fromFile: fileURL),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let view = try? JSONDecoder().decode(StemJob.self, from: data) else { return nil }
+        if view.phase == .ready, let keys = view.stems { return Self.urls(fromKeys: keys, ripsBase: ripsBase) }
+        if view.phase == .error || view.phase == .ineligible { return nil }
+        guard let jobId = view.jobId else { return nil }
+        // Poll to a terminal phase (the pollStemReady cadence; custom jobs skip the manifest).
+        let deadline = Date().addingTimeInterval(4 * 60 * 60)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            var req = URLRequest(url: URL(string: "\(base)/jobs/\(jobId)")!)
+            applyAuth(&req, token: tok)
+            guard let (d, r) = try? await session.data(for: req),
+                  let h = r as? HTTPURLResponse, (200..<300).contains(h.statusCode),
+                  let v = try? JSONDecoder().decode(StemJob.self, from: d) else { continue }
+            switch v.phase {
+            case .ready:
+                guard let keys = v.stems else { return nil }
+                return Self.urls(fromKeys: keys, ripsBase: ripsBase)
+            case .error, .ineligible: return nil
+            default: break   // queued / stemming — keep polling
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func urls(fromKeys keys: [String: String], ripsBase: URL) -> [String: URL] {
+        keys.mapValues { ripsBase.appendingPathComponent($0) }
     }
 
     /// One song's outcome from a batch Stemify (server per-song result).

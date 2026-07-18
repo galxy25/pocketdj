@@ -433,7 +433,7 @@ struct StorageView: View {
             studioUsageRow(.instruments, label: "Instrument packs", icon: "pianokeys",
                            count: packStore.downloadedSlugs.count, unit: "bank")
         } header: {
-            Text("Performance studio")
+            Text("Producer studio")
         } footer: {
             Text("Samples, loops, sequences, and instrumentals are things you made — the app never deletes them on its own (the soft cap above prunes burnt music only). Instrument packs are sound banks you can download again anytime.")
         }

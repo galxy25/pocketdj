@@ -43,13 +43,19 @@ struct RootView: View {
         case history = "History"
         case playlists = "Playlists"
         case mix = "Mix"
-        // The Studio tab (samples/loops/sequencer/instruments/cues). rawValue triple-duties
-        // as sidebar label + settings.lastSection token + PDJ_START_SECTION seam — never
-        // rename it (spec §0's collision table pins the string).
+        // The Studio tab (samples/loops/sequencer/instruments/cues/demuxer). rawValue
+        // triple-duties as settings.lastSection token + PDJ_START_SECTION seam + shadow-button
+        // name — never rename it (spec §0's collision table pins the string). The USER-VISIBLE
+        // name is `title` ("Producer" — renamed 2026-07; the token stays "Performance" forever).
         case performance = "Performance"
         case jukebox = "Jukebox Hero"
         case settings = "Settings"
         var id: String { rawValue }
+        /// User-visible sidebar/menu label. Diverges from `rawValue` only where a tab was
+        /// renamed after its token was pinned (Performance → Producer).
+        var title: String {
+            self == .performance ? "Producer" : rawValue
+        }
         var icon: String {
             switch self {
             case .browse:      return "list.bullet"
@@ -164,8 +170,9 @@ struct RootView: View {
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
+            // Accepts either the pinned token ("Performance") or the visible title ("Producer").
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
-               let s = Section(rawValue: raw) {
+               let s = Section(rawValue: raw) ?? Section.allCases.first(where: { $0.title == raw }) {
                 section = s
             } else {
                 #if os(iOS)
@@ -217,7 +224,7 @@ struct RootView: View {
 
     private var newWindowButton: some View {
         Button { openWindow(id: "main") } label: { Image(systemName: "plus") }
-            .help("New Window — run another surface (Mix, Performance…) alongside this one")
+            .help("New Window — run another surface (Mix, Producer…) alongside this one")
             .accessibilityIdentifier("new-window")
     }
 
@@ -231,7 +238,7 @@ struct RootView: View {
             // No explicit foreground style: the Canvas inherits the Label icon
             // slot's, so it colors exactly like the sibling SF Symbol icons on
             // every platform (white here, accent when the platform tints them).
-            Label { Text(item.rawValue) } icon: {
+            Label { Text(item.title) } icon: {
                 AutoMixIcon()
                     .frame(width: 25, height: 15)
             }
@@ -241,7 +248,7 @@ struct RootView: View {
                     .frame(width: 16, height: 20)
             }
         } else {
-            Label(item.rawValue, systemImage: item.icon)
+            Label(item.title, systemImage: item.icon)
         }
     }
 
