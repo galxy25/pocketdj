@@ -141,6 +141,7 @@ final class StemPlayer {
         generation += 1
         let gen = generation
         let leadName = files["vocals"] != nil ? "vocals" : files.keys.sorted().first
+        var started: [AVAudioPlayerNode] = []
         for (name, node) in nodes {
             guard let file = files[name] else { continue }
             node.stop()
@@ -154,12 +155,22 @@ final class StemPlayer {
                 guard isLead else { return }
                 Task { @MainActor in self?.handlePlaybackEnded(gen) }
             }
+            started.append(node)
+        }
+        guard !started.isEmpty else {                  // seek at/past EOF: nothing schedulable
+            isPlaying = false; pausedAt = duration
+            return
         }
         configureSession()
-        if !engine.isRunning { try? engine.start() }
+        if !engine.isRunning {
+            do { try engine.start() } catch {          // play(at:) on a dead engine is uncatchable
+                isPlaying = false; pausedAt = min(max(0, offset), duration)
+                return
+            }
+        }
         applyVolumes()
         let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.08))
-        for node in nodes.values { node.play(at: when) }
+        for node in started { node.play(at: when) }
         playStartHost = CACurrentMediaTime() - offset
         isPlaying = true
     }

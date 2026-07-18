@@ -48,6 +48,9 @@ struct StudioDemuxView: View {
     @State private var peaks: [Float] = []
     /// The shared synced player: single-mix mode loads one file, stem mode loads all four.
     @State private var player = StemPlayer()
+    /// The in-flight source resolution — stored so re-selection/tab-exit can cancel it
+    /// (see select()).
+    @State private var resolveTask: Task<Void, Never>?
     @State private var stemMode = false
     @State private var showImporter = false
     @State private var searchText = ""
@@ -76,7 +79,7 @@ struct StudioDemuxView: View {
                 .presentationDetents([.medium])
             #endif
         }
-        .onDisappear { player.stop() }
+        .onDisappear { resolveTask?.cancel(); player.stop() }
     }
 
     // MARK: - Source picker
@@ -495,11 +498,21 @@ struct StudioDemuxView: View {
     // MARK: - Selection + resolution
 
     private func select(_ src: DemuxSource) {
+        resolveTask?.cancel()
         clearSource()
         source = src
         phase = .resolving
         searchText = ""
-        Task { await resolve(src) }
+        // STORED so a re-selection (or leaving the tab) cancels the in-flight resolve —
+        // an orphaned resolve could suspend for seconds (carve) or minutes (burn) and
+        // then stomp the newer selection's phase/audio/peaks with stale state.
+        resolveTask = Task { await resolve(src) }
+    }
+
+    /// A resolve that awoke from an await must still be the CURRENT run before it writes
+    /// any view state — the user may have re-selected (or cancelled) while it slept.
+    private func isCurrent(_ src: DemuxSource) -> Bool {
+        !Task.isCancelled && source?.key == src.key
     }
 
     private func clearSource() {
@@ -533,8 +546,10 @@ struct StudioDemuxView: View {
                 return
             }
             if let local = await ensureSongAudio(song) {
+                guard isCurrent(src) else { local.release?(); return }
                 await enterReady(src, url: local.url, release: local.release, lengthMs: songLengthMs(song))
             } else {
+                guard isCurrent(src) else { return }
                 phase = rips.manifest[id] != nil ? .needsBurn : .ripFirst
             }
         }
@@ -556,6 +571,7 @@ struct StudioDemuxView: View {
     }
 
     private func enterReady(_ src: DemuxSource, url: URL, release: (() -> Void)?, lengthMs: Int) async {
+        guard isCurrent(src) else { release?(); return }
         audioURL = url
         durationMs = max(lengthMs, 1)
         var doc = demux.documentCreating(for: src)
@@ -568,7 +584,9 @@ struct StudioDemuxView: View {
         player.load(songId: "\(src.key)#mix", localURLs: ["vocals": url], release: release)
         kickoffChords()
         kickoffTranscript()
-        peaks = await loadPeaks(src, url: url)
+        let loaded = await loadPeaks(src, url: url)
+        guard isCurrent(src) else { return }
+        peaks = loaded
     }
 
     private func loadPeaks(_ src: DemuxSource, url: URL) async -> [Float] {
@@ -586,7 +604,9 @@ struct StudioDemuxView: View {
         guard case .song(let id, let title, let artist) = source else { return }
         phase = .burning
         let r = await burns.burn([(id: id, title: title, artist: artist)])
+        guard isCurrent(source) else { return }
         if r.burned > 0, let song = app.songsById[id], let local = await ensureSongAudio(song) {
+            guard isCurrent(source) else { local.release?(); return }
             await enterReady(source, url: local.url, release: local.release, lengthMs: songLengthMs(song))
             return
         }
@@ -689,13 +709,14 @@ struct StudioDemuxView: View {
         } else if let audioURL {
             stemMode = false
             // Re-resolve the scope for the mix file (the previous load released it).
+            // NOTE: these helpers OPEN the security scope eagerly — on a URL mismatch the
+            // handle must be released, not dropped, or the sandbox scope leaks.
             var release: (() -> Void)?
             if let songId = source.songId,
-               let h = burns.localURLForPlaybackPreferringCut(forSong: songId), h.url == audioURL {
-                release = h.release
-            } else if case .studio(let id, _) = source, let got = studio.localURLForPlayback(id: id),
-                      got.url == audioURL {
-                release = got.release
+               let h = burns.localURLForPlaybackPreferringCut(forSong: songId) {
+                if h.url == audioURL { release = h.release } else { h.release?() }
+            } else if case .studio(let id, _) = source, let got = studio.localURLForPlayback(id: id) {
+                if got.url == audioURL { release = got.release } else { got.release?() }
             }
             player.load(songId: "\(source.key)#mix", localURLs: ["vocals": audioURL], release: release)
         }
