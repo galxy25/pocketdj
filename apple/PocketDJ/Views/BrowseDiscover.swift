@@ -14,12 +14,21 @@ final class DiscoverSearchModel {
     private(set) var hits: [RipsStore.DiscoverHit] = []
     @ObservationIgnored private var task: Task<Void, Never>?
 
-    /// ~400 ms debounce so a burst of keystrokes coalesces into one server round-trip
+    /// ~400 ms debounce so a burst of keystrokes coalesces into one search round-trip
     /// (the on-device recompute's `.task(id:)` debounce doesn't run in discover mode).
     /// Re-triggering cancels the pending run; an all-empty query clears to idle.
-    /// `artist` is the Discover tab's refine field: it WIDENS the server term (iTunes
-    /// term search matches across fields) and NARROWS the hit list client-side.
-    func searchDebounced(_ query: String, artist: String = "", rips: RipsStore) {
+    /// `artist` is the Discover tab's refine field: it WIDENS the search term (term
+    /// search matches across fields) and NARROWS the hit list client-side.
+    ///
+    /// TWO catalogs run in parallel and merge:
+    ///   • `catalog` (MusicKit, when authorized) — FULL Apple Music coverage + real
+    ///     relevance ranking. The legacy iTunes Search API behind the proxy misses
+    ///     whole tracks (e.g. "Witchy (feat. Childish Gambino)" never surfaces for any
+    ///     term while its Instrumental does), so MusicKit leads when available.
+    ///   • the rip-server `/search` proxy — reachable by every tester (no Apple Music
+    ///     subscription needed) and the authority on ripped/streamable state.
+    func searchDebounced(_ query: String, artist: String = "", rips: RipsStore,
+                         catalog: (any StreamingSearch)? = nil) {
         task?.cancel()
         guard let term = Self.term(title: query, artist: artist) else {
             hits = []; state = .idle; return
@@ -29,11 +38,51 @@ final class DiscoverSearchModel {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled, let self else { return }
             self.state = .loading
-            let results = await rips.discoverSearch(term)
+            async let proxyHits = rips.discoverSearch(term)
+            var catalogHits: [RipsStore.DiscoverHit] = []
+            if let catalog, catalog.canSearch {
+                let tracks = (try? await catalog.search(term, limit: 25)) ?? []
+                catalogHits = tracks.map { t in
+                    Self.hit(from: t, ripURL: rips.cachedURL("amrec_\(t.providerTrackID)"))
+                }
+            }
+            let merged = Self.merge(catalog: catalogHits, server: await proxyHits)
             guard !Task.isCancelled else { return }
-            self.hits = Self.refine(results, artist: refine)
+            self.hits = Self.refine(merged, artist: refine)
             self.state = .loaded
         }
+    }
+
+    /// Map a MusicKit catalog hit into the Discover row shape (the `amrec_` ad-hoc-rip
+    /// id convention); `ripURL` is the LOCAL manifest's answer for that id (the add
+    /// flow may already have captured it).
+    static func hit(from track: StreamingTrack, ripURL: URL?) -> RipsStore.DiscoverHit {
+        RipsStore.DiscoverHit(appleMusicId: track.providerTrackID,
+                              title: track.title,
+                              artist: track.artist ?? "",
+                              artworkUrl: track.artworkURL?.absoluteString,
+                              durationMs: track.durationSeconds.map { $0 * 1000 },
+                              songId: "amrec_\(track.providerTrackID)",
+                              ripped: ripURL != nil,
+                              url: ripURL?.absoluteString)
+    }
+
+    /// Merge doctrine: MusicKit's ranking leads; where the proxy knows the same track
+    /// its ROW wins (the server manifest is the authority on ripped/url); proxy-only
+    /// hits follow. Dedup by Apple Music store id.
+    static func merge(catalog: [RipsStore.DiscoverHit],
+                      server: [RipsStore.DiscoverHit]) -> [RipsStore.DiscoverHit] {
+        let serverById = Dictionary(server.map { ($0.appleMusicId, $0) },
+                                    uniquingKeysWith: { a, _ in a })
+        var seen = Set<String>()
+        var out: [RipsStore.DiscoverHit] = []
+        for h in catalog where seen.insert(h.appleMusicId).inserted {
+            out.append(serverById[h.appleMusicId] ?? h)
+        }
+        for h in server where seen.insert(h.appleMusicId).inserted {
+            out.append(h)
+        }
+        return out
     }
 
     /// The server search term: title + artist joined (either alone works — an

@@ -20,6 +20,7 @@ struct BrowseView: View {
     @Binding var path: NavigationPath
     @State private var browse = BrowseState(defaults: SettingsStore.launchDefaults())
     @State private var online = OnlineSearchModel()
+    @Environment(StreamingStore.self) private var streaming
     @State private var discover = DiscoverSearchModel()
     /// Discover's ARTIST refine (the title rides the shared search field).
     @State private var discoverArtist = ""
@@ -158,9 +159,11 @@ struct BrowseView: View {
     }
 
     /// Kick the debounced Discover search for the current query (tab entry + keystrokes
-    /// in either the title search or the artist refine).
+    /// in either the title search or the artist refine). MusicKit rides along when the
+    /// device is authorized — full-catalog coverage the iTunes proxy can't match.
     private func triggerDiscover() {
-        discover.searchDebounced(browse.query, artist: discoverArtist, rips: rips)
+        discover.searchDebounced(browse.query, artist: discoverArtist, rips: rips,
+                                 catalog: streaming.appleMusicProvider)
     }
 
     // Extracted sub-views (the type-checker-budget rule: keep `body` small).

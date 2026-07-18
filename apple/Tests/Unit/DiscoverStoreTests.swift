@@ -166,6 +166,52 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertNil(DiscoverSearchModel.term(title: "  ", artist: ""))
     }
 
+    // MARK: MusicKit merge (the "Witchy" coverage fix — catalog leads, proxy annotates)
+
+    private func track(_ id: String, _ title: String) -> StreamingTrack {
+        StreamingTrack(id: "appleMusic:\(id)", kind: .appleMusic, providerTrackID: id,
+                       title: title, artist: "KAYTRANADA",
+                       artworkURL: URL(string: "https://x/a.jpg"), durationSeconds: 61)
+    }
+
+    private func serverHit(_ id: String, ripped: Bool) -> RipsStore.DiscoverHit {
+        RipsStore.DiscoverHit(appleMusicId: id, title: "S\(id)", artist: "Server Artist",
+                              songId: "amrec_\(id)", ripped: ripped,
+                              url: ripped ? "https://s3/x.mp3" : nil)
+    }
+
+    func testHitMappingFromStreamingTrack() {
+        let mapped = DiscoverSearchModel.hit(from: track("1747040108", "Witchy"),
+                                             ripURL: URL(string: "https://s3/w.mp3"))
+        XCTAssertEqual(mapped.songId, "amrec_1747040108")
+        XCTAssertEqual(mapped.appleMusicId, "1747040108")
+        XCTAssertEqual(mapped.durationMs, 61_000)
+        XCTAssertEqual(mapped.ripped, true)
+        XCTAssertEqual(mapped.url, "https://s3/w.mp3")
+        let unripped = DiscoverSearchModel.hit(from: track("2", "T"), ripURL: nil)
+        XCTAssertEqual(unripped.ripped, false)
+        XCTAssertNil(unripped.url)
+    }
+
+    func testMergeCatalogLeadsServerAnnotatesAndDedupes() {
+        let catalog = [DiscoverSearchModel.hit(from: track("1", "Vocal"), ripURL: nil),
+                       DiscoverSearchModel.hit(from: track("2", "Deep Cut"), ripURL: nil)]
+        let server = [serverHit("3", ripped: false), serverHit("1", ripped: true)]
+        let merged = DiscoverSearchModel.merge(catalog: catalog, server: server)
+        // Catalog ranking first, then proxy-only hits; no duplicate of id 1.
+        XCTAssertEqual(merged.map(\.appleMusicId), ["1", "2", "3"])
+        // Where both know the track, the SERVER row wins (ripped/url authority).
+        XCTAssertEqual(merged[0].ripped, true)
+        XCTAssertEqual(merged[0].url, "https://s3/x.mp3")
+        // Catalog-only hits keep their mapped shape.
+        XCTAssertEqual(merged[1].title, "Deep Cut")
+    }
+
+    func testMergeWithNoCatalogIsServerPassthrough() {
+        let server = [serverHit("9", ripped: false)]
+        XCTAssertEqual(DiscoverSearchModel.merge(catalog: [], server: server).map(\.appleMusicId), ["9"])
+    }
+
     func testRefineNarrowsByArtistCaseInsensitively() {
         let hits = [hit("Daft Punk"), hit("Pendulum"), hit("daft punk & friends")]
         XCTAssertEqual(DiscoverSearchModel.refine(hits, artist: "").count, 3, "empty refine passes through")
