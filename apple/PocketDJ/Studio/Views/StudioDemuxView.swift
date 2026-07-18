@@ -374,22 +374,28 @@ struct StudioDemuxView: View {
             statusRow(spinner: true, "Downloading stems…", a11y: "demux-stems-downloading")
         case .creatable:
             HStack(spacing: 8) {
-                Text("Not stemmed yet — separate it with Demucs on your rip server.")
+                Text(source.songId == nil
+                     ? "Stream this audio to your rip server for Demucs separation."
+                     : "Not stemmed yet — separate it with Demucs on your rip server.")
                     .font(.caption).foregroundStyle(Theme.fgDim)
                 Button("Create stems") { Task { await createStems(source) } }
                     .font(.caption).buttonStyle(.borderless).foregroundStyle(Theme.accent)
                     .accessibilityIdentifier("demux-stems-create")
             }
         case .creating:
-            statusRow(spinner: true, "Separating stems on the rip server (this can take a few minutes)…",
+            statusRow(spinner: true,
+                      source.songId == nil
+                      ? "Uploading + separating on the rip server (this can take a few minutes)…"
+                      : "Separating stems on the rip server (this can take a few minutes)…",
                       a11y: "demux-stems-creating")
         case .failed(let msg):
-            Text(msg).font(.caption).foregroundStyle(Theme.fgDim)
-                .accessibilityIdentifier("demux-stems-failed")
+            HStack(spacing: 8) {
+                Text(msg).font(.caption).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("demux-stems-failed")
+                retryButton("demux-stems-retry") { Task { await createStems(source) } }
+            }
         case .none:
-            Text(source.songId == nil
-                 ? "Stems are available for catalog tracks (Demucs runs on the rip server)."
-                 : "Stems need the rip server, which isn’t reachable right now.")
+            Text("Stems need the rip server, which isn’t reachable right now (Demucs separation runs there).")
                 .font(.caption).foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("demux-stems-none")
         }
@@ -594,14 +600,17 @@ struct StudioDemuxView: View {
         demux.analyzeChords(source: source, url: audioURL, durationMs: durationMs, force: force)
     }
 
-    /// Transcribe the burned VOCALS stem when available (recognition over a full mix is
-    /// best-effort); otherwise the mix file.
+    /// Transcribe the VOCALS stem when one is on device (recognition over a full mix is
+    /// best-effort): the burned stem for songs, the demux stems cache for custom audio;
+    /// otherwise the mix file.
     private func kickoffTranscript(force: Bool = false) {
         guard let source, let audioURL else { return }
         if let songId = source.songId, let stems = burns.localStemURLs(forSong: songId),
            let vocals = stems.urls["vocals"] {
             demux.analyzeTranscript(source: source, url: vocals, durationMs: durationMs,
                                     force: force, release: stems.release)
+        } else if let vocals = demux.localStemURLs(for: source.key)?["vocals"] {
+            demux.analyzeTranscript(source: source, url: vocals, durationMs: durationMs, force: force)
         } else {
             demux.analyzeTranscript(source: source, url: audioURL, durationMs: durationMs, force: force)
         }
@@ -610,7 +619,14 @@ struct StudioDemuxView: View {
     // MARK: - Stems
 
     private func refreshStemState(_ src: DemuxSource) {
-        guard let songId = src.songId else { stemState = .none; return }
+        guard let songId = src.songId else {
+            // CUSTOM audio (imported file / performance media): stems come from the upload
+            // path (`/stemify-custom`) and cache in the DemuxStore, not the BurnStore.
+            if demux.localStemURLs(for: src.key) != nil { stemState = .burned }
+            else if rips.hasServer { stemState = .creatable }
+            else { stemState = .none }
+            return
+        }
         if burns.stemsBurned(forSong: songId) { stemState = .burned }
         else if rips.isStemmed(songId) { stemState = .downloadable }
         else if rips.hasServer, rips.manifest[songId] != nil { stemState = .creatable }
@@ -630,16 +646,31 @@ struct StudioDemuxView: View {
         }
     }
 
-    /// Trigger Demucs on the rip server (`/stemify` + poll — `RipsStore.stemify` returns once
-    /// the job is ready and the manifest refreshed), then pull the stems down.
+    /// Trigger Demucs on the rip server, then pull the stems down. Catalog songs go through
+    /// `/stemify` (server-side source + manifest stamp); CUSTOM audio STREAMS the local file
+    /// up via `/stemify-custom` and caches the results in the demux stems cache.
     private func createStems(_ src: DemuxSource) async {
-        guard let songId = src.songId else { return }
         stemState = .creating
-        await rips.stemify(songId)
-        if rips.isStemmed(songId) {
-            await downloadStems(src)
+        if let songId = src.songId {
+            await rips.stemify(songId)
+            if rips.isStemmed(songId) {
+                await downloadStems(src)
+            } else {
+                stemState = .failed("The rip server couldn’t stem this track (check it’s reachable and try again).")
+            }
+            return
+        }
+        // Custom: upload the resolved local audio, await the job, download the four stems.
+        guard let audioURL else { stemState = .failed("No local audio to upload."); return }
+        guard let remote = await rips.stemifyCustom(id: src.key, fileURL: audioURL) else {
+            stemState = .failed("The rip server couldn’t stem this audio (check it’s reachable and try again).")
+            return
+        }
+        if await demux.downloadStems(for: src.key, remote: remote) != nil {
+            stemState = .burned
+            kickoffTranscript(force: true)   // a vocals stem just arrived — much better source
         } else {
-            stemState = .failed("The rip server couldn’t stem this track (check it’s reachable and try again).")
+            stemState = .failed("Couldn’t download the separated stems.")
         }
     }
 
@@ -652,6 +683,9 @@ struct StudioDemuxView: View {
         let wasPlaying = player.isPlaying
         if stems, let songId = source.songId, let got = burns.localStemURLs(forSong: songId) {
             player.load(songId: "\(source.key)#stems", localURLs: got.urls, release: got.release)
+        } else if stems, let got = demux.localStemURLs(for: source.key) {
+            // Custom audio: stems live in the demux cache (app-managed — no security scope).
+            player.load(songId: "\(source.key)#stems", localURLs: got)
         } else if let audioURL {
             stemMode = false
             // Re-resolve the scope for the mix file (the previous load released it).

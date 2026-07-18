@@ -119,6 +119,57 @@ final class DemuxStore {
         return url
     }
 
+    // MARK: - Custom stems cache (uploaded-audio separation results)
+
+    /// Folder for a CUSTOM source's downloaded stems (`stems/<key>/<stem>.<ext>`). Song
+    /// sources never land here — their stems live in the BurnStore (`burnStems`); this cache
+    /// is for audio the catalog has never seen (imported files, performance media), separated
+    /// via the rip server's `/stemify-custom` upload path.
+    nonisolated static func stemsDir(under cacheDir: URL?, key: String) -> URL? {
+        guard let cacheDir else { return nil }
+        let safe = key.replacingOccurrences(of: ":", with: "_").replacingOccurrences(of: "/", with: "_")
+        let d = cacheDir.appendingPathComponent("stems", isDirectory: true)
+            .appendingPathComponent(safe, isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    /// The four downloaded stem files for a custom source, or nil if any is missing.
+    func localStemURLs(for key: String) -> [String: URL]? {
+        guard let dir = Self.stemsDir(under: cacheDir, key: key),
+              let listing = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return nil }
+        var urls: [String: URL] = [:]
+        for name in StemPlayer.stems {
+            guard let f = listing.first(where: { $0.deletingPathExtension().lastPathComponent == name }) else { return nil }
+            urls[name] = f
+        }
+        return urls
+    }
+
+    /// Download the four remote stem files into the cache (all-or-nothing; a partial set is
+    /// removed so `localStemURLs` never reports a half-downloaded source as ready).
+    func downloadStems(for key: String, remote: [String: URL]) async -> [String: URL]? {
+        guard let dir = Self.stemsDir(under: cacheDir, key: key) else { return nil }
+        var urls: [String: URL] = [:]
+        for name in StemPlayer.stems {
+            guard let src = remote[name],
+                  let (data, response) = try? await URLSession.shared.data(from: src),
+                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                try? FileManager.default.removeItem(at: dir)
+                return nil
+            }
+            let ext = src.pathExtension.isEmpty ? "mp3" : src.pathExtension
+            let dest = dir.appendingPathComponent("\(name).\(ext)")
+            guard (try? data.write(to: dest, options: .atomic)) != nil else {
+                try? FileManager.default.removeItem(at: dir)
+                return nil
+            }
+            urls[name] = dest
+        }
+        return urls
+    }
+
     // MARK: - Analysis kickoff
 
     /// Detect the chord timeline of `url` and land it on the source's document. No-op while a

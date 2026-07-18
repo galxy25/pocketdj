@@ -143,6 +143,28 @@ final class DemuxTests: XCTestCase {
     }
 
     @MainActor
+    func testCustomStemsCacheReportsAllOrNothing() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("demux-stems-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = DemuxStore(cacheDir: DemuxStore.defaultCacheDir(dir))
+        XCTAssertNil(store.localStemURLs(for: "dmx_abc"), "no stems downloaded yet")
+
+        // Three of four stems present ⇒ still nil (all-or-nothing readiness).
+        let stemsDir = try XCTUnwrap(DemuxStore.stemsDir(under: DemuxStore.defaultCacheDir(dir), key: "dmx_abc"))
+        for name in ["vocals", "drums", "bass"] {
+            try Data([9]).write(to: stemsDir.appendingPathComponent("\(name).mp3"))
+        }
+        XCTAssertNil(store.localStemURLs(for: "dmx_abc"))
+
+        // All four ⇒ ready, keyed by canonical stem name regardless of extension.
+        try Data([9]).write(to: stemsDir.appendingPathComponent("other.flac"))
+        let urls = try XCTUnwrap(store.localStemURLs(for: "dmx_abc"))
+        XCTAssertEqual(Set(urls.keys), Set(StemPlayer.stems))
+        XCTAssertEqual(urls["other"]?.pathExtension, "flac")
+    }
+
+    @MainActor
     func testImportFileCopiesAudioAndMintsSource() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("demux-import-\(UUID().uuidString)", isDirectory: true)

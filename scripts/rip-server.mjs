@@ -18,7 +18,7 @@
 //   curl localhost:8787/health
 import http from 'node:http';
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync, copyFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync, copyFileSync, createWriteStream } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -403,6 +403,9 @@ function setPhase(job, phase, extra = {}) {
 function jobView(job) {
   if (!job) return null;
   const v = { jobId: job.jobId, songId: job.songId, phase: job.phase, message: job.message || null, url: job.url || null, error: job.error || null };
+  // Custom (uploaded-audio) stem jobs have no manifest entry — the S3 stem keys ride the job.
+  if (job.stems) v.stems = job.stems;
+  if (job.stemFormat) v.stemFormat = job.stemFormat;
   const live = job.phase === 'ripping' || job.phase === 'streaming' || job.phase === 'stemming';
   if (live && job.realtime && job.ripStartedAt && job.totalMs) {
     const elapsedMs = Math.min(Date.now() - job.ripStartedAt, job.totalMs);
@@ -1150,6 +1153,34 @@ function resumeAnalysis() {
 // with a durable per-songId intent (user intent isn't re-derivable from the manifest), an
 // async-spawn child the watchdog/cancel can group-kill, and an attempt cap for poison inputs.
 // Mirrors the rip queue's durability + the analysis queue's off-critical-path shape.
+// CUSTOM (uploaded-audio) stem jobs — the Demuxer's "stem ANY audio" path. The app STREAMS
+// the device-local file (imported audio / studio sample / loop / instrumental) to
+// /stemify-custom; Demucs runs here and the 4 stems upload to the public bucket under
+// `rips/stems/<id>/` exactly like song stems — but NOTHING is stamped into the manifest
+// (custom ids aren't songs; the S3 keys ride the JOB, see jobView). One shot, no durable
+// want (a crashed upload is simply re-sent by the app). STRICT id shape — these ids become
+// S3 key path segments and a tmp filename, so no dot/slash can ever ride through
+// (the amrec_ ADHOC_ID doctrine; hyphens allowed — studio ids carry UUIDs).
+const CUSTOM_STEM_ID = /^(?:dmx|smp|lp|ptn|tk|slc)_[A-Za-z0-9-]+$/;
+const customStemSrc = new Map();      // id -> uploaded local file (deleted after the run)
+const CUSTOM_STEM_MAX_BYTES = 512 * 1024 * 1024;   // generous: lossless captures upload too
+
+/// Stream a request body to `dest`, rejecting past `maxBytes` (never buffer audio in RAM).
+function readBodyToFile(req, dest, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const out = createWriteStream(dest);
+    let bytes = 0;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > maxBytes) { req.destroy(); out.destroy(); reject(new Error(`body over ${maxBytes} bytes`)); }
+    });
+    req.pipe(out);
+    out.on('finish', () => resolve(bytes));
+    out.on('error', reject);
+    req.on('error', reject);
+  });
+}
+
 const stemQ = [];                     // songIds queued for separation
 let stemming = false;                 // conc-1 guard
 const stemInflight = new Map();       // songId -> stemJobId (ALWAYS per-songId)
@@ -1265,7 +1296,9 @@ async function pumpStems() {
         CFG.stemDeadlineMs + 30_000);                            // > the lib budget; never fights it
       timer.unref?.();
     });
-    await Promise.race([stemManifestSong(songId), watchdog]);
+    await Promise.race([
+      customStemSrc.has(songId) ? stemCustomAudio(songId) : stemManifestSong(songId),
+      watchdog]);
   } catch (e) {
     const n = (stemAttempts.get(songId) || 0) + 1;
     stemAttempts.set(songId, n);
@@ -1313,6 +1346,38 @@ async function stemManifestSong(songId) {
     stemAttempts.delete(songId); clearStemWant(songId); finishStem(songId);
     console.error(`  ✓ stemmed ${songId} (${r.model}, ${r.stemBytes || '?'} bytes)`);
   } finally { try { rmSync(local); } catch { /* ignore */ } }
+}
+
+// Separate an UPLOADED custom-audio file (see CUSTOM_STEM_ID). Mirrors stemManifestSong
+// minus the manifest: the source is the uploaded temp file (no S3 download), and on success
+// the stem keys ride the JOB — nothing is stamped anywhere. One shot: the upload is deleted
+// win or lose (a failure surfaces on the job; the app re-uploads to retry).
+async function stemCustomAudio(id) {
+  const job = jobs.get(stemInflight.get(id));
+  const local = customStemSrc.get(id);
+  try {
+    if (!local || !existsSync(local)) { if (job) setPhase(job, 'error', { error: 'uploaded audio missing' }); return; }
+    if (job?.canceled) return;
+    if (job) setPhase(job, 'stemming', { message: 'separating stems' });
+    const r = await separateStems({                               // async spawn; watchdog-killable
+      file: local, songId: id, bucket: CFG.bucket, region: CFG.region, profile: CFG.profile,
+      model: CFG.demucsModel, runtime: CFG.demucsRuntime, device: CFG.demucsDevice,
+      image: CFG.stemImage, format: CFG.stemFormat, bitrate: CFG.stemBitrate,
+      tmp: CFG.tmp, child: activeStemChild,
+    });
+    if (job?.canceled || job?.phase === 'error') return;          // orphaned-continuation guard
+    if (!r.ok) throw new Error('demucs failed');
+    stemAttempts.delete(id);
+    if (job) {
+      job.stems = r.stems;                                        // rides jobView (no manifest entry)
+      job.stemFormat = r.format || CFG.stemFormat;
+      setPhase(job, 'ready', { message: 'stems ready' });
+    }
+    console.error(`  ✓ stemmed custom ${id} (${r.model}, ${r.stemBytes || '?'} bytes)`);
+  } finally {
+    customStemSrc.delete(id);
+    if (local) { try { rmSync(local); } catch { /* ignore */ } }
+  }
 }
 
 function finishStem(songId) {
@@ -1663,6 +1728,32 @@ const server = http.createServer(async (req, res) => {
     if (r.status === 'ineligible') return send(res, 200, { jobId: null, songId, phase: 'ineligible' });
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', stems: manifest[songId].stems });
     return send(res, 200, jobView(r.job));
+  }
+  // POST /stemify-custom?id=<dmx_|smp_|lp_|ptn_|tk_|slc_...>&ext=<m4a|...> (raw audio body) —
+  // separate DEVICE-LOCAL audio the catalog has never seen (the Demuxer's imported files +
+  // performance media). The body streams to a temp file (size-capped), the job rides the
+  // SAME conc-1 stem queue (defers behind live captures), and the stems land on the public
+  // bucket under rips/stems/<id>/ with the keys returned ON THE JOB — no manifest stamp.
+  // NOTE this deliberately BYPASSES the studio-id fence: that fence exists because /stemify
+  // would chain into a rip (live-searching a garbage title); here the audio is uploaded, so
+  // there is nothing to rip and studio ids are exactly the intended clients.
+  if (path === '/stemify-custom' && req.method === 'POST') {
+    const id = String(url.searchParams.get('id') || '');
+    if (!CUSTOM_STEM_ID.test(id)) return send(res, 400, { error: 'bad custom stem id' });
+    const extRaw = String(url.searchParams.get('ext') || 'm4a').toLowerCase();
+    const ext = /^[a-z0-9]{1,5}$/.test(extRaw) ? extRaw : 'm4a';
+    const existingId = stemInflight.get(id);
+    if (existingId && jobs.has(existingId)) return send(res, 200, jobView(jobs.get(existingId)));
+    const local = join(CFG.tmp, `custom-${id}.${ext}`);
+    try { await readBodyToFile(req, local, CUSTOM_STEM_MAX_BYTES); }
+    catch (e) { try { rmSync(local); } catch { /* ignore */ } return send(res, 413, { error: e.message }); }
+    const job = { jobId: randomUUID(), songId: id, kind: 'stem-custom', phase: 'queued', createdAt: Date.now() };
+    jobs.set(job.jobId, job);
+    stemInflight.set(id, job.jobId);
+    customStemSrc.set(id, local);
+    setPhase(job, 'queued');
+    enqueueStem(id);
+    return send(res, 200, jobView(job));
   }
   // POST /stemify-collection {songIds:[...], ripFromCloud?, confirmLarge?} — batch Stemify,
   // mirroring /rip-collection with the rip/cut→stem chain in acceptStem. Size-capped (a Pocket
