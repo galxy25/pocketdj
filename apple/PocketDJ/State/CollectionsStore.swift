@@ -1026,6 +1026,54 @@ final class CollectionsStore {
         return nil
     }
 
+    /// SUPERSEDE remap (Discover eventual consistency): every collection reference to a
+    /// provisional `amrec_` song follows the INDEXED catalog entry that replaced it —
+    /// playlists (recursive node trees), pockets (songIds + per-song repeats), and
+    /// setlist tracks. One save at the end when anything moved.
+    func remapSongIds(_ pairs: [(from: String, to: String)]) {
+        guard !pairs.isEmpty else { return }
+        let map = Dictionary(pairs.map { ($0.from, $0.to) }, uniquingKeysWith: { a, _ in a })
+        var changed = false
+
+        func remapNodes(_ nodes: [PlaylistNode]) -> [PlaylistNode] {
+            nodes.map { node in
+                var n = node
+                if let sid = n.songId, let to = map[sid] { n.songId = to; changed = true }
+                if let kids = n.children { n.children = remapNodes(kids) }
+                return n
+            }
+        }
+        for i in playlists.indices {
+            playlists[i].sequences = remapNodes(playlists[i].sequences)
+            if let src = playlists[i].sourceSongIds, src.contains(where: { map[$0] != nil }) {
+                playlists[i].sourceSongIds = src.map { map[$0] ?? $0 }
+                changed = true
+            }
+        }
+        for i in pockets.indices {
+            if pockets[i].songIds.contains(where: { map[$0] != nil }) {
+                pockets[i].songIds = pockets[i].songIds.map { map[$0] ?? $0 }
+                changed = true
+            }
+            for (sid, rep) in pockets[i].songRepeats {
+                if let to = map[sid] {
+                    pockets[i].songRepeats.removeValue(forKey: sid)
+                    pockets[i].songRepeats[to] = rep
+                    changed = true
+                }
+            }
+        }
+        for i in setlists.indices {
+            for j in setlists[i].tracks.indices {
+                if let to = map[setlists[i].tracks[j].songId] {
+                    setlists[i].tracks[j].songId = to
+                    changed = true
+                }
+            }
+        }
+        if changed { save() }
+    }
+
     func deleteSetlist(_ id: String) { setlists.removeAll { $0.id == id }; save() }
 
     @discardableResult

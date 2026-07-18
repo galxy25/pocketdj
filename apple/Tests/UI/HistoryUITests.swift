@@ -23,15 +23,14 @@ final class HistoryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Xtal"].firstMatch.exists)
     }
 
-    /// Timeline has TWO Midnight City rows (played in a Mix and in the Browser); switching to
-    /// "By song" collapses them to one row carrying a "2 plays" count.
+    /// The Timeline/By-song mode picker was REMOVED (2026-07-18) — History is always the
+    /// timeline, so the repeated song shows as two event rows and no mode control exists.
     @MainActor
-    func testGroupBySongCollapsesRepeatsWithCount() {
+    func testTimelineOnlyNoModePicker() {
         let app = launch()
         XCTAssertTrue(app.staticTexts["Midnight City"].firstMatch.waitForExistence(timeout: 20))
-        app.segmentedControls["history-mode"].buttons["By song"].tap()
-        XCTAssertTrue(app.staticTexts["2 plays"].firstMatch.waitForExistence(timeout: 5),
-                      "Group-by-song should show a play count for the repeated song")
+        XCTAssertFalse(app.segmentedControls["history-mode"].exists,
+                       "the Timeline/By-song picker should be gone")
     }
 
     /// The History-only "Last played" field is the default sort (most recent first) and shows

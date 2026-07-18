@@ -728,11 +728,28 @@ final class RipsStore {
     /// recognizer flow's lesson — its ＋ adds to the library BEFORE ripping). When this
     /// device can write the library, add first: the library sync reaches the iMac in
     /// time for one of the server's capture retries.
+    /// Provisional-catalog store (eventual consistency — wired at app init). An accepted
+    /// add lands the song in the on-device catalog IMMEDIATELY; the nightly indexer's
+    /// real entry supersedes it later.
+    @ObservationIgnored var discoverAdds: DiscoverAddsStore?
+
     func discoverAdd(_ hit: DiscoverHit, library: (any MusicLibraryContributor)? = nil) async {
         if let library, library.canAddToLibrary {
             try? await library.addSongToLibrary(storeID: hit.appleMusicId)
         }
         await discoverAddRip(hit)
+        // Eventual consistency: once the server ACCEPTED the capture (or already has it),
+        // the song is a catalog citizen — collections/burn/stem key off the amrec_ id and
+        // retry safely against the queued rip.
+        if let job = jobs[hit.songId], job.phase != .error {
+            discoverAdds?.add(songId: hit.songId, appleMusicId: hit.appleMusicId,
+                              title: hit.title, artist: hit.artist, album: hit.album,
+                              artworkUrl: hit.artworkUrl, durationMs: hit.durationMs)
+        } else if manifest[hit.songId] != nil {
+            discoverAdds?.add(songId: hit.songId, appleMusicId: hit.appleMusicId,
+                              title: hit.title, artist: hit.artist, album: hit.album,
+                              artworkUrl: hit.artworkUrl, durationMs: hit.durationMs)
+        }
     }
 
     /// The rip-request half of `discoverAdd` (split so tests can drive it without a
