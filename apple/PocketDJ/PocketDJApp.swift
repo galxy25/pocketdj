@@ -33,6 +33,11 @@ struct PocketDJApp: App {
     /// playing set keeps advancing after the user leaves the screen to build other collections.
     /// Only starting a different collection (a fresh `play`) stops it.
     @State private var setlistPlayer: SetlistPlayer
+    /// Durable playback session: the sequencer's real-time snapshot (queue + index + position)
+    /// so a force-quit/restart rehydrates the Now Playing deck. Constructed here WITHOUT any
+    /// disk read (the visionOS first-frame lesson) — the snapshot is read later, by
+    /// `restorePersistedSessionIfIdle()` in RootView's launch task.
+    @State private var playbackSession: PlaybackSessionStore
     /// Publishes the Now Playing state into the App Group so the widget extension can render it,
     /// and routes the widget's transport buttons back to real playback. Held app-scoped so its
     /// state observation lives for the app's lifetime.
@@ -156,6 +161,11 @@ struct PocketDJApp: App {
         // App-scoped Play-All sequencer (survives navigation — see the property comment).
         let setlistPlayer = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
         _setlistPlayer = State(initialValue: setlistPlayer)
+        // Durable playback session — the sequencer writes every structural change + a throttled
+        // position refresh into it, so the deck survives force-quit/restart. No disk I/O here.
+        let playbackSession = PlaybackSessionStore(fileURL: PlaybackSessionStore.launchURL())
+        setlistPlayer.sessionStore = playbackSession
+        _playbackSession = State(initialValue: playbackSession)
         // Bridge the Now Playing state to the widget extension (App Group snapshot + cover) and
         // wire the widget's ⏮/⏯/⏭ buttons back to the sequencer + player. Uses the SAME art
         // resolver as the lock-screen card. Constructed here so it publishes from first launch.
@@ -488,6 +498,9 @@ struct PocketDJApp: App {
                         streaming.onScenePhaseBackground()
                         mixSessions.flush()    // persist the latest session state before suspension
                         studio.flush()         // studio document too — same suspension-race doctrine
+                        // Playback session: land the freshest position synchronously before a
+                        // possible suspension→kill (the same race the two flushes above close).
+                        playbackSession.flush()
                         // Submit/re-submit the BGTasks (burn-drain + rip-reconcile) so a
                         // backgrounded burn/rip keeps advancing/reconciling. iOS-only.
                         #if os(iOS)

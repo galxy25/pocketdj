@@ -84,6 +84,7 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 | `PocketDJ/Studio/**` (the Performance TAB — samples/loops/sequencer/instruments/cues) | `PerformanceUITests` | `StudioStoreTests`, `StudioFoldersTests`, `BeatMathTests`, `StudioEngineMathTests`, `StudioRenderTests`, `StudioMicRecorderTests`, `InstrumentPacksTests`, `ScoreQuantizerTests`, `SMFWriterTests`, `ScoreLayoutTests`, `CuePlumbingTests`, `CollectionsStudioTests`, `CollectionsLossyDecodeTests` |
 | `Support/**` (Camelot, Genre, Fmt, Config; incl. `BeatMath.swift`, `Config.instruments*`) | *(none)* | `CamelotTests`, `GenreTests`, `FormatTests`, `BeatMathTests` |
 | `Models/IndexModels.swift`, `State/AppModel.swift` | `BrowseUITests` | `DecodingTests`, `CatalogMergeTests` |
+| `State/PlaybackSessionStore.swift`, `Playback/SetlistPlayer.swift`, `Playback/WidgetSync.swift`, `Views/NowPlayingPanel.swift` (durable playback session / sequencer / home deck) | `NowPlayingUITests` | `PlaybackSessionStoreTests`, `SetlistPlayerSessionTests`, `SetlistPlayerTests`, `NowPlayingQueueTests` |
 | **`PocketDJApp.swift`, `RootView.swift`, `Theme.swift`, `project.yml`, `Tests/UI/XCUIHelpers.swift`** | **ALL (shell/infra)** | **ALL** |
 
 **Rule of thumb:** a change confined to one feature → that row's classes on **iPhone

@@ -150,6 +150,45 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
+    /// Durable playback session: launching with a persisted mid-set snapshot (the
+    /// `PDJ_SEED_PLAYBACK_SESSION` seam writes one to the session file, exercising the REAL
+    /// load path) rehydrates the home deck — current song "Pulse", up-next "Drift", played
+    /// "Neon" behind the cursor — WITHOUT auto-playing (the probe reads "paused"; the deck
+    /// is held until ▶). iPhone/iPad; macOS lands on Mix and can't drive UI headlessly.
+    func testRestoredSessionRehydratesDeckWithoutAutoPlay() throws {
+        #if os(macOS)
+        throw XCTSkip("restore deck exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launchEnvironment["PDJ_TEST_PROBE"] = "1"
+        app.launch()
+
+        // iPad restores with the sidebar visible; iPhone lands on the home menu — the
+        // panel rides under the menu rows in both shapes, no navigation needed.
+        let panel = app.any("now-playing-panel")
+        XCTAssertTrue(panel.waitForExistence(timeout: 15),
+                      "the restored session should bring the Now Playing deck up at launch")
+
+        // Current = the snapshot's index-1 row, rendered from the SELF-CONTAINED snapshot
+        // (no catalog lookup — titles/artists come from the session file itself).
+        XCTAssertTrue(app.staticTexts["Pulse"].waitForExistence(timeout: 8), "current song title")
+        XCTAssertTrue(app.staticTexts["Aria"].exists, "current song artist")
+        // Up next = the rows AFTER the cursor (played rows must NOT reappear as upcoming).
+        let upNext = app.any("np-queue-0")
+        XCTAssertTrue(upNext.waitForExistence(timeout: 8), "the up-next queue is restored")
+        XCTAssertTrue(app.staticTexts["Drift"].exists, "index-2 row is up next")
+        attach("restored-session-deck")
+
+        // NEVER auto-plays: the shared engine probe must read paused, and stay paused.
+        let state = app.staticTexts["player-state"]
+        XCTAssertTrue(state.waitForExistence(timeout: 8))
+        XCTAssertEqual(state.value as? String, "paused", "restore must not start audio")
+        sleep(2)
+        XCTAssertEqual(state.value as? String, "paused", "…and it stays held until ▶")
+        XCTAssertTrue(app.el("np-playpause").exists, "one tap of ▶ would resume")
+        #endif
+    }
+
     private func attach(_ name: String) {
         let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         att.name = name

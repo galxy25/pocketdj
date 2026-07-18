@@ -269,6 +269,9 @@ struct NowPlayingPanel: View {
     }
 
     private func togglePlayPause() {
+        // A RESTORED (held) deck has no audio loaded yet — the first ▶ resumes real playback
+        // at the saved position (blindly toggling would hit the idle engine and be refused).
+        if sequencer.isHeldForResume { sequencer.resumeFromHold(); return }
         if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
         else { player.toggle() }
     }

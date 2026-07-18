@@ -63,6 +63,25 @@ final class SetlistPlayer {
     /// newer `playNow` has already mutated the shared now-playing source during a navigation gap.
     @ObservationIgnored var historyContextProvider: ((String?) -> (source: PlayHistoryStore.PlaySource, name: String?))?
     private(set) var capturedHistoryContext: (source: PlayHistoryStore.PlaySource, name: String?)?
+
+    // MARK: Durable playback session (force-quit → relaunch restore)
+
+    /// The durable-session store (injected at app init, like `historyContextProvider`; nil in
+    /// most unit tests). Every structural change to the run — play, index move, live-queue
+    /// edit — snapshots into it immediately; the playing position rides a throttled refresh.
+    @ObservationIgnored var sessionStore: PlaybackSessionStore?
+    /// Identity of the CURRENT run's persisted session — fresh per `play()`, re-adopted by a
+    /// restore (so a restored run keeps overwriting the same snapshot).
+    @ObservationIgnored private var sessionId = ""
+    /// True after `restore(from:)` until the first transport action: the set is ACTIVE (the
+    /// home deck renders played/current/up-next) but NO audio has started — no AVAudioSession
+    /// touch, no system Now Playing card (the app isn't playing anything). The first ▶ goes
+    /// through `resumeFromHold()`, which starts real playback AT the saved position.
+    private(set) var isHeldForResume = false
+    /// The saved mid-song position (ms from the song's 0:00) the first ▶ resumes at.
+    @ObservationIgnored private var pendingResumeMs: Int?
+    /// ~1 Hz position sampler feeding the store's throttled refresh while a set runs.
+    @ObservationIgnored private var positionTicker: Task<Void, Never>?
     /// True when the current track is a live stream with no natural end — the UI shows a
     /// "Next" control so the set never silently freezes on it.
     private(set) var waitingForLive = false
@@ -107,6 +126,28 @@ final class SetlistPlayer {
         // Arm the now-playing observation ONCE; it self-re-arms on every change (see
         // `adoptNowPlayingIfJumped`). Single arm avoids stacking observers across play() calls.
         observeNowPlaying()
+        // Durable session: play/pause flips persist the position IMMEDIATELY (the throttled
+        // ticker alone would leave the paused position up to a tick stale). Same one-shot
+        // self-re-arming pattern as observeNowPlaying.
+        observePlayStateForSession()
+    }
+
+    /// Observe the play/pause state of BOTH backends; on any flip, write the session
+    /// position immediately (the store passes transitions through un-throttled). Armed once
+    /// in `init`, self-perpetuating; a no-op while idle or held.
+    private func observePlayStateForSession() {
+        withObservationTracking {
+            _ = player.isPlaying
+            _ = coordinator.appleMusic.isPlaying
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.observePlayStateForSession()
+                guard self.isRunning, !self.isHeldForResume else { return }
+                self.sessionStore?.updatePosition(ms: self.sessionPositionMs(),
+                                                  isPlaying: self.sessionIsPlaying())
+            }
+        }
     }
 
     /// Start playing `items` from the top, tagged with the source collection's id (so a
@@ -123,8 +164,23 @@ final class SetlistPlayer {
         isRunning = true
         deviceQueueUnplayable = false   // fresh run — clear any prior banner signal
         loadedAnyDeviceTrack = false
-        // Own the engine's end hook + lock-screen next/previous only while running (released in
-        // stop()). The lock screen / Control Center next/prev now advance the SET.
+        // A fresh play over a restored-but-held deck simply replaces it (the natural expiry).
+        isHeldForResume = false
+        pendingResumeMs = nil
+        armEngineHooks()
+        // Durable session: a fresh run gets a fresh identity + an immediate snapshot, and the
+        // ~1 Hz position sampler starts feeding the store's throttled refresh.
+        sessionId = "pses_" + UUID().uuidString
+        persistSession(positionMs: 0)
+        startPositionTicker()
+        Task { await playCurrent() }
+    }
+
+    /// Own the engines' end hooks + lock-screen next/previous while running (released in
+    /// `stop()`). Shared by `play()`, `resumeFromHold()`, and the held-state exits — a
+    /// RESTORED (held) deck deliberately does NOT arm these until real playback starts.
+    private func armEngineHooks() {
+        // The lock screen / Control Center next/prev advance the SET.
         player.onTrackEnded = { [weak self] in self?.handleEnded() }
         player.onNext = { [weak self] in self?.skipNext() }
         player.onPrevious = { [weak self] in self?.skipPrevious() }
@@ -136,7 +192,6 @@ final class SetlistPlayer {
         // The system remote ⏮ during a stream also lands in MusicKit (it rewinds its one-song
         // queue to 0:00); the provider detects the rewind and fires this so ⏮ steps the SET back.
         coordinator.appleMusic.onTrackRestarted = { [weak self] in self?.handleAppleMusicRestarted() }
-        Task { await playCurrent() }
     }
 
     /// Stop the sequence + clear now-playing; resets so the toolbar flips back to Play.
@@ -156,6 +211,12 @@ final class SetlistPlayer {
         queue = []
         sourceSetlistId = nil
         capturedHistoryContext = nil
+        // Durable session: a stopped set (natural end included) must NOT rehydrate next launch.
+        positionTicker?.cancel(); positionTicker = nil
+        isHeldForResume = false
+        pendingResumeMs = nil
+        sessionId = ""
+        sessionStore?.clear()
     }
 
     /// Acknowledge + clear the one-shot device-unplayable banner (the surface calls this
@@ -163,14 +224,19 @@ final class SetlistPlayer {
     func clearDeviceUnplayable() { deviceQueueUnplayable = false }
 
     /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
-    func skipNext() { advanceToNext() }
+    func skipNext() {
+        exitHoldIfNeeded()
+        advanceToNext()
+    }
 
     /// Manually go back one track (lock-screen PREVIOUS). No-op past the top of the set; never
     /// goes below index 0. Re-resolves + plays the (now) current track.
     func skipPrevious() {
         guard isRunning else { return }
+        exitHoldIfNeeded()
         waitingForLive = false
         index = max(0, index - 1)
+        persistSession(positionMs: 0)
         Task { await playCurrent() }
     }
 
@@ -202,6 +268,7 @@ final class SetlistPlayer {
         guard !src.isEmpty else { return }
         tail.move(fromOffsets: src, toOffset: max(0, min(toOffset, tail.count)))
         queue.replaceSubrange((index + 1)..., with: tail)
+        persistSession()
     }
 
     /// Remove tracks from the upcoming tail by row IDENTITY (`Item.uid`), not by
@@ -214,6 +281,7 @@ final class SetlistPlayer {
         var tail = Array(queue[(index + 1)...])
         tail.removeAll { uids.contains($0.uid) }
         queue.replaceSubrange((index + 1)..., with: tail)
+        persistSession()
     }
 
     /// Append tracks to the end of the running queue (the panel's add-search).
@@ -222,6 +290,7 @@ final class SetlistPlayer {
     func appendToQueue(_ items: [Item]) {
         guard isRunning, !items.isEmpty else { return }
         queue.append(contentsOf: items)
+        persistSession()
     }
 
     /// Insert tracks right AFTER the current one ("Add next"). The current slot
@@ -229,6 +298,7 @@ final class SetlistPlayer {
     func insertNextInQueue(_ items: [Item]) {
         guard isRunning, !items.isEmpty else { return }
         queue.insert(contentsOf: items, at: min(index + 1, queue.count))
+        persistSession()
     }
 
     /// Insert tracks at a RANDOM slot in the upcoming tail (Jukebox Hero's "Surprise
@@ -240,6 +310,7 @@ final class SetlistPlayer {
         guard isRunning, !items.isEmpty else { return }
         let lo = min(index + 1, queue.count)
         queue.insert(contentsOf: items, at: slot(lo...queue.count))
+        persistSession()
     }
 
     /// Bump an upcoming row (by identity) to right after the current track
@@ -249,6 +320,7 @@ final class SetlistPlayer {
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
         let item = queue.remove(at: pos)
         queue.insert(item, at: index + 1)
+        persistSession()
     }
 
     /// Send an upcoming row (by identity) to the END of the queue ("Move to end").
@@ -257,6 +329,7 @@ final class SetlistPlayer {
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
         let item = queue.remove(at: pos)
         queue.append(item)
+        persistSession()
     }
 
     /// Shift playback to an upcoming row (by identity) — an Up-Next "Play now". Moves the
@@ -270,8 +343,10 @@ final class SetlistPlayer {
     func jumpToUpcoming(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        exitHoldIfNeeded()
         waitingForLive = false
         index = pos
+        persistSession(positionMs: 0)
         Task { await playCurrent() }
     }
 
@@ -345,8 +420,12 @@ final class SetlistPlayer {
               queue[index].id != npId else { return }
         guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
         NPLog.trace("setlist ADOPT jump → index \(pos) id=\(npId) via \(am ? "appleMusic" : "rip")")
+        // A manual member play makes a RESTORED (held) deck live: real audio is sounding, so
+        // arm the end hooks + position sampler exactly as a resume would.
+        exitHoldIfNeeded()
         index = pos
         waitingForLive = false
+        persistSession(positionMs: 0)
         // Jumped onto a new track (a manual member play) — arm ITS repeat count, not the
         // previous track's leftover, so it loops the right number of times on natural end.
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[pos].repeatCount)
@@ -440,16 +519,20 @@ final class SetlistPlayer {
             // burned file: raise the one-shot banner so the surface tells the DJ nothing was
             // playable on-device (rather than silently ending with no audio).
             let unplayable = playbackMode() == .device && !loadedAnyDeviceTrack
-            stop()                          // reached the end — tear down cleanly
+            stop()                          // reached the end — tear down cleanly (clears the session)
             if unplayable { deviceQueueUnplayable = true }
         } else {
+            persistSession(positionMs: 0)
             Task { await playCurrent(fresh: true) }
         }
     }
 
     /// Resolve the SOURCE fresh each track (a burnt file may have been purged since the
     /// queue was built) and start it. Failure (no end event will ever fire) advances now.
-    private func playCurrent(fresh: Bool = true) async {
+    /// `resumeAtMs` (restore-resume only) starts the track mid-song — it rides every source
+    /// branch's existing cue seam (`playLocalFile(atMs:)` / `coordinator.play(atMs:)`), so
+    /// boundaries and history behave exactly like a normal start.
+    private func playCurrent(fresh: Bool = true, resumeAtMs: Int? = nil) async {
         guard isRunning, index < queue.count else { return }
         // A fresh track (index moved) arms its repeat counter; a repeat (fresh: false) keeps the
         // already-decremented one so it counts down to a single remaining play.
@@ -479,7 +562,7 @@ final class SetlistPlayer {
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
-                          endBoundaryMs: nil, release: res.release)
+                          endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
             return
         }
 
@@ -499,7 +582,7 @@ final class SetlistPlayer {
                 playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                               startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
                               endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
-                              release: res.release)
+                              atMs: resumeAtMs, release: res.release)
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
                 advanceToNext()   // no on-device file for this track → skip it
@@ -515,9 +598,9 @@ final class SetlistPlayer {
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
                           endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
-                          release: res.release)
+                          atMs: resumeAtMs, release: res.release)
         } else {
-            await coordinator.play(id: it.id, title: it.title, artist: it.artist)
+            await coordinator.play(id: it.id, title: it.title, artist: it.artist, atMs: resumeAtMs)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advanceToNext(); return }
             // Apple Music STREAM: MusicKit owns the audio. On iOS/CarPlay it writes NOTHING to
@@ -541,6 +624,143 @@ final class SetlistPlayer {
                 // track's own end. A digital cloud rip is per-song (startMs nil → no boundary,
                 // the natural end governs). `nowPlaying.startMs` is what the rip path resolved.
                 player.setEndBoundary(ms: sharedFileEndBoundaryMs(it, startMs: rips.nowPlaying?.startMs))
+            }
+        }
+    }
+
+    // MARK: - Durable playback session (persist + restore)
+
+    /// Relaunch entry point (RootView's launch task): rehydrate the deck from the persisted
+    /// snapshot — HELD, never auto-playing. Skipped when a set is already running or any
+    /// backend already owns audio (the app was launched by an App Intent / widget that
+    /// started playback first), and under the `PDJ_DISABLE_SESSION_RESTORE` seam.
+    func restorePersistedSessionIfIdle() {
+        guard let sessionStore else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard env["PDJ_DISABLE_SESSION_RESTORE"] == nil else { return }
+        guard !isRunning, coordinator.activeBackend == nil, !player.isPlaying else { return }
+        sessionStore.seedFixtureIfRequested()
+        guard let snap = sessionStore.load() else { return }
+        restore(from: snap)
+    }
+
+    /// Rebuild the run from a snapshot: fresh-uid queue, index cursor, source identity, and
+    /// the captured history context — marked ACTIVE-BUT-HELD so the Now Playing home deck
+    /// (and the widget / CarPlay Up Next) render played/current/up-next, WITHOUT starting
+    /// audio, touching AVAudioSession, or claiming the system Now Playing card (the
+    /// one-audio-owner rule: the card belongs to whoever is actually sounding — nobody yet).
+    /// The engine hooks stay un-armed until real playback starts (`resumeFromHold` /
+    /// skip / jump), mirroring the `PDJ_HOLD_PLAYBACK` discipline. First ▶ resumes AT the
+    /// saved position; everything after that is a 100% normal run. No-op mid-run.
+    func restore(from snap: PlaybackSessionStore.Snapshot) {
+        guard !isRunning, !snap.queue.isEmpty else { return }
+        queue = snap.queue.map {
+            Item(id: $0.songId, title: $0.title, artist: $0.artist,
+                 lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+        }
+        index = min(max(0, snap.index), queue.count - 1)
+        sourceSetlistId = snap.source.id
+        // Reconstruct the run's history origin from the stored kind + name, so plays after
+        // the resume are attributed to the same set the pre-kill plays were.
+        capturedHistoryContext = (PlayHistoryStore.PlaySource(rawValue: snap.source.kind) ?? .setlist,
+                                  snap.source.name)
+        sessionId = snap.sessionId
+        pendingResumeMs = snap.positionMs > 0 ? snap.positionMs : nil
+        currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
+        deviceQueueUnplayable = false
+        loadedAnyDeviceTrack = false
+        waitingForLive = false
+        isHeldForResume = true
+        isRunning = true
+        // Re-adopt the snapshot as the store's current session (the held branch of
+        // `sessionPositionMs` preserves the saved position; `isPlaying` persists false).
+        persistSession()
+        NPLog.trace("setlist RESTORE held session=\(sessionId) index=\(index)/\(queue.count) resumeMs=\(pendingResumeMs ?? 0)")
+    }
+
+    /// The first ▶ after a restore: arm the engine hooks, then start REAL playback of the
+    /// current track AT the saved position (local files seek via `playLocalFile(atMs:)`;
+    /// Apple Music re-plays + seeks via the coordinator's cue seam). The playback surfaces
+    /// (NowPlayingPanel / WidgetSync) route their play-toggle here while `isHeldForResume`.
+    func resumeFromHold() {
+        guard isRunning, isHeldForResume else { return }
+        isHeldForResume = false
+        armEngineHooks()
+        startPositionTicker()
+        let at = pendingResumeMs
+        pendingResumeMs = nil
+        // fresh: false — restore() already armed the current row's repeat counter.
+        Task { await playCurrent(fresh: false, resumeAtMs: at) }
+    }
+
+    /// A held deck acted on by anything OTHER than ▶ (skip / jump / a manual member play):
+    /// drop the pending resume position and go live — arm the hooks + position sampler so
+    /// the action's playback behaves exactly like a normal run's. No-op when not held.
+    private func exitHoldIfNeeded() {
+        guard isHeldForResume else { return }
+        isHeldForResume = false
+        pendingResumeMs = nil
+        armEngineHooks()
+        startPositionTicker()
+    }
+
+    // MARK: Session snapshot plumbing
+
+    /// Snapshot the ENTIRE run into the session store — called on every structural change
+    /// (play / index move / live-queue edit; that's how jukebox guest requests survive a
+    /// force-quit). `positionMs` nil ⇒ read the live position; index moves pass 0 so a kill
+    /// right after an advance never resumes the NEW track at the OLD track's offset.
+    private func persistSession(positionMs: Int? = nil) {
+        guard let sessionStore, isRunning else { return }
+        let rows = queue.map {
+            PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
+                                     lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+        }
+        let ctx = capturedHistoryContext
+        let snap = PlaybackSessionStore.Snapshot(
+            sessionId: sessionId,
+            source: PlaybackSessionStore.SourceRef(kind: (ctx?.source ?? .setlist).rawValue,
+                                                   id: sourceSetlistId, name: ctx?.name),
+            queue: rows, index: index,
+            positionMs: positionMs ?? sessionPositionMs(),
+            isPlaying: sessionIsPlaying(),
+            updatedAt: Date().timeIntervalSince1970 * 1000)
+        sessionStore.save(snap)
+    }
+
+    /// Whether the run is audibly playing, by whichever backend owns the audio (the
+    /// NowPlayingPanel routing rule). A held (restored, not yet resumed) deck is never playing.
+    private func sessionIsPlaying() -> Bool {
+        if isHeldForResume { return false }
+        return coordinator.activeBackend == .appleMusic ? coordinator.appleMusic.isPlaying
+                                                        : player.isPlaying
+    }
+
+    /// The current song's position in ms FROM ITS OWN 0:00 — the restore-resume coordinate.
+    /// Local/rip playback subtracts the shared-album-file `startMs` (PlayerEngine's clock is
+    /// absolute within the file); Apple Music reports song-relative seconds directly. While
+    /// held, the pending resume position IS the position.
+    private func sessionPositionMs() -> Int {
+        if isHeldForResume { return pendingResumeMs ?? 0 }
+        if coordinator.activeBackend == .appleMusic {
+            return max(0, Int(coordinator.appleMusic.positionSeconds * 1000))
+        }
+        let start = rips.nowPlaying?.startMs ?? 0
+        return max(0, Int(player.currentTime * 1000) - start)
+    }
+
+    /// ~1 Hz sampler feeding the store's position refresh while the set runs. The store
+    /// throttles playing-state writes (~5 s) and passes pause/resume transitions through
+    /// immediately, so this stays cheap (reads two clocks, usually writes nothing).
+    private func startPositionTicker() {
+        positionTicker?.cancel()
+        positionTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                guard self.isRunning, !self.isHeldForResume else { continue }
+                self.sessionStore?.updatePosition(ms: self.sessionPositionMs(),
+                                                  isPlaying: self.sessionIsPlaying())
             }
         }
     }
