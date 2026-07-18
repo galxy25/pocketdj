@@ -7,6 +7,8 @@ struct SongDetailView: View {
     @Environment(LyricsStore.self) private var lyricsStore: LyricsStore?
     @Environment(RipsStore.self) private var rips
     @Environment(StreamingStore.self) private var streaming
+    @Environment(IntentServices.self) private var intents
+    @Environment(\.dismiss) private var dismiss
     let song: IndexSong
     @State private var showEdit = false
     @State private var showAdd = false
@@ -136,14 +138,32 @@ struct SongDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(current.name).font(.title2.bold()).foregroundStyle(Theme.fg)
-            Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
+            // Artist + album are HOTLINKS into the Browser (Levi 2026-07-18). They route
+            // via IntentRoute (not NavigationLink) so they work from EVERY presentation —
+            // the browser push, the platter long-press sheet, the mix-session sheet —
+            // where an ad-hoc NavigationStack has no destinations registered. dismiss()
+            // closes a sheet first (a no-op-ish pop in the pushed context, whose stack
+            // the route consumption resets anyway).
+            Button {
+                let artist = current.artist
+                dismiss()
+                intents.pendingRoute = .artist(artist)
+            } label: {
+                Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("artist-hotlink")
             KeyChip(key: current.key, camelot: current.camelot)
             if let src = app.source(ofSong: current.id) {
                 Tag(text: src, color: Theme.fgDim)
                     .accessibilityIdentifier("source-tag")
             }
             if let album {
-                NavigationLink(value: album) {
+                Button {
+                    let id = album.id
+                    dismiss()
+                    intents.pendingRoute = .album(id)
+                } label: {
                     Label(album.name, systemImage: "rectangle.stack")
                         .font(.callout)
                 }
