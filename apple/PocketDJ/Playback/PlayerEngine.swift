@@ -120,7 +120,7 @@ final class PlayerEngine {
     /// The now-playing song id (for artwork resolution) + the fetched Now-Playing-card artwork.
     /// A monotonic token supersedes an in-flight fetch when the track changes, so a slow image
     /// never lands on the wrong song's card.
-    private var nowPlayingSongId: String?
+    private(set) var nowPlayingSongId: String?
     private var nowPlayingArtwork: MPMediaItemArtwork?
     private var artworkToken = 0
 

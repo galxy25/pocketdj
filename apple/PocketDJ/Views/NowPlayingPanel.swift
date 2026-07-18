@@ -200,6 +200,18 @@ struct NowPlayingPanel: View {
         coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying
     }
 
+    /// The record spins only when the AUDIO is the deck's current track — a Discover/
+    /// browser SINGLE playing through the shared engine must not spin the platter under
+    /// a paused set (display/audio mismatch; Levi 2026-07-18). Apple Music playback is
+    /// always deck-owned; a nil engine songId (burned-local loads) is deck-owned too —
+    /// only a KNOWN different song blocks the spin.
+    private var currentItemAudible: Bool {
+        guard isPlayingNow else { return false }
+        if coordinator.activeBackend == .appleMusic { return true }
+        guard let playing = player.nowPlayingSongId, let current = currentItem else { return true }
+        return playing == current.id
+    }
+
     /// Play-position fraction (0…1) for the tonearm sweep — sampled by the record
     /// view on its own throttled timeline (the clocks are deliberately
     /// non-observable; see PlayerClock). Elapsed comes from whichever engine owns
@@ -287,7 +299,7 @@ struct NowPlayingPanel: View {
                 if !compactHeight {
                     RecordPlayerView(album: currentAlbum, artworkURL: currentArtworkURL,
                                      studioId: currentItem?.id, bpm: currentBpm,
-                                     spinning: isPlayingNow, progress: playProgress)
+                                     spinning: currentItemAudible, progress: playProgress)
                         .frame(width: recordSize, height: recordSize * 0.82)
                         // The record is the door to the current track's metadata:
                         // long-press on iOS opens the detail DIRECTLY; macOS gets

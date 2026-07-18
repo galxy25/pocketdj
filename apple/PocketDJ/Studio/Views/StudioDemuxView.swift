@@ -333,9 +333,15 @@ struct StudioDemuxView: View {
                 sectionTitle("Lyrics", icon: "music.mic")
                 DemuxLyricsView(words: doc?.words ?? [], player: player) { seek(toMs: $0) }
             case .done:
-                Text("No words recognized — probably instrumental.")
-                    .font(.caption).foregroundStyle(Theme.fgDim)
-                    .accessibilityIdentifier("demux-no-words")
+                // Retry here too (Levi 2026-07-18): a .done-empty verdict can be a stale
+                // artifact of the pre-chunking transcriber (or a bad run) — let the user
+                // re-trigger the on-device analysis without re-importing anything.
+                HStack(spacing: 8) {
+                    Text("No words recognized — probably instrumental.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("demux-no-words")
+                    retryButton("demux-transcript-retry-empty") { kickoffTranscript(force: true) }
+                }
             case .unavailable:
                 Text("On-device transcription isn’t available (permission or language).")
                     .font(.caption).foregroundStyle(Theme.fgDim)
