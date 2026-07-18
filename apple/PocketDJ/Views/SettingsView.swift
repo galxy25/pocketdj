@@ -9,6 +9,9 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(EditsStore.self) private var edits
     @Environment(CollectionsStore.self) private var collections
+    // The nuclear reset ends the whole mix (ejects both decks), which also clears the durable
+    // mix-deck session — a reset device must launch quiet, not rehydrate yesterday's decks.
+    @Environment(MixEngine.self) private var mix
     // Not private: read by the streamingSection in SettingsView+Streaming.swift.
     @Environment(StreamingStore.self) var streaming
     @State private var ripTesting = false
@@ -580,6 +583,7 @@ struct SettingsView: View {
             .confirmationDialog("Reset everything on this device?",
                                 isPresented: $confirmingReset, titleVisibility: .visible) {
                 Button("Reset everything", role: .destructive) {
+                    mix.ejectAll()   // stop any auto-DJ + eject both decks → durable session cleared
                     settings.resetEverything()
                     Task { await app.reload() }
                     nuking = true   // the nuclear option gets a nuclear send-off

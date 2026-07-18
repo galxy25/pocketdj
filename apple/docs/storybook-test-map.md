@@ -85,6 +85,7 @@ test classes to run. Always add the full unit bundle (`-only-testing:PocketDJTes
 | `Support/**` (Camelot, Genre, Fmt, Config; incl. `BeatMath.swift`, `Config.instruments*`) | *(none)* | `CamelotTests`, `GenreTests`, `FormatTests`, `BeatMathTests` |
 | `Models/IndexModels.swift`, `State/AppModel.swift` | `BrowseUITests` | `DecodingTests`, `CatalogMergeTests` |
 | `State/PlaybackSessionStore.swift`, `Playback/SetlistPlayer.swift`, `Playback/WidgetSync.swift`, `Views/NowPlayingPanel.swift` (durable playback session / sequencer / home deck) | `NowPlayingUITests` | `PlaybackSessionStoreTests`, `SetlistPlayerSessionTests`, `SetlistPlayerTests`, `NowPlayingQueueTests` |
+| `PocketDJ/Mix/**` (Mix engine/decks/sessions/recorder UI), `State/MixDeckSessionStore.swift` (durable mix-deck session) | `MixDeckLayoutUITests`, `MixSessionsUITests`, `VUMeterAndCueUITests`, `MixDeckRestoreUITests` | `MixEngineTests`, `MixRecorderTests`, `MixSessionStoreTests`, `MixSessionRecordingsDeleteTests`, `RecordingBulletproofTests`, `MixDeckSessionStoreTests`, `MixEngineSessionTests` |
 | **`PocketDJApp.swift`, `RootView.swift`, `Theme.swift`, `project.yml`, `Tests/UI/XCUIHelpers.swift`** | **ALL (shell/infra)** | **ALL** |
 
 **Rule of thumb:** a change confined to one feature → that row's classes on **iPhone

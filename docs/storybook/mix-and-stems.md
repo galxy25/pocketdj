@@ -342,3 +342,38 @@ an auto-mix model). The timeline is built to actually read:
 **User story:** "Open a past session and actually read it — the moves wrap across the screen in order,
 each auto-glide is one clean from→to node instead of a thousand ticks, and I can tap any track I loaded
 to see what it was."
+
+---
+
+## Your decks survive a restart — durable mix sessions
+
+Kill the app mid-mix — swipe it away, let the phone reboot, whatever — and **reopen onto the
+Mix tab: the board is back exactly as you left it**. Both decks re-loaded with their tracks,
+playheads **cued to the second you left them**, volumes, tempo and pitch bends, effects and
+their strengths, stem mutes and levels, the crossfader position, the Lead badge — all of it.
+An Auto-DJ that was running comes back with its **whole queue intact** — including every song
+your Jukebox Hero guests slipped into it — **suspended**, showing "Auto-mix paused" with the
+same up-next it had. Nothing is rebuilt from memory or a session log: the live mix **writes
+itself down as you work it** (deck loads and queue changes instantly, slider sweeps as one
+note per gesture, playheads every few seconds), so there is nothing to lose at the moment of
+the kill.
+
+The same two rules as the Now Playing deck's restore keep it honest:
+
+- **Reopening never blasts audio.** Everything comes back *held* — decks cued, the big
+  transport still reading **Play both decks**, the Auto-DJ machine frozen. It never resumes
+  itself: *you* hit a deck's ▶, the master Play, or the banner's **Resume** (which picks the
+  mix up mid-song, right where it was cued, and re-arms the auto machine against what's
+  actually playing). The lock-screen card stays empty until real sound starts — and if a
+  restored *set list* session is also waiting, both sit held side by side; whichever you play
+  first owns the card.
+- **It only restores what's actually there.** Eject both decks (or nuke everything from
+  Settings) and the session is cleared — the next launch opens a clean board. A track whose
+  burned file vanished in the meantime simply leaves that one deck empty; the rest of the mix
+  — the other deck, the queue, the mixer — still comes back. Cue points, beat grids and the
+  pulse re-derive from the burned analysis files, and a recording that was running is handled
+  by the recorder's own crash recovery (the take survives too — see above).
+
+**User story:** "I was two hours into an Auto-DJ set with a dozen guest requests queued when
+the phone died. Rebooted, opened the Mix tab — both decks were sitting there cued mid-song,
+queue untouched, still paused. Hit Resume and the room got the same set back."
