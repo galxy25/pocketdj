@@ -413,7 +413,10 @@ final class RipsStore {
                 guard let v = try? await self.fetchJob(jobId, base: base, token: tok) else { continue }
                 self.jobs[songId] = v
                 if v.phase == .ready, v.url != nil { await self.refreshManifest(); return }
-                if v.phase == .error { return }
+                // Do NOT stop on .error: the server's auto-heal re-queues failed
+                // captures (retry N/6 with backoff), flipping error → queued — a poll
+                // that bailed here left the row stuck on ＋ Add while the server was
+                // still working. The 1-hour cap above is the terminal condition.
             }
         }
     }
@@ -719,7 +722,22 @@ final class RipsStore {
     /// same background poll single-song rips use (`pollToReady`) so the manifest — and the
     /// row — flips to ripped when the capture lands. In-flight state is readable per song
     /// via `jobs[hit.songId]?.phase`. Never throws; failures land in `discoverError`.
-    func discoverAdd(_ hit: DiscoverHit) async {
+    ///
+    /// `library`: the iMac captures by PLAYING the track in Music.app, and a track
+    /// outside the DJ's Apple Music library usually can't produce audio there (the
+    /// recognizer flow's lesson — its ＋ adds to the library BEFORE ripping). When this
+    /// device can write the library, add first: the library sync reaches the iMac in
+    /// time for one of the server's capture retries.
+    func discoverAdd(_ hit: DiscoverHit, library: (any MusicLibraryContributor)? = nil) async {
+        if let library, library.canAddToLibrary {
+            try? await library.addSongToLibrary(storeID: hit.appleMusicId)
+        }
+        await discoverAddRip(hit)
+    }
+
+    /// The rip-request half of `discoverAdd` (split so tests can drive it without a
+    /// library contributor).
+    private func discoverAddRip(_ hit: DiscoverHit) async {
         let outcome = await requestRip(songId: hit.songId, title: hit.title, artist: hit.artist,
                                        appleMusicId: hit.appleMusicId, lengthMs: hit.durationMs)
         switch outcome {

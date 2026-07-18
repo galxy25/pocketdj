@@ -194,6 +194,7 @@ struct DiscoverResultsList: View {
 private struct DiscoverRow: View {
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
+    @Environment(StreamingStore.self) private var streaming
     let hit: RipsStore.DiscoverHit
     let index: Int
 
@@ -257,7 +258,13 @@ private struct DiscoverRow: View {
             }
             .accessibilityIdentifier("discover-progress-\(index)")
         } else {
-            Button { let h = hit; Task { await rips.discoverAdd(h) } } label: {
+            Button {
+                // Library-first (when this device can): the iMac's capture needs the
+                // track playable in ITS Music.app — see discoverAdd.
+                let h = hit
+                let lib = streaming.providers.libraryContributors.first
+                Task { await rips.discoverAdd(h, library: lib) }
+            } label: {
                 Label("Add", systemImage: "plus")
             }
             .buttonStyle(.bordered)

@@ -268,28 +268,42 @@ struct RootView: View {
         guard let route else { return }
         intents.pendingRoute = nil
         path = NavigationPath()
+        // Section lands NOW; the PUSH is staged onto a later runloop pass. Setting both
+        // in one update drops the push whenever the stack re-roots underneath it — the
+        // collapsed (iPhone) split view swapping detail columns, or a presenting sheet
+        // (the platter's song-detail hotlinks) still mid-dismiss — leaving the user at
+        // the section's home instead of the destination.
+        var push: (() -> Void)?
         switch route {
         case .playlist(let id):
             section = .playlists
-            if let pl = collections.playlist(id) { path.append(pl) }
+            if let pl = collections.playlist(id) { push = { path.append(pl) } }
         case .pocket(let id):
             section = .playlists
-            if let p = collections.pocket(id) { path.append(p) }
+            if let p = collections.pocket(id) { push = { path.append(p) } }
         case .setlist(let id):
             section = .playlists
-            if let s = collections.setlist(id) { path.append(s) }
+            if let s = collections.setlist(id) { push = { path.append(s) } }
         case .album(let id):
             section = .browse
-            if let a = app.albumsById[id] { path.append(a) }
+            if let a = app.albumsById[id] { push = { path.append(a) } }
         case .artist(let name):
             section = .browse
-            path.append(Artist(name: name))
+            push = { path.append(Artist(name: name)) }
         case .sourcePlaylist(let id):
             section = .playlists
-            if let sp = app.indexPlaylists.first(where: { $0.id == id }) { path.append(sp) }
+            if let sp = app.indexPlaylists.first(where: { $0.id == id }) { push = { path.append(sp) } }
         case .browseSearch:
             // The search term itself rides `pendingBrowseQuery`, consumed by BrowseView.
             section = .browse
+        }
+        if let push {
+            Task { @MainActor in
+                // Long enough for the sheet-dismiss/section-swap animations to settle
+                // (sheet dismissal is ~400 ms on iOS — racing it re-drops the push).
+                try? await Task.sleep(for: .milliseconds(450))
+                push()
+            }
         }
     }
 

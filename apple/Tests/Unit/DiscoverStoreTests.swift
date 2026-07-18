@@ -166,6 +166,44 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertNil(DiscoverSearchModel.term(title: "  ", artist: ""))
     }
 
+    // MARK: Add = library-first (the iMac captures by playing — recognizer doctrine)
+
+    @MainActor private final class StubLibrary: MusicLibraryContributor {
+        var added: [String] = []
+        var canAdd = true
+        var kind: StreamingProviderKind { .appleMusic }
+        var canContribute: Bool { true }
+        var canAddToLibrary: Bool { canAdd }
+        func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
+        func addSongToLibrary(storeID: String) async throws { added.append(storeID) }
+        func addAlbumToLibrary(storeID: String) async throws {}
+        func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { [] }
+    }
+
+    func testDiscoverAddAddsToLibraryFirst() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/rip"] = Data("""
+        { "jobId": "j1", "songId": "amrec_123", "phase": "queued", "url": null }
+        """.utf8)
+        let lib = StubLibrary()
+        let hit = RipsStore.DiscoverHit(appleMusicId: "123", title: "T", artist: "A", songId: "amrec_123")
+        await rips.discoverAdd(hit, library: lib)
+        XCTAssertEqual(lib.added, ["123"], "library add precedes the rip request")
+        XCTAssertEqual(DiscoverURLProtocol.count(path: "/rip"), 1, "rip still enqueued")
+    }
+
+    func testDiscoverAddSkipsLibraryWhenPlatformCannot() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/rip"] = Data("""
+        { "jobId": "j2", "songId": "amrec_9", "phase": "queued", "url": null }
+        """.utf8)
+        let lib = StubLibrary(); lib.canAdd = false
+        let hit = RipsStore.DiscoverHit(appleMusicId: "9", title: "T", artist: "A", songId: "amrec_9")
+        await rips.discoverAdd(hit, library: lib)
+        XCTAssertTrue(lib.added.isEmpty, "macOS-style contributor: no library write")
+        XCTAssertEqual(DiscoverURLProtocol.count(path: "/rip"), 1)
+    }
+
     // MARK: MusicKit merge (the "Witchy" coverage fix — catalog leads, proxy annotates)
 
     private func track(_ id: String, _ title: String) -> StreamingTrack {
