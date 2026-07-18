@@ -48,6 +48,10 @@ struct PocketDJApp: App {
     /// On-demand lyrics: fetches `{catalogBase}/lyrics/<songId>.txt` when a song detail
     /// opens and caches the text on disk for instant + offline re-opens.
     @State private var lyrics: LyricsStore
+    /// The Producer tab's Demuxer documents (on-device transcript + chord timeline per audio
+    /// source), persisted under `demux-cache/` — app-scoped so an analysis keeps running
+    /// across tab switches.
+    @State private var demux: DemuxStore
     /// APP-SCOPED DJ mix engine (AVAudioEngine two-deck graph) — owned here, NOT by MixView, so a
     /// running mix keeps playing across tab switches (mirrors SetlistPlayer's app-scoping). Built
     /// from the SAME BurnStore so each deck loads ONLY locally-burned files (`localURLForPlayback`).
@@ -184,6 +188,7 @@ struct PocketDJApp: App {
             ready: { amProvider.canResolve },
             resolve: { song in await amProvider.resolve(song)?.artworkURL }))
         _lyrics = State(initialValue: LyricsStore())
+        _demux = State(initialValue: DemuxStore())
         // App-scoped two-deck AVAudioEngine mix engine. Shares `burns` so a deck resolves the on-disk
         // burned file (+ holds its security scope) for the song it loads. Its `recorder` is the
         // app-side session store, wired here so every deck action is logged into the current session.
@@ -473,6 +478,7 @@ struct PocketDJApp: App {
                 .environment(setlistPlayer)
                 .environment(albumArt)
                 .environment(lyrics)
+                .environment(demux)
                 .environment(mix)
                 .environment(mixSessions)
                 .environment(mixRecorder)
