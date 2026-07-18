@@ -170,26 +170,40 @@ enum DemuxTranscriber {
     private static func recognizeOnce(url: URL, recognizer: SFSpeechRecognizer) async throws -> [DemuxWord] {
         let request = SFSpeechURLRecognitionRequest(url: url)
         request.requiresOnDeviceRecognition = true
-        request.shouldReportPartialResults = false
+        // Partials ON (the "only 30 seconds got lyrics" field fix): on MUSIC the
+        // recognizer routinely gives up mid-window — an early error, or a final that
+        // covers only the stretch it was confident about. The words it DID hear are the
+        // result; they must never be discarded with the bail.
+        request.shouldReportPartialResults = true
         request.taskHint = .dictation
 
         let box = TaskBox()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 var finished = false
+                var lastWords: [DemuxWord] = []
                 box.task = recognizer.recognitionTask(with: request) { result, error in
                     guard !finished else { return }
-                    if let result, result.isFinal {
+                    // result and error can arrive in the SAME callback — capture the
+                    // partial first, then settle on final/error.
+                    if let result {
+                        let heard = words(from: result.bestTranscription)
+                        if !heard.isEmpty { lastWords = heard }
+                        if result.isFinal {
+                            finished = true
+                            cont.resume(returning: lastWords)
+                            return
+                        }
+                    }
+                    if let error {
                         finished = true
-                        cont.resume(returning: words(from: result.bestTranscription))
-                    } else if let error {
-                        finished = true
-                        // "No speech detected" surfaces as an error on some OS versions — for a
-                        // WINDOW that's a legitimately wordless stretch (instrumental bridge),
-                        // not a failure.
+                        // A bail with words in hand is a RESULT (best effort); a
+                        // wordless 1110 ("no speech") is a legitimately silent window;
+                        // only a wordless hard failure propagates as an error.
                         let ns = error as NSError
-                        if ns.domain == "kAFAssistantErrorDomain", ns.code == 1110 {
-                            cont.resume(returning: [])
+                        if !lastWords.isEmpty
+                            || (ns.domain == "kAFAssistantErrorDomain" && ns.code == 1110) {
+                            cont.resume(returning: lastWords)
                         } else {
                             cont.resume(throwing: TranscribeError.recognitionFailed(error.localizedDescription))
                         }

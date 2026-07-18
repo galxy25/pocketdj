@@ -82,6 +82,11 @@ struct DemuxTimelineView: View {
                 .gesture(scrubGesture(pxPerSec: effectivePx))
             }
             .accessibilityIdentifier("demux-timeline")
+            // Zoom anchors at the PLAYHEAD (Levi): changing zoom re-centers the current
+            // second, so zoom-in dives into the part you're at instead of drifting off.
+            .onChange(of: pxPerSec) { _, _ in
+                proxy.scrollTo("demux-sec-\(Int(player.currentTime))", anchor: .center)
+            }
             .task(id: followTaskKey) {
                 // Auto-follow: center the playhead's current second while playing. A polling
                 // task (not onChange) because currentTime is deliberately non-Observable.

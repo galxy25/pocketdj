@@ -330,7 +330,13 @@ struct StudioDemuxView: View {
         } else {
             switch doc?.transcriptStatus {
             case .done where !(doc?.words.isEmpty ?? true):
-                sectionTitle("Lyrics", icon: "music.mic")
+                // Regenerate is ALWAYS available (Levi): partial-coverage runs (the
+                // recognizer bailing mid-song) should be one tap from a fresh pass.
+                HStack(spacing: 8) {
+                    sectionTitle("Lyrics", icon: "music.mic")
+                    Spacer()
+                    retryButton("demux-transcript-regenerate") { kickoffTranscript(force: true) }
+                }
                 DemuxLyricsView(words: doc?.words ?? [], player: player) { seek(toMs: $0) }
             case .done:
                 // Retry here too (Levi 2026-07-18): a .done-empty verdict can be a stale
