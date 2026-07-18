@@ -20,6 +20,8 @@ struct RootView: View {
     @Environment(PlayHistoryStore.self) private var playHistory
     @Environment(IntentServices.self) private var intents
     @Environment(CloudSyncService.self) private var cloudSync
+    @Environment(JukeboxStore.self) private var jukebox
+    @Environment(PlaybackCoordinator.self) private var coordinator
     // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
     // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
     // button so it self-hides exactly where ⌘N does (see NewWindowCommands in PocketDJApp).
@@ -220,9 +222,10 @@ struct RootView: View {
     }
 
     /// Menu row: every section uses its SF Symbol except MIX, which wears Apple
-    /// Music's AutoMix mark (two overlapping records — one solid, one open ring).
-    /// No public SF Symbol exists for it, so it's drawn as a tiny vector that
-    /// follows `.tint` exactly like the surrounding symbol icons.
+    /// Music's AutoMix mark (two overlapping records — one solid, one open ring),
+    /// and JUKEBOX HERO, which wears the pride jukebox (colors wander while a
+    /// session is live, breathes while the music is audible — see JukeboxIcon).
+    /// Neither exists as a public SF Symbol, so both are tiny vectors.
     @ViewBuilder private func rowLabel(_ item: Section) -> some View {
         if item == .mix {
             // No explicit foreground style: the Canvas inherits the Label icon
@@ -232,9 +235,23 @@ struct RootView: View {
                 AutoMixIcon()
                     .frame(width: 25, height: 15)
             }
+        } else if item == .jukebox {
+            Label { Text(item.rawValue) } icon: {
+                JukeboxIcon(mode: jukeboxIconMode)
+                    .frame(width: 16, height: 20)
+            }
         } else {
             Label(item.rawValue, systemImage: item.icon)
         }
+    }
+
+    /// The jukebox mark's animation state. "Playing" is the NowPlayingPanel routing
+    /// rule (whichever backend owns the audio), gated on a running set — the same
+    /// music the jukebox's guests are hearing.
+    private var jukeboxIconMode: JukeboxIconMode {
+        let audible = sequencer.isRunning &&
+            (coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying)
+        return JukeboxIconMode.resolve(sessionActive: jukebox.session != nil, isPlaying: audible)
     }
 
     /// Consume a pending intent route on a FRESH stack (Spotlight/Siri asked for
