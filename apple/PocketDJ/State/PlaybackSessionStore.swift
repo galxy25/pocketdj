@@ -46,6 +46,11 @@ final class PlaybackSessionStore {
         var kind: String
         var id: String?
         var name: String?
+        /// NAVIGABLE origin collection (the Up Next header's collection button target):
+        /// a `PlaySource` rawValue + the origin collection's id. Optional so pre-existing
+        /// snapshots (which lack the keys) still decode and restore.
+        var originKind: String?
+        var originId: String?
     }
 
     /// One queue row — a self-contained snapshot of `SetlistPlayer.Item` (fresh `uid`s are

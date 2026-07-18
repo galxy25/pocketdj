@@ -64,6 +64,14 @@ final class SetlistPlayer {
     @ObservationIgnored var historyContextProvider: ((String?) -> (source: PlayHistoryStore.PlaySource, name: String?))?
     private(set) var capturedHistoryContext: (source: PlayHistoryStore.PlaySource, name: String?)?
 
+    /// Resolves the NAVIGABLE origin collection (kind + collection id) for a run's
+    /// `sourceSetlistId` — wired at app init to `CollectionsStore.originCollection`.
+    /// CAPTURED at `play()` (the historyContextProvider doctrine: a later playNow must not
+    /// retag this run) and PERSISTED in the durable-session snapshot, so the Up Next
+    /// header's collection button re-opens the right collection even after a restore.
+    @ObservationIgnored var originProvider: ((String?) -> (kind: PlayHistoryStore.PlaySource, id: String)?)?
+    private(set) var capturedOrigin: (kind: PlayHistoryStore.PlaySource, id: String)?
+
     // MARK: Durable playback session (force-quit → relaunch restore)
 
     /// The durable-session store (injected at app init, like `historyContextProvider`; nil in
@@ -159,6 +167,7 @@ final class SetlistPlayer {
         // Snapshot THIS run's history origin now (before any later playNow can mutate the shared
         // now-playing source), so every play in this run is attributed to the right set.
         capturedHistoryContext = historyContextProvider?(sourceSetlistId)
+        capturedOrigin = originProvider?(sourceSetlistId)
         queue = items
         index = 0
         isRunning = true
@@ -211,6 +220,7 @@ final class SetlistPlayer {
         queue = []
         sourceSetlistId = nil
         capturedHistoryContext = nil
+        capturedOrigin = nil
         // Durable session: a stopped set (natural end included) must NOT rehydrate next launch.
         positionTicker?.cancel(); positionTicker = nil
         isHeldForResume = false
@@ -664,6 +674,14 @@ final class SetlistPlayer {
         // the resume are attributed to the same set the pre-kill plays were.
         capturedHistoryContext = (PlayHistoryStore.PlaySource(rawValue: snap.source.kind) ?? .setlist,
                                   snap.source.name)
+        // And the NAVIGABLE origin — the Up Next collection button's ghost-state fix: a
+        // restored session still knows which collection it came from.
+        if let ok = snap.source.originKind, let kind = PlayHistoryStore.PlaySource(rawValue: ok),
+           let oid = snap.source.originId {
+            capturedOrigin = (kind, oid)
+        } else {
+            capturedOrigin = nil
+        }
         sessionId = snap.sessionId
         pendingResumeMs = snap.positionMs > 0 ? snap.positionMs : nil
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
@@ -720,7 +738,9 @@ final class SetlistPlayer {
         let snap = PlaybackSessionStore.Snapshot(
             sessionId: sessionId,
             source: PlaybackSessionStore.SourceRef(kind: (ctx?.source ?? .setlist).rawValue,
-                                                   id: sourceSetlistId, name: ctx?.name),
+                                                   id: sourceSetlistId, name: ctx?.name,
+                                                   originKind: capturedOrigin?.kind.rawValue,
+                                                   originId: capturedOrigin?.id),
             queue: rows, index: index,
             positionMs: positionMs ?? sessionPositionMs(),
             isPlaying: sessionIsPlaying(),

@@ -554,7 +554,8 @@ struct IndexPlaylistDetailView: View {
     /// no longer requires duplicating it into an editable playlist first. Reuses the same
     /// reserved Now-Playing setlist + autoplay path the editable playlist's Shuffle button uses.
     private func shufflePlay() {
-        collections.playNow(songIds: source.songIds, name: source.name, shuffle: true, source: .playlist)
+        collections.playNow(songIds: source.songIds, name: source.name, shuffle: true, source: .playlist,
+                            originId: source.id)
         path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
     private func duplicate() {

@@ -76,7 +76,8 @@ struct ArtistDetailView: View {
     /// ▶/🔀 the artist's whole discography — a fresh Now Playing snapshot, then open it autostarting
     /// (mirrors AlbumDetailView.play). Attributed to History as source `.artist`.
     private func play(shuffle: Bool) {
-        collections.playNow(songIds: allSongIds, name: artistName, shuffle: shuffle, source: .artist)
+        collections.playNow(songIds: allSongIds, name: artistName, shuffle: shuffle, source: .artist,
+                            originId: artistName)
         if !nowPlayingPushed {
             nowPlayingPushed = true
             path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))

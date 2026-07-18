@@ -251,6 +251,18 @@ struct RootView: View {
         case .pocket(let id):
             section = .playlists
             if let p = collections.pocket(id) { path.append(p) }
+        case .setlist(let id):
+            section = .playlists
+            if let s = collections.setlist(id) { path.append(s) }
+        case .album(let id):
+            section = .browse
+            if let a = app.albumsById[id] { path.append(a) }
+        case .artist(let name):
+            section = .browse
+            path.append(Artist(name: name))
+        case .sourcePlaylist(let id):
+            section = .playlists
+            if let sp = app.indexPlaylists.first(where: { $0.id == id }) { path.append(sp) }
         case .browseSearch:
             // The search term itself rides `pendingBrowseQuery`, consumed by BrowseView.
             section = .browse

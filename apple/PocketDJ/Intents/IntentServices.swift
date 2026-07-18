@@ -7,6 +7,12 @@ import AppIntents
 enum IntentRoute: Hashable {
     case playlist(String)
     case pocket(String)
+    /// The Up Next collection button's extra targets (a running set's origin can be a
+    /// frozen setlist, a catalog album/artist, or a read-only source playlist).
+    case setlist(String)
+    case album(String)
+    case artist(String)
+    case sourcePlaylist(String)
     /// Land on the Browser tab (the system.search intent parks the query separately
     /// on `pendingBrowseQuery` — BrowseView owns the search field's state).
     case browseSearch

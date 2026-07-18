@@ -257,6 +257,11 @@ struct PocketDJApp: App {
         setlistPlayer.historyContextProvider = { [weak collections] in
             collections?.historyContext(forSourceSetlistId: $0) ?? (.setlist, nil)
         }
+        // …and the NAVIGABLE origin (kind + collection id) — the Up Next header's
+        // collection button target, captured per run + persisted in the durable session.
+        setlistPlayer.originProvider = { [weak collections] in
+            collections?.originCollection(forSourceSetlistId: $0)
+        }
         rips.settings = settings       // rip server URL + token come from settings
         musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
         // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum.

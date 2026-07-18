@@ -23,6 +23,10 @@ final class CollectionsStore {
     /// so `playNow` records the kind here for the Play-History hook to attribute the play. nil
     /// ⇒ treat as a generic set list.
     private(set) var nowPlayingSource: PlayHistoryStore.PlaySource?
+    /// The COLLECTION id the reserved Now Playing setlist was built from (playlist/pocket/
+    /// album/artist per `nowPlayingSource`) — what the Up Next header's collection button
+    /// re-opens. nil for browser singles / direct songIds plays with no origin threaded.
+    private(set) var nowPlayingOriginId: String?
     private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
     /// store was constructed with — never re-derives it, so fixture seams stay intact).
@@ -880,9 +884,11 @@ final class CollectionsStore {
     /// on-screen detail view re-snapshots the new order. Returns nil if the catalog isn't wired.
     @discardableResult
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
-                 source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:]) -> Setlist? {
+                 source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:],
+                 originId: String? = nil) -> Setlist? {
         guard let app else { return nil }
         nowPlayingSource = source
+        nowPlayingOriginId = originId
         var tracks: [SetlistTrack] = songIds.compactMap { id in
             // Per-item repeat (loop) count from the source collection — snapshotted so the
             // player loops the row that many times before advancing.
@@ -925,7 +931,7 @@ final class CollectionsStore {
     func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPlaylist: playlistId),
                 name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
-                repeats: playlistRepeatMap(playlistId))
+                repeats: playlistRepeatMap(playlistId), originId: playlistId)
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
     /// `playableIds` for the same reason as the playlist variant above.
@@ -933,7 +939,7 @@ final class CollectionsStore {
     func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
         playNow(songIds: playableIds(forPocket: pocketId),
                 name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
-                repeats: pocket(pocketId)?.songRepeats ?? [:])
+                repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId)
     }
 
     /// Best-effort songId → repeat-count map for a playlist's `.song` nodes (recursing into
@@ -969,6 +975,24 @@ final class CollectionsStore {
         if let p = playlist(id) { return (.playlist, p.name) }
         if let pk = pocket(id) { return (.pocket, pk.name) }
         return (.setlist, nil)
+    }
+
+    /// Resolve the NAVIGABLE origin collection for a sequencer run tagged with
+    /// `sourceSetlistId` — the Up Next header's collection button target. For the reserved
+    /// Now Playing setlist the origin is whatever `playNow` recorded (playlist/pocket/
+    /// album/artist + its id); a REAL setlist is its own origin. nil (⇒ button hidden)
+    /// for browser singles and origins that no longer resolve.
+    func originCollection(forSourceSetlistId id: String?) -> (kind: PlayHistoryStore.PlaySource, id: String)? {
+        guard let id else { return nil }
+        if id == nowPlayingSetlistId {
+            guard let src = nowPlayingSource, let oid = nowPlayingOriginId else { return nil }
+            return (src, oid)
+        }
+        if setlist(id) != nil { return (.setlist, id) }
+        // Defensive twins of historyContext's fallbacks.
+        if playlist(id) != nil { return (.playlist, id) }
+        if pocket(id) != nil { return (.pocket, id) }
+        return nil
     }
 
     func deleteSetlist(_ id: String) { setlists.removeAll { $0.id == id }; save() }
