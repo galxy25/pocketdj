@@ -145,6 +145,13 @@ struct RootView: View {
             // catalog loads. Skips itself when playback is already active (an intent/widget
             // launch beat us here) and under PDJ_DISABLE_SESSION_RESTORE.
             sequencer.restorePersistedSessionIfIdle()
+            // Durable MIX-DECK session (phase 2): read the snapshot and PARK it on the engine —
+            // no audio, no graph build. The Mix tab MATERIALIZES it on first appearance
+            // (`materializePendingRestoreIfNeeded` in MixView's `.task` — which on macOS may
+            // already have run; the engine finishes the handoff either way). Both a setlist
+            // session and a mix snapshot may restore held side by side — whichever the user
+            // plays first becomes the audio owner through the normal arbiter paths.
+            mix.restorePersistedMixIfIdle()
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.

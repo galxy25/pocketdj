@@ -548,6 +548,26 @@ final class MixEngine {
     /// to `PlayStatsStore.notePlayed`; nil in tests.
     @ObservationIgnored var onSongPlayed: ((String) -> Void)?
 
+    // MARK: - Durable mix-deck session (state)
+
+    /// The durable mix-deck snapshot store (`pocketdj-mix-decks.json`) — phase 2 of durable
+    /// playback sessions. Wired at app init (nil in tests until set); every structural deck /
+    /// auto-queue change persists through it in real time so a force-quit restores the Mix tab.
+    @ObservationIgnored var sessionStore: MixDeckSessionStore?
+    /// The snapshot read at launch, parked here WITHOUT touching audio. Materialized lazily —
+    /// the first Mix-tab appearance (or the launch task, if the tab is already up, e.g. macOS
+    /// lands on Mix) actually re-loads the decks. Dropped by any real deck action that beats
+    /// materialization (an intent-started auto-mix, a manual load).
+    @ObservationIgnored private var pendingMixRestore: MixDeckSessionStore.Snapshot?
+    /// The Mix tab already asked to materialize (its `.task` can run BEFORE RootView's launch
+    /// task on macOS, where Mix is the landing tab) — so `restorePersistedMixIfIdle` finishes
+    /// the job the moment the snapshot is read instead of waiting for a tab re-visit.
+    @ObservationIgnored private var materializeWanted = false
+    /// True while a restore is materializing: suppresses session-log recording, persist
+    /// re-entry, and system Now Playing card writes (the one-audio-owner rule — a restore
+    /// claims no card; the card belongs to whoever is actually sounding, and nobody is).
+    @ObservationIgnored private var isRestoringMixSession = false
+
     /// Emit one session event for a deck (or global) action, stamping the deck's loaded song + its
     /// current playhead. The store owns the timeline (t0/tMs), coalescing, and persistence.
     private func rec(_ kind: MixEventKind, _ deck: Deck? = nil, param: String? = nil,
@@ -585,6 +605,9 @@ final class MixEngine {
         let aOn = state(.a).isPlaying, bOn = state(.b).isPlaying
         if aOn != bOn, !suppressStickyUpdates { lastNowPlayingDeck = aOn ? .a : .b }
         updateSystemNowPlaying()                    // reflect the new play state / now-playing deck
+        // Land the freshest playheads on a play/pause transition (immediate through the store's
+        // run/pause detector — a restore must cue at the PAUSED position, not one 5 s stale).
+        persistMixPositions()
     }
 
     // MARK: - Audio recording (capture the mixed house output)
@@ -876,6 +899,9 @@ final class MixEngine {
     /// track untouched. A zero-frame window is rejected (scheduling it would be an uncatchable crash).
     func loadFile(_ url: URL, release: (() -> Void)?, startMs: Int?, lengthMs: Int? = nil,
                   meta: LoadedTrack, on deck: Deck) {
+        // A REAL load supersedes a parked (not-yet-materialized) restore — the user (or an
+        // intent) started something new; the old mix must not rehydrate on top of it later.
+        if !isRestoringMixSession { pendingMixRestore = nil }
         ensureEngine()
         guard let player = players[deck], let inputMixer = inputMixers[deck] else { release?(); return }
         guard let file = try? AVAudioFile(forReading: url) else { release?(); return }   // unreadable / corrupt
@@ -928,6 +954,7 @@ final class MixEngine {
                               value: nil, flag: nil, posMs: 0)
         }
         updateSystemNowPlaying()      // a new track on the now-playing deck → refresh the card
+        persistMixDeckSession()       // deck load = structural change — the mix survives a kill
     }
 
     // MARK: - Transport
@@ -1180,6 +1207,7 @@ final class MixEngine {
         applyBoost(deck)         // volume back to 100% → globalGain back to 0 dB
         restart(deck)            // rewind to the start (no-op if nothing is loaded)
         rec(.resetDeck, deck)    // ONE semantic event (not a burst of per-parameter resets)
+        persistMixDeckSession()  // every parameter changed at once — persist immediately
     }
 
     /// Full deck CLEAR — the "zero state". Everything `resetDeck` returns to default (tempo, pitch,
@@ -1204,6 +1232,7 @@ final class MixEngine {
         updateSystemNowPlaying()                   // an empty now-playing deck → clear/refresh the card
         refreshTransport()
         rec(.resetDeck, deck)
+        persistMixDeckSession()   // eject persists; BOTH decks empty (no auto) ⇒ session cleared
     }
 
     /// Seek to an absolute SOURCE position (seconds from the song's start). Sample-accurate, bounded
@@ -1238,6 +1267,7 @@ final class MixEngine {
         refreshAutoDeckEndIfLive(deck)   // auto-mix: re-time the crossfade to the NEW position
         rec(.seek, deck, value: clamped)
         updateSystemNowPlaying()      // new elapsed on the lock-screen scrubber
+        persistMixDeckSession(debounced: true)   // scrub surface — one write per burst
     }
 
     /// After a manual SEEK of the auto-mix live deck, re-stamp when it will end (wall-clock, allowing
@@ -1257,16 +1287,22 @@ final class MixEngine {
         mutate(deck) { $0.rate = min(max(rate, Self.rateRange.lowerBound), Self.rateRange.upperBound) }
         applyRate(deck)
         rec(.tempo, deck, value: state(deck).rate)
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
 
     func setPitch(_ semitones: Double, on deck: Deck) {
         mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
         applyPitch(deck)
         rec(.pitch, deck, value: state(deck).pitch)
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
 
     /// Designate (or clear) the Lead deck for beat-matching. Tapping the current lead clears it.
-    func setLead(_ deck: Deck) { leadDeck = (leadDeck == deck) ? nil : deck; rec(.lead, deck, flag: isLead(deck)) }
+    func setLead(_ deck: Deck) {
+        leadDeck = (leadDeck == deck) ? nil : deck
+        rec(.lead, deck, flag: isLead(deck))
+        persistMixDeckSession()
+    }
     func isLead(_ deck: Deck) -> Bool { leadDeck == deck }
 
     /// Match the follower's effective BPM to the Lead (rate = leadBPM·leadRate / followerBPM,
@@ -1306,11 +1342,13 @@ final class MixEngine {
         applyMixGains()       // 0…1 portion (+ equal-power crossfade) on the source nodes
         applyBoost(deck)      // >unity portion on the deck's EQ globalGain (volume-change only)
         rec(.volume, deck, value: state(deck).volume)
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
 
     func setCrossfader(_ value: Double) {
         applyCrossfader(value)
         rec(.crossfader, nil, value: crossfader)
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
 
     // MARK: - Cue / PFL (pre-fade listen)
@@ -1396,6 +1434,7 @@ final class MixEngine {
         mutate(deck) { $0.set(effect, enabled) }
         applyEffect(effect, on: deck)
         rec(.effectToggle, deck, param: effect.rawValue, flag: enabled)
+        persistMixDeckSession()                  // discrete tap — persist immediately
     }
 
     /// Per-deck per-effect STRENGTH (0…1) — the wet amount / cutoff / threshold the long-press popup
@@ -1404,6 +1443,7 @@ final class MixEngine {
         mutate(deck) { $0.setStrength(effect, strength) }
         applyEffect(effect, on: deck)
         rec(.effectStrength, deck, param: effect.rawValue, value: state(deck).strength(effect))
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
 
     // MARK: - Auto-Mix (auto-DJ)
@@ -1466,6 +1506,7 @@ final class MixEngine {
         play(.a)
         startTickIfNeeded()
         refreshAutoStatus()
+        persistMixDeckSession()   // the whole (post-shuffle) queue + cursor — survives a kill
     }
 
     func stopAutoMix() {
@@ -1483,6 +1524,7 @@ final class MixEngine {
         autoResumeEndDeck = nil        // a fresh pause clears any stale resume-handoff intent
         rec(.autoPause)
         refreshAutoStatus()
+        persistMixDeckSession()
     }
 
     /// RESUME the auto-DJ after a manual interlude. Rather than cutting whatever's playing, it re-arms
@@ -1509,7 +1551,7 @@ final class MixEngine {
         // pause gate is all that's needed. The blend re-arm below would fight it: it watches the
         // OUTGOING deck and would fire a second, immediate handoff the moment the fade retires it,
         // double-skipping the track the mix was fading INTO.
-        if autoTransitioning { refreshAutoStatus(); startTickIfNeeded(); return }
+        if autoTransitioning { refreshAutoStatus(); startTickIfNeeded(); persistMixDeckSession(); return }
         let now = Date()
         let aOn = state(.a).isPlaying, bOn = state(.b).isPlaying
 
@@ -1520,7 +1562,7 @@ final class MixEngine {
             autoLiveDeck = survivor
             autoResumeEndDeck = other(survivor)                    // ends FIRST → handoff trigger
             autoDeckEndsAt[survivor] = now.addingTimeInterval(survivor == .a ? remA : remB)
-            refreshAutoStatus(); startTickIfNeeded()
+            refreshAutoStatus(); startTickIfNeeded(); persistMixDeckSession()
             return
         }
 
@@ -1540,7 +1582,7 @@ final class MixEngine {
             autoLivePos = max(autoLivePos, autoQueue.count - 1)    // queue exhausted — ride the live deck out
         }
         autoDeckEndsAt[live] = now.addingTimeInterval(max(0, duration(live) - position(live)))
-        refreshAutoStatus(); startTickIfNeeded()
+        refreshAutoStatus(); startTickIfNeeded(); persistMixDeckSession()
     }
 
     /// Two-deck RESUME handoff (called from the idle tick when `autoResumeEndDeck` finishes): retire the
@@ -1595,7 +1637,10 @@ final class MixEngine {
         // Recenter ONLY after a real auto-mix (it swept the fader to an extreme) — and non-recording,
         // so ending an auto-mix never injects a user `.crossfader` event. A bare Manual→Auto→Manual
         // toggle (wasMixing == false) leaves the fader where the user left it.
-        if wasMixing { applyCrossfader(0.5) }
+        if wasMixing {
+            applyCrossfader(0.5)
+            persistMixDeckSession()   // auto over — the decks (still loaded) persist without it
+        }
     }
 
     /// Restore both decks from an interrupted glide (used by `endAutoLoop`): put each deck's forced
@@ -1747,6 +1792,7 @@ final class MixEngine {
                 emitIncomingGlideEvents()      // one compact .glide node per incoming settle-back ramp
             } else { finishGlide() }
         }
+        persistMixDeckSession()       // the cursor advanced (auto or Skip) — persist the new live pos
     }
 
     private func loadAuto(_ item: AutoMixItem, onto deck: Deck) {
@@ -2081,18 +2127,21 @@ final class MixEngine {
             }
         }
         refreshTransport()
+        persistMixDeckSession()                  // stem-mode flip — structural, persist immediately
     }
 
     func toggleStemMute(_ name: String, on deck: Deck) {
         mutate(deck) { if $0.stemMuted.contains(name) { $0.stemMuted.remove(name) } else { $0.stemMuted.insert(name) } }
         applyStemGains(deck)
         rec(.stemMute, deck, param: name, flag: isStemMuted(name, on: deck))
+        persistMixDeckSession()                  // discrete tap — persist immediately
     }
 
     func setStemVolume(_ name: String, _ v: Double, on deck: Deck) {
         mutate(deck) { $0.stemVol[name] = min(max(v, 0), 1) }
         applyStemGains(deck)
         rec(.stemVolume, deck, param: name, value: stemVolume(name, on: deck))
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
 
     /// Resolve + open the deck track's 4 burned stem files and reconnect each stem node at the file's
@@ -2226,6 +2275,232 @@ final class MixEngine {
         }
         autoQueue.insert(item, at: at)
         refreshAutoStatus()   // the "x / count" readout grew by one
+        persistMixDeckSession()   // a guest's accepted request must survive a force-quit
+    }
+
+    // MARK: - Durable mix-deck session (persist + restore)
+    //
+    // Phase 2 of durable playback sessions (see `MixDeckSessionStore` + the phase-1 pattern in
+    // `SetlistPlayer`): the live mix — both decks, mixer, and the Auto-DJ queue — writes itself
+    // down IN REAL TIME and rehydrates at launch, HELD (no audio, no Now Playing card, Auto-DJ
+    // suspended) until the user acts.
+    //
+    // Persisted: per-deck track identity + playhead + volume/tempo/pitch/effects/stem state;
+    // crossfader; lead deck; the Auto-DJ queue/cursor/label/glide flags. EXCLUDED (and why):
+    //  • recording state — `MixRecorder` has its own crash-orphan recovery (fragmented file);
+    //  • cue/PFL routing + cue volume — transient monitoring state (restoring a hard-panned
+    //    house/cue split after a reboot would be a surprise, and the headphone rig is gone);
+    //  • VU meters / realtime taps / `truePlayhead` — pure runtime derivations;
+    //  • beat grids / cue points — derivable from burned analysis sidecars + the studio store,
+    //    re-hydrated by the normal `load` path (never duplicated in the snapshot);
+    //  • in-flight transition state (pre-roll/fade/post-roll clocks, glide context) — wall-clock
+    //    runtime state; a kill mid-crossfade restores in the suspended idle state and the
+    //    existing Resume re-arms the machine against live playback.
+
+    /// Relaunch entry point (RootView's launch task): read the persisted snapshot and PARK it —
+    /// no audio, no engine build, no card. Skipped when the engine is already in use (an intent
+    /// launch started a mix first) and under the `PDJ_DISABLE_SESSION_RESTORE` seam. If the Mix
+    /// tab already asked to materialize (macOS lands on Mix and its `.task` can win the race),
+    /// materialize right away.
+    func restorePersistedMixIfIdle() {
+        guard let sessionStore else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard env["PDJ_DISABLE_SESSION_RESTORE"] == nil else { return }
+        guard !isRunning, !autoMixing, loaded(.a) == nil, loaded(.b) == nil else { return }
+        sessionStore.seedFixtureIfRequested()
+        guard let snap = sessionStore.load() else { return }
+        pendingMixRestore = snap
+        NPLog.trace("mix RESTORE parked decks=\(snap.deckA != nil ? "A" : "")\(snap.deckB != nil ? "B" : "") auto=\(snap.auto?.queue.count ?? 0)")
+        if materializeWanted { materializeNow() }
+    }
+
+    /// Mix-tab entry point (MixView's `.task`, after `prepare()`): actually re-load the parked
+    /// snapshot onto the decks. Lazy on purpose — deck files + the AVAudioEngine graph are only
+    /// touched when the Mix surface first appears, never at launch. Idempotent; remembers the
+    /// request so a launch-task restore that lands later can finish the job.
+    func materializePendingRestoreIfNeeded() {
+        materializeWanted = true
+        materializeNow()
+    }
+
+    /// Rebuild the mix from the parked snapshot: decks re-loaded and CUED at their saved
+    /// playheads, mixer state re-applied, Auto-DJ queue rebuilt SUSPENDED. Nothing plays —
+    /// `AVAudioPlayerNode.play()` is never called, the session-log recorder is detached (a
+    /// restore is not a user gesture), and Now Playing card writes are suppressed
+    /// (`isRestoringMixSession`) so no card is claimed. A track whose file vanished since
+    /// (purged burn, deleted stem source) simply leaves that deck empty — restore what's
+    /// loadable, drop what isn't, never block. No-op when the engine is already in use.
+    private func materializeNow() {
+        guard let snap = pendingMixRestore else { return }
+        pendingMixRestore = nil
+        guard !isRunning, !autoMixing, loaded(.a) == nil, loaded(.b) == nil else { return }
+        isRestoringMixSession = true
+        let savedRecorder = recorder
+        recorder = nil                      // restore must not spam the mix-session action log
+        defer {
+            recorder = savedRecorder
+            isRestoringMixSession = false
+            persistMixDeckSession()         // re-sync: dropped (unloadable) decks fall out of the file
+        }
+        ensureEngine()                      // the Mix tab is up — same warm-up its `.task` already does
+        if let a = snap.deckA { restoreDeck(.a, from: a) }
+        if let b = snap.deckB { restoreDeck(.b, from: b) }
+        applyCrossfader(snap.crossfader)    // non-recording apply (machine move, not a gesture)
+        if let lead = snap.leadDeck.flatMap(Deck.init(rawValue:)), state(lead).loaded != nil {
+            leadDeck = lead                 // after the loads — a load clears its deck's lead role
+        }
+        if let auto = snap.auto { restoreAutoSuspended(auto) }
+        NPLog.trace("mix RESTORE materialized A=\(loaded(.a)?.songId ?? "-") B=\(loaded(.b)?.songId ?? "-") auto=\(autoMixing ? 1 : 0)")
+    }
+
+    /// Re-load one deck through the NORMAL load path (BurnStore cut/analog resolution, studio
+    /// seam, grid hydration), then re-apply its plain-value controls and cue the playhead.
+    /// If the file is gone the load is a silent no-op and the deck stays empty (per-deck drop).
+    private func restoreDeck(_ deck: Deck, from ds: MixDeckSessionStore.DeckSnapshot) {
+        let t = ds.track
+        load(songId: t.songId, title: t.title, artist: t.artist, bpm: t.bpm,
+             camelot: t.camelot, key: t.key, albumId: t.albumId, lengthMs: t.lengthMs, on: deck)
+        guard state(deck).loaded?.songId == t.songId else { return }   // file vanished → deck empty
+        setVolume(ds.volume, on: deck)
+        setRate(ds.rate, on: deck)
+        setPitch(ds.pitch, on: deck)
+        setEffect(.compressor, enabled: ds.compressor, on: deck)
+        setEffect(.reverb, enabled: ds.reverb, on: deck)
+        setEffect(.flanger, enabled: ds.flanger, on: deck)
+        setEffect(.filter, enabled: ds.filter, on: deck)
+        setEffectStrength(.compressor, ds.compStrength, on: deck)
+        setEffectStrength(.reverb, ds.reverbStrength, on: deck)
+        setEffectStrength(.flanger, ds.flangerStrength, on: deck)
+        setEffectStrength(.filter, ds.filterStrength, on: deck)
+        if ds.stemMode {
+            setStemMode(true, on: deck)     // stems no longer burned → stays single-file (graceful)
+            if stemActive(deck) {
+                for name in ds.stemMuted where !isStemMuted(name, on: deck) { toggleStemMute(name, on: deck) }
+                for (name, v) in ds.stemVol { setStemVolume(name, v, on: deck) }
+            }
+        }
+        if ds.positionMs > 0 { seek(deck, toSeconds: Double(ds.positionMs) / 1000) }   // cue, not play
+    }
+
+    /// Rebuild the Auto-DJ machine SUSPENDED (`autoPaused` — the exact state the lock-screen ⏸
+    /// leaves a running mix in): queue + cursor + label + glide flags live, transition machine
+    /// idle, wall clocks unarmed. It must NOT self-resume (the silent-fades invariant from the
+    /// lock-screen transport work) — the existing Resume paths (`resumeAuto` via the banner /
+    /// remote ▶ once the user starts audio) re-stamp the end clocks from live playback, so no
+    /// stale pre-kill timestamps are ever trusted. Deliberately does NOT touch the lock-screen
+    /// ⏭/⏮ enablement or the arbiter — no card is claimed until real sound starts.
+    private func restoreAutoSuspended(_ auto: MixDeckSessionStore.AutoSnapshot) {
+        guard !auto.queue.isEmpty else { return }
+        autoQueue = auto.queue.map {
+            AutoMixItem(loadable: MixLoadable(songId: $0.track.songId, title: $0.track.title,
+                                              artist: $0.track.artist, bpm: $0.track.bpm,
+                                              camelot: $0.track.camelot, key: $0.track.key,
+                                              albumId: $0.track.albumId, lengthMs: $0.track.lengthMs),
+                        durationMs: $0.durationMs)
+        }
+        autoEnabled = true
+        autoSourceLabel = auto.sourceLabel
+        autoLeadSeconds = max(1, auto.leadSeconds)
+        autoFadeSeconds = max(0.2, auto.fadeSeconds)
+        fxGlideEnabled = auto.fxGlide
+        mixGlideEnabled = auto.mixGlide
+        autoLivePos = min(max(0, auto.livePos), autoQueue.count - 1)
+        autoNextToLoad = min(max(0, auto.nextToLoad), autoQueue.count)
+        autoLiveDeck = Deck(rawValue: auto.liveDeck) ?? .a
+        // Fresh machine internals — no in-flight transition, no frozen clocks, no stale intents.
+        autoFadeStartedAt = nil; autoPrerollStartedAt = nil; autoPostrollStartedAt = nil
+        autoTransitionIsGlide = false; glideCtx = nil
+        pendingFadeRestore = nil
+        autoResumeEndDeck = nil
+        resumeAutoOnRemotePlay = false
+        remotePausedAt = nil
+        engineStallAt = nil
+        autoDeckEndsAt = [:]                 // re-stamped by resumeAuto from live positions
+        fxTextureEffect = nil; fxTextureRunRemaining = 0
+        fxGlidePrng = Self.fxSeed(from: autoQueue)
+        for d in Deck.allCases where state(d).loaded != nil {
+            autoDeckDurationMs[d] = Int(duration(d) * 1000)
+        }
+        autoPaused = true                    // SUSPENDED — never self-resumes
+        autoMixing = true
+        refreshAutoStatus()
+    }
+
+    /// End the WHOLE mix — stop any Auto-DJ and eject both decks. The Settings nuclear reset
+    /// rides this; with both decks empty the persist hook `clear()`s the durable session, so a
+    /// reset device launches quiet. Also drops a not-yet-materialized restore.
+    func ejectAll() {
+        pendingMixRestore = nil
+        endAutoLoop()
+        clearDeck(.a)
+        clearDeck(.b)
+    }
+
+    /// Snapshot the ENTIRE mix into the session store. `debounced` for continuous surfaces
+    /// (sliders); immediate for structural changes. Nothing worth restoring (both decks empty,
+    /// no auto queue) ⇒ the session is CLEARED — the mix is over. Guarded off while a restore
+    /// materializes (its `defer` re-syncs once) and while a parked snapshot awaits
+    /// materialization (the on-disk file IS the pending state — an idle-engine write must not
+    /// clobber or clear it).
+    private func persistMixDeckSession(debounced: Bool = false) {
+        guard let sessionStore, !isRestoringMixSession, pendingMixRestore == nil else { return }
+        guard let snap = mixDeckSnapshot() else { sessionStore.clear(); return }
+        if debounced { sessionStore.saveDebounced(snap) } else { sessionStore.save(snap) }
+    }
+
+    /// The live state → snapshot builder. nil when there is nothing to restore.
+    private func mixDeckSnapshot() -> MixDeckSessionStore.Snapshot? {
+        let a = deckSnapshot(.a)
+        let b = deckSnapshot(.b)
+        var auto: MixDeckSessionStore.AutoSnapshot?
+        if autoMixing, !autoQueue.isEmpty {
+            auto = MixDeckSessionStore.AutoSnapshot(
+                queue: autoQueue.map {
+                    MixDeckSessionStore.AutoRow(track: trackRef($0.loadable), durationMs: $0.durationMs)
+                },
+                livePos: autoLivePos, nextToLoad: autoNextToLoad,
+                liveDeck: autoLiveDeck.rawValue, sourceLabel: autoSourceLabel,
+                leadSeconds: autoLeadSeconds, fadeSeconds: pendingFadeRestore ?? autoFadeSeconds,
+                fxGlide: fxGlideEnabled, mixGlide: mixGlideEnabled)
+        }
+        guard a != nil || b != nil || auto != nil else { return nil }
+        return MixDeckSessionStore.Snapshot(
+            deckA: a, deckB: b, crossfader: crossfader, leadDeck: leadDeck?.rawValue,
+            auto: auto, wasRunning: isRunning,
+            updatedAt: Date().timeIntervalSince1970 * 1000)
+    }
+
+    private func deckSnapshot(_ deck: Deck) -> MixDeckSessionStore.DeckSnapshot? {
+        let s = state(deck)
+        guard let l = s.loaded else { return nil }
+        // `lengthMs` round-trips the playback WINDOW (`duration` = the scheduled slice): a
+        // per-song cut reports its full length (and re-load ignores it), an analog shared-album
+        // fallback reports its song slice — exactly what its re-load needs to re-window.
+        let lengthMs = duration(deck) > 0 ? Int(duration(deck) * 1000) : nil
+        return MixDeckSessionStore.DeckSnapshot(
+            track: MixDeckSessionStore.TrackRef(songId: l.songId, title: l.title, artist: l.artist,
+                                                bpm: l.bpm, camelot: l.camelot, key: l.key,
+                                                albumId: l.albumId, lengthMs: lengthMs),
+            positionMs: max(0, Int(position(deck) * 1000)),
+            volume: s.volume, rate: s.rate, pitch: s.pitch,
+            compressor: s.compressor, reverb: s.reverb, flanger: s.flanger, filter: s.filter,
+            compStrength: s.compStrength, reverbStrength: s.reverbStrength,
+            flangerStrength: s.flangerStrength, filterStrength: s.filterStrength,
+            stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol)
+    }
+
+    private func trackRef(_ l: MixLoadable) -> MixDeckSessionStore.TrackRef {
+        MixDeckSessionStore.TrackRef(songId: l.songId, title: l.title, artist: l.artist,
+                                     bpm: l.bpm, camelot: l.camelot, key: l.key,
+                                     albumId: l.albumId, lengthMs: l.lengthMs)
+    }
+
+    /// The decks' playheads → the store's throttled position channel (immediate on a run/pause
+    /// transition, ~5 s otherwise). Fed by the ~10 Hz tick and every `setPlaying` transition.
+    private func persistMixPositions() {
+        guard !isRestoringMixSession, pendingMixRestore == nil else { return }
+        sessionStore?.updatePosition(aMs: Int(positionA * 1000), bMs: Int(positionB * 1000),
+                                     isRunning: deckA.isPlaying || deckB.isPlaying)
     }
 
     // MARK: - Readers (for the UI)
@@ -2323,6 +2598,10 @@ final class MixEngine {
     /// Elapsed/rate are set on each transport change and the system interpolates between; the rate is
     /// the deck's tempo so the scrubber moves at the audible speed.
     private func updateSystemNowPlaying() {
+        // Restoring a session must claim NO card (the one-audio-owner rule): at cold launch the
+        // arbiter is unowned, so without this gate the restore's deck loads/seeks would write a
+        // paused card for audio nobody started. The first real play claims + writes as usual.
+        guard !isRestoringMixSession else { return }
         guard NowPlayingArbiter.shared.isActive(self) else { return }
         guard let deck = nowPlayingDeck, let track = loaded(deck) else { return }
         // Re-assert ⏭/⏮ enablement on EVERY card write, not just at startAutoMix: a standalone-player
@@ -2675,6 +2954,9 @@ final class MixEngine {
         }
         refreshTransport()
         if autoMixing, rendering { autoFire() }
+        // Playhead refresh into the durable session (~10 Hz call, throttled to ~5 s writes
+        // while running inside the store; steady paused state writes nothing).
+        persistMixPositions()
         let active = deckA.isPlaying || deckB.isPlaying || autoMixing
         if !active { tickTask = nil; return false }
         return true

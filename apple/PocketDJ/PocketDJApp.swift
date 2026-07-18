@@ -56,6 +56,11 @@ struct PocketDJApp: App {
     /// App-side recorder for mix SESSIONS (played tracks + the full time-stamped action log, kept
     /// until Reset). Wired as `mix.recorder` so every deck action is logged; persists its own JSON.
     @State private var mixSessions: MixSessionStore
+    /// Durable mix-deck session (phase 2 of durable playback sessions): the Mix engine's
+    /// real-time snapshot (decks + mixer + Auto-DJ queue) so a force-quit/restart rehydrates
+    /// the Mix tab held. Constructed WITHOUT any disk read (the visionOS first-frame lesson) —
+    /// the snapshot is read later, by `restorePersistedMixIfIdle()` in RootView's launch task.
+    @State private var mixDeckSession: MixDeckSessionStore
     /// APP-SCOPED audio recorder — captures the live mix's house output into the current session's
     /// folder. Owned here (not by MixView) so a recording keeps running across Mix-tab switches, just
     /// like `mix`. Its `settings` (session-folder location) is pushed in from the Mix tab's `.task`.
@@ -188,6 +193,12 @@ struct PocketDJApp: App {
         mix.artworkURLsProvider = artworkURLsProvider
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
+        // Durable mix-deck session — the engine writes every structural deck / auto-queue change
+        // + throttled playheads into it, so the Mix tab survives force-quit/restart. No disk I/O
+        // here; RootView's launch task reads the snapshot (`restorePersistedMixIfIdle`).
+        let mixDeckSession = MixDeckSessionStore(fileURL: MixDeckSessionStore.launchURL())
+        mix.sessionStore = mixDeckSession
+        _mixDeckSession = State(initialValue: mixDeckSession)
         // App-scoped audio recorder: captures the mix's house output into the current session's
         // folder. Shares the app's `mix` (audio tap) + `mixSessions` (metadata). Its session-folder
         // `settings` are wired HERE (not only from the Mix tab) so launch-time crash-orphan
@@ -501,6 +512,9 @@ struct PocketDJApp: App {
                         // Playback session: land the freshest position synchronously before a
                         // possible suspension→kill (the same race the two flushes above close).
                         playbackSession.flush()
+                        // Mix-deck session: same doctrine — the decks' latest playheads (and any
+                        // debounced slider value still in memory) land before a suspension→kill.
+                        mixDeckSession.flush()
                         // Submit/re-submit the BGTasks (burn-drain + rip-reconcile) so a
                         // backgrounded burn/rip keeps advancing/reconciling. iOS-only.
                         #if os(iOS)

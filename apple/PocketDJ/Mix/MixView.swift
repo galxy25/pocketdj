@@ -100,6 +100,11 @@ struct MixView: View {
             engine.setSkipFadeSeconds(settings.skipFadeSeconds)       // lock-screen ⏮ slow-skip length
             recorder.settings = settings                              // session-folder location source
             recorder.recoverOrphans()                                 // re-file any crash-interrupted takes
+            // Durable mix-deck session: MATERIALIZE a launch-parked snapshot now that the Mix
+            // surface is up — decks re-load and cue at their saved playheads, the Auto-DJ queue
+            // comes back SUSPENDED, and nothing makes a sound until the user acts. After the
+            // settings pushes above so the restored decks honor cue-channel/glide/pulse prefs.
+            engine.materializePendingRestoreIfNeeded()
         }
         // Writer death mid-take (disk full / session folder vanished): the recorder auto-stopped
         // and FILED the partial take — tell the user why the record button went dark.
