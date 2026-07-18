@@ -107,6 +107,8 @@ struct PocketDJApp: App {
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
     /// the environment so RootView can consume intent navigation (`pendingRoute`).
     @State private var intents: IntentServices
+    /// Provisional Discover-add catalog entries (eventual consistency) — see DiscoverAddsStore.
+    @State private var discoverAdds: DiscoverAddsStore
     /// The user's synced identity (PocketDJ name + durable id) — see ProfileStore.
     @State private var profile: ProfileStore
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
@@ -443,6 +445,16 @@ struct PocketDJApp: App {
         jukebox.resumePersistedSession()
         _jukebox = State(initialValue: jukebox)
 
+        // ── Discover adds: provisional catalog entries (eventual consistency) ──
+        // "＋ Add" makes the song a catalog citizen NOW; the nightly indexer's real
+        // entry supersedes it later (AppModel.withDiscoverAdds → collections remap).
+        let discoverAdds = DiscoverAddsStore(fileURL: DiscoverAddsStore.launchURL())
+        discoverAdds.onAdded = { [weak app] song in app?.injectDiscoverAdd(song) }
+        app.discoverAdds = discoverAdds
+        app.onDiscoverSupersede = { [weak collections] pairs in collections?.remapSongIds(pairs) }
+        rips.discoverAdds = discoverAdds
+        _discoverAdds = State(initialValue: discoverAdds)
+
         // ── User profile + iCloud session sync ─────────────────────────────────
         // The profile is the SYNCED identity (ProfileStore's NAME OWNERSHIP doctrine);
         // the sync service mirrors the session-data documents through the user's private
@@ -482,6 +494,9 @@ struct PocketDJApp: App {
         cloudSync.register("mix-sessions", fileURL: mixSessions.syncFileURL) { [weak mixSessions] in mixSessions?.reloadFromDisk() }
         cloudSync.register("playback-session", fileURL: playbackSession.syncFileURL)
         cloudSync.register("mix-decks", fileURL: mixDeckSession.syncFileURL)
+        cloudSync.register("discover-adds", fileURL: discoverAdds.syncFileURL) { [weak discoverAdds] in
+            discoverAdds?.reloadFromDisk()   // new pulled entries flow through onAdded → live catalog
+        }
         _cloudSync = State(initialValue: cloudSync)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────

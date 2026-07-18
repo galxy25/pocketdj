@@ -103,6 +103,12 @@ final class AppModel {
     var settings: SettingsStore?
     /// Local metadata edits, overlaid onto the catalog (set by the app at launch).
     var edits: EditsStore?
+    /// Provisional Discover adds — merged as a synthetic source until the nightly
+    /// indexer lands each track for real (set by the app at launch).
+    var discoverAdds: DiscoverAddsStore?
+    /// Supersede hook: (provisional amrec_ id → indexed id) pairs for the collections
+    /// remap (set by the app at launch).
+    var onDiscoverSupersede: (([(from: String, to: String)]) -> Void)?
 
     init(loader: CatalogLoading? = nil) {
         if let loader {
@@ -160,16 +166,60 @@ final class AppModel {
         let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
         let albumEdits = edits?.doc.albums ?? [:]
         let songEdits = edits?.doc.songs ?? [:]
-        let derived = await Task.detached(priority: .userInitiated) { () -> Derived? in
+        let provisional = discoverAdds?.entries ?? []
+        let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)])? in
             let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
             guard !cached.isEmpty else { return nil }
-            return AppModel.buildDerived(indexes: cached, albumEdits: albumEdits, songEdits: songEdits)
+            let (indexes, superseded) = AppModel.withDiscoverAdds(provisional, indexes: cached)
+            return (AppModel.buildDerived(indexes: indexes, albumEdits: albumEdits, songEdits: songEdits),
+                    superseded)
         }.value
-        guard let derived else { return false }
+        guard let (derived, superseded) = built else { return false }
         assign(derived)
+        applySupersede(superseded)
         reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
         state = .loaded
         return true
+    }
+
+    /// Fold the provisional Discover adds in as a synthetic SOURCE — after the supersede
+    /// split: an add the indexer has since landed for real is excluded (its remap pair is
+    /// returned instead). Pure; runs inside the off-main build.
+    nonisolated static func withDiscoverAdds(_ provisional: [DiscoverAddsStore.Entry],
+                                             indexes: [IndexJSON])
+        -> (indexes: [IndexJSON], superseded: [(from: String, to: String)]) {
+        guard !provisional.isEmpty else { return (indexes, []) }
+        var byAppleMusicId: [String: String] = [:]
+        for index in indexes {
+            for s in index.songs where s.appleMusicId != nil {
+                if byAppleMusicId[s.appleMusicId!] == nil { byAppleMusicId[s.appleMusicId!] = s.id }
+            }
+        }
+        let split = DiscoverAddsStore.split(provisional, indexedByAppleMusicId: byAppleMusicId)
+        let all = split.keep.isEmpty ? indexes : indexes + [DiscoverAddsStore.syntheticIndex(split.keep)]
+        return (all, split.superseded)
+    }
+
+    /// Land a supersede: prune the provisional store and remap collection references
+    /// (provisional amrec_ id → the indexed id that replaced it).
+    private func applySupersede(_ pairs: [(from: String, to: String)]) {
+        guard !pairs.isEmpty else { return }
+        discoverAdds?.remove(ids: pairs.map(\.from))
+        onDiscoverSupersede?(pairs)
+    }
+
+    /// A Discover add landing while the catalog is LIVE: append the provisional row as a
+    /// raw song of the synthetic source and rebuild the effective catalog (the edit-save
+    /// rebuild path — synchronous, adds are user-initiated and rare).
+    func injectDiscoverAdd(_ song: IndexSong) {
+        guard rawSongsById[song.id] == nil, songsById[song.id] == nil else { return }
+        rawSongs.append(song)
+        rawSongsById[song.id] = song
+        songSourceById[song.id] = DiscoverAddsStore.sourceName
+        if !availableSources.contains(DiscoverAddsStore.sourceName) {
+            availableSources.append(DiscoverAddsStore.sourceName)
+        }
+        applyEdits()
     }
 
     /// If the user saved a metadata edit DURING an off-main catalog build, that build's `derived`
@@ -189,12 +239,16 @@ final class AppModel {
             let indexes = try await fetchIndexes()
             let albumEdits = edits?.doc.albums ?? [:]
             let songEdits = edits?.doc.songs ?? [:]
+            let provisional = discoverAdds?.entries ?? []
             // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
             // OFF the main actor; only the finished value is assigned back on `@MainActor`.
-            let derived = await Task.detached(priority: .userInitiated) {
-                AppModel.buildDerived(indexes: indexes, albumEdits: albumEdits, songEdits: songEdits)
+            let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)]) in
+                let (all, superseded) = AppModel.withDiscoverAdds(provisional, indexes: indexes)
+                return (AppModel.buildDerived(indexes: all, albumEdits: albumEdits, songEdits: songEdits),
+                        superseded)
             }.value
-            assign(derived)
+            assign(built.0)
+            applySupersede(built.1)
             reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
             state = .loaded
         } catch {

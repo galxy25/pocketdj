@@ -81,14 +81,10 @@ struct HistoryView: View {
 
     @ViewBuilder private var content: some View {
         VStack(spacing: 0) {
-            Picker("View", selection: $groupBySong) {
-                Text("Timeline").tag(false)
-                Text("By song").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal).padding(.vertical, 8)
-            .accessibilityIdentifier("history-mode")
-
+            // The Timeline/By-song mode picker is GONE (Levi 2026-07-18: the two reads
+            // were indistinguishable in practice) — History is always the timeline. The
+            // groupBySong plumbing stays (false forever) so the grouped engine remains
+            // one flag away if a future view wants it.
             if browse.displayItems.isEmpty {
                 emptyState
             } else {
