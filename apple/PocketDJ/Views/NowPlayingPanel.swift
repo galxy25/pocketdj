@@ -311,8 +311,34 @@ struct NowPlayingPanel: View {
         }
     }
 
+    /// The header's SETLIST button: a run tagged to a still-existing setlist routes
+    /// straight to it; otherwise (the reserved Now Playing run — its doc is dropped at
+    /// every launch — or an unlinked queue) the document is re-materialized from the
+    /// live queue and then opened. Edits there drive the live queue (the uid-verified
+    /// Now Playing edit path), so this is the full-power view of the running session.
+    private func openSetlistView() {
+        if let sid = sequencer.sourceSetlistId, collections.setlist(sid) != nil {
+            intents.pendingRoute = .setlist(sid)
+            return
+        }
+        let rows = sequencer.queue.map {
+            (id: $0.id, title: $0.title, artist: $0.artist,
+             lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+        }
+        if let set = collections.materializeNowPlayingSetlist(
+            name: sequencer.capturedHistoryContext?.name, queue: rows) {
+            intents.pendingRoute = .setlist(set.id)
+        }
+    }
+
     private func openCurrentSongDetail() {
-        detailSong = currentItem.flatMap { app.songsById[$0.id] }
+        guard let item = currentItem else { return }
+        // Catalog songs open their full metadata; anything else — a Discover amrec_
+        // rip, a jukebox Apple Music insert, a studio row — still opens, synthesized
+        // from the queue row, so the long-press always answers (and the detail's
+        // Apple Music library section can offer ＋ Add for AM-backed tracks).
+        detailSong = app.songsById[item.id]
+            ?? IndexSong.minimal(id: item.id, name: item.title, artist: item.artist)
     }
 
     /// iPhone closes the detail with a nav-bar Back; iPad + macOS get the ✕ overlay.
@@ -417,6 +443,18 @@ struct NowPlayingPanel: View {
                     .help("Open the collection this session is playing from")
                     .accessibilityIdentifier("np-open-collection")
                 }
+                // The SETLIST version of this run — the richer editable view of the
+                // exact queue (vs the origin button's source collection). A restored
+                // session's Now Playing doc was dropped at launch, so the tap
+                // re-materializes it from the live queue first.
+                Button { openSetlistView() } label: {
+                    Image(systemName: "list.bullet.rectangle")
+                }
+                .buttonStyle(.plain)
+                .font(.caption2)
+                .foregroundStyle(Theme.accent)
+                .help("Open this session as a setlist")
+                .accessibilityIdentifier("np-open-setlist")
                 Spacer()
                 #if os(iOS)
                 // .onMove drag handles need edit mode on iOS (macOS drags directly).

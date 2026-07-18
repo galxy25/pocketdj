@@ -924,6 +924,37 @@ final class CollectionsStore {
         return set
     }
 
+    /// The Up Next header's SETLIST button target: the reserved Now Playing setlist if
+    /// it still exists, else MATERIALIZED from the live queue. A durable-session restore
+    /// drops the stale Now Playing doc at launch (init/reloadFromDisk cleanup), so a
+    /// restored run's queue lives only in the player until the user asks for the setlist
+    /// view — this rebuilds the document that queue represents. Rows carry their own
+    /// snapshot (title/artist/length rode the durable session); bpm/camelot re-attach
+    /// from the catalog when the id still resolves.
+    @discardableResult
+    func materializeNowPlayingSetlist(
+        name: String?,
+        queue: [(id: String, title: String, artist: String, lengthMs: Int?, repeatCount: Int?)]
+    ) -> Setlist? {
+        if let existing = setlist(nowPlayingSetlistId) { return existing }
+        guard !queue.isEmpty else { return nil }
+        let tracks: [SetlistTrack] = queue.map { row in
+            let s = app?.songsById[row.id]
+            return SetlistTrack(songId: row.id, artist: row.artist, name: row.title,
+                                bpm: s?.bpm, camelot: s?.camelot,
+                                lengthMs: row.lengthMs ?? s?.length,
+                                source: .explicit,
+                                repeatCount: CollectionMembership.storedRepeat(row.repeatCount ?? 1))
+        }
+        let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
+        let set = Setlist(id: nowPlayingSetlistId, playlistId: nowPlayingPlaylistId,
+                          name: name ?? "Now Playing", seed: "now-playing",
+                          generatedAt: now, totalMs: totalMs, tracks: tracks)
+        setlists.append(set)
+        save()
+        return set
+    }
+
     /// ▶ Play a playlist into the reusable Now Playing setlist (literal resolved order).
     /// Resolves via `playableIds` — studio rows are PLAYABLE and belong in Now Playing
     /// (spec §8), unlike the rip/CSV-facing `songIds(forPlaylist:)`.
