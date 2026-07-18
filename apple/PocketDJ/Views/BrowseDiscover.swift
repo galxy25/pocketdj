@@ -16,20 +16,41 @@ final class DiscoverSearchModel {
 
     /// ~400 ms debounce so a burst of keystrokes coalesces into one server round-trip
     /// (the on-device recompute's `.task(id:)` debounce doesn't run in discover mode).
-    /// Re-triggering cancels the pending run; an empty query clears to idle.
-    func searchDebounced(_ query: String, rips: RipsStore) {
+    /// Re-triggering cancels the pending run; an all-empty query clears to idle.
+    /// `artist` is the Discover tab's refine field: it WIDENS the server term (iTunes
+    /// term search matches across fields) and NARROWS the hit list client-side.
+    func searchDebounced(_ query: String, artist: String = "", rips: RipsStore) {
         task?.cancel()
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { hits = []; state = .idle; return }
+        guard let term = Self.term(title: query, artist: artist) else {
+            hits = []; state = .idle; return
+        }
+        let refine = artist.trimmingCharacters(in: .whitespaces)
         task = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled, let self else { return }
             self.state = .loading
-            let results = await rips.discoverSearch(q)
+            let results = await rips.discoverSearch(term)
             guard !Task.isCancelled else { return }
-            self.hits = results
+            self.hits = Self.refine(results, artist: refine)
             self.state = .loaded
         }
+    }
+
+    /// The server search term: title + artist joined (either alone works — an
+    /// artist-only search is a valid way in). nil ⇒ nothing to search.
+    static func term(title: String, artist: String) -> String? {
+        let t = title.trimmingCharacters(in: .whitespaces)
+        let a = artist.trimmingCharacters(in: .whitespaces)
+        let joined = [t, a].filter { !$0.isEmpty }.joined(separator: " ")
+        return joined.isEmpty ? nil : joined
+    }
+
+    /// Client-side artist narrowing — iTunes term search matches across fields, so a
+    /// refine like "daft" must still drop hits whose artist doesn't carry it.
+    static func refine(_ hits: [RipsStore.DiscoverHit], artist: String) -> [RipsStore.DiscoverHit] {
+        let a = artist.trimmingCharacters(in: .whitespaces)
+        guard !a.isEmpty else { return hits }
+        return hits.filter { $0.artist.localizedCaseInsensitiveContains(a) }
     }
 
     func cancel() { task?.cancel(); task = nil; hits = []; state = .idle }
@@ -43,10 +64,11 @@ struct DiscoverResultsList: View {
     @Environment(RipsStore.self) private var rips
     let model: DiscoverSearchModel
     let query: String
+    var artist: String = ""
 
     var body: some View {
         Group {
-            if query.trimmingCharacters(in: .whitespaces).isEmpty {
+            if DiscoverSearchModel.term(title: query, artist: artist) == nil {
                 hint
             } else {
                 switch model.state {

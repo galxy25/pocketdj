@@ -151,6 +151,28 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertNotNil(rips.discoverError)
         XCTAssertNil(rips.jobs["amrec_123"])
     }
+
+    // MARK: Discover-tab term building + artist refine (pure DiscoverSearchModel math)
+
+    private func hit(_ artist: String) -> RipsStore.DiscoverHit {
+        RipsStore.DiscoverHit(appleMusicId: "1", title: "T", artist: artist, songId: "amrec_1")
+    }
+
+    func testTermJoinsTitleAndArtist() {
+        XCTAssertEqual(DiscoverSearchModel.term(title: "one more time", artist: ""), "one more time")
+        XCTAssertEqual(DiscoverSearchModel.term(title: "", artist: "daft punk"), "daft punk")
+        XCTAssertEqual(DiscoverSearchModel.term(title: " one more time ", artist: " daft punk "),
+                       "one more time daft punk")
+        XCTAssertNil(DiscoverSearchModel.term(title: "  ", artist: ""))
+    }
+
+    func testRefineNarrowsByArtistCaseInsensitively() {
+        let hits = [hit("Daft Punk"), hit("Pendulum"), hit("daft punk & friends")]
+        XCTAssertEqual(DiscoverSearchModel.refine(hits, artist: "").count, 3, "empty refine passes through")
+        let narrowed = DiscoverSearchModel.refine(hits, artist: "DAFT")
+        XCTAssertEqual(narrowed.map(\.artist), ["Daft Punk", "daft punk & friends"])
+        XCTAssertTrue(DiscoverSearchModel.refine(hits, artist: "prodigy").isEmpty)
+    }
 }
 
 /// Scriptable, request-recording `URLProtocol` standing in for the rip server —
