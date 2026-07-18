@@ -40,6 +40,9 @@ final class PlaybackIntegrationUITests: XCTestCase {
         app.launchEnvironment["PDJ_INTEGRATION_PLAYBACK"] = "1"  // ephemeral settings store
         app.launchEnvironment["PDJ_TEST_PROBE"] = "1"            // expose player-state in a11y
         app.launchEnvironment["PDJ_START_SECTION"] = "Browser"   // launch defaults changed (home/Mix)
+        // No fixture here, so the app would otherwise restore the DEVICE'S real persisted
+        // playback session at launch — a leftover deck would pollute the play/pause probes.
+        app.launchEnvironment["PDJ_DISABLE_SESSION_RESTORE"] = "1"
         // We resolve the song via ONLINE search (OpenSearch) rather than loading the 30MB
         // / 92k-song Apple Music index locally (that parse takes >120s in the harness and
         // isn't needed: the play/pause bug is song-agnostic and the song is in the PUBLIC

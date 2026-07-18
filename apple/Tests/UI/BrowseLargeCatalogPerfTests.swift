@@ -18,6 +18,8 @@ final class BrowseLargeCatalogPerfTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_LOAD_APPLE_MUSIC"] = "1"   // add the 90k-song source
         app.launchEnvironment["PDJ_START_SECTION"] = "Browser"
+        // No fixture → don't let the device's real persisted playback session restore a deck.
+        app.launchEnvironment["PDJ_DISABLE_SESSION_RESTORE"] = "1"
         app.launch()
 
         // First launch downloads + parses ~32 MB and pre-builds the browse rows; give it room.

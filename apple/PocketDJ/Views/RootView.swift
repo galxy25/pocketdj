@@ -139,6 +139,12 @@ struct RootView: View {
             studioMic.recoverOrphans()
             // History demo seed (PDJ_SEED_HISTORY) — populate the timeline for UI tests / demos.
             playHistory.seedDemoIfRequested()
+            // Durable playback session: rehydrate the Now Playing deck from the last run's
+            // snapshot — HELD (never auto-plays; the first ▶ resumes at the saved position).
+            // Self-contained (title/artist ride the snapshot), so it renders before the
+            // catalog loads. Skips itself when playback is already active (an intent/widget
+            // launch beat us here) and under PDJ_DISABLE_SESSION_RESTORE.
+            sequencer.restorePersistedSessionIfIdle()
             applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
