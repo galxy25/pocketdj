@@ -195,6 +195,8 @@ private struct DiscoverRow: View {
     @Environment(RipsStore.self) private var rips
     @Environment(PlayerEngine.self) private var player
     @Environment(StreamingStore.self) private var streaming
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(AppModel.self) private var app
     let hit: RipsStore.DiscoverHit
     let index: Int
 
@@ -221,6 +223,44 @@ private struct DiscoverRow: View {
         // their own ids under the row id (the browser SongRow lesson).
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("discover-row-\(index)")
+        // Long-press (iOS) / right-click (macOS) on a RIPPED row: queue it into the
+        // running Now Playing session, and backfill the provisional catalog entry for
+        // songs added before the eventual-consistency store existed (Levi 2026-07-18).
+        .contextMenu { if ripped { rowMenu } }
+    }
+
+    @ViewBuilder private var rowMenu: some View {
+        if sequencer.isRunning {
+            Button { enqueue(next: true) } label: {
+                Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
+            Button { enqueue(next: false) } label: {
+                Label("Play Last", systemImage: "text.line.last.and.arrowtriangle.forward")
+            }
+        }
+        if app.songsById[hit.songId] == nil {
+            Button { addToCatalog() } label: {
+                Label("Add to Catalog", systemImage: "plus.rectangle.on.folder")
+            }
+        }
+    }
+
+    /// Queue into the live session — the catalog entry lands first so the queue row
+    /// (and everything downstream: collections, burn, mix) resolves the id.
+    private func enqueue(next: Bool) {
+        addToCatalog()
+        let item = SetlistPlayer.Item(id: hit.songId, title: hit.title, artist: hit.artist,
+                                      lengthMs: hit.durationMs)
+        if next { sequencer.insertNextInQueue([item]) } else { sequencer.appendToQueue([item]) }
+    }
+
+    /// Backfill the provisional catalog entry (a no-op once the song is in any source —
+    /// including adds recorded by discoverAdd itself).
+    private func addToCatalog() {
+        guard app.songsById[hit.songId] == nil else { return }
+        rips.discoverAdds?.add(songId: hit.songId, appleMusicId: hit.appleMusicId,
+                               title: hit.title, artist: hit.artist, album: hit.album,
+                               artworkUrl: hit.artworkUrl, durationMs: hit.durationMs)
     }
 
     private var subtitle: String {

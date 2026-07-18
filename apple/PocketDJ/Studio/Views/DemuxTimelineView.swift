@@ -28,14 +28,28 @@ struct DemuxTimelineView: View {
     private static let waveHeight: CGFloat = 44
     private static let chordHeight: CGFloat = 34
 
+    /// Live strip width — feeds the fit-to-width zoom floor (zoom-out must always be
+    /// able to show the WHOLE track, portrait included).
+    @State private var containerW: CGFloat = 0
+
     var body: some View {
         VStack(spacing: 6) {
             GeometryReader { geo in
                 strip(containerWidth: geo.size.width)
+                    .onAppear { containerW = geo.size.width }
+                    .onChange(of: geo.size.width) { _, w in containerW = w }
             }
             .frame(height: Self.waveHeight + Self.chordHeight + 18)
             controls
         }
+    }
+
+    /// Points-per-second at which the whole track exactly fits the strip — the true
+    /// zoom-out floor. Falls back to the ladder floor before layout has a width.
+    private var fitPx: CGFloat {
+        let seconds = max(Double(durationMs) / 1_000, 0.01)
+        guard containerW > 0 else { return Self.zoomLadder.first! }
+        return containerW / CGFloat(seconds)
     }
 
     // MARK: - The strip
@@ -176,7 +190,7 @@ struct DemuxTimelineView: View {
             Text("Zoom").font(.caption2).foregroundStyle(Theme.fgDim)
             Button { stepZoom(-1) } label: { Image(systemName: "minus.magnifyingglass") }
                 .buttonStyle(.borderless).foregroundStyle(Theme.accent)
-                .disabled(pxPerSec <= Self.zoomLadder.first!)
+                .disabled(pxPerSec <= fitPx + 0.01)
                 .accessibilityIdentifier("demux-zoom-out")
             Button { stepZoom(+1) } label: { Image(systemName: "plus.magnifyingglass") }
                 .buttonStyle(.borderless).foregroundStyle(Theme.accent)
@@ -197,10 +211,19 @@ struct DemuxTimelineView: View {
         .padding(.horizontal, 2)
     }
 
+    /// Walk the ladder — and BELOW its floor, land on fit-to-width, so zoom-out always
+    /// reaches "the whole track on screen" even for a long song in portrait. Zooming
+    /// back in from the fit stop returns to the ladder.
     private func stepZoom(_ dir: Int) {
         let ladder = Self.zoomLadder
-        let idx = ladder.firstIndex(where: { $0 >= pxPerSec }) ?? 0
-        let next = min(max(idx + dir, 0), ladder.count - 1)
-        pxPerSec = ladder[next]
+        if dir < 0 {
+            if let lower = ladder.last(where: { $0 < pxPerSec }), lower > fitPx {
+                pxPerSec = lower
+            } else {
+                pxPerSec = fitPx
+            }
+        } else {
+            pxPerSec = ladder.first(where: { $0 > pxPerSec }) ?? ladder.last!
+        }
     }
 }

@@ -93,12 +93,16 @@ struct StaffChordView: View {
             let noteX = size.width * 0.62
             /// Diatonic step index of the staff's BOTTOM LINE (treble: E4, bass: G2).
             let bottomStep = clef == .treble ? diatonicStep(64) : diatonicStep(43)
-            var lastStepsUp = Int.min
+            // nil sentinel, NOT Int.min: `stepsUp - Int.min` overflows (Swift trap) for any
+            // first note at/above the bottom line — the scrub-while-playing field crash
+            // (build 1784413084, DemuxChordDetailView.swift:101 arithmetic overflow).
+            var lastStepsUp: Int?
             for midi in midiNotes.sorted() {
                 let (step, sharp) = pitch(midi)
                 let stepsUp = step - bottomStep
                 let y = bottomY - CGFloat(stepsUp) * gap / 2
-                let x = (stepsUp - lastStepsUp == 1) ? noteX + 9 : noteX
+                let collides = lastStepsUp.map { stepsUp - $0 == 1 } ?? false
+                let x = collides ? noteX + 9 : noteX
                 lastStepsUp = stepsUp
 
                 // Ledger lines for heads below/above the staff (even steps sit ON a line).
