@@ -91,7 +91,7 @@ struct PerformanceView: View {
             content
         }
         .background { tabShortcuts }
-        .navigationTitle("Performance")
+        .navigationTitle("Producer")
         .background(Theme.bg)
         .task {
             // Restore the last-open sub-tab ("open where you left off" — the
