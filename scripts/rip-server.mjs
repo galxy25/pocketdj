@@ -31,9 +31,29 @@ import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
 
+// Optional machine-local env file (~/.pocketdj/rip-server.env, chmod 600). The launchd
+// plist is checked into the repo, so secrets (RIP_TOKEN / RIP_ADMIN_TOKEN) and the
+// RIP_PUBLIC switch live here instead — written by scripts/setup-rip-funnel.sh, and it
+// survives a plist reinstall. Real environment variables always win.
+try {
+  for (const line of readFileSync(join(homedir(), '.pocketdj', 'rip-server.env'), 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
+  }
+} catch { /* no env file — Tailnet-only defaults */ }
+
 const CFG = {
   port: parseInt(process.env.RIP_PORT || '8787', 10),
-  token: process.env.RIP_TOKEN || '', // bearer; empty = no auth (local dev)
+  token: process.env.RIP_TOKEN || '', // bearer; empty = no auth (local dev / Tailnet-only)
+  // ADMIN tier: gates the endpoints that mutate the corpus at scale or drive this
+  // machine's library tooling (backfills, ingest, analysis, am-sync). Unset ⇒ those
+  // endpoints fall back to the global RIP_TOKEN gate (Tailnet-only deployments).
+  adminToken: process.env.RIP_ADMIN_TOKEN || '',
+  // PUBLIC (Tailscale Funnel) mode — scripts/setup-rip-funnel.sh. The Tailnet boundary
+  // is gone, so tokens become mandatory and user-tier requests are rate-limited.
+  public: process.env.RIP_PUBLIC === '1',
+  // Browse ▸ Discover search proxy target (env-overridable so tests can stub it).
+  searchBase: process.env.RIP_SEARCH_BASE || 'https://itunes.apple.com/search',
   profile: process.env.AWS_PROFILE || 'levi',
   region: process.env.AWS_REGION || 'us-west-2',
   bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
@@ -76,6 +96,19 @@ const CFG = {
   stemDeadlineMs: process.env.POCKETDJ_STEM_DEADLINE_MS ? parseInt(process.env.POCKETDJ_STEM_DEADLINE_MS, 10) : 30 * 60_000, // one value; watchdog = +30s
   stemCollectionCap: process.env.POCKETDJ_STEM_COLLECTION_CAP ? parseInt(process.env.POCKETDJ_STEM_COLLECTION_CAP, 10) : 60, // guard against an accidental huge job
 };
+// PUBLIC mode refuses to boot open: without a token every write endpoint (rip, ingest,
+// analysis, backfills) would be internet-reachable, and the two tiers must actually be
+// two tiers — a shared value would make a leaked beta-user token the admin token.
+if (CFG.public) {
+  if (!CFG.token || !CFG.adminToken) {
+    console.error('RIP_PUBLIC=1 requires both RIP_TOKEN and RIP_ADMIN_TOKEN — refusing to start open.');
+    process.exit(1);
+  }
+  if (CFG.token === CFG.adminToken) {
+    console.error('RIP_TOKEN and RIP_ADMIN_TOKEN must differ (user tier ≠ admin tier).');
+    process.exit(1);
+  }
+}
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1530,33 +1563,84 @@ function send(res, status, body) {
   });
   res.end(payload);
 }
+function bearerOf(req) {
+  const h = req.headers['authorization'] || '';
+  return h.startsWith('Bearer ') ? h.slice(7) : '';
+}
+// USER tier: the global gate. The admin token is a superset credential — a client
+// configured with it (Levi's own devices) passes every gate.
 function authed(req) {
   if (!CFG.token) return true;
-  const h = req.headers['authorization'] || '';
-  return h === `Bearer ${CFG.token}`;
+  const t = bearerOf(req);
+  return t === CFG.token || (!!CFG.adminToken && t === CFG.adminToken);
 }
-async function readJson(req) {
-  return new Promise((res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { res(b ? JSON.parse(b) : {}); } catch { res({}); } }); });
+// ADMIN tier: corpus-scale mutation + library tooling. With no dedicated admin token
+// this collapses to the global gate (Tailnet-only deployments keep today's behavior).
+function adminAuthed(req) {
+  const admin = CFG.adminToken || CFG.token;
+  if (!admin) return true; // tokenless local dev
+  return bearerOf(req) === admin;
+}
+// Per-IP sliding-window rate limiting — enforced only in PUBLIC mode and only for
+// user-tier requests (admin automation like the nightly indexers is exempt). GETs are
+// chatty by design (HLS segments + 2s job polls) so they get a much wider window than
+// POSTs, which enqueue real capture/transcode work on this machine. Env-tunable so the
+// auth e2e can shrink them.
+const RL = {
+  windowMs: parseInt(process.env.RIP_RL_WINDOW_MS || '60000', 10),
+  getMax: parseInt(process.env.RIP_RL_GET_MAX || '600', 10),
+  postMax: parseInt(process.env.RIP_RL_POST_MAX || '30', 10),
+};
+const rlHits = new Map(); // `${ip} ${get|post}` → [timestamps]
+function rateLimited(req) {
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
+    .split(',')[0].trim();
+  const kind = req.method === 'GET' ? 'get' : 'post';
+  const key = `${ip} ${kind}`;
+  const now = Date.now();
+  const hits = (rlHits.get(key) || []).filter((t) => now - t < RL.windowMs);
+  hits.push(now);
+  if (rlHits.size > 10_000) rlHits.clear(); // memory backstop under IP churn
+  rlHits.set(key, hits);
+  return hits.length > (kind === 'get' ? RL.getMax : RL.postMax);
+}
+// Endpoints behind the ADMIN tier. Everything else (rip/rip-collection/stemify/cancel/
+// status/jobs/hls) is a first-class app feature beta users are meant to reach. GET
+// /am-sync/<id> stays user-tier (read-only poll; ids are unguessable job handles).
+const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgrids',
+  '/stemify-collection', '/backfill-stems', '/analysis', '/ingest-digital', '/am-sync']);
+async function readJson(req, maxBytes = 32 * 1024 * 1024) {
+  return new Promise((res) => {
+    let b = ''; let over = false;
+    req.on('data', (c) => { if (over) return; b += c; if (b.length > maxBytes) { over = true; b = ''; } });
+    req.on('end', () => { try { res(!over && b ? JSON.parse(b) : {}); } catch { res({}); } });
+  });
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname;
   if (req.method === 'OPTIONS') return send(res, 204, '');
+  if (CFG.public && !adminAuthed(req) && rateLimited(req)) return send(res, 429, { error: 'rate limited' });
 
   if (path === '/health') {
     return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, stems: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
-      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token });
+      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token, public: CFG.public });
   }
   // GET /hls/<songId>/<index.m3u8|seg_N.ts> — live HLS (iOS-native). Same ?token= auth.
   const hm = path.match(/^\/hls\/([^/]+)\/([A-Za-z0-9_.-]+)$/);
   if (hm && req.method === 'GET') {
-    const qok = !CFG.token || url.searchParams.get('token') === CFG.token;
+    const qt = url.searchParams.get('token');
+    const qok = !CFG.token || qt === CFG.token || (!!CFG.adminToken && qt === CFG.adminToken);
     if (!authed(req) && !qok) return send(res, 401, { error: 'unauthorized' });
     return serveHls(res, decodeURIComponent(hm[1]), hm[2]);
   }
 
   if (!authed(req)) return send(res, 401, { error: 'unauthorized' });
+  // ADMIN tier — corpus-scale mutation (mass backfills, manifest ingest/analysis) and
+  // this machine's library tooling (am-sync). 403 (not 401): the caller IS authenticated,
+  // just at the wrong tier.
+  if (ADMIN_PATHS.has(path) && !adminAuthed(req)) return send(res, 403, { error: 'admin token required' });
 
   // GET /status/:songId
   let m = path.match(/^\/status\/(.+)$/);
@@ -1576,6 +1660,45 @@ const server = http.createServer(async (req, res) => {
     let st = job;
     try { st = { ...job, ...JSON.parse(readFileSync(jobFile(id), 'utf8')) }; } catch { /* in-memory only */ }
     return send(res, 200, jobView(st));
+  }
+  // GET /search?q=&limit= — Apple-Music catalog search (iTunes Search API proxy) for the
+  // app's Browse ▸ Discover mode. The iMac proxies so beta clients need ONE base URL +
+  // token, and so results are annotated against the live rip manifest: each hit carries
+  // the amrec_ songId the add flow would rip under (see ADHOC_ID / the recognizer flow)
+  // plus ripped/url when that capture already happened. Adding = the existing POST /rip
+  // with the ad-hoc descriptor — it rides the durable conc-1 FIFO queue, so multiple
+  // beta users are served fairly by arrival order.
+  if (path === '/search' && req.method === 'GET') {
+    const q = (url.searchParams.get('q') || '').trim();
+    if (!q) return send(res, 400, { error: 'q required' });
+    const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '25', 10) || 25, 1), 50);
+    try {
+      const it = new URL(CFG.searchBase);
+      it.searchParams.set('term', q);
+      it.searchParams.set('entity', 'song');
+      it.searchParams.set('limit', String(limit));
+      const r = await fetch(it, { signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) return send(res, 502, { error: `itunes search ${r.status}` });
+      const data = await r.json();
+      const results = (data.results || []).filter((t) => t.trackId).map((t) => {
+        const songId = `amrec_${t.trackId}`;
+        const entry = manifest[songId];
+        return {
+          appleMusicId: String(t.trackId),
+          title: t.trackName || '',
+          artist: t.artistName || '',
+          album: t.collectionName || '',
+          artworkUrl: t.artworkUrl100 || null,
+          durationMs: t.trackTimeMillis || null,
+          songId,
+          ripped: !!entry,
+          url: entry ? publicUrl(entry.key) : null,
+        };
+      });
+      return send(res, 200, { results });
+    } catch (e) {
+      return send(res, 502, { error: `search failed: ${String(e?.message || e)}` });
+    }
   }
   // POST /rip {songId} — single-song rip-on-demand (also the F1 stream-through
   // fire-and-forget target: idempotent + durable + non-blocking). Response shape is
