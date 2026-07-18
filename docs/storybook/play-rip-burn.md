@@ -503,3 +503,30 @@ display two windows, hides it.
 the gold record turning at the track's tempo with what's coming next — I drag tomorrow's
 opener up the queue, type 'slow burn', add it straight into the set, and the music never
 hiccups."
+
+## Your set survives a force-quit — durable playback sessions
+
+Kill the app mid-set — swipe it away, let the phone restart, whatever — and **reopen: the
+Now Playing deck is instantly back exactly as it was**. What already played this run sits
+behind the needle, the current song is cued **at the second you left it**, and Up next is
+intact — including the shuffle order and every live edit you (or your Jukebox Hero
+guests) made to the queue. Nothing is reconstructed from history or guessed from the
+setlist: the running set writes itself down **as it plays**, so there is nothing to lose
+at the moment of the kill.
+
+Two rules keep it honest:
+
+- **Reopening never blasts audio.** The deck comes back *held* — record still, ▶ showing —
+  and a single tap of ▶ resumes the song mid-groove, right at the saved position. (Skip,
+  a queue tap, or a row ▶ also wake it, from the top of whatever you chose.) The
+  lock-screen card stays empty until real sound starts: the card belongs to whoever is
+  actually playing, and nobody is yet.
+- **It only restores when there is something to restore.** Stop a set or let it run to its
+  natural end and the session is cleared — the next launch opens quiet. Play anything else
+  and the new set simply replaces the restored one. A song that vanished in the meantime
+  (a purged rip, an Apple Music removal) stays visible in the deck and is skipped over
+  when you press play, like any unplayable track.
+
+**User story:** "Half the room requested songs through the jukebox, then my phone died.
+Plugged in, rebooted, opened PocketDJ — the whole queue was still there, cued 1:12 into
+the song that was playing. One tap and the party never noticed."

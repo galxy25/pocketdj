@@ -1247,6 +1247,66 @@ public SF Symbol exists).
   iPhone. Placement mirrors MixView's leading cluster (`.topBarLeading` iOS, `.navigation`
   macOS/visionOS).
 
+### 10.2 Durable playback sessions — the run survives force-quit (`PlaybackSessionStore`)
+
+**Why.** The sequencer's run — played region, current position, the live-edited Up-Next
+tail (jukebox guest requests included) — was purely in-memory: a force-quit or a phone
+restart lost the whole set. Exit-time saving is the wrong tool (a kill has no exit
+hook), so the run is persisted **in real time as playback happens** and rehydrated at
+launch — held, never auto-playing.
+
+**Source of truth:**
+[`apple/PocketDJ/State/PlaybackSessionStore.swift`](../../apple/PocketDJ/State/PlaybackSessionStore.swift)
+(the store) + the persist/restore tail of
+[`apple/PocketDJ/Playback/SetlistPlayer.swift`](../../apple/PocketDJ/Playback/SetlistPlayer.swift).
+
+- **The snapshot** — ONE overwrite-in-place file, Application Support
+  `pocketdj-playback-session.json` (~KBs): `{ schemaVersion, sessionId, source { kind,
+  id, name }, queue: [{ songId, title, artist, lengthMs, repeatCount }], index,
+  positionMs, isPlaying, updatedAt }`. Rows snapshot **title/artist/lengthMs** so a
+  restore is **self-contained** — the deck renders before (or without) the catalog.
+  `source.kind` is a `PlayHistoryStore.PlaySource` rawValue and `source.name` the
+  captured display name, so `capturedHistoryContext` reconstructs and post-resume plays
+  attribute to the same set. Writes ride an off-main versioned-watermark actor
+  (`PlaybackSessionWriter` — the `MixSessionWriter` pattern; a stale async write can
+  never clobber a newer one, including `clear()`'s delete).
+- **Write triggers** (`persistSession` in SetlistPlayer): `play()` (fresh `sessionId`),
+  EVERY index move (auto-advance, `skipNext`/`skipPrevious`, `jumpToUpcoming`,
+  now-playing **adoption**) — passing `positionMs: 0` so a kill right after an advance
+  never resumes the new track at the old track's offset — and EVERY live-queue edit
+  (all seven: move/remove/append/insertNext/insertRandom/moveNext/moveToEnd — this is
+  how jukebox requests survive). Position: a ~1 Hz sampler + a play-state observation
+  feed `updatePosition(ms:isPlaying:)`, which the store **throttles to ~5 s while
+  playing** and passes **pause/resume transitions through immediately**; the scene
+  `.background` hook calls `flush()` (synchronous write, next to `mixSessions.flush()`).
+  `positionMs` is **song-relative** (local playback subtracts the shared-album
+  `nowPlaying.startMs`; Apple Music reports song seconds directly). `stop()` AND the
+  natural end-of-set call `clear()` — a finished set never rehydrates.
+- **Restore** (`restorePersistedSessionIfIdle`, called from RootView's launch task):
+  `load()` is **lenient** (any decode failure / schema mismatch / empty queue → nil —
+  never blocks launch), then `restore(from:)` rebuilds the queue (fresh `uid`s, clamped
+  index), source identity, and history context, and marks the run
+  **active-but-HELD** (`isRunning = true`, `isHeldForResume = true`): the home deck,
+  widget snapshot (`isPlaying: false`), and CarPlay Up Next all render — but NO audio
+  starts, AVAudioSession is untouched, the engine hooks stay un-armed, and the system
+  Now Playing card is **not** claimed (the one-audio-owner rule — the card belongs to
+  whoever is sounding; nobody is). Guards: skip when a set is already running or a
+  backend is already active (an intent/widget launch won the race), and under the
+  `PDJ_DISABLE_SESSION_RESTORE` seam.
+- **Waking a held deck**: the panel's / widget's ▶ routes to `resumeFromHold()` — arm
+  hooks, then `playCurrent(resumeAtMs:)` threads the saved position through the
+  existing cue seams (`playLocalFile(atMs:)` for burned/studio files,
+  `coordinator.play(atMs:)` → Apple Music re-play + seek). Skip / jump / a manual
+  member play instead hit `exitHoldIfNeeded()` — go live from the top of the chosen
+  track, pending offset dropped. Everything after is a 100% normal run. A vanished
+  song stays in the deck and falls through the normal unplayable-skip on play.
+- **Testing seams**: `PDJ_USE_FIXTURE` isolates the file (`launchURL()`),
+  `PDJ_SEED_PLAYBACK_SESSION` writes a canned mid-set snapshot for the UI test
+  (`NowPlayingUITests.testRestoredSessionRehydratesDeckWithoutAutoPlay`), and
+  `PDJ_DISABLE_SESSION_RESTORE` keeps no-fixture harnesses (the integration/perf
+  suites) off the device's real session. Unit coverage:
+  `PlaybackSessionStoreTests` + `SetlistPlayerSessionTests`.
+
 ---
 
 ## 11. Background processing — transfers + audio survive suspend/lock (native)
