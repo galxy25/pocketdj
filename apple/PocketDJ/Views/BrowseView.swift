@@ -20,6 +20,7 @@ struct BrowseView: View {
     @Binding var path: NavigationPath
     @State private var browse = BrowseState(defaults: SettingsStore.launchDefaults())
     @State private var online = OnlineSearchModel()
+    @State private var discover = DiscoverSearchModel()
     @State private var showFilter = false
     @State private var showSort = false
     @FocusState private var searchFocused: Bool
@@ -56,33 +57,42 @@ struct BrowseView: View {
     var body: some View {
         @Bindable var browse = browse
         return VStack(spacing: 0) {
-            Picker("Show", selection: $browse.kind) {
-                Text("Albums").tag(ItemKind.album)
-                Text("Songs").tag(ItemKind.song)
-                Text("Artists").tag(ItemKind.artist)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .accessibilityIdentifier("kind-picker")
+            // Discover searches the full Apple Music catalog (songs only) — the kind
+            // picker + recognizer row apply to the catalog modes and hide there.
+            if !effectiveDiscover {
+                Picker("Show", selection: $browse.kind) {
+                    Text("Albums").tag(ItemKind.album)
+                    Text("Songs").tag(ItemKind.song)
+                    Text("Artists").tag(ItemKind.artist)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .accessibilityIdentifier("kind-picker")
 
-            // "?♪?" listen-and-identify button — sits at the TOP of the browser
-            // list, wired to the ShazamKit recognizer. Additive: a no-op-with-message
-            // when the ShazamKit entitlement / framework is absent.
-            HStack {
-                Spacer()
-                ShazamButton()
-                    .accessibilityIdentifier("shazam-button")
-                Spacer()
+                // "?♪?" listen-and-identify button — sits at the TOP of the browser
+                // list, wired to the ShazamKit recognizer. Additive: a no-op-with-message
+                // when the ShazamKit entitlement / framework is absent.
+                HStack {
+                    Spacer()
+                    ShazamButton()
+                        .accessibilityIdentifier("shazam-button")
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 4)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 4)
 
-            content
+            if effectiveDiscover {
+                DiscoverResultsList(model: discover, query: browse.query)
+            } else {
+                content
+            }
         }
         .background { kindShortcuts }
         .navigationTitle("Browser")
         .background(Theme.bg)
-        .searchable(text: $browse.query, prompt: "Search artist, album, genre")
+        .searchable(text: $browse.query,
+                    prompt: effectiveDiscover ? "Search Apple Music" : "Search artist, album, genre")
         .searchFocused($searchFocused)
         .toolbar { toolbarItems }
         .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
@@ -93,14 +103,18 @@ struct BrowseView: View {
         // Sort changes RESET + re-fetch online (the server sorts the full result
         // set; the client only holds loaded pages so it can't re-order them).
         .onChange(of: browse.sortKeys) { browse.persist(); if browse.searchOnline { triggerOnline() } }
-        .onChange(of: browse.searchOnline) {
+        .onChange(of: browse.searchMode) {
             browse.persist()
             // Coming back to on-device: restart its paging (the pre-online budget may be
             // huge). Invalidating the committed key makes `liveVisible` fall back to a page.
             visibleKey = ""
             if browse.searchOnline { triggerOnline() } else { online.cancel() }
+            if effectiveDiscover { triggerDiscover() } else { discover.cancel() }
         }
-        .onChange(of: browse.query) { if browse.searchOnline { triggerOnline() } }
+        .onChange(of: browse.query) {
+            if browse.searchOnline { triggerOnline() }
+            if effectiveDiscover { triggerDiscover() }
+        }
         // "Search PocketDJ for …" (the system.search intent): the term is parked on
         // the intents bridge; consume it into the search field — whether the browser
         // is already up (onChange) or the intent launched the app (task).
@@ -108,19 +122,26 @@ struct BrowseView: View {
         .task {
             consumeIntentSearch()
             if browse.searchOnline { triggerOnline() }
+            if effectiveDiscover { triggerDiscover() }
         }
         // Recompute the on-device results OFF the main actor whenever an input changes (kind, query,
         // filters, sort, catalog reload). Keying the task on the signature auto-cancels the previous
         // run, giving free debounce while typing — the heavy filter+sort never blocks the main thread.
-        // In online mode the id is a constant so the on-device recompute doesn't run per keystroke;
-        // toggling back to on-device flips the id and recomputes for the current query.
-        .task(id: effectiveOnline ? "online" : browse.recomputeSignature(app)) {
-            if !effectiveOnline { await browse.refreshResults(app) }
+        // In online/discover mode the id is a constant so the on-device recompute doesn't run per
+        // keystroke; toggling back to on-device flips the id and recomputes for the current query.
+        .task(id: effectiveDiscover ? "discover" : (effectiveOnline ? "online" : browse.recomputeSignature(app))) {
+            if !effectiveOnline && !effectiveDiscover { await browse.refreshResults(app) }
         }
     }
 
     /// Online (OpenSearch) search covers albums + songs only; the Artists kind is always on-device.
     private var effectiveOnline: Bool { browse.searchOnline && browse.kind != .artist }
+
+    /// Discover (Apple Music via the rip server) replaces the whole results area.
+    private var effectiveDiscover: Bool { browse.searchMode == .discover }
+
+    /// Kick the debounced Discover search for the current query (mode entry + keystrokes).
+    private func triggerDiscover() { discover.searchDebounced(browse.query, rips: rips) }
 
     /// Atomically take the pending intent search term into the search field (live
     /// re-read + clear, so multi-window consumers race safely — see RootView's
@@ -259,32 +280,66 @@ struct BrowseView: View {
         #endif
     }
 
+    /// Toolbar icon for the current search mode.
+    private var searchModeIcon: String {
+        switch browse.searchMode {
+        case .device:   return deviceIcon
+        case .online:   return "cloud"
+        case .discover: return "sparkle.magnifyingglass"
+        }
+    }
+
+    private var searchModeHelp: String {
+        switch browse.searchMode {
+        case .device:   return "On-device search"
+        case .online:   return "Online search (OpenSearch)"
+        case .discover: return "Discover — search all of Apple Music"
+        }
+    }
+
+    /// The mode toggle grown a third state: device → online → discover → device.
+    /// Stays a single CYCLING button (not a menu) so the long-standing "one tap flips
+    /// on-device → online" behavior — and the integration test built on it — hold.
+    private func cycleSearchMode() {
+        switch browse.searchMode {
+        case .device:   browse.searchMode = .online
+        case .online:   browse.searchMode = .discover
+        case .discover: browse.searchMode = .device
+        }
+    }
+
     @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            // On-device ⇄ online (OpenSearch) search mode — device icon vs cloud.
-            Button { browse.searchOnline.toggle() } label: {
-                Image(systemName: browse.searchOnline ? "cloud" : deviceIcon)
+            // On-device → online (OpenSearch) → Discover (full Apple Music) cycle.
+            Button { cycleSearchMode() } label: {
+                Image(systemName: searchModeIcon)
             }
             .accessibilityIdentifier("search-mode")
-            .help(browse.searchOnline ? "Online search (OpenSearch)" : "On-device search")
+            // "device" / "online" / "discover" — lets UI tests assert the mode state.
+            .accessibilityValue(browse.searchMode.rawValue)
+            .help(searchModeHelp)
 
-            if browse.kind == .album {
-                Button {
-                    browse.layout = browse.layout == .grid ? .list : .grid
-                } label: {
-                    Image(systemName: browse.layout == .grid ? "square.grid.2x2" : "list.bullet")
+            // Layout / sort / filter shape the CATALOG result set — Discover is a
+            // server-paged song search, so they hide rather than sit dead.
+            if !effectiveDiscover {
+                if browse.kind == .album {
+                    Button {
+                        browse.layout = browse.layout == .grid ? .list : .grid
+                    } label: {
+                        Image(systemName: browse.layout == .grid ? "square.grid.2x2" : "list.bullet")
+                    }
+                    .accessibilityIdentifier("layout-toggle")
                 }
-                .accessibilityIdentifier("layout-toggle")
+                Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
+                    .accessibilityIdentifier("sort-button")
+                Button { showFilter = true } label: {
+                    Image(systemName: (browse.activeFilterCount > 0
+                                       || (browse.kind == .song && browse.membershipActive))
+                          ? "line.3.horizontal.decrease.circle.fill"
+                          : "line.3.horizontal.decrease.circle")
+                }
+                .accessibilityIdentifier("filter-button")
             }
-            Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
-                .accessibilityIdentifier("sort-button")
-            Button { showFilter = true } label: {
-                Image(systemName: (browse.activeFilterCount > 0
-                                   || (browse.kind == .song && browse.membershipActive))
-                      ? "line.3.horizontal.decrease.circle.fill"
-                      : "line.3.horizontal.decrease.circle")
-            }
-            .accessibilityIdentifier("filter-button")
         }
     }
 

@@ -14,8 +14,18 @@ final class BrowseState {
     var clauses: [Clause] = []
     var sortKeys: [SortKey] = []
     var layout: Layout = .grid
-    /// Search mode: false = on-device (local filter), true = online (OpenSearch).
-    var searchOnline: Bool = false
+    /// Search mode: on-device (local filter) · online (OpenSearch) · discover (the rip
+    /// server's full-Apple-Music-catalog `/search` proxy — see BrowseDiscover).
+    enum SearchMode: String, Codable { case device, online, discover }
+    var searchMode: SearchMode = .device
+    /// Legacy boolean view of the mode. The online pipeline (and older persisted
+    /// snapshots) speak this boolean; it maps online ⇄ device and NEVER yields
+    /// discover, so every `searchOnline` call site keeps its exact pre-discover
+    /// semantics (discover reads as "not online").
+    var searchOnline: Bool {
+        get { searchMode == .online }
+        set { searchMode = newValue ? .online : .device }
+    }
 
     /// The on-device results the BrowseView renders (filtered + sorted, WITHOUT membership).
     /// Published by `refreshResults`, which does the heavy filter+sort OFF the main actor — the
@@ -74,7 +84,9 @@ final class BrowseState {
         if let data = defaults.data(forKey: persistenceKey),
            let s = try? JSONDecoder().decode(Snapshot.self, from: data) {
             kind = s.kind; clauses = s.clauses; sortKeys = s.sortKeys
-            layout = s.layout; searchOnline = s.searchOnline ?? false
+            layout = s.layout
+            // Prefer the tri-state mode; fall back to the legacy boolean snapshot.
+            searchMode = s.searchMode ?? ((s.searchOnline ?? false) ? .online : .device)
         }
         if historyMode { kind = .song }   // History is inherently song-mode.
     }
@@ -82,11 +94,14 @@ final class BrowseState {
     private struct Snapshot: Codable {
         var kind: ItemKind, clauses: [Clause], sortKeys: [SortKey], layout: Layout
         var searchOnline: Bool?      // optional for back-compat with older snapshots
+        var searchMode: SearchMode?  // tri-state successor of searchOnline (optional = back-compat)
     }
 
     func persist() {
+        // `searchOnline` is still written so an OLDER build reading this snapshot keeps
+        // its device/online preference (discover degrades to device there).
         let snap = Snapshot(kind: kind, clauses: clauses, sortKeys: sortKeys,
-                            layout: layout, searchOnline: searchOnline)
+                            layout: layout, searchOnline: searchOnline, searchMode: searchMode)
         if let data = try? JSONEncoder().encode(snap) { defaults.set(data, forKey: persistenceKey) }
     }
 

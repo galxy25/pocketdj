@@ -457,8 +457,14 @@ struct PocketDJApp: App {
             collections.performerName = profile.name
         }
         _profile = State(initialValue: profile)
+        // Fixture guard lives HERE (not inside the service): UI-test runs must never
+        // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
+        // globally and the sync engine itself must stay drivable by tests.
+        let fixtureRun = ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil
         let cloudSync = CloudSyncService(database: CKCloudDocDatabase(),
-                                         enabled: { [weak settings] in settings?.cloudSyncEnabled ?? true })
+                                         enabled: { [weak settings] in
+                                             !fixtureRun && (settings?.cloudSyncEnabled ?? true)
+                                         })
         // The synced-document registry: each entry is (record key, the SAME file URL the
         // store was constructed with, post-pull reload). playback-session/mix-decks are
         // file-only (no reload) — their snapshots are pulled BEFORE RootView's restore

@@ -638,6 +638,98 @@ final class RipsStore {
         }
     }
 
+    // MARK: Discover — full-Apple-Music-catalog search (the rip server's /search proxy)
+
+    /// One `GET /search` result: an Apple Music catalog hit the rip server can capture on
+    /// demand. `songId` is the ad-hoc rip id (`amrec_<storeId>`); `ripped`/`url` reflect
+    /// the public rips manifest at search time (the capture may already exist).
+    struct DiscoverHit: Decodable, Identifiable, Equatable {
+        var appleMusicId: String
+        var title: String
+        var artist: String
+        var album: String? = nil
+        var artworkUrl: String? = nil
+        var durationMs: Int? = nil
+        var songId: String
+        var ripped: Bool? = nil
+        var url: String? = nil
+        var id: String { songId }
+    }
+
+    /// The `/search` response envelope.
+    private struct DiscoverResponse: Decodable { var results: [DiscoverHit] }
+
+    /// Why the last Discover search/add failed (nil = healthy) — the Browse ▸ Discover
+    /// inline notice. Strings already name the Settings pane to fix (URL vs token).
+    private(set) var discoverError: String?
+
+    /// Search the ENTIRE Apple Music catalog via the rip server's `/search` proxy.
+    /// Returns [] on ANY failure, surfacing the reason via `discoverError` (a 401/403
+    /// points at Settings ▸ Rip server token) — Discover is a browse surface, so errors
+    /// inform rather than throw. An empty/whitespace query is a no-op.
+    func discoverSearch(_ query: String, limit: Int = 25) async -> [DiscoverHit] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { discoverError = nil; return [] }
+        guard hasServer else {
+            discoverError = "No rip server configured (Settings ▸ Rip server)."
+            return []
+        }
+        guard var comps = URLComponents(string: "\(serverUrl)/search") else {
+            discoverError = "Invalid rip server URL (Settings ▸ Rip server)."
+            return []
+        }
+        comps.queryItems = [URLQueryItem(name: "q", value: q),
+                            URLQueryItem(name: "limit", value: String(limit))]
+        guard let url = comps.url else {
+            discoverError = "Invalid rip server URL (Settings ▸ Rip server)."
+            return []
+        }
+        var req = URLRequest(url: url)
+        // Same short timeout as `ensureURL`'s POST: an unreachable Tailscale server must
+        // fail in seconds, not URLSession's 60 s default, so the notice appears promptly.
+        req.timeoutInterval = 12
+        applyAuth(&req, token: token)
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                discoverError = "Search failed."; return []
+            }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                discoverError = "Rip server rejected the request — check Settings ▸ Rip server token."
+                return []
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                discoverError = "Search failed (\(http.statusCode))."; return []
+            }
+            let hits = try JSONDecoder().decode(DiscoverResponse.self, from: data).results
+            discoverError = nil
+            return hits
+        } catch {
+            discoverError = "Rip server unreachable (Settings ▸ Rip server)."
+            return []
+        }
+    }
+
+    /// "＋ Add" for a Discover hit: enqueue the server's ad-hoc `amrec_` capture via the
+    /// EXISTING metadata-carrying `/rip` path (`requestRip`), then follow the job with the
+    /// same background poll single-song rips use (`pollToReady`) so the manifest — and the
+    /// row — flips to ripped when the capture lands. In-flight state is readable per song
+    /// via `jobs[hit.songId]?.phase`. Never throws; failures land in `discoverError`.
+    func discoverAdd(_ hit: DiscoverHit) async {
+        let outcome = await requestRip(songId: hit.songId, title: hit.title, artist: hit.artist,
+                                       appleMusicId: hit.appleMusicId, lengthMs: hit.durationMs)
+        switch outcome {
+        case .ready:
+            await refreshManifest()
+        case .queued, .inflight:
+            if let jobId = jobs[hit.songId]?.jobId { pollToReady(songId: hit.songId, jobId: jobId) }
+        case .noServer:
+            discoverError = "No rip server configured (Settings ▸ Rip server)."
+        case .unknown, .failed:
+            discoverError = "Add failed — the rip server didn’t accept the request."
+        }
+    }
+
     /// Refresh a single song's job from `/jobs/<id>` (used by the recognizer rip→burn poll
     /// so a server-side capture failure short-circuits instead of waiting out the timeout).
     /// Returns the latest phase, or the last-known phase when there's no job/the fetch fails.

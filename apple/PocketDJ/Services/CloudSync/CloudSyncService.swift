@@ -26,8 +26,9 @@ import Observation
 ///     per document. Media files (burns, studio audio) never sync — documents that
 ///     reference device-local media are excluded from the registry by design.
 ///
-/// Sync is OFF under PDJ_USE_FIXTURE (tests must never touch a real account) and gated
-/// on the Settings toggle + iCloud account availability, both re-checked every pass.
+/// Sync is gated on the injected `enabled` closure (in the app: the Settings toggle AND
+/// no PDJ_USE_FIXTURE — tests must never touch a real account) + iCloud account
+/// availability, re-checked every pass.
 @MainActor
 @Observable
 final class CloudSyncService {
@@ -90,12 +91,11 @@ final class CloudSyncService {
         entries.append(Entry(key: key, fileURL: fileURL, reload: reload))
     }
 
-    /// True when a pass may run at all (toggle + fixture guard; account is checked async).
-    private var mayRun: Bool {
-        guard enabled() else { return false }
-        guard ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil else { return false }
-        return !entries.isEmpty
-    }
+    /// True when a pass may run at all (account availability is checked async per pass).
+    /// The PDJ_USE_FIXTURE guard lives in the APP's `enabled` closure (PocketDJApp.init),
+    /// not here — the unit-test scheme sets that env var globally, and the sync engine
+    /// itself must stay drivable by tests (against the in-memory database).
+    private var mayRun: Bool { enabled() && !entries.isEmpty }
 
     /// The launch pass — awaited by RootView's task BEFORE the durable-session restores so
     /// a fresh device restores CLOUD session files, not empty ones. Bounded by `deadline`:
