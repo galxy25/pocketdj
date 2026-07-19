@@ -108,6 +108,13 @@ struct StudioDemuxView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
+                    // Imported audio stays reachable (previously an import vanished from
+                    // the picker once deselected — the only way back was re-importing).
+                    let files = fileMatches()
+                    if !files.isEmpty {
+                        sectionHeader("Imported audio")
+                        ForEach(files, id: \.id) { fileRow($0) }
+                    }
                     let studioItems = studioMatches()
                     if !studioItems.isEmpty {
                         sectionHeader("Performance media")
@@ -118,7 +125,7 @@ struct StudioDemuxView: View {
                         sectionHeader("Tracks")
                         ForEach(tracks) { trackRow($0) }
                     }
-                    if studioItems.isEmpty && tracks.isEmpty {
+                    if files.isEmpty && studioItems.isEmpty && tracks.isEmpty {
                         Text(query.isEmpty
                              ? "Burn a track, make a sample, or Import an audio file to demux it."
                              : "Nothing matches “\(searchText)”.")
@@ -173,6 +180,30 @@ struct StudioDemuxView: View {
     private func sectionHeader(_ title: String) -> some View {
         Text(title).font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
             .padding(.top, 8).padding(.horizontal, 8)
+    }
+
+    private func fileMatches() -> [(id: String, name: String)] {
+        let all = demux.importedSources()
+        guard !query.isEmpty else { return all }
+        return all.filter { $0.name.lowercased().contains(query) }
+    }
+
+    private func fileRow(_ f: (id: String, name: String)) -> some View {
+        Button {
+            select(.file(id: f.id, name: f.name))
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "waveform.badge.magnifyingglass")
+                    .font(.caption).foregroundStyle(Theme.accent)
+                Text(f.name).foregroundStyle(Theme.fg).lineLimit(1)
+                Spacer()
+            }
+            .padding(.vertical, 6).padding(.horizontal, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.bgRaised))
+        .accessibilityIdentifier("demux-file-row-\(f.id)")
     }
 
     private func trackRow(_ song: IndexSong) -> some View {
