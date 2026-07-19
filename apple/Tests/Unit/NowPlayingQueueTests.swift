@@ -147,6 +147,42 @@ final class NowPlayingQueueTests: XCTestCase {
         XCTAssertTrue(seq.queue.isEmpty)
     }
 
+    /// The history toggle's data: `played` is the already-played head (`queue[0..<index]`,
+    /// oldest first), a pure projection that shrinks when ⏮ walks back and empties on stop.
+    func testPlayedIsTheAlreadyPlayedHead() {
+        let seq = makeSequencer()
+        XCTAssertTrue(seq.played.isEmpty)                        // idle ⇒ empty
+        seq.play([item("a"), item("b"), item("c")], sourceSetlistId: "set_1")
+        XCTAssertTrue(seq.played.isEmpty)                        // nothing finished yet
+        seq.skipNext()
+        XCTAssertEqual(seq.played.map(\.id), ["a"])
+        seq.skipNext()
+        XCTAssertEqual(seq.played.map(\.id), ["a", "b"])         // oldest first
+        seq.skipPrevious()
+        XCTAssertEqual(seq.played.map(\.id), ["a"])              // walking back shrinks it
+        seq.stop()
+        XCTAssertTrue(seq.played.isEmpty)
+    }
+
+    /// History "Play now": the needle lands on exactly the tapped played row, the rows
+    /// between it and the old current return to the upcoming tail; upcoming/unknown uids
+    /// are safe no-ops (the tap races playback by design).
+    func testJumpToPlayedRewindsOntoExactlyThatRow() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
+        seq.skipNext(); seq.skipNext()                           // current = "c", played = [a, b]
+        seq.jumpToPlayed(uid: seq.played[0].uid)                 // back onto "a"
+        XCTAssertEqual(seq.queue[seq.index].id, "a")
+        XCTAssertEqual(seq.upcoming.map(\.id), ["b", "c", "d"])  // in-between rows re-upcoming
+        XCTAssertTrue(seq.played.isEmpty)
+
+        seq.jumpToPlayed(uid: seq.upcoming[0].uid)               // an UPCOMING uid: no-op
+        XCTAssertEqual(seq.queue[seq.index].id, "a")
+        seq.jumpToPlayed(uid: UUID())                            // unknown uid: no-op
+        XCTAssertEqual(seq.queue[seq.index].id, "a")
+        seq.stop()
+    }
+
     func testEditsAreNoOpsWhenIdleOrNothingUpcoming() {
         let seq = makeSequencer()
         seq.appendToQueue([item("x")])                           // idle ⇒ no resurrect

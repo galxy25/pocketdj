@@ -27,7 +27,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Bump when the server gains capabilities the app must detect (health.version).
-const VERSION = 1;
+// v2: per-session played history (now-playing transitions logged; state.json `played`).
+const VERSION = 2;
 
 const CFG = {
   port: parseInt(process.env.JUKEBOX_PORT || '8788', 10),
@@ -63,6 +64,8 @@ const RL = {
   maxLen: 120,        // title/artist cap
 };
 const STATE_DEBOUNCE_MS = 1_000; // trailing debounce on host state snapshots
+const PLAYED_KEEP = 100;    // played-history entries persisted per session…
+const PLAYED_PUBLISH = 30;  // …and how many of the newest ride state.json for guests
 
 mkdirSync(CFG.home, { recursive: true });
 const log = (...a) => console.log(`[jukebox ${new Date().toISOString()}]`, ...a);
@@ -100,8 +103,8 @@ async function s3Put(key, body, contentType) {
 
 // ---------------- storage layer (filesystem today; drops into a Lambda/DynamoDB adapter later) ----------------
 // One session dir per jukebox: <home>/<id>/session.json + <home>/<id>/requests/<reqId>.json.
-// The persisted session is exactly {id,name,hostKey,createdAt,ended,seqCounter}; the live
-// object also carries in-memory-only fields (nowPlaying/upNext, rate maps, save chain, timer).
+// The persisted session is exactly {id,name,hostKey,createdAt,ended,seqCounter,timeless,played};
+// the live object also carries in-memory-only fields (nowPlaying/upNext, rate maps, save chain, timer).
 const sessions = new Map(); // id -> live session
 
 const sessionDir = (id) => join(CFG.home, id);
@@ -110,7 +113,7 @@ const requestsDir = (id) => join(sessionDir(id), 'requests');
 const requestFile = (id, reqId) => join(requestsDir(id), `${reqId}.json`);
 
 function persistSession(s) {
-  writeJson(sessionFile(s.id), { id: s.id, name: s.name, hostKey: s.hostKey, createdAt: s.createdAt, ended: s.ended, seqCounter: s.seqCounter, timeless: !!s.timeless });
+  writeJson(sessionFile(s.id), { id: s.id, name: s.name, hostKey: s.hostKey, createdAt: s.createdAt, ended: s.ended, seqCounter: s.seqCounter, timeless: !!s.timeless, played: s.played || [] });
 }
 function persistRequest(s, r) { writeJson(requestFile(s.id, r.id), r); }
 
@@ -120,7 +123,7 @@ const expiryOf = (s) => (s.timeless ? null : s.createdAt + CFG.ttlMs);
 function newSession(name, timeless) {
   const s = {
     id: genId(8), name: clean(name) || 'PocketDJ Jukebox', hostKey: randomBytes(16).toString('hex'),
-    createdAt: Date.now(), ended: false, seqCounter: 0, timeless: !!timeless,
+    createdAt: Date.now(), ended: false, seqCounter: 0, timeless: !!timeless, played: [],
     requests: new Map(), nowPlaying: null, upNext: [], hear: false,
     lastByClient: new Map(), ipHits: new Map(),
     saveChain: Promise.resolve(), stateTimer: null,
@@ -146,6 +149,7 @@ function loadSessions() {
     const s = {
       id: meta.id, name: meta.name, hostKey: meta.hostKey, createdAt: meta.createdAt,
       ended: !!meta.ended, seqCounter: meta.seqCounter || 0, timeless: !!meta.timeless,
+      played: Array.isArray(meta.played) ? meta.played : [],
       requests: new Map(), nowPlaying: null, upNext: [], hear: false,
       lastByClient: new Map(), ipHits: new Map(),
       saveChain: Promise.resolve(), stateTimer: null,
@@ -183,6 +187,21 @@ function sanitizeUpNext(list) {
   if (!Array.isArray(list)) return [];
   return list.slice(0, 50).map((x) => ({ title: clean(x && x.title, 200), artist: clean(x && x.artist, 200) }));
 }
+// Played history: derived server-side from now-playing TRANSITIONS — when a state POST
+// replaces one (sanitized) track with a DIFFERENT one (or with nothing), the outgoing track
+// is appended to the session's played log. Deriving here (instead of trusting a client-sent
+// list) covers every host source — setlist deck, Auto-DJ mix, single rip plays — with zero
+// wire-protocol change, and logs what guests actually saw as Now Playing (a DJ skipping back
+// re-logs the re-played track, radio-style). Same title+artist = a position tick, not a
+// transition. Persisted in session.json so the log survives restarts; a restart only ever
+// costs the one in-flight track (nowPlaying reloads as null → no bogus append either).
+function notePlayed(s, next) {
+  const prev = s.nowPlaying;
+  if (!prev || !prev.title) return;
+  if (next && next.title === prev.title && next.artist === prev.artist) return;
+  s.played = [...(s.played || []), { title: prev.title, artist: prev.artist, endedAt: Date.now() }].slice(-PLAYED_KEEP);
+  persistSession(s);
+}
 // state.json = host player snapshot ⊕ the last 30 requests' statuses (clientId/ip NOT leaked).
 function composeState(s) {
   const requests = [...s.requests.values()].sort((a, b) => a.seq - b.seq).slice(-30)
@@ -190,7 +209,8 @@ function composeState(s) {
   return {
     v: 1, jukeboxId: s.id, name: s.name, updatedAt: Date.now(), ended: s.ended,
     timeless: !!s.timeless, expiresAt: s.timeless ? null : (s.expiresAt ?? null),
-    hear: !!s.hear, nowPlaying: s.nowPlaying || null, upNext: s.upNext || [], requests,
+    hear: !!s.hear, nowPlaying: s.nowPlaying || null, upNext: s.upNext || [],
+    played: (s.played || []).slice(-PLAYED_PUBLISH), requests,
   };
 }
 // Serialize per-jukebox S3 writes on the session's own chain (like rip-server's saveManifest)
@@ -241,7 +261,9 @@ function endJukebox(s) {
 
 function postState(s, body) {
   s.hear = !!(body && body.hear); // View + Hear toggle (opaque passthrough into state.json)
-  s.nowPlaying = sanitizeNowPlaying(body && body.nowPlaying);
+  const next = sanitizeNowPlaying(body && body.nowPlaying);
+  notePlayed(s, next); // log the outgoing track before the snapshot replaces it
+  s.nowPlaying = next;
   s.upNext = sanitizeUpNext(body && body.upNext);
   scheduleState(s); // debounced ≥1s (composeState re-merges the live request statuses at write time)
   return { status: 200, json: { ok: true } };

@@ -63,6 +63,7 @@ deploys don't prune live jukeboxes.
   "nowPlaying": { "title": "…", "artist": "…", "lengthMs": 214000, "positionMs": 63000,
                   "streamUrl": "https://pocketdj-rips-….s3….amazonaws.com/rips/<id>.mp3" },
   "upNext": [ { "title": "…", "artist": "…" } ],
+  "played": [ { "title": "…", "artist": "…", "endedAt": 1789599786000 } ],
   "requests": [ { "id": "rq_…", "title": "…", "artist": "…", "status": "pending|queued|denied|played" } ]
 }
 ```
@@ -70,17 +71,32 @@ deploys don't prune live jukeboxes.
 Guests poll it every ~4 s. `positionMs` is snapshot-time; the page animates a
 progress bar locally between polls.
 
-### View-only vs View + Hear
+`played` is the session's **previously-played history**, derived **server-side** from
+now-playing transitions (a state POST replacing one track with a different one — or
+with nothing — logs the outgoing track). Deriving on the broker covers every host
+source (setlist deck, Auto-DJ mix, single rip plays) with zero wire-protocol change
+and records what guests actually saw as Now Playing. The full log (last 100) persists
+in `session.json` across restarts; `state.json` carries the newest 30. The guest page
+shows a "Previously played" card with a reveal button (newest first, local end times).
+
+### View-only vs View + Hear (the live radio)
 
 A session is **view-only by default** — a crowd-sourced request line: guests see the
 music and request, they don't hear it. The DJ can flip **View + Hear** on the live
 session (a toggle in the tab): snapshots then carry the current track's **public S3
-rip mp3** as `nowPlaying.streamUrl`, and the guest page shows a "Listen in" button
-(user-gesture-gated — mobile autoplay rules) that plays the track position-synced
-(`positionMs + (now − updatedAt)`, re-seek on >3 s drift). Only rips-bucket audio is
+rip mp3** as `nowPlaying.streamUrl`, and the guest page shows a "📻 Tune in — live
+radio" button (user-gesture-gated — mobile autoplay rules) that plays the track
+position-synced (`positionMs + (now − updatedAt)`, re-seek on >3 s drift). The page
+behaves like an internet-radio client, **no PocketDJ app needed**: tracks auto-advance
+(src swaps ride the original tap gesture), an unexpectedly paused element self-heals
+with a `play()` retry each poll, Media Session metadata puts the station — track,
+artist, jukebox name — on the guest's lock screen with working play/pause, and a
+mid-song join seeks to the live position once metadata loads. Audio streams straight
+from the public rips bucket; the broker never proxies bytes. Only rips-bucket audio is
 ever distributed — a DRM'd Apple Music stream never leaves the host; once its
 stream-through-rip lands in the manifest, a later snapshot picks the URL up
-automatically. Tracks with no public rip stay view-only even in hear mode.
+automatically. Tracks with no public rip stay view-only even in hear mode (the radio
+pauses with a hint and resumes on the next streamable track).
 
 ### Session lifecycle (server-owned)
 

@@ -31,6 +31,9 @@
   .up li:last-child{ border-bottom:0; }
   .up .n{ color:var(--accent); font-variant-numeric:tabular-nums; width:20px; flex:none; }
   .up .t{ font-weight:600; } .up .a{ color:var(--dim); }
+  .up .grow{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .up .time{ color:var(--dim); font-size:12px; flex:none; font-variant-numeric:tabular-nums; }
+  .hist{ margin-top:12px; }
   form{ display:flex; flex-direction:column; gap:10px; }
   input{ width:100%; background:var(--card2); border:1px solid var(--line); border-radius:11px; color:var(--txt); padding:13px 14px; font-size:16px; }
   input:focus{ outline:none; border-color:var(--accent); }
@@ -73,6 +76,12 @@
   <div class="card" id="upcard" style="display:none">
     <div class="label">Up Next</div>
     <ul class="up" id="up"></ul>
+  </div>
+
+  <div class="card" id="histcard" style="display:none">
+    <div class="label">Previously Played</div>
+    <button class="hear" id="histbtn" type="button" style="margin-top:0">🕘 Show previously played</button>
+    <ul class="up hist" id="hist" style="display:none"></ul>
   </div>
 
   <div class="card">
@@ -119,8 +128,9 @@
   var $ = function(id){ return document.getElementById(id); };
   var lastState = null, fails = 0, ended = false;
   var progBase = 0, progLen = 0, progAt = 0; // now-playing interpolation
-  var listening = false, curStream = null;   // View + Hear
+  var listening = false, curStream = null;   // View + Hear (the live radio)
   var au = null;
+  var histOpen = false;                      // Previously Played reveal
 
   function esc(s){ var d=document.createElement("div"); d.textContent=(s==null?"":String(s)); return d.innerHTML; }
 
@@ -142,6 +152,22 @@
         return '<li><span class="n">'+(i+1)+'</span><span><span class="t">'+esc(x.title)+'</span>'+(x.artist?' <span class="a">— '+esc(x.artist)+'</span>':'')+'</span></li>';
       }).join("");
     } else { $("upcard").style.display = "none"; }
+    // Previously played — the button reveals the list (newest first, with local end times)
+    var played = Array.isArray(st.played) ? st.played : [];
+    if(played.length){
+      $("histcard").style.display = "";
+      $("histbtn").textContent = "🕘 " + (histOpen ? "Hide" : "Show") + " previously played (" + played.length + ")";
+      $("histbtn").classList.toggle("on", histOpen);
+      $("hist").style.display = histOpen ? "" : "none";
+      if(histOpen){
+        $("hist").innerHTML = played.slice().reverse().map(function(x,i){
+          var t = x.endedAt ? new Date(x.endedAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}) : "";
+          return '<li><span class="n">'+(i+1)+'</span><span class="grow"><span class="t">'+esc(x.title)+'</span>'+
+                 (x.artist?' <span class="a">— '+esc(x.artist)+'</span>':'')+'</span>'+
+                 (t?'<span class="time">'+esc(t)+'</span>':'')+'</li>';
+        }).join("");
+      }
+    } else { $("histcard").style.display = "none"; }
     handleHear(st);
     // My requests — match my submitted ids against the shared status feed
     var byId = {}; (st.requests||[]).forEach(function(r){ byId[r.id]=r; });
@@ -165,9 +191,12 @@
   }
   setInterval(tickProgress, 250);
 
-  // View + Hear: play the current track's public rip in sync with the DJ. The FIRST play must
-  // be inside the tap gesture (mobile autoplay); after that, src swaps on track change keep
-  // going. Position-sync = positionMs + (now - updatedAt), re-seek only on >3s drift.
+  // View + Hear — the LIVE RADIO: play the current track's public rip in sync with the DJ,
+  // straight from the rips bucket, no app needed. The FIRST play must be inside the tap
+  // gesture (mobile autoplay); after that, src swaps on track change keep the station going.
+  // Position-sync = positionMs + (now - updatedAt), re-seek only on >3s drift. Each poll also
+  // self-heals: an unexpectedly paused element (stall, network hiccup, background throttle)
+  // gets a play() retry, so tuning in behaves like a station, not a one-shot preview.
   function handleHear(st){
     if(!au) au = $("au");
     var np = st.nowPlaying || {};
@@ -175,7 +204,7 @@
     var btn = $("hearbtn");
     if(stream){
       btn.style.display = "";
-      $("hearhint").textContent = "";
+      $("hearhint").textContent = listening ? "" : "listen along in your browser, synced with the DJ";
       if(curStream !== stream){                 // new track (or came back streamable)
         curStream = stream;
         if(listening){ try{ au.src = curStream; au.play().catch(function(){}); }catch(e){} }
@@ -183,21 +212,48 @@
       if(listening){
         var target = ((Number(np.positionMs)||0) + (Date.now() - (Number(st.updatedAt)||Date.now())))/1000;
         if(target >= 0 && isFinite(au.currentTime) && Math.abs(au.currentTime - target) > 3){ try{ au.currentTime = target; }catch(e){} }
-        btn.textContent = "🔊 Listening — tap to stop"; btn.classList.add("on");
-      } else { btn.textContent = "🔊 Listen in"; btn.classList.remove("on"); }
+        if(au.paused){ try{ au.play().catch(function(){}); }catch(e){} }
+        btn.textContent = "📻 On air — tap to stop"; btn.classList.add("on");
+      } else { btn.textContent = "📻 Tune in — live radio"; btn.classList.remove("on"); }
     } else {
       btn.style.display = "none";
       curStream = null;
-      if(listening){ try{ au.pause(); }catch(e){} $("hearhint").textContent = "this track isn't streamable"; }
+      if(listening){ try{ au.pause(); }catch(e){} $("hearhint").textContent = "this track isn't streamable — radio resumes on the next one"; }
     }
+    updateMediaSession(st, np);
   }
-  document.getElementById("hearbtn").addEventListener("click", function(){
+  function setListening(on){
     if(!au) au = $("au");
-    listening = !listening;
-    if(listening && curStream){ try{ au.src = curStream; au.play().catch(function(){}); }catch(e){} }
-    else if(!listening){ try{ au.pause(); }catch(e){} }
+    listening = on;
+    if(on){ if(curStream){ try{ au.src = curStream; au.play().catch(function(){}); }catch(e){} } }
+    else { try{ au.pause(); }catch(e){} }
     if(lastState) render(lastState);
-  });
+  }
+  document.getElementById("hearbtn").addEventListener("click", function(){ setListening(!listening); });
+  // Lock-screen/notification card: while tuned in, the radio announces itself like a
+  // station (Media Session), and the system play/pause buttons tune in/out.
+  function updateMediaSession(st, np){
+    if(!("mediaSession" in navigator)) return;
+    try{
+      if(listening && np && np.title){
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: np.title, artist: np.artist || "",
+          album: (st && st.name ? st.name : "PocketDJ Jukebox") + " — live"
+        });
+      }
+      navigator.mediaSession.playbackState = listening ? "playing" : "paused";
+    }catch(e){}
+  }
+  if("mediaSession" in navigator){
+    try{
+      navigator.mediaSession.setActionHandler("play", function(){ setListening(true); });
+      navigator.mediaSession.setActionHandler("pause", function(){ setListening(false); });
+    }catch(e){}
+  }
+  // Joining mid-song: the drift-sync target can't seek until the file's metadata is in.
+  $("au").addEventListener("loadedmetadata", function(){ if(listening && lastState) handleHear(lastState); });
+  $("au").addEventListener("error", function(){ if(listening){ $("hearhint").textContent = "stream hiccup — retrying…"; } });
+  $("histbtn").addEventListener("click", function(){ histOpen = !histOpen; if(lastState) render(lastState); });
 
   function showEnded(){
     ended = true;

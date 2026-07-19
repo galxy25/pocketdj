@@ -170,6 +170,30 @@ test('View + Hear threads hear + https streamUrl into state.json (http dropped)'
   assert.equal(st.nowPlaying.streamUrl, null);
 });
 
+test('played history: now-playing transitions accumulate; position ticks do not', async () => {
+  const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'History Party' } });
+  const h = created.json;
+  const post = (np) => req('POST', `/jukebox/${h.jukeboxId}/state`, { hostKey: h.hostKey, body: { nowPlaying: np, upNext: [] } });
+  await post({ title: 'Track One', artist: 'Alpha', lengthMs: 180000, positionMs: 0 });
+  await post({ title: 'Track One', artist: 'Alpha', lengthMs: 180000, positionMs: 60000 }); // same track: a position tick
+  await post({ title: 'Track Two', artist: 'Beta', lengthMs: 180000, positionMs: 0 });      // transition → Track One played
+  await wait(1300); // trailing debounce
+  let st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 1, 'exactly one transition should be logged');
+  assert.equal(st.played[0].title, 'Track One');
+  assert.equal(st.played[0].artist, 'Alpha');
+  assert.equal(typeof st.played[0].endedAt, 'number');
+  // Stopping playback (nowPlaying → null) logs the outgoing track too.
+  await post(null);
+  await wait(1300);
+  st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 2);
+  assert.equal(st.played[1].title, 'Track Two');
+  // The log rides session.json (not in-memory only), so it can survive a restart.
+  const meta = JSON.parse(readFileSync(join(HOME, h.jukeboxId, 'session.json'), 'utf8'));
+  assert.equal(meta.played.length, 2);
+});
+
 test('timeless create has no expiry; config flips the lifecycle mode', async () => {
   const t = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Forever Party', timeless: true } });
   assert.equal(t.status, 200);
@@ -200,12 +224,15 @@ test('end marks the jukebox ended in state.json', async () => {
   assert.equal(readState(jb.jukeboxId).ended, true);
 });
 
-test('sessions + requests survive a restart (durable, reloaded on boot)', async () => {
+test('sessions + requests + played history survive a restart (durable, reloaded on boot)', async () => {
   // A separate, still-live jukebox (ended ones are intentionally not reloaded).
   const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Persist Party' } });
   const live = created.json;
   const made = await req('POST', `/jukebox/${live.jukeboxId}/request`, { body: { title: 'Voyager', artist: 'Daft Punk', clientId: 'guest-P' } });
   assert.equal(made.status, 200);
+  // One now-playing transition before the crash → one played entry on disk.
+  await req('POST', `/jukebox/${live.jukeboxId}/state`, { hostKey: live.hostKey, body: { nowPlaying: { title: 'Overture', artist: 'Daft Punk' }, upNext: [] } });
+  await req('POST', `/jukebox/${live.jukeboxId}/state`, { hostKey: live.hostKey, body: { nowPlaying: { title: 'Voyager', artist: 'Daft Punk' }, upNext: [] } });
 
   child.kill('SIGKILL');
   await new Promise((r) => child.on('exit', r));
@@ -215,6 +242,13 @@ test('sessions + requests survive a restart (durable, reloaded on boot)', async 
   const poll = await req('GET', `/jukebox/${live.jukeboxId}/requests?since=0`, { hostKey: live.hostKey });
   assert.equal(poll.status, 200);
   assert.ok(poll.json.requests.find((x) => x.id === made.json.requestId), 'request should reload after restart');
+  // A post-restart state POST republishes state.json — with the reloaded played log. The
+  // reloaded nowPlaying is null, so this re-post must NOT double-log the in-flight track.
+  await req('POST', `/jukebox/${live.jukeboxId}/state`, { hostKey: live.hostKey, body: { nowPlaying: { title: 'Voyager', artist: 'Daft Punk' }, upNext: [] } });
+  await wait(1300);
+  const st = readState(live.jukeboxId);
+  assert.equal(st.played.length, 1, 'played history should reload after restart, without duplicates');
+  assert.equal(st.played[0].title, 'Overture');
 });
 
 test('sweeper: a non-timeless session expires (410) and is then deleted (404 + dirs gone)', async () => {

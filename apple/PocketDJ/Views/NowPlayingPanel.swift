@@ -37,6 +37,10 @@ struct NowPlayingPanel: View {
     @State private var songsExpanded = true
     /// Long-press (iOS) / right-click (macOS) on the record → the current song's
     /// full detail metadata, presented as a sheet with a BACK button top-left.
+    /// The ⟲ history toggle next to the transport: shows the played head of the queue
+    /// ("previously played") as a section between the deck and Up Next. AppStorage so
+    /// the preference survives relaunches like the iOS collapse chevron's.
+    @AppStorage("nowPlayingShowPlayed") private var showPlayed = false
     @State private var detailSong: IndexSong?
     /// Debounced, off-main search results (see the `.task(id:)` below) — the body
     /// must NEVER scan the ~100k-song catalog itself.
@@ -82,6 +86,7 @@ struct NowPlayingPanel: View {
                 searchResults
             } else {
                 deckSection
+                if showPlayed { playedSection }
                 upNextSection
             }
         }
@@ -286,6 +291,23 @@ struct NowPlayingPanel: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Theme.accent)
+        // The history toggle rides the leading edge so the ⏮⏯⏭ trio stays centered.
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .leading) { historyToggle }
+    }
+
+    /// ⟲ — reveals the durable session's already-played tracks between the deck and Up Next.
+    private var historyToggle: some View {
+        Button { withAnimation { showPlayed.toggle() } } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.subheadline)
+                .foregroundStyle(showPlayed ? Theme.accent : Theme.fgDim)
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 12)
+        .help("Previously played")
+        .accessibilityLabel("Previously played")
+        .accessibilityIdentifier("np-history")
     }
 
     /// Static so the collapsed `NowPlayingMiniBar` shares the exact routing.
@@ -379,6 +401,56 @@ struct NowPlayingPanel: View {
 
     private var searching: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The played head of the queue, NEWEST first (the most recently finished track sits
+    /// next to the deck). Same snapshot/uid doctrine as Up Next: rows are identified by
+    /// `Item.uid`; the a11y ids stay positional for tests. Rows are read-only — the context
+    /// menu jumps back onto the row ("Play now", a whole ⏮-walk in one tap) or re-queues a
+    /// FRESH copy (reusing the row would duplicate its per-instance uid).
+    @ViewBuilder private var playedSection: some View {
+        let played = Array(sequencer.played.reversed())
+        Section {
+            if played.isEmpty {
+                Text("Nothing played yet")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                    .listRowBackground(Theme.bg)
+            }
+            ForEach(Array(played.enumerated()), id: \.element.uid) { offset, item in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(item.title).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
+                        Text(item.artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    Button { sequencer.jumpToPlayed(uid: item.uid) } label: {
+                        Label("Play now", systemImage: "play.fill")
+                    }
+                    Button { sequencer.insertNextInQueue([replay(item)]) } label: {
+                        Label("Play again next", systemImage: "arrow.up.to.line")
+                    }
+                    Button { sequencer.appendToQueue([replay(item)]) } label: {
+                        Label("Play again last", systemImage: "arrow.down.to.line")
+                    }
+                }
+                .listRowBackground(Theme.bg)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("np-played-\(offset)")
+            }
+        } header: {
+            Text("Previously played (\(sequencer.played.count))")
+                .font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    /// A fresh Item for re-queueing a played row — never reuse the row itself: `uid` is
+    /// per-instance identity, and a duplicate would confuse every uid-keyed queue op.
+    private func replay(_ item: SetlistPlayer.Item) -> SetlistPlayer.Item {
+        .init(id: item.id, title: item.title, artist: item.artist,
+              lengthMs: item.lengthMs, repeatCount: item.repeatCount)
     }
 
     @ViewBuilder private var upNextSection: some View {

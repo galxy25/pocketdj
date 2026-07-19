@@ -266,6 +266,15 @@ final class SetlistPlayer {
         return Array(queue[(index + 1)...])
     }
 
+    /// The already-played head of the queue (`queue[0..<index]`, oldest first) — the
+    /// "previously played" list behind the Now Playing panel's history toggle. Pure
+    /// projection: played rows stay in the queue (`advanceToNext` only moves the index)
+    /// and ride every durable-session snapshot, so a restored run keeps its history.
+    var played: [Item] {
+        guard isRunning, index > 0 else { return [] }
+        return Array(queue[..<min(index, queue.count)])
+    }
+
     /// Reorder within the upcoming tail (`.onMove` shape; offsets are relative to
     /// `upcoming`, i.e. 0 = the track right after the current one). Offsets are
     /// CLAMPED to the live tail: the panel's drag ends against a render-time
@@ -353,6 +362,21 @@ final class SetlistPlayer {
     func jumpToUpcoming(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        exitHoldIfNeeded()
+        waitingForLive = false
+        index = pos
+        persistSession(positionMs: 0)
+        Task { await playCurrent() }
+    }
+
+    /// Shift playback BACK onto a played row (by identity) — the history list's "Play now".
+    /// `jumpToUpcoming` mirrored at the head: the needle lands exactly on the tapped row and
+    /// the rows between it and the old current return to the upcoming tail (the same region a
+    /// repeated ⏮ walks, one tap). Unknown/current/upcoming uids are a safe no-op — the tap
+    /// races playback by design.
+    func jumpToPlayed(uid: UUID) {
+        guard isRunning, index > 0,
+              let pos = queue[..<min(index, queue.count)].firstIndex(where: { $0.uid == uid }) else { return }
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
