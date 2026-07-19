@@ -16,4 +16,13 @@ final class PocketDJUTTypeTests: XCTestCase {
         // picker/importer that accepts .zip also accept a .pdjcollection file.
         XCTAssertTrue(UTType.pocketDJCollection.conforms(to: .zip))
     }
+
+    /// THE load-bearing check: the type must resolve its DECLARED tag spec from the Info.plist,
+    /// i.e. preferredFilenameExtension == "pdjcollection". If this is nil the declaration didn't
+    /// register → .fileExporter appends nothing (export stays ".playlist") AND the OS doesn't
+    /// recognize the file (no PocketDJ icon / "Open in PocketDJ"). This is exactly the field bug.
+    func testCollectionTypeResolvesDeclaredExtension() {
+        XCTAssertEqual(UTType.pocketDJCollection.preferredFilenameExtension, "pdjcollection")
+        XCTAssertFalse(UTType.pocketDJCollection.isDynamic, "type must be declared, not a dyn.* fallback")
+    }
 }

@@ -772,14 +772,15 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// `<sanitized name>.playlist` — `.fileExporter` appends the `.pocketDJCollection`
-    /// extension (`.pdjcollection`), yielding `<name>.playlist.pdjcollection`. The custom
-    /// type makes the file tap-to-open in Files/iMessage and selectable in the importer.
+    /// `<sanitized name>.playlist.pdjcollection` — the extension is written EXPLICITLY, NOT left to
+    /// `.fileExporter` to append: for a custom exported type it doesn't reliably append on-device
+    /// (it shipped bare `.playlist` files with no PocketDJ type). The `.pdjcollection` tail is
+    /// com.pocketdj.collection, so the file is tap-to-open in Files/iMessage + selectable in the importer.
     private var exportFilename: String {
         let base = (playlist?.name ?? "playlist")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return "\(base.isEmpty ? "playlist" : base).playlist"
+        return "\(base.isEmpty ? "playlist" : base).playlist.pdjcollection"
     }
 
     /// ▶ Play / 🔀 Shuffle: snapshot the resolved playlist into the reusable "Now Playing"

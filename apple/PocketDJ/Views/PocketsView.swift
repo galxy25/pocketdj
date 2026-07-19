@@ -260,13 +260,14 @@ struct PocketDetailView: View {
         }
     }
 
-    /// `<sanitized name>.pocket` — `.fileExporter` appends `.pdjcollection`, yielding
-    /// `<name>.pocket.pdjcollection` (the standalone pocket transfer, tap-to-open).
+    /// `<sanitized name>.pocket.pdjcollection` — the extension is written EXPLICITLY (see the
+    /// PlaylistsView note: `.fileExporter` doesn't reliably append a custom type's extension
+    /// on-device). The `.pdjcollection` tail = com.pocketdj.collection → tap-to-open + selectable.
     private var exportFilename: String {
         let base = (pocket?.name ?? "pocket")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return "\(base.isEmpty ? "pocket" : base).pocket"
+        return "\(base.isEmpty ? "pocket" : base).pocket.pdjcollection"
     }
 
     /// `<sanitized name>.csv` — the universal tracklist filename.
