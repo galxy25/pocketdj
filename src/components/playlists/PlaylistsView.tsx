@@ -78,7 +78,7 @@ export function PlaylistsView() {
         <input
           ref={fileRef}
           type="file"
-          accept=".zip"
+          accept=".zip,.pdjcollection"
           style={{ display: 'none' }}
           data-testid="playlist-import-input"
           onChange={(e) => void onImportFile(e)}

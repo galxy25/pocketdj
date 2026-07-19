@@ -25,7 +25,6 @@ struct SettingsView: View {
     @State private var nuking = false
     @State private var showExporter = false
     @State private var showImporter = false
-    @State private var showCollectionsImporter = false
     @State private var exportDoc = EditsFile(data: Data())
 
     // Full backup (.pocketdj.zip)
@@ -52,7 +51,6 @@ struct SettingsView: View {
             syncSection
             storageSection
             editsSection
-            collectionsSection
             backupSection
             resetSection
             debugSection
@@ -74,12 +72,6 @@ struct SettingsView: View {
                 try? edits.importData(data)
                 app.applyEdits()
             }
-        }
-        .fileImporter(isPresented: $showCollectionsImporter, allowedContentTypes: [.json, .zip]) { result in
-            guard case .success(let url) = result else { return }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            try? collections.importAny(url: url)
         }
         .fileExporter(isPresented: $showBackupExporter, document: backupDoc, contentType: .zip,
                       defaultFilename: "PocketDJ Backup.pocketdj") { _ in }
@@ -236,19 +228,6 @@ struct SettingsView: View {
         let time = at.formatted(date: .omitted, time: .shortened)
         if let summary = cloudSync.lastSummary { return "\(summary) · \(time)" }
         return time
-    }
-
-    private var collectionsSection: some View {
-        Section {
-            Button { showCollectionsImporter = true } label: {
-                Label("Import pocket / playlist…", systemImage: "square.and.arrow.down")
-            }
-            .accessibilityIdentifier("collections-import")
-        } header: {
-            Text("Collections")
-        } footer: {
-            Text("\(collections.pockets.count) pocket\(collections.pockets.count == 1 ? "" : "s"), \(collections.playlists.count) playlist\(collections.playlists.count == 1 ? "" : "s"). Import a single pocket or playlist exported from another device — fresh ids are minted so it never overwrites an existing one. Export from an item’s detail-view ▸ menu. Source-sync options live under Settings ▸ Sync.")
-        }
     }
 
     // MARK: Edits (export / import)

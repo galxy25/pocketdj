@@ -171,7 +171,7 @@ struct PlaylistsView: View {
         } message: {
             Text("Removes the pocket and unnests it from any parent. Its items aren't deleted. This can't be undone.")
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .zip]) { result in
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pocketDJCollection, .zip, .json]) { result in
             guard case .success(let url) = result else { return }
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -714,7 +714,7 @@ struct PlaylistDetailView: View {
             Button("Delete set list", role: .destructive) { if let id = deletingSetlistId { collections.deleteSetlist(id) }; deletingSetlistId = nil }
             Button("Cancel", role: .cancel) { deletingSetlistId = nil }
         }
-        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
+        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .pocketDJCollection,
                       defaultFilename: exportFilename) { _ in }
         .fileExporter(isPresented: $showCSVExporter, document: csvDoc, contentType: .commaSeparatedText,
                       defaultFilename: csvFilename) { _ in }
@@ -772,13 +772,14 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// `<sanitized name>.playlist.pocketdj` — the `.fileExporter` appends the `.zip`
-    /// content-type extension, yielding `<name>.playlist.pocketdj.zip` (PWA-readable).
+    /// `<sanitized name>.playlist` — `.fileExporter` appends the `.pocketDJCollection`
+    /// extension (`.pdjcollection`), yielding `<name>.playlist.pdjcollection`. The custom
+    /// type makes the file tap-to-open in Files/iMessage and selectable in the importer.
     private var exportFilename: String {
         let base = (playlist?.name ?? "playlist")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return "\(base.isEmpty ? "playlist" : base).playlist.pocketdj"
+        return "\(base.isEmpty ? "playlist" : base).playlist"
     }
 
     /// ▶ Play / 🔀 Shuffle: snapshot the resolved playlist into the reusable "Now Playing"
