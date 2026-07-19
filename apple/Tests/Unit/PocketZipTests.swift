@@ -17,7 +17,7 @@ final class PocketZipTests: XCTestCase {
         let original = try XCTUnwrap(s.pocket(p.id))
 
         let zipData = try XCTUnwrap(try s.exportPocketZip(p.id))
-        let (imported, children) = try PocketZip.import(data: zipData)
+        let (imported, children, _) = try PocketZip.import(data: zipData)
 
         XCTAssertEqual(imported.name, "Deep Cuts")
         XCTAssertEqual(imported.songIds, ["sng_1"])     // members travel by catalog id
@@ -39,7 +39,7 @@ final class PocketZipTests: XCTestCase {
         s.addChildPocket(grand.id, toPocket: child.id)
 
         let zipData = try XCTUnwrap(try s.exportPocketZip(root.id))
-        let (imported, children) = try PocketZip.import(data: zipData)
+        let (imported, children, _) = try PocketZip.import(data: zipData)
 
         // DAG-expanded: both child + grandchild travel (root excluded from children).
         XCTAssertEqual(Set(children.map(\.name)), ["Child", "Grand"])
@@ -75,7 +75,7 @@ final class PocketZipTests: XCTestCase {
     func testImportToleratesMissingManifest() throws {
         let p = CollectionsFactory.makePocket("No Manifest", now: 0)
         let data = try makeZip(["pocket.json": try JSONEncoder().encode(p)])
-        let (imported, _) = try PocketZip.import(data: data)
+        let (imported, _, _) = try PocketZip.import(data: data)
         XCTAssertEqual(imported.name, "No Manifest")
     }
 

@@ -11,14 +11,17 @@ import ZIPFoundation
 ///   • `playlist.json` — a `Playlist` (same shape as native `Playlist`/`PlaylistNode`,
 ///     both ported from the PWA's `collections.ts`).
 ///   • `pockets.json` — the pockets the playlist references, DAG-expanded (may be `[]`).
-///   • PORTABLE mode (PWA-only, not produced here) also bundles `items.json` +
-///     `art/<key>.webp` + `setlists.json`; the native importer tolerates their
-///     presence but doesn't consume the catalog/art (songs/albums stay referenced by
-///     catalog id and resolve against the native catalog at display).
+///   • PORTABLE mode also bundles `items.json` — the referenced catalog items in the
+///     PWA's `MusicItem[]` shape (see `PortableItems`) — so the transfer is
+///     self-contained across catalogs: the importer materializes unknown ids as
+///     provisional "Imported" entries (browse/play/burn/stems by id — acceptance A).
+///     The PWA additionally bundles `art/<key>.webp` + `setlists.json`; the native
+///     importer tolerates but doesn't consume those (art loads from its URLs;
+///     set-list history stays deferred).
 ///
-/// PASS 1 of the compatibility effort: single-playlist import + export. The native
-/// app always exports `portable:false` (slim) — the catalog is the same auto-seeded
-/// index on both ends, so items travel by id.
+/// The native app exports PORTABLE whenever the caller hands it the catalog (the
+/// CollectionsStore path always does); `export` without a catalog stays the slim
+/// pass-1 shape byte-for-byte.
 enum PlaylistZip {
 
     // MARK: - Manifest
@@ -99,23 +102,40 @@ enum PlaylistZip {
 
     // MARK: - Export
 
-    /// Build a `.playlist.pocketdj.zip` (slim / `portable:false`) for `playlist`,
-    /// bundling the pockets it references (DAG-expanded, resolved from `pocketsById`).
-    static func export(playlist: Playlist, pocketsById: [String: Pocket]) throws -> Data {
+    /// Build a `.playlist.pocketdj.zip` for `playlist`, bundling the pockets it
+    /// references (DAG-expanded, resolved from `pocketsById`). PORTABLE when a catalog
+    /// is provided: `items.json` carries every referenced song/album (PWA `MusicItem[]`
+    /// shape — see `PortableItems`), so the zip imports fully on a device whose enabled
+    /// sources don't cover these ids. Without a catalog: the slim pass-1 shape.
+    static func export(playlist: Playlist, pocketsById: [String: Pocket],
+                       songsById: [String: IndexSong] = [:],
+                       albumsById: [String: IndexAlbum] = [:]) throws -> Data {
         let pockets = referencedPockets(of: playlist, pocketsById: pocketsById)
 
+        let portable = !songsById.isEmpty || !albumsById.isEmpty
+        var itemsData: Data? = nil
+        var itemCount = 0
+        if portable {
+            let ids = PortableItems.referencedIds(playlist: playlist, pockets: pockets)
+            let data = try PortableItems.encode(songIds: ids.songs, albumIds: ids.albums,
+                                                songsById: songsById, albumsById: albumsById)
+            itemsData = data
+            itemCount = ((try? JSONSerialization.jsonObject(with: data)) as? [Any])?.count ?? 0
+        }
+
         let manifest = Manifest(
-            portable: false,
+            portable: portable,
             exportedAt: ISO8601DateFormatter().string(from: Date()),
             playlistName: playlist.name,
-            counts: .init(items: 0, pockets: pockets.count, setlists: 0, art: 0)
+            counts: .init(items: itemCount, pockets: pockets.count, setlists: 0, art: 0)
         )
 
-        let files: [String: Data] = [
+        var files: [String: Data] = [
             "manifest.json": try encoder.encode(manifest),
             "playlist.json": try encoder.encode(playlist),
             "pockets.json": try encoder.encode(pockets),
         ]
+        if let itemsData { files["items.json"] = itemsData }
 
         let archive: Archive
         do { archive = try Archive(accessMode: .create) } catch { throw PlaylistZipError.archiveUnreadable }
@@ -164,10 +184,12 @@ enum PlaylistZip {
     /// Read a `.playlist.pocketdj.zip` and return its playlist + referenced pockets,
     /// with FRESH ids minted for the playlist, every pocket, and every node id; intra-
     /// bundle references (pocket-node `pocketId`s, child pockets) are remapped to the
-    /// new ids. Songs/albums stay referenced by catalog id. Version-tolerant: a
-    /// missing manifest is allowed (presence of playlist.json is enough), and extra
-    /// manifest fields are ignored.
-    static func `import`(data: Data) throws -> (playlist: Playlist, pockets: [Pocket]) {
+    /// new ids. Songs/albums stay referenced by catalog id — `items` carries the
+    /// PORTABLE catalog snapshot (empty for slim zips) so the caller can materialize
+    /// unknown ids as provisional entries. Version-tolerant: a missing manifest is
+    /// allowed (presence of playlist.json is enough), extra manifest fields ignored.
+    static func `import`(data: Data) throws -> (playlist: Playlist, pockets: [Pocket],
+                                                items: PortableItems.Payload) {
         let archive: Archive
         do { archive = try Archive(data: data, accessMode: .read) } catch { throw PlaylistZipError.archiveUnreadable }
 
@@ -194,11 +216,13 @@ enum PlaylistZip {
         let srcPockets: [Pocket] = extract("pockets.json")
             .flatMap { try? decoder.decode([Pocket].self, from: $0) } ?? []
 
-        // PORTABLE extras (items.json / art/ / setlists.json) are intentionally NOT
-        // consumed in pass 1: the native catalog resolves songs/albums by id, missing
-        // ones render as "(missing …)" rows; set-list history is deferred.
+        // PORTABLE catalog snapshot (PWA MusicItem[] or this app's own export) —
+        // leniently parsed; absent/unreadable ⇒ empty (the slim pass-1 behavior).
+        // art/ + setlists.json stay unconsumed (art loads from URLs; setlists deferred).
+        let items = extract("items.json").map(PortableItems.decode) ?? PortableItems.Payload()
 
-        return remintBundle(playlist: srcPlaylist, pockets: srcPockets)
+        let bundle = remintBundle(playlist: srcPlaylist, pockets: srcPockets)
+        return (bundle.playlist, bundle.pockets, items)
     }
 
     /// Mint fresh ids for the imported playlist + all its pockets + every nodeId, and

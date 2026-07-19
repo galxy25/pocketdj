@@ -16,11 +16,18 @@ import {
   getArt,
   putArt,
   putPlaylist,
+  putSource,
+  getSources,
   bulkPutItems,
   bulkPutPockets,
   bulkPutSetlists,
 } from './repo';
+import type { DataSource } from '../types/model';
+import { artKeyFor } from './artCache';
 import { txn } from '../lib/log';
+
+/** The native apps' portable exports stamp this fixed sourceId (PortableItems.swift). */
+const IMPORTED_SOURCE_ID = 'src_imported';
 
 interface PlaylistManifest {
   app: 'pocketdj';
@@ -191,6 +198,35 @@ export async function importPlaylistZip(buf: ArrayBuffer): Promise<ImportPlaylis
   const pockets = JSON.parse(strFromU8(files['pockets.json'] ?? strToU8('[]'))) as Pocket[];
   const setlists = JSON.parse(strFromU8(files['setlists.json'] ?? strToU8('[]'))) as Setlist[];
 
+  // Native-exported zips carry items WITHOUT a coverArtKey (that key is derived only at
+  // index import) and under the fixed src_imported sourceId. Backfill the art key so
+  // covers render (ItemCard reads coverArtKey exclusively), and upsert a matching
+  // "Imported" DataSource so the items are source-scoped + deletable, not orphans.
+  for (const it of items) {
+    if (isAlbum(it) && !it.coverArtKey) it.coverArtKey = artKeyFor(it);
+  }
+  if (items.some((it) => it.sourceId === IMPORTED_SOURCE_ID)) {
+    const now = Date.now();
+    const existing = (await getSources()).find((s) => s.id === IMPORTED_SOURCE_ID);
+    const src: DataSource = existing ?? {
+      id: IMPORTED_SOURCE_ID,
+      type: 'digital',
+      name: 'Imported',
+      createdAt: now,
+      updatedAt: now,
+      itemCount: { albums: 0, songs: 0 },
+    };
+    // Count only genuinely NEW rows (a re-import upserts the same ids).
+    const fresh = (
+      await Promise.all(items.filter((it) => it.sourceId === IMPORTED_SOURCE_ID).map(async (it) => ((await getItem(it.id)) ? null : it)))
+    ).filter((it): it is MusicItem => !!it);
+    src.itemCount = {
+      albums: src.itemCount.albums + fresh.filter(isAlbum).length,
+      songs: src.itemCount.songs + fresh.filter(isSong).length,
+    };
+    src.updatedAt = now;
+    await putSource(src);
+  }
   if (items.length) await bulkPutItems(items);
 
   // Pockets: only add ones that don't already exist (don't overwrite the user's).

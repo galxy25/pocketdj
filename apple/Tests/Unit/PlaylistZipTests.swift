@@ -20,7 +20,7 @@ final class PlaylistZipTests: XCTestCase {
 
     func testImportsRealFixture() throws {
         let data = try sampleFixtureData()
-        let (playlist, pockets) = try PlaylistZip.import(data: data)
+        let (playlist, pockets, _) = try PlaylistZip.import(data: data)
 
         XCTAssertEqual(playlist.name, "1 — take 3")
         XCTAssertEqual(playlist.sequences.count, 3)               // Openers / Main Event / Final Rounds
@@ -61,7 +61,7 @@ final class PlaylistZipTests: XCTestCase {
         let original = try XCTUnwrap(s.playlist(pl.id))
 
         let zipData = try XCTUnwrap(try s.exportPlaylistZip(pl.id))
-        let (imported, pockets) = try PlaylistZip.import(data: zipData)
+        let (imported, pockets, _) = try PlaylistZip.import(data: zipData)
 
         // Same STRUCTURE…
         XCTAssertEqual(imported.name, original.name)
@@ -92,7 +92,7 @@ final class PlaylistZipTests: XCTestCase {
         s.addPocketRef(parent.id, toPlaylist: pl.id)              // only the parent is referenced
 
         let zipData = try XCTUnwrap(try s.exportPlaylistZip(pl.id))
-        let (imported, pockets) = try PlaylistZip.import(data: zipData)
+        let (imported, pockets, _) = try PlaylistZip.import(data: zipData)
 
         // DAG-expanded: BOTH parent + child travel.
         XCTAssertEqual(Set(pockets.map(\.name)), ["Parent", "Child"])
@@ -126,7 +126,7 @@ final class PlaylistZipTests: XCTestCase {
         // A bundle with ONLY playlist.json (no manifest) still imports.
         let pl = CollectionsFactory.makePlaylist("No Manifest", now: 0)
         let data = try makeZip(["playlist.json": try JSONEncoder().encode(pl)])
-        let (imported, _) = try PlaylistZip.import(data: data)
+        let (imported, _, _) = try PlaylistZip.import(data: data)
         XCTAssertEqual(imported.name, "No Manifest")
     }
 
@@ -137,7 +137,7 @@ final class PlaylistZipTests: XCTestCase {
             "manifest.json": Data(manifest.utf8),
             "playlist.json": try JSONEncoder().encode(pl),
         ])
-        let (imported, _) = try PlaylistZip.import(data: data)
+        let (imported, _, _) = try PlaylistZip.import(data: data)
         XCTAssertEqual(imported.name, "Future")
     }
 

@@ -339,6 +339,55 @@ describe('pocket notes round-trip (collections v2)', () => {
 });
 
 // ===========================================================================
+// 3b. Native PORTABLE playlist import (items.json + src_imported backfills)
+// ===========================================================================
+describe('native portable playlist import', () => {
+  it('imports items.json, backfills coverArtKey, and upserts the Imported source', async () => {
+    const { importPlaylistZip } = await import('./playlistTransfer');
+    const items: MusicItem[] = [
+      {
+        id: 'alb_p1', sourceId: 'src_imported', type: 'album', createdAt: 1, updatedAt: 1,
+        artist: 'A', name: 'Foreign LP', trackIds: ['sng_p1'],
+        coverArtUrl: 'https://art.example/alb_p1.jpg',
+      } as MusicItem,
+      {
+        id: 'sng_p1', sourceId: 'src_imported', type: 'song', createdAt: 1, updatedAt: 1,
+        artist: 'A', name: 'Foreign Song', albumId: 'alb_p1',
+        sentimentKeywords: [], explicit: false, bpm: null, key: null, camelot: null,
+        lengthMs: 200000,
+      } as unknown as MusicItem,
+    ];
+    const playlist: Playlist = {
+      id: 'pls_src', name: 'Shared', sequences: [
+        { nodeId: 'nd_c', kind: 'sequence', children: [{ nodeId: 'nd_1', kind: 'song', songId: 'sng_p1' }] },
+      ] as Playlist['sequences'],
+      createdAt: 1, updatedAt: 1,
+    } as Playlist;
+    const buf = await makeZip({
+      'manifest.json': JSON.stringify({
+        app: 'pocketdj', kind: 'playlist', schemaVersion: 1, portable: true,
+        exportedAt: 'x', playlistName: 'Shared',
+        counts: { items: 2, pockets: 0, setlists: 0, art: 0 },
+      }),
+      'playlist.json': JSON.stringify(playlist),
+      'pockets.json': JSON.stringify([]),
+      'items.json': JSON.stringify(items),
+    });
+
+    const r = await importPlaylistZip(buf);
+    expect(r.items).toBe(2);
+    const album = stores.items.find((i) => i.id === 'alb_p1');
+    expect(album && 'coverArtKey' in album && album.coverArtKey).toBeTruthy();
+    const src = stores.sources.find((s) => (s as { id: string }).id === 'src_imported') as
+      | { name: string; itemCount: { albums: number; songs: number } }
+      | undefined;
+    expect(src?.name).toBe('Imported');
+    expect(src?.itemCount).toEqual({ albums: 1, songs: 1 });
+    expect(stores.playlists.some((p) => p.name === 'Shared (imported)')).toBe(true);
+  });
+});
+
+// ===========================================================================
 // 4. Guards
 // ===========================================================================
 describe('import guards', () => {
