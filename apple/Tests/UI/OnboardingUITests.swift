@@ -29,11 +29,17 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.any("onboarding-name").waitForExistence(timeout: 5))
         app.el("onboarding-continue").tap()
 
-        // Stage 2 — Apple Music invite; skip ("Not now" is the same continue button).
-        XCTAssertTrue(app.el("onboarding-continue").waitForExistence(timeout: 5))
-        app.el("onboarding-back").tap()          // back returns to stage 1…
+        // Stage 2 — Apple Music invite. Back returns to stage 1 at its CHOICE screen
+        // (the stage re-presents fresh — deliberate: the choice is the stage), then
+        // walk forward again and skip Apple Music.
+        XCTAssertTrue(app.el("onboarding-back").waitForExistence(timeout: 5))
+        app.el("onboarding-back").tap()
+        XCTAssertTrue(app.el("onboarding-choice-device").waitForExistence(timeout: 5),
+                      "back lands on the profile choice")
+        app.el("onboarding-choice-device").tap()
         XCTAssertTrue(app.any("onboarding-name").waitForExistence(timeout: 5))
-        app.el("onboarding-continue").tap()      // …and forward again
+        app.el("onboarding-continue").tap()      // stage 1 → stage 2 again
+        XCTAssertTrue(app.el("onboarding-continue").waitForExistence(timeout: 5))
         app.el("onboarding-continue").tap()      // skip Apple Music
 
         // Stage 3 — all three sources preselected; untick all ⇒ Continue disabled.
