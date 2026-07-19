@@ -89,7 +89,9 @@ struct StudioDemuxView: View {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Demuxer").font(.headline).foregroundStyle(Theme.fg)
-                    Text("Pick audio to demux into lyrics, chords, and stems")
+                    Text(DemuxFeatures.lyricsEnabled
+                         ? "Pick audio to demux into lyrics, chords, and stems"
+                         : "Pick audio to demux into chords and stems")
                         .font(.caption2).foregroundStyle(Theme.fgDim)
                 }
                 Spacer()
@@ -279,7 +281,9 @@ struct StudioDemuxView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(source.displayName).font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
-                Text("Demuxed: synced lyrics + chords\(stemState == .burned ? " + stems" : "")")
+                Text((DemuxFeatures.lyricsEnabled ? "Demuxed: synced lyrics + chords"
+                                                  : "Demuxed: chord timeline")
+                     + (stemState == .burned ? " + stems" : ""))
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             }
             Spacer()
@@ -299,7 +303,11 @@ struct StudioDemuxView: View {
                           onChordTap: { chordDetail = $0 })
         chordStatusRow(doc)
         stemsPanel(source)
-        transcriptPanel(doc)
+        // HIDDEN until the engine swap (DemuxFeatures doc) — on-device recognition
+        // over music is too sparse to ship as "lyrics".
+        if DemuxFeatures.lyricsEnabled {
+            transcriptPanel(doc)
+        }
     }
 
     // MARK: Transport (play/pause + clock)
@@ -690,6 +698,9 @@ struct StudioDemuxView: View {
     /// best-effort): the burned stem for songs, the demux stems cache for custom audio;
     /// otherwise the mix file.
     private func kickoffTranscript(force: Bool = false) {
+        // Gated with the panel: no recognition runs and — crucially — the speech
+        // permission prompt never appears for a feature the user can't see.
+        guard DemuxFeatures.lyricsEnabled else { return }
         guard let source, let audioURL else { return }
         if let songId = source.songId, let stems = burns.localStemURLs(forSong: songId),
            let vocals = stems.urls["vocals"] {
