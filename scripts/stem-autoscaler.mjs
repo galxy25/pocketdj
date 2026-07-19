@@ -43,9 +43,14 @@ function fleet() {
 }
 
 function launch(n) {
-  const out = aws('ec2', 'run-instances', '--launch-template', `LaunchTemplateName=${CFG.template},Version=$Latest`,
-    '--count', String(n), '--query', 'Instances[].InstanceId', '--output', 'text');
-  return out.split(/\s+/).filter(Boolean);
+  try {
+    // --count min:max (1:n) launches as MANY as capacity/quota currently allows rather than
+    // all-or-nothing — so bumping POCKETDJ_STEM_MAX_WORKERS after a quota increase scales up
+    // smoothly instead of failing the whole reconcile when the fleet briefly exceeds capacity.
+    const out = aws('ec2', 'run-instances', '--launch-template', `LaunchTemplateName=${CFG.template},Version=$Latest`,
+      '--count', `1:${n}`, '--query', 'Instances[].InstanceId', '--output', 'text');
+    return out.split(/\s+/).filter(Boolean);
+  } catch (e) { console.error('launch error:', e.message); return []; }
 }
 
 function enqueue(ids) {

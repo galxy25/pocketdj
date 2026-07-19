@@ -107,6 +107,10 @@ const CFG = {
   // realtimeCaptureActive() defer stems behind captures. Default ON. Uploaded custom audio
   // (/stemify-custom) still separates locally. Set POCKETDJ_STEM_OFFLOAD=0 to revert to in-process.
   stemOffload: process.env.POCKETDJ_STEM_OFFLOAD !== '0',
+  // Offload DIGITAL-song audio analysis (bpm/key/beatgrid/waveform) to the same cloud workers,
+  // replacing the local Docker/librosa pass (which bottlenecks + breaks when Docker is down).
+  // Analog analysis stays local. Set POCKETDJ_ANALYSIS_OFFLOAD=0 to revert.
+  analysisOffload: process.env.POCKETDJ_ANALYSIS_OFFLOAD !== '0',
   stemJobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs',
   stemResultsQueue: process.env.POCKETDJ_STEM_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-results',
   stemDlqQueue: process.env.POCKETDJ_STEM_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs-dlq',
@@ -1093,7 +1097,41 @@ async function runDigitalJob(job, song) {
 // durable state: entries without `analyzed` are resumed on startup.
 const analysisQ = [];
 let analyzing = false;
-function enqueueAnalysis(songId) { if (songId && !analysisQ.includes(songId)) analysisQ.push(songId); pumpAnalysis(); }
+// Bounded-concurrency dispatcher for offload SQS sends (stems + digital analysis). A backfill/resume
+// can enqueue thousands of jobs; firing every `aws sqs send-message` at once would fork thousands of
+// processes (OOM). This caps CONCURRENT sends only — it does NOT limit total throughput or how many
+// workers run: the cloud fleet still scales to POCKETDJ_STEM_MAX_WORKERS, pulling from SQS in
+// parallel. Raise it only if a very large fleet outpaces the enqueue rate.
+const DISPATCH_CONC = Number(process.env.POCKETDJ_OFFLOAD_DISPATCH_CONC || 12);
+const dispatchQ = [];
+let dispatchActive = 0;
+function dispatchSend(body) {
+  return new Promise((resolve) => { dispatchQ.push({ body, resolve }); dispatchPump(); });
+}
+function dispatchPump() {
+  while (dispatchActive < DISPATCH_CONC && dispatchQ.length) {
+    const { body, resolve } = dispatchQ.shift();
+    dispatchActive++;
+    aws(['sqs', 'send-message', '--queue-url', CFG.stemJobsQueue, '--message-body', body])
+      .then(() => resolve(true)).catch((e) => { console.error('  offload send failed:', e.message); resolve(false); })
+      .finally(() => { dispatchActive--; dispatchPump(); });
+  }
+}
+
+// Digital analysis offloads to the cloud via the bounded dispatcher; analog stays on the local
+// conc-1 Docker path (heavy, and it keeps the catalog's per-song bpm/key).
+function enqueueAnalysis(songId) {
+  const e = manifest[songId];
+  if (CFG.analysisOffload && e && e.source === 'digital' && e.key) { offloadAnalysis(songId); return; }
+  if (songId && !analysisQ.includes(songId)) analysisQ.push(songId);
+  pumpAnalysis();
+}
+async function offloadAnalysis(songId) {
+  const e = manifest[songId];
+  if (!e || !e.key) return;
+  if (await dispatchSend(JSON.stringify({ songId, srcKey: e.key, tasks: ['analysis'] })))
+    console.error(`  → offloaded analysis ${songId} (${e.key}) to SQS`);
+}
 async function pumpAnalysis() {
   if (analyzing) return;
   const songId = analysisQ.shift();
@@ -1343,13 +1381,15 @@ async function offloadStem(songId) {
   const e = manifest[songId];
   const srcKey = e && (e.source === 'analog' ? e.cutKey : e.key);   // analog audio is the per-song CUT
   if (!srcKey) { if (job && job.phase !== 'error') setPhase(job, 'error', { error: 'no source audio to stem' }); return; }
-  try {
-    await aws(['sqs', 'send-message', '--queue-url', CFG.stemJobsQueue, '--message-body', JSON.stringify({ songId, srcKey })]);
+  // Force a re-separation (bypass the worker's skip-if-exists dedup) when the manifest already has
+  // stems of a STALE model/version — else the worker would re-stamp the new model name onto the OLD
+  // model's audio. A fresh song has no stems, so dedup:true is harmless there.
+  const stale = !!(e.stems && ((e.stemVersion ?? 0) < STEMS_VERSION || e.stemModel !== CFG.demucsModel));
+  if (await dispatchSend(JSON.stringify({ songId, srcKey, tasks: ['stems'], dedup: !stale }))) {
     if (job) { job.offloadedAt = Date.now(); if (job.phase !== 'error') setPhase(job, 'stemming', { message: 'separating stems (cloud)' }); }
     console.error(`  → offloaded stem ${songId} (${srcKey}) to SQS`);
-  } catch (err) {
-    if (job && job.phase !== 'error') setPhase(job, 'error', { error: `stem enqueue failed: ${err.message}` });
-    // keep the durable want file: resumeStems re-sends on restart, and a re-request retries
+  } else if (job && job.phase !== 'error') {
+    setPhase(job, 'error', { error: 'stem enqueue failed' });   // keep the want; resumeStems / a re-request retries
   }
 }
 
@@ -1538,6 +1578,18 @@ async function backfillStems() {
   for (const id of ids) { if (wantStems(manifest[id] || {})) acceptStem(id); } // idempotent; drains via pumpStems
 }
 
+// BACKFILL analysis: a DIGITAL ripped song that has no bpm yet — never analyzed, OR "analyzed"
+// while the local Docker was down (analyzeManifestSong stamps analyzed=true even on a null bpm).
+// enqueueAnalysis offloads each to the cloud workers (or runs locally if offload is off). Analog
+// keeps the catalog's per-song bpm/key, so it's excluded.
+const wantAnalysis = (e) => e.source === 'digital' && !!e.key && (!e.analyzed || e.bpm == null);
+let analysisBackfillRunning = false;
+async function backfillAnalysis() {
+  const ids = Object.entries(manifest).filter(([, e]) => wantAnalysis(e)).map(([id]) => id);
+  console.error(`  backfill-analysis: enqueueing ${ids.length} un-analyzed digital song(s)`);
+  for (const id of ids) { if (wantAnalysis(manifest[id] || {})) enqueueAnalysis(id); }
+}
+
 // Resume durable stem intents after a restart (read the intent dir, NOT the manifest). A fresh
 // process has an empty stemInflight, so acceptStem re-enqueues / re-rips / re-cuts as needed.
 function resumeStems() {
@@ -1571,21 +1623,37 @@ async function pumpStemResults() {
       try {
         const r = JSON.parse(m.Body);
         const e = r.songId && manifest[r.songId];
-        // Only stamp on a genuine success for a song that's known and NOT canceled. finishStem +
-        // state-clear are gated on the SAME condition so a failed/stray/canceled result can't flip
-        // a job to 'ready' or drop a want with nothing folded.
-        const folded = !!(e && r.ok !== false && r.stems && !stemCanceled.has(r.songId));
-        if (folded) {
+        const ok = e && r.ok !== false;
+        // STEMS: only stamp on a genuine success for a known, NOT-canceled song. finishStem +
+        // state-clear gate on the SAME condition so a failed/stray/canceled result can't flip a
+        // job to 'ready' or drop a want with nothing folded.
+        const stemsOk = !!(ok && r.stems && !stemCanceled.has(r.songId));
+        let changed = false;
+        if (stemsOk) {
           e.stems = r.stems; e.stemModel = r.stemModel || CFG.demucsModel;
           e.stemVersion = r.stemVersion ?? STEMS_VERSION; e.stemFormat = r.stemFormat || CFG.stemFormat;
           e.stemmedAt = r.stemmedAt || Date.now(); if (r.stemBytes) e.stemBytes = r.stemBytes;
-          await saveManifest();
-          console.error(`  ✓ folded cloud stems ${r.songId} (${e.stemModel}, ${r.stemBytes || '?'} bytes)`);
+          changed = true;
+          console.error(`  ✓ folded cloud stems ${r.songId} (${e.stemModel}${r.deduped ? ', dedup' : ''}, ${r.stemBytes || '?'} bytes)`);
         }
-        if (r.songId) {
-          stemCanceled.delete(r.songId);
-          if (folded) { stemAttempts.delete(r.songId); clearStemWant(r.songId); finishStem(r.songId); stemInflight.delete(r.songId); }
+        // ANALYSIS (digital): fold bpm/key/camelot/length/waveform + beat grid, mirroring the local
+        // analyzeManifestSong stamp via applyBeatgrid.
+        if (ok && r.analysis) {
+          const a = r.analysis;
+          if (a.waveform) e.waveform = a.waveform;
+          if (a.bpm != null) e.bpm = a.bpm;
+          if (a.musicalKey != null) e.musicalKey = a.musicalKey;
+          if (a.camelot != null) e.camelot = a.camelot;
+          if (a.durationSec) e.durationMs = Math.round(a.durationSec * 1000);
+          if (a.beatgrid) applyBeatgrid(e, { beatgrid: a.beatgrid, beatgridKey: a.beatgridKey });
+          e.analyzed = true;
+          changed = true;
+          console.error(`  ✓ folded cloud analysis ${r.songId} (bpm=${a.bpm} key=${a.musicalKey} grid=${a.beatgrid ? a.beatgrid.beatGridBpm : '-'})`);
+          if (isCloudAnalogEntry(r.songId)) requestPublicFold();   // ITEM 10: fold cloud bpm/key into public catalog
         }
+        if (changed) await saveManifest();
+        if (r.stems && r.songId) stemCanceled.delete(r.songId);   // a STEM result clears its OWN cancel tombstone (analysis results don't)
+        if (stemsOk) { stemAttempts.delete(r.songId); clearStemWant(r.songId); finishStem(r.songId); stemInflight.delete(r.songId); }
         await aws(['sqs', 'delete-message', '--queue-url', CFG.stemResultsQueue, '--receipt-handle', m.ReceiptHandle]);
       } catch (err) { console.error('  stem-result fold error:', err.message); }
     }
@@ -1603,12 +1671,15 @@ async function pumpStemDlq() {
     const msgs = (JSON.parse(out || '{}').Messages) || [];
     for (const m of msgs) {
       try {
-        const songId = JSON.parse(m.Body).songId;
-        const job = songId && jobs.get(stemInflight.get(songId));
-        if (job && job.phase !== 'error') setPhase(job, 'error', { error: 'stem failed (dead-letter)' });
-        if (songId) { stemInflight.delete(songId); stemAttempts.delete(songId); clearStemWant(songId); }
+        const b = JSON.parse(m.Body); const songId = b.songId;
+        const tasks = Array.isArray(b.tasks) && b.tasks.length ? b.tasks : ['stems'];
+        if (tasks.includes('stems') && songId) {           // only a STEM dead-letter fails the stem job + want
+          const job = jobs.get(stemInflight.get(songId));
+          if (job && job.phase !== 'error') setPhase(job, 'error', { error: 'stem failed (dead-letter)' });
+          stemInflight.delete(songId); stemAttempts.delete(songId); clearStemWant(songId);
+          console.error(`  ✗ stem dead-lettered ${songId}`);
+        } else { console.error(`  ✗ analysis dead-lettered ${songId}`); }  // no stem state to touch
         await aws(['sqs', 'delete-message', '--queue-url', CFG.stemDlqQueue, '--receipt-handle', m.ReceiptHandle]);
-        console.error(`  ✗ stem dead-lettered ${songId}`);
       } catch (err) { console.error('  stem-dlq drain error:', err.message); }
     }
   } catch (e) { logStemPumpErr('dlq', e); }
@@ -1809,7 +1880,7 @@ function rateLimited(req) {
 // status/jobs/hls) is a first-class app feature beta users are meant to reach. GET
 // /am-sync/<id> stays user-tier (read-only poll; ids are unguessable job handles).
 const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgrids',
-  '/stemify-collection', '/backfill-stems', '/analysis', '/ingest-digital', '/am-sync']);
+  '/stemify-collection', '/backfill-stems', '/backfill-analysis', '/analysis', '/ingest-digital', '/am-sync']);
 async function readJson(req, maxBytes = 32 * 1024 * 1024) {
   return new Promise((res) => {
     let b = ''; let over = false;
@@ -2057,6 +2128,17 @@ const server = http.createServer(async (req, res) => {
         model: CFG.demucsModel, version: STEMS_VERSION });
     if (!stemBackfillRunning) { stemBackfillRunning = true; backfillStems().finally(() => { stemBackfillRunning = false; }); }
     return send(res, 200, { ok: true, candidates, model: CFG.demucsModel, version: STEMS_VERSION, running: stemBackfillRunning });
+  }
+  // POST /backfill-analysis {confirmLarge?} — analyze every DIGITAL ripped song that still lacks
+  // bpm (never analyzed OR analyzed-with-null-bpm from a broken local Docker). Offloads to the
+  // cloud workers. Candidate-capped; re-send with confirmLarge for a full-catalog sweep.
+  if (path === '/backfill-analysis' && req.method === 'POST') {
+    const { confirmLarge } = await readJson(req).catch(() => ({}));
+    const candidates = Object.values(manifest).filter(wantAnalysis).length;
+    if (candidates > CFG.stemCollectionCap && !confirmLarge)
+      return send(res, 200, { ok: false, needsConfirm: true, candidates, cap: CFG.stemCollectionCap, offload: CFG.analysisOffload });
+    if (!analysisBackfillRunning) { analysisBackfillRunning = true; backfillAnalysis().finally(() => { analysisBackfillRunning = false; }); }
+    return send(res, 200, { ok: true, candidates, offload: CFG.analysisOffload, running: analysisBackfillRunning });
   }
   // POST /rip-cancel {songIds:[...]} — Feature 1 STOP RIP. Cancels still-queued matching
   // jobs (splice queue + clear inflight + delete durable file) and KILLS the in-flight
