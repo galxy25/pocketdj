@@ -76,6 +76,34 @@ targets:
             CPTemplateApplicationSceneSessionRoleApplication:
               - UISceneConfigurationName: CarPlay
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
+        # --- PocketDJ collection document type -------------------------------------
+        # Custom UTI so a playlist/pocket export self-identifies as a PocketDJ document:
+        # fixes the import-picker grey-out (allowedContentTypes can name this type) AND makes
+        # Files/iMessage offer "Open in PocketDJ" (CFBundleDocumentTypes claims it). One type
+        # covers both — CollectionsStore.importAny disambiguates by the manifest's `kind`.
+        # Array/nested keys, so they MUST live here (INFOPLIST_KEY_* can't inject them).
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.pocketdj.collection
+            UTTypeDescription: PocketDJ Collection
+            UTTypeConformsTo:
+              - public.zip-archive
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - pdjcollection
+              public.mime-type:
+                - application/x-pocketdj-collection
+                - application/zip
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PocketDJ Collection
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.pocketdj.collection
+        # NOTE: no LSSupportsOpeningDocumentsInPlace key — its default (absent) is "open as a
+        # copy in the app Inbox", which is what we want (import + discard). Setting it to NO
+        # is REJECTED by the macOS archiver (only absent/YES are valid there), and this plist
+        # is shared across iOS/macOS/visionOS.
     dependencies:
       - package: ZIPFoundation
       # Embed the Now Playing widget extension into the app (all supported platforms).

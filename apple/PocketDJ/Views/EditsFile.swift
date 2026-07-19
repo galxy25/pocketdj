@@ -44,7 +44,7 @@ struct RippedAudioFile: FileDocument {
 /// `.playlist.pocketdj.zip` (the PWA single-playlist transfer format) so the PWA can
 /// read a native-exported playlist.
 struct PlaylistZipFile: FileDocument {
-    static var readableContentTypes: [UTType] { [.zip] }
+    static var readableContentTypes: [UTType] { [.pocketDJCollection, .zip] }
 
     var data: Data
     init(data: Data) { self.data = data }

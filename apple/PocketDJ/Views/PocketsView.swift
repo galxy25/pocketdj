@@ -212,7 +212,7 @@ struct PocketDetailView: View {
         } message: {
             Text("Removes the pocket and unnests it from any parent. Its items aren't deleted. This can't be undone.")
         }
-        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .zip,
+        .fileExporter(isPresented: $showExporter, document: exportDoc, contentType: .pocketDJCollection,
                       defaultFilename: exportFilename) { _ in }
         .fileExporter(isPresented: $showCSVExporter, document: csvDoc, contentType: .commaSeparatedText,
                       defaultFilename: csvFilename) { _ in }
@@ -260,13 +260,14 @@ struct PocketDetailView: View {
         }
     }
 
-    /// `<sanitized name>.pocket.pocketdj` — `.fileExporter` appends `.zip`, yielding
-    /// `<name>.pocket.pocketdj.zip` (the standalone pocket transfer).
+    /// `<sanitized name>.pocket.pdjcollection` — the extension is written EXPLICITLY (see the
+    /// PlaylistsView note: `.fileExporter` doesn't reliably append a custom type's extension
+    /// on-device). The `.pdjcollection` tail = com.pocketdj.collection → tap-to-open + selectable.
     private var exportFilename: String {
         let base = (pocket?.name ?? "pocket")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return "\(base.isEmpty ? "pocket" : base).pocket.pocketdj"
+        return "\(base.isEmpty ? "pocket" : base).pocket.pdjcollection"
     }
 
     /// `<sanitized name>.csv` — the universal tracklist filename.

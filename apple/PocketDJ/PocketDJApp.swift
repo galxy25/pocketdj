@@ -13,6 +13,26 @@ import AppIntents
 @main
 struct PocketDJApp: App {
     @State private var app: AppModel
+    /// A collection file (.pdjcollection or a legacy .zip export) tapped in Files/iMessage,
+    /// stashed until onboarding completes (the catalog must be loaded before import resolves
+    /// members). Drained by the onboarding-complete onChange below.
+    @State private var pendingOpenURL: URL?
+
+    /// Import a tapped collection file and route to the newly-created item, so the open visibly
+    /// lands on it. Mirrors the manual pickers (security-scoped access + collections.importAny);
+    /// the new item is found by diffing ids across the import (importAny returns Void).
+    @MainActor private func importCollectionFile(_ url: URL) {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let beforePlaylists = Set(collections.playlists.map(\.id))
+        let beforePockets = Set(collections.pockets.map(\.id))
+        try? collections.importAny(url: url)
+        if let p = collections.playlists.first(where: { !beforePlaylists.contains($0.id) }) {
+            intents.pendingRoute = .playlist(p.id)
+        } else if let k = collections.pockets.first(where: { !beforePockets.contains($0.id) }) {
+            intents.pendingRoute = .pocket(k.id)
+        }
+    }
     @State private var settings: SettingsStore
     @State private var edits: EditsStore
     @State private var collections: CollectionsStore
@@ -610,7 +630,16 @@ struct PocketDJApp: App {
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
                 // here; route it to the owning provider.
-                .onOpenURL { streaming.handleCallback(url: $0) }
+                .onOpenURL { url in
+                    // A streaming provider's OAuth redirect, OR a collection file
+                    // (.pdjcollection / legacy .zip) tapped in Files/iMessage/AirDrop.
+                    guard url.isFileURL else { streaming.handleCallback(url: url); return }
+                    if onboarding.isComplete { importCollectionFile(url) } else { pendingOpenURL = url }
+                }
+                // Drain a file opened at cold launch once onboarding finishes (catalog loaded).
+                .onChange(of: onboarding.isComplete) { _, done in
+                    if done, let u = pendingOpenURL { pendingOpenURL = nil; importCollectionFile(u) }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .active:

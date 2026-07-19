@@ -388,7 +388,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           <input
             ref={fileRef}
             type="file"
-            accept=".zip,.json"
+            accept=".zip,.json,.pdjcollection"
             style={{ display: 'none' }}
             data-testid="settings-import-input"
             onChange={(e) => void onImportFile(e)}

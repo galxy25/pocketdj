@@ -10,6 +10,7 @@
 		00435674A58A0270F15DEB81 /* StemPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82AA84A868F4CD249D1DE972 /* StemPlayer.swift */; };
 		019559A9AE82F386E045D3AE /* ShazamResultSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A3B38B92DD6CE2B3FD2DE88 /* ShazamResultSheet.swift */; };
 		01D138E63D361FB1C261A2C9 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D49AA4F89F97CE3BC8357D3 /* AppModel.swift */; };
+		0353926388012E0E78546B1D /* PocketDJUTTypeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26B94BF9288FCF4BDDDE83BC /* PocketDJUTTypeTests.swift */; };
 		04FA941BDCAD5B79CDCB1D23 /* KeyDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2792CB4F9A27A1DD41CCA9C /* KeyDetectorTests.swift */; };
 		05CF89454BADE3EC679A04A6 /* DemuxTranscriberChunkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47341CD32CABE6F1D9A79054 /* DemuxTranscriberChunkTests.swift */; };
 		05F8DE521A0B67813E696C0A /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F167BA69383E2AFE262B4B03 /* HistoryView.swift */; };
@@ -156,6 +157,7 @@
 		740C0D0570C4757D57C11815 /* AlbumArtworkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E57D669298B63F0D5DC1DC7 /* AlbumArtworkStore.swift */; };
 		75ECC2F2074E85FAD530E261 /* MixRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E16A1B5B945843E398FD9AE /* MixRecorder.swift */; };
 		785A2283E86AF6FBB36C7E97 /* NowPlayingSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E68B627E11B43B6DA0FFC32 /* NowPlayingSnapshot.swift */; };
+		78EF1A8ECCC69029C9189883 /* PocketDJUTType.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */; };
 		798E50C301DAFDD54862DFEC /* JukeboxModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 394BC3F5EEF6BB8C34A8903A /* JukeboxModels.swift */; };
 		79C3B32F7D074CD5D11AEB6B /* PlaylistsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE97BCE395E79206B4AF1156 /* PlaylistsView.swift */; };
 		79FF6F486727A52BA47C6E59 /* OnlineSearchPagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44184ACAC7222E4C700046EE /* OnlineSearchPagingTests.swift */; };
@@ -405,6 +407,7 @@
 		25741D198A372D9021096109 /* KeyChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyChip.swift; sourceTree = "<group>"; };
 		25807BB1133FC7FA2B220B5D /* PlaybackCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackCoordinatorTests.swift; sourceTree = "<group>"; };
 		26044E640932C5D8941C1609 /* BackupZipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupZipTests.swift; sourceTree = "<group>"; };
+		26B94BF9288FCF4BDDDE83BC /* PocketDJUTTypeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketDJUTTypeTests.swift; sourceTree = "<group>"; };
 		2987181AC4CC69F7A55090A9 /* MultiWindowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiWindowUITests.swift; sourceTree = "<group>"; };
 		29C7E9134096392DD9A2303C /* LyricsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsStoreTests.swift; sourceTree = "<group>"; };
 		2C8D035465188F057BDE8ADF /* PlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackCoordinator.swift; sourceTree = "<group>"; };
@@ -551,6 +554,7 @@
 		9D812B60979AF17F5B33E66B /* StudioSequencerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioSequencerView.swift; sourceTree = "<group>"; };
 		9FA29E203999316BAEC9F0CF /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A0213D7D5A7F30B0B4443528 /* CollectionCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionCatalog.swift; sourceTree = "<group>"; };
+		A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketDJUTType.swift; sourceTree = "<group>"; };
 		A133F2F124A87A378C1FE4D0 /* CreatePocketIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreatePocketIntent.swift; sourceTree = "<group>"; };
 		A3AFF78A439A18EAB3E6530C /* CarPlayScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayScene.swift; sourceTree = "<group>"; };
 		A44274EC530895D9DCA349DF /* PlaybackModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackModeTests.swift; sourceTree = "<group>"; };
@@ -788,6 +792,7 @@
 				338DDCC0F5CB04A1293AE22D /* PlaylistZipTests.swift */,
 				7D5980E93946D7C929149EE0 /* PlayStatsStoreTests.swift */,
 				CC3B20D9DF4EBBA30146F064 /* PocketBuilderTests.swift */,
+				26B94BF9288FCF4BDDDE83BC /* PocketDJUTTypeTests.swift */,
 				142DCFC413FBB0A93CC595D1 /* PocketZipTests.swift */,
 				AEFF189C07F35D94924D0295 /* PortableItemsTests.swift */,
 				8ABF8191645BD48E1298D78D /* RealizeEngineTests.swift */,
@@ -1233,6 +1238,7 @@
 				7C814FEF25275F5A6AE683C1 /* Config.swift */,
 				03308285792BC711ACEE2733 /* Format.swift */,
 				2D835E1B471258348AC54331 /* Genre.swift */,
+				A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */,
 				635C99784DD82527D709A026 /* Theme.swift */,
 				B20C96DEBF797CF446162F47 /* TracklistCSV.swift */,
 			);
@@ -1512,6 +1518,7 @@
 				D8257404BF15796C515B4AC2 /* PlaybackSessionTests.swift in Sources */,
 				B892BF15B830C217D4BB40CF /* PlaylistZipTests.swift in Sources */,
 				EF63453D1A2D2B67E4402315 /* PocketBuilderTests.swift in Sources */,
+				0353926388012E0E78546B1D /* PocketDJUTTypeTests.swift in Sources */,
 				0CBFF3993EB761E6945C6217 /* PocketZipTests.swift in Sources */,
 				359D4D1951614DF2EB527C9C /* PortableItemsTests.swift in Sources */,
 				07DC21DBB1D0E63D969865AD /* RealizeEngineTests.swift in Sources */,
@@ -1667,6 +1674,7 @@
 				3C3E47B2A48E1DBB897738FF /* PocketBuilder.swift in Sources */,
 				43BB757610F0F5EBEACEECDA /* PocketDJApp.swift in Sources */,
 				E07921F50A55392F0AAD1A01 /* PocketDJShortcuts.swift in Sources */,
+				78EF1A8ECCC69029C9189883 /* PocketDJUTType.swift in Sources */,
 				1B5BA1AD4F47799BD71BD90F /* PocketZip.swift in Sources */,
 				655B13E4B89D5FDC7340CD54 /* PocketsView.swift in Sources */,
 				2D342F565EE4E63E017673D0 /* PortableItems.swift in Sources */,
