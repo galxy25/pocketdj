@@ -22,6 +22,7 @@ struct RootView: View {
     @Environment(CloudSyncService.self) private var cloudSync
     @Environment(JukeboxStore.self) private var jukebox
     @Environment(PlaybackCoordinator.self) private var coordinator
+    @Environment(DemuxStore.self) private var demux
     // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
     // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
     // button so it self-hides exactly where ⌘N does (see NewWindowCommands in PocketDJApp).
@@ -182,6 +183,7 @@ struct RootView: View {
             // then re-files crash-orphaned mic takes regardless of which tab the app lands on.
             studio.reconcileOnLaunch()
             studio.seedFixtureIfRequested()
+            demux.seedFixtureIfRequested()   // PDJ_SEED_DEMUX — the Demuxer UI-proof source
             studioMic.recoverOrphans()
             // History demo seed (PDJ_SEED_HISTORY) — populate the timeline for UI tests / demos.
             playHistory.seedDemoIfRequested()

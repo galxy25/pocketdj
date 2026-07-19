@@ -46,11 +46,25 @@ xcodebuild build-for-testing -project PocketDJ.xcodeproj -scheme PocketDJ \
   CODE_SIGNING_ALLOWED=NO >/dev/null
 
 PRODUCTS="$DERIVED/Build/Products/Debug"
-echo "▶ ad-hoc signing test products in $PRODUCTS …"
+
+# STABLE-identity signing when the CI keychain is available (TCC permanence): an
+# ad-hoc signature changes on every rebuild, so macOS treats each build as a NEW
+# app and re-prompts privacy grants (the speech-permission Allow loop). The CI
+# keychain's Apple Development cert gives every build the SAME identity, so one
+# Allow sticks forever. Falls back to ad-hoc when the keychain/cert is absent.
+IDENTITY="-"
+if [ -f "$HOME/.config/pocketdj/ci-keychain-pass" ]; then
+  security unlock-keychain -p "$(cat "$HOME/.config/pocketdj/ci-keychain-pass")" pocketdj-ci.keychain-db 2>/dev/null || true
+  FOUND=$(security find-identity -v -p codesigning pocketdj-ci.keychain-db 2>/dev/null \
+    | awk -F'"' '/Apple Development/ {print $2; exit}')
+  if [ -n "$FOUND" ]; then IDENTITY="$FOUND"; fi
+fi
+echo "▶ signing test products in $PRODUCTS (identity: $IDENTITY)…"
 find "$PRODUCTS" -maxdepth 1 \( -name "*.app" -o -name "*.xctest" \) -print0 \
   | while IFS= read -r -d '' bundle; do
       xattr -dr com.apple.quarantine "$bundle" 2>/dev/null || true
-      codesign --force --deep --sign - "$bundle" >/dev/null 2>&1
+      codesign --force --deep --sign "$IDENTITY" "$bundle" >/dev/null 2>&1 \
+        || codesign --force --deep --sign - "$bundle" >/dev/null 2>&1
       echo "  signed $(basename "$bundle")"
     done
 

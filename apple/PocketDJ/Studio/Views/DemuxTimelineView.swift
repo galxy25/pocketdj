@@ -122,12 +122,18 @@ struct DemuxTimelineView: View {
     /// Restart the follow task when zoom changes (anchor spacing moved).
     private var followTaskKey: String { "\(pxPerSec)-\(follow)" }
 
+    /// One 1-second-wide LAYOUT cell per second, in a real HStack flow. This must NOT use
+    /// `.offset(x:)`-positioned 1×1 views: offset is a visual transform — the LAYOUT frame
+    /// of every such anchor sits at x=0, and `ScrollViewReader.scrollTo` resolves layout
+    /// frames, so every scroll landed at 0 (the sim-proof harness caught it: zoom centering
+    /// and playback follow only ever appeared to work inside the first screenful).
     private func followAnchors(seconds: Double, pxPerSec: CGFloat) -> some View {
-        ForEach(0...Int(seconds), id: \.self) { sec in
-            Color.clear
-                .frame(width: 1, height: 1)
-                .offset(x: CGFloat(sec) * pxPerSec)
-                .id("demux-sec-\(sec)")
+        HStack(spacing: 0) {
+            ForEach(0...Int(seconds), id: \.self) { sec in
+                Color.clear
+                    .frame(width: pxPerSec, height: 1)
+                    .id("demux-sec-\(sec)")
+            }
         }
     }
 

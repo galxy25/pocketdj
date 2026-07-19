@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AVFoundation
 #if canImport(UIKit) && !os(macOS)
 import UIKit
 #endif
@@ -103,6 +104,25 @@ final class DemuxStore {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Imported-file sources whose audio is still on disk — the picker's "Imported audio"
+    /// rows. Disk-scanned (not just the memory tier) so imports survive app restarts and
+    /// stay reachable after leaving the tab (previously an import VANISHED from the picker
+    /// once deselected — the only way back was re-importing).
+    func importedSources() -> [(id: String, name: String)] {
+        guard let cacheDir,
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: cacheDir, includingPropertiesForKeys: nil) else { return [] }
+        var out: [(id: String, name: String)] = []
+        for f in files where f.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: f),
+                  let doc = try? JSONDecoder().decode(DemuxDocument.self, from: data),
+                  doc.importedFileName != nil,
+                  importedAudioURL(for: doc.sourceKey) != nil else { continue }
+            out.append((id: doc.sourceKey, name: doc.displayName))
+        }
+        return out.sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+
     // MARK: - Carved-song audio cache (analog shared-album sides)
 
     /// Where a song CARVED OUT of a shared analog album side lands (`audio/<songId>.m4a`).
@@ -171,6 +191,62 @@ final class DemuxStore {
             urls[name] = dest
         }
         return urls
+    }
+
+    // MARK: - Fixture seeding (PDJ_SEED_DEMUX=1 — UI proof runs / demos)
+
+    /// Seed a deterministic, FULLY-ANALYZED 3-minute source ("Demux Proof") for the
+    /// simulator UI proof: synthesized audio in the demux cache, a chord every 2 s
+    /// (stable `demux-chord-<startMs>` ids the test measures frames of), a word every
+    /// second spanning the whole track, both `.done` so no analysis runs (the sim's
+    /// speech daemon can't initialize — DemuxTranscriberFieldProbeTests). Idempotent.
+    func seedFixtureIfRequested() {
+        guard ProcessInfo.processInfo.environment["PDJ_SEED_DEMUX"] == "1" else { return }
+        let id = "dmx_fixture"
+        guard document(for: id) == nil else { return }
+        guard let dir = Self.audioDir(under: cacheDir) else { return }
+        let seconds = 180
+        let name = "\(id).caf"
+        let url = dir.appendingPathComponent(name)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            guard Self.writeSeedAudio(to: url, seconds: seconds) else { return }
+        }
+        var doc = DemuxDocument(sourceKey: id, displayName: "Demux Proof")
+        doc.importedFileName = name
+        doc.durationMs = seconds * 1_000
+        let roots: [(pc: Int, minor: Bool)] = [(0, false), (7, false), (9, true), (5, false)]
+        doc.chords = stride(from: 0, to: doc.durationMs, by: 2_000).map { start in
+            let r = roots[(start / 2_000) % roots.count]
+            return DemuxChordSegment(rootPC: r.pc, minor: r.minor, startMs: start,
+                                     endMs: min(start + 2_000, doc.durationMs), confidence: 0.9)
+        }
+        doc.chordStatus = .done
+        let cycle = ["let", "me", "see", "you", "go", "back"]
+        doc.words = (0..<seconds).map { s in
+            DemuxWord(text: cycle[s % cycle.count], startMs: s * 1_000, endMs: s * 1_000 + 400)
+        }
+        doc.transcriptStatus = .done
+        doc.transcriptCoveredMs = doc.durationMs
+        save(doc)
+    }
+
+    /// 3 minutes of LPCM CAF — a 220 Hz tone under a slow amplitude sweep, so the
+    /// waveform lane shows real contour instead of a flat bar.
+    nonisolated private static func writeSeedAudio(to url: URL, seconds: Int) -> Bool {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1),
+              let file = try? AVAudioFile(forWriting: url, settings: format.settings),
+              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44_100) else { return false }
+        for second in 0..<seconds {
+            buf.frameLength = 44_100
+            let amp = Float(0.05 + 0.25 * abs(sin(Double(second) / 7)))
+            if let p = buf.floatChannelData?[0] {
+                for i in 0..<44_100 {
+                    p[i] = amp * sin(Float(i) * 2 * .pi * 220 / 44_100)
+                }
+            }
+            guard (try? file.write(from: buf)) != nil else { return false }
+        }
+        return true
     }
 
     // MARK: - Analysis kickoff
