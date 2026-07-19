@@ -100,8 +100,10 @@ targets:
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.pocketdj.collection
-        # Opened-from-Files docs arrive as a security-scoped copy we import + discard.
-        LSSupportsOpeningDocumentsInPlace: false
+        # NOTE: no LSSupportsOpeningDocumentsInPlace key — its default (absent) is "open as a
+        # copy in the app Inbox", which is what we want (import + discard). Setting it to NO
+        # is REJECTED by the macOS archiver (only absent/YES are valid there), and this plist
+        # is shared across iOS/macOS/visionOS.
     dependencies:
       - package: ZIPFoundation
       # Embed the Now Playing widget extension into the app (all supported platforms).
