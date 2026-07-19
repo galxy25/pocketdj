@@ -1227,6 +1227,15 @@ public SF Symbol exists).
   never restarts and `nowPlayingRevision` never bumps (no SetlistDetailView restart).
   Note the panel renders the EPHEMERAL run — edits don't write back to the frozen
   `set_now_playing` snapshot (same contract as §10's disabled mid-set Edit).
+- **Previously played — the history toggle**: `played` (= `queue[0..<index]`, a pure
+  projection — `advanceToNext` only moves the index, so finished rows stay in the
+  queue and ride every durable-session snapshot) backs the panel's ⟲ toggle
+  (`np-history`, `@AppStorage("nowPlayingShowPlayed")`), a "Previously played"
+  section rendered newest-first between the deck and Up next. Its context menu:
+  `jumpToPlayed(uid:)` — `jumpToUpcoming` mirrored at the head (needle lands on the
+  tapped row, in-between rows return to the upcoming tail) — plus Play again
+  next/last via `insertNextInQueue`/`appendToQueue` with a **fresh `Item`** (reusing
+  a row would duplicate its per-instance `uid` and confuse every uid-keyed op).
 - **Add-search** — `NowPlayingSearch`: pure tokenized all-tokens-match over
   name+artist, ranked exact-name > name-prefix > catalog order, capped (10 albums /
   25 songs). The panel runs it **debounced (200 ms) on a detached task over value

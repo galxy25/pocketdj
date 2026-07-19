@@ -176,6 +176,10 @@ The guest's page is a live radio dashboard for your set:
 - **Now playing** — the current track's title and artist, with a progress bar that ticks along
   on its own between refreshes.
 - **Up next** — the next few tracks in your queue.
+- **Previously played** — a **🕘 button** that unfolds the set's history: every track the
+  session has already spun, newest first, each with the local time it ended. Guests who
+  arrive late catch up on what they missed ("what was that song half an hour ago?"), and
+  the list keeps growing live while it's open.
 - **Request a song** — type a title and artist, hit send, and it goes straight to the host's
   inbox. The page refreshes every few seconds, so a guest watches their request move from
   *pending* to *queued* (or *played*, or *denied*) through small **status chips**. It gently
@@ -183,11 +187,17 @@ The guest's page is a live radio dashboard for your set:
   over-eager guest can't flood the line for the room.
 
 By default guests **see** the music but don't **hear** it — it's a request line, not a
-broadcast. Flip **View + Hear** on the live session and each guest page grows a **Listen in**
-button: tap it (phones require that tap before they'll start audio) and the guest hears the
-current track, kept in sync with your deck. Only songs that already have a public rip stream
-out — a track without one stays view-only even in hear mode, and a copy-protected Apple Music
-stream never leaves your device.
+broadcast. Flip **View + Hear** on the live session and each guest page becomes a real
+**internet radio station — no PocketDJ app needed**: a **📻 Tune in — live radio** button
+appears (phones require that tap before they'll start audio), and from then on the guest's
+browser plays your set position-synced with your deck, **rolling from track to track on its
+own**. The station puts itself on the guest's **lock screen** — track, artist, and the
+jukebox's name, with working play/pause — survives stream hiccups by quietly retrying, and
+respects the guest's world: unplug headphones or pause from the lock screen and it stays
+paused rather than fighting back. Only songs that already have a public rip stream
+out — a track without one plays a moment of radio silence (with a hint) and the station
+resumes on the next streamable track — and a copy-protected Apple Music stream never leaves
+your device. When you end the session, every tuned-in radio goes silent with it.
 
 ### The host's inbox — you're still the DJ
 
@@ -230,7 +240,9 @@ health check, mirroring the rip-server rows.
 - **⌘J / Broadcast antenna** — open the tab, or start-and-broadcast from the Mix toolbar
 - **QR code + share link** — how guests join, no install, no sign-in
 - **Request inbox** — Deny · Play Next · Play Last · Surprise Slot, each on a matched song
-- **View + Hear toggle** — let guests listen in (public rips only), position-synced
+- **View + Hear toggle** — turn every guest's browser into a synced internet radio
+  (public rips only), with a lock-screen card and auto-advancing tracks
+- **🕘 Previously played** — the guest page's reveal-button history of the whole set
 - **Timeless toggle** — opt out of the 24-hour expiry
 
 **User story:** "It's my party and I'm on the decks. I throw a QR code up on the TV, and the

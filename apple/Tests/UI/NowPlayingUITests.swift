@@ -189,6 +189,39 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
+    /// The ⟲ history toggle: the restored session's played row ("Neon" behind the cursor)
+    /// is hidden by default, revealed as the "Previously played" section by np-history, and
+    /// hidden again by a second tap. State rides @AppStorage, so the test restores the
+    /// hidden default at the end.
+    func testHistoryToggleRevealsPreviouslyPlayed() throws {
+        #if os(macOS)
+        throw XCTSkip("history toggle exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launch()
+
+        let panel = app.any("now-playing-panel")
+        XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
+
+        let toggle = app.el("np-history")
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8), "history toggle rides the transport")
+        // @AppStorage persists in the simulator across runs — an ABORTED earlier run can
+        // leave the section shown. Normalize to hidden first so the assertions below pin
+        // toggle behavior, not leftover state.
+        if app.any("np-played-0").exists { toggle.tap() }
+        XCTAssertFalse(app.any("np-played-0").waitForExistence(timeout: 1), "played list hidden")
+        toggle.tap()
+        let played = app.any("np-played-0")
+        XCTAssertTrue(played.waitForExistence(timeout: 8), "played section appears on toggle")
+        XCTAssertTrue(app.staticTexts["Neon"].exists, "the pre-cursor snapshot row is listed")
+        attach("np-previously-played")
+
+        toggle.tap()                                 // restore the hidden default
+        XCTAssertFalse(app.any("np-played-0").waitForExistence(timeout: 2),
+                       "second tap hides the played section again")
+        #endif
+    }
+
     /// The iOS mini-player (Levi 2026-07-18): chevron-down collapses the deck to the thin
     /// bottom strip (title + ⏮ ⏯ ⏭ + chevron-up), the menu list takes the freed height,
     /// and chevron-up brings the full deck back. State persists via @AppStorage, so the

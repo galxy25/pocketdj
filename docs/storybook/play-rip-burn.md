@@ -461,6 +461,12 @@ Top to bottom:
   platter **freezes in place** (no rewind-to-twelve-o'clock); resume and it picks up from
   the same groove. Unknown tempo ⇒ classic 33⅓.
 - **⏮ ⏯ ⏭ transport** — the same prev/play-pause/next that works from the lock screen.
+  A small **⟲ history button** rides the row's left edge: tap it and a **Previously
+  played** section unfolds between the deck and Up next — every track this run has
+  already spun, newest first. Long-press a played row to **Play now** (jump straight
+  back onto it — a whole ⏮-walk in one tap; everything between returns to Up next) or
+  **Play again next / last** (queue a fresh copy without touching the needle). Tap ⟲
+  again to fold it away; the choice sticks across launches.
 - **Up next** — the not-yet-played queue of the playing collection. **Drag to reorder**
   (Reorder button on iPhone) or **✕ / swipe to remove**; edits touch only what hasn't
   played yet, so the current track never skips or restarts.
@@ -508,7 +514,8 @@ hiccups."
 
 Kill the app mid-set — swipe it away, let the phone restart, whatever — and **reopen: the
 Now Playing deck is instantly back exactly as it was**. What already played this run sits
-behind the needle, the current song is cued **at the second you left it**, and Up next is
+behind the needle (the deck's **⟲ history list** shows it, even after the restore), the
+current song is cued **at the second you left it**, and Up next is
 intact — including the shuffle order and every live edit you (or your Jukebox Hero
 guests) made to the queue. Nothing is reconstructed from history or guessed from the
 setlist: the running set writes itself down **as it plays**, so there is nothing to lose

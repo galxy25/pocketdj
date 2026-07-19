@@ -1006,6 +1006,7 @@ host's latest player snapshot with the server-side request statuses, then writes
   "nowPlaying": { "title": "…", "artist": "…", "lengthMs": 214000, "positionMs": 63000,
                   "streamUrl": "https://pocketdj-rips-….s3….amazonaws.com/rips/<id>.mp3" },
   "upNext":   [ { "title": "…", "artist": "…" } ],
+  "played":   [ { "title": "…", "artist": "…", "endedAt": 1789599786000 } ],
   "requests": [ { "id": "rq_…", "title": "…", "artist": "…",
                   "status": "pending|queued|denied|played" } ]
 }
@@ -1014,8 +1015,20 @@ host's latest player snapshot with the server-side request statuses, then writes
 `positionMs` is snapshot-time only; the guest page animates its progress bar locally between
 4-second polls. **`hear` is the view-only-vs-View+Hear gate** (§11.3): while `false` no audio
 URL is published; while `true` the broker carries the current track's **public rips-bucket mp3**
-as `nowPlaying.streamUrl`, and the page shows a user-gesture-gated **Listen in** button that
-plays position-synced (`positionMs + (now − updatedAt)`, re-seeking on >3 s drift).
+as `nowPlaying.streamUrl`, and the page's user-gesture-gated **📻 Tune in** button turns it
+into a synced radio client (§11.3).
+
+**`played` is the session's history, derived by the broker** (`notePlayed` in
+`jukebox-server.mjs`, server `version: 2`): a state POST that replaces one sanitized track
+with a *different* one — or with nothing — appends the outgoing track to the session's played
+log. Same title+artist is a position tick, not a transition, **except** a hard rewind
+(>30 s → <10 s), which is a back-to-back replay and logs the first spin (Mix broadcasts post
+no position, so they can never trip that rule). Deriving on the broker instead of trusting a
+client-sent list covers every host source — setlist deck, Auto-DJ mix, single rip plays —
+with zero wire-protocol change, and records what guests actually saw as Now Playing. The full
+log (last **100**) persists in `session.json` and survives restarts; `state.json` publishes
+the newest **30**. The guest page renders it as a **Previously Played** card behind a reveal
+button — newest first, with local end times.
 
 ### 11.3 View-only vs View + Hear — only public rips ever leave the host
 
@@ -1027,6 +1040,23 @@ distributed.** A DRM'd Apple Music stream never leaves the host, so a track play
 Music stays view-only *even in hear mode* — until its stream-through-rip (Ch. 5 §8) lands in the
 manifest, at which point a later snapshot picks the public URL up automatically. This is the
 same public-rips-only rule the offline stem/burn surfaces obey (Ch. 5 §15).
+
+With hear on, the guest page behaves as a full **internet-radio client** (no app): the
+`<audio>` element streams the mp3 **directly from the public rips bucket** (the broker never
+proxies audio bytes), drift-syncs to `positionMs + (now − updatedAt)` re-seeking only on >3 s
+drift, and auto-advances on track change by swapping `src` (later plays ride the original tap
+gesture). The page's playback state machine handles the edges deliberately: it never seeks
+past the file's end and never calls `play()` on an **ended** element (the HTML spec rewinds
+an ended element to 0 — the stale window between a track's natural end and the next
+state.json used to replay the intro); an element **`pause` the page didn't initiate**
+(headphone unplug, an interruption, lock-screen pause on browsers without Media Session
+routing) tunes the radio *off* rather than being fought — page-initiated pauses ride a
+`pagePause` flag, natural-end and error-induced pauses are excluded; a fatal media `error`
+reloads the source on a 2 s cadence (`play()` cannot revive an errored element) with a
+persistent "stream hiccup" hint; and the **Media Session API** puts the station on the lock
+screen (track/artist/jukebox name, `playbackState` "playing" only while a stream is actually
+live) with play/pause action handlers gated on the session not having ended. `showEnded()`
+takes the radio off the air: audio stopped, Media Session card cleared.
 
 ### 11.4 Matching — on-device, catalog-first
 
