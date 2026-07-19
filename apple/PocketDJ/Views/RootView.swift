@@ -20,6 +20,7 @@ struct RootView: View {
     @Environment(PlayHistoryStore.self) private var playHistory
     @Environment(IntentServices.self) private var intents
     @Environment(CloudSyncService.self) private var cloudSync
+    @Environment(OnboardingStore.self) private var onboarding
     @Environment(JukeboxStore.self) private var jukebox
     @Environment(PlaybackCoordinator.self) private var coordinator
     @Environment(DemuxStore.self) private var demux
@@ -73,6 +74,13 @@ struct RootView: View {
             case .settings:    return "gearshape"
             }
         }
+    }
+
+    /// The onboarding cover's presentation binding: driven by the store, never by the
+    /// system (interactive dismissal is disabled; the set side is deliberately inert —
+    /// only `OnboardingStore.complete()` takes the cover down).
+    private var onboardingPresented: Binding<Bool> {
+        Binding(get: { !onboarding.isComplete }, set: { _ in })
     }
 
     /// The home Now Playing element shows for collection playback (the app-scoped
@@ -164,9 +172,26 @@ struct RootView: View {
         // the same captured route, but only the first finds the live value non-nil — the
         // guard-let + clear inside consumeIntentRoute is an atomic take on the main actor.
         .onChange(of: intents.pendingRoute) { _, _ in consumeIntentRoute(intents.pendingRoute) }
+        // ZERO-TO-HERO gate: a fresh install (or reinstall) walks the three-stage
+        // onboarding before the app proper. fullScreenCover on iOS/visionOS; macOS has
+        // no fullScreenCover, so a non-dismissable sheet. Every window of a multi-window
+        // session shows the same store-driven cover (they stay in lockstep and all
+        // dismiss on completion — accepted + documented in the design review).
+        #if os(macOS)
+        .sheet(isPresented: onboardingPresented) { OnboardingView().frame(minWidth: 600, minHeight: 640) }
+        #else
+        .fullScreenCover(isPresented: onboardingPresented) { OnboardingView() }
+        #endif
         .task {
             // Store cross-wiring happens in PocketDJApp.init() (so background intent
             // launches are wired too); this task runs the launch ACTIONS.
+            // FIRST: hold the ENTIRE launch pipeline until onboarding resolves (returns
+            // immediately when it never shows). Everything below — cloud sync, session
+            // restores, catalog load — must run with the user's choices (profile mode,
+            // sources), and the stage-1 restore must land BEFORE any store file is
+            // touched. Intent/CarPlay launches never run this task; they are vetoed at
+            // the IntentServices seam instead.
+            await onboarding.waitUntilComplete()
             Task { await SearchService.ensureConfigLoaded() }  // pre-warm online-search host from search-config.json
             // Prune any burned files iOS purged while the app was gone.
             burns.reconcileOnLaunch()

@@ -461,6 +461,16 @@ final class MixSessionStore: MixSessionRecorder {
     /// writer's version watermark so any in-flight async save carrying an older snapshot can't regress
     /// what we just wrote.
     func flush() {
+        // ONBOARDING PULL INVARIANT (R2): never MATERIALIZE the synced document for a
+        // virgin state. Init always mints an empty "Session 1" in memory, so a fresh
+        // install backgrounded mid-onboarding would otherwise write an empty doc whose
+        // fresh mtime out-LWWs the user's real cloud copy on the next push pass (the
+        // sibling PlaybackSession/MixDeckSession flushes guard on `current != nil` — this
+        // is their equivalent). Once the file exists, or anything is worth keeping,
+        // flush exactly as before.
+        let virgin = recEvents.isEmpty && recPlayed.isEmpty
+            && sessions.allSatisfy { $0.events.isEmpty && $0.playedSongIds.isEmpty }
+        if virgin && !FileManager.default.fileExists(atPath: fileURL.path) { return }
         saveTask?.cancel(); saveTask = nil
         saveVersion += 1
         let v = saveVersion

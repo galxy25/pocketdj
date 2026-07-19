@@ -58,6 +58,18 @@ final class IntentServices {
     /// process (RootView.task does the same on a windowed launch — both are idempotent).
     private var kickedManifestRefresh = false
 
+    /// ONBOARDING VETO (R4): true while the zero-to-hero flow is unresolved. Siri/
+    /// Shortcuts/CarPlay can cold-launch the app WITHOUT RootView (and its onboarding
+    /// gate), and a playback intent writes the synced collections/session documents —
+    /// which would break the fresh-install cloud-restore invariant. Mutating intents
+    /// throw `.setupIncomplete` instead; wired in PocketDJApp to
+    /// `{ !onboarding.isComplete }`. nil ⇒ never veto (tests).
+    @ObservationIgnored var onboardingIncomplete: (() -> Bool)?
+
+    private func vetoDuringOnboarding() throws {
+        if onboardingIncomplete?() == true { throw PocketDJIntentError.setupIncomplete }
+    }
+
     /// Process-wide handle to the live bridge, for scene delegates that run OUTSIDE the SwiftUI
     /// environment and can't receive `.environment`-injected stores — specifically the CarPlay
     /// scene (a separate `UIScene`). Set once in `init` (there is one instance, built in
@@ -99,6 +111,7 @@ final class IntentServices {
     /// Returns the playlist's display name for the spoken dialog.
     @discardableResult
     func playPlaylist(id: String, shuffle: Bool) async throws -> String {
+        try vetoDuringOnboarding()
         await ensureReady()
         guard let playlist = collections.playlist(id) else { throw PocketDJIntentError.playlistNotFound }
         guard let set = collections.playNow(playlistId: id, shuffle: shuffle), !set.tracks.isEmpty else {
@@ -111,6 +124,7 @@ final class IntentServices {
     /// ▶/🔀 a pocket (DAG-resolved order). Returns the pocket's name for the dialog.
     @discardableResult
     func playPocket(id: String, shuffle: Bool) async throws -> String {
+        try vetoDuringOnboarding()
         await ensureReady()
         guard let pocket = collections.pocket(id) else { throw PocketDJIntentError.pocketNotFound }
         guard let set = collections.playNow(pocketId: id, shuffle: shuffle), !set.tracks.isEmpty else {
@@ -125,6 +139,7 @@ final class IntentServices {
     /// as for any other Now Playing set. Returns the title for dialogs.
     @discardableResult
     func playSong(id: String) async throws -> String {
+        try vetoDuringOnboarding()
         await ensureReady()
         guard let song = app.songsById[id] else { throw PocketDJIntentError.songNotFound }
         guard let set = collections.playNow(songIds: [id], name: song.name, source: .browser), !set.tracks.isEmpty else {
@@ -138,6 +153,7 @@ final class IntentServices {
     /// Mirrors AlbumDetailView.play (source: .album). Returns the album name for dialogs.
     @discardableResult
     func playAlbum(id: String, shuffle: Bool = false) async throws -> String {
+        try vetoDuringOnboarding()
         await ensureReady()
         guard let album = app.albumsById[id] else { throw PocketDJIntentError.songNotFound }
         guard let set = collections.playNow(songIds: album.trackList, name: album.name,
@@ -153,6 +169,7 @@ final class IntentServices {
     @discardableResult
     func playSongIds(_ ids: [String], name: String, shuffle: Bool = false,
                      source: PlayHistoryStore.PlaySource) async throws -> String {
+        try vetoDuringOnboarding()
         await ensureReady()
         guard let set = collections.playNow(songIds: ids, name: name, shuffle: shuffle, source: source),
               !set.tracks.isEmpty else { throw PocketDJIntentError.emptyCollection(name) }
@@ -177,6 +194,7 @@ final class IntentServices {
     /// Returns (display name, loadable track count) for the dialog.
     @discardableResult
     func startAutoMix(source: MixSource, shuffle: Bool) async throws -> (name: String, count: Int) {
+        try vetoDuringOnboarding()
         await ensureReady()
         let name: String
         switch source {
@@ -206,6 +224,7 @@ final class IntentServices {
     /// pause that freezes the transition machine's wall clock and can later resume; the
     /// in-app `pauseAuto()` keeps audio playing and `pauseBoth()` would END the mix.
     func pauseAutoMix() throws {
+        try vetoDuringOnboarding()
         guard mix.autoMixing else { throw PocketDJIntentError.noAutoMixRunning }
         mix.remotePause()
     }
@@ -214,6 +233,7 @@ final class IntentServices {
     /// clock, resumes only the decks the pause silenced, and re-arms the machine. Never
     /// resurrects a deliberate in-app hand-mixing pause (that flag isn't set by us).
     func resumeAutoMix() throws {
+        try vetoDuringOnboarding()
         guard mix.autoMixing else { throw PocketDJIntentError.noAutoMixRunning }
         guard mix.autoPaused else { throw PocketDJIntentError.autoMixNotPaused }
         mix.remotePlay()
@@ -225,6 +245,7 @@ final class IntentServices {
     /// dialog promises the pocket "shortly"). Throws up-front when the model is
     /// unavailable so Siri can say WHY instead of silently never delivering.
     func createPocket(brief: String, targetMinutes: Int) async throws {
+        try vetoDuringOnboarding()
         let model = try PocketBriefModelFactory.make()
         await ensureReady()
         pocketBuilder.kickOff(brief: brief, targetMinutes: targetMinutes, model: model)
@@ -243,6 +264,7 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
     case noAutoMixRunning
     case autoMixNotPaused
     case intelligenceUnavailable(String)
+    case setupIncomplete
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
@@ -258,6 +280,8 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
             return "I couldn't find that pocket or set list in PocketDJ."
         case .emptyCollection(let name):
             return "\(name) has no playable songs yet."
+        case .setupIncomplete:
+            return "Finish setting up PocketDJ in the app first."
         case .noBurnedSongs(let name):
             return "\(name) has no burned songs on this device — auto-mix plays local files only. Burn it first."
         case .noAutoMixRunning:
