@@ -176,10 +176,17 @@ final class NowPlayingQueueTests: XCTestCase {
         XCTAssertEqual(seq.upcoming.map(\.id), ["b", "c", "d"])  // in-between rows re-upcoming
         XCTAssertTrue(seq.played.isEmpty)
 
-        seq.jumpToPlayed(uid: seq.upcoming[0].uid)               // an UPCOMING uid: no-op
-        XCTAssertEqual(seq.queue[seq.index].id, "a")
+        // No-op checks must run with index > 0 — at index 0 the `index > 0` guard
+        // short-circuits and the head-only uid SCAN is never exercised (a regression
+        // widening the scan to the whole queue would slip through).
+        seq.skipNext()                                           // current = "b", played = [a]
+        seq.jumpToPlayed(uid: seq.upcoming[0].uid)               // an UPCOMING uid ("c"): no-op
+        XCTAssertEqual(seq.queue[seq.index].id, "b")
+        seq.jumpToPlayed(uid: seq.queue[seq.index].uid)          // the CURRENT row: no-op
+        XCTAssertEqual(seq.queue[seq.index].id, "b")
+        XCTAssertEqual(seq.played.map(\.id), ["a"])
         seq.jumpToPlayed(uid: UUID())                            // unknown uid: no-op
-        XCTAssertEqual(seq.queue[seq.index].id, "a")
+        XCTAssertEqual(seq.queue[seq.index].id, "b")
         seq.stop()
     }
 

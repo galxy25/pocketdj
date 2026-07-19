@@ -77,7 +77,7 @@ test('health reports the jukebox service + version', async () => {
   assert.equal(r.status, 200);
   assert.equal(r.json.ok, true);
   assert.equal(r.json.service, 'jukebox');
-  assert.ok(r.json.version >= 1);
+  assert.ok(r.json.version >= 2, 'v2 = played history — the app detects capabilities via this');
 });
 
 test('create requires the token when one is configured', async () => {
@@ -192,6 +192,38 @@ test('played history: now-playing transitions accumulate; position ticks do not'
   // The log rides session.json (not in-memory only), so it can survive a restart.
   const meta = JSON.parse(readFileSync(join(HOME, h.jukeboxId, 'session.json'), 'utf8'));
   assert.equal(meta.played.length, 2);
+});
+
+test('played history: a back-to-back replay (hard rewind to the intro) logs the first spin; small nudges do not', async () => {
+  const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Replay Party' } });
+  const h = created.json;
+  const post = (np) => req('POST', `/jukebox/${h.jukeboxId}/state`, { hostKey: h.hostKey, body: { nowPlaying: np, upNext: [] } });
+  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 170000 });
+  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 2000 });   // end → intro: a replay
+  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 6000 });   // small forward tick: not
+  await wait(1300);
+  const st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 1, 'the first spin should be logged, once');
+  assert.equal(st.played[0].title, 'Encore');
+});
+
+test('played history caps: state.json publishes the newest 30, session.json keeps 100', async () => {
+  const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Marathon Party' } });
+  const h = created.json;
+  for (let i = 0; i < 106; i++) {
+    await req('POST', `/jukebox/${h.jukeboxId}/state`, {
+      hostKey: h.hostKey,
+      body: { nowPlaying: { title: `Track ${i}`, artist: 'Cap', lengthMs: 1000, positionMs: 0 }, upNext: [] },
+    });
+  }
+  await wait(1300); // 105 transitions logged (Track 105 is still "playing")
+  const st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 30, 'guests get the newest 30');
+  assert.equal(st.played[29].title, 'Track 104', 'newest last');
+  assert.equal(st.played[0].title, 'Track 75');
+  const meta = JSON.parse(readFileSync(join(HOME, h.jukeboxId, 'session.json'), 'utf8'));
+  assert.equal(meta.played.length, 100, 'disk log capped at 100');
+  assert.equal(meta.played[99].title, 'Track 104');
 });
 
 test('timeless create has no expiry; config flips the lifecycle mode', async () => {

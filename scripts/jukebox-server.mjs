@@ -198,7 +198,14 @@ function sanitizeUpNext(list) {
 function notePlayed(s, next) {
   const prev = s.nowPlaying;
   if (!prev || !prev.title) return;
-  if (next && next.title === prev.title && next.artist === prev.artist) return;
+  if (next && next.title === prev.title && next.artist === prev.artist) {
+    // Same track: a position tick — EXCEPT a hard rewind to the intro, which is a
+    // back-to-back replay (the DJ queued the same song again, or ⏮ at the top of the
+    // set): that first spin deserves its own history entry. Small nudges and forward
+    // ticks are not transitions; Mix broadcasts post no position (0 → 0, never trips).
+    const rewound = num(prev.positionMs) > 30_000 && num(next.positionMs) < 10_000;
+    if (!rewound) return;
+  }
   s.played = [...(s.played || []), { title: prev.title, artist: prev.artist, endedAt: Date.now() }].slice(-PLAYED_KEEP);
   persistSession(s);
 }

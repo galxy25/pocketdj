@@ -202,10 +202,14 @@ final class NowPlayingUITests: XCTestCase {
 
         let panel = app.any("now-playing-panel")
         XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
-        XCTAssertFalse(app.any("np-played-0").exists, "played list hidden by default")
 
         let toggle = app.el("np-history")
         XCTAssertTrue(toggle.waitForExistence(timeout: 8), "history toggle rides the transport")
+        // @AppStorage persists in the simulator across runs — an ABORTED earlier run can
+        // leave the section shown. Normalize to hidden first so the assertions below pin
+        // toggle behavior, not leftover state.
+        if app.any("np-played-0").exists { toggle.tap() }
+        XCTAssertFalse(app.any("np-played-0").waitForExistence(timeout: 1), "played list hidden")
         toggle.tap()
         let played = app.any("np-played-0")
         XCTAssertTrue(played.waitForExistence(timeout: 8), "played section appears on toggle")
