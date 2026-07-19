@@ -1286,8 +1286,15 @@ function kickBackfillCuts() {
 // status: 'unknown'|'ready'|'inflight'|'queued'|'ripping'|'needsCut'|'ineligible'
 function acceptStem(songId, ripFromCloud = false) {
   const song = songId && songById.get(songId);
-  if (!song) return { job: null, status: 'unknown' };
-  const e = manifest[songId];
+  const e = songId ? manifest[songId] : undefined;
+  // AD-HOC stem: a completed Discover/recognizer rip's synthesized row is evicted at
+  // rip-terminal (runJob), so a later /stemify for the amrec_ id used to 404 even though
+  // the manifest — authoritative for a successful rip — has the audio. The stem chain
+  // only needs the manifest entry (stemManifestSong; digital entries always carry `key`,
+  // so stemSourceReady passes and the acceptRip fallthrough is unreachable). With no
+  // manifest entry there's nothing to re-rip from (the descriptor died with the row) —
+  // that stays 'unknown'.
+  if (!song && !(e && ADHOC_ID.test(songId || ''))) return { job: null, status: 'unknown' };
   if (e && (e.stemVersion ?? 0) >= STEMS_VERSION && e.stemModel === CFG.demucsModel)
     return { job: null, status: 'ready' };                       // idempotent skip (mandatory)
   if (e && cutImpossible(songId, e)) { clearStemWant(songId); return { job: null, status: 'ineligible' }; }

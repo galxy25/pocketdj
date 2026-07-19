@@ -77,7 +77,7 @@ final class RipsStore {
         /// Epoch-ms when this rip completed + uploaded (the server emits `Date.now()`).
         /// Optional for backward-compat with older manifest entries that predate it.
         var rippedAt: Double? = nil
-        /// ANALOG only: the per-song CUT chunk (`cuts/<songId>.mp3`) sliced out of the album,
+        /// ANALOG only: the per-song CUT chunk (`rips/<songId>.cut.mp3`) sliced out of the album,
         /// for the burn's individual-track export (DJ software). nil ⇒ album-only (no cut). The
         /// album `key` + `startMs` remain the playback source (cut is burn-only).
         var cutKey: String? = nil
@@ -513,7 +513,9 @@ final class RipsStore {
 
     // MARK: Analog cut export (burn-only)
 
-    /// The public URL for a manifest key (e.g. an analog `cutKey` = "cuts/<songId>.mp3").
+    /// The public URL for a manifest key (e.g. an analog `cutKey` = "rips/<songId>.cut.mp3" —
+    /// always under the `rips/*` public-bucket-policy prefix; consume the manifest's key
+    /// verbatim, never derive one).
     func url(forKey key: String) -> URL { ripsBase.appendingPathComponent(key) }
 
     /// HEAD `url` → its Last-Modified as epoch-ms (nil offline / missing). Drives the burn's
@@ -978,7 +980,13 @@ final class RipsStore {
             let body: [String: Any] = ripFromCloud ? ["songId": songId, "ripFromCloud": true] : ["songId": songId]
             post.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, response) = try await session.data(for: post)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                // Fire-and-forget, but never INVISIBLE: a refused stemify (e.g. the old
+                // adhoc-eviction 404) must leave a trace for Settings ▸ Debug / Console.
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                dlog("stemify \(songId) refused: HTTP \(code)")
+                return
+            }
             let view = try JSONDecoder().decode(StemJob.self, from: data)
             stemJobs[songId] = view
             if view.phase == .ready { await refreshManifest(); return }
