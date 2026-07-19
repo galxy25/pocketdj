@@ -12,6 +12,33 @@
 > [Distribution, Clients & the Edits Round-Trip](../architecture/07-distribution-and-clients.md).
 > These sections are prose-only — no screenshots captured yet.
 
+## Zero to hero — the first-run flow
+
+A fresh install (or a reinstall — deleting the app resets it) opens on a three-stage
+setup instead of a silent default catalog:
+
+1. **Your profile** — *"Link with iCloud"* or *"Just this device."* Linking probes the
+   cloud first: a returning DJ gets **"Welcome back"** and a one-tap **Restore my
+   stuff** that pulls their profile, collections, and sessions before anything on the
+   device can overwrite them; a new iCloud user just types a DJ name. If iCloud can't
+   be reached the flow says so and continues safely — it never mistakes a slow network
+   for a brand-new account.
+2. **Stream with Apple Music** — the same sign-in as Settings ▸ Streaming accounts,
+   offered up front so full songs stream instantly while rips are made. Skippable.
+3. **Import your music** — pick the global sources by their plain names: **Vinyl**,
+   **Digital**, and **Streaming** (the Apple Music catalog index, with its ~33 MB
+   size called out). All three start selected; at least one is required.
+
+Until the flow finishes, the app holds its whole launch pipeline: nothing syncs up to
+iCloud, and a Siri / CarPlay tap answers *"Finish setting up PocketDJ in the app
+first"* — so a half-set-up device can never overwrite a real profile in the cloud.
+Existing users updating the app never see the flow; the Settings mushroom-cloud reset
+runs it again.
+
+**User story:** "I put PocketDJ on my new phone, tapped *Link with iCloud → Restore my
+stuff*, signed into Apple Music, kept all three sources — and my whole crate was back
+before the kettle boiled."
+
 ## "?♪?" — identify the song that's playing
 
 At the **top of the Browser**, centered, is a **"?♪?"** button — two question marks

@@ -117,7 +117,12 @@ per-field cloud precedence).
 schema versioning (v2→v3 playlist folders, v3→v4 pocket folders, v4→v5 lossy
 `[PlaylistNode]` decode + studio ids, v5→v6 converted-collection (pocket + playlist) source provenance + the
 catalog-refresh three-way sync); the rips-manifest cut / beat-grid / stem fields;
-the explicit offline catalog disk cache (`CatalogService`).
+the explicit offline catalog disk cache (`CatalogService`); **portable transfers** —
+playlist/pocket zips bundle `items.json` (the PWA `MusicItem[]` wire shape, both clients
+read + write it) and the importer materializes ids outside the enabled sources as the
+provisional **"Imported"** synthetic source (`ImportedSongsStore`, CloudKit-synced), so
+foreign songs browse/realize/play/burn-with-stems by the id that traveled — real sources
+shadow provisional twins by merge order, never by deletion.
 
 ### Ch. 4 — Performance Engine
 **Built:** `realize()` (seeded sampling + harmonic autofill); iTunes mirroring; the reusable
@@ -170,7 +175,12 @@ catalog-id-crawl misses; **App Intents** (Siri / Shortcuts / Spotlight); virtual
 packs as a new public-read S3 artifact class; **Jukebox Hero** — the crowd-request line (§11):
 a static S3 guest page + the `jukebox-server.mjs` session broker (Tailscale-Funnel-exposed) +
 the native tab / ⌘J / Mix Broadcast tie-in, with requests matched on-device (Foundation Models
-+ Apple Music) and fed into the SetlistPlayer queue or the Auto-DJ.
++ Apple Music) and fed into the SetlistPlayer queue or the Auto-DJ; the **zero-to-hero
+onboarding** — a three-stage first-run gate (on-device vs iCloud profile with probe +
+pull-forced restore, Apple Music sign-in, the Vinyl/Digital/Streaming source picker) that
+holds the entire launch pipeline (`OnboardingStore` tri-state marker; CloudSync pushes and
+mutating intents refused until it resolves; reinstalls and the mushroom-cloud reset re-run
+it, updates never see it; visionOS auto-completes while the blank-first-window bug is open).
 **Deferred:** the **iMac edits-merge tool** — the client half and the schema are built, but the
 server-side script that folds exported edits back into `current-index.json` does not exist yet.
 Also deferred: the **Jukebox Hero Lambda migration** (§11) — the session-broker handler is

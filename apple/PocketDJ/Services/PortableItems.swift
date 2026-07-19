@@ -162,11 +162,13 @@ enum PortableItems {
     /// a row missing its essentials (id + name/title + artist for songs; + trackIds for
     /// albums) is skipped, never fatal.
     static func decode(_ data: Data) -> Payload {
-        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        guard let rows = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
             return Payload()
         }
         var out = Payload()
-        for obj in raw {
+        // Per-ELEMENT leniency: a junk row (non-dict, missing essentials) drops that
+        // row only — casting the whole array at once would nuke every item with it.
+        for case let obj as [String: Any] in rows {
             guard let id = obj["id"] as? String else { continue }
             let type = obj["type"] as? String
             let name = (obj["name"] as? String) ?? (obj["title"] as? String)
