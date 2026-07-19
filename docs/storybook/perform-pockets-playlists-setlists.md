@@ -302,11 +302,15 @@ Exporting a **playlist**, **pocket**, **set list**, or a **session's tracklist**
 
 The format picker appears after you tap **Export**; pick **PocketDJ** to keep working inside the app,
 or **CSV** to hand your tracklist to the outside world. A single **playlist** or **pocket** in the
-PocketDJ format is a tiny **`.playlist.pocketdj.zip`** / **`.pocket.pocketdj.zip`** that **references
-the catalog by id** (the app re-seeds the same index), so it's a few KB rather than bundling hundreds
-of KB of catalog and art — yet imports with every song resolved; a **portable** mode still bundles
-everything for a device with a different or empty catalog, and an import lands as *"… (imported)"*
-without clobbering what's already there.
+PocketDJ format is a **`.playlist.pocketdj.zip`** / **`.pocket.pocketdj.zip`** that references the
+catalog by id AND bundles a slim **catalog snapshot** (`items.json` — title/artist/album, BPM/key,
+length, streaming ids; never audio or art blobs), so it is **portable across DJs**: import it on a
+device whose sources don't carry those songs — even a fresh install that only enabled Vinyl — and
+the unknown songs land as a provisional **"Imported"** source, browsable and playable immediately,
+burnable **with stems** straight off the shared rips library. Enable the real source later and it
+quietly takes over those ids; un-enable it and the imported fallback is still there. An import
+always lands as *"… (imported)"* without clobbering what's already there, and the same zip imports
+into the web PWA too.
 
 **User story:** "Export a set as PocketDJ when I'm round-tripping it in the app — or as a plain CSV
 with just the universal columns when I need to drop the tracklist into a spreadsheet or another DJ

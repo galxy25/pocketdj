@@ -56,6 +56,12 @@ final class CloudSyncService {
 
     @ObservationIgnored private let database: any CloudDocDatabase
     @ObservationIgnored private let enabled: () -> Bool
+    /// ONBOARDING PUSH GATE (R1): while the zero-to-hero flow is unresolved, NO push may
+    /// run — a store file materialized mid-onboarding (an empty mix-session flush, an
+    /// intent-written collections doc) must never LWW-overwrite a returning user's cloud
+    /// data. nil ⇒ always allowed (tests / pre-onboarding builds). Wired in PocketDJApp
+    /// to `{ onboarding.isComplete }`; pulls are deliberately NOT gated.
+    @ObservationIgnored var pushAllowed: (() -> Bool)?
     @ObservationIgnored private var entries: [Entry] = []
     @ObservationIgnored private let stateURL: URL
     /// key → file mtime (epoch ms) at the last successful push/pull (the in-sync watermark).
@@ -123,6 +129,97 @@ final class CloudSyncService {
     /// Settings ▸ Profile "Sync Now".
     func syncNow() async { await runPass(manual: true) }
 
+    // MARK: - Onboarding (zero-to-hero stage 1)
+
+    /// What the stage-1 "Link with iCloud" probe found in the cloud.
+    enum ProfileProbe: Equatable {
+        /// Sync is disabled (fixture run / toggle off) — the probe never touches CloudKit.
+        case disabled
+        /// No iCloud account signed in / reachable.
+        case noAccount
+        /// Account is up but the probe errored or timed out — NOT the same as `.fresh`:
+        /// treating a slow network as "no profile" would let a typed name LWW-clobber the
+        /// real cloud identity. UX: continue with sync enabled, no name entry, no
+        /// start-fresh — a later successful pass reconciles.
+        case unknown
+        /// Account is up and no profile doc exists — a genuinely new iCloud user.
+        case fresh
+        /// A profile doc exists; `name` decoded from it ("" when unnamed).
+        case existing(name: String)
+    }
+
+    /// Probe the cloud for an existing profile, bounded by `deadline` (a probe must never
+    /// hang the first-run flow; timeout ⇒ `.unknown`, never `.fresh`).
+    func probeCloudProfile(deadline: TimeInterval = 10) async -> ProfileProbe {
+        guard enabled() else { return .disabled }
+        let db = database
+        let work = Task { () -> ProfileProbe in
+            guard await db.accountAvailable() else { return .noAccount }
+            do {
+                guard let doc = try await db.fetch("profile") else { return .fresh }
+                let decoded = try? JSONDecoder().decode(ProfileStore.Document.self, from: doc.payload)
+                return .existing(name: decoded?.name ?? "")
+            } catch {
+                return .unknown
+            }
+        }
+        let result = await withTaskGroup(of: ProfileProbe?.self) { group -> ProfileProbe in
+            group.addTask { await work.value }
+            group.addTask { try? await Task.sleep(for: .seconds(deadline)); return nil }
+            let first = await group.next().flatMap { $0 }
+            group.cancelAll()
+            work.cancel()
+            return first ?? .unknown
+        }
+        switch result {
+        case .noAccount:          accountAvailable = false
+        case .fresh, .existing:   accountAvailable = true
+        case .disabled, .unknown: break   // nothing learned about the account
+        }
+        return result
+    }
+
+    /// Stage-1 "Restore my stuff": pull-FORCED, no deadline. Applies EVERY cloud doc
+    /// regardless of local mtimes — the launch-pass LWW comparison would skip a doc
+    /// whose local file was just materialized (an intent-written collections file, a
+    /// backgrounding flush), which on a fresh install is always junk relative to the
+    /// cloud copy the user explicitly asked to restore. `.pre-cloud` backups still
+    /// taken (the user-data-safety rule). Pushes: none (this is a restore, and the
+    /// onboarding push gate is closed anyway). Returns the pulled doc keys; nil ⇒ the
+    /// pass couldn't run (disabled / no account) — the UI returns to the choice rather
+    /// than advancing (an incomplete restore must never look complete).
+    func restoreForOnboarding() async -> [String]? {
+        guard mayRun, !syncing else { return nil }
+        syncing = true
+        defer { syncing = false }
+        lastError = nil
+        lastPassAt = Date().timeIntervalSince1970 * 1000
+        let available = await database.accountAvailable()
+        accountAvailable = available
+        guard available else {
+            lastSummary = "iCloud account unavailable"
+            return nil
+        }
+        var pulled: [String] = []
+        do {
+            let meta = try await database.fetchMeta(keys: entries.map(\.key))
+            for entry in entries where meta[entry.key] != nil {
+                if let doc = try await database.fetch(entry.key) {
+                    try applyPull(doc, to: entry)
+                    pulled.append(entry.key)
+                }
+            }
+            lastSyncAt = Date()
+            lastSummary = pulled.isEmpty ? "Nothing to restore"
+                                         : "Restored \(pulled.joined(separator: ", "))"
+            saveState()
+            return pulled
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
     /// Backgrounding: push-only, fire-and-forget (the OS gives seconds — pulls can wait).
     func pushOnBackground() {
         guard mayRun else { return }
@@ -158,7 +255,8 @@ final class CloudSyncService {
                     }
                 } else if let localMs,
                           localMs > (cloudMs ?? 0) + Self.skewMs,
-                          localMs > (pushedMtimeMs[entry.key] ?? 0) + 1 {
+                          localMs > (pushedMtimeMs[entry.key] ?? 0) + 1,
+                          pushAllowed?() ?? true {
                     try await push(entry, mtimeMs: localMs)
                     pushed.append(entry.key)
                 }
@@ -172,6 +270,7 @@ final class CloudSyncService {
     }
 
     private func pushDirty() async {
+        guard pushAllowed?() ?? true else { return }
         guard await database.accountAvailable() else { return }
         var pushed = false
         for entry in entries {

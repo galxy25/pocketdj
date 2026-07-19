@@ -106,8 +106,13 @@ final class AppModel {
     /// Provisional Discover adds — merged as a synthetic source until the nightly
     /// indexer lands each track for real (set by the app at launch).
     var discoverAdds: DiscoverAddsStore?
-    /// Supersede hook: (provisional amrec_ id → indexed id) pairs for the collections
-    /// remap (set by the app at launch).
+    /// Provisional IMPORTED entries (cross-user playlist/pocket transfers) — merged as
+    /// a synthetic source appended LAST, so real sources shadow them by merge order
+    /// alone and the entries survive as durable fallbacks (set by the app at launch).
+    var importedSongs: ImportedSongsStore?
+    /// Supersede hook: (provisional id → indexed id) pairs for the collections remap —
+    /// Discover amrec_ supersedes AND imported amrec_ remaps ride the same seam
+    /// (set by the app at launch).
     var onDiscoverSupersede: (([(from: String, to: String)]) -> Void)?
 
     init(loader: CatalogLoading? = nil) {
@@ -167,16 +172,19 @@ final class AppModel {
         let albumEdits = edits?.doc.albums ?? [:]
         let songEdits = edits?.doc.songs ?? [:]
         let provisional = discoverAdds?.entries ?? []
-        let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)])? in
+        let importedS = importedSongs?.songs ?? []
+        let importedA = importedSongs?.albums ?? []
+        let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)])? in
             let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
             guard !cached.isEmpty else { return nil }
-            let (indexes, superseded) = AppModel.withDiscoverAdds(provisional, indexes: cached)
+            let (indexes, discoverPairs, importedPairs) = AppModel.withProvisionalSources(
+                discover: provisional, importedSongs: importedS, importedAlbums: importedA, indexes: cached)
             return (AppModel.buildDerived(indexes: indexes, albumEdits: albumEdits, songEdits: songEdits),
-                    superseded)
+                    discoverPairs, importedPairs)
         }.value
-        guard let (derived, superseded) = built else { return false }
+        guard let (derived, discoverPairs, importedPairs) = built else { return false }
         assign(derived)
-        applySupersede(superseded)
+        applySupersede(discover: discoverPairs, imported: importedPairs)
         reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
         state = .loaded
         return true
@@ -184,28 +192,61 @@ final class AppModel {
 
     /// Fold the provisional Discover adds in as a synthetic SOURCE — after the supersede
     /// split: an add the indexer has since landed for real is excluded (its remap pair is
-    /// returned instead). Pure; runs inside the off-main build.
+    /// returned instead). Pure; runs inside the off-main build. (Thin wrapper kept for
+    /// the existing tests; the live pipeline calls `withProvisionalSources`.)
     nonisolated static func withDiscoverAdds(_ provisional: [DiscoverAddsStore.Entry],
                                              indexes: [IndexJSON])
         -> (indexes: [IndexJSON], superseded: [(from: String, to: String)]) {
-        guard !provisional.isEmpty else { return (indexes, []) }
+        let r = withProvisionalSources(discover: provisional, importedSongs: [],
+                                       importedAlbums: [], indexes: indexes)
+        return (r.indexes, r.discoverSuperseded)
+    }
+
+    /// Fold BOTH provisional sources in — Discover adds, then imported entries — each as
+    /// a synthetic source appended AFTER every real one (merge is first-wins, so a real
+    /// source always shadows a provisional twin without deleting it). Discover entries
+    /// whose appleMusicId the indexer has landed are excluded with a remap pair; imported
+    /// amrec_ entries likewise (catalog sng_ ids are NEVER remapped — the imported id's
+    /// manifest identity is the specific recording that was shared). Pure; off-main.
+    nonisolated static func withProvisionalSources(discover: [DiscoverAddsStore.Entry],
+                                                   importedSongs: [ImportedSongsStore.SongEntry],
+                                                   importedAlbums: [ImportedSongsStore.AlbumEntry],
+                                                   indexes: [IndexJSON])
+        -> (indexes: [IndexJSON],
+            discoverSuperseded: [(from: String, to: String)],
+            importedSuperseded: [(from: String, to: String)]) {
+        guard !discover.isEmpty || !importedSongs.isEmpty || !importedAlbums.isEmpty else {
+            return (indexes, [], [])
+        }
         var byAppleMusicId: [String: String] = [:]
         for index in indexes {
             for s in index.songs where s.appleMusicId != nil {
                 if byAppleMusicId[s.appleMusicId!] == nil { byAppleMusicId[s.appleMusicId!] = s.id }
             }
         }
-        let split = DiscoverAddsStore.split(provisional, indexedByAppleMusicId: byAppleMusicId)
-        let all = split.keep.isEmpty ? indexes : indexes + [DiscoverAddsStore.syntheticIndex(split.keep)]
-        return (all, split.superseded)
+        let split = DiscoverAddsStore.split(discover, indexedByAppleMusicId: byAppleMusicId)
+        let importedPairs = ImportedSongsStore.supersedePairs(importedSongs,
+                                                              indexedByAppleMusicId: byAppleMusicId)
+        let remapped = Set(importedPairs.map(\.from))
+        let keptImported = importedSongs.filter { !remapped.contains($0.songId) }
+        var all = indexes
+        if !split.keep.isEmpty { all.append(DiscoverAddsStore.syntheticIndex(split.keep)) }
+        if !keptImported.isEmpty || !importedAlbums.isEmpty {
+            all.append(ImportedSongsStore.syntheticIndex(songs: keptImported, albums: importedAlbums))
+        }
+        return (all, split.superseded, importedPairs)
     }
 
-    /// Land a supersede: prune the provisional store and remap collection references
-    /// (provisional amrec_ id → the indexed id that replaced it).
-    private func applySupersede(_ pairs: [(from: String, to: String)]) {
-        guard !pairs.isEmpty else { return }
-        discoverAdds?.remove(ids: pairs.map(\.from))
-        onDiscoverSupersede?(pairs)
+    /// Land the supersedes: prune each provisional store (Discover entries whose indexed
+    /// twin owns the id now; imported amrec_ entries that remapped) and remap collection
+    /// references through the shared hook.
+    private func applySupersede(discover: [(from: String, to: String)],
+                                imported: [(from: String, to: String)] = []) {
+        if !discover.isEmpty { discoverAdds?.remove(ids: discover.map(\.from)) }
+        if !imported.isEmpty { importedSongs?.remove(songIds: imported.map(\.from)) }
+        let all = discover + imported
+        guard !all.isEmpty else { return }
+        onDiscoverSupersede?(all)
     }
 
     /// A Discover add landing while the catalog is LIVE: append the provisional row as a
@@ -218,6 +259,32 @@ final class AppModel {
         songSourceById[song.id] = DiscoverAddsStore.sourceName
         if !availableSources.contains(DiscoverAddsStore.sourceName) {
             availableSources.append(DiscoverAddsStore.sourceName)
+        }
+        applyEdits()
+    }
+
+    /// An IMPORT landing while the catalog is LIVE: append every unknown row (songs AND
+    /// their albums) as the "Imported" synthetic source, then ONE effective rebuild — a
+    /// playlist import can carry hundreds of songs, and the edit-save rebuild is the
+    /// per-batch cost, never per-song. Known ids are skipped (a real source or an
+    /// earlier import already owns them).
+    func injectImported(songs newSongs: [IndexSong], albums newAlbums: [IndexAlbum]) {
+        var changed = false
+        for s in newSongs where rawSongsById[s.id] == nil && songsById[s.id] == nil {
+            rawSongs.append(s)
+            rawSongsById[s.id] = s
+            songSourceById[s.id] = ImportedSongsStore.sourceName
+            changed = true
+        }
+        for a in newAlbums where rawAlbumsById[a.id] == nil && albumsById[a.id] == nil {
+            rawAlbums.append(a)
+            rawAlbumsById[a.id] = a
+            albumSourceById[a.id] = ImportedSongsStore.sourceName
+            changed = true
+        }
+        guard changed else { return }
+        if !availableSources.contains(ImportedSongsStore.sourceName) {
+            availableSources.append(ImportedSongsStore.sourceName)
         }
         applyEdits()
     }
@@ -240,15 +307,18 @@ final class AppModel {
             let albumEdits = edits?.doc.albums ?? [:]
             let songEdits = edits?.doc.songs ?? [:]
             let provisional = discoverAdds?.entries ?? []
+            let importedS = importedSongs?.songs ?? []
+            let importedA = importedSongs?.albums ?? []
             // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
             // OFF the main actor; only the finished value is assigned back on `@MainActor`.
-            let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)]) in
-                let (all, superseded) = AppModel.withDiscoverAdds(provisional, indexes: indexes)
+            let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)]) in
+                let (all, discoverPairs, importedPairs) = AppModel.withProvisionalSources(
+                    discover: provisional, importedSongs: importedS, importedAlbums: importedA, indexes: indexes)
                 return (AppModel.buildDerived(indexes: all, albumEdits: albumEdits, songEdits: songEdits),
-                        superseded)
+                        discoverPairs, importedPairs)
             }.value
             assign(built.0)
-            applySupersede(built.1)
+            applySupersede(discover: built.1, imported: built.2)
             reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
             state = .loaded
         } catch {

@@ -109,12 +109,19 @@ struct PocketDJApp: App {
     @State private var intents: IntentServices
     /// Provisional Discover-add catalog entries (eventual consistency) — see DiscoverAddsStore.
     @State private var discoverAdds: DiscoverAddsStore
+    /// Provisional IMPORTED catalog entries (cross-user playlist/pocket transfers) — see
+    /// ImportedSongsStore.
+    @State private var importedSongs: ImportedSongsStore
     /// The user's synced identity (PocketDJ name + durable id) — see ProfileStore.
     @State private var profile: ProfileStore
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
     /// launch task awaits its launch pass BEFORE the durable-session restores so a fresh
     /// device restores cloud session files, not empty ones.
     @State private var cloudSync: CloudSyncService
+    /// The zero-to-hero first-run flow's state machine (fresh install / reinstall).
+    /// RootView presents its cover and awaits it before ANY launch action; CloudSync
+    /// pushes and mutating intents are refused until it completes.
+    @State private var onboarding: OnboardingStore
     @Environment(\.scenePhase) private var scenePhase
 
     // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
@@ -129,7 +136,16 @@ struct PocketDJApp: App {
 
     init() {
         let app = AppModel()
-        let settings = SettingsStore(defaults: SettingsStore.launchDefaults())
+        // ONE UserDefaults instance shared by settings + onboarding: launchDefaults()
+        // re-wipes the fixture suite on EVERY call, so a second call would erase
+        // whatever the first store persisted between the two constructions.
+        let sharedDefaults = SettingsStore.launchDefaults()
+        let settings = SettingsStore(defaults: sharedDefaults)
+        // ── Zero-to-hero onboarding (first install / reinstall) ── decided ONCE,
+        // HERE, before any store can persist: the decision reads the settings blob's
+        // pre-construction presence (existing users updating in never see the flow).
+        let onboarding = OnboardingStore(defaults: sharedDefaults,
+                                         hadPersistedSettings: settings.hadPersistedSettings)
         let edits = EditsStore(fileURL: EditsStore.launchURL())
         let collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
         let musicSync = MusicSyncClient()
@@ -455,6 +471,18 @@ struct PocketDJApp: App {
         rips.discoverAdds = discoverAdds
         _discoverAdds = State(initialValue: discoverAdds)
 
+        // ── Imported songs: provisional entries for cross-user transfers ───────
+        // A portable playlist/pocket import whose songs live outside this device's
+        // enabled sources materializes them as the "Imported" synthetic source — the
+        // global rips manifest streams/burns/stems them by id (acceptance test A).
+        let importedSongs = ImportedSongsStore(fileURL: ImportedSongsStore.launchURL())
+        importedSongs.onAdded = { [weak app] songs, albums in
+            app?.injectImported(songs: songs, albums: albums)
+        }
+        app.importedSongs = importedSongs
+        collections.importedSongs = importedSongs
+        _importedSongs = State(initialValue: importedSongs)
+
         // ── User profile + iCloud session sync ─────────────────────────────────
         // The profile is the SYNCED identity (ProfileStore's NAME OWNERSHIP doctrine);
         // the sync service mirrors the session-data documents through the user's private
@@ -497,13 +525,29 @@ struct PocketDJApp: App {
         cloudSync.register("discover-adds", fileURL: discoverAdds.syncFileURL) { [weak discoverAdds] in
             discoverAdds?.reloadFromDisk()   // new pulled entries flow through onAdded → live catalog
         }
+        cloudSync.register("imported-songs", fileURL: importedSongs.syncFileURL) { [weak importedSongs] in
+            importedSongs?.reloadFromDisk()  // same doctrine — imports follow the Apple ID
+        }
+        // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
+        // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
+        // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the
+        // stage-1 restore IS a pull), but the scenePhase hooks below hold full passes too.
+        cloudSync.pushAllowed = { [weak onboarding] in onboarding?.isComplete ?? true }
         _cloudSync = State(initialValue: cloudSync)
+        // R7: completing onboarding re-fetches the catalog with the CHOSEN sources —
+        // loadIfNeeded alone would early-return if an intent/CarPlay launch had already
+        // loaded the default catalog before the user picked.
+        onboarding.onComplete = { [weak app] in Task { await app?.reload() } }
+        _onboarding = State(initialValue: onboarding)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
         // One bridge instance carries the live stores to intents + entity queries.
         let intents = IntentServices(app: app, settings: settings, collections: collections,
                                      setlistPlayer: setlistPlayer, mix: mix, burns: burns,
                                      studio: studio, rips: rips)
+        // ONBOARDING VETO (R4): Siri/Shortcuts/CarPlay cold-launch without RootView (and
+        // its gate) — mutating intents must not write synced documents mid-onboarding.
+        intents.onboardingIncomplete = { [weak onboarding] in !(onboarding?.isComplete ?? true) }
         _intents = State(initialValue: intents)
         AppDependencyManager.shared.add(dependency: intents)
         // Donations: keep Spotlight's entity index + Siri's speakable playlist/pocket
@@ -561,6 +605,7 @@ struct PocketDJApp: App {
                 .environment(intents)
                 .environment(profile)
                 .environment(cloudSync)
+                .environment(onboarding)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -571,7 +616,9 @@ struct PocketDJApp: App {
                     case .active:
                         streaming.onScenePhaseActive()
                         // Cross-device freshness beyond launch (throttled inside).
-                        cloudSync.syncOnForeground()
+                        // HELD during onboarding: .active fires at cold launch too, and a
+                        // full pass would pull/push before stage 1 decides the profile mode.
+                        if onboarding.isComplete { cloudSync.syncOnForeground() }
                         // A widget transport tap that fired while the app was fully quit dropped a
                         // command in the App Group — apply it now that playback stores are live.
                         widgetSync.drainPendingCommand(now: Date().timeIntervalSince1970)
@@ -594,7 +641,8 @@ struct PocketDJApp: App {
                         mixDeckSession.flush()
                         // Push any session documents whose files advanced since the last
                         // sync — AFTER the flushes above so the freshest bytes upload.
-                        cloudSync.pushOnBackground()
+                        // (pushAllowed also refuses inside while onboarding is unresolved.)
+                        if onboarding.isComplete { cloudSync.pushOnBackground() }
                         // Submit/re-submit the BGTasks (burn-drain + rip-reconcile) so a
                         // backgrounded burn/rip keeps advancing/reconciling. iOS-only.
                         #if os(iOS)

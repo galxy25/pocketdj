@@ -35,6 +35,9 @@ final class CollectionsStore {
     /// The catalog the realize engine resolves ids against (wired at launch, like
     /// AppModel.settings/edits). Weak so the store never retains the app graph.
     weak var app: AppModel?
+    /// Provisional entries for imported songs outside the enabled sources (set by the
+    /// app at launch) — portable zip imports materialize unknown ids through it.
+    weak var importedSongs: ImportedSongsStore?
 
     /// Fired after every persisted mutation (post-`save()`). Wired at launch by the
     /// App Intents layer to re-index Spotlight entities + refresh Siri's speakable
@@ -1200,13 +1203,16 @@ final class CollectionsStore {
 
     // MARK: PWA .playlist.pocketdj.zip interop (single-playlist transfer)
 
-    /// Export one playlist as the PWA's `.playlist.pocketdj.zip` (slim/non-portable):
-    /// manifest + playlist.json + pockets.json (its referenced pockets, DAG-expanded).
-    /// The bytes are readable by the PWA's `importPlaylistZip`. Returns nil if gone.
+    /// Export one playlist as the PWA's `.playlist.pocketdj.zip`, PORTABLE: manifest +
+    /// playlist.json + pockets.json + items.json (the referenced catalog items in the
+    /// PWA `MusicItem[]` shape), so it imports fully on a device — or the PWA — whose
+    /// catalog doesn't cover these ids. Returns nil if gone.
     func exportPlaylistZip(_ id: String) throws -> Data? {
         guard let pl = playlist(id) else { return nil }
         let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return try PlaylistZip.export(playlist: pl, pocketsById: pocketsById)
+        return try PlaylistZip.export(playlist: pl, pocketsById: pocketsById,
+                                      songsById: app?.songsById ?? [:],
+                                      albumsById: app?.albumsById ?? [:])
     }
 
     /// Insert an already-reminted imported playlist + its pockets (from a
@@ -1219,20 +1225,26 @@ final class CollectionsStore {
     }
 
     /// Import a `.playlist.pocketdj.zip` (PWA or native-exported): mints fresh ids and
-    /// inserts the playlist + its referenced pockets.
+    /// inserts the playlist + its referenced pockets, then materializes any portable
+    /// items OUTSIDE the live catalog as provisional "Imported" entries — the songs are
+    /// browsable/playable/burnable immediately (acceptance test A).
     func importPlaylistZip(data: Data) throws {
         let bundle = try PlaylistZip.import(data: data)
         insertImported(playlist: bundle.playlist, pockets: bundle.pockets)
+        materializePortableItems(bundle.items)
     }
 
     // MARK: PWA .pocket.pocketdj.zip interop (single-pocket transfer)
 
-    /// Export one pocket as a `.pocket.pocketdj.zip` (slim/non-portable): manifest +
-    /// pocket.json + pockets.json (its child pockets, DAG-expanded). Returns nil if gone.
+    /// Export one pocket as a `.pocket.pocketdj.zip`, PORTABLE (items.json — the
+    /// PlaylistZip doctrine): manifest + pocket.json + pockets.json (its child pockets,
+    /// DAG-expanded) + the referenced catalog items. Returns nil if gone.
     func exportPocketZip(_ id: String) throws -> Data? {
         guard let p = pocket(id) else { return nil }
         let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return try PocketZip.export(pocket: p, pocketsById: pocketsById)
+        return try PocketZip.export(pocket: p, pocketsById: pocketsById,
+                                    songsById: app?.songsById ?? [:],
+                                    albumsById: app?.albumsById ?? [:])
     }
 
     /// Insert an already-reminted imported pocket bundle. Child pockets are added only
@@ -1249,10 +1261,41 @@ final class CollectionsStore {
         save()
     }
 
-    /// Import a `.pocket.pocketdj.zip`: mint fresh ids and insert the pocket + children.
+    /// Import a `.pocket.pocketdj.zip`: mint fresh ids and insert the pocket + children,
+    /// then materialize portable items outside the catalog (the PlaylistZip doctrine).
     func importPocketZip(data: Data) throws {
         let bundle = try PocketZip.import(data: data)
         insertImportedPocket(root: bundle.pocket, children: bundle.children)
+        materializePortableItems(bundle.items)
+    }
+
+    /// Materialize a portable snapshot's UNKNOWN ids as provisional "Imported" catalog
+    /// entries (ImportedSongsStore → AppModel injection → browse/play/burn/stems all
+    /// resolve them). Ids the live catalog already carries are skipped — a real source
+    /// always wins; the provisional store dedups against itself. No-op when the seam
+    /// isn't wired (tests) or the zip was slim.
+    func materializePortableItems(_ items: PortableItems.Payload) {
+        guard let importedSongs, !items.isEmpty else { return }
+        let now = Date().timeIntervalSince1970 * 1000
+        let albumsById = Dictionary(items.albums.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let songs = items.songs
+            .filter { app?.songsById[$0.id] == nil && !StudioFactory.isStudioId($0.id) }
+            .map { s in
+                ImportedSongsStore.SongEntry(
+                    songId: s.id, title: s.name, artist: s.artist, albumId: s.albumId,
+                    album: s.albumId.flatMap { albumsById[$0]?.name },
+                    artworkUrl: s.albumId.flatMap { albumsById[$0]?.coverArtUrl },
+                    durationMs: s.lengthMs, bpm: s.bpm, key: s.key, camelot: s.camelot,
+                    year: s.year, appleMusicId: s.appleMusicId, addedAtMs: now)
+            }
+        let albums = items.albums
+            .filter { app?.albumsById[$0.id] == nil }
+            .map { a in
+                ImportedSongsStore.AlbumEntry(
+                    albumId: a.id, name: a.name, artist: a.artist, trackIds: a.trackIds,
+                    artworkUrl: a.coverArtUrl, genre: a.genre, year: a.year, addedAtMs: now)
+            }
+        importedSongs.add(songs: songs, albums: albums)
     }
 
     // MARK: Full backup `.pocketdj.zip` — collections merge (fresh ids)

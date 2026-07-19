@@ -174,8 +174,15 @@ final class SettingsStore {
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
 
+    /// Whether a persisted settings blob existed when THIS store was constructed — the
+    /// existing-user signal OnboardingStore's decision tree reads (an update must never
+    /// show the first-run flow). Captured before anything can persist; App.init on a
+    /// fresh install never persists settings (verified invariant — see OnboardingStore).
+    @ObservationIgnored let hadPersistedSettings: Bool
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.hadPersistedSettings = defaults.data(forKey: SettingsStore.key) != nil
         let data = SettingsStore.load(from: defaults)
         self.sources = data.sources
         self.ripServerURL = data.ripServerURL
@@ -275,6 +282,31 @@ final class SettingsStore {
         persist()
     }
 
+    /// Onboarding stage 3 ("Import your music"): reconcile the sources list to EXACTLY
+    /// the chosen built-in set. The default blob pre-seeds "My Vinyl", so an unticked
+    /// Vinyl must REMOVE it — one-tap loaders alone can't express that. Built-ins are
+    /// matched by name OR index URL (the `hasMyDigital` doctrine); any custom source the
+    /// user somehow already has is left untouched. At least one must be chosen — with
+    /// zero enabled sources the catalog load hard-fails (AppModel.fetchIndexes throws) —
+    /// enforced here as a last line behind the UI's disabled Continue.
+    func applyOnboardingSources(vinyl: Bool, digital: Bool, streaming: Bool) {
+        guard vinyl || digital || streaming else { return }
+        let builtins: [(want: Bool, name: String, url: String)] = [
+            (vinyl, "My Vinyl", Config.indexURL.absoluteString),
+            (digital, Config.digitalSourceName, Config.digitalIndexURL.absoluteString),
+            (streaming, Config.appleMusicSourceName, Config.appleMusicIndexURL.absoluteString),
+        ]
+        for b in builtins {
+            let present = sources.contains { $0.name == b.name || $0.urlString == b.url }
+            if b.want && !present {
+                sources.append(SourceConfig(name: b.name, urlString: b.url, enabled: true))
+            } else if !b.want && present {
+                sources.removeAll { $0.name == b.name || $0.urlString == b.url }
+            }
+        }
+        persist()
+    }
+
     /// Merge backup sources in: add any whose (name, urlString) pair isn't already
     /// present (a fresh UUID is minted so it can't collide). Returns the count added.
     @discardableResult
@@ -327,6 +359,10 @@ final class SettingsStore {
     /// catalog disk cache, back to defaults.
     func resetEverything() {
         defaults.removeObject(forKey: SettingsStore.key)
+        // Force the zero-to-hero flow on next launch. An explicit `pending` marker — NOT
+        // blob-absence — because leaving the Settings tab after the reset re-persists the
+        // blob via RootView's lastSection onChange, which would mask a blob-absence signal.
+        OnboardingStore.markPendingAfterReset(in: defaults)
         URLCache.shared.removeAllCachedResponses()
         // Also drop CatalogService's persistent offline cache — otherwise a "reset" still
         // serves the last-good index for each source on the next failed fetch.

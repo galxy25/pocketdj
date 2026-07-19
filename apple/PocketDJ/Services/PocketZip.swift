@@ -13,9 +13,10 @@ import ZIPFoundation
 ///   • `pockets.json` — the child pockets it references, DAG-expanded (cycle-guarded);
 ///     may be `[]`. The root is NOT duplicated here.
 ///
-/// Like `PlaylistZip`, this is SLIM (`portable:false`): songs/albums stay referenced
-/// by catalog id (the same auto-seeded index resolves them on both ends), so neither
-/// `items.json` nor `art/` is bundled.
+/// Like `PlaylistZip`, this exports PORTABLE when the caller hands it the catalog:
+/// `items.json` carries the referenced songs/albums (PWA `MusicItem[]` shape — see
+/// `PortableItems`) so the pocket imports fully on a device whose enabled sources
+/// don't cover these ids. Without a catalog it stays the original SLIM shape.
 enum PocketZip {
 
     // MARK: - Manifest
@@ -32,12 +33,17 @@ enum PocketZip {
         struct Counts: Codable {
             var pockets: Int
             var art: Int
+            /// Portable catalog rows bundled in items.json (0 / absent for slim zips).
+            var items: Int
 
-            init(pockets: Int = 0, art: Int = 0) { self.pockets = pockets; self.art = art }
+            init(pockets: Int = 0, art: Int = 0, items: Int = 0) {
+                self.pockets = pockets; self.art = art; self.items = items
+            }
             init(from decoder: Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 pockets = (try? c.decode(Int.self, forKey: .pockets)) ?? 0
                 art = (try? c.decode(Int.self, forKey: .art)) ?? 0
+                items = (try? c.decode(Int.self, forKey: .items)) ?? 0
             }
         }
 
@@ -82,23 +88,38 @@ enum PocketZip {
 
     // MARK: - Export
 
-    /// Build a `.pocket.pocketdj.zip` (slim) for `pocket`, bundling its child pockets
-    /// DAG-expanded (resolved from `pocketsById`, cycle-guarded).
-    static func export(pocket: Pocket, pocketsById: [String: Pocket]) throws -> Data {
+    /// Build a `.pocket.pocketdj.zip` for `pocket`, bundling its child pockets
+    /// DAG-expanded (resolved from `pocketsById`, cycle-guarded). PORTABLE when a
+    /// catalog is provided (items.json — see `PortableItems`); slim otherwise.
+    static func export(pocket: Pocket, pocketsById: [String: Pocket],
+                       songsById: [String: IndexSong] = [:],
+                       albumsById: [String: IndexAlbum] = [:]) throws -> Data {
         let children = referencedChildren(of: pocket, pocketsById: pocketsById)
 
+        let portable = !songsById.isEmpty || !albumsById.isEmpty
+        var itemsData: Data? = nil
+        var itemCount = 0
+        if portable {
+            let ids = PortableItems.referencedIds(pocket: pocket, children: children)
+            let data = try PortableItems.encode(songIds: ids.songs, albumIds: ids.albums,
+                                                songsById: songsById, albumsById: albumsById)
+            itemsData = data
+            itemCount = ((try? JSONSerialization.jsonObject(with: data)) as? [Any])?.count ?? 0
+        }
+
         let manifest = Manifest(
-            portable: false,
+            portable: portable,
             exportedAt: ISO8601DateFormatter().string(from: Date()),
             pocketName: pocket.name,
-            counts: .init(pockets: children.count + 1, art: 0)
+            counts: .init(pockets: children.count + 1, art: 0, items: itemCount)
         )
 
-        let files: [String: Data] = [
+        var files: [String: Data] = [
             "manifest.json": try encoder.encode(manifest),
             "pocket.json": try encoder.encode(pocket),
             "pockets.json": try encoder.encode(children),
         ]
+        if let itemsData { files["items.json"] = itemsData }
 
         let archive: Archive
         do { archive = try Archive(accessMode: .create) } catch { throw PocketZipError.archiveUnreadable }
@@ -133,9 +154,11 @@ enum PocketZip {
 
     /// Read a `.pocket.pocketdj.zip` and return the root pocket + its child pockets,
     /// with FRESH ids minted for every pocket; child refs are remapped to the new ids.
-    /// Songs/albums stay referenced by catalog id. Version-tolerant: a missing manifest
+    /// Songs/albums stay referenced by catalog id — `items` carries the PORTABLE
+    /// catalog snapshot (empty for slim zips). Version-tolerant: a missing manifest
     /// is allowed (presence of pocket.json is enough), extra manifest fields ignored.
-    static func `import`(data: Data) throws -> (pocket: Pocket, children: [Pocket]) {
+    static func `import`(data: Data) throws -> (pocket: Pocket, children: [Pocket],
+                                                items: PortableItems.Payload) {
         let archive: Archive
         do { archive = try Archive(data: data, accessMode: .read) } catch { throw PocketZipError.archiveUnreadable }
 
@@ -161,7 +184,10 @@ enum PocketZip {
         let srcChildren: [Pocket] = extract("pockets.json")
             .flatMap { try? decoder.decode([Pocket].self, from: $0) } ?? []
 
-        return remintBundle(root: srcRoot, children: srcChildren)
+        let items = extract("items.json").map(PortableItems.decode) ?? PortableItems.Payload()
+
+        let bundle = remintBundle(root: srcRoot, children: srcChildren)
+        return (bundle.pocket, bundle.children, items)
     }
 
     /// Mint fresh ids for the imported root + every child pocket, remapping child refs
