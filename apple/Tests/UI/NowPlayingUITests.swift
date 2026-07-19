@@ -189,6 +189,40 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
+    /// The iOS mini-player (Levi 2026-07-18): chevron-down collapses the deck to the thin
+    /// bottom strip (title + ⏮ ⏯ ⏭ + chevron-up), the menu list takes the freed height,
+    /// and chevron-up brings the full deck back. State persists via @AppStorage, so the
+    /// test restores the expanded default at the end.
+    func testCollapseToMiniBarAndExpandBack() throws {
+        #if os(macOS)
+        throw XCTSkip("the mini-bar is iOS-only")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launch()
+
+        let panel = app.any("now-playing-panel")
+        XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
+
+        let collapse = app.el("np-collapse")
+        XCTAssertTrue(collapse.waitForExistence(timeout: 8), "collapse chevron rides the panel")
+        collapse.tap()
+
+        let mini = app.any("np-mini-bar")
+        XCTAssertTrue(mini.waitForExistence(timeout: 8), "thin strip replaces the deck")
+        XCTAssertFalse(app.any("now-playing-panel").exists, "full panel is gone while collapsed")
+        XCTAssertTrue(app.staticTexts["Pulse"].exists, "strip shows the current track title")
+        XCTAssertTrue(app.el("np-mini-playpause").exists)
+        XCTAssertTrue(app.el("np-mini-previous").exists)
+        XCTAssertTrue(app.el("np-mini-next").exists)
+        attach("np-mini-bar")
+
+        app.el("np-expand").tap()
+        XCTAssertTrue(app.any("now-playing-panel").waitForExistence(timeout: 8),
+                      "chevron-up restores the full deck")
+        XCTAssertFalse(app.any("np-mini-bar").exists)
+        #endif
+    }
+
     private func attach(_ name: String) {
         let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         att.name = name

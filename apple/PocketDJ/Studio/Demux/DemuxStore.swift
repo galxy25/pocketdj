@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+#if canImport(UIKit) && !os(macOS)
+import UIKit
+#endif
 
 /// Owns the Demuxer's derived-metadata documents: one `DemuxDocument` JSON per analyzed source
 /// under `Application Support/demux-cache/` (the LyricsStore disk-cache pattern — flat files,
@@ -195,30 +198,68 @@ final class DemuxStore {
         }
     }
 
+    /// Test seam: stands in for `DemuxTranscriber.transcribe` (headless CI has no on-device
+    /// speech models). Receives (url, resumeFromMs, onWindow); drives the same incremental
+    /// persistence + status machine the real recognizer does.
+    static var transcribeHook: ((URL, Int,
+                                 (@MainActor @Sendable (DemuxTranscriber.WindowReport) -> Void)?)
+                                async throws -> [DemuxWord])?
+
     /// Transcribe `url` (callers pass the VOCALS STEM when burned — far better than the full
     /// mix) and land the timed words on the source's document. `release` (a held security
     /// scope on `url`) is invoked when the run finishes.
+    ///
+    /// FULL-SONG robustness (the "lyrics stop after a snip" field bug): the doc is stamped
+    /// `.running` and each finished window's words land IMMEDIATELY (`transcriptCoveredMs`
+    /// advances with them) — lyrics fill in live, an app death loses nothing, and the next
+    /// kickoff RESUMES from the coverage point instead of starting over. On iOS the run holds
+    /// a background-task assertion so leaving the foreground grants a grace window instead of
+    /// freezing recognition mid-song.
     func analyzeTranscript(source: DemuxSource, url: URL, durationMs: Int, force: Bool = false,
                            release: (() -> Void)? = nil) {
         let key = source.key
         guard !transcriptRuns.contains(key) else { release?(); return }
-        if !force, documentCreating(for: source).transcriptStatus == .done { release?(); return }
-        guard DemuxTranscriber.isSupported else {
-            var doc = documentCreating(for: source)
+        var doc = documentCreating(for: source)
+        if !force, doc.transcriptStatus == .done { release?(); return }
+        guard DemuxTranscriber.isSupported || Self.transcribeHook != nil else {
             doc.transcriptStatus = .unavailable
             save(doc)
             release?()
             return
         }
         transcriptRuns.insert(key)
-        var doc = documentCreating(for: source)
         doc.durationMs = max(doc.durationMs, durationMs)
+        // Resume an interrupted run (status persisted `.running`, no task alive) from its
+        // coverage point, keeping the words already heard; anything else starts clean.
+        let resumeFrom = (!force && doc.transcriptStatus == .running) ? (doc.transcriptCoveredMs ?? 0) : 0
+        if resumeFrom == 0 {
+            doc.words = []
+            doc.transcriptCoveredMs = 0
+        }
+        doc.transcriptStatus = .running
+        doc.transcriptDiag = nil
         save(doc)
+        let hold = BackgroundHold("demux-transcript")
         Task {
             var status = DemuxArtifactStatus.done
-            var words: [DemuxWord] = []
+            var windowsFailed = 0
+            var windowsTotal = 0
+            var lastFailure: String?
+            let onWindow: @MainActor @Sendable (DemuxTranscriber.WindowReport) -> Void = { report in
+                windowsTotal = report.total
+                if let f = report.failure { windowsFailed += 1; lastFailure = f }
+                var doc = self.documentCreating(for: source)
+                doc.words = (doc.words + report.words).sorted { $0.startMs < $1.startMs }
+                doc.transcriptCoveredMs = max(doc.transcriptCoveredMs ?? 0, report.endMs)
+                self.save(doc)
+            }
             do {
-                words = try await DemuxTranscriber.transcribe(url: url)
+                if let hook = Self.transcribeHook {
+                    _ = try await hook(url, resumeFrom, onWindow)
+                } else {
+                    _ = try await DemuxTranscriber.transcribe(url: url, resumeFromMs: resumeFrom,
+                                                              onWindow: onWindow)
+                }
             } catch DemuxTranscriber.TranscribeError.unauthorized,
                     DemuxTranscriber.TranscribeError.unsupported {
                 status = .unavailable
@@ -226,11 +267,42 @@ final class DemuxStore {
                 status = .failed
             }
             release?()
+            hold.end()
             var doc = self.documentCreating(for: source)
-            doc.words = words
+            // Words accumulated per window above — the final pass only settles status/diag.
+            if status == .done, doc.words.isEmpty, windowsFailed > 0 {
+                status = .failed        // nothing heard AND something broke → retryable
+            }
             doc.transcriptStatus = status
+            if status == .done, windowsFailed > 0, windowsTotal > 0 {
+                doc.transcriptDiag = "\(windowsFailed) of \(windowsTotal) sections couldn’t be "
+                    + "transcribed\(lastFailure.map { " (\($0))" } ?? "") — Regenerate to fill gaps."
+            }
             self.save(doc)
             self.transcriptRuns.remove(key)
         }
     }
+}
+
+/// Holds a UIKit background-task assertion for the lifetime of an analysis run, so leaving
+/// the foreground (lock, app switch) grants the run a grace window instead of freezing
+/// recognition mid-song. Ending twice is guarded; system expiration self-ends. No-op off iOS.
+@MainActor
+private final class BackgroundHold {
+    #if canImport(UIKit) && !os(macOS)
+    private var id: UIBackgroundTaskIdentifier = .invalid
+    init(_ name: String) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
+    }
+    #else
+    init(_ name: String) {}
+    func end() {}
+    #endif
 }

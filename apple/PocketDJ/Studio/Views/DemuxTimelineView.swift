@@ -21,6 +21,9 @@ struct DemuxTimelineView: View {
     /// Zoom: points per second. The stepper walks the ladder; "fit" derives from width.
     @State private var pxPerSec: CGFloat = 10
     @State private var follow = true
+    /// Bumped by the ⌖ button — the strip (which owns the scroll proxy) centers the
+    /// playhead once per bump, playing or paused.
+    @State private var centerNonce = 0
     /// Mid-drag scrub target (ms) — the playhead renders here while the finger is down.
     @GestureState private var scrubMs: Int?
 
@@ -84,8 +87,21 @@ struct DemuxTimelineView: View {
             .accessibilityIdentifier("demux-timeline")
             // Zoom anchors at the PLAYHEAD (Levi): changing zoom re-centers the current
             // second, so zoom-in dives into the part you're at instead of drifting off.
+            // Deferred one runloop turn — during this update the strip hasn't laid out at
+            // the new width yet, so a synchronous scrollTo lands on STALE anchor frames
+            // (the field bug: zoom after a scrub drifted off-position; it only looked
+            // right mid-playback because auto-follow re-centered 0.5 s later).
             .onChange(of: pxPerSec) { _, _ in
-                proxy.scrollTo("demux-sec-\(Int(player.currentTime))", anchor: .center)
+                let sec = Int(player.currentTime)
+                DispatchQueue.main.async {
+                    proxy.scrollTo("demux-sec-\(sec)", anchor: .center)
+                }
+            }
+            // ⌖ button: one immediate center of the playhead, playing or paused.
+            .onChange(of: centerNonce) { _, _ in
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo("demux-sec-\(Int(player.currentTime))", anchor: .center)
+                }
             }
             .task(id: followTaskKey) {
                 // Auto-follow: center the playhead's current second while playing. A polling
@@ -202,15 +218,21 @@ struct DemuxTimelineView: View {
                 .disabled(pxPerSec >= Self.zoomLadder.last!)
                 .accessibilityIdentifier("demux-zoom-in")
             Spacer()
+            // ⌖ = "take me to the playhead": ALWAYS centers immediately (paused too), and
+            // arms auto-follow for playback. A scrub/manual scroll disarms follow; the
+            // filled capsule makes armed/disarmed legible ("scope" has no .fill variant,
+            // so the old symbolVariant toggle showed nothing).
             Button {
-                follow.toggle()
+                follow = true
+                centerNonce &+= 1
             } label: {
-                Image(systemName: follow ? "scope" : "scope")
-                    .symbolVariant(follow ? .fill : .none)
+                Image(systemName: "scope")
+                    .foregroundStyle(follow ? Theme.bg : Theme.fgDim)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(follow ? Theme.accent : Theme.bgRaised, in: Capsule())
             }
             .buttonStyle(.borderless)
-            .foregroundStyle(follow ? Theme.accent : Theme.fgDim)
-            .help("Follow the playhead")
+            .help("Jump to the playhead and follow it")
             .accessibilityIdentifier("demux-follow")
         }
         .padding(.horizontal, 2)

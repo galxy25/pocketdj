@@ -28,6 +28,7 @@ final class DemuxTranscriberChunkTests: XCTestCase {
         XCTAssertEqual(chunks.count, 1)
         XCTAssertEqual(chunks[0].url, url, "no temp copy for a single-shot file")
         XCTAssertEqual(chunks[0].startMs, 0)
+        XCTAssertEqual(chunks[0].endMs, 40_000)
         XCTAssertFalse(chunks[0].temporary)
     }
 
@@ -37,6 +38,8 @@ final class DemuxTranscriberChunkTests: XCTestCase {
         defer { for c in chunks where c.temporary { try? FileManager.default.removeItem(at: c.url) } }
         XCTAssertEqual(chunks.count, 3, "130 s at 50 s windows → 50+50+30")
         XCTAssertEqual(chunks.map(\.startMs), [0, 50_000, 100_000])
+        // The resume contract: a window's endMs IS the next window's startMs, exactly.
+        XCTAssertEqual(chunks.map(\.endMs), [50_000, 100_000, 130_000])
         XCTAssertTrue(chunks.allSatisfy(\.temporary))
         // Every window is a real, readable audio file of the expected length.
         let lengths = try chunks.map { chunk -> Double in
@@ -47,6 +50,19 @@ final class DemuxTranscriberChunkTests: XCTestCase {
         XCTAssertEqual(lengths[0], 50, accuracy: 0.05)
         XCTAssertEqual(lengths[1], 50, accuracy: 0.05)
         XCTAssertEqual(lengths[2], 30, accuracy: 0.05)
+    }
+
+    func testPendingSkipsCoveredWindows() throws {
+        let url = try makeAudio(seconds: 130)
+        let chunks = try DemuxTranscriber.slice(url: url)
+        defer { for c in chunks where c.temporary { try? FileManager.default.removeItem(at: c.url) } }
+        // Fresh run: everything pending, original numbering.
+        XCTAssertEqual(DemuxTranscriber.pending(chunks, resumeFromMs: 0).map(\.index), [0, 1, 2])
+        // Resume from a finished window's endMs: exactly the later windows remain.
+        XCTAssertEqual(DemuxTranscriber.pending(chunks, resumeFromMs: 50_000).map(\.index), [1, 2])
+        XCTAssertEqual(DemuxTranscriber.pending(chunks, resumeFromMs: 100_000).map(\.index), [2])
+        // Fully covered (died after the last window, before the final status write).
+        XCTAssertTrue(DemuxTranscriber.pending(chunks, resumeFromMs: 130_000).isEmpty)
     }
 
     func testOffsetReanchorsWords() {

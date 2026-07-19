@@ -327,6 +327,11 @@ struct StudioDemuxView: View {
     @ViewBuilder private func transcriptPanel(_ doc: DemuxDocument?) -> some View {
         if let source, demux.transcriptRuns.contains(source.key) {
             statusRow(spinner: true, "Transcribing on device…", a11y: "demux-transcribing")
+            // Words land per finished window — show them AS THEY ARRIVE (and a re-run
+            // keeps the screen honest about what's been heard so far).
+            if let words = doc?.words, !words.isEmpty {
+                DemuxLyricsView(words: words, player: player) { seek(toMs: $0) }
+            }
         } else {
             switch doc?.transcriptStatus {
             case .done where !(doc?.words.isEmpty ?? true):
@@ -337,7 +342,25 @@ struct StudioDemuxView: View {
                     Spacer()
                     retryButton("demux-transcript-regenerate") { kickoffTranscript(force: true) }
                 }
+                if let diag = doc?.transcriptDiag {
+                    Text(diag).font(.caption2).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("demux-transcript-diag")
+                }
                 DemuxLyricsView(words: doc?.words ?? [], player: player) { seek(toMs: $0) }
+            case .running:
+                // Status persisted `.running` with no live run = the app died mid-analysis.
+                // The next kickoff auto-resumes from the coverage point; meanwhile show
+                // what it heard and offer the resume by hand.
+                HStack(spacing: 8) {
+                    sectionTitle("Lyrics", icon: "music.mic")
+                    Spacer()
+                    Button("Resume") { kickoffTranscript() }
+                        .font(.caption).buttonStyle(.borderless).foregroundStyle(Theme.accent)
+                        .accessibilityIdentifier("demux-transcript-resume")
+                }
+                if let words = doc?.words, !words.isEmpty {
+                    DemuxLyricsView(words: words, player: player) { seek(toMs: $0) }
+                }
             case .done:
                 // Retry here too (Levi 2026-07-18): a .done-empty verdict can be a stale
                 // artifact of the pre-chunking transcriber (or a bad run) — let the user

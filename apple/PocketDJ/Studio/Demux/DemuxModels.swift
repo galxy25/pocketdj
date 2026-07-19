@@ -127,9 +127,11 @@ struct DemuxChordSegment: Codable, Equatable, Identifiable {
 // MARK: - Document (persisted)
 
 /// Per-artifact lifecycle. `unavailable` is a terminal "can't on this device/source" (e.g. speech
-/// recognition unsupported for the locale); `failed` is retryable.
+/// recognition unsupported for the locale); `failed` is retryable. `running` is PERSISTED while
+/// an analysis is in flight — a doc found `running` with no live run means the app died mid-run,
+/// and the next kickoff RESUMES from `transcriptCoveredMs` instead of starting over.
 enum DemuxArtifactStatus: String, Codable {
-    case none, done, failed, unavailable
+    case none, done, failed, unavailable, running
 }
 
 /// Everything the Demuxer derived for one audio source. One JSON file per source key.
@@ -141,6 +143,13 @@ struct DemuxDocument: Codable, Equatable {
 
     var transcriptStatus: DemuxArtifactStatus = .none
     var words: [DemuxWord] = []
+    /// How far (ms into the FILE) transcription has progressed — words land per finished
+    /// window, so a killed/suspended run resumes here instead of starting over. Optional so
+    /// pre-existing cached docs (no key) still decode.
+    var transcriptCoveredMs: Int?
+    /// Human-readable note when a run was IMPERFECT (some windows failed) — surfaced next to
+    /// the lyrics so a partial result is legible, and invaluable in field debugging.
+    var transcriptDiag: String?
 
     var chordStatus: DemuxArtifactStatus = .none
     var chords: [DemuxChordSegment] = []
