@@ -21,13 +21,14 @@ final class DemuxProofUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launchDemux() throws {
+    private func launchDemux(lyrics: Bool = false) throws {
         #if os(macOS)
         throw XCTSkip("macOS UI automation is unavailable headless; the sim carries this proof")
         #else
         app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"   // no real account/CK in tests
         app.launchEnvironment["PDJ_SEED_DEMUX"] = "1"
+        if lyrics { app.launchEnvironment["PDJ_DEMUX_LYRICS"] = "1" }
         app.launchEnvironment["PDJ_START_SECTION"] = "Performance"
         app.launch()
         // Sub-tab 5 = Demuxer (coordinate tap — compact segments carry no per-item ids;
@@ -124,17 +125,29 @@ final class DemuxProofUITests: XCTestCase {
         assertCentered(at: clockSeconds(), tolerance: 150,
                        "zoom during playback re-centers the live position")
         snap("demux-proof-4-zoom-while-playing")
-        app.el("demux-play").tap()          // pause for the lyrics scroll
+        app.el("demux-play").tap()          // pause for the panel sweep
 
-        // ---- (5) Full-span lyrics rendered from the analyzed doc.
+        // ---- (5) Lyrics are HIDDEN in the shipped state (DemuxFeatures.lyricsEnabled off
+        //          until the cloud/local-model transcription engine lands).
+        var n = 0
+        while n < 8 { app.swipeUp(); n += 1 }
+        XCTAssertFalse(app.any("demux-lyrics").exists, "no Lyrics panel while the feature is gated")
+        XCTAssertFalse(app.any("demux-transcribing").exists, "no transcription ever kicks off")
+        snap("demux-proof-5-no-lyrics")
+    }
+
+    /// The gated karaoke path stays ALIVE for the engine swap: relaunching with the
+    /// PDJ_DEMUX_LYRICS=1 dev seam renders the full-span seeded lyrics.
+    func testGatedLyricsPathStillRendersUnderDevSeam() throws {
+        try launchDemux(lyrics: true)
         var n = 0
         while !app.any("demux-lyrics").exists && n < 12 { app.swipeUp(); n += 1 }
-        XCTAssertTrue(app.any("demux-lyrics").exists, "the Lyrics panel renders")
+        XCTAssertTrue(app.any("demux-lyrics").exists, "dev-seam Lyrics panel renders")
         // Lines render as one concatenated Text inside a (tap-to-seek) Button — match any
         // element carrying the joined words.
         let line = app.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS %@", "let me see you go back")).firstMatch
         XCTAssertTrue(line.waitForExistence(timeout: 5), "seeded lyric lines render")
-        snap("demux-proof-5-lyrics")
+        snap("demux-proof-6-dev-seam-lyrics")
     }
 }

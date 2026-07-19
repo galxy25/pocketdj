@@ -10,6 +10,23 @@ import Foundation
 /// (the LyricsStore disk-cache pattern), keyed by the source's stable id.
 let demuxSchemaVersion = 1
 
+/// Feature gates for the Demuxer.
+///
+/// LYRICS ARE HIDDEN (Levi 2026-07-18): on-device SFSpeech recognition over music is too
+/// sparse to ship — the macOS probe over a real song heard only 20 words on the full mix
+/// and 34–42 on the isolated vocals stem (45% token recall). The panel returns when
+/// transcription moves to a CLOUD or LOCAL-MODEL engine (Whisper-class) that is
+/// time-synced to the track. The full pipeline underneath — DemuxTranscriber's windowed/
+/// resumable recognition, DemuxStore's incremental run machine, the karaoke view, and all
+/// their tests — stays live behind this gate, ready for the engine swap.
+enum DemuxFeatures {
+    /// Dev re-enable seam: launch with PDJ_DEMUX_LYRICS=1 (UI tests keep the hidden
+    /// path AND the gated karaoke path verified).
+    static var lyricsEnabled: Bool {
+        ProcessInfo.processInfo.environment["PDJ_DEMUX_LYRICS"] == "1"
+    }
+}
+
 // MARK: - Source identity
 
 /// What the Demuxer is looking at. The `key` is the persistence identity: catalog songs use the
