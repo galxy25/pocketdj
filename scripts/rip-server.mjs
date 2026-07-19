@@ -102,6 +102,14 @@ const CFG = {
   stemBitrate: process.env.POCKETDJ_STEM_BITRATE || '256', // integer kbps
   stemDeadlineMs: process.env.POCKETDJ_STEM_DEADLINE_MS ? parseInt(process.env.POCKETDJ_STEM_DEADLINE_MS, 10) : 30 * 60_000, // one value; watchdog = +30s
   stemCollectionCap: process.env.POCKETDJ_STEM_COLLECTION_CAP ? parseInt(process.env.POCKETDJ_STEM_COLLECTION_CAP, 10) : 60, // guard against an accidental huge job
+  // OFFLOAD: manifest-song stems separate on cloud SQS workers (scripts/stem-worker.mjs) instead
+  // of the in-process demucs path — frees the Mac from the CPU/thermal contention that made
+  // realtimeCaptureActive() defer stems behind captures. Default ON. Uploaded custom audio
+  // (/stemify-custom) still separates locally. Set POCKETDJ_STEM_OFFLOAD=0 to revert to in-process.
+  stemOffload: process.env.POCKETDJ_STEM_OFFLOAD !== '0',
+  stemJobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs',
+  stemResultsQueue: process.env.POCKETDJ_STEM_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-results',
+  stemDlqQueue: process.env.POCKETDJ_STEM_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs-dlq',
 };
 // PUBLIC posture always boots (simplicity wins during beta — setup-rip-funnel.sh
 // provisions tokens before the Funnel port is ever mounted), but a missing or collapsed
@@ -1320,8 +1328,55 @@ function acceptStem(songId, ripFromCloud = false) {
 
 function enqueueStem(songId) {
   if (!stemInflight.has(songId)) return;
-  if (!stemQ.includes(songId)) stemQ.push(songId);
+  if (CFG.stemOffload && !customStemSrc.has(songId)) { offloadStem(songId); return; } // manifest song → cloud
+  if (!stemQ.includes(songId)) stemQ.push(songId);                                     // uploaded custom audio → local demucs
   pumpStems();
+}
+
+// Offload a manifest song's separation to the SQS jobs queue (cloud stem workers). The worker
+// posts its result to the results queue; pumpStemResults folds it into the manifest. The send is
+// cheap and non-blocking, so — unlike the local demucs path — there is NO realtimeCaptureActive
+// gate: decoupling stems from the capture rig is the entire point.
+async function offloadStem(songId) {
+  const job = jobs.get(stemInflight.get(songId));
+  if (job?.canceled) return;
+  const e = manifest[songId];
+  const srcKey = e && (e.source === 'analog' ? e.cutKey : e.key);   // analog audio is the per-song CUT
+  if (!srcKey) { if (job && job.phase !== 'error') setPhase(job, 'error', { error: 'no source audio to stem' }); return; }
+  try {
+    await aws(['sqs', 'send-message', '--queue-url', CFG.stemJobsQueue, '--message-body', JSON.stringify({ songId, srcKey })]);
+    if (job) { job.offloadedAt = Date.now(); if (job.phase !== 'error') setPhase(job, 'stemming', { message: 'separating stems (cloud)' }); }
+    console.error(`  → offloaded stem ${songId} (${srcKey}) to SQS`);
+  } catch (err) {
+    if (job && job.phase !== 'error') setPhase(job, 'error', { error: `stem enqueue failed: ${err.message}` });
+    // keep the durable want file: resumeStems re-sends on restart, and a re-request retries
+  }
+}
+
+// Tombstone: a song whose stem was canceled after it was offloaded. pumpStemResults consults this
+// so a late cloud result doesn't silently re-stamp (and "un-cancel") the manifest.
+const stemCanceled = new Set();
+// Throttled logging for the pump receive loops so a persistent SQS/IAM misconfig is visible
+// without spamming (the loops otherwise fast-fail + reschedule every ~500ms).
+let lastPumpErrLog = 0;
+function logStemPumpErr(which, e) {
+  const now = Date.now();
+  if (now - lastPumpErrLog > 30_000) { lastPumpErrLog = now; console.error(`  stem-${which} pump receive error: ${e.message}`); }
+}
+// Reap offloaded jobs stuck in 'stemming' (e.g. the autoscaler/fleet never picked the job up so it
+// never reaches the DLQ). Generous deadline; a late worker result can still re-stamp the manifest.
+const STEM_OFFLOAD_STALE_MS = 60 * 60_000;
+function reapStaleOffloadStems() {
+  if (!CFG.stemOffload) return;
+  const now = Date.now();
+  for (const [songId, jobId] of stemInflight) {
+    const job = jobs.get(jobId);
+    if (job && job.kind === 'stem' && job.offloadedAt && job.phase === 'stemming' && now - job.offloadedAt > STEM_OFFLOAD_STALE_MS) {
+      setPhase(job, 'error', { error: 'stem timed out (no worker result)' });
+      stemInflight.delete(songId); stemAttempts.delete(songId); clearStemWant(songId);
+      console.error(`  ✗ reaped stale offloaded stem ${songId}`);
+    }
+  }
 }
 
 // Never start a stem while a real-time digital/cloud capture is in flight (CPU/RAM/thermal
@@ -1466,6 +1521,7 @@ function cancelStemOne(songId, canceledAlbums) {
   const job = jobs.get(jobId);
   if (activeStemJobId === jobId) { job.canceled = true; killActiveStemChild(); } // kill the live child
   const qi = stemQ.indexOf(songId); if (qi >= 0) stemQ.splice(qi, 1);
+  if (job.offloadedAt) stemCanceled.add(songId);                 // a late cloud result must not re-stamp
   stemInflight.delete(songId); stemAttempts.delete(songId); clearStemWant(songId);
   setPhase(job, 'error', { error: 'canceled' });
   return 'canceled';
@@ -1499,6 +1555,64 @@ function resumeStems() {
     if (r.status !== 'unknown' && r.status !== 'ineligible') n++;
   }
   if (n) console.error(`  resumed ${n} pending stem job(s)`);
+}
+
+// Consume worker results from the SQS results queue and fold them into the manifest (the same
+// stamp applyStems writes). Long-polls (20s) so it's cheap when idle; self-reschedules. Idempotent:
+// a duplicate result just re-stamps the same S3 keys. Survives restarts — a result for a song whose
+// in-memory job died with a previous process still stamps the manifest (finishStem no-ops).
+async function pumpStemResults() {
+  if (!CFG.stemOffload) return;
+  try {
+    const out = await aws(['sqs', 'receive-message', '--queue-url', CFG.stemResultsQueue,
+      '--max-number-of-messages', '10', '--wait-time-seconds', '20', '--visibility-timeout', '60', '--output', 'json']);
+    const msgs = (JSON.parse(out || '{}').Messages) || [];
+    for (const m of msgs) {
+      try {
+        const r = JSON.parse(m.Body);
+        const e = r.songId && manifest[r.songId];
+        // Only stamp on a genuine success for a song that's known and NOT canceled. finishStem +
+        // state-clear are gated on the SAME condition so a failed/stray/canceled result can't flip
+        // a job to 'ready' or drop a want with nothing folded.
+        const folded = !!(e && r.ok !== false && r.stems && !stemCanceled.has(r.songId));
+        if (folded) {
+          e.stems = r.stems; e.stemModel = r.stemModel || CFG.demucsModel;
+          e.stemVersion = r.stemVersion ?? STEMS_VERSION; e.stemFormat = r.stemFormat || CFG.stemFormat;
+          e.stemmedAt = r.stemmedAt || Date.now(); if (r.stemBytes) e.stemBytes = r.stemBytes;
+          await saveManifest();
+          console.error(`  ✓ folded cloud stems ${r.songId} (${e.stemModel}, ${r.stemBytes || '?'} bytes)`);
+        }
+        if (r.songId) {
+          stemCanceled.delete(r.songId);
+          if (folded) { stemAttempts.delete(r.songId); clearStemWant(r.songId); finishStem(r.songId); stemInflight.delete(r.songId); }
+        }
+        await aws(['sqs', 'delete-message', '--queue-url', CFG.stemResultsQueue, '--receipt-handle', m.ReceiptHandle]);
+      } catch (err) { console.error('  stem-result fold error:', err.message); }
+    }
+  } catch (e) { logStemPumpErr('results', e); }
+  setTimeout(pumpStemResults, 500);
+}
+
+// Drain the dead-letter queue: a job that failed maxReceiveCount times never posts a result, so
+// mark the dependent stem job errored and release its durable want (don't leave it 'stemming' forever).
+async function pumpStemDlq() {
+  if (!CFG.stemOffload) return;
+  try {
+    const out = await aws(['sqs', 'receive-message', '--queue-url', CFG.stemDlqQueue,
+      '--max-number-of-messages', '10', '--visibility-timeout', '30', '--output', 'json']);
+    const msgs = (JSON.parse(out || '{}').Messages) || [];
+    for (const m of msgs) {
+      try {
+        const songId = JSON.parse(m.Body).songId;
+        const job = songId && jobs.get(stemInflight.get(songId));
+        if (job && job.phase !== 'error') setPhase(job, 'error', { error: 'stem failed (dead-letter)' });
+        if (songId) { stemInflight.delete(songId); stemAttempts.delete(songId); clearStemWant(songId); }
+        await aws(['sqs', 'delete-message', '--queue-url', CFG.stemDlqQueue, '--receipt-handle', m.ReceiptHandle]);
+        console.error(`  ✗ stem dead-lettered ${songId}`);
+      } catch (err) { console.error('  stem-dlq drain error:', err.message); }
+    }
+  } catch (e) { logStemPumpErr('dlq', e); }
+  setTimeout(pumpStemDlq, 30_000);
 }
 
 // ---------------- ITEM 10 (CRITIC-H): cloud-analog analysis -> public/current-index.json ----------------
@@ -2076,6 +2190,7 @@ await loadManifest();
 resumePending(); // re-enqueue any rip requests left pending by a previous run
 resumeAnalysis(); // analyze any ripped songs that don't have bpm/key/waveform yet
 resumeStems(); // re-drive any stem requests left pending by a previous run
+if (CFG.stemOffload) { pumpStemResults(); pumpStemDlq(); setInterval(reapStaleOffloadStems, 5 * 60_000).unref?.(); } // consume results + dead-letters; reap stuck jobs
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });
