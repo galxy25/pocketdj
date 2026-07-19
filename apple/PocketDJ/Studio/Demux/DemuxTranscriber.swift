@@ -61,26 +61,48 @@ enum DemuxTranscriber {
         }
     }
 
+    /// One finished window's outcome, delivered via `onWindow` as the run progresses. Words
+    /// are already re-anchored onto the song timeline. Drives INCREMENTAL persistence (lyrics
+    /// fill in live; a killed run keeps everything heard so far) and the diagnostics note.
+    struct WindowReport: Sendable {
+        let index: Int          // position in the full window list (resume keeps numbering)
+        let total: Int
+        let startMs: Int
+        let endMs: Int
+        let words: [DemuxWord]
+        /// nil = recognized (possibly legitimately wordless); else the failure message.
+        let failure: String?
+    }
+
     /// Transcribe `url` fully on device, window by window. Returns the timed words (may
     /// legitimately be empty — an instrumental has no lyrics). Throws for setup/authorization
     /// failures, and — unlike v1 — when EVERY window failed hard: a broken recognition run
     /// must surface as `.failed` (retryable), never masquerade as an instrumental.
-    static func transcribe(url: URL, locale: Locale = .current) async throws -> [DemuxWord] {
-        guard let recognizer = onDeviceRecognizer(locale) else { throw TranscribeError.unsupported }
+    /// `resumeFromMs` skips windows that already landed (a prior run's coverage point);
+    /// `onWindow` fires after EACH window with its outcome.
+    static func transcribe(url: URL, locale: Locale = .current, resumeFromMs: Int = 0,
+                           onWindow: (@MainActor @Sendable (WindowReport) -> Void)? = nil)
+    async throws -> [DemuxWord] {
+        guard onDeviceRecognizer(locale) != nil else { throw TranscribeError.unsupported }
         guard await ensureAuthorized() else { throw TranscribeError.unauthorized }
 
         let chunks = try slice(url: url)
         defer {
             for c in chunks where c.temporary { try? FileManager.default.removeItem(at: c.url) }
         }
+        let work = pending(chunks, resumeFromMs: resumeFromMs)
         var all: [DemuxWord] = []
         var hardFailures = 0
         var lastFailure = ""
-        for chunk in chunks {
+        for (i, chunk) in work {
             try Task.checkCancellation()
+            var report: WindowReport
             do {
-                let words = try await recognizeWindow(chunk.url, recognizer: recognizer)
-                all.append(contentsOf: offset(words, byMs: chunk.startMs))
+                let words = try await recognizeWindowWithRetry(chunk.url, locale: locale)
+                let anchored = offset(words, byMs: chunk.startMs)
+                all.append(contentsOf: anchored)
+                report = WindowReport(index: i, total: chunks.count, startMs: chunk.startMs,
+                                      endMs: chunk.endMs, words: anchored, failure: nil)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -90,12 +112,25 @@ enum DemuxTranscriber {
                 lastFailure = (error as? TranscribeError).flatMap {
                     if case .recognitionFailed(let m) = $0 { return m } else { return nil }
                 } ?? error.localizedDescription
+                report = WindowReport(index: i, total: chunks.count, startMs: chunk.startMs,
+                                      endMs: chunk.endMs, words: [], failure: lastFailure)
             }
+            if let onWindow { await onWindow(report) }
         }
-        if all.isEmpty, hardFailures == chunks.count, hardFailures > 0 {
+        if all.isEmpty, hardFailures == work.count, hardFailures > 0 {
             throw TranscribeError.recognitionFailed(lastFailure)
         }
         return all.sorted { $0.startMs < $1.startMs }
+    }
+
+    /// The windows still to run given a prior run's coverage point. Pure — unit-tested.
+    /// (`resumeFromMs` is always a finished window's `endMs`, which equals the next window's
+    /// `startMs` exactly — the frame math in `slice` guarantees the boundary.)
+    nonisolated static func pending(_ chunks: [AudioChunk],
+                                    resumeFromMs: Int) -> [(index: Int, chunk: AudioChunk)] {
+        chunks.enumerated().compactMap { i, c in
+            c.startMs >= resumeFromMs ? (index: i, chunk: c) : nil
+        }
     }
 
     // MARK: - Windows
@@ -103,6 +138,9 @@ enum DemuxTranscriber {
     struct AudioChunk {
         let url: URL
         let startMs: Int
+        /// End of this window on the song timeline (exact frame math, so a finished window's
+        /// `endMs` == the next window's `startMs` — the resume boundary).
+        let endMs: Int
         /// True for sliced temp files (deleted after the run); false for the original URL.
         let temporary: Bool
     }
@@ -114,10 +152,13 @@ enum DemuxTranscriber {
                                   singleShotMax: Double = singleShotMaxSeconds) throws -> [AudioChunk] {
         let file = try AVAudioFile(forReading: url)
         let sr = file.processingFormat.sampleRate
-        guard sr > 0, file.length > 0 else { return [AudioChunk(url: url, startMs: 0, temporary: false)] }
+        guard sr > 0, file.length > 0 else {
+            return [AudioChunk(url: url, startMs: 0, endMs: 0, temporary: false)]
+        }
         let totalSeconds = Double(file.length) / sr
+        let totalMs = Int((totalSeconds * 1000).rounded())
         guard totalSeconds > singleShotMax else {
-            return [AudioChunk(url: url, startMs: 0, temporary: false)]
+            return [AudioChunk(url: url, startMs: 0, endMs: totalMs, temporary: false)]
         }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("pdj-demux-chunks-\(UUID().uuidString)", isDirectory: true)
@@ -133,11 +174,14 @@ enum DemuxTranscriber {
             let chunkURL = dir.appendingPathComponent("chunk-\(out.count).caf")
             let writer = try AVAudioFile(forWriting: chunkURL, settings: file.processingFormat.settings)
             try writer.write(from: buf)
-            out.append(AudioChunk(url: chunkURL, startMs: Int((Double(start) / sr * 1000).rounded()),
+            let end = start + AVAudioFramePosition(frames)
+            out.append(AudioChunk(url: chunkURL,
+                                  startMs: Int((Double(start) / sr * 1000).rounded()),
+                                  endMs: Int((Double(end) / sr * 1000).rounded()),
                                   temporary: true))
-            start += AVAudioFramePosition(frames)
+            start = end
         }
-        return out.isEmpty ? [AudioChunk(url: url, startMs: 0, temporary: false)] : out
+        return out.isEmpty ? [AudioChunk(url: url, startMs: 0, endMs: totalMs, temporary: false)] : out
     }
 
     /// Re-anchor a window's words onto the song timeline. Pure — unit-tested.
@@ -148,12 +192,35 @@ enum DemuxTranscriber {
 
     // MARK: - One window
 
+    /// One retry per window: a timeout here is often the app having been SUSPENDED
+    /// mid-window (the deadline burned while frozen), or a transient Speech-service
+    /// failure — the second attempt on a live pass routinely succeeds. Cancellation
+    /// propagates; only real failures re-try.
+    private static func recognizeWindowWithRetry(_ url: URL, locale: Locale) async throws -> [DemuxWord] {
+        do {
+            return try await recognizeWindow(url, locale: locale)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try await Task.sleep(for: .seconds(2))
+            return try await recognizeWindow(url, locale: locale)
+        }
+    }
+
     /// Recognize one window with the hard per-window timeout racing the Speech callback.
-    private static func recognizeWindow(_ url: URL, recognizer: SFSpeechRecognizer) async throws -> [DemuxWord] {
-        try await withThrowingTaskGroup(of: [DemuxWord].self) { group in
+    /// A FRESH `SFSpeechRecognizer` per attempt: the local speech daemon can wedge an
+    /// instance after a mid-window bail — the sim probe reproduced the cascade (every
+    /// later request spamming kAFAssistantErrorDomain 1101 "Failed to initialize
+    /// recognizer"); a new instance re-binds to the daemon cleanly.
+    private static func recognizeWindow(_ url: URL, locale: Locale) async throws -> [DemuxWord] {
+        guard let recognizer = onDeviceRecognizer(locale) else { throw TranscribeError.unsupported }
+        return try await withThrowingTaskGroup(of: [DemuxWord].self) { group in
             group.addTask { try await recognizeOnce(url: url, recognizer: recognizer) }
             group.addTask {
-                try await Task.sleep(for: .seconds(chunkTimeoutSeconds))
+                // SuspendingClock: the deadline must not burn while the DEVICE sleeps
+                // (locked phone mid-analysis) — recognition wasn't running then either.
+                try await Task.sleep(until: SuspendingClock().now + .seconds(chunkTimeoutSeconds),
+                                     clock: SuspendingClock())
                 throw TranscribeError.recognitionFailed("recognition timed out")
             }
             guard let first = try await group.next() else { return [] }

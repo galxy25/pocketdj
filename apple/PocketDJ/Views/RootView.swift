@@ -37,6 +37,11 @@ struct RootView: View {
     @State private var section: Section?
     #endif
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
+    #if os(iOS)
+    /// Now Playing collapsed to the thin bottom strip (Levi 2026-07-18). Persisted so the
+    /// home screen comes back in the shape it was left in.
+    @AppStorage("nowPlayingCollapsed") private var npCollapsed = false
+    #endif
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
         case browse = "Browser"
@@ -76,6 +81,16 @@ struct RootView: View {
         NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix)
     }
 
+    /// The FULL panel is up (visible and not collapsed to the strip) — only then does the
+    /// menu list yield its height.
+    private var nowPlayingExpanded: Bool {
+        #if os(iOS)
+        return nowPlayingVisible && !npCollapsed
+        #else
+        return nowPlayingVisible
+        #endif
+    }
+
     var body: some View {
         NavigationSplitView {
             // Sidebar = the iPhone HOME menu screen / the iPad+macOS left column.
@@ -86,10 +101,32 @@ struct RootView: View {
                 List(Section.allCases, selection: $section) { item in
                     rowLabel(item).tag(item)
                 }
-                .frame(maxHeight: nowPlayingVisible ? 236 : .infinity)
+                .frame(maxHeight: nowPlayingExpanded ? 236 : .infinity)
                 if nowPlayingVisible {
                     Divider().overlay(Theme.border)
+                    #if os(iOS)
+                    if npCollapsed {
+                        NowPlayingMiniBar { npCollapsed = false }
+                    } else {
+                        // Collapse chevron rides the panel's upper right (Levi): down to
+                        // the thin strip; the strip's chevron-up brings the deck back.
+                        NowPlayingPanel()
+                            .overlay(alignment: .topTrailing) {
+                                Button { npCollapsed = true } label: {
+                                    Image(systemName: "chevron.down")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(Theme.fgDim)
+                                        .padding(8)
+                                        .background(Theme.bgRaised.opacity(0.85), in: Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.top, 6).padding(.trailing, 10)
+                                .accessibilityIdentifier("np-collapse")
+                            }
+                    }
+                    #else
                     NowPlayingPanel()
+                    #endif
                 }
             }
             // Plain "PocketDJ" home title on every platform — the old ✦ AI sparkle is gone.

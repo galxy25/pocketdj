@@ -196,8 +196,14 @@ struct NowPlayingPanel: View {
     /// PlayerEngine: the click was refused, and the ▶/⏸ glyph contradicted what was audible.
     /// When Apple Music is streaming it owns transport, period; every local/rip/burned path
     /// (which has NO coordinator backend) toggles PlayerEngine directly.
-    private var isPlayingNow: Bool {
+    /// Static so the collapsed `NowPlayingMiniBar` shares the exact routing.
+    @MainActor
+    static func isPlayingNow(coordinator: PlaybackCoordinator, player: PlayerEngine) -> Bool {
         coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying
+    }
+
+    private var isPlayingNow: Bool {
+        Self.isPlayingNow(coordinator: coordinator, player: player)
     }
 
     /// The record spins only when the AUDIO is the deck's current track — a Discover/
@@ -282,12 +288,19 @@ struct NowPlayingPanel: View {
         .foregroundStyle(Theme.accent)
     }
 
-    private func togglePlayPause() {
+    /// Static so the collapsed `NowPlayingMiniBar` shares the exact routing.
+    @MainActor
+    static func togglePlayPause(sequencer: SetlistPlayer, coordinator: PlaybackCoordinator,
+                                player: PlayerEngine) {
         // A RESTORED (held) deck has no audio loaded yet — the first ▶ resumes real playback
         // at the saved position (blindly toggling would hit the idle engine and be refused).
         if sequencer.isHeldForResume { sequencer.resumeFromHold(); return }
         if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
         else { player.toggle() }
+    }
+
+    private func togglePlayPause() {
+        Self.togglePlayPause(sequencer: sequencer, coordinator: coordinator, player: player)
     }
 
     // MARK: - The deck row (scrolls away so Up Next can take the whole panel)
@@ -561,6 +574,66 @@ struct NowPlayingPanel: View {
         songs.map {
             SetlistPlayer.Item(id: $0.id, title: $0.name, artist: $0.artist, lengthMs: $0.length)
         }
+    }
+}
+
+// MARK: - The collapsed strip (iOS)
+
+/// The COLLAPSED Now Playing element (iOS, Levi 2026-07-18): a thin strip pinned at the
+/// bottom of the home menu — current track title, ⏮ ⏯ ⏭, and a chevron to expand back to
+/// the full deck. RootView owns the swap (the menu list takes the freed height); transport
+/// routes through the SAME statics as the full panel, so backend ownership (Apple Music vs
+/// PlayerEngine) and held-deck resume behave identically in both shapes.
+struct NowPlayingMiniBar: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
+    /// Flips the collapse state back off (owned by RootView's @AppStorage).
+    var expand: () -> Void
+
+    private var current: SetlistPlayer.Item? {
+        guard sequencer.isRunning, sequencer.index < sequencer.queue.count else { return nil }
+        return sequencer.queue[sequencer.index]
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Text(current?.title ?? "—")
+                .font(.subheadline.weight(.medium)).foregroundStyle(Theme.fg)
+                .lineLimit(1)
+                .accessibilityIdentifier("np-mini-title")
+            Spacer(minLength: 8)
+            Button { sequencer.skipPrevious() } label: {
+                Image(systemName: "backward.fill").font(.footnote)
+            }
+            .accessibilityIdentifier("np-mini-previous")
+            Button {
+                NowPlayingPanel.togglePlayPause(sequencer: sequencer, coordinator: coordinator,
+                                                player: player)
+            } label: {
+                Image(systemName: NowPlayingPanel.isPlayingNow(coordinator: coordinator,
+                                                               player: player)
+                        ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.title2)
+            }
+            .accessibilityIdentifier("np-mini-playpause")
+            Button { sequencer.skipNext() } label: {
+                Image(systemName: "forward.fill").font(.footnote)
+            }
+            .accessibilityIdentifier("np-mini-next")
+            Button(action: expand) {
+                Image(systemName: "chevron.up")
+                    .font(.footnote.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                    .padding(.leading, 2)
+            }
+            .accessibilityIdentifier("np-expand")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.accent)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.bgRaised)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("np-mini-bar")
     }
 }
 
