@@ -221,7 +221,7 @@ final class TransferCoordinator: NSObject {
     /// recoverable) then create + resume a background download task for `url`. The task's real
     /// identifier overwrites the record's placeholder. Returns the live task's identifier.
     @discardableResult
-    func enqueueDownload(url: URL, token: String, record: TransferRecord) -> Int {
+    func enqueueDownload(url: URL, token: String, profileId: String = "", record: TransferRecord) -> Int {
         guard usesRealSession else {
             // Test seam: persist the record only (no real task). Identifier kept as given.
             lock.lock()
@@ -234,6 +234,8 @@ final class TransferCoordinator: NSObject {
         }
         var request = URLRequest(url: url)
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // Per-user identity rides on the burn download (a rip-server fetch) too, for uniformity.
+        PDJIdentityHeaders.apply(to: &request, profileId: profileId)
         let task = session.downloadTask(with: request)
         var rec = record
         rec.taskIdentifier = task.taskIdentifier

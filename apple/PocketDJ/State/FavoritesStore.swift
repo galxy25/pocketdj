@@ -222,6 +222,16 @@ final class FavoritesStore {
         adopt(Self.decode(fileURL))
     }
 
+    /// Wipe every favorite and tombstone — the destructive "clear all favorites" control.
+    /// Deletes the on-disk document and resets the in-memory @Observable state to empty so
+    /// the ♥ across the UI updates immediately. No `onChanged` — a wipe is not a per-song
+    /// user toggle, so it generates no outbound Apple Music writes. `removeItem` swallows a
+    /// missing file the same way `decode`/`save` swallow their I/O errors.
+    func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
+        adopt(Document())
+    }
+
     // MARK: - Internals
 
     private func apply(_ entry: Entry) {

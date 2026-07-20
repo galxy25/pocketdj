@@ -69,6 +69,10 @@ final class MusicSyncClient {
     private let session: URLSession
     /// Settings supply the rip-server URL + token (set by the app at launch).
     var settings: SettingsStore?
+    /// The signed-in profile's durable id, read FRESH per request (mirrors RipsStore — it can
+    /// change under a cloud pull / account-deletion reset). Wired from `ProfileStore.id`; the
+    /// default empty source ⇒ no profile header until wired. Rides as `X-PocketDJ-Profile`.
+    @ObservationIgnored var profileIdProvider: () -> String = { "" }
 
     var serverUrl: String { (settings?.ripServerURL ?? "").trimmingCharacters(in: .whitespaces).trimmedTrailingSlash }
     var token: String { (settings?.ripToken ?? "").trimmingCharacters(in: .whitespaces) }
@@ -150,6 +154,8 @@ final class MusicSyncClient {
 
     private func applyAuth(_ request: inout URLRequest, token: String) {
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // Per-user identity rides alongside the shared bearer on every AM-sync call.
+        PDJIdentityHeaders.apply(to: &request, profileId: profileIdProvider())
     }
 
     static func sleep1s() async throws { try await Task.sleep(nanoseconds: 1_000_000_000) }
