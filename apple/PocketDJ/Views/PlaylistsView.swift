@@ -512,6 +512,8 @@ struct IndexPlaylistDetailView: View {
     @State private var ripBurn = CollectionRipBurnController()
 
     private var songs: [IndexSong] { source.songIds.compactMap { app.songsById[$0] } }
+    /// An on-device duplicate of THIS source already exists (see `duplicate()`).
+    private var hasDuplicate: Bool { collections.existingDuplicate(forSource: source) != nil }
 
     var body: some View {
         List {
@@ -522,8 +524,14 @@ struct IndexPlaylistDetailView: View {
                 Button { shufflePlay() } label: { Label("Shuffle", systemImage: "shuffle") }
                     .disabled(songs.isEmpty)
                     .accessibilityIdentifier("indexplaylist-shuffle")
-                Button { duplicate() } label: { Label("Duplicate as editable playlist", systemImage: "plus.square.on.square") }
-                    .accessibilityIdentifier("indexplaylist-duplicate")
+                // One duplicate per source, always: when a copy already exists (made here or
+                // automatically by an "Add to…" into this playlist) this OPENS it rather
+                // than minting a rival that follows the same source.
+                Button { duplicate() } label: {
+                    Label(hasDuplicate ? "Open editable copy" : "Duplicate as editable playlist",
+                          systemImage: hasDuplicate ? "arrow.right.square" : "plus.square.on.square")
+                }
+                .accessibilityIdentifier("indexplaylist-duplicate")
                 Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
                     .disabled(source.songIds.isEmpty)
                     .accessibilityIdentifier("indexplaylist-convert")
@@ -561,7 +569,11 @@ struct IndexPlaylistDetailView: View {
     private func duplicate() {
         // Provenance-stamped: the duplicate follows this source playlist as the catalog
         // refreshes (toggle/manual-sync live in the editable playlist's ⋯ menu).
-        let pl = collections.createPlaylist(source.name, songIds: source.songIds, source: source)
+        // FIND-OR-CREATE, not create: the Add-to sheet duplicates this same source
+        // automatically when you add a song to it, so a second create here would leave two
+        // playlists both claiming to follow this source. `duplicateForSource` is the single
+        // primitive both paths share — tapping this when a copy already exists just opens it.
+        let pl = collections.duplicateForSource(source)
         // Replace the read-only detail with the new editable one.
         path.removeLast()
         path.append(pl)

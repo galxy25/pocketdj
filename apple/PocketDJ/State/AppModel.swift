@@ -652,4 +652,33 @@ final class AppModel {
     /// Origin source name for an album/song id (nil if untagged/unknown).
     func source(ofAlbum id: String) -> String? { albumSourceById[id] }
     func source(ofSong id: String) -> String? { songSourceById[id] }
+
+    // MARK: - Apple Music identity (favorites two-way sync)
+
+    /// Reverse index (Apple Music catalog id → song id), built lazily on first ask and
+    /// invalidated by `catalogRevision`. @ObservationIgnored because filling it is a pure
+    /// cache fill — observing it would invalidate whatever asked, for no state change.
+    @ObservationIgnored private var appleMusicIdIndex: [String: String] = [:]
+    @ObservationIgnored private var appleMusicIdIndexRevision = -1
+
+    /// Every catalog song that HAS an Apple Music identity, as (songId, appleMusicId).
+    /// This is the id space `FavoritesSyncService`'s inbound pull asks Apple Music about —
+    /// vinyl / My Digital / Studio songs carry no catalog id and are excluded by
+    /// construction, so they can never be dragged into an Apple Music round-trip.
+    func appleMusicCatalogPairs() -> [(songId: String, appleMusicId: String)] {
+        songs.compactMap { s in s.appleMusicId.map { (songId: s.id, appleMusicId: $0) } }
+    }
+
+    /// Resolve an Apple Music catalog id back to this catalog's song id (the inbound
+    /// direction — Apple Music speaks catalog ids, the app speaks PocketDJ song ids).
+    /// FIRST-seen wins, matching `merge`'s dedup order, so a song present in two sources
+    /// resolves to the same id the rest of the app uses.
+    func songId(forAppleMusicId appleMusicId: String) -> String? {
+        if appleMusicIdIndexRevision != catalogRevision {
+            appleMusicIdIndex = Dictionary(songs.compactMap { s in s.appleMusicId.map { ($0, s.id) } },
+                                           uniquingKeysWith: { first, _ in first })
+            appleMusicIdIndexRevision = catalogRevision
+        }
+        return appleMusicIdIndex[appleMusicId]
+    }
 }

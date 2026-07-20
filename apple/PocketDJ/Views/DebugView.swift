@@ -9,7 +9,19 @@ import UniformTypeIdentifiers
 /// unconditionally regardless of the toggle; this buffer only exists while capturing.
 struct DebugView: View {
     @Bindable var settings: SettingsStore
+    /// Optional on purpose: this panel is reachable from Settings, which is only ever hosted by
+    /// the app's own window (where the service IS injected) — but a preview or a future test host
+    /// that renders it standalone should degrade to "unavailable", not trap.
+    @Environment(FavoritesSyncService.self) private var favoritesSync: FavoritesSyncService?
     @State private var showExporter = false
+    /// This install's owner hash, resolved once on appear (CloudKit round-trip, then cached
+    /// inside OwnerIdentity). `loadedHash` distinguishes "still asking" from "no answer".
+    @State private var ownerHash: String?
+    @State private var loadedHash = false
+    @State private var copiedHash = false
+    @State private var copiedBuild = false
+    @State private var showSeedExporter = false
+    @State private var seedDoc = EditsFile(data: Data())
 
     private var diag: MixDiag { MixDiag.shared }
 
@@ -42,9 +54,27 @@ struct DebugView: View {
                     Text("Save it to iCloud Drive (or AirDrop it) to ship it off this device.")
                 }
             }
+            ownerIdentitySection
+            // Both diagnostic values here exist to be QUOTED somewhere else — the build
+            // identity into a bug report, the iCloud hash into Config.ownerICloudHashes — so
+            // both get the same treatment: selectable text AND a one-tap Copy. Selection
+            // alone isn't enough on iPhone, where long-press-to-select inside a Form row is
+            // fiddly and frequently steals the scroll gesture.
             Section("Build") {
-                LabeledContent("Version", value: MixDiag.buildIdentity())
-                    .accessibilityIdentifier("debug-build-version")
+                LabeledContent("Version") {
+                    Text(MixDiag.buildIdentity())
+                        .font(.caption2.monospaced())
+                        .lineLimit(2).truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                .accessibilityIdentifier("debug-build-version")
+                Button {
+                    copyToPasteboard(MixDiag.buildIdentity())
+                    copiedBuild = true
+                } label: {
+                    Label(copiedBuild ? "Copied" : "Copy version", systemImage: "doc.on.doc")
+                }
+                .accessibilityIdentifier("debug-build-copy")
             }
         }
         .formStyle(.grouped)
@@ -54,6 +84,110 @@ struct DebugView: View {
                       document: DebugLogDocument(text: diag.dump()),
                       contentType: .plainText,
                       defaultFilename: "pocketdj-debug-session") { _ in }
+        // The seed rides the same fileExporter idiom as the Edits/Backup exports — save it
+        // into iCloud Drive, then upload it to `Config.favoritesSeedURL` on the catalog CDN.
+        .fileExporter(isPresented: $showSeedExporter, document: seedDoc, contentType: .json,
+                      defaultFilename: "favorites-seed") { _ in }
+        .task {
+            ownerHash = await OwnerIdentity.currentHash()
+            loadedHash = true
+        }
+    }
+
+    // MARK: - Owner identity (the two-way-sync bootstrap)
+
+    /// THE BOOTSTRAP ROW. `Config.ownerICloudHashes` ships EMPTY — deliberately, so every
+    /// install is favorites-local-only until proven otherwise — which means the allowlist can
+    /// only ever be filled from here: run the build, copy this hash, paste it into Config, ship.
+    /// Capture BOTH the Development and Production values: `CKContainer.userRecordID` is
+    /// container-scoped, so a TestFlight build silently fails the gate with only the dev hash.
+    private var ownerIdentitySection: some View {
+        Section {
+            LabeledContent("iCloud hash") {
+                Text(hashDisplay)
+                    .font(.caption2.monospaced())
+                    .lineLimit(2).truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            .accessibilityIdentifier("owner-identity-hash")
+            Button {
+                if let ownerHash { copyToPasteboard(ownerHash); copiedHash = true }
+            } label: {
+                Label(copiedHash ? "Copied" : "Copy hash", systemImage: "doc.on.doc")
+            }
+            .disabled(ownerHash == nil)
+            .accessibilityIdentifier("owner-identity-copy")
+
+            LabeledContent("Favorites sync", value: gateLine)
+                .accessibilityIdentifier("owner-identity-gate")
+            if let error = favoritesSync?.lastError {
+                LabeledContent("Last error", value: error)
+                    .font(.caption).foregroundStyle(Theme.danger)
+                    .accessibilityIdentifier("owner-identity-error")
+            }
+            if let ms = favoritesSync?.lastSyncedAtMs {
+                LabeledContent("Last synced", value: Date(timeIntervalSince1970: ms / 1000)
+                    .formatted(date: .abbreviated, time: .shortened))
+                    .accessibilityIdentifier("owner-identity-last-synced")
+            }
+            // Owner-only: the seed is the OWNER's Apple Music ♥, and exporting it from a
+            // non-owner install would publish a tester's own favorites to every other tester.
+            if (favoritesSync?.isOwner ?? nil) == true {
+                Button {
+                    exportSeed()
+                } label: {
+                    Label("Export favorites seed…", systemImage: "square.and.arrow.up")
+                }
+                .accessibilityIdentifier("owner-export-seed")
+            }
+        } header: {
+            Text("Owner identity")
+        } footer: {
+            Text("""
+                 Two-way Apple Music favorites sync is owner-only. Copy this device's hash into \
+                 `Config.ownerICloudHashes` (both the Development and Production CloudKit values) \
+                 and ship — until then every install keeps its ♥ to itself, which is the safe default.
+
+                 UN-FAVORITING IS LOSSY ON APPLE MUSIC. Apple ships no delete counterpart to \
+                 `POST /v1/me/favorites`, so removing a ♥ here deletes the love RATING (which is \
+                 what recommendations and this app read) but cannot retract the ★ — the track stays \
+                 in Apple Music's "Favorite Songs" until you remove it there yourself.
+                 """)
+        }
+    }
+
+    private var hashDisplay: String {
+        if let ownerHash { return ownerHash }
+        return loadedHash ? "unavailable" : "…"
+    }
+
+    private var gateLine: String {
+        // Flattened deliberately: `favoritesSync?.isOwner` is a DOUBLE optional (no service
+        // vs. gate unresolved), and both of those mean the same thing to the reader here.
+        guard let isOwner = favoritesSync?.isOwner ?? nil else { return "Checking…" }
+        return isOwner ? "Owner: two-way Apple Music sync on"
+                       : "Not owner: favorites stay on this profile"
+    }
+
+    /// Encode the owner's Apple-Music-sourced ♥ and hand them to the file exporter.
+    /// The version is a UNIX timestamp: `applySeed` only applies a seed NEWER than the one a
+    /// tester already has, so each export must outrank the last, and wall-clock does that
+    /// without any state to remember between exports.
+    private func exportSeed() {
+        guard let favoritesSync else { return }
+        let seed = favoritesSync.exportSeed(version: Int(Date().timeIntervalSince1970))
+        guard let data = try? JSONEncoder().encode(seed) else { return }
+        seedDoc = EditsFile(data: data)
+        showSeedExporter = true
+    }
+
+    private func copyToPasteboard(_ s: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #else
+        UIPasteboard.general.string = s
+        #endif
     }
 
     /// The toggle drives BOTH the persisted preference (so a relaunch mid-repro resumes

@@ -213,8 +213,9 @@ struct SongDetailView: View {
         }
     }
 
-    /// Bottom playback bar: the SAME ▶ play / ⤓ download transport used in every track row,
-    /// plus the slide-out streaming / waveform inline player that reveals below it on Play.
+    /// Bottom action bar: the ♥ favorite toggle + the SAME ▶ play / ⤓ download transport used
+    /// in every track row, plus the slide-out streaming / waveform inline player that reveals
+    /// below it on Play.
     private var playback: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().overlay(Theme.border)
@@ -222,6 +223,10 @@ struct SongDetailView: View {
                 Text("Play").font(.caption.weight(.semibold)).textCase(.uppercase)
                     .foregroundStyle(Theme.fgDim)
                 Spacer()
+                // ♥ lives HERE, in the in-content action cluster, NOT in the toolbar: on
+                // iPhone the toolbar's primaryAction group overflows into a nested "More"
+                // menu, which would bury a one-tap primary action two taps deep.
+                FavoriteToggle(songId: current.id, appleMusicId: current.appleMusicId, font: .title3)
                 RowTransport(song: (id: current.id, title: current.name, artist: current.artist),
                              startMs: nil,
                              // SongDetail ONLY: a stemmed song's glyph slides out the audition

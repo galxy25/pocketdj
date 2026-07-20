@@ -33,6 +33,20 @@ struct PocketDJApp: App {
             intents.pendingRoute = .pocket(k.id)
         }
     }
+    /// Kick a favorites sync pass — at launch (once the catalog is loaded), on foreground, and
+    /// when onboarding completes. NEVER awaited by a caller: a pass can walk hundreds of ratings
+    /// batches, and nothing on screen depends on it finishing.
+    ///
+    /// Two guards, both load-bearing. The CATALOG must be loaded, because the inbound pull maps
+    /// Apple Music catalog ids onto song ids and an empty catalog silently pulls nothing.
+    /// ONBOARDING must be resolved, for the same reason CloudSync's passes are held: a first-run
+    /// profile that hasn't decided yet must not have a seed applied over it. Re-entry is free —
+    /// `run()` single-flights on `isSyncing`, so a second window's trigger folds into the first.
+    @MainActor private func syncFavoritesIfReady() {
+        guard onboarding.isComplete, app.state == .loaded else { return }
+        Task { await favoritesSync.run() }
+    }
+
     @State private var settings: SettingsStore
     @State private var edits: EditsStore
     @State private var collections: CollectionsStore
@@ -127,6 +141,16 @@ struct PocketDJApp: App {
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
     /// the environment so RootView can consume intent navigation (`pendingRoute`).
     @State private var intents: IntentServices
+    /// Per-profile song favorites (the ♥ on every song surface + the Browse favorite filter).
+    /// Synced through CloudSyncService like every other session document — i.e. the signed-in
+    /// Apple ID's PRIVATE CloudKit DB, so a tester's ♥ never reach anyone else.
+    @State private var favorites: FavoritesStore
+    /// The OWNER-ONLY bridge from those favorites to Apple Music (push ♥ / pull loves), and
+    /// the tester-seed downloader for everyone else. See `OwnerIdentity` for the gate.
+    @State private var favoritesSync: FavoritesSyncService
+    /// Durable outbound queue for "added a song to an Apple Music source playlist" — the
+    /// write-back half of source-playlist adds (see PlaylistWriteBack).
+    @State private var playlistWriteBack: PlaylistWriteBack
     /// Provisional Discover-add catalog entries (eventual consistency) — see DiscoverAddsStore.
     @State private var discoverAdds: DiscoverAddsStore
     /// Provisional IMPORTED catalog entries (cross-user playlist/pocket transfers) — see
@@ -481,13 +505,57 @@ struct PocketDJApp: App {
         jukebox.resumePersistedSession()
         _jukebox = State(initialValue: jukebox)
 
+        // ── Favorites (♥) + owner-only Apple Music two-way sync ───────────────
+        // The store is gate-agnostic: it records intent and fires `onChanged`. The sync
+        // service resolves `OwnerIdentity` once per launch and decides whether that intent
+        // ever leaves the device — a non-owner's ♥ stay in their own profile, full stop.
+        let favorites = FavoritesStore(fileURL: FavoritesStore.launchURL())
+        // MusicDataRequest carries no macOS-unavailable annotation (unlike MusicLibrary's
+        // writes), so the SAME transport serves every platform that can import MusicKit.
+        // Availability is satisfied by the deployment targets (iOS 18 / macOS 15 / visionOS 2).
+        #if canImport(MusicKit)
+        let favoritesTransport: (any AppleMusicFavoritesTransport)? = MusicKitFavoritesTransport()
+        #else
+        let favoritesTransport: (any AppleMusicFavoritesTransport)? = nil
+        #endif
+        let favoritesSync = FavoritesSyncService(favorites: favorites, transport: favoritesTransport)
+        // The catalog seams (kept out of the service so it stays free of the data layer):
+        // the id space the inbound pull asks about, and the reverse resolution of a loved
+        // catalog id back to a PocketDJ song id.
+        favoritesSync.catalogAppleMusicIds = { [weak app] in app?.appleMusicCatalogPairs() ?? [] }
+        favoritesSync.songIdForAppleMusicId = { [weak app] id in app?.songId(forAppleMusicId: id) }
+        // A ♥ tap reaches Apple Music NOW rather than at the next pass. `onChanged` fires only
+        // for user-originated changes (never a cloud pull or the seed), and `pushNow` is a
+        // silent no-op for a non-owner or a song with no Apple Music identity — so this is
+        // safe to wire unconditionally on every install.
+        favorites.onChanged = { [weak favoritesSync] entry in
+            Task { await favoritesSync?.pushNow(entry) }
+        }
+        _favorites = State(initialValue: favorites)
+        _favoritesSync = State(initialValue: favoritesSync)
+
+        // ── Apple Music playlist write-back ────────────────────────────────────
+        // Adding a song to a SOURCE (Apple Music) playlist writes locally and queues the
+        // upstream half here. Device-local by design: it is an outbound intent log, NOT a
+        // synced document — syncing it would make a second device replay a delivered write
+        // and duplicate the track in the real Apple Music playlist.
+        let playlistWriteBack = PlaylistWriteBack(fileURL: PlaylistWriteBack.launchURL(),
+                                                  transport: PlaylistWriteBack.makeDefaultTransport())
+        _playlistWriteBack = State(initialValue: playlistWriteBack)
+
         // ── Discover adds: provisional catalog entries (eventual consistency) ──
         // "＋ Add" makes the song a catalog citizen NOW; the nightly indexer's real
         // entry supersedes it later (AppModel.withDiscoverAdds → collections remap).
         let discoverAdds = DiscoverAddsStore(fileURL: DiscoverAddsStore.launchURL())
         discoverAdds.onAdded = { [weak app] song in app?.injectDiscoverAdd(song) }
         app.discoverAdds = discoverAdds
-        app.onDiscoverSupersede = { [weak collections] pairs in collections?.remapSongIds(pairs) }
+        // A superseded provisional id must be rewritten EVERYWHERE it is referenced — the
+        // collections AND the favorites — or a ♥ made on a Discover add silently detaches
+        // when the nightly indexer lands the real track under its permanent id.
+        app.onDiscoverSupersede = { [weak collections, weak favorites] pairs in
+            collections?.remapSongIds(pairs)
+            favorites?.remapSongIds(pairs)
+        }
         rips.discoverAdds = discoverAdds
         _discoverAdds = State(initialValue: discoverAdds)
 
@@ -537,6 +605,9 @@ struct PocketDJApp: App {
         cloudSync.register("profile", fileURL: profile.syncFileURL) { [weak profile] in profile?.reloadFromDisk() }
         cloudSync.register("collections", fileURL: collections.syncFileURL) { [weak collections] in collections?.reloadFromDisk() }
         cloudSync.register("edits", fileURL: edits.syncFileURL) { [weak edits] in edits?.reloadFromDisk() }
+        cloudSync.register("favorites", fileURL: favorites.syncFileURL) { [weak favorites] in
+            favorites?.reloadFromDisk()   // no onChanged on reload — a pull must not push back up
+        }
         cloudSync.register("play-stats", fileURL: playStats.syncFileURL) { [weak playStats] in playStats?.reloadFromDisk() }
         cloudSync.register("play-history", fileURL: playHistory.syncFileURL) { [weak playHistory] in playHistory?.reloadFromDisk() }
         cloudSync.register("mix-sessions", fileURL: mixSessions.syncFileURL) { [weak mixSessions] in mixSessions?.reloadFromDisk() }
@@ -626,6 +697,9 @@ struct PocketDJApp: App {
                 .environment(profile)
                 .environment(cloudSync)
                 .environment(onboarding)
+                .environment(favorites)
+                .environment(favoritesSync)
+                .environment(playlistWriteBack)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -639,7 +713,13 @@ struct PocketDJApp: App {
                 // Drain a file opened at cold launch once onboarding finishes (catalog loaded).
                 .onChange(of: onboarding.isComplete) { _, done in
                     if done, let u = pendingOpenURL { pendingOpenURL = nil; importCollectionFile(u) }
+                    if done { syncFavoritesIfReady() }
                 }
+                // The LAUNCH favorites pass. It hangs off the catalog reaching `.loaded`
+                // rather than a `.task`, because the inbound pull resolves Apple Music
+                // catalog ids against the catalog — running it earlier would ask about an
+                // empty id space and pull nothing.
+                .onChange(of: app.state) { _, _ in syncFavoritesIfReady() }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .active:
@@ -648,6 +728,14 @@ struct PocketDJApp: App {
                         // HELD during onboarding: .active fires at cold launch too, and a
                         // full pass would pull/push before stage 1 decides the profile mode.
                         if onboarding.isComplete { cloudSync.syncOnForeground() }
+                        // Cross-device/-app freshness for ♥ (a love added in the Music app
+                        // shows up here) — same launch/foreground cadence as cloudSync, and
+                        // likewise never blocking: fire-and-forget, guarded inside.
+                        syncFavoritesIfReady()
+                        // Drain any Apple Music playlist write-back queued in a previous
+                        // session (or backed off after a failure) — the queue has no internal
+                        // timer, so launch/foreground is what re-arms it.
+                        playlistWriteBack.runSoon()
                         // A widget transport tap that fired while the app was fully quit dropped a
                         // command in the App Group — apply it now that playback stores are live.
                         widgetSync.drainPendingCommand(now: Date().timeIntervalSince1970)

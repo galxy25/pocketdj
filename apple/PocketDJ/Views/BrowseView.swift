@@ -12,6 +12,10 @@ struct BrowseView: View {
     @Environment(PlayerEngine.self) private var player
     @Environment(BurnStore.self) private var burns
     @Environment(CollectionsStore.self) private var collections
+    /// OPTIONAL by design: the favorite filter degrades to "no constraint" on any host that
+    /// hasn't injected the store (previews, and any window built before it was wired up) rather
+    /// than trapping the way a non-optional `@Environment` store lookup does.
+    @Environment(FavoritesStore.self) private var favorites: FavoritesStore?
     @Environment(IntentServices.self) private var intents
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(MixEngine.self) private var mix
@@ -43,12 +47,16 @@ struct BrowseView: View {
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)] }
 
     /// Signature of everything the on-device result set depends on: the results memo key
-    /// plus the song-mode membership selections (which live outside that key). Recomputed
-    /// per body eval; cheap. A change means a DIFFERENT set, so paging restarts at the top.
+    /// plus the song-mode membership selections and favorite filter (which live outside that
+    /// key). Recomputed per body eval; cheap. A change means a DIFFERENT set, so paging
+    /// restarts at the top. Note this tracks the CONSTRAINTS, not the stores' contents — the
+    /// same bargain membership already makes: hearting a song re-filters (the @Observable read
+    /// in `visibleResults` invalidates the body) without collapsing the scroll position.
     private var pagingKey: String {
         browse.resultsKey(app)
             + "|m:\(browse.includeAny),\(browse.includeIds.sorted().joined(separator: "+"))"
             + ",\(browse.excludeAny),\(browse.excludeIds.sorted().joined(separator: "+"))"
+            + "|f:\(browse.favoriteFilter.rawValue)"
     }
 
     /// The render budget for the CURRENT result set: the grown `visibleCount` only while it
@@ -227,7 +235,7 @@ struct BrowseView: View {
 
     /// The visible items (on-device or online) for the current kind, in display order.
     private var visibleItems: [BrowseItem] {
-        browse.searchOnline ? online.items : browse.visibleResults(collections)
+        browse.searchOnline ? online.items : browse.visibleResults(collections, favorites: favorites)
     }
 
     /// The row ids currently shown in WHICHEVER list is up (on-device or online), in
@@ -475,7 +483,7 @@ struct BrowseView: View {
             } else {
                 // Full ordered set is memoized (cheap); render only a growing prefix so the
                 // ForEach stays small no matter how large the catalog is.
-                let items = browse.visibleResults(collections)
+                let items = browse.visibleResults(collections, favorites: favorites)
                 let page = BrowsePaging.page(items, visible: liveVisible)
                 resultsHeader(items.count)
                 switch browse.kind {

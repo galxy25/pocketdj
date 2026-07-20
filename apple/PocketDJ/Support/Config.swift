@@ -51,6 +51,26 @@ enum Config {
     static var digitalIndexURL: URL { catalogBase.appendingPathComponent("digital-index.json") }
     static let digitalSourceName = "My Digital"
 
+    /// The OWNER allowlist for two-way Apple Music favorites — salted SHA-256 of the
+    /// iCloud user-record name (see `OwnerIdentity`). **Ships EMPTY on purpose**: an empty
+    /// set means nobody is the owner, so every install is favorites-local-only, which is
+    /// the safe default. To enable it, read your hash from Settings ▸ Debug ▸ "Owner
+    /// identity" and paste it below.
+    ///
+    /// Add BOTH environments' hashes. `CKContainer.userRecordID` is container-scoped, so
+    /// the CloudKit Development and Production containers yield DIFFERENT values — with
+    /// only the dev hash a TestFlight build silently falls back to local-only.
+    static let ownerICloudHashes: Set<String> = [
+        // "…dev container hash…",
+        // "…prod container hash…",
+    ]
+
+    /// A NEW profile's starting favorites — a snapshot of the owner's APPLE MUSIC ♥,
+    /// applied once (per `version`) on a tester's first run. Apple-Music-sourced ids only:
+    /// the owner's vinyl / My Digital favorites are personal and never ship here.
+    /// Produced by the owner-only "Export favorites seed" action in Settings ▸ Debug.
+    static var favoritesSeedURL: URL { catalogBase.appendingPathComponent("favorites-seed.json") }
+
     /// ONLINE-search host config (`{ host, region, index }`), served by the same
     /// CloudFront. Read at launch so the aoss collection can be swapped (e.g. a
     /// scale-to-zero rebuild → new host) WITHOUT shipping a new client build.
