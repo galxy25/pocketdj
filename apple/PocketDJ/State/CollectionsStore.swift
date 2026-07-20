@@ -333,6 +333,118 @@ final class CollectionsStore {
         playlists.append(pl); save(); return pl
     }
 
+    // MARK: Source playlist → on-device duplicate (find-or-create)
+
+    /// The ONE find-or-create primitive for "the on-device duplicate of this source
+    /// playlist". Returns the existing duplicate when there is one, else mints a fresh
+    /// provenance-stamped one via `createPlaylist(_:songIds:source:)`.
+    ///
+    /// WHY IT MUST BE THE ONLY PATH: the manual "Duplicate as editable playlist" button and
+    /// the automatic duplication behind "add a song to an Apple Music playlist" would
+    /// otherwise each mint their own copy, and the user would end up with two playlists
+    /// both claiming to follow the same source — both getting reconciled, neither holding
+    /// all their edits. Every caller goes through here.
+    ///
+    /// MATCHES ON BOTH `sourcePlaylistId` AND `sourceName`: a playlist id is unique only
+    /// WITHIN a source namespace ("Apple Music (Local)" and "My Digital" can each carry a
+    /// playlist id `1234`), so id alone can collide across sources. A LEGACY duplicate
+    /// stamped before `sourceName` existed (nil) still matches by id alone — same
+    /// concession `liveSourcePlaylist` / `syncConvertedCollections` make, and the reason a
+    /// legacy item doesn't get a second, competing copy.
+    @discardableResult
+    func duplicateForSource(_ source: SourcePlaylist) -> Playlist {
+        if let exact = playlists.first(where: {
+            $0.sourcePlaylistId == source.id && $0.sourceName == source.sourceName
+        }) { return exact }
+        if let legacy = playlists.first(where: {
+            $0.sourcePlaylistId == source.id && $0.sourceName == nil
+        }) { return legacy }
+        return createPlaylist(source.name, songIds: source.songIds, source: source)
+    }
+
+    /// The existing duplicate of a source playlist, WITHOUT creating one (so a view can
+    /// say "you already have a local copy" before the user commits to anything).
+    func existingDuplicate(forSource source: SourcePlaylist) -> Playlist? {
+        playlists.first { $0.sourcePlaylistId == source.id && $0.sourceName == source.sourceName }
+            ?? playlists.first { $0.sourcePlaylistId == source.id && $0.sourceName == nil }
+    }
+
+    /// What `addSong(_:toIndexPlaylist:appleMusicId:)` did — enough for the caller to
+    /// enqueue the Apple Music write-back AND to tell the user what just happened.
+    struct IndexPlaylistAdd {
+        /// The on-device duplicate the song landed in.
+        let playlist: Playlist
+        /// The duplicate was minted by THIS call (the user has a new local playlist).
+        let createdDuplicate: Bool
+        /// The song was already a member — nothing was appended locally.
+        let alreadyPresent: Bool
+        /// This source has a real Apple Music upstream AND the song has a store id, so a
+        /// write-back job is worth queueing. False ⇒ the add is local-only by nature
+        /// (vinyl / My Digital / Studio song, or a non-Apple-Music source playlist).
+        let writeBackEligible: Bool
+        /// The store id the write-back would use (nil when not eligible).
+        let appleMusicId: String?
+    }
+
+    /// Add a song to a read-only SOURCE ("From your sources") playlist — the two-way path.
+    /// Composes `duplicateForSource` + `addSong(_:toPlaylist:)`: the on-device duplicate is
+    /// found or created, and the song is appended to its default chapter.
+    ///
+    /// DELIBERATELY DOES NOT TOUCH `sourceSongIds`. That snapshot is the base of
+    /// `reconcilePlaylist`'s three-way merge, and removals are computed as
+    /// (snapshot − current source). Writing the new song into the snapshot before Apple
+    /// Music has confirmed it would make the very next catalog refresh classify it as a
+    /// source REMOVAL and delete the user's add. Leaving it out means a failed write-back
+    /// degrades to exactly "the add stayed local", which is the safe outcome. The snapshot
+    /// advances only when a real catalog refresh brings the song back from the source.
+    ///
+    /// Also deliberately does NOT set `lastAddTarget`: the "Last used" shortcut re-adds to a
+    /// plain local playlist with no write-back, so silently remembering this target would
+    /// quietly drop the Apple Music half of a repeat add.
+    @discardableResult
+    func addSong(_ songId: String, toIndexPlaylist source: SourcePlaylist,
+                 appleMusicId: String?) -> IndexPlaylistAdd {
+        let existing = existingDuplicate(forSource: source)
+        let pl = existing ?? duplicateForSource(source)
+        let created = existing == nil
+
+        let present = songIdsInNodes(pl.sequences).contains(songId)
+        if !present {
+            addSong(songId, toPlaylist: pl.id, sequenceId: pl.sequences.first?.nodeId)
+        }
+
+        let amId = (appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
+        let eligible = !amId.isEmpty && PlaylistWriteBack.isAppleMusicSource(source.sourceName)
+        return IndexPlaylistAdd(playlist: playlist(pl.id) ?? pl,
+                                createdDuplicate: created,
+                                alreadyPresent: present,
+                                writeBackEligible: eligible,
+                                appleMusicId: eligible ? amId : nil)
+    }
+
+    /// DIRECT membership test: does this playlist carry a `.song` node for `songId`?
+    /// Membership, not resolution — unlike `playableIds(forPlaylist:)` this doesn't expand
+    /// albums/pockets and doesn't need the catalog, so it answers correctly for a song the
+    /// live catalog can't currently resolve.
+    func playlist(_ id: String, contains songId: String) -> Bool {
+        guard let pl = playlist(id) else { return false }
+        return songIdsInNodes(pl.sequences).contains(songId)
+    }
+
+    /// Every song id referenced by a node tree (recursing into sub-chapters) — membership,
+    /// not resolution, so albums/pockets are NOT expanded.
+    private func songIdsInNodes(_ nodes: [PlaylistNode]) -> Set<String> {
+        var out = Set<String>()
+        func walk(_ ns: [PlaylistNode]) {
+            for n in ns {
+                if n.kind == .song, let id = n.songId { out.insert(id) }
+                if let kids = n.children { walk(kids) }
+            }
+        }
+        walk(nodes)
+        return out
+    }
+
     // MARK: Convert playlist → pocket
 
     /// Convert an editable playlist TEMPLATE into a NEW, reusable Pocket. Its song /

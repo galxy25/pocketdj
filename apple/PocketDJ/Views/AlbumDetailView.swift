@@ -253,7 +253,11 @@ private struct TrackRow: View {
                 .foregroundStyle(Theme.fgDim)
                 .frame(width: 48, alignment: .trailing)
 
-            // Same play / download transport as the browser + collection rows.
+            // Same ♥ + play / download controls as the browser + collection rows. The ♥ is
+            // intrinsically sized (it gets no fixed-width column) so the table's #/Title/BPM/
+            // Key/Time rhythm — and its header alignment — stay exactly as they were.
+            FavoriteToggle(songId: song.id, appleMusicId: song.appleMusicId)
+
             RowTransport(song: (id: song.id, title: song.name, artist: song.artist), startMs: nil)
         }
         .padding(.horizontal, 12)

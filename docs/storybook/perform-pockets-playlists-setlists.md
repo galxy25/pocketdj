@@ -79,6 +79,10 @@ correctly when none exist.)
 The picker surfaces your **last-used** playlist/pocket first (with a *last used* badge) and
 defaults to the sequence you last added into — fewer taps when you're building a set fast.
 
+Below your own collections the native picker adds a **"From your sources"** section listing the
+playlists that came from Apple Music (and your other sources) — see
+[Add a song to an Apple Music playlist](#add-a-song-to-an-apple-music-playlist--it-goes-upstream-too) for what happens when you tap one.
+
 **User story:** wherever you find a record, you're one tap from filing it into a set
 or a crate.
 
@@ -243,6 +247,55 @@ Items made by hand (or converted before this shipped) have no source and are nev
 **User story:** "I built this pocket from my Apple Music party playlist. I keep adding songs to
 that playlist on my phone — I want the pocket to just keep up, without flattening the tweaks
 I've made to it, and I want one switch to freeze it before a gig."
+
+---
+
+## Add a song to an Apple Music playlist — it goes upstream too
+
+Following a source used to be a **one-way street**: changes made in Apple Music flowed down
+into your copy, and nothing you did in PocketDJ ever flowed back. Now it goes both ways.
+
+The **＋ Add to…** picker ([Add to a pocket or playlist](#add-to-a-pocket-or-playlist)) lists a
+**"From your sources"** section under your own collections — your Apple Music playlists, each
+with a line saying what tapping it will do: *"Apple Music (Local) · adds to your local copy"*
+if you already have an editable copy of that list, or *"· makes a local copy"* if this is the
+first time. Tap one and **two** things happen:
+
+1. **On this device** — PocketDJ finds (or makes) the editable copy of that playlist and adds
+   the song to it. The copy keeps following the original, exactly as before, and this is the
+   *same* copy the **Duplicate as editable playlist** button makes — you never end up with two
+   competing copies of the same list.
+2. **In Apple Music** — the song is also added to the **real** playlist in your Apple Music
+   library, so it's there in the Music app, on your other devices, and in the car.
+
+An alert tells you which of those actually happened, in plain words, every time — including
+the honest cases:
+
+- **Already there** — the song is already in the Apple Music list, so nothing is sent upstream
+  (sending it would put a *second* copy of the track in your real playlist).
+- **"…isn't an Apple Music track, so it stays in your copy only"** — a **vinyl**, **My
+  Digital**, or **Studio** song has no Apple Music identity to add, so the local add is the
+  whole of it.
+- **"Apple Music playlists can't be edited from this device"** — on the **Mac**, Apple gives
+  apps no way to write to a library playlist at all. The local add still stands; the upstream
+  half simply doesn't exist there. On iPhone, iPad, and Vision Pro it does.
+
+If you're **offline** or not signed in when you tap, nothing is lost: the upstream add is
+**remembered and retried** the next time the app opens or comes forward, and it retries a few
+times before it gives up. Until it lands, the worst case is exactly *"the add stayed local"* —
+your copy has the song, Apple Music doesn't yet, and nothing you added ever gets deleted by the
+sync that follows the source back down.
+
+**Affordances**
+- **＋ Add to… ▸ From your sources** — one row per source playlist, with a ✓ when the song is
+  already in it.
+- **Row subtitle** — says up front whether tapping makes a new local copy or adds to an
+  existing one.
+- **Result alert** — names exactly what happened locally and upstream.
+
+**User story:** "I'm digging in PocketDJ and I find one for the Friday list. I want it in my
+Friday list — the real one, the one on my phone in the car — not in some parallel copy I have
+to reconcile later."
 
 ---
 

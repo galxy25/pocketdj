@@ -54,6 +54,19 @@ final class BrowseState {
         includeAny || !includeIds.isEmpty || excludeAny || !excludeIds.isEmpty
     }
 
+    // MARK: Favorite filter (song mode only) — held TRANSIENTLY for the same reason
+    // membership is: its truth lives in another store (`FavoritesStore`) whose contents
+    // change independently of this view-state, so persisting a snapshot of the CONSTRAINT
+    // while the underlying set moves would be meaningless, and folding it into the results
+    // memo key would either serve stale rows (favorites changed, key didn't) or destroy the
+    // memo (key churns on every ♥). Applied at read time like `applyMembership`.
+    // Deliberately NOT Codable: nothing may quietly add it to `Snapshot` later.
+    enum FavoriteFilter: String, Hashable { case any, only, exclude }
+    var favoriteFilter: FavoriteFilter = .any
+
+    /// True when the favorite filter constrains anything (`.any` = no constraint).
+    var favoriteActive: Bool { favoriteFilter != .any }
+
     private let defaults: UserDefaults
     /// UserDefaults key for THIS instance's persisted snapshot. Parameterized so History mode
     /// keeps its own filters/sort ("pdj.history.v1") without clobbering the Browser's.
@@ -105,16 +118,23 @@ final class BrowseState {
         if let data = try? JSONEncoder().encode(snap) { defaults.set(data, forKey: persistenceKey) }
     }
 
-    var activeFilterCount: Int { clauses.filter { !$0.isIncomplete }.count }
+    /// How many filters the user would call "on" — complete clauses, plus the favorite
+    /// filter when it's actually constraining the current kind. Counting it keeps the
+    /// toolbar's filled/unfilled filter glyph honest for a favorite-ONLY filter (which
+    /// adds no clause). Kind-gated exactly like the membership term at that call site:
+    /// the constraint is song-mode-only, so it must not light up in album/artist mode.
+    var activeFilterCount: Int {
+        clauses.filter { !$0.isIncomplete }.count + (kind == .song && favoriteActive ? 1 : 0)
+    }
 
     /// All rows for the current kind (unfiltered), with album names / source / genre
     /// already attached. Pre-built once by `AppModel.applyEdits` (see `browseItems`), so
     /// this is an O(1) array hand-off rather than a per-render map over the whole catalog.
     func baseItems(_ app: AppModel) -> [BrowseItem] { app.browseItems(kind) }
 
-    /// A stable signature of everything `results` depends on EXCEPT membership — the
-    /// browse results memo key. Built from field VALUES (never a Clause's UUID `id`), so
-    /// two logically-identical filter sets share a cache entry; includes the catalog
+    /// A stable signature of everything `results` depends on EXCEPT membership and the
+    /// favorite filter — the browse results memo key. Built from field VALUES (never a
+    /// Clause's UUID `id`), so two logically-identical filter sets share a cache entry; includes the catalog
     /// revision so an edit/reload can never serve a stale memo. Only complete clauses
     /// count (incomplete ones are no-ops in FilterEngine).
     ///
@@ -154,31 +174,43 @@ final class BrowseState {
     /// the frequent body re-evals paging causes (each scroll grows a `@State`) return the
     /// already-sorted set instantly instead of re-sorting ~90k rows.
     ///
-    /// Collection membership (song mode) is layered on top as a CHEAP O(n) filter of that
-    /// cached sorted array — never memoized, because its inputs (the selected collections'
-    /// contents) live outside the key and can change independently, so it always reflects
-    /// the current collections. Crucially it does NOT trigger a re-sort: the costly work
-    /// stays behind the memo even on the membership path.
-    /// Synchronous derivation (base rows → text query → clause filter → multi-key sort → membership).
+    /// Collection membership AND the favorite filter (song mode) are layered on top as CHEAP
+    /// O(n) filters of that cached sorted array — never memoized, because their inputs (the
+    /// selected collections' contents, the ♥ set) live outside the key and can change
+    /// independently, so they always reflect the current stores. Crucially neither triggers a
+    /// re-sort: the costly work stays behind the memo even on the membership/favorite path.
+    /// Synchronous derivation (base rows → text query → clause filter → multi-key sort →
+    /// membership → favorites).
     /// Kept for tests + any caller that needs the result inline; the BrowseView instead renders the
     /// OFF-main `displayItems` via `visibleResults` (see `refreshResults`) so the heavy work never
     /// runs on the main actor.
-    func results(_ app: AppModel, collections: CollectionsStore? = nil) -> [BrowseItem] {
+    func results(_ app: AppModel, collections: CollectionsStore? = nil,
+                 favorites: FavoritesStore? = nil) -> [BrowseItem] {
         let sorted = app.cachedBrowseResults(resultsKey(app)) { computeSorted(app) }
-        if kind == .song, membershipActive, let collections {
-            return applyMembership(sorted, collections)
-        }
-        return sorted
+        return applyReadTimeFilters(sorted, collections, favorites)
     }
 
     /// The rows the BrowseView renders: the OFF-main-computed `displayItems` with the cheap
-    /// collection-membership filter (song mode) layered on at read time so it always reflects the
-    /// live collections. Never does the heavy filter/sort — that lands in `displayItems`.
-    func visibleResults(_ collections: CollectionsStore? = nil) -> [BrowseItem] {
+    /// collection-membership + favorite filters (song mode) layered on at read time so they always
+    /// reflect the live stores. Never does the heavy filter/sort — that lands in `displayItems`.
+    func visibleResults(_ collections: CollectionsStore? = nil,
+                        favorites: FavoritesStore? = nil) -> [BrowseItem] {
+        applyReadTimeFilters(displayItems, collections, favorites)
+    }
+
+    /// The read-time layer shared by `results` and `visibleResults`: the filters whose inputs
+    /// live OUTSIDE the memo key. Order is irrelevant (both are independent row predicates);
+    /// membership runs first only because it's the older of the two.
+    private func applyReadTimeFilters(_ items: [BrowseItem], _ collections: CollectionsStore?,
+                                      _ favorites: FavoritesStore?) -> [BrowseItem] {
+        var out = items
         if kind == .song, membershipActive, let collections {
-            return applyMembership(displayItems, collections)
+            out = applyMembership(out, collections)
         }
-        return displayItems
+        if kind == .song, favoriteActive, let favorites {
+            out = applyFavorites(out, favorites)
+        }
+        return out
     }
 
     /// The `.task(id:)` signature the BrowseView keys its off-main recompute on: changes whenever any
@@ -308,6 +340,21 @@ final class BrowseState {
         }
     }
 
+    /// Apply the favorite filter (song mode only). `.only` keeps ♥ songs; `.exclude` keeps
+    /// everything else — which deliberately includes songs the user has never touched AND
+    /// explicit un-♥ tombstones, since "not favorited" is a statement about the CURRENT state,
+    /// not about history. Reads `favoriteIds` (a Set) so the predicate stays O(1) per row on
+    /// the ~90k-row path; non-song rows pass through untouched, like membership.
+    private func applyFavorites(_ items: [BrowseItem], _ favorites: FavoritesStore) -> [BrowseItem] {
+        guard kind == .song, favoriteActive else { return items }
+        let wantFavorited = (favoriteFilter == .only)
+        let ids = favorites.favoriteIds
+        return items.filter { item in
+            guard case .song = item else { return true }
+            return ids.contains(item.id) == wantFavorited
+        }
+    }
+
     /// Remove a single filter clause by id (the per-row remove action), leaving the
     /// other AND-composed clauses intact.
     func removeClause(id: Clause.ID) {
@@ -317,6 +364,16 @@ final class BrowseState {
     /// Clear all membership selections (the membership "Clear" action).
     func clearMembership() {
         includeAny = false; includeIds = []; excludeAny = false; excludeIds = []
+    }
+
+    /// The FilterSheet "Clear All" action: drop every clause AND release the favorite filter.
+    /// Membership is NOT cleared here — it owns a dedicated, always-visible "Clear membership"
+    /// button in its own section, and Clear All has never touched it. The favorite filter has no
+    /// such escape hatch beyond its own `.any` state, so Clear All must own it or a user who
+    /// reaches for the one "reset everything" control would be left with rows still hidden.
+    func clearAllFilters() {
+        clauses.removeAll()
+        favoriteFilter = .any
     }
 
     /// The pure filter+sort core, `nonisolated` so it runs on a background executor (called from

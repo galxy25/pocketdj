@@ -240,6 +240,56 @@ the `results()` pipeline. Finally, every filter clause gains a **per-clause remo
 button + swipe in `FilterSheet`, calling `BrowseState.removeClause(id:)`) alongside the
 existing **Clear All**, so one stray clause can be dropped without resetting the whole filter.
 
+### 6.1 The favorite filter — a second read-time layer
+
+**Why it is not a clause.** The ♥ filter looks like a third filter clause, but its truth lives
+in **another store** (`FavoritesStore`, [Ch. 3 §5](./03-catalog-and-data-model.md#5-favorites--the-per-profile--document))
+whose contents change independently of `BrowseState`. Folding it into `resultsKey` would give
+you one of two bugs and no third option: leave the ♥ set out of the key and the memo serves
+**stale rows** the moment a heart changes; put it in and the key **churns on every tap**,
+destroying the memo the ~90k-row path depends on (§7). So it takes the same shape membership
+already has — a **read-time layer**, applied fresh on top of the cached sorted array.
+
+```
+ BrowseState.FavoriteFilter : String { any, only, exclude }    NOT Codable — must never
+   favoriteFilter = .any (default)                            reach Snapshot / persistence
+   favoriteActive = favoriteFilter != .any
+
+ applyReadTimeFilters(items, collections, favorites)      ← shared by results() + visibleResults()
+   1. membership (§6)      song mode ∧ any include/exclude selected
+   2. applyFavorites       song mode ∧ favoriteActive ∧ store injected
+        wantFavorited = (filter == .only)
+        keep row ⇔ favorites.favoriteIds.contains(item.id) == wantFavorited     O(1) per row
+        non-song rows pass through untouched
+
+ activeFilterCount = complete clauses + (kind == .song ∧ favoriteActive ? 1 : 0)
+ clearAllFilters() = clauses.removeAll() + favoriteFilter = .any    (membership NOT cleared —
+                     it owns its own always-visible "Clear membership" button)
+```
+
+**Reading the diagram.** `FavoriteFilter` is a three-state enum held **transiently** and
+deliberately **not `Codable`**, so nothing can quietly add it to the persisted `Snapshot`
+later. `applyReadTimeFilters` is the shared tail of both `results()` (full pipeline) and
+`visibleResults()` (the cheap re-read the render path calls) — membership first, favorites
+second, order irrelevant since both are independent row predicates. The favorite predicate
+reads `favoriteIds`, a **Set**, so it stays O(1) per row across ~90k songs; non-song rows pass
+through, exactly like membership. `.exclude` keeps everything **not currently** favorited —
+which includes songs never touched **and** explicit un-♥ tombstones, because "not favorited"
+is a statement about the current state, not about history.
+
+Two smaller consequences. `activeFilterCount` counts the favorite filter (kind-gated to song
+mode, like the membership term) so the toolbar's filled/unfilled filter glyph stays honest for
+a favorite-**only** filter, which adds no clause. And `clearAllFilters()` releases it: the
+favorite filter has no escape hatch of its own beyond `.any`, so the one "reset everything"
+control must own it or a user who reached for it would be left with rows still hidden.
+
+`BrowseView` injects the store as an **optional** `@Environment(FavoritesStore.self)` — a host
+that hasn't wired it (a preview) degrades to "no constraint" instead of trapping — and folds
+`favoriteFilter.rawValue` into `pagingKey`, so changing the constraint restarts paging at the
+top. `pagingKey` tracks the **constraint**, not the store's contents: hearting a song
+re-filters (the `@Observable` read in `visibleResults` invalidates the body) without collapsing
+the scroll position — the same bargain membership already makes.
+
 ## 7. On-device Browse paging + results memo (large catalogs)
 
 **Why.** The merged on-device catalog is large — a real device carries **~12.7k albums /
@@ -268,7 +318,8 @@ of the online pager (§4): online is **server-paged** and already snappy, so thi
  (2) MEMOIZE THE SORT — BrowseState.results(app):
        sorted = app.cachedBrowseResults( resultsKey ) { computeSorted(app) }   // base→query→clauses→SORT
        resultsKey = JSONEncoder(.sortedKeys) over {catalogRevision, kind, query, clauses, sortKeys}
-       song-mode MEMBERSHIP filter applied FRESH on top of `sorted` (cheap O(n), never re-sorts)
+       song-mode MEMBERSHIP + FAVORITE filters applied FRESH on top of `sorted`
+         (applyReadTimeFilters — cheap O(n), never re-sorts, inputs live OUTSIDE the key §6.1)
        memo lives on AppModel (survives BrowseView re-creation on tab switch), @ObservationIgnored, cap 6
 
  (3) RENDER A GROWING PREFIX — BrowseView:
@@ -287,10 +338,10 @@ expensive base→text→clause→**sort** pass is **memoized** on `AppModel` (lo
 survives the `BrowseView` SwiftUI re-creates every time the Browser tab is re-entered), keyed by
 `resultsKey` — a **JSON-encoded** signature (`.sortedKeys` for determinism; JSON string-escaping
 makes it collision-proof where a delimiter-joined key wasn't) over the catalog revision, kind,
-query, complete clauses, and sort keys. The song-mode **membership** filter (§6) is layered on
-top of that cached sorted array as a cheap `O(n)` filter, computed **fresh** each call (its
-inputs — the selected collections' contents — live outside the key), so it's never stale *and*
-never triggers a re-sort. **(3)** `BrowseView` hands `ForEach` only a **growing prefix**
+query, complete clauses, and sort keys. The song-mode **membership** (§6) and **favorite**
+(§6.1) filters are layered on top of that cached sorted array as cheap `O(n)` predicates,
+computed **fresh** each call (their inputs — the selected collections' contents, the ♥ set —
+live outside the key), so they're never stale *and* never trigger a re-sort. **(3)** `BrowseView` hands `ForEach` only a **growing prefix**
 (`liveVisible`, 120 per page) — the render-side cost that scaled with catalog size. `liveVisible`
 is **derived** from a committed `visibleKey`, so a kind/filter switch collapses the budget to one
 page **synchronously in the same render** (never a stale large prefix for a frame); the prefix

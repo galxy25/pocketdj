@@ -521,6 +521,98 @@ groups decode as optionals, so a song with neither — the common case — loads
 (Stems are **per-song** even for analog: a vinyl song stems its *cut*, never the shared album
 side, so a stem key is always `rips/stems/<songId>/…`.)
 
+## 5. Favorites — the per-profile ♥ document
+
+**Why its own document, and not a field.** A ♥ is per-*profile* user state, not catalog
+state, so it can't ride the index (read-only, machine-produced, shared by every install).
+It could have ridden `CollectionsDocument` (§3.1) — but that document is the thing every
+transfer path carries: the backup zip, the playlist/pocket zips, `importCollection`'s
+id-remint. Favorites must **not** travel that way. The owner exporting a pocket to a friend
+must not ship their taste with it, and an import must never overwrite the importer's hearts.
+So favorites are a **separate Application Support document with its own sync registration**
+— the `DiscoverAddsStore` durable-JSON pattern (decode-on-init, atomic save, `PDJ_USE_FIXTURE`
+launch seam) — and they appear in **neither** `BackupZip` nor the interchange family
+([Ch. 7 §3.5](./07-distribution-and-clients.md#35-the-interchange-format-family--three-zips-one-envelope)).
+iCloud, not a file handed to someone, is the only way a ♥ moves between devices.
+
+**Source of truth:**
+[`apple/PocketDJ/State/FavoritesStore.swift`](../../apple/PocketDJ/State/FavoritesStore.swift)
+(the document + the store),
+[`apple/PocketDJ/State/FavoritesSyncService.swift`](../../apple/PocketDJ/State/FavoritesSyncService.swift)
+(`Seed`), and the registration in
+[`apple/PocketDJ/PocketDJApp.swift`](../../apple/PocketDJ/PocketDJApp.swift).
+The two-way Apple Music half — the Web API, the owner gate, the tester seed — is
+[Ch. 7 §5.5](./07-distribution-and-clients.md#55-apple-music-favorites--the-web-api-two-way-sync-owner-gated).
+
+```
+ Application Support/pocketdj-favorites.json      (FavoritesStore.defaultURL)
+   Document { schemaVersion = 1, entries:[Entry], seedVersion? }
+     Entry { songId, favorited:Bool, atMs, appleMusicId?, pushedAtMs? }
+       favorited:false  =  TOMBSTONE, not a deleted row  (absence ⇒ "never touched")
+       atMs             =  when the USER last toggled  (Apple Music reconcile tie-break)
+       appleMusicId?    =  catalog id captured AT TOGGLE TIME, so a queued push needs no
+                           re-resolve.  nil ⇒ vinyl / "My Digital" / Studio ⇒ LOCAL-ONLY
+       pushedAtMs?      =  last successful mirror to Apple Music.
+                           (pushedAtMs ?? -1) < atMs  ⇒  still owed an outbound push
+     seedVersion?       =  highest tester-seed generation already applied (nil ⇒ never)
+
+   in memory:  byId:[songId:Entry]  (truth)  +  favoriteIds:Set<String>  (derived cache,
+               so a row's isFavorite and the ~90k-row Browse filter are both O(1))
+
+ CloudSync registration  (PocketDJApp.init)
+   cloudSync.register("favorites", fileURL: favorites.syncFileURL) { favorites.reloadFromDisk() }
+     ⇒ the signed-in Apple ID's PRIVATE CloudKit DB — same-URL doctrine as the other
+       session documents; a pull re-decodes and fires NO onChanged (see below)
+
+ favorites-seed.json      (Config.favoritesSeedURL = catalogBase + "favorites-seed.json")
+   Seed { version:Int, songIds:[String], appleMusicIds?:{songId:appleMusicId} }
+     produced by FavoritesSyncService.exportSeed (owner-only, filters on appleMusicId != nil)
+```
+
+**Reading the diagram.** The document is a flat `entries` array keyed by `songId`, adopted on
+load into `byId` (the truth) plus a derived `favoriteIds` **Set** — the Browse favorite filter
+runs per row over ~90k songs, so it must never walk a dictionary
+([Ch. 6](./06-search-and-discovery.md)). Three fields carry the load-bearing semantics.
+**`favorited:false` is a tombstone**, not a deletion: absence means "never touched", and the
+two consumers that need the distinction are the tester seed (which fills only untouched songs,
+so it cannot resurrect a deliberate un-♥) and the Apple Music pull (which must tell "never
+favorited" from "deliberately unfavorited"). **`atMs`** timestamps the *user's* toggle and is
+the reconcile tie-break — `applyRemote` refuses to overwrite an entry whose `atMs` is newer
+than the observation, so a ♥ made offline survives a pull that still shows the old upstream
+state. **`appleMusicId`** is captured at toggle time and is the structural reason vinyl /
+"My Digital" / Studio favorites can never be dragged into an Apple Music round-trip: they
+have no catalog id, `pendingPushes` filters on `appleMusicId != nil`, and the exported seed
+does too.
+
+**Why the CloudSync callback must not re-emit.** `FavoritesStore.onChanged` fires for
+**user-originated** writes only (`set`/`toggle`), and the app wires it to
+`FavoritesSyncService.pushNow`. `reloadFromDisk` (the CloudSync pull) and `applySeed`
+deliberately do **not** fire it: a pull is already-known state, and re-emitting it would push
+the cloud's view straight back up to Apple Music on every launch, on every device, forever.
+`applyRemote` (the inbound Apple Music half) likewise returns without `onChanged`.
+
+**Bulk writes coalesce.** `save()` re-encodes and atomically rewrites the whole document, and
+this is a `@MainActor` type — so the inbound Apple Music reconcile, which can touch every
+catalog song, would be O(n²) encoding plus *n* atomic writes synchronously on the main actor
+(a multi-second launch freeze). `withCoalescedSaves { … }` is the bulk seam: re-entrant, it
+collapses every nested `save()` into one trailing write, and still writes exactly once if the
+body throws partway.
+
+**Provisional ids are remapped like collections.** A ♥ placed on a Discover/recognizer add
+carries a provisional `amrec_` id. When the nightly indexer lands the real track,
+`AppModel.onDiscoverSupersede` fans out to **both** `CollectionsStore.remapSongIds` and
+`FavoritesStore.remapSongIds` — miss the second and the heart silently detaches from the song
+it was placed on. A destination the user has already touched explicitly wins over the
+remapped entry.
+
+**The seed document** is a separate, tiny public artifact on the same CloudFront catalog base
+as the index ([Ch. 7 §1](./07-distribution-and-clients.md#1-aws-s3--cloudfront--the-public-content-host)).
+It carries PocketDJ **song ids** (not Apple Music ids) plus an optional `songId →
+appleMusicId` map, so a seeded ♥ is still pushable if that install later becomes an owner.
+`version` is monotonic (the exporter stamps a UNIX timestamp) and `applySeed` only applies a
+version **greater** than the stored `seedVersion`, which is what makes the seed a one-time
+event rather than a per-launch overwrite.
+
 ## Next
 
 → [Chapter 4 — Performance Engine](./04-performance-engine.md)

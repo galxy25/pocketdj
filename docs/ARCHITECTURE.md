@@ -88,11 +88,11 @@ server-less coordination work.
 |---|---|---|---|
 | 1 | [**Foundations**](./architecture/01-foundations.md) | the whole | System entities, ownership table, the files-as-API spine, content-derived ids. **Start here.** |
 | 2 | [**Ingest & Enrichment**](./architecture/02-ingest-and-enrichment.md) | *diverse sources* | Filesystem (vinyl `*Raw`), `Library.xml`, AppleScript/Shortcuts capture, the 5-stage analog indexer, Apple Music indexer, audio analysis + art mirroring. |
-| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — incl. the **`CollectionsDocument` schema versioning (v2→v3) + flat playlist `folders`** — the one shape everything speaks. Reference chapter. |
+| 3 | [**Catalog & Data Model**](./architecture/03-catalog-and-data-model.md) | *personal catalog* | Index JSON schema (incl. the `appleMusicId` **catalog-id stage** and the **cloud re-index** that folds Apple Music length/bpm/key in with cloud precedence via **tight `am-match`**), internal model, collections — incl. the **`CollectionsDocument` schema versioning (v2→v3) + flat playlist `folders`** — **and the per-profile FAVORITES document (`pocketdj-favorites.json` — tombstoned un-♥, CloudKit-registered, plus the `favorites-seed.json` shape)** — the one shape everything speaks. Reference chapter. |
 | 4 | [**Performance Engine**](./architecture/04-performance-engine.md) | *Playlists Producer* | Pockets → playlists → setlists, the `realize()` engine, iTunes mirroring, **the Play/Shuffle reusable "Now Playing" setlist (`playNow`)**, **the two-deck Mix engine (first-party `AVAudioEngine` — tempo/pitch/seek/crossfader/4 effects, grid-aware beat-match, Auto-Mix, and offline STEM DECKS, §7)**, **and the AI auto-*building* seam, whose first consumer is the Siri "Create Pocket" on-device-LLM builder (§4.1)**, **and the native PERFORMANCE tab (Studio, §8+) — samples, beat-synced loops, a 16-step sequencer, MIDI virtual instruments with score/PDF/MIDI export, per-track cue points, and **on-device key detection that makes studio creations harmonically-mixable collection tracks (§8.8)**, whose creations ride collections as namespaced ids**. |
 | 5 | [**Playback & Rip-on-Demand**](./architecture/05-playback-and-rip-on-demand.md) | *play & mix* | The rip server API (incl. batch `POST /rip-collection`, the `POST /rip-cancel` **stop + worker-kill**, the `rippedAt` manifest stamp, **the analog per-song CUT export + `POST /backfill-cuts` / `POST /retag-cuts`**), job state machine, live HLS, the public rips cache, mini-player + setlist playback, the native inline player (`PlayerEngine`/`PlayerClock`/TimelineView, **with a length-aware position end-boundary + held playback security-scope**), the stream-first → rip-last provider chain (`PlaybackCoordinator`) **with stream-through-rip**, the offline Collection Rip/Burn store (`BurnStore`, **+ user-browsable burnt-music folder + the metadata burn-filename scheme + the per-song analog-cut burn + the `@Observable` background-burn progress mirror**), the **length-aware + manual-jump-adopting** `SetlistPlayer` burnt-or-stream sequencer with **persistent ⏮/⏭ transport**, **the home NOW PLAYING deck (§10.1 — spinning beat-grid-rate gold record, live Up-Next queue edits by row identity, debounced add-search, iOS home/restore + macOS-Mix launch defaults)**, **the global device/cloud `PlaybackMode` + shared `playLocalFile` (burned-first + scope-held on EVERY song-start path) + the explicit offline catalog disk cache (`CatalogService` `catalog-cache/`)**, **the queue self-heal (per-job watchdog + transient backoff retry), the analog source config (`POCKETDJ_ANALOG_BASE`), the persistent collection-RIP Stop/progress poll, native BACKGROUND PROCESSING (`TransferCoordinator` background `URLSession` + `pocketdj-transfers.json` + BGTasks + background audio), the cloud-analog → `public/current-index.json` IN-PROCESS fold (`cloud-reindex-fold.mjs`), **the measured BEAT-GRID pass (`/backfill-beatgrids` → `beatGridBpm`/`firstDownbeatMs`/`steady`)**, and **STEMS end-to-end (server Demucs `/stemify` → public `rips/stems/`; the collection-burn STEM pull; the offline `StemPlayer` audition).** |
 | 6 | [**Search & Discovery**](./architecture/06-search-and-discovery.md) | *instantly find* | OpenSearch Serverless (aoss), the SigV4 + CloudFront-proxy trick, online/offline modes, **online pagination (`from/size` + `track_total_hits`) + server-side sort + the `genreCategory` field**, **the native Browse genre + collection-membership filters**, **on-device Browse paging + the results memo (pre-built rows, `resultsKey`-keyed sort cache, growing-prefix render — instant tab/kind switching at ~100k songs)**, **Play History (§8, the `PlayHistoryStore` append-only per-play log) + the Artists browse kind (§9, shuffle a whole discography)**, the star map. |
-| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, **the native app as a single universal SwiftUI target (iPhone/iPad/Mac, iOS 18/macOS 15) built with XcodeGen and shipped to TestFlight (`apple-publish`/`testflight.sh`)**, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`), and the App Intents layer (§7) — Siri/Shortcuts/Spotlight: play/shuffle playlist + pocket, auto-mix with lock-screen-seam pause/resume, Spotlight entity indexing + intent donations, and the Siri "Create Pocket" builder — plus **CarPlay (§9), a thin template UI over the shared engines, the Now Playing widgets (§10) — a WidgetKit extension fed over the `group.com.levi.pocketdj` App Group with intent-driven transport, and Jukebox Hero (§11) — a crowd-request line distributed as a static S3 guest page, brokered by the `jukebox-server.mjs` iMac sibling and DJ'd by the app**.** |
+| 7 | [**Distribution, Clients & Edits**](./architecture/07-distribution-and-clients.md) | *portable, anywhere* | S3/CloudFront (public-read), the PWA + native clients, **the native app as a single universal SwiftUI target (iPhone/iPad/Mac, iOS 18/macOS 15) built with XcodeGen and shipped to TestFlight (`apple-publish`/`testflight.sh`)**, the deploy loop, the edits round-trip, the native app's streaming-account providers + ShazamKit recognizer (bundle `com.levi.pocketdj`), **the `backfill-rip` skill for the catalog-id-crawl misses (`apple-music-catalog-misses.csv`), and the App Intents layer (§7) — Siri/Shortcuts/Spotlight: play/shuffle playlist + pocket, auto-mix with lock-screen-seam pause/resume, Spotlight entity indexing + intent donations, and the Siri "Create Pocket" builder — plus **CarPlay (§9), a thin template UI over the shared engines, the Now Playing widgets (§10) — a WidgetKit extension fed over the `group.com.levi.pocketdj` App Group with intent-driven transport, and Jukebox Hero (§11) — a crowd-request line distributed as a static S3 guest page, brokered by the `jukebox-server.mjs` iMac sibling and DJ'd by the app**, **plus the two-way APPLE MUSIC FAVORITES sync (§5.5) — the `MusicDataRequest` Web-API path (★ + love rating), the fail-closed iCloud-hash OWNER GATE that ships empty, and the tester seed — and the PLAYLIST WRITE-BACK queue (§5.6) that carries an add up to the real library playlist**.** |
 
 ---
 
@@ -122,7 +122,10 @@ playlist/pocket zips bundle `items.json` (the PWA `MusicItem[]` wire shape, both
 read + write it) and the importer materializes ids outside the enabled sources as the
 provisional **"Imported"** synthetic source (`ImportedSongsStore`, CloudKit-synced), so
 foreign songs browse/realize/play/burn-with-stems by the id that traveled — real sources
-shadow provisional twins by merge order, never by deletion.
+shadow provisional twins by merge order, never by deletion; the per-profile **favorites**
+document (`pocketdj-favorites.json` — `favorited:false` tombstones, `atMs` reconcile
+tie-break, a derived `favoriteIds` Set for the ~90k-row filter, CloudSync-registered, and
+absent from every backup/interchange zip) plus the public `favorites-seed.json` shape.
 
 ### Ch. 4 — Performance Engine
 **Built:** `realize()` (seeded sampling + harmonic autofill); iTunes mirroring; the reusable
@@ -163,7 +166,9 @@ tools + soft-cap LRP prune).
 modes; online pagination (`from`/`size` + `track_total_hits`) + server-side sort + the
 `genreCategory` field; the native Browse **genre** + **collection-membership** filters; the
 **Artists** browse kind + shuffle-by-artist; the **Play History** timeline
-(`PlayHistoryStore`, append-only); on-device Browse paging + the results memo; the star map.
+(`PlayHistoryStore`, append-only); the tri-state **favorite** filter (Any / only / not
+favorited — a read-time layer deliberately outside the results memo key); on-device Browse
+paging + the results memo; the star map.
 
 ### Ch. 7 — Distribution, Clients & Edits
 **Built:** the S3 / CloudFront public-read content host; the PWA + a **single universal SwiftUI
@@ -180,7 +185,18 @@ onboarding** — a three-stage first-run gate (on-device vs iCloud profile with 
 pull-forced restore, Apple Music sign-in, the Vinyl/Digital/Streaming source picker) that
 holds the entire launch pipeline (`OnboardingStore` tri-state marker; CloudSync pushes and
 mutating intents refused until it resolves; reinstalls and the mushroom-cloud reset re-run
-it, updates never see it; visionOS auto-completes while the blank-first-window bug is open).
+it, updates never see it; visionOS auto-completes while the blank-first-window bug is open);
+the **♥ favorites** surface (one shared `FavoriteToggle` on song rows / song detail / album
+track table) with **two-way Apple Music sync** (§5.5 — the `MusicDataRequest` Web-API path:
+★ + love rating out, loves in) and the **playlist write-back** queue (§5.6 — an add to an
+Apple Music source playlist carried up to the real library playlist; iOS/visionOS only, macOS
+settles jobs local-only).
+**Built but INERT until bootstrapped:** the favorites **owner gate** —
+`Config.ownerICloudHashes` ships **empty**, so *no* install syncs favorites to Apple Music
+until a real iCloud hash is copied from Settings ▸ Debug ▸ Owner identity (both the
+Development **and** Production CloudKit values) and shipped. The Apple Music round-trip is
+also **not** headless-testable (it needs a signed-in account *and* the owner hash), so that
+leg is device-verified only.
 **Deferred:** the **iMac edits-merge tool** — the client half and the schema are built, but the
 server-side script that folds exported edits back into `current-index.json` does not exist yet.
 Also deferred: the **Jukebox Hero Lambda migration** (§11) — the session-broker handler is
@@ -461,3 +477,68 @@ Things found while writing that don't fully line up, gathered here so they're no
     **new** playback engine (or a new `setCategory(.playback)` call) without wiring this guard
     reintroduces the take-killing route change — the flag only protects the sites that check it.
     (Ch. 4 §8; STORYBOOK [The Studio](./storybook/studio.md))
+43. **`Config.ownerICloudHashes` ships EMPTY — the whole favorites↔Apple Music sync is inert
+    out of the box.** An empty allowlist means *nobody* is the owner, so `OwnerIdentity.isOwner()`
+    is false on every install and every ♥ stays app-local. That is the **safe default, not a
+    bug**: the hash cannot be known before the app runs, so the loop is *run the build → copy
+    the hash from Settings ▸ Debug ▸ Owner identity → paste into `Config` → ship.* Capture
+    **both** values — `CKContainer.userRecordID` is **container-scoped**, so the CloudKit
+    Development and Production containers produce **different** hashes and a TestFlight build
+    with only the dev hash silently falls back to local-only with no error. The gate also
+    **fails closed** on every path (no iCloud account, iCloud off, offline, any thrown error),
+    because the dangerous direction is a stranger being mistaken for the owner and written into
+    someone else's music library — a missed owner check only costs a relaunch. (Ch. 7 §5.5)
+44. **Un-favoriting on Apple Music is LOSSY and cannot be fixed — Apple ships no delete for
+    the ★.** A favorite writes **two** things: `POST /v1/me/favorites?ids[songs]=…` (the ★ /
+    "Favorite Songs") and `PUT /v1/me/ratings/songs/{id}` (the love rating). Only the **rating**
+    has a `DELETE`. There is also **no favorites GET**, so the ★ can be neither read back nor
+    retracted from any app. A maintainer "completing" the un-favorite path will not find the
+    missing endpoint; the correct behaviour is the shipped one — delete the rating, and *say
+    so* in the UI. Related: the ★ POST's `ids` parameter is **type-scoped**, `ids[songs]=`, not
+    a bare `ids=`; a bare `ids=` is accepted and silently no-ops, which is undetectable
+    precisely because there is nothing to read back. (Ch. 7 §5.5)
+45. **`AppleMusicFavorites.lovedIds` returns `Set<String>?` and the nil case MUST abort the
+    pull.** The inbound reconcile treats every catalog id absent from the ratings response as
+    *not loved*, so an empty `Set` returned for an **unreadable** 200 body (truncated payload,
+    an HTML error page, a schema change) would tombstone the user's **entire** favorites
+    library in one pass. Nil means "I could not tell you", `pull()` throws on it, and the pass
+    writes nothing. Row-level tolerance is preserved (rows decode individually, so one bad row
+    costs one id) — only a top-level `data`-array failure yields nil. A maintainer "simplifying"
+    the signature back to a non-optional `Set` reinstates a silent, total data loss.
+    (Ch. 7 §5.5)
+46. **The playlist write-back queue is DEVICE-LOCAL and persists after EVERY job — both on
+    purpose.** `pocketdj-playlist-writeback.json` is deliberately **not** registered with
+    `CloudSyncService` (unlike `pocketdj-favorites.json`): it is an outbound *intent log*, and
+    syncing it would make the iPad replay a write the iPhone already delivered, putting the
+    same track in the real Apple Music playlist twice. For the same reason `run()` calls
+    `save()` after **each** job rather than once after the drain — `MusicLibrary.add` is **not
+    idempotent** and its write is not retractable from this app, so a background kill mid-drain
+    would lose an in-memory `.delivered` and re-deliver on the next launch. Also: on **macOS /
+    Catalyst** `MusicLibrary`'s write methods are `@available(…, unavailable)`, so the transport
+    is compiled out, `makeDefaultTransport()` returns nil, and jobs settle as `.notApplicable`
+    (terminal) — while an unauthorized-but-supported platform leaves them **`queued`**, because
+    that is a condition the user can fix. (Ch. 7 §5.6)
+47. **A locally-added song must NEVER be written into `sourceSongIds`.** `reconcilePlaylist`
+    computes source removals as (`sourceSongIds` snapshot − current source), so optimistically
+    recording a PocketDJ-side add in the snapshot would make the very next catalog refresh
+    classify it as a source **removal** and delete the user's own add. Leaving it out is what
+    makes a failed write-back degrade safely to "the add stayed local"; the snapshot advances
+    only when a real catalog refresh brings the song back from Apple Music. The same method
+    also deliberately leaves `lastAddTarget` untouched, so the "Last used" shortcut (which
+    re-adds to a plain local playlist with no write-back) can't silently drop the Apple Music
+    half of a repeat add. (Ch. 3 §3.1, Ch. 7 §5.6)
+48. **`FavoritesStore.onChanged` fires for USER writes only — never for a cloud pull or the
+    seed.** `reloadFromDisk` (the CloudSync callback), `applyRemote` (the inbound Apple Music
+    half), and `applySeed` all mutate the store **without** emitting, because the app wires
+    `onChanged → FavoritesSyncService.pushNow`. A maintainer who "unifies" the write paths to
+    emit uniformly creates a launch-time loop that pushes the cloud's own view straight back up
+    to Apple Music, on every device, forever. Relatedly, `favorited:false` is a **tombstone**,
+    not a deleted row (absence means "never touched") — the tester seed and the Apple Music
+    reconcile both depend on telling those two apart. (Ch. 3 §5, Ch. 7 §5.5)
+49. **The favorite Browse filter is deliberately OUTSIDE `resultsKey`.** Its input (the ♥ set)
+    lives in another store, so folding it into the results memo key gives you stale rows (if
+    the set is left out) or a key that churns on every heart-tap and destroys the memo the
+    ~90k-row path depends on (if it's in). It is applied as a read-time `O(1)`-per-row Set
+    predicate in `applyReadTimeFilters`, exactly like collection membership, and
+    `BrowseState.FavoriteFilter` is **not `Codable`** so nothing can quietly add it to the
+    persisted `Snapshot`. (Ch. 6 §6.1, §7)

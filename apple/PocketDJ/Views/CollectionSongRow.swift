@@ -12,6 +12,7 @@ import SwiftUI
 ///   • SECONDARY line: "artist · year · genre" (size-gated — see below),
 ///   • MIDDLE music cluster: BPM as tiered play-icons (+ numeric), a Camelot KeyChip
 ///     (always populated — black-box "U" when unknown), and the length (`Fmt.duration`),
+///   • ♥ FAVORITE toggle (`FavoriteToggle`) immediately left of the transport,
 ///   • RIGHT: ▶ play / ⤓ download transport (`RowTransport`) — rip-on-demand wired to
 ///     `RipsStore` + `PlayerEngine`; ▶ reveals the inline slide-out player below the row.
 ///
@@ -83,6 +84,10 @@ struct SongRowView: View {
             }
 
             if let trailing { trailing }
+
+            // ♥ sits INSIDE the row's own layout (not the `trailing` slot — callers already
+            // spend that on setlist source/sequence badges), immediately left of transport.
+            FavoriteToggle(songId: data.songId, appleMusicId: data.appleMusicId)
 
             RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
                          startMs: data.startMs)
@@ -172,6 +177,10 @@ struct SongRowData {
     var startMs: Int?
     /// The album behind the song (for cover art + genre/year fallback); nil → placeholder.
     var album: IndexAlbum?
+    /// Apple Music catalog id, carried so the row's ♥ can hand it to `FavoritesStore` for a
+    /// later outbound push. Nil for vinyl / "My Digital" / Studio songs — they have no Apple
+    /// Music identity and stay local-only favorites forever.
+    var appleMusicId: String?
 
     /// Project a catalog song. Pass the song's resolved album for art + genre/year.
     /// Year prefers the song's own value, falling back to the album's.
@@ -188,6 +197,7 @@ struct SongRowData {
         self.explicit = song.explicit == true
         self.startMs = nil   // analog offset resolves from the rips manifest entry
         self.album = album
+        self.appleMusicId = song.appleMusicId
     }
 
     /// Project a frozen setlist track (its snapshot) — resolve year/genre/art from the
@@ -205,6 +215,9 @@ struct SongRowData {
         self.explicit = song?.explicit == true
         self.startMs = nil
         self.album = album
+        // The frozen snapshot carries no catalog id — resolve it from the live song when it
+        // still exists; a setlist whose backing song is gone favorites local-only.
+        self.appleMusicId = song?.appleMusicId
     }
 
     private static func cleanGenre(_ g: String?) -> String? {
@@ -289,6 +302,41 @@ struct SongThumbnail: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
         }
+    }
+}
+
+/// ♥ — the ONE favorite control, shared by every song surface: the shared `SongRowView`
+/// (Browse / collections / setlists / History), the album track table, and the song detail
+/// page. Filled `heart.fill` + accent when on, outline `heart` + `Theme.fgDim` when off.
+///
+/// One tap = one `FavoritesStore.toggle`; the store owns everything downstream (tombstones,
+/// persistence, and whether the change is even eligible to reach Apple Music). Callers pass
+/// the song's catalog id when it has one — vinyl / "My Digital" / Studio songs pass nil and
+/// are favorited local-only, which the store handles by construction.
+struct FavoriteToggle: View {
+    @Environment(FavoritesStore.self) private var favorites
+    let songId: String
+    var appleMusicId: String?
+    /// Glyph size — rows keep the compact default; the detail page's action cluster bumps it
+    /// so the ♥ reads as a primary action rather than row furniture.
+    var font: Font = .caption
+
+    private var on: Bool { favorites.isFavorite(songId) }
+
+    var body: some View {
+        Button { favorites.toggle(songId, appleMusicId: appleMusicId) } label: {
+            Image(systemName: on ? "heart.fill" : "heart").font(font)
+                .contentShape(Rectangle())
+        }
+        // `.borderless` — the SAME style the row's working ▶/⤓ transport uses, and for the
+        // same two reasons: it keeps the enclosing `NavigationLink` from swallowing the tap,
+        // AND it survives macOS hit-testing inside a `ScrollView`+`LazyVStack`, where a
+        // `.plain` button silently drops its press (the documented "dead slide-out buttons"
+        // bug — the press hit-tests but the action never fires).
+        .buttonStyle(.borderless)
+        .foregroundStyle(on ? Theme.accent : Theme.fgDim)
+        .accessibilityIdentifier("favorite-toggle-\(songId)")
+        .accessibilityLabel(on ? "Unfavorite" : "Favorite")
     }
 }
 

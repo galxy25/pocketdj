@@ -16,6 +16,10 @@ struct FilterSheet: View {
         browse.kind == .song && !browse.historyMode
             && !(collections.playlists.isEmpty && collections.pockets.isEmpty)
     }
+    /// The favorite filter is song-mode only (and excluded from History, whose per-event rows
+    /// bypass the read-time layer). Unlike membership it has NO "do you own any?" gate: an empty
+    /// ♥ set is a legitimate thing to filter on ("show me what I haven't favorited yet").
+    private var showFavorite: Bool { browse.kind == .song && !browse.historyMode }
 
     var body: some View {
         NavigationStack {
@@ -50,6 +54,10 @@ struct FilterSheet: View {
                     .accessibilityIdentifier("add-filter")
                 }
 
+                if showFavorite {
+                    FavoriteSection(browse: browse)
+                }
+
                 if showMembership {
                     MembershipSection(browse: browse, collections: collections)
                 }
@@ -63,8 +71,8 @@ struct FilterSheet: View {
                     Button("Done") { dismiss() }.accessibilityIdentifier("filter-done")
                 }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Clear All") { browse.clauses.removeAll() }
-                        .disabled(browse.clauses.isEmpty)
+                    Button("Clear All") { browse.clearAllFilters() }
+                        .disabled(browse.clauses.isEmpty && !browse.favoriteActive)
                         .accessibilityIdentifier("filter-clear-all")
                 }
             }
@@ -200,6 +208,28 @@ private struct ClauseEditor: View {
                     ms.wrappedValue = start.timeIntervalSince1970 * 1000
                 }
             })
+    }
+}
+
+/// Favorite filter (song mode) — the ♥ sibling of the membership section below, sharing its
+/// idiom: a titled `Section` holding one labelled control whose row shows the current state.
+/// A tri-state Picker rather than membership's DisclosureGroup because there is nothing to
+/// expand — three mutually-exclusive choices, not a list of ids. Left at the Form's DEFAULT
+/// (menu) picker style deliberately: a `.segmented` style would squeeze "Not favorited" into
+/// an unreadable sliver in iPhone portrait, which is the same narrow-control failure the
+/// portrait-slider-popover rule exists to prevent.
+private struct FavoriteSection: View {
+    @Bindable var browse: BrowseState
+
+    var body: some View {
+        Section("Favorites") {
+            Picker("Favorites", selection: $browse.favoriteFilter) {
+                Text("Any").tag(BrowseState.FavoriteFilter.any)
+                Text("Favorites only").tag(BrowseState.FavoriteFilter.only)
+                Text("Not favorited").tag(BrowseState.FavoriteFilter.exclude)
+            }
+            .accessibilityIdentifier("favorite-filter")
+        }
     }
 }
 

@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 struct DebugView: View {
     @Bindable var settings: SettingsStore
     @State private var showExporter = false
+    @State private var copiedBuild = false
 
     private var diag: MixDiag { MixDiag.shared }
 
@@ -42,9 +43,26 @@ struct DebugView: View {
                     Text("Save it to iCloud Drive (or AirDrop it) to ship it off this device.")
                 }
             }
+            // Both diagnostic values here exist to be QUOTED somewhere else — the build
+            // identity into a bug report, the iCloud hash into Config.ownerICloudHashes — so
+            // both get the same treatment: selectable text AND a one-tap Copy. Selection
+            // alone isn't enough on iPhone, where long-press-to-select inside a Form row is
+            // fiddly and frequently steals the scroll gesture.
             Section("Build") {
-                LabeledContent("Version", value: MixDiag.buildIdentity())
-                    .accessibilityIdentifier("debug-build-version")
+                LabeledContent("Version") {
+                    Text(MixDiag.buildIdentity())
+                        .font(.caption2.monospaced())
+                        .lineLimit(2).truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                .accessibilityIdentifier("debug-build-version")
+                Button {
+                    copyToPasteboard(MixDiag.buildIdentity())
+                    copiedBuild = true
+                } label: {
+                    Label(copiedBuild ? "Copied" : "Copy version", systemImage: "doc.on.doc")
+                }
+                .accessibilityIdentifier("debug-build-copy")
             }
         }
         .formStyle(.grouped)
@@ -54,6 +72,15 @@ struct DebugView: View {
                       document: DebugLogDocument(text: diag.dump()),
                       contentType: .plainText,
                       defaultFilename: "pocketdj-debug-session") { _ in }
+    }
+
+    private func copyToPasteboard(_ s: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #else
+        UIPasteboard.general.string = s
+        #endif
     }
 
     /// The toggle drives BOTH the persisted preference (so a relaunch mid-repro resumes

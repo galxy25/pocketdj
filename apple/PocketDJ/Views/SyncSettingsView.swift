@@ -3,19 +3,32 @@ import SwiftUI
 /// Settings ▸ Sync — everything that keeps the app in step with the outside world,
 /// gathered into one navigable panel (the Storage-panel pattern):
 ///   • the Apple Music LIBRARY re-index (ask the Mac's rip server to diff Library.xml
-///     for newly-added music — the manual twin of the 04:00 nightly), and
+///     for newly-added music — the manual twin of the 04:00 nightly),
 ///   • the converted-collections SOURCE SYNC (pockets converted from / playlists
 ///     duplicated from a source playlist following that playlist as the catalog
-///     refreshes), with the global toggle and a manual sync-all trigger.
+///     refreshes), with the global toggle and a manual sync-all trigger, and
+///   • FAVORITES sync — whether this install's ♥ round-trip with Apple Music, which
+///     is owner-gated (see `OwnerIdentity`).
 struct SyncSettingsView: View {
     @Bindable var settings: SettingsStore
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(MusicSyncClient.self) private var musicSync
+    /// Optional on purpose: this panel is reachable from Settings, which is only ever hosted
+    /// by the app's own window (where the service IS injected) — but a preview or a future
+    /// test host that renders it standalone should degrade to "unavailable", not trap.
+    @Environment(FavoritesSyncService.self) private var favoritesSync: FavoritesSyncService?
 
     @State private var syncing = false
     @State private var syncStatus: SyncStatus?
     @State private var collectionsSyncResult: String?
+    /// This install's owner hash, resolved once on appear (CloudKit round-trip, then cached
+    /// inside OwnerIdentity). `loadedHash` distinguishes "still asking" from "no answer".
+    @State private var ownerHash: String?
+    @State private var loadedHash = false
+    @State private var copiedHash = false
+    @State private var showSeedExporter = false
+    @State private var seedDoc = EditsFile(data: Data())
 
     enum SyncStatus { case ok(String), bad(String) }
 
@@ -29,11 +42,133 @@ struct SyncSettingsView: View {
         Form {
             appleMusicSection
             collectionsSection
+            favoritesSection
         }
         .formStyle(.grouped)
         .navigationTitle("Sync")
         .scrollContentBackground(.hidden).background(Theme.bg)
+        // The seed rides the same fileExporter idiom as the Edits/Backup exports — save it
+        // into iCloud Drive, then upload it to `Config.favoritesSeedURL` on the catalog CDN.
+        .fileExporter(isPresented: $showSeedExporter, document: seedDoc, contentType: .json,
+                      defaultFilename: "favorites-seed") { _ in }
+        .task {
+            ownerHash = await OwnerIdentity.currentHash()
+            loadedHash = true
+        }
         .onDisappear { settings.persist() }
+    }
+
+    // MARK: Favorites ⇄ Apple Music
+
+    /// Favorites sync lives HERE rather than in Debug (Levi 2026-07-20): whether your ♥
+    /// round-trip with Apple Music is a sync question, and this is the sync panel.
+    ///
+    /// The iCloud-hash row is the BOOTSTRAP for it. `Config.ownerICloudHashes` ships empty —
+    /// deliberately, so every install is favorites-local-only until proven otherwise — which
+    /// means the allowlist can only ever be filled from a row like this one: run the build,
+    /// copy the hash, paste it into Config, ship. Capture the value from EACH build that
+    /// needs it: `CKContainer.userRecordID` is container-scoped, so a TestFlight build and a
+    /// local dev build produce different hashes and one does not enable the other.
+    private var favoritesSection: some View {
+        Section {
+            LabeledContent("Status", value: gateLine)
+                .accessibilityIdentifier("favorites-sync-gate")
+            if let error = favoritesSync?.lastError {
+                LabeledContent("Last error", value: error)
+                    .font(.caption).foregroundStyle(Theme.danger)
+                    .accessibilityIdentifier("favorites-sync-error")
+            }
+            if let ms = favoritesSync?.lastSyncedAtMs {
+                LabeledContent("Last synced", value: Date(timeIntervalSince1970: ms / 1000)
+                    .formatted(date: .abbreviated, time: .shortened))
+                    .accessibilityIdentifier("favorites-sync-last-synced")
+            }
+            Button {
+                Task { await favoritesSync?.run() }
+            } label: {
+                if favoritesSync?.isSyncing == true {
+                    ProgressView()
+                } else {
+                    Label("Sync favorites now", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            .disabled(favoritesSync == nil || favoritesSync?.isSyncing == true)
+            .accessibilityIdentifier("favorites-sync-now")
+
+            LabeledContent("iCloud hash") {
+                Text(hashDisplay)
+                    .font(.caption2.monospaced())
+                    .lineLimit(2).truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            .accessibilityIdentifier("favorites-sync-hash")
+            Button {
+                if let ownerHash { copyToPasteboard(ownerHash); copiedHash = true }
+            } label: {
+                Label(copiedHash ? "Copied" : "Copy hash", systemImage: "doc.on.doc")
+            }
+            .disabled(ownerHash == nil)
+            .accessibilityIdentifier("favorites-sync-copy-hash")
+
+            // Owner-only: the seed is the OWNER's Apple Music ♥, and exporting it from a
+            // non-owner install would publish a tester's own favorites to every other tester.
+            if (favoritesSync?.isOwner ?? nil) == true {
+                Button {
+                    exportSeed()
+                } label: {
+                    Label("Export favorites seed…", systemImage: "square.and.arrow.up")
+                }
+                .accessibilityIdentifier("favorites-export-seed")
+            }
+        } header: {
+            Text("Favorites")
+        } footer: {
+            Text("""
+                 Two-way Apple Music favorites sync is owner-only — every other install keeps \
+                 its ♥ to itself, which is the safe default. Your vinyl, My Digital, and Studio \
+                 favorites are always local to your profile: they have no Apple Music identity, \
+                 so they never leave this device's iCloud account.
+
+                 UN-FAVORITING IS LOSSY ON APPLE MUSIC. Apple ships no delete counterpart to \
+                 `POST /v1/me/favorites`, so removing a ♥ here deletes the love RATING (which is \
+                 what recommendations and this app read) but cannot retract the ★ — the track \
+                 stays in Apple Music's "Favorite Songs" until you remove it there yourself.
+                 """)
+        }
+    }
+
+    private var hashDisplay: String {
+        if let ownerHash { return ownerHash }
+        return loadedHash ? "unavailable" : "…"
+    }
+
+    private var gateLine: String {
+        // Flattened deliberately: `favoritesSync?.isOwner` is a DOUBLE optional (no service
+        // vs. gate unresolved), and both of those mean the same thing to the reader here.
+        guard let isOwner = favoritesSync?.isOwner ?? nil else { return "Checking…" }
+        return isOwner ? "Two-way Apple Music sync on"
+                       : "Local to this profile"
+    }
+
+    /// Encode the owner's Apple-Music-sourced ♥ and hand them to the file exporter.
+    /// The version is a UNIX timestamp: `applySeed` only applies a seed NEWER than the one a
+    /// tester already has, so each export must outrank the last, and wall-clock does that
+    /// without any state to remember between exports.
+    private func exportSeed() {
+        guard let favoritesSync else { return }
+        let seed = favoritesSync.exportSeed(version: Int(Date().timeIntervalSince1970))
+        guard let data = try? JSONEncoder().encode(seed) else { return }
+        seedDoc = EditsFile(data: data)
+        showSeedExporter = true
+    }
+
+    private func copyToPasteboard(_ s: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #else
+        UIPasteboard.general.string = s
+        #endif
     }
 
     // MARK: Apple Music library (moved here from the Settings root)
