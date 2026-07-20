@@ -298,9 +298,18 @@ struct MixView: View {
             .accessibilityIdentifier("mix-reset")
     }
 
-    /// BROADCAST — the Mix side of Jukebox Hero. No session yet: one tap CREATES the
+    /// JUKEBOX — the Mix side of Jukebox Hero. No session yet: one tap CREATES the
     /// jukebox (default name) and pushes its view (QR + requests); Back returns here.
     /// Session live: the antenna glows accent and the tap just opens the jukebox.
+    /// NOT a broadcast, which is why the help text doesn't call it one: a new session is a
+    /// VIEW-ONLY request line (`JukeboxStore.start` sets `hearEnabled = false`) — guests see
+    /// what's playing and send requests, and no audio goes to them unless the host turns hear
+    /// mode on from the Jukebox screen.
+    /// #TOUPDATE: a jukebox is meant to be a PRIVATE event — the guest link token-gated by
+    /// default, a server-enforced listener cap, and mandatory session expiry. None of the three
+    /// exists yet (the guest page is public to anyone holding the link, there is no cap, and
+    /// `timeless` still opts a session out of expiry), so no copy on this button may call a
+    /// jukebox private, capped, or token-gated.
     private var broadcastButton: some View {
         Button {
             if jukebox.session == nil {
@@ -317,8 +326,8 @@ struct MixView: View {
         }
         .disabled(jukebox.starting)
         .help(jukebox.session != nil
-              ? "Broadcasting — open the jukebox (requests + QR code)"
-              : "Broadcast — start a jukebox so guests can see the mix and request songs")
+              ? "Jukebox is live — open it (requests + QR code)"
+              : "Jukebox — start a request line so guests can see the mix and send requests")
         .accessibilityIdentifier("mix-broadcast")
     }
 
@@ -328,10 +337,12 @@ struct MixView: View {
     /// 🔀 Shuffle / ⏹ Stop — mirroring the Playlists tab's menu-bar play/shuffle.
     @ToolbarContentBuilder private var autoMixToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            // BROADCAST (Jukebox Hero): one tap starts a jukebox session (if none is live)
+            // JUKEBOX (Jukebox Hero): one tap starts a jukebox session (if none is live)
             // and pushes its view onto THIS stack — Back returns to the decks. The mix and
             // the jukebox share the setlist: guests see the on-air track + the auto queue,
             // and accepted requests feed the Auto-DJ (in-mix actions take precedence).
+            // By default only TEXT (title/artist) crosses to guests — a view-only request
+            // line. Audio is added only if the host turns hear mode on from the Jukebox screen.
             broadcastButton
             // Record the mix audio into the current session's folder — pulses purple→red while live.
             RecordButton(recorder: recorder)
@@ -480,7 +491,7 @@ struct MixView: View {
         }
     }
 
-    /// In-content recording status (● Recording m:ss + Stop) — shown while a capture runs. Keeps the
+    /// In-content recording status (● Recording m:ss + Stop) — shown while a recording runs. Keeps the
     /// record state + a Stop control visible even if the toolbar button overflows on iPhone; the
     /// pulsing dot mirrors the toolbar button's purple→red pulse.
     private var recordingIndicator: some View {
@@ -515,7 +526,7 @@ struct MixView: View {
         .accessibilityIdentifier("mix-record-indicator")
     }
 
-    /// Elapsed capture clock (m:ss) from the recorder's start epoch-ms.
+    /// Elapsed recording clock (m:ss) from the recorder's start epoch-ms.
     private static func elapsedClock(sinceMs startMs: Double) -> String {
         let s = Int(max(0, Date().timeIntervalSince1970 * 1000 - startMs) / 1000)
         return String(format: "%d:%02d", s / 60, s % 60)
@@ -1026,8 +1037,11 @@ private struct GlidePillToggle: View {
 // MARK: - Record button
 
 /// The top-level Mix toolbar RECORD button. Idle = a dim record ring; recording = a purple→red
-/// gradient record icon that PULSES (breathes). Tapping toggles capture of the mix's house output
-/// into the current session's folder. App-scoped recorder, so the capture survives leaving the tab.
+/// gradient record icon that PULSES (breathes). Tapping toggles recording of the mix's house output
+/// into the current session's folder. App-scoped recorder, so it survives leaving the tab.
+/// The recorder taps the mix's OWN audio graph, and that graph is fed exclusively by on-device
+/// files (`MixResolver` keeps only ids whose burned/studio file exists; `MixEngine.load` opens
+/// them through `BurnStore`) — it never records from Apple Music or any other stream.
 private struct RecordButton: View {
     let recorder: MixRecorder
     var body: some View {

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Settings ▸ Sync — everything that keeps the app in step with the outside world,
 /// gathered into one navigable panel (the Storage-panel pattern):
-///   • the Apple Music LIBRARY re-index (ask the Mac's rip server to diff Library.xml
+///   • the Apple Music LIBRARY re-index (ask the PocketDJ server to diff its Library.xml
 ///     for newly-added music — the manual twin of the 04:00 nightly),
 ///   • the converted-collections SOURCE SYNC (pockets converted from / playlists
 ///     duplicated from a source playlist following that playlist as the catalog
@@ -193,10 +193,11 @@ struct SyncSettingsView: View {
             Text("Favorites")
         } footer: {
             Text("""
-                 Two-way Apple Music favorites sync is owner-only — every other install keeps \
-                 its ♥ to itself, which is the safe default. Your vinyl, My Digital, and Studio \
-                 favorites are always local to your profile: they have no Apple Music identity, \
-                 so they never leave this device's iCloud account.
+                 ♥ lives in your PocketDJ profile, in your own iCloud account. Where two-way \
+                 Apple Music sync is available on this install, ♥ on an Apple Music song also \
+                 loves it in Apple Music — the Status line at the top of this section says \
+                 which mode you're in. Vinyl, My Digital, and Studio favorites have no Apple \
+                 Music identity, so they never leave this device's iCloud account.
 
                  UN-FAVORITING IS LOSSY ON APPLE MUSIC. Apple ships no delete counterpart to \
                  `POST /v1/me/favorites`, so removing a ♥ here deletes the love RATING (which is \
@@ -263,9 +264,13 @@ struct SyncSettingsView: View {
             } header: {
                 Text("Apple Music library")
             } footer: {
+                // #TOUPDATE: the no-server branch sends the user to "Settings ▸ Import server", but
+                // SettingsView.swift:465/:491 still render "Rip server URL" / "Rip server". That
+                // rename ships in this same change-set — confirm it landed, then delete this marker.
+                // If it did NOT land, revert this breadcrumb to "Settings ▸ Rip server" instead.
                 Text(musicSync.hasServer
-                    ? "Checks your Mac's Apple Music library (via the rip server) for newly-added music. The library is also checked automatically every day at 04:00. Detected songs appear in the “Apple Music (Local)” source once the change is committed + deployed — not instantly; use “Reload catalog” if a deploy is still in flight."
-                    : "Requires the rip server (Settings ▸ Rip server). Once set, this checks your Mac's Apple Music library for newly-added music; it's also checked automatically every day at 04:00.")
+                    ? "Checks the Apple Music library on the PocketDJ server for newly-added music. It's also checked automatically every day at 04:00. New songs appear in the “Apple Music (Local)” source after the next catalog publish — not instantly; use “Reload catalog” if one is still landing."
+                    : "Requires the import server (Settings ▸ Import server). Once set, this checks the Apple Music library on the PocketDJ server for newly-added music; it's also checked automatically every day at 04:00.")
             }
         }
     }

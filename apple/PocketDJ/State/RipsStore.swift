@@ -2,19 +2,43 @@ import Foundation
 import Observation
 import os                  // rips Logger — studio-id guard + cue diagnostics
 
-/// Rip-on-demand client — a faithful native port of the PWA's `useRipsStore`.
+/// Import-on-demand client — a faithful native port of the PWA's `useRipsStore`.
+///
+/// EVERYTHING this client asks for is the user's OWN media, held in their own cloud
+/// library. A song the user does not own is simply a MISS: the server returns nothing
+/// and never goes looking for that audio anywhere else. Apple Music is a playback
+/// surface only — nothing here captures, records or downloads audio from it.
 ///
 /// Two backends, exactly like the web app:
-///   • the PUBLIC S3 rips manifest (`<ripsBase>/rips/manifest.json`) tells us what's
-///     already ripped — fetched straight from S3, so it works even with the rip
-///     server offline (the server is only needed to CREATE a rip),
-///   • the iMac rip server (Tailscale) creates rips on demand and serves a live HLS
-///     stream while the capture is still running.
+///   • the rips manifest (`<ripsBase>/rips/manifest.json`) says which of the user's songs
+///     are already prepared — fetched straight from object storage, so it works even with
+///     the import server offline (the server is only needed to PREPARE a song),
+///   • the import server prepares a song on demand from the user's own cloud library and
+///     serves a live HLS stream while it is still being prepared.
 ///
-/// `play(_:)` resolves a song to a playable URL: a cached song streams its durable S3
+/// `play(_:)` resolves a song to a playable URL: a prepared song streams its durable
 /// mp3 instantly; a miss POSTs `/rip`, polls `/jobs/<id>`, and returns the live HLS
 /// URL the moment the stream is ready (then keeps polling in the background to swap the
 /// manifest to the durable mp3). `download(_:)` resolves the durable mp3 bytes.
+///
+/// #TOUPDATE: "the user's OWN media / their own copy" is the TARGET, not today's storage.
+/// The manifest and every object it names sit under a PUBLIC-READ, FLAT `rips/<songId>.mp3`
+/// namespace SHARED by all users — no per-user copies, no per-user access control. Honest
+/// only once rips are written under a per-user prefix and reads are access-controlled. The
+/// "public S3 / public ripsBase / PUBLIC rips/ prefix" notes further down this file are
+/// accurate TODAY and describe exactly what has to change; sweep them in the same pass.
+///
+/// #TOUPDATE: "accesses only theirs" also needs request auth. The server's `authed()` and
+/// `adminAuthed()` FAIL OPEN — with no token configured EVERY request is authorized, and
+/// `/health` reports `auth:false`. Honest only once the server authenticates the requester
+/// and rejects unauthenticated reads and writes.
+///
+/// #TOUPDATE: "prepares from the user's own cloud library" is the TARGET. Today the server
+/// routes every DIGITAL-source song to a real-time Apple Music CAPTURE unconditionally
+/// (rip-server.mjs — "Digital songs always capture from Apple Music"), and analog songs
+/// capture on an exact library match; the `ripFromCloud` flag below is NOT the gate. Honest
+/// only once capture is deleted and the server FAILS CLOSED on any song the requester does
+/// not own in their cloud library.
 @MainActor
 @Observable
 final class RipsStore {
@@ -183,8 +207,17 @@ final class RipsStore {
     var serverUrl: String { (settings?.ripServerURL ?? "").trimmingCharacters(in: .whitespaces).trimmedTrailingSlash }
     var token: String { (settings?.ripToken ?? "").trimmingCharacters(in: .whitespaces) }
     var hasServer: Bool { !serverUrl.isEmpty }
-    /// When on, rip requests ask the server to try an Apple Music (cloud) capture with
-    /// analog fallback. Sent in the POST body only when true (older servers ignore it).
+    /// When on, requests ask the server to prefer the user's CLOUD-library copy of a song
+    /// over their local/analog one. Sent in the POST body only when true (older servers
+    /// ignore it).
+    ///
+    /// #TOUPDATE: this flag should not exist. All preparation is meant to run against the
+    /// user's owned media in their cloud library, so there is nothing to toggle. Today it
+    /// still maps to the server's `preferCloud`, and the server captures DIGITAL songs from
+    /// Apple Music whether or not it is set — so the toggle does NOT gate capture. Delete it
+    /// (this property, the POST bodies below, the server's `preferCloud`, the persisted
+    /// `SettingsStore.ripFromCloud` and its Settings toggle) once capture is gone. Left in
+    /// place for now because removing it would change behaviour and strand a stored setting.
     var ripFromCloud: Bool { settings?.ripFromCloud ?? false }
 
     /// Studio-id guard + cue diagnostics (spec §8/§9) — one info line per fenced request;
@@ -203,7 +236,7 @@ final class RipsStore {
     /// Pure: drop studio-namespaced ids (`smp_`/`lp_`/`ptn_`/`tk_` — `StudioFactory.studioPrefixes`,
     /// the single source of truth). Studio items ride collections' string arrays, so ANY
     /// collection-shaped id list handed to rip/stemify may contain them — and a studio id
-    /// reaching the rip server would trigger a live-search rip of a garbage title into the
+    /// reaching the import server would trigger a live-search rip of a garbage title into the
     /// public bucket. The server rejects them too (`rip-server.mjs`); this client mirror keeps
     /// the requests from ever leaving the device. (`cue_` ids pass through on purpose: cues
     /// never ride collection arrays — see `StudioFactory.newCueId`.)
@@ -275,7 +308,7 @@ final class RipsStore {
         return ripsBase.appendingPathComponent(w)
     }
 
-    // MARK: Stem (Demucs) helpers — read-only ingestion (creation lives on the rip server)
+    // MARK: Stem (Demucs) helpers — read-only ingestion (creation lives on the import server)
 
     /// True once a song has been separated into stems (presence of the version stamp).
     func isStemmed(_ songId: String) -> Bool { manifest[songId]?.stemVersion != nil }
@@ -386,12 +419,17 @@ final class RipsStore {
     enum RipError: LocalizedError {
         case noServer, ripFailed(Int), didNotStart(String?), serverError(String?), timedOut
         /// A studio-namespaced id reached a rip path (spec §8) — these play from their own
-        /// local files and must NEVER hit the rip server (defense-in-depth; the server
+        /// local files and must NEVER hit the import server (defense-in-depth; the server
         /// rejects them too). Surfacing an explicit error beats a confusing server 4xx.
         case studioItem
+
+        /// NOTE: the "Settings ▸ Import server" pointers here and in the `discoverError`
+        /// strings below name a REAL section — SettingsView's `Text("Import server")` header
+        /// and its "Import server URL" / token fields. Rename them together or the pointers
+        /// dangle. (The `settings-rip-*` accessibility ids are NOT user-visible and stay.)
         var errorDescription: String? {
             switch self {
-            case .noServer:           return "No rip server configured (Settings ▸ Rip server)."
+            case .noServer:           return "No import server configured (Settings ▸ Import server)."
             case .ripFailed(let s):   return "Rip failed (\(s))."
             case .didNotStart(let m): return m ?? "Rip did not start."
             case .serverError(let m): return m ?? "Rip failed."
@@ -419,9 +457,9 @@ final class RipsStore {
         var post = URLRequest(url: URL(string: "\(base)/rip")!)
         post.httpMethod = "POST"
         // Short connect/request timeout (matches RipServerService.health's 12s) so a CONFIGURED
-        // but unreachable rip server (e.g. an asleep Tailscale/home server while on venue wifi)
-        // fails in seconds — letting Play-All SKIP an un-burned track promptly rather than
-        // stalling on URLSession.shared's 60s default before advancing.
+        // but unreachable import server (asleep, or venue wifi that can't reach it) fails in
+        // seconds — letting Play-All SKIP an un-burned track promptly rather than stalling on
+        // URLSession.shared's 60s default before advancing.
         post.timeoutInterval = 12
         post.setValue("application/json", forHTTPHeaderField: "content-type")
         applyAuth(&post, token: tok)
@@ -470,7 +508,7 @@ final class RipsStore {
                 self.jobs[songId] = v
                 if v.phase == .ready, v.url != nil { await self.refreshManifest(); return }
                 // Do NOT stop on .error: the server's auto-heal re-queues failed
-                // captures (retry N/6 with backoff), flipping error → queued — a poll
+                // jobs (retry N/6 with backoff), flipping error → queued — a poll
                 // that bailed here left the row stuck on ＋ Add while the server was
                 // still working. The 1-hour cap above is the terminal condition.
             }
@@ -612,10 +650,16 @@ final class RipsStore {
     /// constant without a MainActor hop (and to stay clean under the Swift 6 language mode).
     nonisolated private static let inFlightPhases: Set<Phase> = [.queued, .searching, .ripping, .streaming, .uploading]
 
-    /// FIRE-AND-FORGET async rip request (Feature 1). Called the moment a streamable
-    /// Apple Music song STARTS playing so the durable rip is likely ready shortly after
-    /// the user finishes streaming. NEVER throws (errors are swallowed) and NEVER blocks
-    /// playback — the caller fires it in an unawaited `Task`.
+    /// FIRE-AND-FORGET import request (Feature 1). Called the moment a streamable song
+    /// STARTS playing, so the user's durable copy is likely ready shortly after. This is an
+    /// independent request for the user's own copy — the Apple Music stream the user may be
+    /// hearing is not recorded, reused, or otherwise involved. NEVER throws (errors are
+    /// swallowed) and NEVER blocks playback — the caller fires it in an unawaited `Task`.
+    ///
+    /// #TOUPDATE: "the stream is not recorded" is the TARGET — the request the client sends
+    /// carries only the song id, but the server still fulfils it by capturing the track from
+    /// Apple Music in real time. True once the server's capture path is deleted (see the
+    /// capture marker at the top of this file).
     ///
     /// IDEMPOTENT at three layers:
     ///   1. cheap MainActor guard — already cached, an in-flight job, or already requesting
@@ -654,23 +698,30 @@ final class RipsStore {
         }
     }
 
-    /// Outcome of an explicit, metadata-carrying rip request (`requestRip`).
+    /// Outcome of an explicit, metadata-carrying import request (`requestRip`).
     enum RipRequestOutcome: Equatable {
-        case ready          // already in the S3 manifest — nothing to capture
-        case queued         // newly enqueued on the rip server
-        case inflight       // joined an in-progress capture for the same resource
-        case unknown        // server doesn't know this song (old server / no ad-hoc support)
-        case noServer       // no rip server configured
+        case ready          // already in the manifest — nothing to prepare
+        case queued         // newly enqueued on the import server
+        case inflight       // joined an in-progress job for the same resource
+        case unknown        // server has nothing to prepare for this song — a MISS, not a failure
+        case noServer       // no import server configured
         case failed         // network / decode error
     }
 
-    /// Request a rip for a song the catalog may NOT contain yet — the recognizer "add to
-    /// Apple Music + burn" path. Unlike `requestRipIfNeeded` (which posts only `songId`,
-    /// so the server must already know the track), this carries `title`/`artist` so the
-    /// server can synthesize an ad-hoc catalog row and the digital worker (which captures
-    /// by artist+title) can find it. Returns the server's classification so the caller can
-    /// decide whether to poll for completion. Idempotent-ish: a cached song short-circuits
-    /// to `.ready`.
+    /// Request the user's own copy of a song the catalog may NOT contain yet — the
+    /// recognizer's ＋ Add path (save to the user's Apple Music library, then prepare their
+    /// own copy). Unlike `requestRipIfNeeded` (which posts only `songId`, so the server must
+    /// already know the track), this carries `title`/`artist` so the server can synthesize an
+    /// ad-hoc catalog row and resolve the song by artist+title. Returns the server's
+    /// classification so the caller can decide whether to poll for completion; a song the user
+    /// does not own comes back `.unknown` — a miss, and the end of it. Idempotent-ish: an
+    /// already-prepared song short-circuits to `.ready`.
+    ///
+    /// #TOUPDATE: "a song the user does not own comes back `.unknown`" is the TARGET. Today
+    /// the server treats an unowned song as work to do — it synthesizes the ad-hoc row and
+    /// captures the track from Apple Music — so this path currently returns `.queued`, not
+    /// `.unknown`. True once the server fails closed on media the requester does not own in
+    /// their cloud library and reports the miss as a 404.
     @discardableResult
     func requestRip(songId: String, title: String, artist: String,
                     appleMusicId: String? = nil, lengthMs: Int? = nil) async -> RipRequestOutcome {
@@ -703,11 +754,12 @@ final class RipsStore {
         }
     }
 
-    // MARK: Discover — full-Apple-Music-catalog search (the rip server's /search proxy)
+    // MARK: Discover — Apple Music catalog search (the import server's /search proxy)
 
-    /// One `GET /search` result: an Apple Music catalog hit the rip server can capture on
-    /// demand. `songId` is the ad-hoc rip id (`amrec_<storeId>`); `ripped`/`url` reflect
-    /// the public rips manifest at search time (the capture may already exist).
+    /// One `GET /search` result: an Apple Music catalog hit — METADATA only (title, artist,
+    /// artwork). Finding a song here grants no access to its audio; see `discoverAdd` for what
+    /// ＋ Add actually does. `songId` is the ad-hoc id (`amrec_<storeId>`); `ripped`/`url`
+    /// reflect the rips manifest at search time (the user's copy may already be prepared).
     struct DiscoverHit: Decodable, Identifiable, Equatable {
         var appleMusicId: String
         var title: String
@@ -728,29 +780,30 @@ final class RipsStore {
     /// inline notice. Strings already name the Settings pane to fix (URL vs token).
     private(set) var discoverError: String?
 
-    /// Search the ENTIRE Apple Music catalog via the rip server's `/search` proxy.
-    /// Returns [] on ANY failure, surfacing the reason via `discoverError` (a 401/403
-    /// points at Settings ▸ Rip server token) — Discover is a browse surface, so errors
-    /// inform rather than throw. An empty/whitespace query is a no-op.
+    /// Search the ENTIRE Apple Music catalog via the import server's `/search` proxy — a
+    /// METADATA lookup, for finding out what exists. Returns [] on ANY failure, surfacing the
+    /// reason via `discoverError` (a 401/403 points at the Settings ▸ Import server token) —
+    /// Discover is a browse surface, so errors inform rather than throw. An empty/whitespace
+    /// query is a no-op.
     func discoverSearch(_ query: String, limit: Int = 25) async -> [DiscoverHit] {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { discoverError = nil; return [] }
         guard hasServer else {
-            discoverError = "No rip server configured (Settings ▸ Rip server)."
+            discoverError = "No import server configured (Settings ▸ Import server)."
             return []
         }
         guard var comps = URLComponents(string: "\(serverUrl)/search") else {
-            discoverError = "Invalid rip server URL (Settings ▸ Rip server)."
+            discoverError = "Invalid import server URL (Settings ▸ Import server)."
             return []
         }
         comps.queryItems = [URLQueryItem(name: "q", value: q),
                             URLQueryItem(name: "limit", value: String(limit))]
         guard let url = comps.url else {
-            discoverError = "Invalid rip server URL (Settings ▸ Rip server)."
+            discoverError = "Invalid import server URL (Settings ▸ Import server)."
             return []
         }
         var req = URLRequest(url: url)
-        // Same short timeout as `ensureURL`'s POST: an unreachable Tailscale server must
+        // Same short timeout as `ensureURL`'s POST: an unreachable import server must
         // fail in seconds, not URLSession's 60 s default, so the notice appears promptly.
         req.timeoutInterval = 12
         applyAuth(&req, token: token)
@@ -760,7 +813,7 @@ final class RipsStore {
                 discoverError = "Search failed."; return []
             }
             if http.statusCode == 401 || http.statusCode == 403 {
-                discoverError = "Rip server rejected the request — check Settings ▸ Rip server token."
+                discoverError = "The import server rejected the request — check Settings ▸ Import server token."
                 return []
             }
             guard (200..<300).contains(http.statusCode) else {
@@ -770,22 +823,39 @@ final class RipsStore {
             discoverError = nil
             return hits
         } catch {
-            discoverError = "Rip server unreachable (Settings ▸ Rip server)."
+            discoverError = "Import server unreachable (Settings ▸ Import server)."
             return []
         }
     }
 
-    /// "＋ Add" for a Discover hit: enqueue the server's ad-hoc `amrec_` capture via the
-    /// EXISTING metadata-carrying `/rip` path (`requestRip`), then follow the job with the
-    /// same background poll single-song rips use (`pollToReady`) so the manifest — and the
-    /// row — flips to ripped when the capture lands. In-flight state is readable per song
-    /// via `jobs[hit.songId]?.phase`. Never throws; failures land in `discoverError`.
+    /// "＋ Add" for a Discover hit — two INDEPENDENT app-side actions, in order:
     ///
-    /// `library`: the iMac captures by PLAYING the track in Music.app, and a track
-    /// outside the DJ's Apple Music library usually can't produce audio there (the
-    /// recognizer flow's lesson — its ＋ adds to the library BEFORE ripping). When this
-    /// device can write the library, add first: the library sync reaches the iMac in
-    /// time for one of the server's capture retries.
+    ///   1. Add the song to the user's own Apple Music library (when this device can write
+    ///      it). This is a complete user-facing action on its own: the user found something
+    ///      and saved it to their library. It does not exist to enable step 2.
+    ///   2. Ask the import server to prepare the user's own copy, via the metadata-carrying
+    ///      `/rip` path (`requestRip`), then follow the job with the same background poll
+    ///      single-song imports use (`pollToReady`) so the manifest — and the row — flips when
+    ///      the job lands. In-flight state is readable per song via `jobs[hit.songId]?.phase`.
+    ///      Never throws; failures land in `discoverError`.
+    ///
+    /// ＋ Add is NOT an exception to the ownership rule. Step 1 stands on its own. Step 2 only
+    /// ever succeeds for media the user already OWNS in their cloud library; a song they don't
+    /// own is a MISS, and the server acquires the audio from nowhere to fill the gap.
+    ///
+    /// This code is AGNOSTIC to how the server fulfils step 2, and must stay that way. The
+    /// app states an intent ("prepare this user's copy") and the server decides what it can
+    /// honour — its contract is that it processes ONLY media the user owns in their own cloud
+    /// library, and a song outside that is simply a miss. Do not reintroduce assumptions about
+    /// the server's mechanism here, or sequence app-side work to accommodate one: that couples
+    /// the client to a server implementation it cannot see, and it misdescribes the app's
+    /// behaviour to anyone reading this source.
+    ///
+    /// #TOUPDATE: the server contract described above is the TARGET, not current behaviour —
+    /// the server does not yet restrict itself to media the user owns (it captures Discover
+    /// adds from Apple Music), and does not yet authenticate the requester or serve per-user
+    /// copies. Remove this marker once it does all three.
+    ///
     /// Provisional-catalog store (eventual consistency — wired at app init). An accepted
     /// add lands the song in the on-device catalog IMMEDIATELY; the nightly indexer's
     /// real entry supersedes it later.
@@ -796,9 +866,9 @@ final class RipsStore {
             try? await library.addSongToLibrary(storeID: hit.appleMusicId)
         }
         await discoverAddRip(hit)
-        // Eventual consistency: once the server ACCEPTED the capture (or already has it),
-        // the song is a catalog citizen — collections/burn/stem key off the amrec_ id and
-        // retry safely against the queued rip.
+        // Eventual consistency: once the server has ACCEPTED the request (or already holds
+        // the media), the song is a catalog citizen — collections/burn/stem key off the
+        // amrec_ id and retry safely against the queued job.
         if let job = jobs[hit.songId], job.phase != .error {
             discoverAdds?.add(songId: hit.songId, appleMusicId: hit.appleMusicId,
                               title: hit.title, artist: hit.artist, album: hit.album,
@@ -810,7 +880,7 @@ final class RipsStore {
         }
     }
 
-    /// The rip-request half of `discoverAdd` (split so tests can drive it without a
+    /// The import-request half of `discoverAdd` (split so tests can drive it without a
     /// library contributor).
     private func discoverAddRip(_ hit: DiscoverHit) async {
         let outcome = await requestRip(songId: hit.songId, title: hit.title, artist: hit.artist,
@@ -821,14 +891,14 @@ final class RipsStore {
         case .queued, .inflight:
             if let jobId = jobs[hit.songId]?.jobId { pollToReady(songId: hit.songId, jobId: jobId) }
         case .noServer:
-            discoverError = "No rip server configured (Settings ▸ Rip server)."
+            discoverError = "No import server configured (Settings ▸ Import server)."
         case .unknown, .failed:
-            discoverError = "Add failed — the rip server didn’t accept the request."
+            discoverError = "Add failed — the import server didn’t accept the request."
         }
     }
 
     /// Refresh a single song's job from `/jobs/<id>` (used by the recognizer rip→burn poll
-    /// so a server-side capture failure short-circuits instead of waiting out the timeout).
+    /// so a server-side failure short-circuits instead of waiting out the timeout).
     /// Returns the latest phase, or the last-known phase when there's no job/the fetch fails.
     @discardableResult
     func refreshJob(_ songId: String) async -> Phase? {
@@ -959,8 +1029,8 @@ final class RipsStore {
     }
 
     /// STOP an in-flight collection RIP (Feature 1): POST `/rip-cancel` so the server removes
-    /// still-queued matching jobs (+ their durable queue files) and KILLS the in-flight capture
-    /// worker for a currently-running match, marking each canceled. Idempotent — a second call
+    /// still-queued matching jobs (+ their durable queue files) and KILLS the in-flight worker
+    /// for a currently-running match, marking each canceled. Idempotent — a second call
     /// for the same song reports `notFound`. Deduplicates `ids`. No-op when there's no server.
     /// An older server that 404s `/rip-cancel` is a silent no-op (forward-compatible). After a
     /// successful cancel, the canceled songs' local job entries are cleared so the row's phase
@@ -1005,7 +1075,7 @@ final class RipsStore {
         }
     }
 
-    // MARK: Stemify — separate a song (or collection) into stems on the rip server
+    // MARK: Stemify — separate a song (or collection) into stems on the import server
 
     /// Phases that mean a stem job is already working (queued / ripping-first / separating).
     nonisolated private static let stemInFlightPhases: Set<StemPhase> = [.queued, .ripping, .stemming]
@@ -1077,7 +1147,7 @@ final class RipsStore {
     }
 
     /// Stem DEVICE-LOCAL audio the catalog has never seen (the Demuxer's imported files and
-    /// performance media): STREAM the file to the rip server's `/stemify-custom`, await the
+    /// performance media): STREAM the file to the import server's `/stemify-custom`, await the
     /// Demucs job, and return the four public-S3 stem URLs. Deliberately NOT behind the
     /// studio-id fence — that fence stops /stemify's rip chain (live-searching a garbage
     /// title); here the audio is uploaded, so studio ids are exactly the intended clients.

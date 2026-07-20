@@ -5,9 +5,23 @@ import Observation
 /// Setlist, Pocket, and source-playlist detail screens. One place owns the wiring so the
 /// four views stay consistent and their `body` stays within the type-checker's reach.
 ///
-///   • RIP  → `RipsStore.ripCollection` (server-side batch enqueue + S3 upload, reusing
-///            the durable queue). Real-time + concurrency-1, so the summary says
-///            "enqueued — completes over time" and offers a manifest Refresh.
+///   • RIP  → `RipsStore.ripCollection` (server-side batch enqueue, reusing the durable
+///            queue). RIP only ever prepares the user's OWN copy of media the user owns
+///            in their own cloud library. A song the user doesn't own is a MISS: the
+///            server returns nothing for it and never sources the audio from anywhere
+///            else. Nothing is captured, recorded or downloaded from Apple Music — Apple
+///            Music is playback only. Concurrency-1, so the summary says "enqueued —
+///            completes over time" and offers a manifest Refresh.
+///            #TOUPDATE: the server does not enforce any of that yet — rip-server.mjs:798
+///            routes every DIGITAL-source song to Apple Music capture unconditionally
+///            ("Digital songs always capture from Apple Music"), and :549 captures analog
+///            songs on an exact Apple Music library match. Delete the capture path and
+///            make the server fail closed on any id the requester doesn't own in their
+///            own cloud library.
+///            #TOUPDATE: "the user's OWN copy" — rips are stored in ONE flat, public-read
+///            namespace (rips/<songId>.mp3) shared by every user, and authed() fails open
+///            (rip-server.mjs:1904) so a request isn't attributed to a user at all. Needs
+///            per-user prefixes (or buckets) plus enforced per-user request auth.
 ///   • BURN → `BurnStore.burn` (app-side serial download of ALREADY-ripped songs +
 ///            sidecars into managed storage). Downloads only what's ripped; reports the
 ///            rest as "not yet ripped".
@@ -78,10 +92,10 @@ final class CollectionRipBurnController {
     var showSummary = false
     var canRefresh = false
 
-    /// A collection RIP enqueues in ~1-2s (that's all `working` covers) but the actual
-    /// capture is server-side, real-time, concurrency-1 — minutes to hours. While the
-    /// enqueued songs are still being ripped this stays true so the STOP button + a live
-    /// progress indicator remain visible. Driven by the manifest poll below.
+    /// A collection RIP enqueues in ~1-2s (that's all `working` covers) but the work is
+    /// server-side, concurrency-1 — minutes to hours. While the enqueued songs are still
+    /// being prepared this stays true so the STOP button + a live progress indicator
+    /// remain visible. Driven by the manifest poll below.
     private(set) var ripInProgress = false
     /// Live progress string for the in-flight collection RIP (e.g. "ripping — 3 of 12 done").
     private(set) var ripProgress: String?
@@ -115,8 +129,8 @@ final class CollectionRipBurnController {
     private var lastRipIds: [String] = []
 
     /// How often the rip poll reconciles the manifest, and a generous safety cap so the
-    /// poll never runs forever (a concurrency-1, real-time rip can take a long time, but
-    /// a leaked Task is worse than stopping the *indicator* early).
+    /// poll never runs forever (a concurrency-1 rip can take a long time, but a leaked
+    /// Task is worse than stopping the *indicator* early).
     static var ripPollIntervalMs = 4500
     static var ripPollMaxTicks = 1600   // ~2h at 4.5s/tick
 
@@ -126,14 +140,20 @@ final class CollectionRipBurnController {
         lastRipIds = ids
         Task {
             let r = await rips.ripCollection(ids)
-            // Real-time, concurrency-1: "queued/inflight" means enqueued, not done. Don't
-            // imply instant readiness; offer Refresh to reconcile the manifest later.
+            // Concurrency-1: "queued/inflight" means enqueued, not done. Don't imply
+            // instant readiness; offer Refresh to reconcile the manifest later.
             let pending = r.queued + r.inflight
             var parts: [String] = []
             if r.ready > 0 { parts.append("\(r.ready) already ripped") }
             if pending > 0 { parts.append("\(pending) enqueued — completes over time") }
             if r.unknown > 0 { parts.append("\(r.unknown) unrippable") }
-            if rips.ripFromCloud && pending > 0 { parts.append("cloud rips capture in real time, one at a time") }
+            // No source guard: preparing a song is the same operation whichever source it
+            // came from, and it is always the user's own copy of media they own.
+            // #TOUPDATE: Settings ▸ Rip server still ships a "Rip from cloud source" toggle
+            // (SettingsView.swift:475) that no longer gates anything here. It must be
+            // removed together with the server's Apple Music capture path
+            // (rip-server.mjs:549 analog-on-library-match, :798 digital-always).
+            if pending > 0 { parts.append("prepared one at a time") }
             summary = parts.isEmpty ? "Nothing to rip." : parts.joined(separator: " · ")
             canRefresh = pending > 0 || r.ready > 0
             working = false
@@ -147,11 +167,14 @@ final class CollectionRipBurnController {
         }
     }
 
-    /// Poll the public S3 manifest periodically and count how many of `ids` are now ripped
-    /// (`rips.cachedURL(id) != nil`). Drives `ripInProgress` + `ripProgress` and the result
-    /// summary as songs complete. Stops when pending hits 0 (done), on `stop()`, or after a
-    /// generous safety cap — never polls forever, never leaks (the Task is cancellable and
-    /// re-checks cancellation each tick).
+    /// Poll the user's own rip manifest periodically and count how many of `ids` are now
+    /// ripped (`rips.cachedURL(id) != nil`). Drives `ripInProgress` + `ripProgress` and the
+    /// result summary as songs complete. Stops when pending hits 0 (done), on `stop()`, or
+    /// after a generous safety cap — never polls forever, never leaks (the Task is
+    /// cancellable and re-checks cancellation each tick).
+    /// #TOUPDATE: there is no per-user manifest yet — the manifest and the rips it lists sit
+    /// in ONE flat, public-read namespace (rips/<songId>.mp3) shared by every user, with no
+    /// per-user access control. Needs per-user prefixes + authenticated reads.
     private func startRipPoll(_ ids: [String], rips: RipsStore) {
         ripPollTask?.cancel()
         let total = ids.count
@@ -342,7 +365,10 @@ final class CollectionRipBurnController {
                 if r.failed > 0 { parts.append("\(r.failed) failed") }
                 if r.outOfSpace { parts.append("out of space — stopped early") }
                 if r.stopped { parts.append("stopped") }
-                if rips.ripFromCloud && !r.stopped && r.notRipped > 0 && rips.hasServer { parts.append("cloud rips capture in real time, one at a time") }
+                // #TOUPDATE: same as the rip path — the "Rip from cloud source" guard is gone.
+                // The toggle (SettingsView.swift:475) and the server's Apple Music capture path
+                // (rip-server.mjs:549, :798) must both be removed.
+                if !r.stopped && r.notRipped > 0 && rips.hasServer { parts.append("prepared one at a time") }
             }
             summary = parts.joined(separator: " · ")
             canRefresh = !r.stopped && !r.folderUnavailable && r.notRipped > 0

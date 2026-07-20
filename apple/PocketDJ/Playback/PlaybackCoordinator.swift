@@ -120,13 +120,30 @@ final class PlaybackCoordinator {
             if await provider.tryPlay(song, atMs: atMs) {
                 activeBackend = provider.backend
                 onPlay?(song.id)
-                // Feature 1 — stream-through-ripping. The Apple Music stream has already
-                // STARTED (tryPlay returned true), so kicking off the async rip here adds
-                // ZERO playback latency. Fire-and-forget (unawaited, never blocks/delays
-                // playback; failures are silent). A plain `Task` inherits this @MainActor —
-                // `requestRipIfNeeded` is idempotent and suspends (not blocks) on the POST.
-                // (Not for a namespaced `am:` id: the rip server indexes no such song and
-                // has no ad-hoc descriptor here — the POST could only 404.)
+                // Ask the server to prepare this user's OWN copy, if they have one.
+                //
+                // SERVER CONTRACT (enforced server-side, not here): `/rip` processes ONLY
+                // audio the user uploaded for their own collection. A song the user has no
+                // uploaded media for is a MISS — the server returns nothing and does not
+                // acquire the audio from anywhere. Playback stays on whatever backend won
+                // above. The miss is the correct outcome, never a gap for the server to fill.
+                //
+                // #TOUPDATE: the contract above is the TARGET. The server does not enforce
+                // user-owned-media-only yet, and it currently runs unauthenticated. Remove
+                // this marker once the server rejects anything the requesting user did not
+                // upload, and authenticates the requester.
+                //
+                // Fire-and-forget: unawaited, never blocks or delays playback, failures are
+                // silent. `requestRipIfNeeded` is idempotent and suspends (not blocks) on
+                // the POST; a plain `Task` inherits this @MainActor.
+                //
+                // #TOUPDATE: the CONDITION below is still the pre-D6 one and does not match
+                // the contract above. Gating on `.appleMusic` means the POST fires exactly
+                // when the user is LEAST likely to have their own copy, and a reviewer
+                // reading this binary sees "Apple Music playback → POST /rip", which is what
+                // guideline 5.2.3 describes regardless of what the server does. Re-gate on
+                // "user has unprocessed uploaded media for this song" once that signal
+                // exists client-side.
                 if provider.backend == .appleMusic,
                    AppleMusicCatalog.storeID(fromSongID: song.id) == nil {
                     Task { await self.ripProvider.requestAsyncRip(song.id) }
