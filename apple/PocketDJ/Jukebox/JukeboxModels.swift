@@ -50,6 +50,16 @@ struct JukeboxSessionInfo: Codable, Equatable {
     /// a per-session token and both the guest page and its state.json refuse a request
     /// without one.
     let url: String
+    /// Whether this session requires a per-session guest access token: guests need the code
+    /// baked into `url` to get in. Seeded at create from Settings ▸ Jukebox Hero (ON by
+    /// default) and overridable per session. Optional so older persisted sessions decode as
+    /// nil (= treat as off). The token itself, once minted, never expires (a permanent code).
+    ///
+    /// #TOUPDATE: the server does not mint or enforce the guest token yet. `url` is still the
+    /// bare public page (jukebox-server.mjs:247) and the guest request route is public (:446),
+    /// so today this flag only records intent — it admits no one and turns no one away. True
+    /// when the server mints the token into `url` and refuses tokenless guest requests.
+    var requiresToken: Bool?
     /// Never expires / never auto-deletes. Optional: older persisted sessions decode as nil (= off).
     ///
     /// #TOUPDATE: this field must not exist — a jukebox session always expires. Deleting it

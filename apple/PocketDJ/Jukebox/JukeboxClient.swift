@@ -74,11 +74,15 @@ struct JukeboxClient {
     /// Create a jukebox: the server mints ids, renders + uploads the guest page, and
     /// seeds `state.json`. Longer timeout — the create does two S3 uploads.
     /// `timeless: false` ⇒ the default lifecycle (auto-end 24 h, sweeper-deleted at 7 d).
-    func create(name: String, timeless: Bool) async throws -> JukeboxSessionInfo {
-        struct Body: Encodable { let name: String; let timeless: Bool }
+    /// `requiresToken` asks the server to mint a per-session guest access token and bake it
+    /// into the returned `url`. #TOUPDATE: the server ignores this field today (it returns a
+    /// bare public URL); it rides the create call as intent so the plumbing is ready when
+    /// jukebox-server.mjs starts minting + enforcing the guest token.
+    func create(name: String, timeless: Bool, requiresToken: Bool) async throws -> JukeboxSessionInfo {
+        struct Body: Encodable { let name: String; let timeless: Bool; let requiresToken: Bool }
         return try await run(
             try request("/jukebox", method: "POST", bearer: token,
-                        body: Body(name: name, timeless: timeless), timeout: 30),
+                        body: Body(name: name, timeless: timeless, requiresToken: requiresToken), timeout: 30),
             as: JukeboxSessionInfo.self)
     }
 

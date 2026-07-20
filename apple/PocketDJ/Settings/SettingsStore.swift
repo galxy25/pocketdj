@@ -69,6 +69,13 @@ final class SettingsStore {
     var jukeboxServerURL: String
     /// Optional server-level bearer for creating jukeboxes (JUKEBOX_TOKEN on the server).
     var jukeboxToken: String
+    /// Default for whether a NEW jukebox session requires a per-session guest access token
+    /// (each session's create-view toggle seeds from this and can override it). ON by default
+    /// so a session is admits-only by default rather than open to anyone with the link.
+    /// #TOUPDATE: the server (jukebox-server.mjs) must mint the guest token, bake it into the
+    /// guest URL, and refuse tokenless guest requests — until then this flag rides the create
+    /// call as intent but does not yet gate anyone.
+    var jukeboxTokensRequiredByDefault: Bool
     /// When on, every rip the app requests asks the server to try capturing the song from
     /// the Apple Music library on the iMac (cloud), falling back to the analog (vinyl)
     /// source when there's no Apple Music match or the capture fails. No-op for songs that
@@ -197,6 +204,7 @@ final class SettingsStore {
         self.ripToken = data.ripToken
         self.jukeboxServerURL = data.jukeboxServerURL ?? ""
         self.jukeboxToken = data.jukeboxToken ?? ""
+        self.jukeboxTokensRequiredByDefault = data.jukeboxTokensRequiredByDefault ?? true
         self.ripFromCloud = data.ripFromCloud ?? false
         self.playbackMode = data.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         self.searchAccessKeyID = data.searchAccessKeyID
@@ -334,6 +342,7 @@ final class SettingsStore {
         let snapshot = SettingsData(
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
             jukeboxServerURL: jukeboxServerURL, jukeboxToken: jukeboxToken,
+            jukeboxTokensRequiredByDefault: jukeboxTokensRequiredByDefault,
             ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
@@ -380,6 +389,7 @@ final class SettingsStore {
         ripServerURL = d.ripServerURL; ripToken = d.ripToken
         jukeboxServerURL = d.jukeboxServerURL ?? ""
         jukeboxToken = d.jukeboxToken ?? ""
+        jukeboxTokensRequiredByDefault = d.jukeboxTokensRequiredByDefault ?? true
         ripFromCloud = d.ripFromCloud ?? false
         playbackMode = d.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
@@ -427,6 +437,8 @@ struct SettingsData: Codable {
     /// Jukebox Hero server base (nil ⇒ blank, i.e. no server configured) + creation token.
     var jukeboxServerURL: String?
     var jukeboxToken: String?
+    /// Optional so older blobs decode (a missing key ⇒ nil ⇒ the `?? true` default applies).
+    var jukeboxTokensRequiredByDefault: Bool?
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — a
     /// non-optional Bool would fail decode and silently reset ALL settings to defaults
     /// (load() falls back to .default via `try?`). Coalesced to false at the read sites.
@@ -501,6 +513,7 @@ struct SettingsData: Codable {
         ripToken: "",
         jukeboxServerURL: "",
         jukeboxToken: "",
+        jukeboxTokensRequiredByDefault: true,
         ripFromCloud: false,
         playbackMode: PlaybackMode.cloud.rawValue,
         searchAccessKeyID: "",

@@ -34,6 +34,9 @@ struct JukeboxView: View {
 
     @State private var name = ""
     @State private var timeless = false
+    /// Per-session override of Settings ▸ Jukebox Hero ▸ "Require access token" — seeded from
+    /// that default in createView's .onAppear, then adjustable for this one session.
+    @State private var requiresToken = true
     @State private var confirmEnd = false
 
     var body: some View {
@@ -85,6 +88,10 @@ struct JukeboxView: View {
                 .font(.caption).foregroundStyle(Theme.fgDim)
                 .frame(maxWidth: 320)
                 .accessibilityIdentifier("jukebox-timeless")
+            Toggle("Require access token", isOn: $requiresToken)
+                .font(.caption).foregroundStyle(Theme.fgDim)
+                .frame(maxWidth: 320)
+                .accessibilityIdentifier("jukebox-require-token")
             Button {
                 start()
             } label: {
@@ -118,6 +125,9 @@ struct JukeboxView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Seed the per-session toggle from the Settings default each time the create view
+        // appears (so a change in Settings is reflected for the next session).
+        .onAppear { requiresToken = settings.jukeboxTokensRequiredByDefault }
     }
 
     private var defaultName: String { Self.defaultName(settings) }
@@ -130,7 +140,7 @@ struct JukeboxView: View {
 
     private func start() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task { await jukebox.start(name: trimmed.isEmpty ? defaultName : trimmed, timeless: timeless) }
+        Task { await jukebox.start(name: trimmed.isEmpty ? defaultName : trimmed, timeless: timeless, requiresToken: requiresToken) }
     }
 
     // MARK: - Live session
@@ -249,6 +259,21 @@ struct JukeboxView: View {
                 }
             }
             .accessibilityIdentifier("jukebox-timeless-live")
+            .listRowBackground(Theme.bg)
+            Toggle(isOn: Binding(
+                get: { session.requiresToken ?? false },
+                set: { on in jukebox.setRequiresToken(on) })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Require access token").font(.caption).foregroundStyle(Theme.fg)
+                    // #TOUPDATE: flipping this on a live session must make the server mint/revoke
+                    // the guest token and re-publish the guest page — see JukeboxStore.setRequiresToken.
+                    Text((session.requiresToken ?? false)
+                         ? "Only guests with this session's code (in the link) can join."
+                         : "Anyone with the link can join.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+            .accessibilityIdentifier("jukebox-require-token-live")
             .listRowBackground(Theme.bg)
         } header: {
             Text("Session").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)

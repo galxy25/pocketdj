@@ -593,6 +593,16 @@ struct SettingsView: View {
             TextField("Token (optional)", text: $settings.jukeboxToken)
                 .pocketField()
                 .accessibilityIdentifier("settings-jukebox-token")
+            Toggle(isOn: Binding(
+                get: { settings.jukeboxTokensRequiredByDefault },
+                set: { settings.jukeboxTokensRequiredByDefault = $0; settings.persist() })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Require access token")
+                    Text("New sessions require a per-session code by default. You can override this per session.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+            .accessibilityIdentifier("settings-jukebox-require-token")
             HStack {
                 Button {
                     settings.persist()
