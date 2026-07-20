@@ -139,29 +139,16 @@ final class CarPlayController {
     private func artistsTemplate(_ model: CarPlayModel) -> CPListTemplate {
         azListTemplate(title: "Artists", tabImageName: "music.mic", emptyText: "No artists",
                        rows: model.artists()) { [weak self] row in
-            self?.pushArtistAlbums(name: row.title, model: model)   // row.title == artist name
+            // Selecting an artist pushes a FLAT list of every one of their songs (depth 2 =
+            // tab-root → this list), NOT artist → albums → songs (depth 3). CarPlay audio apps
+            // cap the template stack at 2 including the root on iOS ≤ 26.3 (3 on ≥ 26.4), and a
+            // third push throws a runtime exception. `pushSongs` keeps the "▶ Play all" /
+            // "🔀 Shuffle all" affordances on top, playing the whole discography.  row.title ==
+            // artist name.
+            self?.pushSongs(title: row.title, rows: model.songs(byArtist: row.title),
+                            playAll: { await model.playArtist(name: row.title) },
+                            shuffleAll: { await model.playArtist(name: row.title, shuffle: true) })
         }
-    }
-
-    /// An artist's albums, with Play all / Shuffle all (the whole discography) on top.
-    private func pushArtistAlbums(name: String, model: CarPlayModel) {
-        let playAll = CPListItem(text: "▶ Play all", detailText: nil)
-        playAll.handler = { [weak self] _, c in Task { await model.playArtist(name: name); self?.showNowPlaying(); c() } }
-        let shuffle = CPListItem(text: "🔀 Shuffle all", detailText: nil)
-        shuffle.handler = { [weak self] _, c in Task { await model.playArtist(name: name, shuffle: true); self?.showNowPlaying(); c() } }
-        let albums = model.albums(byArtist: name).map { album in
-            listItem(album, showsDisclosure: true) { [weak self] in
-                self?.pushSongs(title: album.title, rows: model.songs(inAlbum: album.id),
-                                playAll: { await model.playAlbum(id: album.id) },
-                                shuffleAll: { await model.playAlbum(id: album.id, shuffle: true) })
-            }
-        }
-        let template = CPListTemplate(title: name, sections: [
-            CPListSection(items: [playAll, shuffle]),
-            CPListSection(items: albums.isEmpty ? [CPListItem(text: "No albums", detailText: nil)] : albums,
-                          header: "Albums", sectionIndexTitle: nil),
-        ])
-        interfaceController.pushTemplate(template, animated: true, completion: nil)
     }
 
     /// First-letter index key: A–Z, else "#".

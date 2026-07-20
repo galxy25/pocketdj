@@ -6,8 +6,9 @@ import Foundation
 enum Config {
     enum Environment { case dev, prod }
 
-    /// Flip to `.prod` to point at the production CloudFront distribution.
-    static var environment: Environment = .dev
+    /// Ships as `.prod` so release/TestFlight builds point at the production CloudFront
+    /// distribution. Flip to `.dev` locally to develop against the dev distribution.
+    static var environment: Environment = .prod
 
     /// CloudFront site that serves `current-index.json` and `/art/…`.
     static var catalogBase: URL {
@@ -20,23 +21,16 @@ enum Config {
     /// Public S3 rips bucket: `rips/manifest.json` + `rips/<songId>.mp3`.
     static let ripsBase = URL(string: "https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com")!
 
-    /// iMac rip server (rip-on-demand + live HLS + Discover search). PUBLIC since the
-    /// beta-distribution promotion: Tailscale Funnel serves it on HTTPS port 10000
-    /// (scripts/setup-rip-funnel.sh), so beta testers off the Tailnet reach it too —
-    /// with a bearer token once the funnel script provisions them (Settings ▸ Rip
-    /// server ▸ token; RIP_TOKEN user tier, RIP_ADMIN_TOKEN admin tier). Port note:
-    /// 443 stays the Tailnet-only `tailscale serve` mount (Levi's original path) and
-    /// 8443 is the jukebox Funnel — Funnel is per-PORT, so the rip server rides the
-    /// third HTTPS port.
-    static let ripServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net:10000")!
-
-    /// Jukebox Hero session broker (scripts/jukebox-server.mjs). PUBLICLY reachable —
-    /// guests submit requests from their own phones — via Tailscale Funnel at the
-    /// `:8443/jukebox` path mount (the first public mount; the rip server followed on
-    /// :10000). Port 8443 (not 443) is load-bearing: Funnel is per-PORT and 443 stays
-    /// the Tailnet-only `tailscale serve` rip-server mount. (The planned Lambda + API
-    /// Gateway move changes only this base URL.)
-    static let jukeboxServerBase = URL(string: "https://levis-imac.tail2e2bdf.ts.net:8443/jukebox")!
+    // Rip server (rip-on-demand + live HLS + Discover search) and Jukebox Hero session
+    // broker: there is intentionally NO shipped default base URL for either. The app seeds
+    // BOTH `SettingsData.default.ripServerURL` and `.jukeboxServerURL` blank, so `hasServer`
+    // is honestly false out of the box and the server-dependent features show their existing
+    // "No rip server configured" state until the user sets a URL in Settings. The previous
+    // default was a personal machine on a personal Tailscale tailnet — an always-non-empty
+    // URL that made every server affordance render ENABLED and then fail at request time
+    // (a Guideline 2.1 loud-failure), and it shipped a personal hostname inside the binary.
+    // #TOUPDATE: once a first-party PocketDJ cloud rip-server / jukebox endpoint exists, make
+    // its public URL the seeded default here (and in SettingsData.default) instead of blank.
 
     /// The catalog index document (vinyl, the default source).
     static var indexURL: URL { catalogBase.appendingPathComponent("current-index.json") }

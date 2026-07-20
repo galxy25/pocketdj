@@ -87,6 +87,14 @@ final class CarPlayModel {
         }
     }
 
+    /// One artist's whole discography as a FLAT list of song rows (their albums' track lists,
+    /// concatenated in album order). CarPlay audio apps cap the template stack at depth 2 (root +
+    /// one push) on iOS ≤ 26.3, so the Artists tab pushes this flat list directly instead of
+    /// artist → albums → songs (which would be depth 3 and throws at runtime). Case-insensitive.
+    func songs(byArtist name: String) -> [Row] {
+        songRows(albumsByArtist(name).flatMap(\.trackList))
+    }
+
     /// ▶/🔀 an artist's whole discography.
     func playArtist(name: String, shuffle: Bool = false) async {
         let ids = albumsByArtist(name).flatMap(\.trackList)

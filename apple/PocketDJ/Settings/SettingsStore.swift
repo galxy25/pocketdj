@@ -187,7 +187,7 @@ final class SettingsStore {
         self.sources = data.sources
         self.ripServerURL = data.ripServerURL
         self.ripToken = data.ripToken
-        self.jukeboxServerURL = data.jukeboxServerURL ?? Config.jukeboxServerBase.absoluteString
+        self.jukeboxServerURL = data.jukeboxServerURL ?? ""
         self.jukeboxToken = data.jukeboxToken ?? ""
         self.ripFromCloud = data.ripFromCloud ?? false
         self.playbackMode = data.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
@@ -370,7 +370,7 @@ final class SettingsStore {
         let d = SettingsData.default
         sources = d.sources
         ripServerURL = d.ripServerURL; ripToken = d.ripToken
-        jukeboxServerURL = d.jukeboxServerURL ?? Config.jukeboxServerBase.absoluteString
+        jukeboxServerURL = d.jukeboxServerURL ?? ""
         jukeboxToken = d.jukeboxToken ?? ""
         ripFromCloud = d.ripFromCloud ?? false
         playbackMode = d.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
@@ -416,7 +416,7 @@ struct SettingsData: Codable {
     var ripServerURL: String
     var ripToken: String
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode —
-    /// Jukebox Hero server base (nil ⇒ `Config.jukeboxServerBase`) + creation token.
+    /// Jukebox Hero server base (nil ⇒ blank, i.e. no server configured) + creation token.
     var jukeboxServerURL: String?
     var jukeboxToken: String?
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — a
@@ -485,9 +485,13 @@ struct SettingsData: Codable {
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
-        ripServerURL: Config.ripServerBase.absoluteString,
+        // #TOUPDATE: no shipped default rip/jukebox server URL — seeded BLANK so `hasServer`
+        // is honestly false out of the box (server features show "No rip server configured"
+        // until the user sets a URL). This also keeps the old personal-tailnet hostname out of
+        // the shipped binary. Set these to the first-party PocketDJ cloud endpoint once it exists.
+        ripServerURL: "",
         ripToken: "",
-        jukeboxServerURL: Config.jukeboxServerBase.absoluteString,
+        jukeboxServerURL: "",
         jukeboxToken: "",
         ripFromCloud: false,
         playbackMode: PlaybackMode.cloud.rawValue,
