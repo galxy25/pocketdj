@@ -17,7 +17,9 @@ import { execFileSync } from 'node:child_process';
 const CFG = {
   region: process.env.AWS_REGION || 'us-west-2',
   jobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs',
-  maxWorkers: Number(process.env.POCKETDJ_STEM_MAX_WORKERS || 2),
+  // 2026-07-19: standard-vCPU quota raised 5 → 64 (m7i.large = 2 vCPU ⇒ 32 max); default 30
+  // keeps one instance-pair of headroom so an unrelated launch never trips a quota error.
+  maxWorkers: Number(process.env.POCKETDJ_STEM_MAX_WORKERS || 30),
   jobsPerWorker: Number(process.env.POCKETDJ_STEM_JOBS_PER_WORKER || 2),
   template: process.env.POCKETDJ_STEM_LAUNCH_TEMPLATE || 'pocketdj-stem-worker',
 };
