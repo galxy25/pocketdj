@@ -101,5 +101,35 @@ final class FavoritesUITests: XCTestCase {
         XCTAssertTrue(app.el("favorite-filter").waitForExistence(timeout: 5),
                       "the filter sheet exposes the favorite constraint in song mode")
     }
+
+    /// END TO END: ♥ a song, then filter to "Favorites only" and assert THAT SONG is the one
+    /// left standing. This is the assertion that would have caught a filter reading a
+    /// different FavoritesStore instance than the ♥ writes to, or matching on the wrong id
+    /// space — both of which look identical from outside ("the filter matches zero songs").
+    func testFavoritesOnlyFilterShowsExactlyTheFavoritedSong() {
+        let app = launch()
+        XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))
+        app.selectKind(songs: true)
+
+        // Two songs visible up front; ♥ exactly one of them.
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.el("row-play-sng_7").exists)
+        app.el("favorite-toggle-sng_1").tap()
+        XCTAssertEqual(app.el("favorite-toggle-sng_1").label, "Unfavorite")
+
+        // Filter to Favorites only.
+        app.el("filter-button").tap()
+        let picker = app.el("favorite-filter")
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.tap()
+        app.buttons["Favorites only"].tap()
+        app.buttons["Done"].firstMatch.tap()
+
+        // The ♥'d song survives; the un-♥'d one is filtered out.
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 10),
+                      "the favorited song must still be listed")
+        XCTAssertFalse(app.el("row-play-sng_7").exists,
+                       "a song that was never favorited must be filtered out")
+    }
     #endif
 }

@@ -53,8 +53,26 @@ enum OwnerIdentity {
     /// change while the app runs, and the Settings row should not re-hit CloudKit.
     private static var cached: String?
 
+    /// True when it is SAFE to construct a `CKContainer` for our container id.
+    ///
+    /// `CKContainer(identifier:)` does not throw when the container is missing from the app's
+    /// entitlements — it **traps**, taking the process with it, and no `do/catch` can save
+    /// you. An unsigned simulator/dev build (`CODE_SIGNING_ALLOWED=NO` strips entitlements)
+    /// is exactly that case, so a launch-time owner check crashed the app on sight. Note this
+    /// only became reachable once `Config.ownerICloudHashes` gained an entry: with an empty
+    /// allowlist `isOwner()` short-circuits before ever asking for a hash, which is why the
+    /// crash appeared the moment the gate was armed rather than when it was written.
+    ///
+    /// The rest of the app avoids this by never touching CloudKit under a fixture run
+    /// (`CloudSyncService`'s `enabled` closure is `!fixtureRun && …`, and `CKCloudDocDatabase`
+    /// builds its container lazily inside those gated calls). This mirrors that doctrine.
+    private static var cloudKitIsSafeToTouch: Bool {
+        ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil
+    }
+
     static func currentHash() async -> String? {
         if let cached { return cached }
+        guard cloudKitIsSafeToTouch else { return nil }    // fail closed, and do not trap
         do {
             let id = try await CKContainer(identifier: CKCloudDocDatabase.containerID).userRecordID()
             cached = id.recordName.isEmpty ? nil : hash(id.recordName)

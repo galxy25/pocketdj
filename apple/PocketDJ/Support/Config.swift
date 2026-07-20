@@ -61,8 +61,12 @@ enum Config {
     /// the CloudKit Development and Production containers yield DIFFERENT values — with
     /// only the dev hash a TestFlight build silently falls back to local-only.
     static let ownerICloudHashes: Set<String> = [
-        // "…dev container hash…",
-        // "…prod container hash…",
+        // Levi. Captured 2026-07-20 from Settings ▸ Debug ▸ Owner identity.
+        // If two-way sync reads as OFF on some build, that build is talking to a CloudKit
+        // container this hash didn't come from — capture that build's hash and add it here
+        // too, rather than replacing this one. The Debug panel's "Favorites sync" line is
+        // the check: it resolves to owner or it doesn't.
+        "f9f6d08a986591dcf82e96d1155f73b37750ebaebb2f0e9e2c4854d2b3e53a2a",
     ]
 
     /// A NEW profile's starting favorites — a snapshot of the owner's APPLE MUSIC ♥,
