@@ -37,6 +37,9 @@ struct DemuxCutSampleView: View {
     /// Carve a MIX of the selected demux-cache stems instead of the resolved file.
     @State private var stemMode = false
     @State private var enabledStems: Set<String> = Set(StemPlayer.stems)
+    /// Stem-mode AUDITION: the chips live-mute this synced player, so what you HEAR is exactly
+    /// the mix that gets carved (full-mix mode auditions the resolved file via StudioEngine).
+    @State private var stemAudition = StemPlayer()
 
     private static let minWindowMs = 50
 
@@ -86,6 +89,64 @@ struct DemuxCutSampleView: View {
         .task { await resolveSource() }
         .onDisappear {
             if let pid = previewId, engine.loadedSampleId == pid { engine.unloadSample() }
+            stemAudition.stop()
+        }
+    }
+
+    // MARK: - Audition routing (what you HEAR is what gets carved)
+
+    /// Stem mode auditions through the synced StemPlayer (chips live-mute it); full-mix mode
+    /// auditions the resolved file through StudioEngine. One player sounds at a time.
+    private var auditionIsPlaying: Bool {
+        stemMode ? stemAudition.isPlaying : engine.isPlayingSample
+    }
+
+    private func auditionToggle() {
+        if stemMode {
+            stemAudition.togglePlayPause()
+        } else {
+            guard engine.loadedSampleId == previewId else { return }
+            if engine.isPlayingSample { engine.pauseSample() } else { engine.playSample() }
+        }
+    }
+
+    private func auditionStop() {
+        if stemMode {
+            if stemAudition.isPlaying { stemAudition.togglePlayPause() }
+            stemAudition.seek(to: 0)
+        } else {
+            engine.stopSample()
+        }
+    }
+
+    /// Flip between the two audition engines, carrying position + play state across so the
+    /// toggle sounds like a mute change, not a restart.
+    private func setStemMode(_ on: Bool) {
+        guard on != stemMode else { return }
+        if on {
+            guard let stems else { return }
+            let pos = playheadSeconds()
+            let wasPlaying = engine.isPlayingSample
+            if wasPlaying { engine.pauseSample() }
+            stemAudition.load(songId: "\(source.key)#cut-stems", localURLs: stems)
+            stemMode = true
+            applyChipMutes()
+            stemAudition.seek(to: pos)
+            if wasPlaying { stemAudition.togglePlayPause() }
+        } else {
+            let wasPlaying = stemAudition.isPlaying
+            if wasPlaying { stemAudition.togglePlayPause() }
+            stemMode = false
+            // The engine resumes from ITS paused spot (a minor divergence beats a restart);
+            // play is one tap away and the region marks are mode-independent.
+            if wasPlaying, engine.loadedSampleId == previewId { engine.playSample() }
+        }
+    }
+
+    /// Converge the stem player's mutes onto the enabled-chip set (load resets mutes).
+    private func applyChipMutes() {
+        for name in StemPlayer.stems where stemAudition.isAudible(name) != enabledStems.contains(name) {
+            stemAudition.toggleMute(name)
         }
     }
 
@@ -153,17 +214,14 @@ struct DemuxCutSampleView: View {
                 Text(StudioFmt.clock(playheadSeconds()))
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
 
-                Button {
-                    guard engine.loadedSampleId == previewId else { return }
-                    if engine.isPlayingSample { engine.pauseSample() } else { engine.playSample() }
-                } label: {
-                    Image(systemName: engine.isPlayingSample ? "pause.fill" : "play.fill")
+                Button { auditionToggle() } label: {
+                    Image(systemName: auditionIsPlaying ? "pause.fill" : "play.fill")
                         .font(.title2).frame(width: 46, height: 38).contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless).foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("demux-cut-play")
 
-                Button { engine.stopSample() } label: {
+                Button { auditionStop() } label: {
                     Image(systemName: "stop.fill")
                         .font(.title3).frame(width: 40, height: 38).contentShape(Rectangle())
                 }
@@ -211,7 +269,7 @@ struct DemuxCutSampleView: View {
     @ViewBuilder private var stemSection: some View {
         if stems != nil {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $stemMode) {
+                Toggle(isOn: Binding(get: { stemMode }, set: { setStemMode($0) })) {
                     Label("Stem source", systemImage: "square.stack.3d.up")
                         .font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
                 }
@@ -223,7 +281,7 @@ struct DemuxCutSampleView: View {
                               alignment: .leading, spacing: 8) {
                         ForEach(Self.stemDisplay, id: \.key) { st in stemChip(st) }
                     }
-                    Text("Carves a mix of the selected stems for this region.")
+                    Text("The audition plays exactly this mix — what you hear is what gets cut.")
                         .font(.caption2).foregroundStyle(Theme.fgDim)
                 }
             }
@@ -239,6 +297,7 @@ struct DemuxCutSampleView: View {
             } else {
                 enabledStems.insert(st.key)
             }
+            applyChipMutes()   // live: the audition mix follows the chips instantly
         } label: {
             Label(st.label, systemImage: st.icon)
                 .font(.caption.weight(.semibold))
@@ -409,6 +468,7 @@ struct DemuxCutSampleView: View {
     }
 
     private func playheadSeconds() -> Double {
+        if stemMode, stemAudition.ready { return max(0, stemAudition.currentTime) }
         guard engine.loadedSampleId == previewId else { return 0 }
         return max(0, engine.samplePlayheadSeconds())
     }
