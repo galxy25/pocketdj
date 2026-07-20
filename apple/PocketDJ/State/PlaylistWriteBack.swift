@@ -62,11 +62,12 @@ final class PlaylistWriteBack {
 
     /// One owed write: "this song belongs in that Apple Music playlist".
     ///
-    /// `playlistName` is the join key, not `indexPlaylistId`: our `IndexPlaylist.id` comes
-    /// from the indexer's Library.xml persistent id, which MusicKit knows nothing about, and
-    /// `LibraryPlaylistFilter` exposes exactly `{id, name}` — so NAME is the only handle the
-    /// two worlds share. The id is kept anyway for de-dupe and for showing the user which
-    /// playlist a stuck job belongs to.
+    /// `playlistName` is only the BOOTSTRAP key. Our `IndexPlaylist.id` is the indexer's
+    /// Library.xml persistent id, which MusicKit has never heard of, so the very first
+    /// delivery for a playlist has to start from the name — but a name is a terrible join
+    /// key (Levi 2026-07-20: "Sap " in the index vs. "Sap" in the live library lost a song
+    /// silently). So the name is used ONCE to resolve the playlist's stable MusicKit
+    /// library id, and `musicKitPlaylistId` is what every write actually uses from then on.
     struct Job: Codable, Identifiable, Equatable, Sendable {
         var id: String
         var indexPlaylistId: String
@@ -81,19 +82,32 @@ final class PlaylistWriteBack {
         var nextAttemptAtMs: Double?
         /// When the job reached a terminal state (drives history pruning).
         var settledAtMs: Double?
+        /// The stable MusicKit library-playlist id this job resolved to, once known.
+        /// OPTIONAL and additive: an older document has no such key, and a document written
+        /// by this build still decodes on a build that doesn't know the field — which is why
+        /// `schemaVersion` does NOT move (a bump would strand the user's queued writes).
+        var musicKitPlaylistId: String?
+        /// Human-readable note about HOW the playlist was resolved when the answer wasn't
+        /// obvious (several library playlists share the name). Surfaced in Settings ▸ Sync
+        /// so a guess is visible rather than silent — the failure mode this whole change is
+        /// about is a wrong-or-missing playlist join that nobody could see.
+        var resolutionNote: String?
 
         enum CodingKeys: String, CodingKey {
             case id, indexPlaylistId, playlistName, songId, appleMusicId,
-                 queuedAtMs, attempts, lastError, state, nextAttemptAtMs, settledAtMs
+                 queuedAtMs, attempts, lastError, state, nextAttemptAtMs, settledAtMs,
+                 musicKitPlaylistId, resolutionNote
         }
 
         init(id: String, indexPlaylistId: String, playlistName: String, songId: String,
              appleMusicId: String, queuedAtMs: Double, attempts: Int = 0, lastError: String? = nil,
-             state: JobState = .queued, nextAttemptAtMs: Double? = nil, settledAtMs: Double? = nil) {
+             state: JobState = .queued, nextAttemptAtMs: Double? = nil, settledAtMs: Double? = nil,
+             musicKitPlaylistId: String? = nil, resolutionNote: String? = nil) {
             self.id = id; self.indexPlaylistId = indexPlaylistId; self.playlistName = playlistName
             self.songId = songId; self.appleMusicId = appleMusicId; self.queuedAtMs = queuedAtMs
             self.attempts = attempts; self.lastError = lastError; self.state = state
             self.nextAttemptAtMs = nextAttemptAtMs; self.settledAtMs = settledAtMs
+            self.musicKitPlaylistId = musicKitPlaylistId; self.resolutionNote = resolutionNote
         }
 
         /// LENIENT by construction: every field falls back to a sane default so a document
@@ -113,12 +127,18 @@ final class PlaylistWriteBack {
             state = (try? c.decode(JobState.self, forKey: .state)) ?? .queued
             nextAttemptAtMs = try? c.decode(Double.self, forKey: .nextAttemptAtMs)
             settledAtMs = try? c.decode(Double.self, forKey: .settledAtMs)
+            musicKitPlaylistId = try? c.decode(String.self, forKey: .musicKitPlaylistId)
+            resolutionNote = try? c.decode(String.self, forKey: .resolutionNote)
         }
     }
 
+    /// `resolvedPlaylistIds` is additive and OPTIONAL for the same reason the Job fields are:
+    /// a document written before this change has no such key and must still decode into a
+    /// working queue. schemaVersion stays at 1 on purpose.
     private struct Document: Codable {
         var schemaVersion: Int = 1
         var jobs: [Job] = []
+        var resolvedPlaylistIds: [String: String]?
     }
 
     // MARK: - State
@@ -128,6 +148,29 @@ final class PlaylistWriteBack {
     private(set) var isRunning = false
     /// Most recent delivery failure, for a Settings/debug surface. Cleared on a clean drain.
     private(set) var lastError: String?
+
+    /// A resolution the transport had to GUESS at — several library playlists share the
+    /// indexed name and no track overlap arbitrated between them. Distinct from `lastError`
+    /// on purpose: this describes a delivery that SUCCEEDED, possibly into the wrong
+    /// playlist, so it must survive the clean-drain reset that clears `lastError`. Retired
+    /// only when a later resolution for that playlist comes back unambiguous.
+    private(set) var resolutionWarning: String?
+
+    /// indexPlaylistId → stable MusicKit library-playlist id. Persisted so the resolve — which
+    /// costs a fetch of the user's ENTIRE library playlist list — happens once per playlist
+    /// ever, not once per queued song. Invalidated (per key) when a write reports `playlistGone`.
+    private(set) var resolvedPlaylistIds: [String: String] = [:]
+
+    /// Catalog seam for disambiguation: given an `indexPlaylistId`, the Apple Music store ids
+    /// of the songs the INDEX thinks are in that playlist. Used only to pick between several
+    /// live library playlists that share a name. Defaults to nothing, because the queue has no
+    /// business knowing about the catalog — the app wires it at init.
+    @ObservationIgnored var appleMusicIdsForIndexPlaylist: ((String) -> [String])?
+
+    /// How many of the indexed playlist's track ids are handed to the transport for
+    /// disambiguation. This picks between candidates; it does not verify membership, so a
+    /// sample is as good as the whole list and far cheaper to compare.
+    private static let disambiguationSampleLimit = 50
 
     @ObservationIgnored private let fileURL: URL
     /// The MusicKit seam. nil ⇒ nothing can be written from this build/platform (see
@@ -139,7 +182,9 @@ final class PlaylistWriteBack {
          transport: (any PlaylistWriteBackTransport)? = nil) {
         self.fileURL = fileURL
         self.transport = transport
-        jobs = Self.decode(fileURL)
+        let doc = Self.decode(fileURL)
+        jobs = doc.jobs
+        resolvedPlaylistIds = doc.resolvedPlaylistIds ?? [:]
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -159,10 +204,10 @@ final class PlaylistWriteBack {
         return defaultURL()
     }
 
-    private nonisolated static func decode(_ url: URL) -> [Job] {
+    private nonisolated static func decode(_ url: URL) -> Document {
         guard let data = try? Data(contentsOf: url),
-              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return [] }
-        return doc.jobs
+              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return Document() }
+        return doc
     }
 
     // MARK: - Derived
@@ -199,9 +244,12 @@ final class PlaylistWriteBack {
                 && ($0.state == .queued || $0.state == .delivered)
         }) else { return nil }
 
+        // Seed the job with the playlist's already-known MusicKit id when we have one: the
+        // second song added to a playlist should never pay for the all-playlists fetch again.
         let job = Job(id: "wbj_" + UUID().uuidString, indexPlaylistId: indexPlaylistId,
                       playlistName: playlistName, songId: songId, appleMusicId: amId,
-                      queuedAtMs: Self.nowMs)
+                      queuedAtMs: Self.nowMs,
+                      musicKitPlaylistId: resolvedPlaylistIds[indexPlaylistId])
         jobs.append(job)
         prune()
         save()
@@ -267,12 +315,24 @@ final class PlaylistWriteBack {
 
     /// One delivery attempt. Returns true on success. Never throws — a stuck job is a
     /// recorded state, not an error the caller has to handle.
+    ///
+    /// THE JOIN, in order: use the id we already resolved for this playlist; otherwise resolve
+    /// it by name ONCE and remember it. If the write comes back `playlistGone` the remembered
+    /// id is stale (the playlist was deleted, or MusicKit re-minted it), so it is forgotten and
+    /// re-resolved exactly once before giving up — one retry, not a loop, because a genuinely
+    /// missing playlist would otherwise re-resolve forever inside a single attempt.
     @discardableResult
     private func attempt(_ jobId: String, transport: any PlaylistWriteBackTransport) async -> Bool {
         guard let job = jobs.first(where: { $0.id == jobId }) else { return true }
         do {
-            try await transport.addSong(appleMusicId: job.appleMusicId,
-                                        toPlaylistNamed: job.playlistName)
+            let target = try await playlistId(for: job, transport: transport)
+            do {
+                try await transport.addSong(appleMusicId: job.appleMusicId, toPlaylistId: target)
+            } catch PlaylistWriteBackError.playlistGone {
+                forgetResolution(for: job.indexPlaylistId)
+                let fresh = try await playlistId(for: job, transport: transport, forceResolve: true)
+                try await transport.addSong(appleMusicId: job.appleMusicId, toPlaylistId: fresh)
+            }
             update(jobId) {
                 $0.attempts += 1
                 $0.lastError = nil
@@ -297,6 +357,52 @@ final class PlaylistWriteBack {
             }
             lastError = message
             return false
+        }
+    }
+
+    /// The MusicKit id to write into, resolving (and remembering) it if we don't have one yet.
+    /// Throws `playlistNotFound` when the live library has nothing by that name — an actionable
+    /// end state: the user renamed or deleted the playlist and only they can say what to do.
+    private func playlistId(for job: Job, transport: any PlaylistWriteBackTransport,
+                            forceResolve: Bool = false) async throws -> String {
+        if !forceResolve {
+            if let known = resolvedPlaylistIds[job.indexPlaylistId] { return known }
+            if let stored = job.musicKitPlaylistId, !stored.isEmpty {
+                // The map is device-local and can be lost (fresh install restoring the queue
+                // from a backup); the job carries its own copy, so re-seed the map from it.
+                resolvedPlaylistIds[job.indexPlaylistId] = stored
+                return stored
+            }
+        }
+        let sample = Array((appleMusicIdsForIndexPlaylist?(job.indexPlaylistId) ?? [])
+            .prefix(Self.disambiguationSampleLimit))
+        guard let resolved = try await transport.resolvePlaylistId(name: job.playlistName,
+                                                                   expectedAppleMusicIds: sample) else {
+            throw PlaylistWriteBackError.playlistNotFound(job.playlistName)
+        }
+        resolvedPlaylistIds[job.indexPlaylistId] = resolved
+        // A resolution the transport had to GUESS at (duplicate names) is recorded on the job
+        // AND on `resolutionWarning`, because the whole point of this change is that a wrong
+        // playlist join must never again be invisible.
+        //
+        // Deliberately NOT `lastError`: that means "the last thing that FAILED" and `run()`
+        // clears it whenever a drain succeeds — which is precisely the case a guess survives.
+        // A song written into the wrong playlist is a SUCCESSFUL delivery, so routing the
+        // warning through lastError would erase it at the exact moment it started to matter.
+        let note = transport.lastResolutionNote
+        update(job.id) { $0.musicKitPlaylistId = resolved; $0.resolutionNote = note }
+        // An unambiguous resolution for this playlist retires an earlier guess about it.
+        resolutionWarning = note ?? (jobs.contains { $0.resolutionNote != nil } ? resolutionWarning : nil)
+        save()
+        return resolved
+    }
+
+    /// Drop a stale mapping (from both the map and every job that cached it) so the next
+    /// attempt starts over from the name.
+    private func forgetResolution(for indexPlaylistId: String) {
+        resolvedPlaylistIds[indexPlaylistId] = nil
+        for i in jobs.indices where jobs[i].indexPlaylistId == indexPlaylistId {
+            jobs[i].musicKitPlaylistId = nil
         }
     }
 
@@ -338,7 +444,11 @@ final class PlaylistWriteBack {
 
     /// Re-decode after an external write (parity with the other durable stores; this
     /// document is NOT cloud-synced, so in practice only tests call it).
-    func reloadFromDisk() { jobs = Self.decode(fileURL) }
+    func reloadFromDisk() {
+        let doc = Self.decode(fileURL)
+        jobs = doc.jobs
+        resolvedPlaylistIds = doc.resolvedPlaylistIds ?? [:]
+    }
 
     // MARK: - Internals
 
@@ -373,7 +483,7 @@ final class PlaylistWriteBack {
     }
 
     private func save() {
-        let doc = Document(jobs: jobs)
+        let doc = Document(jobs: jobs, resolvedPlaylistIds: resolvedPlaylistIds)
         if let data = try? JSONEncoder().encode(doc) {
             try? data.write(to: fileURL, options: .atomic)
         }
@@ -400,6 +510,9 @@ enum PlaylistWriteBackError: Error, LocalizedError {
     case notAuthorized
     case songNotFound(String)
     case playlistNotFound(String)
+    /// A previously-resolved MusicKit playlist id no longer resolves. NOT a user-facing end
+    /// state: the queue catches this one, forgets the mapping, and re-resolves by name once.
+    case playlistGone(String)
 
     var errorDescription: String? {
         switch self {
@@ -411,6 +524,8 @@ enum PlaylistWriteBackError: Error, LocalizedError {
             return "Couldn’t find this song in the Apple Music catalog (\(id))."
         case .playlistNotFound(let name):
             return "Couldn’t find an Apple Music playlist named “\(name)” in your library."
+        case .playlistGone(let id):
+            return "That Apple Music playlist is no longer in your library (\(id))."
         }
     }
 }
@@ -429,9 +544,25 @@ protocol PlaylistWriteBackTransport: AnyObject {
     /// Can a write go out RIGHT NOW (Apple Music enabled in this build + authorized)? A
     /// false here leaves jobs queued — the user can fix it and we'll try again.
     var canWrite: Bool { get }
-    /// Add the catalog song `appleMusicId` to the LIBRARY playlist named `playlistName`.
-    /// Throws on any failure so the queue can retry.
-    func addSong(appleMusicId: String, toPlaylistNamed playlistName: String) async throws
+    /// Resolve an indexed playlist to its STABLE MusicKit library-playlist id — the one join
+    /// key that survives the name drift between Library.xml and MusicKit. Returns nil when the
+    /// live library has no playlist that could plausibly be this one.
+    ///
+    /// `expectedAppleMusicIds` is a SAMPLE of the indexed playlist's track catalog ids, used
+    /// ONLY to break a tie between several library playlists sharing a name. It is not a
+    /// membership check and must never be treated as one.
+    func resolvePlaylistId(name: String, expectedAppleMusicIds: [String]) async throws -> String?
+    /// Add the catalog song `appleMusicId` to the library playlist with this MusicKit id.
+    /// Throws `PlaylistWriteBackError.playlistGone` when the id no longer resolves, so the
+    /// caller can drop its cached mapping and re-resolve once; throws anything else for retry.
+    func addSong(appleMusicId: String, toPlaylistId playlistId: String) async throws
+    /// Set by `resolvePlaylistId` when the answer was a GUESS (duplicate names, no track
+    /// overlap to arbitrate). Defaulted so a stub never has to care.
+    var lastResolutionNote: String? { get }
+}
+
+extension PlaylistWriteBackTransport {
+    var lastResolutionNote: String? { nil }
 }
 
 #if canImport(MusicKit) && !os(macOS) && !targetEnvironment(macCatalyst)
@@ -439,22 +570,27 @@ import MusicKit
 
 /// Production transport.
 ///
-/// Two lookups, because the two id spaces don't meet:
-///   1. `MusicCatalogResourceRequest<Song>(matching: \.id, equalTo:)` — our
+/// THE JOIN IS BY MUSICKIT ID, NOT BY NAME (Levi 2026-07-20). The previous implementation
+/// resolved the live playlist with `.filter(matching: \.name, equalTo: playlistName)` — an
+/// EXACT string match — and that lost a real song: "Sweet Thing" never reached Apple Music
+/// because the indexed name is `"Sap "` (trailing space, straight out of Library.xml) while
+/// the live library playlist is `"Sap"`. Exact-match found nothing and the job died quietly.
+/// Names drift between Library.xml and MusicKit in every direction — whitespace, case,
+/// diacritics — so the name is now used ONCE, fuzzily, to find the playlist's `id`, and the
+/// id is what every subsequent write uses.
+///
+/// Three lookups, because the id spaces don't meet:
+///   1. `MusicLibraryRequest<Playlist>()` with NO filter — the whole library playlist list,
+///      matched in tiers locally (see `resolvePlaylistId`). Filtering server-side by name
+///      can't express "trimmed" or "case-insensitive", which is exactly what we need.
+///   2. `MusicLibraryRequest<Playlist>.filter(matching: \.id, equalTo:)` — the STABLE join.
+///      `LibraryPlaylistFilter` exposes `{id, name}` (verified in the iOS 26 SDK
+///      swiftinterface), so `id` is filterable; and `MusicLibrary.add(_:to:)` needs a
+///      Playlist OBJECT, which is why a stored id still costs one request.
+///   3. `MusicCatalogResourceRequest<Song>(matching: \.id, equalTo:)` — our
 ///      `IndexSong.appleMusicId` IS a catalog store id (resolved by
 ///      `scripts/resolve-apple-music-catalog.mjs`), so this is exact. Same idiom as
 ///      `AppleMusicProvider.fetchSong(storeID:)`.
-///   2. `MusicLibraryRequest<Playlist>.filter(matching: \.name, equalTo:)` — resolves the
-///      LIVE library playlist. By NAME because that is the only field the two worlds share:
-///      `LibraryPlaylistFilter` exposes exactly `{id, name}` (verified in the iOS 26 SDK
-///      swiftinterface) and our `IndexPlaylist.id` is the indexer's Library.xml persistent
-///      id, which MusicKit has never heard of.
-///
-/// KNOWN LIMIT of the name join: two library playlists with the SAME name are
-/// indistinguishable here, and we take the first match. Failing instead would strand the
-/// job permanently on a condition the user can't see; picking the first at least lands the
-/// song in a playlist by that name. The file/type docs and the Add-to sheet's footer are
-/// the honest disclosure.
 ///
 /// The whole class is compiled out on macOS / Catalyst — `MusicLibrary`'s write methods
 /// don't exist there — so `makeDefaultTransport()` returns nil and the queue resolves
@@ -469,21 +605,107 @@ final class MusicKitPlaylistWriteBackTransport: PlaylistWriteBackTransport {
         AppleMusicCredentials.isEnabled && MusicAuthorization.currentStatus == .authorized
     }
 
-    func addSong(appleMusicId: String, toPlaylistNamed playlistName: String) async throws {
+    private(set) var lastResolutionNote: String?
+
+    // MARK: Resolve
+
+    func resolvePlaylistId(name: String, expectedAppleMusicIds: [String]) async throws -> String? {
         guard canWrite else { throw PlaylistWriteBackError.notAuthorized }
+        lastResolutionNote = nil
+
+        // No filter: fetch them all and match in tiers below. This is the expensive call, which
+        // is why the queue caches the answer per playlist rather than repeating it per song.
+        let all = try await MusicLibraryRequest<MusicKit.Playlist>().response().items
+        let candidates = Self.candidates(named: name, in: Array(all))
+        guard !candidates.isEmpty else { return nil }
+        guard candidates.count > 1 else { return candidates[0].id.rawValue }
+
+        // Several playlists really do share the name. Prefer the one whose tracks overlap what
+        // the index says this playlist contains.
+        let expected = Set(expectedAppleMusicIds)
+        var best = candidates[0]
+        var bestOverlap = -1
+        for candidate in candidates {
+            var overlap = 0
+            if !expected.isEmpty, let tracks = (try? await candidate.with([.tracks]))?.tracks {
+                for track in tracks where Self.catalogIds(of: track).contains(where: expected.contains) {
+                    overlap += 1
+                }
+            }
+            if overlap > bestOverlap { best = candidate; bestOverlap = overlap }
+        }
+        if bestOverlap <= 0 {
+            // A tie, or nothing to arbitrate with: we take the first, but that IS a guess, and
+            // a silent guess is the failure mode this whole path exists to end. Say so.
+            lastResolutionNote = "Your library has \(candidates.count) playlists named “\(name)” — "
+                + "PocketDJ picked the first one. If the song lands in the wrong playlist, rename them apart."
+            best = candidates[0]
+        }
+        return best.id.rawValue
+    }
+
+    /// Every id a library track might be known by on the CATALOG side. `Track.id` is the
+    /// LIBRARY id for a library track (`i.…`), which never equals one of our store ids — the
+    /// catalog id is only reachable through `playParameters`, which MusicKit exposes as an
+    /// opaque `Codable` blob rather than typed fields. Round-tripping it through JSON is the
+    /// only way to read it, and it is best-effort by nature: a miss just means this candidate
+    /// scores no overlap and the disambiguation falls back to "first, and say so".
+    private static func catalogIds(of track: MusicKit.Track) -> [String] {
+        var ids = [track.id.rawValue]
+        if let params = track.playParameters,
+           let data = try? JSONEncoder().encode(params),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["catalogId", "catalogID", "id"] {
+                if let value = obj[key] as? String { ids.append(value) }
+            }
+        }
+        return ids
+    }
+
+    /// Name matching in widening tiers, stopping at the first tier that matches ANYTHING —
+    /// so an exact name always beats a fuzzy one and we never widen further than we must.
+    ///   (a) exact;
+    ///   (b) whitespace-trimmed — THE "Sap " CASE: Library.xml keeps the trailing space the
+    ///       user typed, MusicKit reports the name trimmed, and exact match found nothing;
+    ///   (c) trimmed + case- and diacritic-insensitive, for the rest of the drift.
+    static func candidates(named name: String,
+                           in playlists: [MusicKit.Playlist]) -> [MusicKit.Playlist] {
+        let exact = playlists.filter { $0.name == name }
+        if !exact.isEmpty { return exact }
+
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = playlists.filter {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == target
+        }
+        if !trimmed.isEmpty { return trimmed }
+
+        let folded = target.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        return playlists.filter {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) == folded
+        }
+    }
+
+    // MARK: Write
+
+    func addSong(appleMusicId: String, toPlaylistId playlistId: String) async throws {
+        guard canWrite else { throw PlaylistWriteBackError.notAuthorized }
+
+        // Resolve the id back into a Playlist OBJECT — `MusicLibrary.add(_:to:)` takes the
+        // item, not the id. An empty result means the playlist was deleted (or MusicKit
+        // re-minted its id): distinct from a write failure, so the queue can re-resolve.
+        var listReq = MusicLibraryRequest<MusicKit.Playlist>()
+        listReq.filter(matching: \.id, equalTo: MusicItemID(playlistId))
+        listReq.limit = 1
+        guard let playlist = try await listReq.response().items.first else {
+            throw PlaylistWriteBackError.playlistGone(playlistId)
+        }
 
         var songReq = MusicCatalogResourceRequest<MusicKit.Song>(matching: \.id,
                                                                  equalTo: MusicItemID(appleMusicId))
         songReq.limit = 1
         guard let song = try await songReq.response().items.first else {
             throw PlaylistWriteBackError.songNotFound(appleMusicId)
-        }
-
-        var listReq = MusicLibraryRequest<MusicKit.Playlist>()
-        listReq.filter(matching: \.name, equalTo: playlistName)
-        listReq.limit = 1
-        guard let playlist = try await listReq.response().items.first else {
-            throw PlaylistWriteBackError.playlistNotFound(playlistName)
         }
 
         _ = try await MusicLibrary.shared.add(song, to: playlist)

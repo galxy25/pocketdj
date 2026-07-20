@@ -541,6 +541,15 @@ struct PocketDJApp: App {
         // and duplicate the track in the real Apple Music playlist.
         let playlistWriteBack = PlaylistWriteBack(fileURL: PlaylistWriteBack.launchURL(),
                                                   transport: PlaylistWriteBack.makeDefaultTransport())
+        // Catalog seam for the playlist JOIN: when the live library has several playlists by
+        // the same name, these store ids are what tells them apart. Kept out of the queue so
+        // it stays free of the data layer (the FavoritesSyncService idiom above).
+        playlistWriteBack.appleMusicIdsForIndexPlaylist = { [weak app] indexPlaylistId in
+            guard let app,
+                  let source = app.indexPlaylists.first(where: { $0.id == indexPlaylistId })
+            else { return [] }
+            return source.songIds.compactMap { app.songsById[$0]?.appleMusicId }
+        }
         _playlistWriteBack = State(initialValue: playlistWriteBack)
 
         // ── Discover adds: provisional catalog entries (eventual consistency) ──
