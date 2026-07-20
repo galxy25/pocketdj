@@ -1131,6 +1131,9 @@ private struct LoopLengthPopover: View {
     @Binding var presented: Bool
     let a11y: String
     @State private var interaction = 0
+    /// True while a slider drag is in progress — a finger held STILL bumps nothing, so without
+    /// this the 3 s idle timer would close the popover out from under the drag.
+    @State private var editing = false
 
     private var unitName: String { engine.loopUsesBeats(deck) ? "beat" : "sec" }
 
@@ -1145,7 +1148,8 @@ private struct LoopLengthPopover: View {
                 nudge("arrow.right", edge: .start, delta: 1, id: "\(a11y)-start-fwd")
                 Slider(value: Binding(get: { units },
                                       set: { engage(); engine.setLoopUnits(deck, $0); interaction += 1 }),
-                       in: 1...32, step: 1)
+                       in: 1...32, step: 1,
+                       onEditingChanged: { editing = $0; if !$0 { interaction += 1 } })
                     .tint(Theme.accent)
                     .accessibilityIdentifier("\(a11y)-length")
                 // RIGHT pair — walk the loop's END edge back / forward one unit.
@@ -1161,7 +1165,7 @@ private struct LoopLengthPopover: View {
         .presentationCompactAdaptation(.popover)        // stay a popover on iPhone (not a sheet)
         .task(id: interaction) {                        // 3 s idle auto-dismiss
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if !Task.isCancelled { presented = false }
+            if !Task.isCancelled, !editing { presented = false }
         }
     }
 
