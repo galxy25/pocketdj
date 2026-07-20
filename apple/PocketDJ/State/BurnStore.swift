@@ -1017,7 +1017,8 @@ final class BurnStore {
                     bytes: 0, rippedAt: entry.rippedAt, downloadedAt: now,
                     state: .downloading, error: nil, wasAppStorage: !isUserFolder)
                 save()   // incremental persistence — survive relaunch mid-flight
-                transfers.enqueueDownload(url: durableURL, token: rips.token, record: record)
+                transfers.enqueueDownload(url: durableURL, token: rips.token,
+                                          profileId: rips.profileIdProvider(), record: record)
                 result.burned += 1   // "enqueued" — the overlay tracks completion via the coordinator
                 continue
             }

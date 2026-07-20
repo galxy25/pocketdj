@@ -18,6 +18,8 @@ final class CloudSyncServiceTests: XCTestCase {
         }
         func fetch(_ key: String) async throws -> CloudDoc? { docs[key] }
         func save(_ doc: CloudDoc) async throws { docs[doc.key] = doc; saveCount += 1 }
+        func delete(_ key: String) async throws { docs[key] = nil }
+        func deleteAll(_ keys: [String]) async throws { for k in keys { docs[k] = nil } }
         func seed(_ key: String, payload: Data, modifiedAtMs: Double) {
             docs[key] = CloudDoc(key: key, payload: payload, modifiedAtMs: modifiedAtMs, deviceName: "seed")
         }

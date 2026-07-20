@@ -1551,4 +1551,19 @@ final class CollectionsStore {
         setlists.removeAll { $0.id == nowPlayingSetlistId || $0.playlistId == nowPlayingPlaylistId }
         onChange?()
     }
+
+    /// FULL WIPE: reset every collection family (pockets, playlists, setlists, folders,
+    /// and the remembered add target) to empty AND delete the on-disk document, so the
+    /// UI updates immediately and a relaunch decodes nothing. Inverse of init's decode:
+    /// where `save()` writes the doc, this removes it (`try?` swallows a missing file,
+    /// same as `launchURL()`), then fires `onChange` so Spotlight/Siri drop the vocabulary.
+    func clear() {
+        pockets = []
+        playlists = []
+        setlists = []
+        folders = []
+        lastAddTarget = nil
+        try? FileManager.default.removeItem(at: fileURL)
+        onChange?()
+    }
 }

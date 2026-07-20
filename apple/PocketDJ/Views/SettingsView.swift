@@ -16,11 +16,17 @@ struct SettingsView: View {
     @Environment(StreamingStore.self) var streaming
     @Environment(ProfileStore.self) private var profile
     @Environment(CloudSyncService.self) private var cloudSync
+    // Account-deletion orchestrator (5.1.1(v)) — wired in PocketDJApp with every store it wipes.
+    @Environment(AccountDeletionService.self) private var accountDeletion
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
     @State private var jukeboxTesting = false
     @State private var jukeboxStatus: RipStatus?
     @State private var confirmingReset = false
+    /// Account deletion (5.1.1(v)): the confirm dialog + the in-progress guard (disables the row
+    /// and shows a spinner while the orchestrator runs).
+    @State private var confirmingAccountDeletion = false
+    @State private var deletingAccount = false
     /// Easter egg: the mushroom-cloud overlay playing after a confirmed reset.
     @State private var nuking = false
     @State private var showExporter = false
@@ -214,10 +220,51 @@ struct SettingsView: View {
                         .accessibilityIdentifier("profile-sync-status")
                 }
             }
+            // Account deletion (App Store Guideline 5.1.1(v)) lives HERE, in the Profile /
+            // identity section — the account-management area a reviewer (and the user) looks in —
+            // rather than beside the local-only "Reset all app state" nuke: this removes the
+            // ACCOUNT (the synced identity AND its private-CloudKit copies), not just this
+            // device's caches. It reuses the same mushroom-cloud send-off as the reset.
+            deleteAccountRow
         } header: {
             Text("Profile")
         } footer: {
             Text("Your PocketDJ name shows as the artist on your samples, loops, sequences, and instrumentals (leave blank for “Studio”). iCloud sync keeps your profile, collections, history, and playback sessions in step across your devices — last writer wins per document.")
+        }
+    }
+
+    /// The destructive "Delete Account" control (5.1.1(v)) — mirrors `resetSection`'s pattern
+    /// (a `Button(role:.destructive)` gated by a `.confirmationDialog`), but wipes EVERYTHING
+    /// including the iCloud copies + identity, and shows an in-progress spinner while it runs.
+    @ViewBuilder private var deleteAccountRow: some View {
+        Button(role: .destructive) { confirmingAccountDeletion = true } label: {
+            if deletingAccount {
+                Label { Text("Deleting…") } icon: { ProgressView() }
+            } else {
+                Label("Delete Account", systemImage: "person.crop.circle.badge.xmark")
+            }
+        }
+        .tint(Theme.danger)
+        .disabled(deletingAccount)
+        .accessibilityIdentifier("settings-delete-account")
+        .confirmationDialog("Delete your account and all data?",
+                            isPresented: $confirmingAccountDeletion, titleVisibility: .visible) {
+            Button("Delete Everything", role: .destructive) {
+                deletingAccount = true
+                Task {
+                    await accountDeletion.deleteAccountAndAllData()
+                    // Re-seed the catalog with the reset sources, then send it off with the same
+                    // nuclear overlay as Reset. Onboarding re-arms itself for the next launch
+                    // (SettingsStore.resetEverything → OnboardingStore.markPendingAfterReset).
+                    await app.reload()
+                    deletingAccount = false
+                    nuking = true
+                }
+            }
+            .accessibilityIdentifier("settings-delete-account-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently erases your profile, library, collections, favorites, listening history, downloads, and studio content from this device, and removes their iCloud copies from your private database on this Apple ID. It can’t be undone. Even if iCloud can’t be reached, everything on this device is still erased.")
         }
     }
 
@@ -578,7 +625,8 @@ struct SettingsView: View {
 
     private func testRip() async {
         ripTesting = true; ripStatus = nil
-        let result = await RipServerService.health(urlString: settings.ripServerURL, token: settings.ripToken)
+        let result = await RipServerService.health(urlString: settings.ripServerURL,
+                                                   token: settings.ripToken, profileId: profile.id)
         switch result {
         case .success(let h):
             var parts: [String] = []

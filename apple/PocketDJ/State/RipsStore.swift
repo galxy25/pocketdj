@@ -178,6 +178,10 @@ final class RipsStore {
     private let session: URLSession
     /// Settings supply the rip-server URL + token (set by the app at launch).
     var settings: SettingsStore?
+    /// The signed-in profile's durable id, read FRESH per request (it can change under a cloud
+    /// pull or an account-deletion reset). Wired from `ProfileStore.id` in the app; the default
+    /// empty source ⇒ no profile header until wired. Rides as `X-PocketDJ-Profile` (see applyAuth).
+    @ObservationIgnored var profileIdProvider: () -> String = { "" }
 
     /// `serverUrl`/`token` resolve from settings, exactly like the PWA reads localStorage.
     var serverUrl: String { (settings?.ripServerURL ?? "").trimmingCharacters(in: .whitespaces).trimmedTrailingSlash }
@@ -1321,6 +1325,8 @@ final class RipsStore {
 
     private func applyAuth(_ request: inout URLRequest, token: String) {
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // Per-user identity rides alongside the shared bearer on every rip-server call.
+        PDJIdentityHeaders.apply(to: &request, profileId: profileIdProvider())
     }
 
     static func sleep1s() async throws { try await sleep(ms: 1000) }

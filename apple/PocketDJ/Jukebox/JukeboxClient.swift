@@ -9,6 +9,10 @@ struct JukeboxClient {
     var baseURL: String
     /// Server-level bearer for `POST /jukebox` (empty = server runs open).
     var token: String
+    /// The signed-in profile's durable id (`ProfileStore.id`), snapshotted when this client is
+    /// built (the struct is rebuilt per call from the live id). Empty ⇒ no profile header.
+    /// Rides as `X-PocketDJ-Profile` on every jukebox call (see `request`).
+    var profileId: String = ""
     var session: URLSession = .shared
 
     enum ClientError: Error, LocalizedError {
@@ -44,6 +48,8 @@ struct JukeboxClient {
         if let bearer, !bearer.isEmpty {
             req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }
+        // Per-user identity rides alongside the (host-key or server) bearer on every call.
+        PDJIdentityHeaders.apply(to: &req, profileId: profileId)
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONEncoder().encode(body)

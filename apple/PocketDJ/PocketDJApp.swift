@@ -166,6 +166,11 @@ struct PocketDJApp: App {
     /// RootView presents its cover and awaits it before ANY launch action; CloudSync
     /// pushes and mutating intents are refused until it completes.
     @State private var onboarding: OnboardingStore
+    /// Account-deletion orchestrator (App Store Guideline 5.1.1(v)) — stops live activity,
+    /// deletes the private-CloudKit copies, wipes every local store + media + Keychain token,
+    /// resets settings (re-arming onboarding), and mints a fresh identity. Injected into the
+    /// environment for Settings ▸ Profile's "Delete Account" row. See AccountDeletionService.
+    @State private var accountDeletion: AccountDeletionService
     @Environment(\.scenePhase) private var scenePhase
 
     // The App/Scene delegate receives background-URLSession launch events (iOS) + registers/
@@ -598,6 +603,12 @@ struct PocketDJApp: App {
             settings.persist()
             collections.performerName = profile.name
         }
+        // Per-user identity header (X-PocketDJ-Profile) on every authenticated server call:
+        // give the rip-server + Apple-Music-sync clients the LIVE profile id, read FRESH per
+        // request so a cloud-pulled name change — or a post-account-deletion fresh id — is
+        // picked up immediately (weak so the id closures never retain the profile graph).
+        rips.profileIdProvider = { [weak profile] in profile?.id ?? "" }
+        musicSync.profileIdProvider = { [weak profile] in profile?.id ?? "" }
         _profile = State(initialValue: profile)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
@@ -639,6 +650,26 @@ struct PocketDJApp: App {
         // loaded the default catalog before the user picked.
         onboarding.onComplete = { [weak app] in Task { await app?.reload() } }
         _onboarding = State(initialValue: onboarding)
+
+        // ── Account deletion (App Store Guideline 5.1.1(v)) ────────────────────
+        // Constructed with the LIVE stores/services it must wipe (no globals of its own). It
+        // deletes the same 11 PDJDoc keys registered above, via its OWN CKCloudDocDatabase()
+        // (a stateless struct, identical to the one cloudSync holds). `cloudDeleteEnabled` is
+        // `{ !fixtureRun }` — UI-test runs must never touch a real iCloud account — and the
+        // background-transfer cancel is wired to the process-wide TransferCoordinator here so
+        // the service stays global-free.
+        let accountDeletion = AccountDeletionService(
+            jukebox: jukebox, setlistPlayer: setlistPlayer, mix: mix,
+            cancelTransfers: { TransferCoordinator.shared.cancelAll() },
+            cloudDatabase: CKCloudDocDatabase(),
+            cloudDeleteEnabled: { !fixtureRun },
+            collections: collections, favorites: favorites, playStats: playStats,
+            playHistory: playHistory, edits: edits, discoverAdds: discoverAdds,
+            importedSongs: importedSongs, playlistWriteBack: playlistWriteBack,
+            mixSessions: mixSessions, playbackSession: playbackSession,
+            mixDeckSession: mixDeckSession, burns: burns, studio: studio,
+            streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)
+        _accountDeletion = State(initialValue: accountDeletion)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
         // One bridge instance carries the live stores to intents + entity queries.
@@ -709,6 +740,7 @@ struct PocketDJApp: App {
                 .environment(favorites)
                 .environment(favoritesSync)
                 .environment(playlistWriteBack)
+                .environment(accountDeletion)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through

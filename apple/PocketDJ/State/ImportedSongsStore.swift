@@ -126,6 +126,15 @@ final class ImportedSongsStore {
         save()
     }
 
+    /// Wipe every provisional entry and delete the on-disk document (file-not-found
+    /// swallowed like the rest of this store) — the @Observable arrays reset to empty
+    /// so the catalog/UI drops the Imported source immediately.
+    func clear() {
+        songs = []
+        albums = []
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     /// Re-decode after CloudSyncService pulled a newer copy, surfacing NEW entries
     /// through `onAdded` so the live catalog follows the pull.
     func reloadFromDisk() {
