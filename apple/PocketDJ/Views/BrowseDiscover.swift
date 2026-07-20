@@ -55,7 +55,7 @@ final class DiscoverSearchModel {
 
     /// Map a MusicKit catalog hit into the Discover row shape (the `amrec_` ad-hoc-rip
     /// id convention); `ripURL` is the LOCAL manifest's answer for that id (the add
-    /// flow may already have captured it).
+    /// flow may already have prepared this song's copy).
     static func hit(from track: StreamingTrack, ripURL: URL?) -> RipsStore.DiscoverHit {
         RipsStore.DiscoverHit(appleMusicId: track.providerTrackID,
                               title: track.title,
@@ -105,10 +105,22 @@ final class DiscoverSearchModel {
     func cancel() { task?.cancel(); task = nil; hits = []; state = .idle }
 }
 
-/// Browse ▸ Discover — search the ENTIRE Apple Music catalog through the rip server's
-/// `/search` proxy. "＋ Add" asks the iMac to capture the song (the ad-hoc `amrec_`
-/// rip path); once ripped it lands in the PUBLIC rips manifest, streamable/burnable
-/// by every user, and the row flips to a ▶ wired to the standard rip-play path.
+/// Browse ▸ Discover — search the Apple Music catalog through the rip server's `/search`
+/// proxy. "＋ Add" saves the song to the user's own Apple Music library and asks the rip
+/// server to prepare the user's own copy (the ad-hoc `amrec_` path); if the server can
+/// honour that, the row flips to a ▶ wired to the standard rip-play path.
+///
+/// This view is AGNOSTIC to how the server fulfils the request — see `discoverAdd`. The
+/// server's contract is that it prepares ONLY media the user already owns in their cloud
+/// library, and serves each user their own copy; a request it cannot honour is simply a
+/// miss and the row stays as it was. Apple Music is playback only — nothing on this
+/// screen captures, records or downloads audio from it.
+///
+/// #TOUPDATE: that contract is the TARGET. Today the server does not restrict itself to
+/// the requester's owned cloud media (it captures from Apple Music), does not authenticate
+/// the requester (auth fails open), and does not serve per-user copies (one flat,
+/// public-read rips/<songId>.mp3 namespace shared across users). Remove this marker only
+/// once all three are true.
 struct DiscoverResultsList: View {
     @Environment(RipsStore.self) private var rips
     let model: DiscoverSearchModel
@@ -141,7 +153,16 @@ struct DiscoverResultsList: View {
         ContentUnavailableView {
             Label("Discover Apple Music", systemImage: "sparkle.magnifyingglass")
         } description: {
-            Text("Search Apple Music — added songs are ripped to the shared catalog.")
+            // #TOUPDATE: both halves of this sentence are the TARGET, not today's code.
+            // (1) The prepare step (discoverAdd → discoverAddRip) must operate ONLY on media
+            //     the user owns in their cloud library, and return a miss for anything else —
+            //     today the server captures the track from Apple Music unconditionally.
+            // (2) "your own copy" needs per-user storage + an authenticated requester; today
+            //     every rip lands in one flat, public-read rips/<songId>.mp3 shared by all
+            //     users, and the server's auth fails open.
+            // (3) The library save is conditional on `canAddToLibrary` (false on macOS) and
+            //     swallowed by `try?`, so it is not yet the guarantee this claims.
+            Text("Search Apple Music — ＋ Add saves the song to your Apple Music library, then prepares your own copy. Only music you already own in your cloud library can be prepared.")
         }
         .accessibilityIdentifier("discover-hint")
     }
@@ -290,7 +311,7 @@ private struct DiscoverRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("discover-play-\(index)")
-            .help("In the shared catalog — play")
+            .help("Ready to play")
         } else if let phase, Self.working.contains(phase) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -299,8 +320,9 @@ private struct DiscoverRow: View {
             .accessibilityIdentifier("discover-progress-\(index)")
         } else {
             Button {
-                // Library-first (when this device can): the iMac's capture needs the
-                // track playable in ITS Music.app — see discoverAdd.
+                // Pass a library contributor when this device can write the user's Apple
+                // Music library, so the ＋ also saves the song there — a complete action in
+                // its own right, independent of what the server does. See `discoverAdd`.
                 let h = hit
                 let lib = streaming.providers.libraryContributors.first
                 Task { await rips.discoverAdd(h, library: lib) }
@@ -310,7 +332,11 @@ private struct DiscoverRow: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .accessibilityIdentifier("discover-add-\(index)")
-            .help("Rip this song into the shared catalog")
+            // #TOUPDATE: honest once (a) discoverAdd asks the server to prepare only the
+            // user's own cloud-library media instead of capturing from Apple Music, and
+            // (b) the ＋ is gated on `canAddToLibrary` — false on macOS, where no library
+            // write happens at all, so today this help overstates the library half there.
+            .help("Save to your Apple Music library and prepare your copy")
         }
     }
 

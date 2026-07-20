@@ -6,8 +6,22 @@ import SwiftUI
 ///   • not linked  → "Connect Apple Music"
 ///   • in library  → open its album (in-app when the album is in our index, else the
 ///                    synthesized `RecognizedAlbumView`)
-///   • not in library → ＋ "Add to Apple Music" which adds the song to the library and
-///     THEN rips + burns it to the device (store-owned, survives sheet dismissal).
+///   • not in library → ＋ "Add to Apple Music", which saves the song to the user's OWN
+///     Apple Music library — a complete action in its own right — and THEN separately asks
+///     the server to prepare the user's own copy and save it to this device (store-owned,
+///     survives sheet dismissal).
+///
+/// Apple Music itself is playback only: nothing on this screen captures, records or
+/// downloads audio from it. The prepare step runs only against media the user owns in their
+/// cloud library; a track they don't own is simply a miss — the server returns nothing and
+/// never acquires the audio from anywhere else.
+///
+/// #TOUPDATE: that second half is the TARGET, not current behaviour. `add(storeID:…)` still
+/// calls `burns.startRipAndBurn`, and scripts/rip-server.mjs:798 routes every digital-source
+/// job to a real-time Apple Music capture ("Digital songs always capture from Apple Music")
+/// regardless of what the user owns. Remove this marker once ＋ Add ends at
+/// `addSongToLibrary` — or the prepare step reads the user's own cloud library — AND the
+/// server fails closed on media the user does not own.
 ///
 /// All navigation uses `NavigationLink(value:)` against destinations registered on the
 /// sheet's own `NavigationStack`, so the section needs no path binding.
@@ -170,8 +184,8 @@ struct AppleMusicRecognitionSection: View {
         }
     }
 
-    /// Live "downloading to device" status for the post-add rip/burn (driven off the
-    /// store's job phase + burned-file presence, both observable).
+    /// Live progress for the post-add prepare + save-to-device step (driven off the store's
+    /// job phase + burned-file presence, both observable).
     @ViewBuilder private var burnStatus: some View {
         if let id = burnSongID {
             if burns.localURL(forSong: id) != nil {
@@ -191,10 +205,17 @@ struct AppleMusicRecognitionSection: View {
 
     private func ripPhaseLabel(_ phase: RipsStore.Phase?) -> String {
         switch phase {
-        case .some(.queued), .some(.searching): return "Downloading — finding the track…"
-        case .some(.ripping), .some(.streaming): return "Downloading — capturing…"
-        case .some(.uploading): return "Downloading — finishing…"
-        default: return "Downloading to device…"
+        // #TOUPDATE: the two "your copy" labels below are the TARGET. Today there is no per-user
+        // copy to find or prepare — `AppleMusicRecognition.burnSongID` is deterministic from the
+        // Apple Music store id (catalog id, else "amrec_<storeID>"), so every user's request
+        // resolves to the same flat, public-read object rips/<songId>.mp3 on a server that
+        // reports auth:false. Remove this marker once rips are keyed per user
+        // (users/<userId>/rips/<songId>.mp3), the public rips/* grant is gone, and the server
+        // authenticates the requester and serves each user only their own copy.
+        case .some(.queued), .some(.searching): return "Preparing — finding your copy…"
+        case .some(.ripping), .some(.streaming): return "Preparing your copy…"
+        case .some(.uploading): return "Preparing — finishing up…"
+        default: return "Saving to this device…"
         }
     }
 
@@ -210,8 +231,20 @@ struct AppleMusicRecognitionSection: View {
         resolving = false
     }
 
-    /// Add the recognized song to the Apple Music library, THEN rip + burn it to device
-    /// (the user's confirmed order). The burn is store-owned so it survives dismissal.
+    /// Save the recognized song to the user's own Apple Music library — a complete action in
+    /// its own right — THEN separately ask the server to prepare the user's own copy and save
+    /// it to this device (the user's confirmed order). The save is store-owned so it survives
+    /// dismissal.
+    ///
+    /// This code is AGNOSTIC to how the server fulfils the second step, and must stay that
+    /// way. The app states an intent ("prepare this user's copy") and the server decides what
+    /// it can honour — its contract is that it works ONLY against media the user owns in their
+    /// cloud library, and a track with no such media is simply a miss. Nothing is captured,
+    /// recorded or downloaded from Apple Music.
+    ///
+    /// #TOUPDATE: that contract is the TARGET. Today the server neither restricts itself to
+    /// media the user owns nor serves per-user copies — a digital-source job is captured from
+    /// Apple Music in real time (scripts/rip-server.mjs:798). Remove this marker once it does.
     private func add(storeID: String, title: String, artist: String) {
         guard let contributor else { return }
         adding = true; errorText = nil
@@ -223,6 +256,10 @@ struct AppleMusicRecognitionSection: View {
                     storeID: storeID, title: title, artist: artist, in: app.songs)?.id
                 let id = AppleMusicRecognition.burnSongID(catalogSongID: catalogID, storeID: storeID)
                 burnSongID = id
+                // #TOUPDATE: this is the "prepare the user's own copy" step, but the call it
+                // makes today is a real-time Apple Music capture into a shared object. Repoint
+                // it at an owned-media prepare that fails closed on anything the user does not
+                // own — or delete it, so ＋ Add ends at `addSongToLibrary` above.
                 burns.startRipAndBurn(songId: id, title: title, artist: artist,
                                       appleMusicId: storeID, lengthMs: nil)
                 await resolve()   // flips the section to the in-library state

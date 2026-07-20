@@ -18,8 +18,11 @@ import SwiftUI
 ///   1. BURNED locally (`BurnStore.localURLForPlaybackPreferringCut`) → carve directly;
 ///   2. in the rips manifest but NOT burned → **burn-on-demand** (the `StemAuditionPanel`
 ///      burning → ready → failed + Retry phase pattern), then carve;
-///   3. no manifest entry at all (Apple-Music-only) → an explicit "Rip first" state pointing at the
-///      existing rip flows.
+///   3. no manifest entry at all — nothing has been prepared for this song → an explicit
+///      "nothing to sample" state. This is NOT an Apple-Music-specific branch: the phase is chosen
+///      purely on manifest membership (`rips.manifest[song.id] == nil`), so a vinyl, digital or
+///      imported song that simply isn't in the manifest lands here too. Apple Music is playback
+///      only — nothing in this view captures, records or downloads audio from it.
 ///
 /// ANALOG offset (load-bearing): when the resolved local file is the shared ALBUM file (not a
 /// per-song cut), region ms are FILE-relative — the carve window is `startMs(forSong:) + region`;
@@ -54,7 +57,7 @@ struct StudioNewSampleFromTrackView: View {
         case needsBurn       // in the manifest, not burned — offer burn-on-demand
         case burning         // burn in flight
         case burnFailed(String)
-        case ripFirst        // no manifest entry (Apple-Music-only)
+        case ripFirst        // no manifest entry — nothing prepared yet (any source, not AM-specific)
     }
 
     // Picker.
@@ -621,11 +624,17 @@ struct StudioNewSampleFromTrackView: View {
 
     private var ripFirstState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Rip this track first", systemImage: "waveform.badge.plus")
+            Label("Nothing to sample here", systemImage: "waveform.badge.plus")
                 .font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
-            Text("This song streams from Apple Music and has no local rip yet, so there’s nothing "
-                 + "to carve from. Rip it (▶/⤓ on the song, or Rip in a collection / setlist) — "
-                 + "once it’s ripped, come back and it’ll burn + carve here.")
+            // #TOUPDATE: "your own library" is the target state, not today's behaviour. Today the
+            // server routes every DIGITAL-source id to Apple Music capture unconditionally
+            // (scripts/rip-server.mjs:798), so a prepared copy did not necessarily come from media
+            // the requester owns; and prepared audio lands at rips/<songId>.mp3 — one flat,
+            // public-read namespace shared across all users, not a per-user copy. This line is
+            // honest once the server prepares ONLY from the requester's own cloud library, returns
+            // a miss for anything they don't own, and serves each user their own copy.
+            Text("No audio on the device for this track, so there’s nothing to carve from. "
+                 + "Carving works off your own library — pick a track that’s already on the device.")
                 .font(.caption).foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("sample-rip-first")
         }
@@ -667,7 +676,8 @@ struct StudioNewSampleFromTrackView: View {
         regionEndMs = min(len, 8_000)
         if regionEndMs < Self.minWindowMs { regionEndMs = len }   // degenerate: tiny/unknown length
         if await enterReady(song) { return }
-        // Not burned: manifest membership decides burn-on-demand vs. Apple-Music-only.
+        // Not burned: manifest membership decides burn-on-demand vs. nothing-prepared. Membership is
+        // source-agnostic — it says a copy exists to burn, not which source the song came from.
         phase = rips.manifest[song.id] != nil ? .needsBurn : .ripFirst
     }
 
@@ -709,7 +719,7 @@ struct StudioNewSampleFromTrackView: View {
             if await enterReady(song) { return }
         }
         if r.notRipped > 0 {
-            phase = .burnFailed("This track hasn’t been ripped yet — rip it first, then carve.")
+            phase = .burnFailed("There’s nothing prepared for this track yet, so there’s nothing to burn.")
         } else if r.folderUnavailable {
             phase = .burnFailed("Your burn folder isn’t reachable right now (Settings ▸ Storage).")
         } else if r.outOfSpace {

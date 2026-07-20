@@ -1,19 +1,36 @@
 import Foundation
 import Observation
 
-/// Apple Music (Local) sync client — talks to the iMac rip server's AM-sync endpoints to
-/// keep the app's "Apple Music (Local)" data source in step with the real local library.
+/// Apple Music (Local) sync client — talks to the PocketDJ import server's AM-sync endpoints to
+/// keep the app's "Apple Music (Local)" data source in step with the user's own Apple Music
+/// library.
 ///
-/// Mirrors `RipsStore`'s server contract: the rip-server URL + bearer token come from
-/// `SettingsStore` (the SAME ones the rip features use), and the request/poll shape mirrors
-/// the rip job pattern (POST → jobId, GET poll-by-id):
+/// METADATA ONLY. This endpoint reads titles, artists and ids out of an Apple Music library and
+/// diffs them against the published index. It never captures, records or downloads audio from
+/// Apple Music — Apple Music is a playback surface only. Nothing here prepares or moves audio.
+///
+/// Mirrors `RipsStore`'s server contract: the import-server URL + bearer token come from
+/// `SettingsStore` (the SAME ones the import features use), and the request/poll shape mirrors
+/// the prepare-job pattern (POST → jobId, GET poll-by-id):
 ///   • POST `/am-sync`        → `{ jobId, phase }` (returns immediately; the check runs server-side),
 ///   • GET  `/am-sync/<id>`   → `{ phase, result }` polled until `phase == .ready` (or `.error`).
 ///
 /// The server does the library read + diff (via the incremental Apple Music indexer) and, when
-/// it finds new music, writes a change-set to its `~/Downloads` for the cron Claude-agent to
-/// commit + deploy. The app's `sync()` surfaces the DETECTED counts immediately for feedback;
-/// the live `apple-music-index.json` only changes once that agent has committed+pushed+deployed.
+/// it finds new music, writes a change-set for the publish job to commit + deploy. The app's
+/// `sync()` surfaces the DETECTED counts immediately for feedback; the live
+/// `apple-music-index.json` only changes once that publish has landed.
+///
+/// #TOUPDATE: "the user's own Apple Music library" is the TARGET. Today `/am-sync` reads the
+/// Apple Music library on the SERVER HOST — rip-server.mjs files it under "this machine's
+/// library tooling" and reads that machine's `Library.xml` — and the result is published as ONE
+/// shared `apple-music-index.json` that every install subscribes to. There are no per-user
+/// indexes. Honest only once the check reads the REQUESTING user's own cloud library and the
+/// result set contains only that user's rows.
+///
+/// #TOUPDATE: this endpoint is admin-tier on paper only. `authed()`/`adminAuthed()` FAIL OPEN —
+/// with no token configured every caller is authorized to trigger a library scan, and `/health`
+/// reports `auth:false`. Honest only once the server authenticates the requester and rejects
+/// unauthenticated calls.
 @MainActor
 @Observable
 final class MusicSyncClient {
@@ -45,7 +62,7 @@ final class MusicSyncClient {
         var added: [SyncItem] = []
         var changed: [SyncItem] = []
         var removed: [SyncItem] = []
-        /// Absolute path of the change-set the server wrote to its Downloads (nil if 0 added).
+        /// Absolute path of the change-set the server wrote for the publish job (nil if 0 added).
         var changeSetPath: String?
     }
 
@@ -67,7 +84,7 @@ final class MusicSyncClient {
     // MARK: Config (mirror RipsStore — server URL + token from settings)
 
     private let session: URLSession
-    /// Settings supply the rip-server URL + token (set by the app at launch).
+    /// Settings supply the import-server URL + token (set by the app at launch).
     var settings: SettingsStore?
     /// The signed-in profile's durable id, read FRESH per request (mirrors RipsStore — it can
     /// change under a cloud pull / account-deletion reset). Wired from `ProfileStore.id`; the
@@ -88,8 +105,8 @@ final class MusicSyncClient {
         case noServer, unsupported, requestFailed(Int), serverError(String?), timedOut
         var errorDescription: String? {
             switch self {
-            case .noServer:            return "No rip server configured (Settings ▸ Rip server)."
-            case .unsupported:         return "Server too old — update the rip server to sync."
+            case .noServer:            return "No import server configured (Settings ▸ Import server)."
+            case .unsupported:         return "Server too old — update the import server to sync."
             case .requestFailed(let s): return "Sync request failed (\(s))."
             case .serverError(let m):  return m ?? "Sync failed."
             case .timedOut:            return "Sync timed out."
@@ -99,8 +116,9 @@ final class MusicSyncClient {
 
     // MARK: Sync
 
-    /// Kick a library check on the rip server and poll until it produces a result set. Returns
-    /// the detected `added/changed/removed` counts + items. Throws `.unsupported` against an
+    /// Kick a metadata-only library check on the import server and poll until it produces a result
+    /// set. Returns the detected `added/changed/removed` counts + items. Nothing is captured or
+    /// downloaded — this reads library metadata and diffs it. Throws `.unsupported` against an
     /// older server (404 on POST `/am-sync`), `.noServer` when unconfigured.
     @discardableResult
     func sync() async throws -> SyncResult {
@@ -119,10 +137,10 @@ final class MusicSyncClient {
         if http.statusCode == 404 { throw SyncError.unsupported }
         guard (200..<300).contains(http.statusCode) else { throw SyncError.requestFailed(http.statusCode) }
         let job = try JSONDecoder().decode(SyncJob.self, from: data)
-        guard let jobId = job.jobId else { throw SyncError.serverError("server returned no job id") }
+        guard let jobId = job.jobId else { throw SyncError.serverError("the import server returned no job id") }
 
-        // Poll GET /am-sync/<id> until ready/error. The scan is a local XML diff (fast), so a
-        // 1s cadence with a generous cap is plenty.
+        // Poll GET /am-sync/<id> until ready/error. The scan is a metadata-only XML diff on the
+        // server (fast), so a 1s cadence with a generous cap is plenty.
         for _ in 0..<600 {
             try await Self.sleep1s()
             guard let view = try? await fetchJob(jobId, base: base, token: tok) else { continue }

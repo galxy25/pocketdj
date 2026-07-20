@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Settings — mirrors the PWA's: data sources, online-search credentials, the
-/// rip-server config, an Edits export/import, plus a nuclear reset. No refresh /
+/// import-server config, an Edits export/import, plus a nuclear reset. No refresh /
 /// data-migration controls: the App Store ships those with each new version.
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
@@ -291,7 +291,7 @@ struct SettingsView: View {
         } header: {
             Text("Edits")
         } footer: {
-            Text("\(edits.count) local metadata edit\(edits.count == 1 ? "" : "s"). Export to JSON (schema v\(editsSchemaVersion)) to merge into the main index on the iMac; Import merges another export in.")
+            Text("\(edits.count) local metadata edit\(edits.count == 1 ? "" : "s"). Export to JSON (schema v\(editsSchemaVersion)) to merge into the PocketDJ catalog; Import merges another export in.")
         }
     }
 
@@ -355,7 +355,7 @@ struct SettingsView: View {
         } header: {
             Text("Data sources")
         } footer: {
-            Text("Choose which sources to show across the app. Each is a PocketDJ index URL served from CloudFront/S3.")
+            Text("Choose which sources to show across the app. Each is a PocketDJ index URL served from cloud storage.")
         }
     }
 
@@ -398,9 +398,9 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Online search (OpenSearch)")
+            Text("Online search")
         } footer: {
-            Text("Enables full-text search across the whole collection. Leave the host blank to follow the shared default (updates automatically); set it to point at a private or migrated search host. Leave key/secret blank to stay fully offline.")
+            Text("Enables full-text search across the whole collection. Leave the host blank to follow the shared default (updates automatically); set it to point at your own search host. The key and secret are the AWS credentials for that host — leave them blank to stay fully offline.")
         }
         // Reflect the live effective host as the override field changes.
         .task(id: settings.searchEndpoint) {
@@ -505,11 +505,11 @@ struct SettingsView: View {
         return s
     }
 
-    // MARK: Rip server
+    // MARK: Import server
 
     private var ripSection: some View {
         Section {
-            TextField("Rip server URL", text: $settings.ripServerURL)
+            TextField("Import server URL", text: $settings.ripServerURL)
                 .pocketField()
                 .font(.caption.monospaced())
                 #if os(iOS)
@@ -519,6 +519,18 @@ struct SettingsView: View {
             TextField("Token (optional)", text: $settings.ripToken)
                 .pocketField()
                 .accessibilityIdentifier("settings-rip-token")
+            // #TOUPDATE: delete this toggle. The target state has no Apple Music capture, so there
+            // is no "cloud source" to rip from and nothing for this switch to mean. It is left in
+            // place ONLY because removing it today would strand the persisted flag — three things
+            // must land first, in this order:
+            //   1. rip-server.mjs must fail closed on media the requester doesn't own. Removing
+            //      the toggle alone does NOT stop capture: :798 ("Digital songs always capture
+            //      from Apple Music") routes every DIGITAL song to capture regardless of this
+            //      flag, and :549 captures an analog song on an exact library match.
+            //   2. SettingsStore.swift:192 must force `ripFromCloud` false on load, or an already-
+            //      persisted `true` keeps asking for capture with no UI left to turn it off.
+            //   3. SettingsTests.swift:23/32 asserts that `true` round-trips — update it with (2).
+            // The footer below deliberately no longer describes this control.
             Toggle("Rip from cloud source", isOn: $settings.ripFromCloud)
                 .accessibilityIdentifier("settings-rip-from-cloud")
                 .onChange(of: settings.ripFromCloud) { settings.persist() }
@@ -535,9 +547,22 @@ struct SettingsView: View {
                 ripStatusView
             }
         } header: {
-            Text("Rip server")
+            Text("Import server")
         } footer: {
-            Text("The iMac rip-on-demand server (over Tailscale). Streams/downloads any song; only needed to create a rip — once ripped it plays from S3 anywhere. When “Rip from cloud source” is on, songs that match your Apple Music library are captured from Apple Music (real-time, one at a time) and fall back to vinyl otherwise — a large Rip/Burn can take a while.")
+            // #TOUPDATE: the footer below is written to the TARGET state. Three of its claims are
+            // not true of today's code:
+            //   (a) "music you already own in your cloud library" / "nothing comes back" —
+            //       rip-server.mjs:798 ("Digital songs always capture from Apple Music") still
+            //       routes every DIGITAL song to capture unconditionally, and :549 captures an
+            //       analog song on an exact library match. The server must fail closed on any
+            //       media the requester does not own, and return the miss envelope instead.
+            //   (b) "your own copy" / "your storage" — rips/* is public-read under a FLAT
+            //       rips/<songId>.mp3 key shared across every user. Needs per-user key prefixes
+            //       and the public-read grant removed before any possessive is honest.
+            //   (c) any per-requester claim at all — the server does not authenticate: authed()
+            //       (rip-server.mjs:1904) returns true whenever no token is configured, and
+            //       /health reports auth:false. Needs enforced per-user authorization.
+            Text("The server that prepares your own copy of music you already own in your cloud library — nothing else. Ask for a song you don't own and nothing comes back; it is never fetched from anywhere else to fill the gap. Only needed the first time: once a song is prepared it plays from your storage anywhere, with the server off. One job at a time, so a whole collection takes a while.")
         }
     }
 
@@ -583,7 +608,22 @@ struct SettingsView: View {
         } header: {
             Text("Jukebox Hero")
         } footer: {
-            Text("The jukebox session broker guests' phones talk to (public — exposed with Tailscale Funnel, like the rip server). Start a jukebox from the Jukebox Hero tab (⌘J); guests scan its QR code to see what's playing and request songs.")
+            // #TOUPDATE: the footer below is written to the TARGET state. None of the three
+            // session bounds it promises exist yet:
+            //   (a) "the link carries a token" — the guest page is a public CloudFront object and
+            //       jukebox-server.mjs:446 serves guest requests with no guest key at all
+            //       ("Public guest request — no host key"). JUKEBOX_TOKEN (:35) gates only the
+            //       host/create endpoints and defaults to empty. Needs a per-session guest token,
+            //       default ON.
+            //   (b) "the listener count is capped" — there is no cap; the server's own header (:9)
+            //       advertises "any number of listeners". The only limit is a per-IP request
+            //       window on the request form (ipWindowMax = 12, :62). Needs a server-enforced
+            //       listener cap.
+            //   (c) "the session expires" — ttlMs (24 h) and deleteMs (7 d) are real (:50-51), but
+            //       `timeless` is a shipped opt-out that makes expiryOf() return null (:121), and
+            //       each streamUrl is a public, non-expiring rips-bucket mp3 that outlives the
+            //       session. Needs `timeless` removed and per-session signed, expiring audio URLs.
+            Text("The jukebox session broker your guests' phones talk to. Start a jukebox from the Jukebox Hero tab (⌘J); guests scan its QR code to see what's playing and request songs. A session is bounded to your event: the link carries a token, the listener count is capped, and the session expires when the night is over.")
         }
     }
 
@@ -616,11 +656,11 @@ struct SettingsView: View {
 
     // MARK: Apple Music (Local) sync
 
-    /// "Sync Apple Music library" — kicks a library check on the rip server (POST `/am-sync`,
+    /// "Sync Apple Music library" — kicks a library check on the import server (POST `/am-sync`,
     /// polls the job), then evicts the stale AM index from `URLCache.shared` and reloads the
     /// catalog so newly-deployed tracks appear. Only meaningful once the AM source is loaded,
-    /// and it leans on the SAME rip server as the rip features — so it lives right after the
-    /// rip section and is gated on both `hasAppleMusic` (the source is present) and a server.
+    /// and it leans on the SAME import server as the import features — so it lives right after
+    /// that section and is gated on both `hasAppleMusic` (the source is present) and a server.
     // (The Apple Music library sync UI moved to SyncSettingsView — Settings ▸ Sync.)
 
     private func testRip() async {
@@ -643,6 +683,12 @@ struct SettingsView: View {
 
     // MARK: Reset
 
+    /// Device-local reset only. #TOUPDATE: this is the closest thing the app has to account
+    /// deletion, and it deletes nothing server-side — there is no in-app way to remove your
+    /// prepared audio or your synced profile from the cloud. Needs a real delete path (per-user
+    /// keys to delete, an authenticated request to delete them, and the CloudKit profile/session
+    /// records purged) before the copy here can offer it. Until then this message must keep
+    /// saying plainly that server-side audio survives.
     private var resetSection: some View {
         Section {
             Button(role: .destructive) { confirmingReset = true } label: {
@@ -660,14 +706,18 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings-reset-confirm")
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Removes sources, search & rip-server config, and cached covers. Your collections are cleared too. This can’t be undone.")
+                // #TOUPDATE: "your cloud library" is per-user framing that is not true today —
+                // prepared audio lives at a FLAT, public-read rips/<songId>.mp3 key shared across
+                // every user, so there is no "your" copy to leave behind. Honest once per-user key
+                // prefixes and an authenticating server land.
+                Text("Removes sources, search & import-server config, and cached covers. Your collections are cleared too. This can’t be undone. Music you’ve already prepared stays in your cloud library — this only resets this device.")
             }
         } footer: {
             Text("App updates (new views + data migrations) ship via the App Store.")
         }
     }
 
-    // MARK: Debug (capture-session diagnostics — see DebugView)
+    // MARK: Debug (audio capture-session diagnostics — see DebugView)
 
     /// Last section on purpose: its footer is the app's build identity, so a TestFlight
     /// tester can say exactly which build they're running.

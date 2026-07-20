@@ -7,10 +7,16 @@ import UniformTypeIdentifiers
 ///   • the LYRICS/speech transcript (Apple Speech, fully on device) — karaoke panel;
 ///   • the dominant-CHORD timeline — colored blocks on the scrubbable strip, tap for
 ///     notation (treble/bass staves) or a guitar shape;
-///   • the four Demucs STEMS — mute/solo live (the drums + bass stems ARE the rhythm view).
+///   • the four separated STEMS — mute/solo live (the drums + bass stems ARE the rhythm view).
 ///     Stems degrade gracefully: burned → play; stemmed server-side → download; not stemmed →
-///     create via the rip server when it's reachable (catalog tracks only) — there is NO
-///     on-device separation (Demucs runs on the rip server; spec: stems architecture).
+///     create on the import server when one is configured — there is NO on-device separation
+///     (Demucs runs on the import server; spec: stems architecture). A catalog track stems
+///     from the copy the server already prepared for THIS user; imported/Studio audio uploads
+///     the local file. Either way the server only ever separates audio the user owns — it
+///     never goes and acquires audio to fill a gap.
+///     #TOUPDATE: per-user prepared copies + request auth. Today rips/* is a FLAT, public-read
+///     namespace keyed rips/<songId>.mp3 and SHARED across users, and the server's authed()
+///     fails open (scripts/rip-server.mjs:1904), so "prepared for THIS user" is not yet true.
 ///
 /// Source resolution reuses the sample-from-track ladder (burned → burn-on-demand → rip-first),
 /// with one demux-specific twist: a shared ANALOG album side is carved once into the demux
@@ -28,11 +34,11 @@ struct StudioDemuxView: View {
         case failed(String)
     }
 
-    /// Stem availability for the loaded source (songs only — see the header).
+    /// Stem availability for the loaded source (songs and custom audio alike — see the header).
     private enum StemState: Equatable {
-        case none            // non-song source, or song with no stems + no server
-        case creatable       // song, not stemmed, rip server reachable
-        case creating        // Demucs run in flight on the rip server
+        case none            // no import server configured, or a song with no prepared audio
+        case creatable       // not stemmed, and an import server is configured
+        case creating        // separation run in flight on the import server
         case downloadable    // stemmed server-side, not burned
         case downloading
         case burned          // 4 local files — stem mode available
@@ -622,9 +628,13 @@ struct StudioDemuxView: View {
             statusRow(spinner: true, "Downloading stems…", a11y: "demux-stems-downloading")
         case .creatable:
             HStack(spacing: 8) {
+                // #TOUPDATE: "stays private to you" needs per-user storage + request auth on
+                // the import server. Today an upload lands in the FLAT, public-read rips/*
+                // namespace shared across users, and authed() fails open
+                // (scripts/rip-server.mjs:1904). Drop the clause or land the server change.
                 Text(source.songId == nil
-                     ? "Stream this audio to your rip server for Demucs separation."
-                     : "Not stemmed yet — separate it with Demucs on your rip server.")
+                     ? "Uploads this audio to the import server to separate its stems — it stays private to you."
+                     : "Not stemmed yet — separate it on the import server.")
                     .font(.caption).foregroundStyle(Theme.fgDim)
                 Button("Create stems") { Task { await createStems(source) } }
                     .font(.caption).buttonStyle(.borderless).foregroundStyle(Theme.accent)
@@ -633,8 +643,8 @@ struct StudioDemuxView: View {
         case .creating:
             statusRow(spinner: true,
                       source.songId == nil
-                      ? "Uploading + separating on the rip server (this can take a few minutes)…"
-                      : "Separating stems on the rip server (this can take a few minutes)…",
+                      ? "Uploading + separating on the import server (this can take a few minutes)…"
+                      : "Separating stems on the import server (this can take a few minutes)…",
                       a11y: "demux-stems-creating")
         case .failed(let msg):
             HStack(spacing: 8) {
@@ -643,7 +653,7 @@ struct StudioDemuxView: View {
                 retryButton("demux-stems-retry") { Task { await createStems(source) } }
             }
         case .none:
-            Text("Stems need the rip server, which isn’t reachable right now (Demucs separation runs there).")
+            Text("No stems for this one yet — they’re separated on the import server (Settings ▸ Import server).")
                 .font(.caption).foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("demux-stems-none")
         }
@@ -690,7 +700,7 @@ struct StudioDemuxView: View {
 
     private func needsBurnState(_ source: DemuxSource) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("This track is ripped but not on the device yet.")
+            Text("This track’s audio is prepared but not on the device yet.")
                 .font(.caption).foregroundStyle(Theme.fgDim)
             Button("Burn + demux") { Task { await burnThenReady(source) } }
                 .font(.callout.weight(.semibold)).buttonStyle(.borderless).foregroundStyle(Theme.accent)
@@ -700,10 +710,10 @@ struct StudioDemuxView: View {
 
     private var ripFirstState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Rip this track first", systemImage: "waveform.badge.plus")
+            Label("Nothing to demux here", systemImage: "waveform.badge.plus")
                 .font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
-            Text("This song has no local rip yet, so there’s nothing to demux. Rip it "
-                 + "(▶/⤓ on the song, or Rip in a collection), then come back.")
+            Text("There’s no prepared audio for this track yet, so there’s nothing to demux. "
+                 + "Pick a track that’s already on the device, or Import an audio file.")
                 .font(.caption).foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("demux-rip-first")
         }
@@ -967,9 +977,14 @@ struct StudioDemuxView: View {
         }
     }
 
-    /// Trigger Demucs on the rip server, then pull the stems down. Catalog songs go through
-    /// `/stemify` (server-side source + manifest stamp); CUSTOM audio STREAMS the local file
-    /// up via `/stemify-custom` and caches the results in the demux stems cache.
+    /// Trigger separation on the import server, then pull the stems down. Catalog songs go
+    /// through `/stemify` (the server separates the copy it already prepared for this user, and
+    /// stamps the manifest); CUSTOM audio STREAMS the local file up via `/stemify-custom` and
+    /// caches the results in the demux stems cache. Neither path acquires audio the user does
+    /// not already own — a song with nothing prepared is a MISS, not a fetch.
+    /// #TOUPDATE: "prepared for this user" + "is a MISS" both need the server work — rips/* is
+    /// still a flat, shared, public-read namespace, and scripts/rip-server.mjs:798 still routes
+    /// DIGITAL-source ids to Apple Music capture unconditionally.
     private func createStems(_ src: DemuxSource) async {
         stemState = .creating
         if let songId = src.songId {
@@ -977,14 +992,14 @@ struct StudioDemuxView: View {
             if rips.isStemmed(songId) {
                 await downloadStems(src)
             } else {
-                stemState = .failed("The rip server couldn’t stem this track (check it’s reachable and try again).")
+                stemState = .failed("The import server couldn’t stem this track (check it’s reachable and try again).")
             }
             return
         }
         // Custom: upload the resolved local audio, await the job, download the four stems.
         guard let audioURL else { stemState = .failed("No local audio to upload."); return }
         guard let remote = await rips.stemifyCustom(id: src.key, fileURL: audioURL) else {
-            stemState = .failed("The rip server couldn’t stem this audio (check it’s reachable and try again).")
+            stemState = .failed("The import server couldn’t stem this audio (check it’s reachable and try again).")
             return
         }
         if await demux.downloadStems(for: src.key, remote: remote) != nil {
