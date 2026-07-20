@@ -18,6 +18,8 @@ struct SyncSettingsView: View {
     /// by the app's own window (where the service IS injected) — but a preview or a future
     /// test host that renders it standalone should degrade to "unavailable", not trap.
     @Environment(FavoritesSyncService.self) private var favoritesSync: FavoritesSyncService?
+    /// Optional for the same reason as `favoritesSync` — a preview host may not inject it.
+    @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
 
     @State private var syncing = false
     @State private var syncStatus: SyncStatus?
@@ -42,6 +44,7 @@ struct SyncSettingsView: View {
         Form {
             appleMusicSection
             collectionsSection
+            writeBackSection
             favoritesSection
         }
         .formStyle(.grouped)
@@ -56,6 +59,72 @@ struct SyncSettingsView: View {
             loadedHash = true
         }
         .onDisappear { settings.persist() }
+    }
+
+    // MARK: Apple Music playlist write-back
+
+    /// The OUTBOUND leg of source-playlist adds, made visible (Levi 2026-07-20). Half of the
+    /// "Sweet Thing never reached Apple Music" bug was that the write failed; the other half
+    /// was that nothing anywhere said so — the queue settled the job as `.failed` and the only
+    /// evidence lived in a JSON file. This section is that evidence, and the retry.
+    ///
+    /// Hidden entirely when the queue is empty: on a healthy install adds land in seconds and
+    /// there is nothing to say, so a permanently-visible "0 pending" row would be noise.
+    @ViewBuilder private var writeBackSection: some View {
+        if let writeBack, !writeBack.jobs.isEmpty {
+            Section {
+                LabeledContent("Waiting to send", value: "\(writeBack.pendingCount)")
+                    .accessibilityIdentifier("writeback-pending")
+                LabeledContent("Failed", value: "\(writeBack.failed.count)")
+                    .foregroundStyle(writeBack.failed.isEmpty ? Theme.fg : Theme.danger)
+                    .accessibilityIdentifier("writeback-failed")
+
+                ForEach(writeBack.failed) { job in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(songTitle(job.songId)) → \(job.playlistName)")
+                            .font(.callout)
+                        if let error = job.lastError {
+                            Text(error).font(.caption).foregroundStyle(Theme.danger)
+                        }
+                    }
+                    .accessibilityIdentifier("writeback-failed-job")
+                }
+
+                // A GUESSED playlist match is a successful delivery that may have gone to the
+                // wrong place — the one outcome no error list would ever show, so it gets its
+                // own row rather than riding the failure list.
+                if let warning = writeBack.resolutionWarning {
+                    Text(warning)
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("writeback-warning")
+                }
+
+                if !writeBack.failed.isEmpty {
+                    Button {
+                        writeBack.retryFailed()
+                        writeBack.runSoon()
+                    } label: {
+                        Label("Retry failed", systemImage: "arrow.clockwise")
+                    }
+                    .accessibilityIdentifier("writeback-retry")
+                }
+            } header: {
+                Text("Apple Music playlist updates")
+            } footer: {
+                Text("""
+                     Songs you add to an Apple Music playlist from inside PocketDJ are written to \
+                     your real Apple Music library, and normally arrive within seconds. PocketDJ's \
+                     OWN view of that playlist catches up later — the “Apple Music (Local)” source \
+                     only changes when the 04:00 nightly library sync re-indexes it — so a song can \
+                     be in Apple Music and not yet listed here. That is expected, not a failure.
+                     """)
+            }
+        }
+    }
+
+    /// A failed job stores a song id; show the user a title when the catalog still knows it.
+    private func songTitle(_ songId: String) -> String {
+        app.songsById[songId]?.name ?? songId
     }
 
     // MARK: Favorites ⇄ Apple Music
