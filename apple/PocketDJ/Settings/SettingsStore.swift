@@ -186,6 +186,14 @@ final class SettingsStore {
         let data = SettingsStore.load(from: defaults)
         self.sources = data.sources
         self.ripServerURL = data.ripServerURL
+        // UI-test seam: the shipping default rip-server URL is blank (features stay
+        // dormant until the user configures a server), so tests that exercise a
+        // configured-server state seed one via PDJ_RIP_SERVER_URL. No env var → no
+        // change, so this is inert in every real build. (Mirrors PDJ_MIX_DECK_LAYOUT.)
+        if let fixtureRip = ProcessInfo.processInfo.environment["PDJ_RIP_SERVER_URL"],
+           !fixtureRip.isEmpty {
+            self.ripServerURL = fixtureRip
+        }
         self.ripToken = data.ripToken
         self.jukeboxServerURL = data.jukeboxServerURL ?? ""
         self.jukeboxToken = data.jukeboxToken ?? ""
