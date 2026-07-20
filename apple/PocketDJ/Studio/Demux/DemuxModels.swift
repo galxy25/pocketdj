@@ -141,6 +141,36 @@ struct DemuxChordSegment: Codable, Equatable, Identifiable {
     var tabText: String { guitarFrets.map { $0.map(String.init) ?? "x" }.joined(separator: "-") }
 }
 
+// MARK: - Drum pattern
+
+/// The drum-hit classes the pattern view colors and the sequencer export lanes on. `bass` comes
+/// from the BASS stem's onsets (its own lane in the remix grid); the other four are spectral
+/// classes of DRUMS-stem onsets.
+enum DemuxDrumKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case kick, snare, percussive, other, bass
+
+    /// Lane order in the pattern grid + sequencer export (kick at the top, bass at the bottom).
+    static let laneOrder: [DemuxDrumKind] = [.kick, .snare, .percussive, .other, .bass]
+
+    var label: String {
+        switch self {
+        case .kick: return "Kick"
+        case .snare: return "Snare"
+        case .percussive: return "Perc"
+        case .other: return "Other"
+        case .bass: return "Bass"
+        }
+    }
+}
+
+/// One detected hit: onset time (ms from the stem's 0:00 — the SONG timeline, stems are
+/// cut-aligned), its class, and a 0…1 onset strength (relative to the loudest hit in the file).
+struct DemuxDrumHit: Codable, Equatable, Hashable, Sendable {
+    var ms: Int
+    var kind: DemuxDrumKind
+    var strength: Double
+}
+
 // MARK: - Document (persisted)
 
 /// Per-artifact lifecycle. `unavailable` is a terminal "can't on this device/source" (e.g. speech
@@ -167,9 +197,19 @@ struct DemuxDocument: Codable, Equatable {
     /// Human-readable note when a run was IMPERFECT (some windows failed) — surfaced next to
     /// the lyrics so a partial result is legible, and invaluable in field debugging.
     var transcriptDiag: String?
+    /// Where the words came from: "cloud" (whisper sidecar fetched from S3) or "device"
+    /// (on-device Speech). OPTIONAL — pre-existing docs (all device-era) decode as nil.
+    /// Gates the cloud fetch's own dedup (a fetched sidecar isn't re-fetched every load).
+    var transcriptEngine: String?
 
     var chordStatus: DemuxArtifactStatus = .none
     var chords: [DemuxChordSegment] = []
+
+    /// Drum-pattern extraction (drums + bass stem onsets, classified). OPTIONAL — synthesized
+    /// Codable requires present keys for non-optionals, and pre-existing cache docs don't have
+    /// these; optionality IS the migration (the `transcriptCoveredMs` precedent).
+    var drumStatus: DemuxArtifactStatus?
+    var drumHits: [DemuxDrumHit]?
 
     /// For `.file` sources only: the copied-in audio's filename inside the demux-cache audio
     /// folder (catalog/Studio sources re-resolve their audio through their own stores).

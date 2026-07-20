@@ -55,6 +55,19 @@ struct StudioDemuxView: View {
     @State private var showImporter = false
     @State private var searchText = ""
     @State private var chordDetail: DemuxChordSegment?
+    /// The "Cut sample" sheet (catalog songs → the full sampler flow; custom/studio sources →
+    /// the URL-seeded region editor). The demux player is PAUSED before presenting — the sheet
+    /// auditions through StudioEngine and two live players violate the one-audio-owner rule.
+    @State private var showCutSample = false
+    /// The drum-pattern grid's bar list (measured sidecar downbeats when available, else an
+    /// estimated constant grid) — resolved once per extraction, off the render path.
+    /// `drumBarsKey` records WHICH source the bars belong to: the async resolve (sidecar
+    /// download / 90 s grid estimate) can lag a source switch, and quantizing the new song's
+    /// hits on the old song's bars would render — and export — a wrong pattern.
+    @State private var drumBars: [DrumPatternDetector.Bar] = []
+    @State private var drumBarsKey: String?
+    /// A cloud lyrics-sidecar download in flight (drives the panel's fetching row).
+    @State private var cloudLyricsFetching = false
 
     var body: some View {
         Group {
@@ -281,8 +294,10 @@ struct StudioDemuxView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(source.displayName).font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
-                Text((DemuxFeatures.lyricsEnabled ? "Demuxed: synced lyrics + chords"
-                                                  : "Demuxed: chord timeline")
+                Text((DemuxFeatures.lyricsEnabled
+                      || cloudLyricsAvailable(source, demux.document(for: source.key))
+                      ? "Demuxed: synced lyrics + chords"
+                      : "Demuxed: chord timeline")
                      + (stemState == .burned ? " + stems" : ""))
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             }
@@ -303,10 +318,163 @@ struct StudioDemuxView: View {
                           onChordTap: { chordDetail = $0 })
         chordStatusRow(doc)
         stemsPanel(source)
-        // HIDDEN until the engine swap (DemuxFeatures doc) — on-device recognition
-        // over music is too sparse to ship as "lyrics".
-        if DemuxFeatures.lyricsEnabled {
+        drumPatternPanel(source, doc)
+        cutSampleRow(source)
+        // The CLOUD engine (whisper sidecars) shows for any song that has one — the
+        // DemuxFeatures gate's documented exit criterion. On-device recognition stays
+        // env-gated (too sparse over music to ship as "lyrics").
+        if DemuxFeatures.lyricsEnabled || cloudLyricsAvailable(source, doc) {
             transcriptPanel(doc)
+        }
+    }
+
+    // MARK: Drum pattern (drums + bass stem onsets → color-coded bar grid → sequencer export)
+
+    @ViewBuilder private func drumPatternPanel(_ source: DemuxSource, _ doc: DemuxDocument?) -> some View {
+        let status = doc?.drumStatus ?? .none
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Drum pattern", icon: "square.grid.4x3.fill")
+            if demux.drumRuns.contains(source.key) {
+                statusRow(spinner: true, "Listening for drum hits…", a11y: "demux-drums-running")
+            } else if status == .done, let hits = doc?.drumHits, !hits.isEmpty {
+                if drumBarsKey == source.key {
+                    DemuxDrumPatternView(source: source, hits: hits, bars: drumBars,
+                                         durationMs: durationMs)
+                } else {
+                    // Bars still resolving for THIS source — never render/export the new
+                    // song's hits on the previous song's bar lattice.
+                    statusRow(spinner: true, "Aligning bars…", a11y: "demux-drums-bars")
+                }
+                HStack(spacing: 8) {
+                    Text("Kick · snare · perc · other from the drums stem; the bass lane from the bass stem.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                    Spacer()
+                    retryButton("demux-drums-rerun") { kickoffDrums(force: true) }
+                }
+            } else if status == .failed {
+                HStack(spacing: 8) {
+                    Text("No clear drum hits found in the stems.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                    retryButton("demux-drums-retry") { kickoffDrums(force: true) }
+                }
+            } else if stemState == .burned {
+                Button { kickoffDrums() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform.badge.magnifyingglass")
+                        Text("Extract drum pattern").font(.callout.weight(.semibold))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Theme.accent.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .accessibilityIdentifier("demux-drums-extract")
+            } else {
+                Text("Download this track’s stems first — the pattern reads the drums (+ bass) stems.")
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
+            }
+        }
+        // Bars resolve when a finished extraction is on screen (sidecar downbeats → measured
+        // bars; else a constant-grid estimate from the drums stem itself). Keyed to the source
+        // so a stale async resolve can never label another source's bars as this one's.
+        .task(id: "\(source.key)#\(status.rawValue)") {
+            guard status == .done else { return }
+            guard drumBarsKey != source.key else { return }   // already resolved for this source
+            let bars = await resolveDrumBars(source)
+            guard isCurrent(source) else { return }
+            drumBars = bars
+            drumBarsKey = source.key
+        }
+    }
+
+    private func kickoffDrums(force: Bool = false) {
+        guard let source else { return }
+        if let songId = source.songId, let stems = burns.localStemURLs(forSong: songId),
+           let drums = stems.urls["drums"] {
+            demux.analyzeDrumPattern(source: source, drumsURL: drums, bassURL: stems.urls["bass"],
+                                     force: force, release: stems.release)
+        } else if let stems = demux.localStemURLs(for: source.key), let drums = stems["drums"] {
+            demux.analyzeDrumPattern(source: source, drumsURL: drums, bassURL: stems["bass"],
+                                     force: force)
+        }
+    }
+
+    /// The pattern grid's bars: measured sidecar downbeats when the song has an analysis
+    /// sidecar (tempo drift included), else a constant grid estimated from the drums stem.
+    private func resolveDrumBars(_ src: DemuxSource) async -> [DrumPatternDetector.Bar] {
+        if let songId = src.songId {
+            var sc = burns.localBeatGrid(forSong: songId)
+            if sc == nil { sc = await burns.burnBeatGrid(forSong: songId) }
+            if let sc {
+                let bars = DrumPatternDetector.bars(downbeatsMs: sc.downbeatsMs,
+                                                    bpm: sc.beatGridBpm,
+                                                    firstDownbeatMs: sc.firstDownbeatMs,
+                                                    durationMs: durationMs)
+                if !bars.isEmpty { return bars }
+            }
+            if let got = burns.localStemURLs(forSong: songId) {
+                let drums = got.urls["drums"]
+                let grid: StudioGrid? = await Task.detached(priority: .utility) {
+                    drums.flatMap { DrumPatternDetector.gridEstimate(url: $0) }
+                }.value
+                got.release?()
+                if let grid, grid.bpm > 0 {
+                    return DrumPatternDetector.bars(downbeatsMs: [], bpm: grid.bpm,
+                                                    firstDownbeatMs: grid.firstDownbeatMs,
+                                                    durationMs: durationMs)
+                }
+            }
+            return []
+        }
+        if let drums = demux.localStemURLs(for: src.key)?["drums"] {
+            let grid: StudioGrid? = await Task.detached(priority: .utility) {
+                DrumPatternDetector.gridEstimate(url: drums)
+            }.value
+            if let grid, grid.bpm > 0 {
+                return DrumPatternDetector.bars(downbeatsMs: [], bpm: grid.bpm,
+                                                firstDownbeatMs: grid.firstDownbeatMs,
+                                                durationMs: durationMs)
+            }
+        }
+        return []
+    }
+
+    // MARK: Cut sample (the sampler's in/out region editor over THIS loaded audio)
+
+    private func cutSampleRow(_ source: DemuxSource) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Cut sample", icon: "scissors")
+            Button {
+                if player.isPlaying { player.togglePlayPause() }   // one-audio-owner: sheet auditions
+                showCutSample = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "scissors")
+                    Text("Cut a sample from this audio").font(.callout.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("demux-cut-sample")
+            Text(source.songId != nil
+                 ? "Opens the sampler’s region editor — full track or a mix of its stems."
+                 : (demux.localStemURLs(for: source.key) != nil
+                    ? "Set in/out points — full audio or a mix of its stems."
+                    : "Set in/out points over this audio."))
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+        }
+        .sheet(isPresented: $showCutSample) {
+            if case .song(let id, _, _) = source {
+                StudioNewSampleFromTrackView(initialSongId: id)
+            } else {
+                DemuxCutSampleView(source: source)
+            }
         }
     }
 
@@ -364,7 +532,9 @@ struct StudioDemuxView: View {
     }
 
     @ViewBuilder private func transcriptPanel(_ doc: DemuxDocument?) -> some View {
-        if let source, demux.transcriptRuns.contains(source.key) {
+        if cloudLyricsFetching {
+            statusRow(spinner: true, "Fetching lyrics…", a11y: "demux-lyrics-fetching")
+        } else if let source, demux.transcriptRuns.contains(source.key) {
             statusRow(spinner: true, "Transcribing on device…", a11y: "demux-transcribing")
             // Words land per finished window — show them AS THEY ARRIVE (and a re-run
             // keeps the screen honest about what's been heard so far).
@@ -598,6 +768,8 @@ struct StudioDemuxView: View {
         audioURL = nil
         durationMs = 0
         peaks = []
+        drumBars = []
+        drumBarsKey = nil
     }
 
     private func resolve(_ src: DemuxSource) async {
@@ -694,12 +866,30 @@ struct StudioDemuxView: View {
         demux.analyzeChords(source: source, url: audioURL, durationMs: durationMs, force: force)
     }
 
-    /// Transcribe the VOCALS stem when one is on device (recognition over a full mix is
-    /// best-effort): the burned stem for songs, the demux stems cache for custom audio;
-    /// otherwise the mix file.
+    /// Transcript source ladder, CLOUD FIRST: a catalog song with a manifest lyrics sidecar
+    /// (whisper over the vocals stem, produced by the offload workers) fetches that — better
+    /// than any on-device recognition, works regardless of the on-device gate, and never
+    /// triggers the speech permission prompt. Only sources WITHOUT a cloud sidecar fall to the
+    /// gated on-device path (vocals stem when local, else the mix file).
     private func kickoffTranscript(force: Bool = false) {
-        // Gated with the panel: no recognition runs and — crucially — the speech
-        // permission prompt never appears for a feature the user can't see.
+        guard let source, audioURL != nil else { return }
+        if let songId = source.songId, rips.hasLyricsSidecar(songId) {
+            let doc = demux.documentCreating(for: source)
+            // Fetched-once dedup: a landed cloud transcript isn't re-downloaded per load
+            // (Regenerate forces a refetch — the sidecar may have been re-transcribed).
+            if force || doc.transcriptStatus != .done || doc.transcriptEngine != "cloud" {
+                Task { await fetchCloudTranscript(source, songId: songId, force: force) }
+            }
+            return
+        }
+        kickoffDeviceTranscript(force: force)
+    }
+
+    /// The ON-DEVICE ladder (vocals stem when local, else the mix file) — the path for sources
+    /// with no cloud sidecar, and the fallback when a cloud fetch fails on a gated build.
+    /// Gated with the panel: no recognition runs and — crucially — the speech permission
+    /// prompt never appears for a feature the user can't see.
+    private func kickoffDeviceTranscript(force: Bool = false) {
         guard DemuxFeatures.lyricsEnabled else { return }
         guard let source, let audioURL else { return }
         if let songId = source.songId, let stems = burns.localStemURLs(forSong: songId),
@@ -711,6 +901,39 @@ struct StudioDemuxView: View {
         } else {
             demux.analyzeTranscript(source: source, url: audioURL, durationMs: durationMs, force: force)
         }
+    }
+
+    /// Download + decode the cloud lyrics sidecar and land it on the document (wholesale —
+    /// DemuxStore stamps done/coverage/provenance). Word timestamps are already song-relative
+    /// (the vocals stem is cut-derived), so they drop straight into the karaoke panel.
+    /// A device run in flight wins the race (its per-window appends would interleave with the
+    /// wholesale replace); the sidecar is fetched again on the next open. A FAILED fetch
+    /// (offline / corrupt sidecar) falls back to the gated on-device ladder so a dev-seam
+    /// build never loses the transcription it used to get.
+    private func fetchCloudTranscript(_ source: DemuxSource, songId: String, force: Bool) async {
+        guard !cloudLyricsFetching else { return }
+        guard !demux.transcriptRuns.contains(source.key) else { return }
+        cloudLyricsFetching = true
+        defer { cloudLyricsFetching = false }
+        guard let url = rips.lyricsSidecarURL(forSong: songId),
+              let data = try? await rips.downloadBytes(url),
+              let sidecar = try? JSONDecoder().decode(RipsStore.TimedLyricsSidecar.self, from: data)
+        else {
+            guard isCurrent(source) else { return }
+            kickoffDeviceTranscript(force: force)
+            return
+        }
+        demux.applyCloudTranscript(
+            source: source,
+            words: sidecar.words.map { DemuxWord(text: $0.text, startMs: $0.startMs, endMs: $0.endMs) },
+            model: sidecar.model)
+    }
+
+    /// The transcript panel shows for a source with a cloud sidecar (or an already-landed
+    /// cloud transcript — the offline case) even while on-device lyrics stay env-gated.
+    private func cloudLyricsAvailable(_ source: DemuxSource, _ doc: DemuxDocument?) -> Bool {
+        if let songId = source.songId, rips.hasLyricsSidecar(songId) { return true }
+        return doc?.transcriptEngine == "cloud" && !(doc?.words.isEmpty ?? true)
     }
 
     // MARK: - Stems

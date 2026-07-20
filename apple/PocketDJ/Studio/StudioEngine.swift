@@ -233,9 +233,20 @@ final class StudioEngine {
     /// Per-row step toggles for the loaded pattern (≤ 8 rows, engine's own copy — the store's
     /// document can mutate underneath; a running pattern plays what was loaded).
     @ObservationIgnored private var patternSteps: [[Bool]] = []
+    /// Per-row per-step LOOP flags (engine's own copy, same shape as `patternSteps`). A loop
+    /// step schedules `[.loops, .interrupts]` — it keeps looping until the row's next trigger
+    /// (usually the same step one bar later, which the horizon arms with `.interrupts`, cutting
+    /// and restarting it: the wrap-restart contract).
+    @ObservationIgnored private var patternLoopSteps: [[Bool]] = []
+    /// Per-row per-step stretch spans (0 = natural). Non-zero spans pick a pre-stretched buffer
+    /// from `patternSpanBuffers`; a span with no rendered buffer falls back to natural.
+    @ObservationIgnored private var patternStepSpans: [[Int]] = []
     /// Row index → pre-baked canonical PCM buffer. Rows absent here (deleted target, silent row,
     /// bad format) are simply never scheduled — skipped, never a throw (spec §2).
     @ObservationIgnored private var patternBuffers: [Int: AVAudioPCMBuffer] = [:]
+    /// Row index → (span → tempo-fit buffer), pre-stretched offline by the caller (StudioRender)
+    /// to EXACTLY span×step frames at the loaded bpm. Validated like `patternBuffers`.
+    @ObservationIgnored private var patternSpanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:]
     @ObservationIgnored private var patternBpm: Double = 120
     /// Number of 1-bar passes whose steps are already scheduled. The tick keeps this one pass
     /// ahead of the audible pass (the spec's 1-bar scheduling horizon).
@@ -707,7 +718,8 @@ final class StudioEngine {
     /// skipped, never a throw). Rows beyond `maxPatternRows` are dropped with a log. Swaps only
     /// while stopped (a running pattern is stopped first) — the attach set is fixed, so this
     /// never touches the live graph.
-    func loadPattern(_ pattern: StudioPattern, buffers: [Int: AVAudioPCMBuffer]) {
+    func loadPattern(_ pattern: StudioPattern, buffers: [Int: AVAudioPCMBuffer],
+                     spanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:]) {
         ensureEngine()
         if isPlayingPattern { stopPattern() }
         let rows = Array(pattern.rows.prefix(Self.maxPatternRows))
@@ -715,8 +727,11 @@ final class StudioEngine {
             dlog("loadPattern \(pattern.id): rows capped at \(Self.maxPatternRows) (had \(pattern.rows.count))")
         }
         patternSteps = rows.map(\.steps)
+        patternLoopSteps = rows.map(\.loopSteps)
+        patternStepSpans = rows.map(\.stepSpans)
         patternBpm = pattern.bpm > 0 ? pattern.bpm : 120
         patternBuffers = [:]
+        patternSpanBuffers = [:]
         for (i, row) in rows.enumerated() {
             guard let buf = buffers[i] else { continue }             // missing target — skipped
             guard buf.frameLength > 0 else {                          // zero-frame schedule = crash
@@ -728,6 +743,15 @@ final class StudioEngine {
                 continue
             }
             patternBuffers[i] = buf
+            // Pre-stretched span variants ride the same gates; a bad one falls back to natural
+            // at schedule time rather than blocking the row.
+            if let spans = spanBuffers[i] {
+                let ok = spans.filter { $0.value.frameLength > 0 && StudioAudio.isCanonical($0.value.format) }
+                if ok.count != spans.count {
+                    dlog("loadPattern: row \(i) dropped \(spans.count - ok.count) bad span buffer(s)")
+                }
+                if !ok.isEmpty { patternSpanBuffers[i] = ok }
+            }
             if rowGains.indices.contains(i) {
                 rowGains[i].outputVolume = StudioAudio.gainMultiplier(db: row.gainDb)
             }
@@ -804,6 +828,12 @@ final class StudioEngine {
     /// Schedule one 1-bar pass of steps. Times are on each row player's OWN timeline (sample
     /// time 0 = the shared start), `.interrupts` = the classic mono-choke: a retrigger cuts the
     /// ringing previous hit on that row (spec §4).
+    ///
+    /// Per-step modes: a span > 0 picks the pre-stretched buffer (tempo-fit to span×step frames,
+    /// natural fallback); a LOOP step adds `.loops` — one queue entry that keeps looping until
+    /// the row's next trigger's `.interrupts` takes over at its own schedule time. The wrap case
+    /// is the same mechanism: the NEXT pass arms the same step a bar later, cutting and
+    /// restarting the loop exactly on the wrap (the user-facing loop contract).
     private func armPass(_ pass: Int) {
         let sr = StudioAudio.canonicalSampleRate
         for (row, buf) in patternBuffers {
@@ -814,7 +844,13 @@ final class StudioEngine {
                 let at = Self.stepTime(anchor: AVAudioTime(sampleTime: 0, atRate: sr),
                                        index: pass * StudioPattern.stepCount + col,
                                        bpm: patternBpm, sampleRate: sr)
-                player.scheduleBuffer(buf, at: at, options: .interrupts)
+                let span = patternStepSpans.indices.contains(row)
+                    && patternStepSpans[row].indices.contains(col) ? patternStepSpans[row][col] : 0
+                let stepBuf = span > 0 ? (patternSpanBuffers[row]?[span] ?? buf) : buf
+                let loops = patternLoopSteps.indices.contains(row)
+                    && patternLoopSteps[row].indices.contains(col) && patternLoopSteps[row][col]
+                player.scheduleBuffer(stepBuf, at: at,
+                                      options: loops ? [.loops, .interrupts] : .interrupts)
             }
         }
     }

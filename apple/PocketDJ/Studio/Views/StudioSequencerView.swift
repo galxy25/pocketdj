@@ -491,10 +491,37 @@ private struct SequencerEditor: View {
             if !skipped.isEmpty {
                 notice = "Skipped (audio unavailable): \(skipped.joined(separator: ", "))."
             }
-            // Reload the pattern FRESH from the store: the user may have toggled steps while
-            // buffers were rendering, and the engine should play what's on screen now.
+            // Pre-stretch every span variant an on-step demands (deduped by target+span — the
+            // same sample fit to the same span on two rows stretches once). A failed stretch
+            // falls back to the natural buffer at schedule time — a degraded hit, never a block.
+            var spanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:]
+            var stretchCache: [StudioStretchKey: AVAudioPCMBuffer] = [:]
+            let stepF = StudioEngine.stepFrames(bpm: pattern.bpm,
+                                                sampleRate: StudioAudio.canonicalSampleRate)
+            for (i, row) in pattern.rows.prefix(StudioEngine.maxPatternRows).enumerated() {
+                guard let natural = buffers[i] else { continue }
+                for col in row.steps.indices where row.steps[col] && row.stepSpans[col] > 0 {
+                    let span = row.stepSpans[col]
+                    let key = StudioStretchKey(targetId: row.targetId, span: span)
+                    if stretchCache[key] == nil {
+                        stretchCache[key] = try? await StudioRender.shared
+                            .stretchBuffer(natural, toFrames: stepF * Int64(span))
+                    }
+                    if let b = stretchCache[key] { spanBuffers[i, default: [:]][span] = b }
+                }
+                guard gen == prepGeneration, !Task.isCancelled else { return }
+            }
+            // Reload the pattern FRESH from the store — the user may have toggled steps while
+            // buffers were rendering — but ONLY when the prepared audio still fits it: the
+            // buffers hold the SNAPSHOT's targets and the span buffers are tempo-fit to the
+            // snapshot's bpm, so a mid-prepare bpm/retarget/span edit must play the snapshot
+            // (the "edits apply next Play" banner contract) rather than off-grid/wrong audio.
             let current = studio.pattern(patternId) ?? pattern
-            engine.loadPattern(current, buffers: buffers)
+            let compatible = current.bpm == pattern.bpm
+                && current.rows.map(\.targetId) == pattern.rows.map(\.targetId)
+                && current.rows.map(\.stepSpans) == pattern.rows.map(\.stepSpans)
+            engine.loadPattern(compatible ? current : pattern,
+                               buffers: buffers, spanBuffers: spanBuffers)
             engine.startPattern()
         }
     }
@@ -590,7 +617,10 @@ private struct SequencerEditor: View {
             }
             let name = StudioFolders.fileName(.sequences, id: pattern.id)
             do {
+                let spans = await StudioPatternBouncer.stretchSpanBuffers(pattern: pattern,
+                                                                          natural: buffers)
                 _ = try await StudioRender.shared.bouncePattern(pattern, buffers: buffers,
+                                                                spanBuffers: spans,
                                                                 to: dest.url.appendingPathComponent(name))
                 // Clear the dirty flag ONLY if the pattern still matches what was bounced — an
                 // edit that landed mid-render means the file on disk is already stale, and
@@ -669,6 +699,7 @@ private struct PatternRowCard: View {
                     .foregroundStyle(missing ? Theme.danger.opacity(0.8) : Theme.fgDim)
             }
             Spacer()
+            retargetMenu
             RowGainChip(rowIndex: rowIndex, gainDb: row.gainDb) { db in
                 // Persist through the store (marks the bounce dirty, debounced save) AND mirror
                 // into the live mixer when THIS pattern is loaded — row gain is the one edit
@@ -688,6 +719,48 @@ private struct PatternRowCard: View {
             .accessibilityIdentifier("seq-row-remove-\(rowIndex)")
             .help("Remove row")
         }
+    }
+
+    /// Re-point this row at a different sample/loop, keeping its steps/modes/gain — the "morph"
+    /// move: an extracted drum pattern's kick lane re-triggers a hit cut from another song.
+    private var retargetMenu: some View {
+        let samples = studio.samples.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let loops = studio.loops.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return Menu {
+            if !samples.isEmpty {
+                Section("Samples") {
+                    ForEach(samples) { s in
+                        Button { studio.setPatternRowTarget(patternId, row: rowIndex, targetId: s.id) } label: {
+                            if s.id == row.targetId {
+                                Label(s.name.isEmpty ? "Untitled sample" : s.name, systemImage: "checkmark")
+                            } else {
+                                Text(s.name.isEmpty ? "Untitled sample" : s.name)
+                            }
+                        }
+                        .accessibilityIdentifier("seq-row-retarget-\(rowIndex)-\(s.id)")
+                    }
+                }
+            }
+            if !loops.isEmpty {
+                Section("Loops") {
+                    ForEach(loops) { l in
+                        Button { studio.setPatternRowTarget(patternId, row: rowIndex, targetId: l.id) } label: {
+                            if l.id == row.targetId {
+                                Label(l.name.isEmpty ? "Untitled loop" : l.name, systemImage: "checkmark")
+                            } else {
+                                Text(l.name.isEmpty ? "Untitled loop" : l.name)
+                            }
+                        }
+                        .accessibilityIdentifier("seq-row-retarget-\(rowIndex)-\(l.id)")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(Theme.fgDim)
+        }
+        .accessibilityLabel("Change row target")
+        .accessibilityIdentifier("seq-row-retarget-\(rowIndex)")
+        .help("Swap the sample/loop this row triggers (steps and modes stay)")
     }
 
     // MARK: Step grid
@@ -749,26 +822,83 @@ private struct PatternRowCard: View {
         }
     }
 
+    /// Columns swept by an EARLIER trigger's stretch span (trigger col excluded) — rendered
+    /// with a faint fill so the fit's musical footprint reads at a glance.
+    private var spanCoverage: [Bool] {
+        var cov = Array(repeating: false, count: StudioPattern.stepCount)
+        for col in row.steps.indices where row.steps[col] {
+            let span = row.stepSpans.indices.contains(col) ? row.stepSpans[col] : 0
+            guard span > 1 else { continue }
+            for c in (col + 1)..<min(col + span, StudioPattern.stepCount) { cov[c] = true }
+        }
+        return cov
+    }
+
     private func stepCell(_ col: Int) -> some View {
         let on = row.steps.indices.contains(col) && row.steps[col]
+        let loops = on && row.loopSteps.indices.contains(col) && row.loopSteps[col]
+        let span = on && row.stepSpans.indices.contains(col) ? row.stepSpans[col] : 0
+        let covered = !on && spanCoverage.indices.contains(col) && spanCoverage[col]
         return Button {
             studio.setPatternStep(patternId, row: rowIndex, col: col, on: !on)
         } label: {
             RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
                 // A missing row's on-steps render dimmed: the data is kept (re-adding the target
-                // revives it) but nothing will sound — the fill mirrors that truth.
-                .fill(on ? Theme.accent.opacity(missing ? 0.35 : 1) : Theme.bgOverlay)
+                // revives it) but nothing will sound — the fill mirrors that truth. Span-covered
+                // off-cells carry a faint wash (the stretch footprint).
+                .fill(on ? Theme.accent.opacity(missing ? 0.35 : 1)
+                         : (covered ? Theme.accent.opacity(0.16) : Theme.bgOverlay))
                 .overlay(RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
                     // Downbeat columns get a brighter border — the at-a-glance 4/4 anchor.
                     .strokeBorder(col % 4 == 0 ? Theme.fgDim.opacity(0.55) : Theme.border, lineWidth: 1))
+                .overlay(alignment: .topTrailing) {
+                    if loops {
+                        Image(systemName: "repeat")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Theme.bg)
+                            .padding(2)
+                    }
+                }
+                .overlay(alignment: .bottomLeading) {
+                    if span > 0 {
+                        Text("×\(span)")
+                            .font(.system(size: 8, weight: .bold)).monospacedDigit()
+                            .foregroundStyle(Theme.bg)
+                            .padding(2)
+                    }
+                }
                 .frame(height: Self.cellHeight)
                 .frame(maxWidth: .infinity)
                 .contentShape(RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Step \(col + 1)")
+        .accessibilityValue(on ? (loops ? "loop" : "one-shot") + (span > 0 ? ", fit \(span) steps" : "") : "")
         .accessibilityAddTraits(on ? [.isSelected] : [])
         .accessibilityIdentifier("seq-step-\(rowIndex)-\(col)")
+        // Long-press (iOS) / right-click (macOS) step modes — only an ON step has any.
+        .contextMenu { if on { stepModeMenu(col, loops: loops, span: span) } }
+    }
+
+    /// The per-step trigger-mode menu: one-shot vs loop, and the tempo-fit span. Edits ride
+    /// `mutatePattern` (bounce re-dirties) and — like step/BPM edits — apply on the next Play.
+    @ViewBuilder private func stepModeMenu(_ col: Int, loops: Bool, span: Int) -> some View {
+        Button {
+            studio.setPatternStepLoop(patternId, row: rowIndex, col: col, loop: !loops)
+        } label: {
+            Label(loops ? "One-shot (play once)" : "Loop until retriggered",
+                  systemImage: loops ? "1.circle" : "repeat")
+        }
+        .accessibilityIdentifier("seq-step-loop-\(rowIndex)-\(col)")
+        Picker("Fit to steps", selection: Binding(
+            get: { span },
+            set: { studio.setPatternStepSpan(patternId, row: rowIndex, col: col, span: $0) })) {
+            Text("Natural length").tag(0)
+            ForEach([1, 2, 3, 4, 6, 8, 12, 16], id: \.self) { n in
+                Text(n == 1 ? "1 step" : "\(n) steps").tag(n)
+            }
+        }
+        .accessibilityIdentifier("seq-step-span-\(rowIndex)-\(col)")
     }
 }
 

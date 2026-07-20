@@ -25,12 +25,79 @@ stem-autoscaler.mjs (cron ~60s): reads jobs-queue depth, launches
 
 | Piece | What it is |
 |---|---|
-| `scripts/stem-worker.mjs` | Worker. `<songId>` one-shot · `--serve` long-running SQS consumer · `--poll` one message. Pulls the source audio using the **S3 key carried in the job** (`srcKey` — analog songs use their per-song cut `rips/<id>.cut.mp3`, digital use `rips/<id>.mp3`), runs Demucs (same `separate-one.py` + `STEM_*` contract as `lib/audio-stem.mjs`), uploads 4 stems, posts the result to the results queue, deletes the job. A failed job is left un-deleted → redelivered → DLQ after 3 tries. |
+| `scripts/stem-worker.mjs` | Worker. `<songId>` one-shot · `--serve` long-running SQS consumer · `--poll` one message. Pulls the source audio using the **S3 key carried in the job** (`srcKey` — analog songs use their per-song cut `rips/<id>.cut.mp3`, digital use `rips/<id>.mp3`), runs Demucs (same `separate-one.py` + `STEM_*` contract as `lib/audio-stem.mjs`), uploads 4 stems, posts the result to the results queue, deletes the job. A failed job is left un-deleted → redelivered → DLQ after 3 tries. Also runs the `analysis` and `lyrics` tasks (see below). |
+| `scripts/transcribe-one.py` | faster-whisper over ONE vocals stem → prints one JSON line `{version,model,lang,durationMs,words:[{text,startMs,endMs}]}` (the `runPyJson` last-line contract). Model/device/compute from `LYRICS_MODEL` (small) / `LYRICS_DEVICE` (cpu) / `LYRICS_COMPUTE` (int8). `word_timestamps` + `vad_filter`. |
 | `scripts/stem-autoscaler.mjs` | Scale-**up** controller. `reconcile` launches workers from the launch template based on `ApproximateNumberOfMessages`. `--enqueue` sends jobs to SQS (rip-server calls the same). `--status` dry-run. Never scales down. |
 | `scripts/stem-sqs-setup.mjs` | Idempotent SQS setup: creates the jobs queue (redrive→DLQ, 900s visibility), results queue, DLQ. |
 | `scripts/stem-worker-userdata.sh` | Launch-template boot: fetch worker code from `s3://…/worker-code/`, `--serve`, then `shutdown` (instance launches with `InstanceInitiatedShutdownBehavior=terminate`). |
 | Golden AMI / launch template / IAM role / SG / keypair | `pocketdj-stem-worker`: m7i.large, code fetched from S3 at boot, IAM scoped to the rips bucket + the 3 SQS queues. |
 | `rip-server.mjs` (`CFG.stemOffload`, default on) | `offloadStem()` sends manifest-song jobs to SQS instead of running demucs inline; `pumpStemResults()` folds worker results into `manifest.json`; `pumpStemDlq()` fails dead-lettered jobs. **Uploaded custom audio (`/stemify-custom`) still separates locally.** Set `POCKETDJ_STEM_OFFLOAD=0` to revert. |
+| `rip-server.mjs` (`CFG.lyricsOffload`, follows stemOffload) | `offloadLyrics()` fire-and-forget lyrics jobs; `pumpStemResults()` folds the lyrics result; `/backfill-lyrics` + `/lyricsify` trigger. Set `POCKETDJ_LYRICS_OFFLOAD=0/1` to override. See **Lyrics task** below. |
+
+## Lyrics task (timed transcription)
+
+A **separate, fire-and-forget** job (`tasks:['lyrics']`) that transcribes a song's **vocals stem**
+into timed words with faster-whisper. Split from stems (not bundled) so it can't blow the 1800s
+queue visibility timeout on a long song; the worker still handles a combined `['stems','lyrics']`
+job correctly, reusing the vocals stem it just produced instead of re-downloading it.
+
+```
+pumpStemResults folds stems ─┐
+/backfill-lyrics (all)       ├─▶ offloadLyrics(id) ── send ─▶ SQS {songId,srcKey,tasks:['lyrics']}
+/lyricsify {songId}          ┘                                        │
+                                                                      ▼  stem-worker doLyrics()
+   rips/lyrics/<id>.json  ◀── upload ── faster-whisper(vocals) ◀── vocals stem (local reuse | S3 cp)
+        ▲                                                             │
+        └── pumpStemResults folds {lyrics,lyricsModel,lyricsVersion} ─┘ (result posted, job deleted)
+```
+
+- **Job message:** `{songId, srcKey, tasks:['lyrics']}` (`srcKey` carried for consistency; the worker
+  reads the vocals stem, not `srcKey`). **Result message:** `{ok, songId, tasks, workerSeconds,
+  lyrics:{lyrics:<key>, lyricsModel, lyricsVersion, deduped?}}` — the `lyrics` field is **nested**
+  (like `analysis`), so the stems / analysis / lyrics fold branches stay independent.
+- **Vocals source:** the just-produced local `work/vocals.<ext>` on a combined stems+lyrics job,
+  else `aws s3 cp rips/stems/<id>/vocals.<ext>`. A missing vocals stem **throws** → DLQ (the server
+  only enqueues lyrics once stems exist).
+- **Worker DEDUP:** `existingLyrics()` does `aws s3 ls rips/lyrics/<id>.json` and skips whisper +
+  re-posts the key unless the job carries `dedup:false` (mirrors `existingStems`).
+- **S3 sidecar** `rips/lyrics/<id>.json` (public rips bucket, `application/json`):
+  ```json
+  {"version":1,"model":"faster-whisper-small","lang":"en","durationMs":215000,
+   "words":[{"text":"hello","startMs":1200,"endMs":1440}, ...]}
+  ```
+  Words are trimmed/non-empty; `startMs` is clamped monotonically non-decreasing; `endMs >= startMs`.
+  **Lines are derived client-side** (`DemuxLine.lines(from:)`), so the file only carries words. The
+  vocals stem is **cut-derived (song-relative)**, so word timestamps need **no extra offset** — they
+  are already relative to the song's start, whether it was a digital rip or an analog per-song cut.
+- **Manifest fold** (`pumpStemResults`): stamps `e.lyrics` (the S3 key), `e.lyricsModel`,
+  `e.lyricsVersion`, `e.lyricsAt`. `LYRICS_VERSION = 1` (kept in sync between `stem-worker.mjs` and
+  `rip-server.mjs`); a bump re-runs stale sidecars via `/backfill-lyrics`. Distinct from the
+  catalog's untimed `song.lyrics` text (web bucket `/lyrics/<id>.txt`, `lyrics-cdn.sh`).
+- **Enqueue triggers:** (a) automatically after a stems result folds, if the song has vocals and
+  no fresh lyrics (`wantLyrics`); (b) `GET|POST /backfill-lyrics` (admin) — every stemmed song
+  without fresh lyrics, candidate-capped (`confirmLarge` to sweep the corpus); (c) `POST /lyricsify
+  {songId, force?}` (admin) — one song: 404 if unknown, 400 if no vocals stem, already-done if
+  fresh (unless `force:true`), else queued.
+- **Env:** `POCKETDJ_LYRICS_MODEL` (small), `POCKETDJ_LYRICS_DEVICE` (cpu), `POCKETDJ_LYRICS_COMPUTE`
+  (int8); `POCKETDJ_LYRICS_OFFLOAD` follows `POCKETDJ_STEM_OFFLOAD` when unset.
+- **Dedup override:** `offloadLyrics` sends `dedup:false` when the caller forces (`/lyricsify
+  {force:true}`) or the manifest's sidecar is version-stale — the worker's skip-if-exists would
+  otherwise re-stamp the OLD sidecar as current (the `offloadStem dedup:!stale` contract). A worker
+  DEDUP result carries no model; the fold keeps the previously-folded `lyricsModel`.
+- **AUTO PIPELINE (default):** every fresh rip runs `acceptStem` alongside analysis
+  (`CFG.autoStemOnRip`, follows `POCKETDJ_STEM_OFFLOAD`; `POCKETDJ_AUTO_STEM_ON_RIP=0` reverts), and
+  every stems fold auto-enqueues lyrics — so a newly ripped or demuxed song lands with stems +
+  analysis + timed lyrics, zero taps. The fold pump runs when ANY offload family is on, so lyrics
+  results still fold with `POCKETDJ_STEM_OFFLOAD=0`.
+- **Catalog fold:** `node scripts/fold-cloud-lyrics.mjs [--apply] [--upload dev,prod]` surfaces the
+  timed sidecars in the CATALOG lyrics system (song detail cards): songs with NO scraped lyrics get
+  `lyricsStatus='found'` + `lyricsSource='whisper'` and a derived plain-text `/lyrics/<id>.txt` on
+  the web CDN (additive copy — never `--delete`, the scraped corpus shares the prefix). Scraped
+  lyrics always win; instrumentals stay untouched. Idempotent — re-run after a backfill wave.
+- **Deploy** (at ship time, not now): upload `stem-worker.mjs` **and** `transcribe-one.py` to
+  `s3://pocketdj-rips-011183829623/worker-code/`; the userdata pip-installs `faster-whisper` and the
+  **first** lyrics job downloads the CTranslate2 model from HuggingFace (no AMI re-bake; bake the
+  model into the AMI later for boot determinism).
 
 ## Scaling model
 

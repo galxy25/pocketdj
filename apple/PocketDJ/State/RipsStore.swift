@@ -107,6 +107,13 @@ final class RipsStore {
         var stemFormat: String? = nil
         var stemmedAt: Double? = nil
         var stemBytes: Int? = nil
+        // Cloud timed-lyrics transcription (faster-whisper over the VOCALS stem; all optional ⇒
+        // back-compat). `lyrics` is the sidecar KEY (`rips/lyrics/<songId>.json` — the beatgrid
+        // key convention); word timestamps inside are ms from the SONG's 0:00 (the cut for
+        // analog, because the vocals stem is cut-derived). Presence ⇒ transcribed.
+        var lyrics: String? = nil
+        var lyricsModel: String? = nil
+        var lyricsVersion: Int? = nil
     }
 
     /// The 4 Demucs stem S3 keys (typed; matches `stemURLs`). Stored explicitly so URL
@@ -322,6 +329,55 @@ final class RipsStore {
             steady = try c.decodeIfPresent(Bool.self, forKey: .steady)
             beatsMs = try c.decodeIfPresent([Int].self, forKey: .beatsMs) ?? []
             downbeatsMs = try c.decodeIfPresent([Int].self, forKey: .downbeatsMs) ?? []
+        }
+    }
+
+    // MARK: Cloud lyrics sidecar (timed words — the Demuxer's transcript source for songs)
+
+    /// True once the cloud pipeline has produced a timed-lyrics sidecar for the song.
+    func hasLyricsSidecar(_ songId: String) -> Bool { !((manifest[songId]?.lyrics ?? "").isEmpty) }
+
+    /// Public URL of the timed-lyrics sidecar (`rips/lyrics/<songId>.json`), nil when none.
+    /// Built off the same public ripsBase as stems/beatgrids, so it resolves server-offline.
+    func lyricsSidecarURL(forSong songId: String) -> URL? {
+        guard let key = manifest[songId]?.lyrics, !key.isEmpty else { return nil }
+        return ripsBase.appendingPathComponent(key)
+    }
+
+    /// The timed-lyrics sidecar the cloud worker ships to S3 (`transcribe-one.py`'s output):
+    /// whisper words over the vocals stem, ms from the song's 0:00 — a drop-in for `DemuxWord`.
+    /// Defensive decode (the `BeatGridSidecar` style) so a partial/older sidecar still lands.
+    struct TimedLyricsSidecar: Decodable, Equatable {
+        struct Word: Decodable, Equatable {
+            var text: String
+            var startMs: Int
+            var endMs: Int
+        }
+        /// Per-element lossy box: ONE malformed word drops that word only — never the whole
+        /// transcript (an all-or-nothing decode would land "instrumental" as done+cloud and
+        /// the fetched-once dedup would never retry it).
+        private struct LossyWord: Decodable {
+            let value: Word?
+            init(from decoder: Decoder) { value = try? Word(from: decoder) }
+        }
+        var version: Int?
+        var model: String?
+        var lang: String?
+        var durationMs: Int?
+        var words: [Word]
+        private enum CodingKeys: String, CodingKey { case version, model, lang, durationMs, words }
+        init(version: Int? = nil, model: String? = nil, lang: String? = nil,
+             durationMs: Int? = nil, words: [Word] = []) {
+            self.version = version; self.model = model; self.lang = lang
+            self.durationMs = durationMs; self.words = words
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            version = try c.decodeIfPresent(Int.self, forKey: .version)
+            model = try c.decodeIfPresent(String.self, forKey: .model)
+            lang = try c.decodeIfPresent(String.self, forKey: .lang)
+            durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
+            words = ((try? c.decode([LossyWord].self, forKey: .words)) ?? []).compactMap(\.value)
         }
     }
 
