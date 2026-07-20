@@ -475,6 +475,52 @@ History runs on the Browser's own **filter & sort** machinery, so every filter a
 
 ---
 
+## ♥ Favorites — mark the ones you love
+
+Every song row in the native app now carries a small **♥**, sitting just left of the ▶/⤓
+transport. It's the *same* heart everywhere a song row appears: the **Browser**, inside a
+**playlist**, **pocket** or **set list**, on the **History** timeline, and in an album's
+**track table**. Tap it and it fills in; tap it again and it empties. Tapping the heart never
+opens the song — it stays put and only toggles. The **song detail** page carries the same
+control, larger, in its **Play** action row, so you can heart the track you're reading about
+without going back to a list.
+
+**Favorites are yours, and they follow you.** They live in your own profile and travel between
+*your* devices through iCloud — heart something on the phone and it's hearted on the iPad and
+the Mac. They never reach another DJ. A ♥ you put on a **vinyl** rip, a **My Digital** file, or
+something you made in the **Studio** stays on your own devices entirely: those tracks have no
+Apple Music identity, so there's nothing anywhere else to sync them to.
+
+For the owner's install, a ♥ also travels **up to Apple Music** — and un-hearting there is
+**not fully reversible**. That whole story, including exactly what survives an un-favorite,
+lives in [Favorites and Apple Music — the two-way sync](native-and-system-integration.md#favorites-and-apple-music--the-two-way-sync).
+
+**Filter by it.** The Browser's **Filter** sheet gains a **Favorites** section, right above
+the collection-membership controls, with three choices:
+
+- **Any** — no constraint (the default),
+- **Favorites only** — show just the songs you've hearted,
+- **Not favorited** — show everything you *haven't*, which is the "what's left to go
+  through?" view.
+
+It's a **Songs-mode** filter (albums and artists don't carry a ♥) and it's off the History
+timeline. It reads the **current** state, so a song you hearted and later un-hearted counts as
+"not favorited" — the filter is about where things stand now, not what you've ever done.
+**Clear All** in the filter sheet releases it along with your other clauses, and the toolbar's
+filter glyph reads as *on* while it's constraining — even when it's the only filter you have.
+
+**Affordances**
+- **♥ on any song row** — favorite / unfavorite in one tap, without opening the song.
+- **♥ in the song detail Play row** — the same toggle as a primary action.
+- **♥ in an album's track table** — heart a track while scanning the record.
+- **Filter ▸ Favorites** — Any / Favorites only / Not favorited.
+
+**User story:** "Let me flag the records I actually reach for as I dig — one tap, anywhere I
+see a song — and then show me just those when I'm building a set, or just the ones I haven't
+judged yet when I'm still digging."
+
+---
+
 ## Browse — genre & collection-membership filters, per-clause remove
 
 The native Browser's **Filter** sheet composes the same rich filtering as the web app (and a little more).
@@ -494,12 +540,16 @@ own **Clear**. Both can be on at once — the list shows the **intersection** (e
 in Peak Hour that isn't already in Saturday Set*) — exactly mirroring the web app, including
 your **imported iTunes** playlists.
 
+**Favorite filter (Songs mode).** A **Favorites** section sits just above the membership one —
+**Any / Favorites only / Not favorited** — and stacks with everything else, so *"disco I've
+hearted that isn't already in Saturday Set"* is one query ([♥ Favorites](#-favorites--mark-the-ones-you-love)).
+
 **Per-clause remove.** Every filter clause has its **own remove** — a **trash** button (and
 a left **swipe**) on the row — alongside the existing **Clear All**. So you can drop a single
 clause without tearing down the whole query.
 
 **User story:** "Filter by the genre buckets I think in, slice by what's already in my sets,
-and peel off one filter at a time instead of starting over."
+keep to the ones I've hearted, and peel off one filter at a time instead of starting over."
 
 ---
 

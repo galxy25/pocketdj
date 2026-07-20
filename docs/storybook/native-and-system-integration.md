@@ -3,10 +3,12 @@
 > Part of the [PocketDJ Product Storybook](../STORYBOOK.md). These are the surfaces
 > where PocketDJ meets the rest of the phone and the operating system: the **"?♪?"
 > recognizer** that names the song in the room and maps it back to your crate,
-> **streaming-account** linking, **Siri / Shortcuts / Spotlight** voice and system
+> **streaming-account** linking, the **two-way Apple Music favorites sync**,
+> **Siri / Shortcuts / Spotlight** voice and system
 > actions, **CarPlay** in the car, the **Now Playing widgets** on the home screen /
 > desktop, **Jukebox Hero** — a QR-code request line the whole room can scan — and the
-> **Settings** utilities — the storage manager and a remote-debug capture — plus one
+> **Settings** utilities — the storage manager, the owner-identity bootstrap, and a
+> remote-debug capture — plus one
 > easter egg. They all read the same
 > catalog, rips and collections as everything else. The systems-side complement is
 > [Distribution, Clients & the Edits Round-Trip](../architecture/07-distribution-and-clients.md).
@@ -92,6 +94,91 @@ recognizer a way to **play** a recognized track that isn't in your crate.
 
 **User story:** "Beyond my own crate, let me reach into my streaming subscription —
 log in once, and play from it inside the same app."
+
+---
+
+## Favorites and Apple Music — the two-way sync
+
+The **♥** on every song row ([♥ Favorites](explore-and-discover.md#-favorites--mark-the-ones-you-love))
+is, for most installs, purely a PocketDJ thing: your hearts live in your own profile, sync to
+your own devices through iCloud, and go nowhere else. On the **owner's** install — the DJ whose
+Apple Music library the shared catalog was built from — the ♥ is also wired **straight into
+Apple Music**, in both directions:
+
+- **Heart in PocketDJ → it shows up in Apple Music.** The track gets the ★ in Apple's
+  **Favorite Songs**, and it gets **loved**, so Apple's own recommendations start taking it
+  into account.
+- **♥ in the Music app → it shows up in PocketDJ.** Whenever the app launches or comes
+  forward, it reads back which tracks the account loves and folds them in. A song you loved on
+  the way to work is hearted in PocketDJ by the time you open it.
+
+If you heart something while offline, the change is kept and sent on the next pass — nothing is
+dropped. And if you heart something in one place and un-heart it in the other, **your most
+recent action wins** locally.
+
+### Un-favoriting is lossy — read this once
+
+**Apple gives no app a way to take the ★ back.** Adding to Apple Music's **Favorite Songs** is
+a one-way door in every app that isn't the Music app itself. So when you un-heart a track in
+PocketDJ, the app does the one thing it *can* do: it removes the **love**, which is what
+recommendations — and PocketDJ itself — read. The ★ stays in your Apple Music **Favorite
+Songs** until you remove it there yourself.
+
+Everything else behaves the way you'd expect: the ♥ is off in PocketDJ, off on your other
+devices, and the track stops being treated as loved. It's only Apple's own Favorite Songs list
+that keeps the entry. The app says so where it matters rather than letting you find out later.
+
+### Only one install syncs — and it ships switched off
+
+Two things make this safe for everyone who *isn't* the owner:
+
+- **Nothing about your favorites can reach anyone else, structurally.** They sync through your
+  own private iCloud, not through the shared catalog — there is no path from your device to
+  another DJ's, whatever the settings say.
+- **No install pushes anything to Apple Music unless it's explicitly been named as the
+  owner's.** The check has to be bootstrapped by hand (below), and a build ships with **nobody
+  named** — so every install is favorites-local-only out of the box. If the check can't be made
+  at all — no iCloud account, no network, an error of any kind — the answer is *"not the
+  owner"* and the app stays local-only. It errs toward doing nothing, always.
+
+Which means: **a beta tester's ♥ never touch their own Apple Music account, and never touch
+anyone else's.** What a tester *does* get is a **starting set** — a one-time copy of the
+owner's Apple-Music-sourced favorites, applied on first run so a fresh install doesn't open
+onto an empty crate of hearts. It only ever fills in songs you've never touched: anything you
+have hearted, or deliberately un-hearted, is left exactly as you left it, and it's applied
+once, not every launch. The owner's personal **vinyl** and **My Digital** hearts are never part
+of it — only Apple Music tracks travel.
+
+### Settings ▸ Debug ▸ Owner identity — the bootstrap
+
+The panel that turns the whole thing on lives in **Settings ▸ Debug**, under **Owner
+identity**:
+
+- **iCloud hash** — this device's identifier for the check, shown as selectable text with a
+  **Copy hash** button. This is the value that gets written into the app's build and shipped;
+  until it is, nothing syncs to Apple Music. (Both the development and the TestFlight builds
+  produce **different** hashes, so both have to be captured.)
+- **Favorites sync** — a plain-language status line: *"Owner: two-way Apple Music sync on"* or
+  *"Not owner: favorites stay on this profile"*, plus the **last synced** time and the **last
+  error** if a pass failed.
+- **Export favorites seed…** — owner-only. Writes the starting-set file (the Apple-Music-sourced
+  hearts, nothing personal) out through the normal save/share sheet, ready to publish for
+  testers. It doesn't appear at all on a non-owner install, so a tester can't accidentally
+  publish their own favorites.
+
+The panel's footer states the un-favorite caveat in the same words as above, so whoever is
+holding the phone sees it at the moment they'd care.
+
+**Affordances**
+- **♥ anywhere** — favorites the song; on the owner's install it also stars and loves it in
+  Apple Music.
+- **Settings ▸ Debug ▸ Owner identity** — copy this device's hash, read the sync status, see
+  the last error.
+- **Export favorites seed…** — owner-only; produces the testers' starting set.
+
+**User story:** "My hearts should be one thing, not two — what I love in the Music app and what
+I've flagged in PocketDJ should be the same list. And when I hand a build to a friend, their
+taste stays theirs and never lands in my library, or theirs."
 
 ---
 
@@ -364,9 +451,17 @@ keep me under it by tossing what I never play."
 
 ## Settings ▸ Debug — capture a debug session, ship it back
 
-Remote testing has a built-in feedback loop. **Settings ▸ Debug** (the last row — and the footer
-beneath it always shows **exactly which build you're running**, version and build number) opens a
-small panel with one switch: **Capture debug log**. Turn it on, **reproduce whatever's misbehaving**,
+Remote testing has a built-in feedback loop. **Settings ▸ Debug** (the last row) opens a small
+panel with three things on it: which **build** you're running, the **Owner identity** rows that
+bootstrap the Apple Music favorites sync ([Favorites and Apple Music](#favorites-and-apple-music--the-two-way-sync)),
+and one switch — **Capture debug log**.
+
+The **build** row is now a proper row rather than a footer line: the version and build number as
+selectable text with a **Copy version** button beside it, because the only reason to look at it
+is to paste it into a bug report, and long-pressing to select inside a settings list on a phone
+is a fight.
+
+**Capture debug log** is the loop itself. Turn it on, **reproduce whatever's misbehaving**,
 turn it off — and the frozen session appears right there with an **Export** button. Save the text
 file straight into **iCloud Drive** (or AirDrop it) and it's off the device and in front of whoever's
 debugging, no cables, no Terminal, no Xcode.

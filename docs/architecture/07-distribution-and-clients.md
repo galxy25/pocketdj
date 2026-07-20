@@ -17,7 +17,7 @@ the **HTTPS** a PWA service worker mandates and a same-origin **proxy** for Open
 
 | Bucket | Key objects | Written by | Read by |
 |---|---|---|---|
-| **web** `pocketdj-{dev,prod}-web-<acct>` | `current-index.json`, `apple-music-index.json`, `index.html` + hashed assets + `sw.js`, `/art/*`, `/lyrics/*` | `deploy.sh`, `mirror-art.sh` (profile `levi`) | all clients (via CloudFront) |
+| **web** `pocketdj-{dev,prod}-web-<acct>` | `current-index.json`, `apple-music-index.json`, `favorites-seed.json` (§5.5), `index.html` + hashed assets + `sw.js`, `/art/*`, `/lyrics/*` | `deploy.sh`, `mirror-art.sh` (profile `levi`) | all clients (via CloudFront) |
 | **rips** `pocketdj-rips-011183829623` | `rips/manifest.json`, `rips/<id>.mp3`, `rips/waveforms/<id>.png` | `rip-server.mjs`, `rip-one.mjs` (profile `levi`) | all clients (direct S3 https) |
 
 ```
@@ -436,6 +436,12 @@ checklist (portal toggles, SDKs, credentials, plist keys) lives in the cross-ref
 *architecture* — the seams, the registry, the gating, and how a recognized song reaches
 a player.
 
+The link is also **two-way** for a subset of state: §5.5 mirrors the user's ♥ into (and out
+of) the Apple Music account over the **Web API**, and §5.6 writes an "added to this playlist"
+back to the real **library playlist**. Both are additive to everything above, and both are
+inert until explicitly enabled — §5.5 by a hand-bootstrapped owner allowlist, §5.6 by the
+platform simply not being macOS.
+
 ### 5.1 Streaming providers — `StreamingProvider` / `StreamingStore`
 
 **Source of truth:** [`apple/PocketDJ/Services/Streaming/`](../../apple/PocketDJ/Services/Streaming/)
@@ -609,6 +615,225 @@ sequencer's queue index), and **Delete**. When **idle**, iOS shows the flat trai
 so `setlistToolbar` always emits the flat `.primaryAction` layout (mode toggle · ◀/▶ while
 running · ▶/⏹ · add-note · rip/burn menu · rename · delete) — same actions, no centered
 cluster.
+
+### 5.5 Apple Music favorites — the Web API two-way sync, owner-gated
+
+**Why the Web API and not MusicKit.** MusicKit has **no favorites, loves, or ratings surface
+at all** — a grep of the iOS 26.5 and macOS `MusicKit.swiftinterface` files for
+`favorite|love|Rating` returns only `ContentRating` (the explicit-content advisory). The love
+state is reachable **only** through `api.music.apple.com`. MusicKit still carries the whole
+weight of the integration, though, via **`MusicDataRequest`**: it takes an arbitrary
+`URLRequest` (so PUT/POST/DELETE all work) and auto-attaches **both** the developer token and
+the Music-User-Token, so there is no JWT to sign, no secret to ship, and no token to rotate on
+device. `MusicDataRequest` carries **no** macOS-unavailable annotation (unlike `MusicLibrary`'s
+writes, §5.6), so this path works on every platform that can import MusicKit.
+
+**Source of truth:**
+[`apple/PocketDJ/Services/Streaming/AppleMusicFavorites.swift`](../../apple/PocketDJ/Services/Streaming/AppleMusicFavorites.swift)
+(request construction + the transport seam),
+[`apple/PocketDJ/State/FavoritesSyncService.swift`](../../apple/PocketDJ/State/FavoritesSyncService.swift)
+(push / pull / seed), and
+[`apple/PocketDJ/Support/OwnerIdentity.swift`](../../apple/PocketDJ/Support/OwnerIdentity.swift)
+(the gate). The local ♥ document it bridges is
+[Ch. 3 §5](./03-catalog-and-data-model.md#5-favorites--the-per-profile--document).
+
+```
+ FavoritesSyncService.run()      launch (catalog .loaded) · foreground · onboarding done
+   isOwner ??= OwnerIdentity.isOwner()          ← resolved ONCE per launch, cached
+     │
+     ├─ TRUE (owner)
+     │    push()   FavoritesStore.pendingPushes  (appleMusicId != nil ∧ unpushed)
+     │      favorite ⇒ BOTH halves:
+     │        POST /v1/me/favorites?ids[songs]=a,b,c   ★ "Favorite Songs"
+     │            batched · NO body · NO delete counterpart exists · best-effort
+     │        PUT  /v1/me/ratings/songs/{id}  {"type":"rating","attributes":{"value":1}}
+     │                                                             ← reversible + READABLE
+     │      unfavorite ⇒ DELETE /v1/me/ratings/songs/{id}   ONLY. The ★ stays.
+     │      on success: markPushed(songId, pushedAtMs: entry.atMs)
+     │                  ← the SENT state's timestamp, never the wall clock
+     │    pull()   GET /v1/me/ratings/songs?ids=…   (batchSize 250)
+     │      lovedIds(fromRatingsPayload:) -> Set<String>?   nil ⇒ ABORT the pass
+     │      → applyRemote(...) inside favorites.withCoalescedSaves { }
+     │
+     └─ FALSE / unresolved  (every non-owner, and every failure path)
+          applySeedIfNeeded()   GET Config.favoritesSeedURL → Seed → applySeed(once)
+          …and NOTHING else. No push, no pull, no export. A pure download.
+
+ OwnerIdentity      CKContainer(id: CKCloudDocDatabase.containerID).userRecordID()
+   hash = SHA256(recordName + "pocketdj-owner-v1")            (salted, domain-separated)
+   isOwner = !Config.ownerICloudHashes.isEmpty ∧ hashes.contains(hash)
+   FAIL CLOSED: no account · iCloud off · offline · any throw · EMPTY allowlist ⇒ false
+```
+
+**Reading the diagram.** One pass, single-flighted on `isSyncing`, runs at launch (gated on
+`app.state == .loaded` *and* `onboarding.isComplete`), on foreground, and when onboarding
+finishes. It resolves the gate once, then branches: the owner pushes then pulls; everyone else
+gets the one-time seed and nothing more.
+
+**The two endpoints are not the same thing, and a favorite writes both.**
+`POST /v1/me/favorites` is the **★** — the Music app's "Favorite Songs". Ids ride as a
+**type-scoped query parameter, `ids[songs]=`, not a bare `ids=`**: Apple documents the
+parameter as "the ids of the specific type", and a bare `ids=` carries no type, so the request
+is *accepted* and silently does nothing. That is the worst possible failure mode here, because
+there is **no favorites GET to read back and no delete to undo a mistake** — the app would have
+no way to detect that the irreversible half had been no-opping forever. The star writes are
+batched and **best-effort** (`try?`): a ★ failure must not block or un-mark the rating write.
+`PUT/DELETE /v1/me/ratings/songs/{id}` is the **love rating** (`value: 1`; PocketDJ never
+writes `-1`), and it is the only half that is both **reversible and readable** — which is what
+makes genuine two-way sync possible at all.
+
+**The accepted consequence: un-favoriting is LOSSY.** Apple ships **no delete counterpart** to
+the ★ (verified against the complete Apple Music API symbol index), so `unfavorite` does
+exactly one thing — `DELETE` the rating. The track stays in Apple Music's "Favorite Songs"
+until the user removes it there. This is disclosed in the UI (the Settings ▸ Debug ▸ Owner
+identity footer) rather than hidden; see the storybook
+[Favorites and Apple Music](../storybook/native-and-system-integration.md#favorites-and-apple-music--the-two-way-sync).
+
+**`lovedIds` returns `Set<String>?`, and the optionality is load-bearing.** The caller
+reconciles by treating every catalog id *absent* from the response as not-loved — so "no loved
+ids" and "I could not read the response" are catastrophically different answers that an empty
+`Set` cannot distinguish. A 200 carrying a truncated body, an HTML error page, or a schema
+change would otherwise **tombstone the user's entire favorites library** in one pass. So a
+top-level failure (the `data` array missing or unreadable) yields **nil** and `pull()` throws,
+abandoning the pass with nothing written. Row-level tolerance is kept where it's safe: rows
+decode individually through a failable box, so one malformed entry costs that one id rather
+than its whole 250-song batch.
+
+**Why the gate is an iCloud check and not an Apple Music one.** The literal requirement — "only
+sync if the Apple Music profile is mine" — is **not implementable on any Apple API**:
+`MusicSubscription` carries three capability booleans and no identity, the Web API has no
+`/v1/me/account` (and `/v1/me/storefront` is a country code shared by millions), and the raw
+Music User Token is a **rotating** bearer credential, so hashing it yields an unstable id, not
+an identity. So the gate rides `CKContainer.userRecordID()` — opaque, stable per Apple ID per
+container — **salted** (`"pocketdj-owner-v1"`) and SHA-256'd so the shipped constant isn't a
+usable record id if the binary is inspected. It is the right substitute for a second reason:
+favorites already sync through the **private** CloudKit database, so a non-owner is
+*structurally* incapable of reading or writing the owner's favorites regardless of this check.
+The gate's job is narrower — keep a tester's ♥ out of the **tester's own** Apple Music account,
+and route them to the seed instead.
+
+**The allowlist ships EMPTY, on purpose.** `Config.ownerICloudHashes` is `[]` in the shipped
+source, which means *nobody* is the owner, which means **every install is favorites-local-only
+until the constant is bootstrapped by hand**. The hash can't be known before the app runs, so
+**Settings ▸ Debug ▸ "Owner identity"** surfaces this device's hash with a Copy button; the
+loop is run → copy → paste into `Config` → ship. **Both** environments' hashes are required:
+`userRecordID` is container-scoped, so the CloudKit **Development** and **Production**
+containers yield different values, and a TestFlight build with only the dev hash silently
+falls through to local-only. The same panel shows the resolved gate state, `lastSyncedAtMs`,
+`lastError`, and — **owner-only** — an **Export favorites seed…** `fileExporter` that produces
+`favorites-seed.json` (the Edits/Backup export idiom; it's hidden on a non-owner install
+precisely so a tester can't publish their own taste to every other tester).
+
+**Testability.** `AppleMusicFavoritesTransport` (`canSync` + `send(_:) -> Data`) is the network
+seam, and every request builder in `AppleMusicFavorites` is a **pure** static function — so the
+whole sync service, both branches of the gate (`ownerCheck` is an overridable closure), and the
+seed fetcher (`fetchSeed`) drive under unit test with no account, no entitlement, and no
+network. `OwnerIdentity.isOwner(hash:allowlist:)` is the pure membership test beside the
+CloudKit-backed one. What is **not** headless-testable is the round-trip itself: it needs a
+signed-in Apple Music account **and** a bootstrapped owner hash, so device verification is the
+only proof for that leg.
+
+### 5.6 Apple Music playlist write-back — the outbound queue
+
+**Why.** `syncConvertedCollections` / `reconcilePlaylist` (Ch. 3 §3.1) have always been
+**pull-only**: an Apple Music playlist changes upstream and the on-device duplicate follows.
+Adding a song to a source playlist from inside PocketDJ only ever touched the local duplicate.
+This is the missing outbound leg — every add to an Apple Music source playlist lands (a) in the
+on-device duplicate immediately and (b) in the **real** library playlist as soon as MusicKit
+will take it.
+
+**Why a durable queue and not a fire-and-forget `await`.** The write fails for reasons that
+have nothing to do with the user's intent — offline, MusicKit not yet authorized, the catalog
+song momentarily unresolvable — and the local add has *already happened* by the time we try.
+Dropping the write would leave the two sides permanently divergent with no record that anything
+was owed. So the intent is persisted first and drained later, exactly like `TransferCoordinator`'s
+background transfers (Ch. 5 §11).
+
+**Source of truth:**
+[`apple/PocketDJ/State/PlaylistWriteBack.swift`](../../apple/PocketDJ/State/PlaylistWriteBack.swift)
+(queue + transport), `CollectionsStore.addSong(_:toIndexPlaylist:appleMusicId:)` +
+`duplicateForSource(_:)`
+([`CollectionsStore.swift`](../../apple/PocketDJ/State/CollectionsStore.swift)), and the
+"From your sources" section of
+[`AddToCollectionView.swift`](../../apple/PocketDJ/Views/AddToCollectionView.swift).
+
+```
+ Add-to sheet ▸ "From your sources" ▸ tap an Apple Music playlist
+   CollectionsStore.addSong(songId, toIndexPlaylist: source, appleMusicId:)
+     duplicateForSource(source)   find-or-create the ON-DEVICE duplicate
+       match on (sourcePlaylistId AND sourceName); legacy nil-sourceName matches by id
+     append to sequences[0]        ── and DELIBERATELY NOT to sourceSongIds
+   → IndexPlaylistAdd { playlist, createdDuplicate, alreadyPresent,
+                        writeBackEligible, appleMusicId? }
+     eligible ⇔ appleMusicId non-empty ∧ source.sourceName == Config.appleMusicSourceName
+     already in source.songIds ⇒ DON'T queue (Apple Music has it; a write would duplicate)
+
+ Application Support/pocketdj-playlist-writeback.json   (schemaVersion 1, jobs[])
+   Job { id "wbj_…", indexPlaylistId, playlistName, songId, appleMusicId,
+         queuedAtMs, attempts, lastError?, state, nextAttemptAtMs?, settledAtMs? }
+   JobState  queued → delivered | failed | notApplicable          queued = ONLY non-terminal
+   NOT CloudKit-registered — a device-local OUTBOUND INTENT LOG (see below)
+
+ run()   launch + foreground (runSoon), sequential, oldest-first
+   no transport / !isSupported  ⇒ settleUnsupported()  → every job .notApplicable   [macOS]
+   !canWrite (not authorized)   ⇒ leave QUEUED, set lastError   (the user can fix this)
+   per job: transport.addSong(...) → .delivered   |   throw → attempts+1,
+            backoff 30s → 1m → 2m, maxAttempts 4 → .failed
+   save() after EVERY job, not once after the drain
+   prune(): historyLimit 200, oldest settled first; queued + failed are NEVER pruned
+
+ MusicKitPlaylistWriteBackTransport   #if canImport(MusicKit) && !os(macOS) && !macCatalyst
+   MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(appleMusicId))
+   MusicLibraryRequest<Playlist>.filter(matching: \.name, equalTo: playlistName)
+   MusicLibrary.shared.add(song, to: playlist)
+```
+
+**Reading the diagram.** A tap on a source playlist row runs one composed operation: find-or-create
+the duplicate, append locally, and — only when the source is Apple Music *and* the song has a
+catalog id — enqueue the upstream half. The sheet then reports what actually happened in an
+alert, including the three honest non-cases (already upstream, not an Apple Music track, this
+device can't write). The queue is drained fire-and-forget at launch and foreground; it has no
+internal timer, so those two moments are what re-arm a backed-off job.
+
+**The invariant this must not break.** `reconcilePlaylist` computes source **removals** as
+(`sourceSongIds` snapshot − current source). A locally-added song is **not** in that snapshot,
+so it is never removal-eligible — and that is precisely what makes a failed write-back
+harmless: the add simply stays local until a later delivery succeeds (or forever, benignly).
+Writing the new song into `sourceSongIds` optimistically would make the very next catalog
+refresh classify it as a source removal and **delete the user's own add**. Nothing in
+`addSong(_:toIndexPlaylist:appleMusicId:)` or in this queue touches that snapshot; it advances
+only when a real catalog refresh brings the song back from Apple Music itself. (`addSong` also
+deliberately leaves `lastAddTarget` alone — the "Last used" shortcut re-adds to a plain local
+playlist with no write-back, so remembering this target would quietly drop the Apple Music
+half of a repeat add.)
+
+**Why the document is NOT CloudKit-registered.** Unlike favorites (Ch. 3 §5) this is an
+outbound *intent log*, not shared state. Syncing it would make the iPad replay a write the
+iPhone already delivered — the same song added to the same Apple Music playlist twice. Related:
+`save()` runs after **every** job rather than once after the drain, because `MusicLibrary.add`
+is **not idempotent** and the write it performs is not retractable from this app. A background
+kill mid-drain (ordinary on iOS, not exotic) would lose an in-memory-only `.delivered`, and the
+next launch would re-deliver it — a duplicate track the user has to clean up by hand. One extra
+small write per job is the correct trade.
+
+**macOS settles as local-only, permanently.** `MusicLibrary`'s write methods are
+`@available(…, unavailable)` on macOS and Catalyst, so the transport class is **compiled out**
+there, `makeDefaultTransport()` returns nil, and `run()` marks every queued job
+`.notApplicable` — terminal, with a user-facing message — rather than spinning on a retry that
+can never succeed. `isSupported` is a *permanent* platform answer; `canWrite` is the *runtime*
+one (Apple Music enabled + `MusicAuthorization.authorized`), and a false `canWrite` leaves jobs
+**queued**, because that is a condition the user can fix. The Add-to sheet's footer reads
+`canWriteBack` to say so before the tap.
+
+**The name join, and its known limit.** The two id spaces don't meet: our `IndexPlaylist.id` is
+the indexer's `Library.xml` persistent id, which MusicKit has never heard of, and
+`LibraryPlaylistFilter` exposes exactly `{id, name}` — so **name** is the only handle the two
+worlds share. Two library playlists with the same name are therefore indistinguishable, and the
+transport takes the **first** match: failing instead would strand the job permanently on a
+condition the user cannot see. The `indexPlaylistId` is still carried for de-dupe and for
+naming the playlist in a stuck job. `PlaylistWriteBackTransport` is the seam that makes every
+retry rule, state transition, and persistence behaviour above unit-testable against a stub —
+the same idiom as `AppleMusicFavoritesTransport` (§5.5).
 
 ---
 
