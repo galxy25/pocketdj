@@ -339,7 +339,8 @@ struct StudioDemuxView: View {
             } else if status == .done, let hits = doc?.drumHits, !hits.isEmpty {
                 if drumBarsKey == source.key {
                     DemuxDrumPatternView(source: source, hits: hits, bars: drumBars,
-                                         durationMs: durationMs)
+                                         durationMs: durationMs, player: player,
+                                         onSeek: { seek(toMs: $0) })
                 } else {
                     // Bars still resolving for THIS source — never render/export the new
                     // song's hits on the previous song's bar lattice.

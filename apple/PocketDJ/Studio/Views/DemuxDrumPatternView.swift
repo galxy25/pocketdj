@@ -16,8 +16,17 @@ struct DemuxDrumPatternView: View {
     let hits: [DemuxDrumHit]
     let bars: [DrumPatternDetector.Bar]
     let durationMs: Int
+    /// The demuxer's shared player — the grid FOLLOWS playback like the lyrics/chord panels:
+    /// the displayed bar tracks the playing bar and a highlight column marches the 16 steps.
+    let player: StemPlayer
+    /// Tap a step cell → seek there (the lyrics tap-line contract).
+    var onSeek: (Int) -> Void = { _ in }
 
     @State private var selectedBar = 0
+    /// Follow playback (default on): the displayed bar auto-advances with the playhead while
+    /// playing. Selecting a bar SEEKS playback to it (two-way sync), so follow never fights a
+    /// manual pick; the chip exists to freeze the grid on one bar while the song plays on.
+    @State private var follow = true
     /// Quantized lanes per bar — computed once per (hits, bars) pair, not per render.
     @State private var grid: [[DemuxDrumKind: [Bool]]] = []
     @State private var exporting = false
@@ -46,18 +55,61 @@ struct DemuxDrumPatternView: View {
             // Land on the first bar that actually has hits (intros are often empty).
             if let first = grid.firstIndex(where: { !$0.isEmpty }) { selectedBar = first }
         }
+        // FOLLOW: advance the displayed bar with playback. Bar-granularity state writes only
+        // (once per ~2 s bar) — the fast intra-bar column highlight lives in a TimelineView
+        // overlay so this poll never invalidates the grid mid-tap (the lyrics-scroll pattern).
+        .task(id: follow) {
+            guard follow else { return }
+            while !Task.isCancelled {
+                if player.isPlaying, !bars.isEmpty {
+                    let ms = Int(player.currentTime * 1_000)
+                    if let bi = DrumPatternDetector.barIndex(forMs: ms, bars: bars), bi != selectedBar {
+                        selectedBar = bi
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
     }
 
     // MARK: Bar chips (time division — tap to inspect/export that bar)
 
     private var barChips: some View {
+        HStack(spacing: 6) {
+            // Follow chip (the timeline's demux-follow idiom): on = the grid rides playback;
+            // off = the grid freezes on the selected bar while the song plays on.
+            Button { follow.toggle() } label: {
+                Image(systemName: follow ? "location.fill" : "location")
+                    .font(.caption)
+                    .frame(width: 28, height: 26)
+                    .background(follow ? Theme.accent.opacity(0.22) : Theme.bgOverlay,
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(follow ? Theme.accent : Theme.border, lineWidth: 1))
+                    .foregroundStyle(follow ? Theme.accent : Theme.fgDim)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(follow ? "Following playback" : "Follow playback")
+            .accessibilityIdentifier("demux-drum-follow")
+            .help("Follow playback — the grid tracks the playing bar")
+            barChipScroller
+        }
+        .frame(height: 34)
+    }
+
+    private var barChipScroller: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 4) {
                     ForEach(bars) { bar in
                         let hasHits = grid.indices.contains(bar.index) && !grid[bar.index].isEmpty
                         Button {
+                            // Two-way sync: selecting a bar SNAPS playback to it, so the grid
+                            // and the audio agree in both directions (see it AND hear it) —
+                            // follow stays armed because there's no divergence to protect.
                             selectedBar = bar.index
+                            onSeek(bar.startMs)
                         } label: {
                             Text("\(bar.index + 1)")
                                 .font(.caption2.weight(.semibold)).monospacedDigit()
@@ -113,6 +165,9 @@ struct DemuxDrumPatternView: View {
                                                           : Theme.border, lineWidth: 0.5))
                                         .frame(height: 18)
                                         .frame(maxWidth: .infinity)
+                                        .contentShape(Rectangle())
+                                        // Tap a step → seek there (the lyrics tap-line contract).
+                                        .onTapGesture { seekToStep(col) }
                                         .accessibilityLabel("\(kind.label) step \(col + 1)")
                                         .accessibilityValue(steps[col] ? "hit" : "empty")
                                 }
@@ -124,6 +179,44 @@ struct DemuxDrumPatternView: View {
                 .accessibilityIdentifier("demux-drum-lane-\(kind.rawValue)")
             }
         }
+        // Playing-step column, OVERLAID: its own TimelineView layer (hit-testing off, identical
+        // nested spacing so it aligns) — the sequencer's highlight doctrine, so the 10 Hz clock
+        // never re-creates the tappable cells mid-gesture.
+        .overlay {
+            TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                let ms = Int(player.currentTime * 1_000)
+                let current: Int? = {
+                    guard bars.indices.contains(selectedBar) else { return nil }
+                    let bar = bars[selectedBar]
+                    guard ms >= bar.startMs, ms < bar.endMs else { return nil }
+                    let len = max(1, bar.endMs - bar.startMs)
+                    return min(15, (ms - bar.startMs) * 16 / len)
+                }()
+                HStack(spacing: 8) {
+                    Color.clear.frame(width: 56)
+                    HStack(spacing: 10) {
+                        ForEach(0..<4, id: \.self) { group in
+                            HStack(spacing: 3) {
+                                ForEach(0..<4, id: \.self) { i in
+                                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                        .strokeBorder(Theme.accent2, lineWidth: 1.5)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .opacity(group * 4 + i == current ? 1 : 0)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Seek playback to a step's time in the selected bar (16th-note boundaries).
+    private func seekToStep(_ col: Int) {
+        guard bars.indices.contains(selectedBar) else { return }
+        let bar = bars[selectedBar]
+        onSeek(bar.startMs + col * (bar.endMs - bar.startMs) / 16)
     }
 
     // MARK: Export (bar → StudioPattern + per-class kit samples)

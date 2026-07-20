@@ -90,6 +90,11 @@ struct StudioNewSampleFromTrackView: View {
     @State private var stemMode = false
     /// Which stems feed the mix (canonical names; the UI keeps ≥1 selected).
     @State private var enabledStems: Set<String> = Set(StemPlayer.stems)
+    /// Stem-mode AUDITION: the chips live-mute this synced player, so what you HEAR is exactly
+    /// the mix that gets carved (full-mix mode auditions the burned file via StudioEngine).
+    /// Flipping the toggle downloads the stems first when they aren't local yet.
+    @State private var stemAudition = StemPlayer()
+    @State private var stemAuditionLoading = false
 
     /// Display order + labels/icons for the 4 stems (the model keeps them as bare strings).
     private static let stemDisplay: [(key: String, label: String, icon: String)] = [
@@ -126,9 +131,85 @@ struct StudioNewSampleFromTrackView: View {
         // Resolve the ladder (and load / unload the audition preview) whenever the selection moves.
         .task(id: selectedSongId) { await resolveSource() }
         // Closing the sheet stops the audition + releases the source file's security scope (held by
-        // the engine since the preview load — the editor's onDisappear contract).
+        // the engine since the preview load — the editor's onDisappear contract). The stem-mode
+        // player releases ITS stem-folder scope in stop().
         .onDisappear {
             if let pid = previewId, engine.loadedSampleId == pid { engine.unloadSample() }
+            stemAudition.stop()
+        }
+    }
+
+    // MARK: - Audition routing (what you HEAR is what gets carved)
+
+    /// Stem mode auditions through the synced StemPlayer (chips live-mute it); full-mix mode
+    /// auditions the burned file through StudioEngine. One player sounds at a time.
+    private var auditionIsPlaying: Bool {
+        stemMode ? stemAudition.isPlaying : engine.isPlayingSample
+    }
+
+    private func auditionToggle() {
+        if stemMode {
+            stemAudition.togglePlayPause()
+        } else {
+            guard engine.loadedSampleId == previewId else { return }
+            if engine.isPlayingSample { engine.pauseSample() } else { engine.playSample() }
+        }
+    }
+
+    private func auditionStop() {
+        if stemMode {
+            if stemAudition.isPlaying { stemAudition.togglePlayPause() }
+            stemAudition.seek(to: 0)
+        } else {
+            engine.stopSample()
+        }
+    }
+
+    /// Flip between the two audition engines, carrying position + play state across. Stems not
+    /// on the device yet download FIRST (burnStems) so stem mode always sounds like the carve.
+    private func setStemMode(_ on: Bool, song: IndexSong) {
+        guard on != stemMode else { return }
+        if on {
+            guard !stemAuditionLoading else { return }
+            let pos = playheadSongSeconds()
+            let wasPlaying = engine.isPlayingSample
+            if wasPlaying { engine.pauseSample() }
+            stemAuditionLoading = true
+            Task {
+                defer { stemAuditionLoading = false }
+                var local = burns.localStemURLs(forSong: song.id)
+                if local == nil {
+                    local = await burns.burnStems(forSong: song.id)
+                    if local != nil { stemsDownloaded = true }
+                }
+                guard selectedSongId == song.id else { local?.release?(); return }
+                guard let local else {
+                    // Download failed — stem mode still carves (download-at-carve), but the
+                    // audition stays on the full mix; the caption explains.
+                    stemMode = true
+                    carveError = "Couldn’t download the stems to audition — the carve will fetch them."
+                    return
+                }
+                // The player HOLDS the stem folder's scope until stop() (its release contract).
+                stemAudition.load(songId: "\(song.id)#cut-stems", localURLs: local.urls,
+                                  release: local.release)
+                stemMode = true
+                applyChipMutes()
+                stemAudition.seek(to: pos)
+                if wasPlaying { stemAudition.togglePlayPause() }
+            }
+        } else {
+            let wasPlaying = stemAudition.isPlaying
+            if wasPlaying { stemAudition.togglePlayPause() }
+            stemMode = false
+            if wasPlaying, engine.loadedSampleId == previewId { engine.playSample() }
+        }
+    }
+
+    /// Converge the stem player's mutes onto the enabled-chip set (load resets mutes).
+    private func applyChipMutes() {
+        for name in StemPlayer.stems where stemAudition.isAudible(name) != enabledStems.contains(name) {
+            stemAudition.toggleMute(name)
         }
     }
 
@@ -340,17 +421,14 @@ struct StudioNewSampleFromTrackView: View {
                 Text(StudioFmt.clock(playheadSongSeconds()))
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
 
-                Button {
-                    guard engine.loadedSampleId == previewId else { return }
-                    if engine.isPlayingSample { engine.pauseSample() } else { engine.playSample() }
-                } label: {
-                    Image(systemName: engine.isPlayingSample ? "pause.fill" : "play.fill")
+                Button { auditionToggle() } label: {
+                    Image(systemName: auditionIsPlaying ? "pause.fill" : "play.fill")
                         .font(.title2).frame(width: 46, height: 38).contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless).foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("sample-audition-play")
 
-                Button { engine.stopSample() } label: {
+                Button { auditionStop() } label: {
                     Image(systemName: "stop.fill")
                         .font(.title3).frame(width: 40, height: 38).contentShape(Rectangle())
                 }
@@ -437,11 +515,15 @@ struct StudioNewSampleFromTrackView: View {
     private func stemSection(_ song: IndexSong) -> some View {
         if stemsAvailable {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $stemMode) {
-                    Label("Stem source", systemImage: "square.stack.3d.up")
-                        .font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
+                Toggle(isOn: Binding(get: { stemMode }, set: { setStemMode($0, song: song) })) {
+                    HStack(spacing: 8) {
+                        Label("Stem source", systemImage: "square.stack.3d.up")
+                            .font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
+                        if stemAuditionLoading { ProgressView().controlSize(.small) }
+                    }
                 }
                 .tint(Theme.accent)
+                .disabled(stemAuditionLoading)
                 .accessibilityIdentifier("sample-stem-mode")
 
                 if stemMode {
@@ -451,9 +533,7 @@ struct StudioNewSampleFromTrackView: View {
                             stemChip(st)
                         }
                     }
-                    Text(stemsDownloaded
-                         ? "Carves a mix of the selected stems for this region."
-                         : "Carves a mix of the selected stems — they’ll download first.")
+                    Text("The audition plays exactly this mix — what you hear is what gets cut.")
                         .font(.caption2).foregroundStyle(Theme.fgDim)
                 }
             }
@@ -469,6 +549,7 @@ struct StudioNewSampleFromTrackView: View {
             } else {
                 enabledStems.insert(st.key)
             }
+            applyChipMutes()   // live: the audition mix follows the chips instantly
         } label: {
             Label(st.label, systemImage: st.icon)
                 .font(.caption.weight(.semibold))
@@ -576,6 +657,7 @@ struct StudioNewSampleFromTrackView: View {
         stemsDownloaded = burns.stemsBurned(forSong: song.id)
         stemsAvailable = stemsDownloaded || rips.isStemmed(song.id)
         stemMode = false
+        stemAudition.stop()   // previous song's stem audition (and its folder scope) dies here
         enabledStems = Set(StemPlayer.stems)
         phase = .resolving
         // A fresh region: 0 → the first ~8 s (or the whole song when it's shorter). A sample is
@@ -789,9 +871,11 @@ struct StudioNewSampleFromTrackView: View {
         }
     }
 
-    /// The audition playhead mapped to SONG-relative seconds (the engine reports FILE seconds; a
-    /// shared-album file's song starts at `fileStartMs`). Clamped ≥ 0 for the shade/label.
+    /// The audition playhead mapped to SONG-relative seconds. Stem mode reads the stem player
+    /// directly (stems are song-relative — no album offset); full-mix mode maps the engine's
+    /// FILE seconds back by `fileStartMs`. Clamped ≥ 0 for the shade/label.
     private func playheadSongSeconds() -> Double {
+        if stemMode, stemAudition.ready { return max(0, stemAudition.currentTime) }
         guard engine.loadedSampleId == previewId else { return 0 }
         return max(0, engine.samplePlayheadSeconds() - Double(fileStartMs) / 1000)
     }
