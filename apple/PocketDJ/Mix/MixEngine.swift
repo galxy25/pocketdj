@@ -216,6 +216,13 @@ final class MixEngine {
         /// independent monitor level for that send (0…1). Both survive a deck reset.
         var cued = false
         var cueVol: Double = 1.0
+        /// LOOP (∞): when on, the deck repeats a window around the playhead forever until released.
+        /// `loopUnits` is its LENGTH in the deck's natural unit — BEATS when the track has a usable
+        /// grid (measured `beatsMs`, else a bpm to synthesize one), SECONDS when it has neither.
+        /// Both are user intent ⇒ they ride the durable session; the resolved window is runtime
+        /// plumbing (derivable from position + grid) and lives in `loopWindows`.
+        var loopOn = false
+        var loopUnits: Double = 2
 
         func isEnabled(_ e: Effect) -> Bool {
             switch e {
@@ -1223,6 +1230,7 @@ final class MixEngine {
         releases[deck]?(); releases[deck] = nil   // release the main file's scope
         files[deck] = nil; paths[deck] = nil; sampleRates[deck] = nil
         startFrames[deck] = nil; endFrames[deck] = nil; segmentStartSeconds[deck] = nil
+        loopWindows[deck] = nil; loopPasses[deck] = nil   // the loop dies with the track
         if leadDeck == deck { leadDeck = nil }     // give up the lead role if this deck held it
         mutate(deck) { $0 = DeckState() }          // empty track, every parameter back to default, cue off
         setDuration(deck, 0); setPosition(deck, 0)
@@ -1240,7 +1248,20 @@ final class MixEngine {
     func seek(_ deck: Deck, toSeconds sec: Double) {
         let clamped = min(max(0, sec), duration(deck))
         let was = state(deck).isPlaying
-        if stemActive(deck) {                              // stem mode: re-seek + re-sync the 4 stems
+        // Scrubbing while LOOPED moves the loop to where you dropped the playhead (rather than
+        // fighting it or silently dropping out) — re-arm and take the same housekeeping tail.
+        // `setLoop(off)` clears `loopOn` BEFORE it calls seek, so this can't recurse.
+        if state(deck).loopOn, let nw = loopBounds(deck, anchorSec: clamped) {
+            loopWindows[deck] = nw
+            armLoop(deck)
+            refreshTransport()
+            startTickIfNeeded()
+            rec(.seek, deck, value: clamped)
+            updateSystemNowPlaying()
+            persistMixDeckSession(debounced: true)
+            return
+        }
+        if stemActive(deck) {                            // stem mode: re-seek + re-sync the 4 stems
             stopStemNodes(deck)
             let ok = scheduleStems(deck, fromSeconds: clamped)
             setPosition(deck, clamped)
@@ -1269,6 +1290,274 @@ final class MixEngine {
         updateSystemNowPlaying()      // new elapsed on the lock-screen scrubber
         persistMixDeckSession(debounced: true)   // scrub surface — one write per burst
     }
+
+    // MARK: - Loop (∞) — repeat a beat/second window until released
+
+    /// How many copies of the window stay queued ahead of the playhead. The node plays queued
+    /// segments back-to-back with no gap, so a loop is sample-accurate BY CONSTRUCTION (no
+    /// completion handler, no tick-timed re-seek that would land up to a tick late); the tick only
+    /// tops the queue back up. Same 1-bar-horizon doctrine as the Studio sequencer.
+    private static let loopHorizonPasses = 3
+    /// Resolved windows in SOURCE seconds (runtime plumbing — the durable session stores intent).
+    @ObservationIgnored private var loopWindows: [Deck: (start: Double, end: Double)] = [:]
+    /// How many passes have been handed to the node since the loop was armed.
+    @ObservationIgnored private var loopPasses: [Deck: Int] = [:]
+
+    /// Does this deck count loop length in BEATS? True when the track has a measured grid or any
+    /// usable bpm to synthesize one; false ⇒ the unit is SECONDS (the documented fallback).
+    func loopUsesBeats(_ deck: Deck) -> Bool {
+        guard let l = state(deck).loaded else { return false }
+        if let b = l.beatsMs, b.count >= 2 { return true }
+        return (l.gridBpm ?? l.bpm ?? 0) > 0
+    }
+
+    /// One loop unit in seconds — a beat at the deck's grid tempo, else exactly 1 s.
+    func loopUnitSeconds(_ deck: Deck) -> Double {
+        guard loopUsesBeats(deck) else { return 1 }
+        let bpm = state(deck).loaded?.gridBpm ?? state(deck).loaded?.bpm ?? 120
+        return 60.0 / min(max(bpm, 20), 300)
+    }
+
+    func loopOn(_ deck: Deck) -> Bool { state(deck).loopOn }
+    func loopUnits(_ deck: Deck) -> Double { state(deck).loopUnits }
+    /// The live window (nil unless a loop is armed) — also the test hook for wrap math.
+    func loopWindow(_ deck: Deck) -> (start: Double, end: Double)? {
+        guard state(deck).loopOn, let w = loopWindows[deck], w.end > w.start else { return nil }
+        return w
+    }
+
+    /// Resolve the window for `units` around `anchorSec`: snap the START back to the PREVIOUS unit
+    /// boundary (the beat you're in — or the previous whole second) and run `units` forward from
+    /// there. A measured grid drives both edges through `BeatMath` (so real tempo drift is
+    /// honored); otherwise the boundaries are synthesized from bpm + downbeat phase. Clamped into
+    /// the deck's window, sliding back rather than shrinking when it would overrun the end.
+    private func loopBounds(_ deck: Deck, anchorSec: Double) -> (start: Double, end: Double)? {
+        let dur = duration(deck)
+        guard dur > 0 else { return nil }
+        let units = min(max(state(deck).loopUnits, 1), 32)
+        let anchor = min(max(0, anchorSec), dur)
+        var start: Double
+        var end: Double
+        if loopUsesBeats(deck) {
+            let l = state(deck).loaded
+            let bpm = l?.gridBpm ?? l?.bpm ?? 120
+            let period = loopUnitSeconds(deck)
+            let anchorMs = anchor * 1000
+            if let beats = l?.beatsMs, beats.count >= 2 {
+                let prevMs = BeatMath.lastBeat(beatsMs: beats, downbeatsMs: l?.downbeatsMs,
+                                               atMs: anchorMs)?.beatMs
+                let startMs = Double(prevMs ?? Int(anchorMs))
+                // Walk `units` beats off the MEASURED lattice (drift-correct); the helper
+                // synthesizes past the last measured beat at a constant period.
+                if let sb = BeatMath.sliceBoundaries(
+                    anchorMs: Int(startMs.rounded()), beats: units,
+                    grid: (bpm: bpm, firstDownbeatMs: l?.firstDownbeatMs ?? 0, beatsMs: beats)) {
+                    start = Double(sb.startMs) / 1000
+                    end = Double(sb.endMs) / 1000
+                } else {
+                    start = startMs / 1000
+                    end = start + units * period
+                }
+            } else {
+                // No measured beats — synthesize the lattice off the downbeat phase + tempo.
+                return Self.loopWindowMath(anchorSec: anchor,
+                                           phaseSec: Double(l?.firstDownbeatMs ?? 0) / 1000,
+                                           unitSeconds: period, units: units, durationSec: dur)
+            }
+        } else {
+            return Self.loopWindowMath(anchorSec: anchor, phaseSec: 0,   // previous whole second
+                                       unitSeconds: 1, units: units, durationSec: dur)
+        }
+        return Self.clampLoopWindow(start: start, end: end, durationSec: dur)
+    }
+
+    /// Snap `anchor` back to the previous unit boundary off `phase`, then run `units` forward —
+    /// the ungridded (and synthesized-grid) path. Pure + testable without an audio device.
+    nonisolated static func loopWindowMath(anchorSec: Double, phaseSec: Double, unitSeconds: Double,
+                                           units: Double, durationSec: Double) -> (start: Double, end: Double)? {
+        guard unitSeconds > 0, units > 0, durationSec > 0 else { return nil }
+        let anchor = min(max(0, anchorSec), durationSec)
+        let rel = anchor - phaseSec
+        let start = rel >= 0 ? phaseSec + floor(rel / unitSeconds) * unitSeconds : phaseSec
+        return clampLoopWindow(start: start, end: start + units * unitSeconds, durationSec: durationSec)
+    }
+
+    /// Fit a window inside the deck: enforce a floor length (a sub-50 ms window is a click, not a
+    /// loop) and, when it would overrun the end, SLIDE it back rather than shrink it — a 4-beat
+    /// loop stays 4 beats even when engaged in the last bar. Pure + testable.
+    nonisolated static func clampLoopWindow(start: Double, end: Double,
+                                            durationSec: Double) -> (start: Double, end: Double)? {
+        guard durationSec > 0 else { return nil }
+        var s = start
+        let len = min(max(end - s, 0.05), durationSec)
+        var e = s + len
+        if e > durationSec { e = durationSec; s = max(0, e - len) }   // slide back, keep the length
+        if s < 0 { s = 0; e = min(durationSec, len) }
+        guard e > s else { return nil }
+        return (s, e)
+    }
+
+    /// (Re)queue the window on the deck's voices — the single file, or ALL FOUR stems in stem mode
+    /// (they're sample-aligned and restarted at one shared host time, so queueing the same window
+    /// on each keeps them locked together exactly as normal stem playback does).
+    private func armLoop(_ deck: Deck) {
+        guard let w = loopWindow(deck), built else { return }
+        let was = state(deck).isPlaying
+        if stemActive(deck) {
+            stopStemNodes(deck)                          // stop() discards the queue → re-fill below
+            guard scheduleLoopPasses(deck, window: w, passes: Self.loopHorizonPasses) else { return }
+            loopPasses[deck] = Self.loopHorizonPasses
+            setPosition(deck, w.start)
+            if was { startStems(deck) }
+        } else {
+            guard let player = players[deck] else { return }
+            player.stop()                                // resets the node timeline to 0
+            guard scheduleLoopPasses(deck, window: w, passes: Self.loopHorizonPasses) else { return }
+            loopPasses[deck] = Self.loopHorizonPasses
+            segmentStartSeconds[deck] = w.start
+            setPosition(deck, w.start)
+            if was {
+                if startEngineIfNeeded() { player.play() }  // dead engine → stays queued; watchdog resumes
+                setPlaying(deck, true)
+            }
+        }
+        refreshTransport()
+        startTickIfNeeded()
+    }
+
+    /// Append `passes` copies of the window to the deck's voice(s). Handles both modes; returns
+    /// false when nothing could be queued (no file / zero-frame window).
+    @discardableResult
+    private func scheduleLoopPasses(_ deck: Deck, window w: (start: Double, end: Double),
+                                    passes: Int) -> Bool {
+        guard passes > 0 else { return false }
+        if stemActive(deck) {
+            guard let stems = stemFiles[deck], let nodes = stemPlayers[deck] else { return false }
+            var any = false
+            for (name, node) in nodes {
+                guard let file = stems[name] else { continue }
+                let sr = file.processingFormat.sampleRate
+                guard sr > 0 else { continue }
+                // Stem files start at the SONG's 0:00 (no album offset), so the window maps directly.
+                let f0 = min(max(0, AVAudioFramePosition(w.start * sr)), file.length)
+                let f1 = min(max(f0, AVAudioFramePosition(w.end * sr)), file.length)
+                let count = f1 - f0
+                guard count > 0 else { continue }
+                for _ in 0..<passes {
+                    node.scheduleSegment(file, startingFrame: f0, frameCount: AVAudioFrameCount(count),
+                                         at: nil, completionHandler: nil)
+                }
+                any = true
+            }
+            if any { stemsScheduled[deck] = true }
+            return any
+        }
+        guard let file = files[deck], let player = players[deck], let sr = sampleRates[deck], sr > 0,
+              let startF = startFrames[deck], let endF = endFrames[deck] else { return false }
+        let f0 = min(max(startF, startF + AVAudioFramePosition(w.start * sr)), endF)
+        let f1 = min(max(f0, startF + AVAudioFramePosition(w.end * sr)), endF)
+        let count = f1 - f0
+        guard count > 0 else { return false }
+        for _ in 0..<passes {
+            player.scheduleSegment(file, startingFrame: f0, frameCount: AVAudioFrameCount(count),
+                                   at: nil, completionHandler: nil)
+        }
+        return true
+    }
+
+    /// The render clock representing the deck: its player, or any stem node (all four are started
+    /// at one shared host time, so any of them reports the same elapsed).
+    private func loopClock(_ deck: Deck) -> (node: AVAudioPlayerNode, sampleRate: Double)? {
+        if stemActive(deck) {
+            guard let nodes = stemPlayers[deck], let stems = stemFiles[deck] else { return nil }
+            for name in Self.stemNames {                 // canonical order ⇒ deterministic pick
+                if let n = nodes[name], let f = stems[name], f.processingFormat.sampleRate > 0 {
+                    return (n, f.processingFormat.sampleRate)
+                }
+            }
+            return nil
+        }
+        guard let p = players[deck], let sr = sampleRates[deck], sr > 0 else { return nil }
+        return (p, sr)
+    }
+
+    /// Tick duty: keep `loopHorizonPasses` copies queued ahead of what the node has consumed, so
+    /// the loop never runs out of scheduled audio (the seam that would otherwise click).
+    private func topUpLoop(_ deck: Deck) {
+        guard state(deck).isPlaying, let w = loopWindow(deck),
+              let clock = loopClock(deck),
+              let nodeTime = clock.node.lastRenderTime,
+              let pt = clock.node.playerTime(forNodeTime: nodeTime) else { return }
+        let len = w.end - w.start
+        guard len > 0 else { return }
+        // The node timeline is in SOURCE frames, so a tempo change doesn't distort this count —
+        // it only changes how fast passes are consumed in wall time.
+        let consumed = Int(floor(max(0, Double(pt.sampleTime) / clock.sampleRate) / len))
+        let scheduled = loopPasses[deck] ?? 0
+        let want = consumed + Self.loopHorizonPasses
+        guard want > scheduled else { return }
+        if scheduleLoopPasses(deck, window: w, passes: want - scheduled) { loopPasses[deck] = want }
+    }
+
+    /// Engage / release the loop. Engaging arms a window around the CURRENT playhead; releasing
+    /// re-schedules the rest of the track from wherever inside the window you were, so the audio
+    /// carries straight on (and the auto-mix crossfade re-times against the real runway).
+    func setLoop(_ deck: Deck, on: Bool) {
+        guard state(deck).loaded != nil, on != state(deck).loopOn else { return }
+        if on {
+            if let songId = state(deck).loaded?.songId {
+                hydrateBeatGrid(deck, songId: songId, force: true)   // beats need the grid NOW
+            }
+            let anchor = truePlayhead(deck) ?? position(deck)
+            guard let w = loopBounds(deck, anchorSec: anchor) else { return }
+            mutate(deck) { $0.loopOn = true }
+            loopWindows[deck] = w
+            armLoop(deck)
+            dlog("loop ON \(deck.rawValue) \(String(format: "%.2f–%.2f", w.start, w.end))s "
+                 + "(\(Int(state(deck).loopUnits)) \(loopUsesBeats(deck) ? "beat" : "sec"))")
+        } else {
+            let resume = truePlayhead(deck) ?? position(deck)
+            mutate(deck) { $0.loopOn = false }
+            loopWindows[deck] = nil
+            loopPasses[deck] = nil
+            seek(deck, toSeconds: resume)   // re-arms the rest of the track + re-times auto-mix
+            dlog("loop OFF \(deck.rawValue) → \(String(format: "%.2f", resume))s")
+        }
+        persistMixDeckSession()   // discrete tap — persist immediately
+    }
+
+    /// Set the loop LENGTH in units (1…32). Keeps the window's start; re-arms when live.
+    func setLoopUnits(_ deck: Deck, _ units: Double) {
+        let u = min(max(units.rounded(), 1), 32)
+        guard u != state(deck).loopUnits else { return }
+        mutate(deck) { $0.loopUnits = u }
+        if state(deck).loopOn, let w = loopWindows[deck], let nw = loopBounds(deck, anchorSec: w.start) {
+            loopWindows[deck] = nw
+            armLoop(deck)
+        }
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
+    }
+
+    /// Nudge one EDGE by ±1 unit (the popover's ← → arrows). Moving an edge changes the loop's
+    /// length, so `loopUnits` follows; both stay inside 1…32 units and the deck's window.
+    func nudgeLoop(_ deck: Deck, edge: LoopEdge, byUnits delta: Double) {
+        guard let w = loopWindow(deck) else { return }
+        let step = loopUnitSeconds(deck) * delta
+        let dur = duration(deck)
+        var (s, e) = (w.start, w.end)
+        switch edge {
+        case .start: s = min(max(0, s + step), e - loopUnitSeconds(deck))
+        case .end:   e = min(max(e + step, s + loopUnitSeconds(deck)), dur)
+        }
+        guard e > s else { return }
+        let units = min(max(((e - s) / loopUnitSeconds(deck)).rounded(), 1), 32)
+        loopWindows[deck] = (s, e)
+        mutate(deck) { $0.loopUnits = units }
+        armLoop(deck)
+        persistMixDeckSession(debounced: true)
+    }
+
+    enum LoopEdge { case start, end }
 
     /// After a manual SEEK of the auto-mix live deck, re-stamp when it will end (wall-clock, allowing
     /// for tempo) so the crossfade fires relative to the NEW position. Sliding a song near its end now
@@ -1395,13 +1684,15 @@ final class MixEngine {
     /// the real beats. Uses the LOCAL sidecar synchronously if it's already burned; otherwise — only
     /// when the pulse is enabled — downloads it in the background and patches the deck if it's still
     /// showing this song. A no-op when the song has no sidecar (the pulse falls back to synthesis).
-    private func hydrateBeatGrid(_ deck: Deck, songId: String) {
+    /// `force` bypasses the beat-pulse opt-in: engaging a LOOP needs real beats now, whether or not
+    /// the pulse visual is on (without it a beat loop would silently fall back to synthesis).
+    private func hydrateBeatGrid(_ deck: Deck, songId: String, force: Bool = false) {
         if state(deck).loaded?.beatsMs != nil { return }                 // already hydrated
         if let local = burns.localBeatGrid(forSong: songId), !local.beatsMs.isEmpty {
             mutate(deck) { $0.loaded?.beatsMs = local.beatsMs; $0.loaded?.downbeatsMs = local.downbeatsMs }
             return
         }
-        guard beatPulseEnabled else { return }                           // OFF ⇒ never download on load
+        guard beatPulseEnabled || force else { return }                  // OFF ⇒ never download on load
         Task { [weak self] in
             guard let self, let sc = await self.burns.burnBeatGrid(forSong: songId), !sc.beatsMs.isEmpty else { return }
             guard self.state(deck).loaded?.songId == songId else { return }   // deck moved on → drop it
@@ -1700,6 +1991,9 @@ final class MixEngine {
             // PAUSED: the DJ is hand-mixing — never auto-advance (nor auto-stop at end-of-track). Playback
             // + recording keep running; the live deck simply plays on until Resume re-arms the machine.
             guard !autoPaused else { return }
+            // LOOPING: an engaged loop is a hand-mix hold — never crossfade out from under it
+            // (the live deck would advance mid-loop). Releasing the loop re-times the transition.
+            guard !state(autoLiveDeck).loopOn else { return }
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
             let secondsLeft = endsAt.timeIntervalSince(now)
             if autoLivePos + 1 < autoQueue.count {
@@ -2126,6 +2420,9 @@ final class MixEngine {
                 if was, startEngineIfNeeded() { player.play() }   // dead engine → watchdog resumes
             }
         }
+        // A LIVE loop follows the deck across the mode flip: re-arm on whichever voices now play
+        // (the branches above scheduled the whole remaining track, which would run past the window).
+        if loopWindow(deck) != nil { armLoop(deck) }
         refreshTransport()
         persistMixDeckSession()                  // stem-mode flip — structural, persist immediately
     }
@@ -2380,6 +2677,12 @@ final class MixEngine {
             }
         }
         if ds.positionMs > 0 { seek(deck, toSeconds: Double(ds.positionMs) / 1000) }   // cue, not play
+        // LOOP last: the window is derived from the restored position, so it must be armed AFTER
+        // the seek above (and after stem mode, so it arms on the voices that will actually play).
+        if ds.loopOn == true {
+            setLoopUnits(deck, ds.loopUnits ?? 2)
+            setLoop(deck, on: true)
+        }
     }
 
     /// Rebuild the Auto-DJ machine SUSPENDED (`autoPaused` — the exact state the lock-screen ⏸
@@ -2486,7 +2789,8 @@ final class MixEngine {
             compressor: s.compressor, reverb: s.reverb, flanger: s.flanger, filter: s.filter,
             compStrength: s.compStrength, reverbStrength: s.reverbStrength,
             flangerStrength: s.flangerStrength, filterStrength: s.filterStrength,
-            stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol)
+            stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
+            loopOn: s.loopOn, loopUnits: s.loopUnits)
     }
 
     private func trackRef(_ l: MixLoadable) -> MixDeckSessionStore.TrackRef {
@@ -2565,7 +2869,14 @@ final class MixEngine {
               let player = players[deck], let nodeTime = player.lastRenderTime,
               let pt = player.playerTime(forNodeTime: nodeTime),
               let sr = sampleRates[deck], sr > 0 else { return nil }
-        return (segmentStartSeconds[deck] ?? 0) + Double(pt.sampleTime) / sr
+        let raw = (segmentStartSeconds[deck] ?? 0) + Double(pt.sampleTime) / sr
+        // LOOPING: the node's timeline runs monotonically across the queued repeats, so fold it
+        // back into the window — every caller (beat pulse, seek slider, snapshot) wants the
+        // position you HEAR, which is inside the loop.
+        if let w = loopWindow(deck), raw >= w.start {
+            return w.start + (raw - w.start).truncatingRemainder(dividingBy: w.end - w.start)
+        }
+        return raw
     }
 
     /// The deck whose track is the Mix's "Now Playing" — what the lock-screen card shows. Rule: if
@@ -2936,6 +3247,15 @@ final class MixEngine {
                 let dur = duration(d)
                 guard dur > 0 else {             // nothing / zero-length loaded — don't run the playhead forever
                     if !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
+                    continue
+                }
+                // LOOPING: the playhead folds back into the window instead of advancing to the
+                // end, and the queue is topped up so the repeats never run dry.
+                if let w = loopWindow(d) {
+                    var p = position(d) + dt * state(d).rate
+                    if p >= w.end { p = w.start + (p - w.start).truncatingRemainder(dividingBy: w.end - w.start) }
+                    setPosition(d, p)
+                    topUpLoop(d)
                     continue
                 }
                 let pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
