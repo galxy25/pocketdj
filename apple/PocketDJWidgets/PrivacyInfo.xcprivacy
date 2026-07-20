@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PocketDJWidgets (WidgetKit extension) — bundle com.levi.pocketdj.widgets -->
+	<!-- The extension reads a Now Playing snapshot (title, artist, song id, isPlaying, -->
+	<!-- cover version, up-next list) from the shared App Group container written by the -->
+	<!-- app, and renders it. It performs NO networking: verified 0 hits for URLSession / -->
+	<!-- URLRequest / NWConnection across PocketDJWidgets/ and Shared/. It therefore -->
+	<!-- collects nothing and its collected-data array is legitimately empty. -->
+
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+
+		<!-- UserDefaults -->
+		<!-- 1C8F.1 ONLY — the extension's single UserDefaults use is the App Group suite -->
+		<!--   group.com.levi.pocketdj at Shared/NowPlayingSnapshot.swift:46. -->
+		<!-- CA92.1 deliberately NOT declared: UserDefaults.standard appears 0 times in this -->
+		<!-- target's sources, so declaring it would assert a use the extension does not make. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>1C8F.1</string>
+			</array>
+		</dict>
+
+		<!-- No FileTimestamp, no SystemBootTime, no DiskSpace, no ActiveKeyboards: verified -->
+		<!-- 0 hits for every API in those categories across PocketDJWidgets/ and Shared/. -->
+
+	</array>
+</dict>
+</plist>

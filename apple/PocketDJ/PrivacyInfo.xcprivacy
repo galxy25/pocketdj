@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PocketDJ (app target) — bundle com.levi.pocketdj -->
+
+	<!-- VERIFIED 2026-07-20: no ATT, no IDFA, no SKAdNetwork, no advertisingIdentifier, -->
+	<!-- no analytics/crash/attribution SDK. Sole third-party SPM dependency is -->
+	<!-- ZIPFoundation 0.9.20 (MIT), which performs no networking. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array>
+
+		<!-- ============================================================== -->
+		<!-- User Content ▸ Audio Data                                      -->
+		<!-- Audio the user uploads, imports, rips from their own analog     -->
+		<!-- sources, or records in Studio/Mix and then sends for stem       -->
+		<!-- separation, plus derived stems and analysis, processed by        -->
+		<!-- PocketDJ cloud services.                                        -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeAudioData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
+		<!-- User Content ▸ Other User Content                              -->
+		<!-- Collection/playlist/pocket/setlist structure and now-playing    -->
+		<!-- queues published to a hosted session. NOTE: documents synced to -->
+		<!-- the user's PRIVATE CloudKit database are deliberately NOT       -->
+		<!-- counted here — see §5.2 of the privacy-manifest spec.           -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
+		<!-- Identifiers ▸ User ID                                          -->
+		<!-- The durable per-user account identifier used to scope a user's  -->
+		<!-- own copies in PocketDJ cloud services, plus session/host ids.   -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
+		<!-- Contact Info ▸ Name                                            -->
+		<!-- The DJ display name shown to guests of a hosted session.        -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeName</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
+		<!-- Usage Data ▸ Product Interaction                               -->
+		<!-- Now-playing / up-next / played transitions posted to a hosted   -->
+		<!-- session so the guest page can display them. NOTE: on-device     -->
+		<!-- play history and play stats are NOT counted here — see §5.2.    -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
+		<!-- Search History                                                  -->
+		<!-- Catalog search terms sent to PocketDJ cloud services.           -->
+		<!-- Declared because the capability exists, even though the         -->
+		<!-- full-text search backend is opt-in and off by default.          -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeSearchHistory</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
+		<!-- Diagnostics ▸ Other Diagnostic Data                            -->
+		<!-- Server-side request logs kept by PocketDJ cloud services.       -->
+		<!-- The app itself uploads NO diagnostics automatically: there is   -->
+		<!-- no crash reporter, no analytics SDK, no MetricKit. The in-app   -->
+		<!-- debug capture never leaves the device unless the user exports   -->
+		<!-- it by hand.                                                     -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherDiagnosticData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+	</array>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+
+		<!-- UserDefaults -->
+		<!-- CA92.1 — app-private defaults. Three writers: -->
+		<!--          Views/PlaylistsView.swift:455,458 (collapsed folder state); -->
+		<!--          Services/Streaming/StreamingTokenStore.swift:18,23,28 (account label -->
+		<!--          only — that token lives in the Keychain); and Settings/SettingsStore.swift, -->
+		<!--          which persists the whole settings blob (:174) to the store returned by -->
+		<!--          launchDefaults() (:232-241 — .standard outside UI tests). A literal grep -->
+		<!--          for "UserDefaults.standard" does NOT surface that third writer. -->
+		<!-- 1C8F.1 — App Group group.com.levi.pocketdj: Settings/SettingsStore.swift:237 -->
+		<!--          and Shared/NowPlayingSnapshot.swift:46 (widget snapshot). -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+				<string>1C8F.1</string>
+			</array>
+		</dict>
+
+		<!-- FileTimestamp -->
+		<!-- C617.1 — app container: Services/CloudSync/CloudSyncService.swift:309-310 reads -->
+		<!--          .modificationDate to decide push/pull for sync documents. -->
+		<!-- 3B52.1 — user-granted directories reached via a security-scoped bookmark from a -->
+		<!--          document picker: State/MixRecorder.swift:106,124 and -->
+		<!--          Studio/StudioMicRecorder.swift:484 read .creationDateKey on files inside -->
+		<!--          a user-picked recordings/samples folder to recover orphaned takes. -->
+		<!-- DDA9.1 deliberately NOT declared: it is "display file timestamps to the person -->
+		<!-- using the device", which is not what these sites do. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+				<string>3B52.1</string>
+			</array>
+		</dict>
+
+		<!-- SystemBootTime -->
+		<!-- 35F9.1 — mach_absolute_time() for audio-engine scheduling and elapsed-time math: -->
+		<!--          Mix/MixEngine.swift:2610, Playback/StemPlayer.swift:172, -->
+		<!--          Studio/StudioEngine.swift:819, Studio/InstrumentEngine.swift (12 sites). -->
+		<!--          Host times are converted to a RELATIVE offset before anything is -->
+		<!--          persisted (InstrumentEngine.swift:189-196), so no boot-referenced value -->
+		<!--          is ever sent off-device — which is exactly 35F9.1's constraint. -->
+		<!-- 8FFB.1 deliberately NOT declared: it covers sending absolute in-app event -->
+		<!-- timestamps off-device, which PocketDJ does not do. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+
+		<!-- NSPrivacyAccessedAPICategoryDiskSpace is deliberately ABSENT — verified 0 hits -->
+		<!-- for volumeAvailableCapacity / systemFreeSize / statfs / attributesOfFileSystem / -->
+		<!-- availableCapacity. StorageManager sums per-file .fileSizeKey; it never queries -->
+		<!-- free space. -->
+		<!-- NSPrivacyAccessedAPICategoryActiveKeyboards is deliberately ABSENT — 0 hits for -->
+		<!-- activeInputModes. -->
+
+	</array>
+</dict>
+</plist>
