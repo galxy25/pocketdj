@@ -881,6 +881,72 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    // MARK: - Loop (∞): window math, unit rule, clamps
+
+    /// The tap default: snap back to the PREVIOUS unit boundary and run 2 units from there.
+    func testLoopWindowMathSnapsBackToPreviousBoundary() {
+        // Ungridded (1 s units, phase 0), playhead at 7.4 s ⇒ 7…9 s.
+        let w = MixEngine.loopWindowMath(anchorSec: 7.4, phaseSec: 0, unitSeconds: 1,
+                                         units: 2, durationSec: 200)
+        XCTAssertEqual(w?.start ?? -1, 7.0, accuracy: 1e-9)
+        XCTAssertEqual(w?.end ?? -1, 9.0, accuracy: 1e-9)
+    }
+
+    /// A synthesized beat lattice is anchored on the DOWNBEAT phase, not on zero.
+    func testLoopWindowMathHonoursDownbeatPhase() {
+        // 120 BPM ⇒ 0.5 s beats, first downbeat 0.2 s; playhead 3.05 s ⇒ boundary 2.7 s.
+        let w = MixEngine.loopWindowMath(anchorSec: 3.05, phaseSec: 0.2, unitSeconds: 0.5,
+                                         units: 4, durationSec: 200)
+        XCTAssertEqual(w?.start ?? -1, 2.7, accuracy: 1e-9)
+        XCTAssertEqual(w?.end ?? -1, 4.7, accuracy: 1e-9, "4 beats at 120 BPM = 2 s")
+        // Before the first downbeat, the phase itself is the boundary (never a negative start).
+        let early = MixEngine.loopWindowMath(anchorSec: 0.1, phaseSec: 0.2, unitSeconds: 0.5,
+                                             units: 2, durationSec: 200)
+        XCTAssertEqual(early?.start ?? -1, 0.2, accuracy: 1e-9)
+    }
+
+    /// Engaged in the last bar, a loop SLIDES back to keep its length instead of shrinking.
+    func testLoopWindowClampSlidesBackKeepingLength() {
+        let w = MixEngine.clampLoopWindow(start: 118, end: 122, durationSec: 120)
+        XCTAssertEqual(w?.end ?? -1, 120, accuracy: 1e-9)
+        XCTAssertEqual(w?.start ?? -1, 116, accuracy: 1e-9, "4 s window slid back, not truncated")
+        XCTAssertEqual((w?.end ?? 0) - (w?.start ?? 0), 4, accuracy: 1e-9)
+        // A window longer than the whole track collapses onto the track, never inverts.
+        let huge = MixEngine.clampLoopWindow(start: 10, end: 500, durationSec: 120)
+        XCTAssertEqual(huge?.start ?? -1, 0, accuracy: 1e-9)
+        XCTAssertEqual(huge?.end ?? -1, 120, accuracy: 1e-9)
+        // Degenerate inputs never produce an inverted or zero-length window.
+        XCTAssertNil(MixEngine.clampLoopWindow(start: 0, end: 1, durationSec: 0))
+        let floored = MixEngine.clampLoopWindow(start: 5, end: 5, durationSec: 120)
+        XCTAssertGreaterThan((floored?.end ?? 0) - (floored?.start ?? 0), 0, "floored to a real window")
+    }
+
+    func testLoopDefaultsOffAtTwoUnits() {
+        let e = makeEngine()
+        XCTAssertFalse(e.loopOn(.a))
+        XCTAssertEqual(e.loopUnits(.a), 2, "tap default is a 2-unit loop")
+        XCTAssertNil(e.loopWindow(.a), "no window until engaged")
+        XCTAssertFalse(e.loopUsesBeats(.a), "no track ⇒ no grid ⇒ seconds")
+        XCTAssertEqual(e.loopUnitSeconds(.a), 1, "ungridded unit is exactly one second")
+    }
+
+    /// No track ⇒ engaging is a no-op (mirrors the stem-mode guard).
+    func testSetLoopWithoutTrackStaysOff() {
+        let e = makeEngine()
+        e.setLoop(.a, on: true)
+        XCTAssertFalse(e.loopOn(.a))
+        XCTAssertNil(e.loopWindow(.a))
+    }
+
+    func testLoopUnitsClampToOneThroughThirtyTwo() {
+        let e = makeEngine()
+        e.setLoopUnits(.a, 99);   XCTAssertEqual(e.loopUnits(.a), 32)
+        e.setLoopUnits(.a, 0);    XCTAssertEqual(e.loopUnits(.a), 1)
+        e.setLoopUnits(.a, -4);   XCTAssertEqual(e.loopUnits(.a), 1)
+        e.setLoopUnits(.a, 8.4);  XCTAssertEqual(e.loopUnits(.a), 8, "units are whole")
+        XCTAssertEqual(e.loopUnits(.b), 2, "length is per-deck")
+    }
+
     // MARK: - Stems (per-deck stem mode / mute / volume)
 
     func testStemNamesAreTheFourCanonical() {

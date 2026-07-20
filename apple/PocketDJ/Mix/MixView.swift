@@ -825,6 +825,9 @@ private struct DeckView: View {
                 StemModeButton(deck: deck, engine: engine, songId: loaded?.songId ?? "",
                                compact: compactControls, a11y: "\(a11y)-stemmode")
             }
+            // LOOP (∞), immediately right of the stem icon — tap for a 2-unit loop off the
+            // previous boundary; long-press / right-click for length + edge nudges.
+            LoopButton(engine: engine, deck: deck, enabled: loaded != nil, a11y: "\(a11y)-loop")
             Spacer()
             // CUE / PFL — tap to monitor this deck on the cue channel (house mix untouched);
             // long-press / right-click for its cue-volume slider. Just left of Reset.
@@ -1070,6 +1073,121 @@ private struct RecordPulse: ViewModifier {
 /// monitor channel (the house mix is untouched). LONG-PRESS (iOS) / RIGHT-CLICK (macOS) reveals a
 /// fixed-width cue-VOLUME popover (the cue level is independent of the deck's main Vol fader). A plain
 /// tappable view, NOT a Button, so the long-press isn't swallowed (same reason as `EffectButton`).
+// MARK: - Loop (∞) chip
+
+/// The deck's LOOP control, sitting immediately right of the stem icon.
+///   • TAP — engage/release. Engaging snaps back to the PREVIOUS boundary and repeats 2 units
+///     (a 2-beat loop when the track has a grid; a 2-second loop when it doesn't).
+///   • LONG-PRESS / RIGHT-CLICK — the length popover: a 1…32 slider plus ← → arrows on each end
+///     that walk the loop's START and END one unit at a time.
+/// Not a `Button` for the same reason as `CueButton`/`EffectButton`: a real Button swallows the
+/// long-press. Works in BOTH playback modes — a stem deck loops all four synced stem nodes — so
+/// it's disabled only when the deck has no track.
+private struct LoopButton: View {
+    let engine: MixEngine
+    let deck: MixEngine.Deck
+    let enabled: Bool
+    let a11y: String
+    @State private var showPopover = false
+
+    var body: some View {
+        let on = engine.loopOn(deck)
+        Image(systemName: "infinity")
+            .font(.callout)
+            .frame(minHeight: 18)
+            .padding(.vertical, 6).padding(.horizontal, 9)
+            .background(on ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(on ? Theme.accent : Theme.border, lineWidth: 1))
+            .foregroundStyle(!enabled ? Theme.fgDim.opacity(0.4) : (on ? Theme.accent : Theme.fgDim))
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .onTapGesture { if enabled { engine.setLoop(deck, on: !on) } }
+            .onLongPressGesture(minimumDuration: 0.4) { if enabled { showPopover = true } }
+            #if os(macOS)
+            .overlay { if enabled { SecondaryClick { showPopover = true } } }
+            #endif
+            .popover(isPresented: $showPopover, arrowEdge: .top) {
+                LoopLengthPopover(engine: engine, deck: deck, presented: $showPopover, a11y: a11y)
+            }
+            .help("Loop — tap to loop 2 \(engine.loopUsesBeats(deck) ? "beats" : "seconds") from the previous "
+                  + "\(engine.loopUsesBeats(deck) ? "beat" : "second") · long-press for length and in/out nudges")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Loop")
+            .accessibilityValue(on ? "On, \(Int(engine.loopUnits(deck))) \(engine.loopUsesBeats(deck) ? "beats" : "seconds")" : "Off")
+            .accessibilityIdentifier(a11y)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// The loop popover: LENGTH (1…32 units) plus per-edge ← → nudges. Fixed width + compact-adaptation
+/// + 3 s idle auto-dismiss, matching `ChipStrengthPopover` (an in-place slider is undraggable in
+/// iPhone portrait). Adjusting anything ENGAGES the loop — dialling a length you can't hear is a
+/// dead control (the `StemPad.reveal()` precedent).
+private struct LoopLengthPopover: View {
+    let engine: MixEngine
+    let deck: MixEngine.Deck
+    @Binding var presented: Bool
+    let a11y: String
+    @State private var interaction = 0
+
+    private var unitName: String { engine.loopUsesBeats(deck) ? "beat" : "sec" }
+
+    var body: some View {
+        let units = engine.loopUnits(deck)
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Loop length", systemImage: "infinity")
+                .font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+            HStack(spacing: 8) {
+                // LEFT pair — walk the loop's START edge back / forward one unit.
+                nudge("arrow.left", edge: .start, delta: -1, id: "\(a11y)-start-back")
+                nudge("arrow.right", edge: .start, delta: 1, id: "\(a11y)-start-fwd")
+                Slider(value: Binding(get: { units },
+                                      set: { engage(); engine.setLoopUnits(deck, $0); interaction += 1 }),
+                       in: 1...32, step: 1)
+                    .tint(Theme.accent)
+                    .accessibilityIdentifier("\(a11y)-length")
+                // RIGHT pair — walk the loop's END edge back / forward one unit.
+                nudge("arrow.left", edge: .end, delta: -1, id: "\(a11y)-end-back")
+                nudge("arrow.right", edge: .end, delta: 1, id: "\(a11y)-end-fwd")
+            }
+            Text("\(Int(units)) \(unitName)\(Int(units) == 1 ? "" : "s")"
+                 + (engine.loopUsesBeats(deck) ? "" : " — no beat grid on this track"))
+                .font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
+        }
+        .padding(16)
+        .frame(width: 320)                              // fixed width — room to actually drag
+        .presentationCompactAdaptation(.popover)        // stay a popover on iPhone (not a sheet)
+        .task(id: interaction) {                        // 3 s idle auto-dismiss
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { presented = false }
+        }
+    }
+
+    private func nudge(_ icon: String, edge: MixEngine.LoopEdge, delta: Double, id: String) -> some View {
+        Button {
+            engage()
+            engine.nudgeLoop(deck, edge: edge, byUnits: delta)
+            interaction += 1
+        } label: {
+            Image(systemName: icon).font(.caption.weight(.semibold))
+                .frame(width: 26, height: 26)
+                .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.fgDim)
+        .accessibilityLabel("\(edge == .start ? "Loop in" : "Loop out") \(delta < 0 ? "back" : "forward") one \(unitName)")
+        .accessibilityIdentifier(id)
+    }
+
+    /// The nudges act on a LIVE window, so a length tweak from the released state engages first.
+    private func engage() {
+        if !engine.loopOn(deck) { engine.setLoop(deck, on: true) }
+    }
+}
+
 private struct CueButton: View {
     let engine: MixEngine
     let deck: MixEngine.Deck

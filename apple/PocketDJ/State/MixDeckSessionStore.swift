@@ -81,6 +81,13 @@ final class MixDeckSessionStore {
         var stemMode: Bool
         var stemMuted: [String]
         var stemVol: [String: Double]
+        /// LOOP (∞) intent: engaged state + length in the deck's unit (beats when the track has a
+        /// grid, else seconds). OPTIONAL deliberately — the loader demands an EXACT
+        /// `schemaVersion` match (a bump would throw away every saved session), and Swift's
+        /// synthesized decode has no default-value fallback for a missing key, so optionality is
+        /// what lets pre-loop sessions keep restoring. Absent ⇒ no loop, default length.
+        var loopOn: Bool? = nil
+        var loopUnits: Double? = nil
     }
 
     /// One Auto-DJ queue row — a `MixEngine.AutoMixItem` (loadable + known length).

@@ -26,7 +26,8 @@ final class MixDeckSessionStoreTests: XCTestCase {
         .init(track: track(id), positionMs: positionMs, volume: 1.4, rate: 1.25, pitch: -3,
               compressor: false, reverb: true, flanger: false, filter: true,
               compStrength: 0.5, reverbStrength: 0.8, flangerStrength: 0.5, filterStrength: 0.33,
-              stemMode: true, stemMuted: ["vocals"], stemVol: ["drums": 0.6])
+              stemMode: true, stemMuted: ["vocals"], stemVol: ["drums": 0.6],
+              loopOn: true, loopUnits: 8)
     }
 
     private func snapshot() -> MixDeckSessionStore.Snapshot {
@@ -75,6 +76,8 @@ final class MixDeckSessionStoreTests: XCTestCase {
         XCTAssertTrue(a.stemMode)
         XCTAssertEqual(a.stemMuted, ["vocals"])
         XCTAssertEqual(a.stemVol, ["drums": 0.6], "per-stem gains survive")
+        XCTAssertEqual(a.loopOn, true, "loop engagement survives a relaunch")
+        XCTAssertEqual(a.loopUnits, 8, "loop length survives a relaunch")
         XCTAssertEqual(loaded.deckB?.positionMs, 7_000)
         // Globals.
         XCTAssertEqual(loaded.crossfader, 0.3)
@@ -551,5 +554,24 @@ final class MixEngineSessionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(e.position(.a), 0.49, "resumed FROM the cued position, not 0:00")
 
         e.stopAutoMix()
+    }
+
+    /// A session written BEFORE the loop feature (no `loopOn`/`loopUnits` keys) must still decode.
+    /// The loader demands an exact `schemaVersion` match, so the loop fields had to be OPTIONAL
+    /// rather than version-bumped — otherwise every saved deck session would have been discarded.
+    func testPreLoopSessionJSONStillDecodes() throws {
+        let legacy = """
+        {"track":{"songId":"sng_old","title":"T","artist":"Aria","bpm":120,"camelot":"8A",
+         "key":"Am","albumId":"alb_1","lengthMs":200000},
+         "positionMs":42000,"volume":1.0,"rate":1.0,"pitch":0.0,
+         "compressor":false,"reverb":false,"flanger":false,"filter":false,
+         "compStrength":0.5,"reverbStrength":0.5,"flangerStrength":0.5,"filterStrength":0.5,
+         "stemMode":false,"stemMuted":[],"stemVol":{}}
+        """
+        let ds = try JSONDecoder().decode(MixDeckSessionStore.DeckSnapshot.self, from: Data(legacy.utf8))
+        XCTAssertEqual(ds.track.songId, "sng_old")
+        XCTAssertEqual(ds.positionMs, 42_000)
+        XCTAssertNil(ds.loopOn, "absent ⇒ no loop, not a decode failure")
+        XCTAssertNil(ds.loopUnits)
     }
 }
