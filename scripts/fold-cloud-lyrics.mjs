@@ -2,19 +2,24 @@
 // fold-cloud-lyrics — surface the cloud TIMED transcripts (rips/lyrics/<id>.json, produced by
 // the SQS lyrics workers) in the CATALOG lyrics system the apps already ship: song detail cards
 // lazy-load /lyrics/<songId>.txt off the web CDN when song.lyricsStatus === 'found'
-// (PWA IndexedDB cache + native LyricsStore). This fold makes a whisper transcript fill that
-// slot for every song that has NO scraped lyrics yet — scraped lyrics always win (official text
-// beats ASR), so a song already 'found' is never touched.
+// (PWA IndexedDB cache + native LyricsStore).
+//
+// PRECEDENCE (Levi 2026-07-19): WHISPER WINS. The transcripts beat the scraped corpus on
+// accuracy, so a whisper transcript REPLACES scraped lyrics (index stamp + CDN txt overwrite).
+// The ONLY source that outranks whisper is `lyricsSource === 'manual'` (hand-entered — never
+// touched). Scraped text survives solely as the interim fallback on songs with NO transcript
+// yet; each stemify/backfill wave replaces more of it until the scraper corpus is fully retired.
 //
 // WHAT IT DOES, per index (current-index.json, apple-music-index.json, digital-index.json):
-//   1. candidate = song whose manifest entry carries `lyrics` (the sidecar key) AND whose
-//      lyricsStatus !== 'found';
+//   1. candidate = song whose manifest entry carries `lyrics` (the sidecar key), except
+//      lyricsSource === 'manual' (kept) or an already-whisper song (idempotent skip);
 //   2. fetch the sidecar (public S3; cached under index-out/lyrics-cloud/sidecars/ so re-runs
 //      are cheap), derive plain text — words grouped into lines on a ≥1.2 s gap or 12 words,
 //      the SAME grouping the native Demuxer renders (DemuxLine.lines parity);
-//   3. write index-out/lyrics-cloud/txt/<id>.txt and stamp the song lyricsStatus='found' +
-//      lyricsSource='whisper' (provenance — a later scraped/official pass may replace these);
-//      empty-word sidecars (instrumentals) are left untouched.
+//   3. write index-out/lyrics-cloud/txt/<id>.txt (OVERWRITES the scraped CDN file on upload)
+//      and stamp lyricsStatus='found' + lyricsSource='whisper'; empty-word sidecars
+//      (instrumental / VAD-empty) leave the existing state untouched — an empty transcript
+//      must never erase readable lyrics.
 //
 // IDEMPOTENT: output is a deterministic function of (indexes, manifest, sidecars); re-running
 // after more backfill results land picks up only the new songs.
@@ -109,22 +114,25 @@ for (const rel of INDEXES) {
   const path = rel.startsWith('/') ? rel : join(REPO, rel);
   if (!existsSync(path)) continue;
   const idx = JSON.parse(readFileSync(path, 'utf8'));
-  const r = { songs: idx.songs.length, candidates: 0, stamped: 0, instrumental: 0, missingSidecar: 0, alreadyFound: 0 };
+  const r = { songs: idx.songs.length, candidates: 0, stamped: 0, replacedScraped: 0,
+              instrumental: 0, missingSidecar: 0, manualKept: 0, alreadyWhisper: 0 };
   let n = 0;
   for (const s of idx.songs) {
     const e = manifest[s.id];
     if (!e || !e.lyrics) continue;
-    if (s.lyricsStatus === 'found') { r.alreadyFound++; continue; }   // scraped/official wins
+    if (s.lyricsSource === 'manual') { r.manualKept++; continue; }    // the ONE override above whisper
+    if (s.lyricsSource === 'whisper') { r.alreadyWhisper++; continue; } // idempotent re-run skip
     if (n >= limit) break;
     n++;
     r.candidates++;
     const sc = await fetchSidecar(s.id, e.lyrics);
     if (!sc || !Array.isArray(sc.words)) { r.missingSidecar++; continue; }
     const lines = linesFromWords(sc.words);
-    if (!lines.length) { r.instrumental++; continue; }               // nothing sung — leave untouched
+    if (!lines.length) { r.instrumental++; continue; }               // empty transcript never erases lyrics
     writeFileSync(join(txtDir, `${s.id}.txt`), lines.join('\n') + '\n');
+    if (s.lyricsStatus === 'found') r.replacedScraped++;             // whisper wins over scraped
     s.lyricsStatus = 'found';
-    s.lyricsSource = 'whisper';                                       // provenance (scraped pass may replace)
+    s.lyricsSource = 'whisper';
     r.stamped++;
     report.txtWritten++;
   }
