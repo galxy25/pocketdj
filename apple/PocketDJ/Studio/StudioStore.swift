@@ -294,6 +294,41 @@ final class StudioStore {
         mutatePattern(id) { p in
             guard p.rows.indices.contains(row) else { return }
             p.rows[row].steps[col] = on
+            if !on {
+                // A cleared step sheds its trigger modes — re-enabling starts from the one-shot
+                // default instead of resurrecting a mode the user can no longer see.
+                p.rows[row].loopSteps[col] = false
+                p.rows[row].stepSpans[col] = 0
+            }
+        }
+    }
+
+    /// Per-step trigger mode: loop (retrigger-cut) vs one-shot. Only meaningful on an on-step —
+    /// the setter doesn't enforce that (the UI only offers it there); `setPatternStep(off)` clears it.
+    func setPatternStepLoop(_ id: String, row: Int, col: Int, loop: Bool) {
+        guard (0..<StudioPattern.stepCount).contains(col) else { return }
+        mutatePattern(id) { p in
+            guard p.rows.indices.contains(row) else { return }
+            p.rows[row].loopSteps[col] = loop
+        }
+    }
+
+    /// Per-step stretch span: 0 = natural, n ≥ 1 = tempo-fit the sample to exactly n steps.
+    func setPatternStepSpan(_ id: String, row: Int, col: Int, span: Int) {
+        guard (0..<StudioPattern.stepCount).contains(col) else { return }
+        mutatePattern(id) { p in
+            guard p.rows.indices.contains(row) else { return }
+            p.rows[row].stepSpans[col] = min(max(span, 0), StudioPattern.stepCount)
+        }
+    }
+
+    /// Re-point a row at a different sample/loop, keeping its steps, modes, and gain — the
+    /// "morph" move: an extracted drum pattern re-triggers a hit cut from another song.
+    func setPatternRowTarget(_ id: String, row: Int, targetId: String) {
+        guard !targetId.isEmpty else { return }
+        mutatePattern(id) { p in
+            guard p.rows.indices.contains(row) else { return }
+            p.rows[row].targetId = targetId
         }
     }
 

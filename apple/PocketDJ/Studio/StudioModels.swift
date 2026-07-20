@@ -354,22 +354,38 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
     /// edited elsewhere can never desync the grid UI's fixed 16 columns.
     var steps: [Bool]
     var gainDb: Double = 0
+    /// Per-step trigger mode: `true` = LOOP (the hit keeps re-looping until the sequencer next
+    /// retriggers this row — typically the same step one bar later, which restarts it), `false`
+    /// = one-shot (plays once from the trigger, the original behavior). Meaningful only where
+    /// `steps` is on. Additive field (docs without it decode to all-false = all one-shot); an
+    /// older build that saves the document drops it — accepted schema doctrine.
+    var loopSteps: [Bool]
+    /// Per-step stretch span: 0 = natural length (untouched), n ≥ 1 = tempo-fit the sample to
+    /// EXACTLY n steps (time-stretch via rate, pitch preserved). Meaningful only where `steps`
+    /// is on. Same additive treatment as `loopSteps` (absent ⇒ all 0).
+    var stepSpans: [Int]
 
     /// A row with no sounding step (contributes nothing; also the freshly-added state).
     var isSilent: Bool { !steps.contains(true) }
 
-    enum CodingKeys: String, CodingKey { case targetId, steps, gainDb }
+    enum CodingKeys: String, CodingKey { case targetId, steps, gainDb, loopSteps, stepSpans }
     init(targetId: String, steps: [Bool] = Array(repeating: false, count: StudioPattern.stepCount),
-         gainDb: Double = 0) {
+         gainDb: Double = 0,
+         loopSteps: [Bool] = Array(repeating: false, count: StudioPattern.stepCount),
+         stepSpans: [Int] = Array(repeating: 0, count: StudioPattern.stepCount)) {
         self.targetId = targetId
         self.steps = StudioPatternRow.normalized(steps)
         self.gainDb = gainDb
+        self.loopSteps = StudioPatternRow.normalized(loopSteps)
+        self.stepSpans = StudioPatternRow.normalizedSpans(stepSpans)
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         targetId = (try? c.decode(String.self, forKey: .targetId)) ?? ""
         steps = StudioPatternRow.normalized((try? c.decode([Bool].self, forKey: .steps)) ?? [])
         gainDb = (try? c.decode(Double.self, forKey: .gainDb)) ?? 0
+        loopSteps = StudioPatternRow.normalized((try? c.decode([Bool].self, forKey: .loopSteps)) ?? [])
+        stepSpans = StudioPatternRow.normalizedSpans((try? c.decode([Int].self, forKey: .stepSpans)) ?? [])
     }
 
     /// Pad/truncate to exactly the fixed step count (pure, testable).
@@ -377,6 +393,16 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
         var s = Array(steps.prefix(StudioPattern.stepCount))
         if s.count < StudioPattern.stepCount {
             s += Array(repeating: false, count: StudioPattern.stepCount - s.count)
+        }
+        return s
+    }
+
+    /// `normalized` for the span array: pad/truncate to the step count AND clamp each span to
+    /// 0…stepCount (a hand-edited document can't demand a 400-step stretch).
+    static func normalizedSpans(_ spans: [Int]) -> [Int] {
+        var s = Array(spans.prefix(StudioPattern.stepCount)).map { min(max($0, 0), StudioPattern.stepCount) }
+        if s.count < StudioPattern.stepCount {
+            s += Array(repeating: 0, count: StudioPattern.stepCount - s.count)
         }
         return s
     }

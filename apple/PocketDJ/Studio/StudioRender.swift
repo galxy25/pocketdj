@@ -34,6 +34,17 @@ enum StudioRenderError: Error {
     case bankLoadFailed(URL)
 }
 
+// MARK: - Stretch identity
+
+/// Identity of a pre-stretched pattern-step buffer: one TARGET tempo-fit to `span` steps at the
+/// pattern's bpm. Prepare/bounce call sites dedupe stretch renders on this key (the same sample
+/// fit to 4 steps on two rows stretches once) — the span sibling of `bouncePattern`'s
+/// target-id buffer keying.
+struct StudioStretchKey: Hashable, Sendable {
+    let targetId: String
+    let span: Int
+}
+
 // MARK: - StudioRender (offline bounce — spec §4)
 
 /// The Studio OFFLINE renderer — `AVAudioEngine.enableManualRenderingMode(.offline)` graphs that
@@ -183,7 +194,14 @@ actor StudioRender {
     /// target is missing (no buffer) are SKIPPED, never a throw (spec §2) — but a pattern whose
     /// sounding rows are ALL missing is refused as `.emptyPattern`: the bounce would be a bar of
     /// silence, and playback refuses the same pattern for the same reason.
-    func bouncePattern(_ pattern: StudioPattern, buffers: [String: AVAudioPCMBuffer], to destURL: URL)
+    ///
+    /// Per-step modes: `spanBuffers` carries the pre-stretched span variants (`stretchBuffer`
+    /// output, keyed target+span — deduped across rows). LOOP steps are baked as FINITE chained
+    /// repeats trimmed to the row's next trigger or the bar end — never `.loops`: an endless
+    /// schedule would ring straight through the tail drain to its 3 s cap, and the bounce's wrap
+    /// restart is the bar boundary itself (the bounced bar loops as a whole downstream).
+    func bouncePattern(_ pattern: StudioPattern, buffers: [String: AVAudioPCMBuffer],
+                       spanBuffers: [StudioStretchKey: AVAudioPCMBuffer] = [:], to destURL: URL)
         async throws -> (frames: Int64, lengthMs: Int) {
         guard pattern.hasSoundingSteps else { throw StudioRenderError.emptyPattern }
         let bpm = pattern.bpm > 0 ? pattern.bpm : 120
@@ -211,17 +229,66 @@ actor StudioRender {
         do { try engine.start() } catch { throw StudioRenderError.engineStart(error) }
 
         let stepF = StudioEngine.stepFrames(bpm: bpm, sampleRate: Self.canonicalSampleRate)
-        let anchor = AVAudioTime(sampleTime: 0, atRate: Self.canonicalSampleRate)
+        let barFrames = stepF * Int64(StudioPattern.stepCount)   // one bar of 16ths in 4/4
         for v in voices {
-            for col in v.row.steps.indices where v.row.steps[col] {
-                Self.scheduleStep(v.buffer, on: v.player,
-                                  at: StudioEngine.stepTime(anchor: anchor, index: col, bpm: bpm,
-                                                            sampleRate: Self.canonicalSampleRate))
+            let onCols = v.row.steps.indices.filter { v.row.steps[$0] }
+            let stepBuf: (Int) -> AVAudioPCMBuffer = { col in
+                let span = v.row.stepSpans.indices.contains(col) ? v.row.stepSpans[col] : 0
+                return span > 0
+                    ? (spanBuffers[StudioStretchKey(targetId: v.row.targetId, span: span)] ?? v.buffer)
+                    : v.buffer
+            }
+            // STEADY-STATE WRAP FILL, scheduled FIRST (the player queue must stay time-ordered):
+            // live playback's LAST loop trigger rings across the bar wrap until the row's FIRST
+            // trigger of the next pass. The one-bar bounce represents that steady state — fill
+            // [0, firstTrigger) with the loop's continuing phase so the bounced bar has no
+            // dropout live playback doesn't have (bounce ≡ live).
+            if let last = onCols.last, let first = onCols.first, first > 0,
+               v.row.loopSteps.indices.contains(last), v.row.loopSteps[last] {
+                let loopBuf = stepBuf(last)
+                let bufFrames = Int64(loopBuf.frameLength)
+                if bufFrames > 0 {
+                    let firstF = Int64(first) * stepF
+                    var offset = (barFrames - Int64(last) * stepF) % bufFrames
+                    var pos: Int64 = 0
+                    while pos < firstF {
+                        let len = min(bufFrames - offset, firstF - pos)
+                        guard len > 0, let piece = Self.sliceBuffer(loopBuf, from: offset, frames: len)
+                        else { break }
+                        Self.scheduleStep(piece, on: v.player,
+                                          at: AVAudioTime(sampleTime: pos, atRate: Self.canonicalSampleRate))
+                        pos += len
+                        offset = 0                       // after the phase-continuation piece: full repeats
+                    }
+                }
+            }
+            for (k, col) in onCols.enumerated() {
+                let buf = stepBuf(col)
+                let start = Int64(col) * stepF
+                let isLoop = v.row.loopSteps.indices.contains(col) && v.row.loopSteps[col]
+                if isLoop {
+                    // Finite loop bake: repeats chained back-to-back from the trigger, the last
+                    // one trimmed so the chain ends EXACTLY at the next trigger (which live
+                    // playback would cut with `.interrupts`) or the bar end (the wrap).
+                    let cut = k + 1 < onCols.count ? Int64(onCols[k + 1]) * stepF : barFrames
+                    var pos = start
+                    while pos < cut {
+                        let repFrames = min(Int64(buf.frameLength), cut - pos)
+                        guard repFrames > 0,
+                              let piece = repFrames == Int64(buf.frameLength)
+                                  ? buf : StudioAudio.trimmedOrPadded(buf, to: repFrames) else { break }
+                        Self.scheduleStep(piece, on: v.player,
+                                          at: AVAudioTime(sampleTime: pos, atRate: Self.canonicalSampleRate))
+                        pos += repFrames
+                    }
+                } else {
+                    Self.scheduleStep(buf, on: v.player,
+                                      at: AVAudioTime(sampleTime: start, atRate: Self.canonicalSampleRate))
+                }
             }
             v.player.play()
         }
 
-        let barFrames = stepF * Int64(StudioPattern.stepCount)   // one bar of 16ths in 4/4
         let frames = try Self.writeAtomically(to: destURL, settings: Self.aacSettings) { out in
             // No AU chain here ⇒ no priming head to trim; the drain lets the last hit ring out.
             try Self.pullAndWrite(engine: engine, to: out, skipHead: 0,
@@ -238,6 +305,39 @@ actor StudioRender {
     /// engine's synchronous loop-audition path (small files, one-time cost).
     func decodeBuffer(url: URL) async throws -> AVAudioPCMBuffer {
         try Self.decodeFileSync(url: url)
+    }
+
+    /// Tempo-fit a canonical PCM buffer to EXACTLY `frames` frames — time-stretch through a bare
+    /// offline `player → timePitch → main` chain (rate = source/target, pitch preserved), head
+    /// latency dropped, output trimmed/zero-padded to the exact target. This is the sequencer's
+    /// step-span bake: a span buffer must land bit-exactly on span×step frames or the grid's
+    /// sample-accurate schedule drifts (the `renderLoop` exact-frames doctrine). The rate is
+    /// clamped to timePitch's legal 1/32…32; extreme fits are the user's call — artifacts and all.
+    func stretchBuffer(_ source: AVAudioPCMBuffer, toFrames frames: Int64) async throws
+        -> AVAudioPCMBuffer {
+        guard frames > 0, source.frameLength > 0 else { throw StudioRenderError.emptyWindow }
+        guard StudioAudio.isCanonical(source.format) else { throw StudioRenderError.cannotCreateBuffer }
+        if Int64(source.frameLength) == frames { return source }
+        let rate = min(max(Double(source.frameLength) / Double(frames), 1.0 / 32.0), 32.0)
+        let engine = AVAudioEngine()
+        do { try engine.enableManualRenderingMode(.offline, format: Self.canonicalFormat,
+                                                  maximumFrameCount: Self.chunkFrames) }
+        catch { throw StudioRenderError.engineStart(error) }
+        let player = AVAudioPlayerNode()
+        let tp = AVAudioUnitTimePitch()
+        tp.rate = Float(rate)
+        engine.attach(player); engine.attach(tp)
+        engine.connect(player, to: tp, format: Self.canonicalFormat)
+        engine.connect(tp, to: engine.mainMixerNode, format: Self.canonicalFormat)
+        defer { engine.stop() }
+        do { try engine.start() } catch { throw StudioRenderError.engineStart(error) }
+        Self.scheduleWhole(source, on: player)
+        player.play()
+        let headSec = tp.auAudioUnit.latency + engine.outputNode.auAudioUnit.latency
+        let head = max(0, Int64((headSec * Self.canonicalSampleRate).rounded()))
+        let out = try Self.pullFrames(engine: engine, skipHead: head, count: frames)
+        Self.rlog("stretch \(source.frameLength)f → \(frames)f (rate \(String(format: "%.3f", rate)))")
+        return out
     }
 
     /// Neutral-edit region carve for sample creation (spec §4/§10): read the `[startMs, endMs)`
@@ -642,6 +742,28 @@ actor StudioRender {
         player.scheduleBuffer(buffer, at: time, options: .interrupts, completionHandler: nil)
     }
 
+    /// Schedule a whole buffer from the player's time 0 (the stretch bake's single source).
+    /// Same synchronous-overload rationale as the helpers above.
+    private nonisolated static func scheduleWhole(_ buffer: AVAudioPCMBuffer, on player: AVAudioPlayerNode) {
+        player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+    }
+
+    /// Copy `frames` frames starting at `from` out of a buffer — the bounce's loop-phase
+    /// continuation piece (`trimmedOrPadded` only cuts from frame 0). nil on a bad window or
+    /// a non-float buffer; never zero-pads (callers size the window from the buffer).
+    private nonisolated static func sliceBuffer(_ buffer: AVAudioPCMBuffer, from: Int64,
+                                                frames: Int64) -> AVAudioPCMBuffer? {
+        guard from >= 0, frames > 0, from + frames <= Int64(buffer.frameLength),
+              frames <= Int64(UInt32.max),
+              let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: AVAudioFrameCount(frames)),
+              let src = buffer.floatChannelData, let dst = out.floatChannelData else { return nil }
+        for c in 0..<Int(buffer.format.channelCount) {
+            memcpy(dst[c], src[c] + Int(from), Int(frames) * MemoryLayout<Float>.size)
+        }
+        out.frameLength = AVAudioFrameCount(frames)
+        return out
+    }
+
     // MARK: - Pull → trim head → write → drain tail
 
     /// The shared offline pump. Pulls `skipHead + nominal` frames (writing everything past the
@@ -680,6 +802,46 @@ actor StudioRender {
             if isBelowFloor(render, floorDb: tailFloorDb) { break }   // FX tail fully decayed
         }
         return written
+    }
+
+    /// The buffer-out sibling of `pullAndWrite`: pull `skipHead + count` frames from an offline
+    /// engine, drop the head, and return EXACTLY `count` frames of canonical PCM (a source that
+    /// runs short is zero-padded — fresh buffer memory is NOT guaranteed zeroed). For callers
+    /// that feed a schedule directly (span stretches) rather than a file.
+    private static func pullFrames(engine: AVAudioEngine, skipHead: Int64, count: Int64)
+        throws -> AVAudioPCMBuffer {
+        let fmt = engine.manualRenderingFormat
+        guard count > 0, count <= Int64(UInt32.max),
+              let out = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(count)),
+              let render = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunkFrames),
+              let dst = out.floatChannelData else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        var pulled: Int64 = 0
+        var written: Int64 = 0
+        let target = skipHead + count
+        while pulled < target, written < count {
+            let want = AVAudioFrameCount(min(Int64(chunkFrames), target - pulled))
+            let status = try engine.renderOffline(want, to: render)
+            guard status == .success, render.frameLength > 0,        // offline should never stall — bail, never spin
+                  let src = render.floatChannelData else { break }
+            let dropFront = Int(max(0, min(Int64(render.frameLength), skipHead - pulled)))
+            let copy = Int(min(Int64(render.frameLength) - Int64(dropFront), count - written))
+            if copy > 0 {
+                for c in 0..<Int(fmt.channelCount) {
+                    memcpy(dst[c] + Int(written), src[c] + dropFront, copy * MemoryLayout<Float>.size)
+                }
+                written += Int64(copy)
+            }
+            pulled += Int64(render.frameLength)
+        }
+        if written < count {
+            for c in 0..<Int(fmt.channelCount) {
+                memset(dst[c] + Int(written), 0, Int(count - written) * MemoryLayout<Float>.size)
+            }
+        }
+        out.frameLength = AVAudioFrameCount(count)
+        return out
     }
 
     /// Append `buffer[from...]` to the file. The full-buffer case writes directly; a head-trimmed

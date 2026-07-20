@@ -81,7 +81,9 @@ enum StudioPatternBouncer {
         defer { dest.release?() }
         let name = StudioFolders.fileName(.sequences, id: patternId)
         do {
+            let spans = await stretchSpanBuffers(pattern: pattern, natural: buffers)
             _ = try await StudioRender.shared.bouncePattern(pattern, buffers: buffers,
+                                                            spanBuffers: spans,
                                                             to: dest.url.appendingPathComponent(name))
             // Bless the bounce only if the pattern still matches what was rendered (an edit
             // mid-render would leave the file stale — the sequencer's own guard).
@@ -89,6 +91,30 @@ enum StudioPatternBouncer {
                 studio.setPatternBounced(patternId, fileName: name, wasUserFolder: dest.isUserFolder)
             }
         } catch { /* silent — the sequencer's Bounce button surfaces failures interactively */ }
+    }
+
+    /// Pre-stretch every span variant a pattern's on-steps demand, deduped by target+span (the
+    /// `StudioStretchKey` contract shared with `bouncePattern`). `natural` is the target-id-keyed
+    /// buffer set already prepared for the bounce. A failed stretch just leaves its key absent —
+    /// the bounce falls back to the natural buffer for that step (degraded, never a block).
+    /// Shared by the sequencer's Bounce button and this automatic bouncer.
+    static func stretchSpanBuffers(pattern: StudioPattern, natural: [String: AVAudioPCMBuffer])
+        async -> [StudioStretchKey: AVAudioPCMBuffer] {
+        var out: [StudioStretchKey: AVAudioPCMBuffer] = [:]
+        let stepF = StudioEngine.stepFrames(bpm: pattern.bpm,
+                                            sampleRate: StudioAudio.canonicalSampleRate)
+        for row in pattern.rows.prefix(StudioEngine.maxPatternRows) where !row.isSilent {
+            guard let base = natural[row.targetId] else { continue }
+            for col in row.steps.indices where row.steps[col] && row.stepSpans[col] > 0 {
+                let key = StudioStretchKey(targetId: row.targetId, span: row.stepSpans[col])
+                guard out[key] == nil else { continue }
+                if let b = try? await StudioRender.shared
+                    .stretchBuffer(base, toFrames: stepF * Int64(key.span)) {
+                    out[key] = b
+                }
+            }
+        }
+        return out
     }
 
     /// Decode a loop/sample target into a PCM buffer for the bounce (the sequencer's `preparedBuffer`

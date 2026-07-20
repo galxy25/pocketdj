@@ -27,6 +27,7 @@ import { analyzeAudio, ANALYSIS_VERSION } from './lib/audio-analyze.mjs';
 import { separateStems, STEMS_VERSION, STEMS_MODEL, STEM_NAMES } from './lib/audio-stem.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
+const LYRICS_VERSION = 1;   // timed-lyrics sidecar version; keep in sync with LYRICS_VERSION in scripts/stem-worker.mjs
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
@@ -111,6 +112,15 @@ const CFG = {
   // replacing the local Docker/librosa pass (which bottlenecks + breaks when Docker is down).
   // Analog analysis stays local. Set POCKETDJ_ANALYSIS_OFFLOAD=0 to revert.
   analysisOffload: process.env.POCKETDJ_ANALYSIS_OFFLOAD !== '0',
+  // Offload timed-lyrics transcription (faster-whisper over the vocals stem) to the same cloud
+  // workers. Lyrics ride the results-fold pump, so this follows stemOffload by default (a lyrics
+  // job needs stems, and the pump only runs when stemOffload is on). Set POCKETDJ_LYRICS_OFFLOAD=0/1 to override.
+  lyricsOffload: process.env.POCKETDJ_LYRICS_OFFLOAD != null ? process.env.POCKETDJ_LYRICS_OFFLOAD !== '0' : process.env.POCKETDJ_STEM_OFFLOAD !== '0',
+  // AUTO PIPELINE: every FRESH rip chases its full derived set by default — stems (→ the stems
+  // fold auto-enqueues lyrics) alongside the analysis pass — so a newly ripped or demuxed song
+  // arrives fully analyzed with zero taps. Follows stemOffload (the cloud fleet absorbs the
+  // Demucs load; the local serial path would choke on bulk rips). POCKETDJ_AUTO_STEM_ON_RIP=0/1 overrides.
+  autoStemOnRip: process.env.POCKETDJ_AUTO_STEM_ON_RIP != null ? process.env.POCKETDJ_AUTO_STEM_ON_RIP !== '0' : process.env.POCKETDJ_STEM_OFFLOAD !== '0',
   stemJobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs',
   stemResultsQueue: process.env.POCKETDJ_STEM_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-results',
   stemDlqQueue: process.env.POCKETDJ_STEM_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs-dlq',
@@ -903,6 +913,10 @@ async function runAnalogJob(job, song) {
   // rip→stem chain: the cut pass above wrote each cutKey, so any song of this album that a
   // stem is waiting on can now separate (gated on the durable wantStem set).
   for (const s of songsByAlbum.get(album.id) || []) kickWantedStem(s.id);
+  // AUTO PIPELINE: freshly cut album songs chase stems (→ lyrics) unprompted. acceptStem is
+  // idempotent (fresh-version skip, inflight dedup, cutImpossible → ineligible), so already-
+  // stemmed and boundary-less songs fall out for free.
+  if (CFG.autoStemOnRip) for (const s of songsByAlbum.get(album.id) || []) acceptStem(s.id);
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -1079,6 +1093,7 @@ async function runDigitalJob(job, song) {
     setPhase(job, 'ready', { message: `${song.name} ready` });
     enqueueAnalysis(song.id); // background: bpm/key/camelot + waveform for this song
     kickWantedStem(song.id);  // rip→stem chain: a waiting stem can now separate this mp3
+    if (CFG.autoStemOnRip) acceptStem(song.id);  // AUTO PIPELINE: stems (→ lyrics) unprompted
     inflight.delete(job.resourceKey);
   } else if (job.preferCloud && song.sourceType === 'analog') {
     // Tier-2 fallback: an exact-match analog cloud rip that didn't capture → vinyl. Fall
@@ -1131,6 +1146,23 @@ async function offloadAnalysis(songId) {
   if (!e || !e.key) return;
   if (await dispatchSend(JSON.stringify({ songId, srcKey: e.key, tasks: ['analysis'] })))
     console.error(`  → offloaded analysis ${songId} (${e.key}) to SQS`);
+}
+// Fire-and-forget lyrics offload (modeled on offloadAnalysis): the worker transcribes the vocals
+// stem and posts a result the results pump folds. No job object / inflight tracking / reap — the
+// manifest is the only state, and a dropped job is caught by /backfill-lyrics.
+//
+// dedup:false rides along when the caller FORCES (/lyricsify force:true) or when the manifest's
+// sidecar is version-STALE — otherwise the worker's existingLyrics skip would re-stamp the old
+// sidecar as current-version without re-transcribing and the song could never be regenerated
+// (the offloadStem dedup:!stale contract, mirrored).
+async function offloadLyrics(songId, { force = false } = {}) {
+  const e = manifest[songId];
+  if (!e || !e.key) return;
+  const stale = !!e.lyrics && (e.lyricsVersion ?? 0) < LYRICS_VERSION;
+  const body = { songId, srcKey: e.key, tasks: ['lyrics'] };
+  if (force || stale) body.dedup = false;
+  if (await dispatchSend(JSON.stringify(body)))
+    console.error(`  → offloaded lyrics ${songId} to SQS${force || stale ? ' (dedup off)' : ''}`);
 }
 async function pumpAnalysis() {
   if (analyzing) return;
@@ -1590,6 +1622,17 @@ async function backfillAnalysis() {
   for (const id of ids) { if (wantAnalysis(manifest[id] || {})) enqueueAnalysis(id); }
 }
 
+// BACKFILL lyrics: a song that HAS a vocals stem but no (or a stale) timed-lyrics sidecar. Gated on
+// e.stems.vocals — lyrics is downstream of stems, so a song must be stemmed first (/stemify). Any
+// songId (digital or analog cut) qualifies once it has vocals. offloadLyrics fires each to the cloud.
+const wantLyrics = (e) => !!(e.stems && e.stems.vocals) && (!e.lyrics || (e.lyricsVersion ?? 0) < LYRICS_VERSION);
+let lyricsBackfillRunning = false;
+async function backfillLyrics() {
+  const ids = Object.entries(manifest).filter(([, e]) => wantLyrics(e)).map(([id]) => id);
+  console.error(`  backfill-lyrics: enqueueing ${ids.length} stemmed song(s) without fresh lyrics`);
+  for (const id of ids) { if (wantLyrics(manifest[id] || {})) offloadLyrics(id); }
+}
+
 // Resume durable stem intents after a restart (read the intent dir, NOT the manifest). A fresh
 // process has an empty stemInflight, so acceptStem re-enqueues / re-rips / re-cuts as needed.
 function resumeStems() {
@@ -1614,7 +1657,10 @@ function resumeStems() {
 // a duplicate result just re-stamps the same S3 keys. Survives restarts — a result for a song whose
 // in-memory job died with a previous process still stamps the manifest (finishStem no-ops).
 async function pumpStemResults() {
-  if (!CFG.stemOffload) return;
+  // Any offload family keeps the fold alive: lyrics/analysis results must fold even when the
+  // stems path is reverted to local (POCKETDJ_STEM_OFFLOAD=0) — else queued cloud results rot
+  // in the results queue and the manifest never learns about them.
+  if (!CFG.stemOffload && !CFG.analysisOffload && !CFG.lyricsOffload) return;
   try {
     const out = await aws(['sqs', 'receive-message', '--queue-url', CFG.stemResultsQueue,
       '--max-number-of-messages', '10', '--wait-time-seconds', '20', '--visibility-timeout', '60', '--output', 'json']);
@@ -1651,6 +1697,21 @@ async function pumpStemResults() {
           console.error(`  ✓ folded cloud analysis ${r.songId} (bpm=${a.bpm} key=${a.musicalKey} grid=${a.beatgrid ? a.beatgrid.beatGridBpm : '-'})`);
           if (isCloudAnalogEntry(r.songId)) requestPublicFold();   // ITEM 10: fold cloud bpm/key into public catalog
         }
+        // LYRICS: fold the timed-word sidecar KEY + model/version (words live in the S3 sidecar,
+        // not the SQS result). Independent of the stems state-clear below. A worker DEDUP
+        // result carries no model — keep the previously-folded one (idempotent re-fold).
+        if (ok && r.lyrics && r.lyrics.lyrics) {
+          e.lyrics = r.lyrics.lyrics;
+          e.lyricsModel = r.lyrics.lyricsModel ?? e.lyricsModel;
+          e.lyricsVersion = r.lyrics.lyricsVersion ?? e.lyricsVersion ?? LYRICS_VERSION;
+          e.lyricsAt = Date.now();
+          changed = true;
+          console.error(`  ✓ folded cloud lyrics ${r.songId} (${e.lyricsModel || '?'}${r.lyrics.deduped ? ', dedup' : ''})`);
+        }
+        // Stems-fold auto-chase, AFTER the lyrics fold: a combined ['stems','lyrics'] result
+        // (or an SQS redelivery) must see its OWN lyrics stamp before wantLyrics decides —
+        // else every combined result would enqueue a guaranteed-redundant lyrics job.
+        if (stemsOk && CFG.lyricsOffload && wantLyrics(e)) offloadLyrics(r.songId);
         if (changed) await saveManifest();
         if (r.stems && r.songId) stemCanceled.delete(r.songId);   // a STEM result clears its OWN cancel tombstone (analysis results don't)
         if (stemsOk) { stemAttempts.delete(r.songId); clearStemWant(r.songId); finishStem(r.songId); stemInflight.delete(r.songId); }
@@ -1880,7 +1941,10 @@ function rateLimited(req) {
 // status/jobs/hls) is a first-class app feature beta users are meant to reach. GET
 // /am-sync/<id> stays user-tier (read-only poll; ids are unguessable job handles).
 const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgrids',
-  '/stemify-collection', '/backfill-stems', '/backfill-analysis', '/analysis', '/ingest-digital', '/am-sync']);
+  // NOTE: /lyricsify is deliberately NOT here — it's user-tier like /stemify (the app/public can
+  // trigger a single song's lyrics tokenlessly); only the batch backfills stay admin.
+  '/stemify-collection', '/backfill-stems', '/backfill-analysis', '/backfill-lyrics',
+  '/analysis', '/ingest-digital', '/am-sync']);
 async function readJson(req, maxBytes = 32 * 1024 * 1024) {
   return new Promise((res) => {
     let b = ''; let over = false;
@@ -2059,6 +2123,20 @@ const server = http.createServer(async (req, res) => {
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', stems: manifest[songId].stems });
     return send(res, 200, jobView(r.job));
   }
+  // POST /lyricsify {songId, force?} — transcribe ONE stemmed song's vocals into timed lyrics
+  // (fire-and-forget cloud job). Refuses a song with no manifest entry (404) or no vocals stem
+  // (400 — Stemify first); returns already-done for fresh lyrics unless force:true; else queues.
+  if (path === '/lyricsify' && req.method === 'POST') {
+    const { songId, force } = await readJson(req).catch(() => ({}));
+    const e = songId && manifest[songId];
+    if (!e) return send(res, 404, { error: 'unknown songId' });
+    if (!e.stems || !e.stems.vocals) return send(res, 400, { error: 'no vocals stem — stemify first' });
+    if (!force && e.lyrics && (e.lyricsVersion ?? 0) >= LYRICS_VERSION)
+      return send(res, 200, { ok: true, alreadyDone: true, songId, lyrics: e.lyrics, lyricsModel: e.lyricsModel, lyricsVersion: e.lyricsVersion });
+    if (!CFG.lyricsOffload) return send(res, 503, { error: 'lyrics offload is disabled (POCKETDJ_LYRICS_OFFLOAD=0)' });
+    offloadLyrics(songId, { force: !!force });
+    return send(res, 200, { ok: true, queued: true, songId });
+  }
   // POST /stemify-custom?id=<dmx_|smp_|lp_|ptn_|tk_|slc_...>&ext=<m4a|...> (raw audio body) —
   // separate DEVICE-LOCAL audio the catalog has never seen (the Demuxer's imported files +
   // performance media). The body streams to a temp file (size-capped), the job rides the
@@ -2139,6 +2217,19 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: false, needsConfirm: true, candidates, cap: CFG.stemCollectionCap, offload: CFG.analysisOffload });
     if (!analysisBackfillRunning) { analysisBackfillRunning = true; backfillAnalysis().finally(() => { analysisBackfillRunning = false; }); }
     return send(res, 200, { ok: true, candidates, offload: CFG.analysisOffload, running: analysisBackfillRunning });
+  }
+  // GET|POST /backfill-lyrics {confirmLarge?} — transcribe every stemmed song that lacks fresh
+  // timed lyrics (offloads to the cloud workers). Candidate-capped like /backfill-analysis; re-send
+  // with confirmLarge (POST body or ?confirmLarge=1) for a full-corpus sweep. GET is curl-friendly.
+  if (path === '/backfill-lyrics' && (req.method === 'POST' || req.method === 'GET')) {
+    const body = req.method === 'POST' ? await readJson(req).catch(() => ({})) : {};
+    const confirmLarge = !!body.confirmLarge || url.searchParams.get('confirmLarge') === '1' || url.searchParams.get('confirmLarge') === 'true';
+    if (!CFG.lyricsOffload) return send(res, 503, { error: 'lyrics offload is disabled (POCKETDJ_LYRICS_OFFLOAD=0)' });
+    const candidates = Object.values(manifest).filter(wantLyrics).length;
+    if (candidates > CFG.stemCollectionCap && !confirmLarge)
+      return send(res, 200, { ok: false, needsConfirm: true, candidates, cap: CFG.stemCollectionCap, offload: CFG.lyricsOffload });
+    if (!lyricsBackfillRunning) { lyricsBackfillRunning = true; backfillLyrics().finally(() => { lyricsBackfillRunning = false; }); }
+    return send(res, 200, { ok: true, candidates, offload: CFG.lyricsOffload, running: lyricsBackfillRunning });
   }
   // POST /rip-cancel {songIds:[...]} — Feature 1 STOP RIP. Cancels still-queued matching
   // jobs (splice queue + clear inflight + delete durable file) and KILLS the in-flight
@@ -2272,7 +2363,7 @@ await loadManifest();
 resumePending(); // re-enqueue any rip requests left pending by a previous run
 resumeAnalysis(); // analyze any ripped songs that don't have bpm/key/waveform yet
 resumeStems(); // re-drive any stem requests left pending by a previous run
-if (CFG.stemOffload) { pumpStemResults(); pumpStemDlq(); setInterval(reapStaleOffloadStems, 5 * 60_000).unref?.(); } // consume results + dead-letters; reap stuck jobs
+if (CFG.stemOffload || CFG.analysisOffload || CFG.lyricsOffload) { pumpStemResults(); pumpStemDlq(); setInterval(reapStaleOffloadStems, 5 * 60_000).unref?.(); } // consume results + dead-letters; reap stuck jobs (any offload family keeps the fold alive)
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });

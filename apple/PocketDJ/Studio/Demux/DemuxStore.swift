@@ -20,6 +20,7 @@ final class DemuxStore {
     /// Keys with an analysis in flight (drives the running spinners; not persisted).
     private(set) var chordRuns: Set<String> = []
     private(set) var transcriptRuns: Set<String> = []
+    private(set) var drumRuns: Set<String> = []
 
     init(cacheDir: URL? = DemuxStore.defaultCacheDir()) {
         self.cacheDir = cacheDir
@@ -274,6 +275,50 @@ final class DemuxStore {
         }
     }
 
+    /// Land a CLOUD transcript (the whisper sidecar fetched from public S3) on the source's
+    /// document WHOLESALE: replaces any on-device words, stamps `.done` + FULL coverage so the
+    /// on-device resume machinery can never "resume" a complete cloud transcript, and records
+    /// engine provenance. Skipped while a device run is in flight (its per-window appends would
+    /// interleave with the replacement) — the sidecar is refetched on the NEXT Demuxer open of
+    /// this source (kickoffTranscript's cloud-first branch), so the cloud words land then.
+    func applyCloudTranscript(source: DemuxSource, words: [DemuxWord], model: String?) {
+        guard !transcriptRuns.contains(source.key) else { return }
+        var doc = documentCreating(for: source)
+        doc.words = words.sorted { $0.startMs < $1.startMs }
+        doc.transcriptStatus = .done   // empty words = instrumental; the panel says so
+        doc.transcriptCoveredMs = max(doc.durationMs, doc.transcriptCoveredMs ?? 0)
+        doc.transcriptEngine = "cloud"
+        doc.transcriptDiag = model.map { "Transcribed in the cloud (\($0))." }
+        save(doc)
+    }
+
+    /// Extract the classified drum-hit list from the DRUMS stem (+ optional BASS stem) and land
+    /// it on the source's document (the `analyzeChords` shape). No-op while a run for the same
+    /// key is in flight. `force` re-extracts over a done result. `release` (a held security
+    /// scope covering BOTH stem urls — BurnStore hands one closure per stem SET) is invoked
+    /// when the run finishes.
+    func analyzeDrumPattern(source: DemuxSource, drumsURL: URL, bassURL: URL?,
+                            force: Bool = false, release: (() -> Void)? = nil) {
+        let key = source.key
+        guard !drumRuns.contains(key) else { release?(); return }
+        if !force, (documentCreating(for: source).drumStatus ?? .none) == .done { release?(); return }
+        drumRuns.insert(key)
+        var doc = documentCreating(for: source)
+        doc.drumStatus = .running
+        save(doc)
+        Task {
+            let hits = await Task.detached(priority: .utility) {
+                DrumPatternDetector.detect(drumsURL: drumsURL, bassURL: bassURL)
+            }.value
+            release?()
+            var doc = self.documentCreating(for: source)
+            doc.drumHits = hits
+            doc.drumStatus = hits.isEmpty ? .failed : .done
+            self.save(doc)
+            self.drumRuns.remove(key)
+        }
+    }
+
     /// Test seam: stands in for `DemuxTranscriber.transcribe` (headless CI has no on-device
     /// speech models). Receives (url, resumeFromMs, onWindow); drives the same incremental
     /// persistence + status machine the real recognizer does.
@@ -350,6 +395,7 @@ final class DemuxStore {
                 status = .failed        // nothing heard AND something broke → retryable
             }
             doc.transcriptStatus = status
+            doc.transcriptEngine = "device"
             if status == .done, windowsFailed > 0, windowsTotal > 0 {
                 doc.transcriptDiag = "\(windowsFailed) of \(windowsTotal) sections couldn’t be "
                     + "transcribed\(lastFailure.map { " (\($0))" } ?? "") — Regenerate to fill gaps."

@@ -5,10 +5,13 @@
 //   • stems    — Demucs → 4 stems → rips/stems/<id>/<stem>.<ext>
 //   • analysis — librosa BPM/key/Camelot + beat grid + ffmpeg waveform (DIGITAL songs; keyed by
 //                songId) → rips/waveforms/<id>.png + rips/analysis/<id>.json
+//   • lyrics   — faster-whisper over the VOCALS stem → timed words → rips/lyrics/<id>.json
+//                (fire-and-forget; reuses the just-produced local vocals on a combined stems+lyrics
+//                job, else downloads rips/stems/<id>/vocals.<ext>). Needs `faster-whisper` in the venv.
 // Posts the manifest-stamp result to the SQS results queue; rip-server folds it into manifest.json.
 // This decouples both heavy jobs from the single serial iMac (and the flaky local Docker analysis).
 //
-// Job body: {songId, srcKey, tasks:["stems"|"analysis"...]}  (tasks defaults to ["stems"])
+// Job body: {songId, srcKey, tasks:["stems"|"analysis"|"lyrics"...]}  (tasks defaults to ["stems"])
 // Modes:
 //   node stem-worker.mjs <songId>        one-shot stems (digital rips/<id>.mp3), print result
 //   node stem-worker.mjs --serve         long-running SQS consumer; idle-exit → self-terminate
@@ -17,7 +20,9 @@
 // Env: POCKETDJ_RIPS_BUCKET, AWS_REGION, POCKETDJ_STEM_JOBS_QUEUE, POCKETDJ_STEM_RESULTS_QUEUE,
 //   POCKETDJ_DEMUCS_MODEL, POCKETDJ_STEM_DEVICE(cpu|cuda|mps), POCKETDJ_STEM_FORMAT/_BITRATE,
 //   POCKETDJ_STEM_VENV, POCKETDJ_STEM_PY, POCKETDJ_ANALYZE_PY, POCKETDJ_BEATGRID_PY,
-//   POCKETDJ_STEM_VISIBILITY, POCKETDJ_STEM_IDLE_SECONDS.  AWS creds via the instance role.
+//   POCKETDJ_TRANSCRIBE_PY, POCKETDJ_LYRICS_MODEL(small), POCKETDJ_LYRICS_DEVICE(cpu),
+//   POCKETDJ_LYRICS_COMPUTE(int8), POCKETDJ_STEM_VISIBILITY, POCKETDJ_STEM_IDLE_SECONDS.
+//   AWS creds via the instance role.
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, copyFileSync, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -39,11 +44,17 @@ const CFG = {
   stemPy: process.env.POCKETDJ_STEM_PY || join(HERE, 'separate-one.py'),
   analyzePy: process.env.POCKETDJ_ANALYZE_PY || join(HERE, 'analyze-one.py'),
   beatgridPy: process.env.POCKETDJ_BEATGRID_PY || join(HERE, 'analyze-beatgrid.py'),
+  transcribePy: process.env.POCKETDJ_TRANSCRIBE_PY || join(HERE, 'transcribe-one.py'),
+  lyricsModel: process.env.POCKETDJ_LYRICS_MODEL || 'small',
+  lyricsDevice: process.env.POCKETDJ_LYRICS_DEVICE || 'cpu',
+  lyricsCompute: process.env.POCKETDJ_LYRICS_COMPUTE || 'int8',
   idleSeconds: Number(process.env.POCKETDJ_STEM_IDLE_SECONDS || 300),
 };
 const STEM_VERSION = 1;        // keep in sync with STEMS_VERSION in scripts/lib/audio-stem.mjs
 const ANALYSIS_VERSION = 1;    // keep in sync with ANALYSIS_VERSION in scripts/lib/audio-analyze.mjs
+const LYRICS_VERSION = 1;      // keep in sync with LYRICS_VERSION in scripts/rip-server.mjs
 const STEM_NAMES = ['vocals', 'drums', 'bass', 'other'];
+const stemExt = () => (CFG.format === 'flac' ? 'flac' : 'mp3');
 const aws = (...args) => execFileSync('aws', [...args, '--region', CFG.region], { encoding: 'utf8' });
 const log = (...m) => process.stderr.write(m.join(' ') + '\n');
 
@@ -54,13 +65,15 @@ function runPyJson(scriptPath, mp3, env) {
   return new Promise((res, rej) => {
     const p = spawn(pyBin(), [scriptPath, mp3], { env: { ...process.env, ...env, PYTORCH_ENABLE_MPS_FALLBACK: '1' } });
     let buf = '';
+    let errbuf = '';                                             // keep a rolling stderr tail for DLQ diagnosis
     p.stdout.on('data', (d) => { buf += d; });
-    p.stderr.on('data', () => {});
+    p.stderr.on('data', (d) => { errbuf += d; if (errbuf.length > 4000) errbuf = errbuf.slice(-4000); });
     p.on('error', rej);
     p.on('close', (code) => {
-      if (code !== 0) return rej(new Error(`${scriptPath} exit ${code}`));
+      const tail = errbuf.trim().slice(-2000);                  // whisper/librosa failures print here, not to stdout
+      if (code !== 0) return rej(new Error(`${scriptPath} exit ${code}${tail ? `: ${tail}` : ''}`));
       const line = buf.trim().split('\n').filter(Boolean).pop();
-      try { res(JSON.parse(line)); } catch { rej(new Error(`${scriptPath}: no JSON`)); }
+      try { res(JSON.parse(line)); } catch { rej(new Error(`${scriptPath}: no JSON${tail ? ` — ${tail}` : ''}`)); }
     });
   });
 }
@@ -107,6 +120,7 @@ async function doStems(songId, mp3, work, allowDedup) {
     const local = join(work, j.stems[name]);
     const key = `rips/stems/${songId}/${name}.${ext}`;
     aws('s3', 'cp', local, `s3://${CFG.bucket}/${key}`, '--content-type', contentType, '--only-show-errors');
+    if (name === 'vocals') try { copyFileSync(local, join(work, `vocals.${ext}`)); } catch { /* lyrics falls back to S3 */ }
     stems[name] = key;
     try { bytes += statSync(local).size; } catch { /* ignore */ }
   }
@@ -145,6 +159,42 @@ async function doAnalysis(songId, mp3, work) {
   return a;
 }
 
+// Is a timed-lyrics sidecar already on S3? Worker-level DEDUP mirror of existingStems: a duplicate
+// lyrics job (the same song enqueued twice, or a rip-server restart re-sending the want) skips
+// whisper and re-posts the existing key. Returns the S3 key or null.
+function existingLyrics(songId) {
+  try { aws('s3', 'ls', `s3://${CFG.bucket}/rips/lyrics/${songId}.json`); } catch { return null; }
+  return `rips/lyrics/${songId}.json`;
+}
+
+// lyrics task: faster-whisper over the VOCALS stem → timed word sidecar rips/lyrics/<id>.json.
+// Vocals come from the just-produced local file (combined stems+lyrics job) or, failing that, S3.
+// A missing vocals stem throws — the server only enqueues lyrics once stems exist; the DLQ is the
+// backstop. The stem is cut-derived (song-relative), so word timestamps need no extra offset.
+async function doLyrics(songId, work, { dedup, localVocals } = {}) {
+  if (dedup !== false) {
+    const key = existingLyrics(songId);
+    if (key) { log(`[${songId}] lyrics already on S3 — dedup skip`); return { lyrics: key, lyricsVersion: LYRICS_VERSION, deduped: true }; }
+  }
+  const ext = stemExt();
+  let vocals = localVocals && existsSync(localVocals) ? localVocals : null;
+  if (!vocals) {
+    vocals = join(work, `vocals.${ext}`);
+    try { aws('s3', 'cp', `s3://${CFG.bucket}/rips/stems/${songId}/vocals.${ext}`, vocals, '--only-show-errors'); }
+    catch { throw new Error(`no vocals stem rips/stems/${songId}/vocals.${ext} — stemify first`); }
+  }
+  copyFileSync(CFG.transcribePy, join(work, 'transcribe-one.py'));
+  log(`[${songId}] whisper (${CFG.lyricsModel}/${CFG.lyricsDevice}/${CFG.lyricsCompute}) …`);
+  const j = await runPyJson(join(work, 'transcribe-one.py'), vocals,
+    { LYRICS_MODEL: CFG.lyricsModel, LYRICS_DEVICE: CFG.lyricsDevice, LYRICS_COMPUTE: CFG.lyricsCompute });
+  if (!j || !Array.isArray(j.words)) throw new Error(`transcribe not-ok: ${JSON.stringify(j).slice(0, 160)}`);
+  const key = `rips/lyrics/${songId}.json`;
+  const sidecar = join(work, 'lyrics.json');
+  writeFileSync(sidecar, JSON.stringify({ version: j.version ?? LYRICS_VERSION, model: j.model || CFG.lyricsModel, lang: j.lang ?? null, durationMs: j.durationMs ?? null, words: j.words }));
+  aws('s3', 'cp', sidecar, `s3://${CFG.bucket}/${key}`, '--content-type', 'application/json', '--only-show-errors');
+  return { lyrics: key, lyricsModel: j.model || CFG.lyricsModel, lyricsVersion: LYRICS_VERSION };
+}
+
 // Process ONE job: download the source once, run the requested tasks, return the combined result.
 async function processJob(songId, srcKey, tasks, dedup) {
   if (!/^sng_[0-9a-f]{12}$|^amrec_\d+$/.test(songId)) throw new Error(`bad songId ${songId}`);
@@ -157,7 +207,9 @@ async function processJob(songId, srcKey, tasks, dedup) {
   const result = { ok: true, songId, tasks, workerSeconds: 0 };
   try {
     aws('s3', 'cp', `s3://${CFG.bucket}/${source}`, mp3, '--only-show-errors');
-    if (tasks.includes('stems')) Object.assign(result, await doStems(songId, mp3, work, dedup));
+    let localVocals = null;                                              // reused by lyrics on a combined stems+lyrics job
+    if (tasks.includes('stems')) { Object.assign(result, await doStems(songId, mp3, work, dedup)); localVocals = join(work, `vocals.${stemExt()}`); }
+    if (tasks.includes('lyrics')) result.lyrics = await doLyrics(songId, work, { dedup, localVocals });
     if (tasks.includes('analysis')) result.analysis = await doAnalysis(songId, mp3, work);
     result.workerSeconds = Math.round((Date.now() - t0) / 1000);
     return result;

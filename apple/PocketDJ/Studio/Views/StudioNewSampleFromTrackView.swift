@@ -39,6 +39,13 @@ struct StudioNewSampleFromTrackView: View {
     /// pick streams / burns on demand, the normal "From track" flow).
     var restrictToDownloaded = false
 
+    /// Open with a song pre-selected (straight into the region editor — the Demuxer's "Cut
+    /// sample" entry). The picker stays reachable via "Change"; nil = the normal picker-first flow.
+    init(restrictToDownloaded: Bool = false, initialSongId: String? = nil) {
+        self.restrictToDownloaded = restrictToDownloaded
+        _selectedSongId = State(initialValue: initialSongId)
+    }
+
     /// The source-resolution phase for the selected song (the ladder above).
     private enum SourcePhase: Equatable {
         case idle            // nothing selected
