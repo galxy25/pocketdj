@@ -938,6 +938,44 @@ final class MixEngineTests: XCTestCase {
         XCTAssertNil(e.loopWindow(.a))
     }
 
+    /// A loop must NOT survive a track change: the previous song's window would fold the new
+    /// track's playhead into a dead range, queue out-of-order audio, and — via autoFire's
+    /// `loopOn` gate — stall the Auto-DJ forever. Regression for the shipped a95a582 bug.
+    func testLoopClearsWhenADifferentTrackLoads() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 8), b = try makeSineWAV(seconds: 8)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("one", bpm: 120), on: .a)
+        e.setLoop(.a, on: true)
+        XCTAssertTrue(e.loopOn(.a), "precondition: a loop is armed")
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("two", bpm: 120), on: .a)
+        XCTAssertFalse(e.loopOn(.a), "loading a new track releases the loop")
+        XCTAssertNil(e.loopWindow(.a), "…and drops the previous track's window")
+        e.teardown()
+    }
+
+    /// ↺ Reset rewinds to 0:00 and re-schedules the whole file — a window left armed would fold
+    /// the playhead ~90 s ahead of what's audible and loop a mid-track chunk forever.
+    func testLoopClearsOnRestartAndReset() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let url = try makeSineWAV(seconds: 8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        e.loadFile(url, release: nil, startMs: nil, meta: meta("r", bpm: 120), on: .a)
+        e.setLoop(.a, on: true)
+        XCTAssertTrue(e.loopOn(.a))
+        e.restart(.a)
+        XCTAssertFalse(e.loopOn(.a), "rewind releases the loop")
+        XCTAssertNil(e.loopWindow(.a))
+        e.setLoop(.a, on: true)
+        e.resetDeck(.a)
+        XCTAssertFalse(e.loopOn(.a), "full deck reset releases the loop")
+        e.teardown()
+    }
+
     func testLoopUnitsClampToOneThroughThirtyTwo() {
         let e = makeEngine()
         e.setLoopUnits(.a, 99);   XCTAssertEqual(e.loopUnits(.a), 32)

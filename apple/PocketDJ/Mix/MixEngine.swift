@@ -943,7 +943,9 @@ final class MixEngine {
             $0.stemMode = false       // a fresh track starts in single-file mode
             $0.stemMuted = []
             $0.stemVol = [:]
+            $0.loopOn = false         // the PREVIOUS track's window means nothing here
         }
+        clearLoopState(deck)          // …and drop its resolved window + pass count
         unwireStems(deck)             // drop the prior track's stem files + scope
         // Loading stopped this deck OUTSIDE setPlaying (direct isPlaying=false above) — mirror the
         // sticky-card update so the card can't later fall back to this deck's never-played new track
@@ -1172,6 +1174,7 @@ final class MixEngine {
     /// Return a deck to the BEGINNING (its window's start frame) and resume if it was playing.
     func restart(_ deck: Deck) {
         let was = state(deck).isPlaying
+        clearLoopState(deck)   // rewinding past the window would leave a stale loop half-armed
         if stemActive(deck) {                              // stem mode: rewind + re-sync the 4 stems
             stopStemNodes(deck)
             guard scheduleStems(deck, fromSeconds: 0) else { return }
@@ -1230,7 +1233,7 @@ final class MixEngine {
         releases[deck]?(); releases[deck] = nil   // release the main file's scope
         files[deck] = nil; paths[deck] = nil; sampleRates[deck] = nil
         startFrames[deck] = nil; endFrames[deck] = nil; segmentStartSeconds[deck] = nil
-        loopWindows[deck] = nil; loopPasses[deck] = nil   // the loop dies with the track
+        clearLoopState(deck)                              // the loop dies with the track
         if leadDeck == deck { leadDeck = nil }     // give up the lead role if this deck held it
         mutate(deck) { $0 = DeckState() }          // empty track, every parameter back to default, cue off
         setDuration(deck, 0); setPosition(deck, 0)
@@ -1300,8 +1303,24 @@ final class MixEngine {
     private static let loopHorizonPasses = 3
     /// Resolved windows in SOURCE seconds (runtime plumbing — the durable session stores intent).
     @ObservationIgnored private var loopWindows: [Deck: (start: Double, end: Double)] = [:]
-    /// How many passes have been handed to the node since the loop was armed.
+    /// Passes handed to the voices SINCE THE LAST ARM (the node timeline is zeroed by `stop()` in
+    /// `armLoop`, so this counter and `sampleTime` share an origin — see `topUpLoop`'s reset guard).
     @ObservationIgnored private var loopPasses: [Deck: Int] = [:]
+    /// Last elapsed reading, to catch a node timeline RESET (route change / external stop) that
+    /// would otherwise strand the pass arithmetic and silently starve the queue.
+    @ObservationIgnored private var loopLastElapsed: [Deck: Double] = [:]
+    /// Which stem actually carries the queue (its render clock drives the top-up). nil ⇒ single file.
+    @ObservationIgnored private var loopClockStem: [Deck: String] = [:]
+
+    /// Forget everything about a deck's loop — the ONE teardown, called wherever a deck's audio
+    /// timeline is rebuilt out from under a window (load, restart/reset, clear, release).
+    private func clearLoopState(_ deck: Deck) {
+        if state(deck).loopOn { mutate(deck) { $0.loopOn = false } }
+        loopWindows[deck] = nil
+        loopPasses[deck] = nil
+        loopLastElapsed[deck] = nil
+        loopClockStem[deck] = nil
+    }
 
     /// Does this deck count loop length in BEATS? True when the track has a measured grid or any
     /// usable bpm to synthesize one; false ⇒ the unit is SECONDS (the documented fallback).
@@ -1314,6 +1333,13 @@ final class MixEngine {
     /// One loop unit in seconds — a beat at the deck's grid tempo, else exactly 1 s.
     func loopUnitSeconds(_ deck: Deck) -> Double {
         guard loopUsesBeats(deck) else { return 1 }
+        // MEASURED lattice first: `loopUsesBeats` can be true purely on `beatsMs` (the async grid
+        // hydrate patches beats WITHOUT a gridBpm), and the window walks that same lattice — so a
+        // nominal-bpm unit here would disagree with the window it's supposed to describe.
+        if let beats = state(deck).loaded?.beatsMs, beats.count >= 2 {
+            let gaps = zip(beats.dropFirst(), beats).map { Double($0 - $1) }.filter { $0 > 0 }.sorted()
+            if let median = gaps.isEmpty ? nil : gaps[gaps.count / 2], median > 0 { return median / 1000 }
+        }
         let bpm = state(deck).loaded?.gridBpm ?? state(deck).loaded?.bpm ?? 120
         return 60.0 / min(max(bpm, 20), 300)
     }
@@ -1400,29 +1426,65 @@ final class MixEngine {
     /// (Re)queue the window on the deck's voices — the single file, or ALL FOUR stems in stem mode
     /// (they're sample-aligned and restarted at one shared host time, so queueing the same window
     /// on each keeps them locked together exactly as normal stem playback does).
-    private func armLoop(_ deck: Deck) {
-        guard let w = loopWindow(deck), built else { return }
+    /// (Re)queue the window. `resumeAt` (when inside the window) keeps the playhead where it is by
+    /// queueing a PARTIAL first pass from there — so re-arming for a length tweak or an engine
+    /// comeback doesn't yank the audio back to the top of the loop.
+    ///
+    /// Order is load-bearing: prove the window is schedulable BEFORE stopping any voice. Stopping
+    /// first and then failing to schedule leaves a deck that reports Playing while rendering
+    /// silence — the exact trap `setStemMode` documents ("schedule BEFORE muting… only commit if
+    /// they actually scheduled").
+    @discardableResult
+    private func armLoop(_ deck: Deck, resumeAt: Double? = nil) -> Bool {
+        guard let w = loopWindow(deck), built else { return false }
+        guard loopSchedulable(deck, window: w) else { return false }   // ← check before any stop()
         let was = state(deck).isPlaying
-        if stemActive(deck) {
-            stopStemNodes(deck)                          // stop() discards the queue → re-fill below
-            guard scheduleLoopPasses(deck, window: w, passes: Self.loopHorizonPasses) else { return }
-            loopPasses[deck] = Self.loopHorizonPasses
-            setPosition(deck, w.start)
-            if was { startStems(deck) }
-        } else {
-            guard let player = players[deck] else { return }
-            player.stop()                                // resets the node timeline to 0
-            guard scheduleLoopPasses(deck, window: w, passes: Self.loopHorizonPasses) else { return }
-            loopPasses[deck] = Self.loopHorizonPasses
-            segmentStartSeconds[deck] = w.start
-            setPosition(deck, w.start)
-            if was {
-                if startEngineIfNeeded() { player.play() }  // dead engine → stays queued; watchdog resumes
-                setPlaying(deck, true)
-            }
+        // A resume point strictly inside the window becomes a shorter FIRST pass; the tail passes
+        // are whole windows, so the loop is phase-continuous from wherever it already was.
+        let head: (start: Double, end: Double)? = {
+            guard let r = resumeAt, r > w.start + 0.02, r < w.end - 0.02 else { return nil }
+            return (r, w.end)
+        }()
+        let stems = stemActive(deck)
+        if stems { stopStemNodes(deck) } else { players[deck]?.stop() }   // zeroes the node timeline
+        var passes = Self.loopHorizonPasses
+        if let head {
+            guard scheduleLoopPasses(deck, window: head, passes: 1) else { return false }
+            passes -= 1
+        }
+        if passes > 0 { scheduleLoopPasses(deck, window: w, passes: passes) }
+        loopPasses[deck] = Self.loopHorizonPasses     // head + tails = one horizon's worth
+        loopLastElapsed[deck] = 0                     // fresh timeline origin
+        let from = head?.start ?? w.start
+        if !stems { segmentStartSeconds[deck] = from }
+        setPosition(deck, from)
+        if was {
+            if stems { startStems(deck) }
+            else if startEngineIfNeeded() { players[deck]?.play(); setPlaying(deck, true) }
         }
         refreshTransport()
         startTickIfNeeded()
+        return true
+    }
+
+    /// Would `scheduleLoopPasses` produce any audio for this window? Pure check — no side effects.
+    private func loopSchedulable(_ deck: Deck, window w: (start: Double, end: Double)) -> Bool {
+        if stemActive(deck) {
+            guard let stems = stemFiles[deck], let nodes = stemPlayers[deck] else { return false }
+            return nodes.contains { name, _ in
+                guard let f = stems[name] else { return false }
+                let sr = f.processingFormat.sampleRate
+                guard sr > 0 else { return false }
+                let f0 = min(max(0, AVAudioFramePosition(w.start * sr)), f.length)
+                let f1 = min(max(f0, AVAudioFramePosition(w.end * sr)), f.length)
+                return f1 - f0 > 0
+            }
+        }
+        guard files[deck] != nil, players[deck] != nil, let sr = sampleRates[deck], sr > 0,
+              let startF = startFrames[deck], let endF = endFrames[deck] else { return false }
+        let f0 = min(max(startF, startF + AVAudioFramePosition(w.start * sr)), endF)
+        let f1 = min(max(f0, startF + AVAudioFramePosition(w.end * sr)), endF)
+        return f1 - f0 > 0
     }
 
     /// Append `passes` copies of the window to the deck's voice(s). Handles both modes; returns
@@ -1434,8 +1496,8 @@ final class MixEngine {
         if stemActive(deck) {
             guard let stems = stemFiles[deck], let nodes = stemPlayers[deck] else { return false }
             var any = false
-            for (name, node) in nodes {
-                guard let file = stems[name] else { continue }
+            for name in Self.stemNames {          // canonical order ⇒ a deterministic clock stem
+                guard let node = nodes[name], let file = stems[name] else { continue }
                 let sr = file.processingFormat.sampleRate
                 guard sr > 0 else { continue }
                 // Stem files start at the SONG's 0:00 (no album offset), so the window maps directly.
@@ -1447,6 +1509,9 @@ final class MixEngine {
                     node.scheduleSegment(file, startingFrame: f0, frameCount: AVAudioFrameCount(count),
                                          at: nil, completionHandler: nil)
                 }
+                // The FIRST stem that really received frames owns the top-up clock: reading a node
+                // with an empty queue would report an elapsed that never advances.
+                if !any { loopClockStem[deck] = name }
                 any = true
             }
             if any { stemsScheduled[deck] = true }
@@ -1469,13 +1534,11 @@ final class MixEngine {
     /// at one shared host time, so any of them reports the same elapsed).
     private func loopClock(_ deck: Deck) -> (node: AVAudioPlayerNode, sampleRate: Double)? {
         if stemActive(deck) {
-            guard let nodes = stemPlayers[deck], let stems = stemFiles[deck] else { return nil }
-            for name in Self.stemNames {                 // canonical order ⇒ deterministic pick
-                if let n = nodes[name], let f = stems[name], f.processingFormat.sampleRate > 0 {
-                    return (n, f.processingFormat.sampleRate)
-                }
-            }
-            return nil
+            // The stem the queue was actually written to (recorded at schedule time) — NOT merely
+            // the first canonical one, which may have had no frames in this window.
+            guard let name = loopClockStem[deck], let n = stemPlayers[deck]?[name],
+                  let f = stemFiles[deck]?[name], f.processingFormat.sampleRate > 0 else { return nil }
+            return (n, f.processingFormat.sampleRate)
         }
         guard let p = players[deck], let sr = sampleRates[deck], sr > 0 else { return nil }
         return (p, sr)
@@ -1492,7 +1555,19 @@ final class MixEngine {
         guard len > 0 else { return }
         // The node timeline is in SOURCE frames, so a tempo change doesn't distort this count —
         // it only changes how fast passes are consumed in wall time.
-        let consumed = Int(floor(max(0, Double(pt.sampleTime) / clock.sampleRate) / len))
+        let elapsed = max(0, Double(pt.sampleTime) / clock.sampleRate)
+        // TIMELINE RESET: anything that stops the node outside `armLoop` (route/config change →
+        // engine rebuild, an external stop) zeroes `sampleTime` while `loopPasses` keeps its old
+        // count — after which `want <= scheduled` forever and the queue silently starves to dead
+        // air. Detect the rewind and re-arm in place instead.
+        if let last = loopLastElapsed[deck], elapsed + 0.05 < last {
+            let resume = w.start + elapsed.truncatingRemainder(dividingBy: len)
+            dlog("loop \(deck.rawValue): node timeline reset — re-arming")
+            armLoop(deck, resumeAt: resume)
+            return
+        }
+        loopLastElapsed[deck] = elapsed
+        let consumed = Int(floor(elapsed / len))
         let scheduled = loopPasses[deck] ?? 0
         let want = consumed + Self.loopHorizonPasses
         guard want > scheduled else { return }
@@ -1512,14 +1587,18 @@ final class MixEngine {
             guard let w = loopBounds(deck, anchorSec: anchor) else { return }
             mutate(deck) { $0.loopOn = true }
             loopWindows[deck] = w
-            armLoop(deck)
+            // COMMIT ONLY ON SUCCESS: a window that can't schedule (e.g. past the end of the
+            // burned stems) must leave the deck exactly as it was, never lit-but-silent.
+            guard armLoop(deck, resumeAt: anchor) else {
+                clearLoopState(deck)
+                dlog("loop ON \(deck.rawValue) REFUSED — window not schedulable")
+                return
+            }
             dlog("loop ON \(deck.rawValue) \(String(format: "%.2f–%.2f", w.start, w.end))s "
                  + "(\(Int(state(deck).loopUnits)) \(loopUsesBeats(deck) ? "beat" : "sec"))")
         } else {
             let resume = truePlayhead(deck) ?? position(deck)
-            mutate(deck) { $0.loopOn = false }
-            loopWindows[deck] = nil
-            loopPasses[deck] = nil
+            clearLoopState(deck)
             seek(deck, toSeconds: resume)   // re-arms the rest of the track + re-times auto-mix
             dlog("loop OFF \(deck.rawValue) → \(String(format: "%.2f", resume))s")
         }
@@ -1532,8 +1611,11 @@ final class MixEngine {
         guard u != state(deck).loopUnits else { return }
         mutate(deck) { $0.loopUnits = u }
         if state(deck).loopOn, let w = loopWindows[deck], let nw = loopBounds(deck, anchorSec: w.start) {
+            // Keep playing where we are: dragging the length slider issues a re-arm per step, and
+            // restarting each one from the top of the window would machine-gun the loop.
+            let here = truePlayhead(deck) ?? position(deck)
             loopWindows[deck] = nw
-            armLoop(deck)
+            armLoop(deck, resumeAt: (here > nw.start && here < nw.end) ? here : nil)
         }
         persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
@@ -1542,18 +1624,27 @@ final class MixEngine {
     /// length, so `loopUnits` follows; both stay inside 1…32 units and the deck's window.
     func nudgeLoop(_ deck: Deck, edge: LoopEdge, byUnits delta: Double) {
         guard let w = loopWindow(deck) else { return }
-        let step = loopUnitSeconds(deck) * delta
+        let unit = loopUnitSeconds(deck)
+        let step = unit * delta
         let dur = duration(deck)
         var (s, e) = (w.start, w.end)
         switch edge {
-        case .start: s = min(max(0, s + step), e - loopUnitSeconds(deck))
-        case .end:   e = min(max(e + step, s + loopUnitSeconds(deck)), dur)
+        case .start: s = min(max(0, s + step), e - unit)
+        case .end:   e = min(max(e + step, s + unit), dur)
+        }
+        // Clamp the WINDOW to the same 1…32 units the slider exposes — clamping only the derived
+        // count would let repeated nudges grow a real 40-unit loop while the stored length reads
+        // 32, after which the slider's equality guard makes the mismatch unfixable.
+        let maxLen = 32 * unit
+        if e - s > maxLen {
+            if edge == .start { s = e - maxLen } else { e = s + maxLen }
         }
         guard e > s else { return }
-        let units = min(max(((e - s) / loopUnitSeconds(deck)).rounded(), 1), 32)
+        let units = min(max(((e - s) / unit).rounded(), 1), 32)
+        let here = truePlayhead(deck) ?? position(deck)
         loopWindows[deck] = (s, e)
         mutate(deck) { $0.loopUnits = units }
-        armLoop(deck)
+        armLoop(deck, resumeAt: (here > s && here < e) ? here : nil)
         persistMixDeckSession(debounced: true)
     }
 
@@ -1697,6 +1788,14 @@ final class MixEngine {
             guard let self, let sc = await self.burns.burnBeatGrid(forSong: songId), !sc.beatsMs.isEmpty else { return }
             guard self.state(deck).loaded?.songId == songId else { return }   // deck moved on → drop it
             self.mutate(deck) { $0.loaded?.beatsMs = sc.beatsMs; $0.loaded?.downbeatsMs = sc.downbeatsMs }
+            // A loop armed BEFORE the download landed was resolved against synthesized beats (this
+            // fetch is why `force` exists) — re-resolve it on the real lattice now that it's here,
+            // keeping the playhead in place.
+            guard self.loopWindow(deck) != nil else { return }
+            let here = self.truePlayhead(deck) ?? self.position(deck)
+            guard let nw = self.loopBounds(deck, anchorSec: here) else { return }
+            self.loopWindows[deck] = nw
+            self.armLoop(deck, resumeAt: (here > nw.start && here < nw.end) ? here : nil)
         }
     }
 
