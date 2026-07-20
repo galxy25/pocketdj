@@ -90,10 +90,13 @@ pumpStemResults folds stems ─┐
   analysis + timed lyrics, zero taps. The fold pump runs when ANY offload family is on, so lyrics
   results still fold with `POCKETDJ_STEM_OFFLOAD=0`.
 - **Catalog fold:** `node scripts/fold-cloud-lyrics.mjs [--apply] [--upload dev,prod]` surfaces the
-  timed sidecars in the CATALOG lyrics system (song detail cards): songs with NO scraped lyrics get
+  timed sidecars in the CATALOG lyrics system (song detail cards): every transcript song gets
   `lyricsStatus='found'` + `lyricsSource='whisper'` and a derived plain-text `/lyrics/<id>.txt` on
-  the web CDN (additive copy — never `--delete`, the scraped corpus shares the prefix). Scraped
-  lyrics always win; instrumentals stay untouched. Idempotent — re-run after a backfill wave.
+  the web CDN. **WHISPER WINS** (Levi 2026-07-19): a transcript REPLACES scraped lyrics (index +
+  CDN overwrite); `lyricsSource='manual'` is the ONE protected source. Scraped text survives only
+  as the interim fallback on songs with no transcript yet — the scraper pipeline is retired as a
+  lyrics source. Empty transcripts never erase lyrics. Additive copy — never `--delete` (the
+  fallback corpus shares the prefix). Idempotent — re-run after each backfill wave.
 - **Deploy** (at ship time, not now): upload `stem-worker.mjs` **and** `transcribe-one.py` to
   `s3://pocketdj-rips-011183829623/worker-code/`; the userdata pip-installs `faster-whisper` and the
   **first** lyrics job downloads the CTranslate2 model from HuggingFace (no AMI re-bake; bake the
