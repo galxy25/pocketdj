@@ -25,6 +25,10 @@ struct DemuxInstrumentalView: View {
     let durationMs: Int
     /// The demuxer's shared original-audio player — the master clock both views follow.
     let player: StemPlayer
+    /// The ONE shared demux Follow (lifted to StudioDemuxView) — the SAME toggle that governs the
+    /// drum-pattern lane-grid and the timeline, so enabling Follow scrolls the score's system, the
+    /// drum grid's bar, AND the strip all to the same playhead time (paused scrub included).
+    @Binding var follow: Bool
     /// Song-relative seek (bar-chip taps).
     var onSeek: (Int) -> Void = { _ in }
 
@@ -34,8 +38,6 @@ struct DemuxInstrumentalView: View {
     /// The shared bar lattice (DrumPatternDetector.bars over the chords-only grid) — the drum
     /// pattern's bar chips, scrolled by the same follow that scrolls the score.
     @State private var bars: [DrumPatternDetector.Bar] = []
-    /// One shared follow for BOTH surfaces (default on).
-    @State private var follow = true
     @State private var selectedBar = 0
     @State private var currentSystem = 0
     @State private var notice: String?
@@ -53,7 +55,7 @@ struct DemuxInstrumentalView: View {
             FollowScoreView(pages: pages, bpm: takeBpm, firstDownbeatMs: firstDownbeatMs,
                             player: player, follow: follow, currentSystem: currentSystem)
         }
-        .task(id: rebuildKey) { rebuild() }
+        .task(id: rebuildKey) { await rebuild() }
         // ONE shared follow poll: read the non-Observable player clock and advance BOTH the bar
         // chips and the score system — ALWAYS (playing or a paused scrub), no isPlaying gate, so a
         // scrub while paused scrolls both (the bar-granularity writes are cheap; the score's fast
@@ -74,14 +76,28 @@ struct DemuxInstrumentalView: View {
         }
     }
 
-    private func rebuild() {
-        let (ev, b) = DemuxInstrumental.events(chords: chords, grid: grid)
-        events = ev
-        takeBpm = b
-        let doc = ScoreQuantizer.quantize(events: ev, bpm: b, instrument: .piano)
-        pages = ScoreLayout.systems(score: doc, instrument: .piano)
-        bars = DrumPatternDetector.bars(downbeatsMs: [], bpm: b, firstDownbeatMs: firstDownbeatMs,
-                                        durationMs: durationMs)
+    /// Build the events + score pages + bar lattice OFF the main actor (all pure `nonisolated`
+    /// statics) so a long/dense score's quantize + layout never blocks the UI — the drum-bars
+    /// Task.detached discipline (StudioDemuxView.resolveDrumBars). Results assign back on the
+    /// MainActor; a stale run (the key changed while we computed) drops its result.
+    private func rebuild() async {
+        let chords = chords, grid = grid
+        let firstDownbeatMs = firstDownbeatMs, durationMs = durationMs
+        let built = await Task.detached(priority: .userInitiated) {
+            () -> (events: [StudioNoteEvent], bpm: Double,
+                   pages: [ScorePage], bars: [DrumPatternDetector.Bar]) in
+            let (ev, b) = DemuxInstrumental.events(chords: chords, grid: grid)
+            let doc = ScoreQuantizer.quantize(events: ev, bpm: b, instrument: .piano)
+            let pages = ScoreLayout.systems(score: doc, instrument: .piano)
+            let bars = DrumPatternDetector.bars(downbeatsMs: [], bpm: b,
+                                                firstDownbeatMs: firstDownbeatMs, durationMs: durationMs)
+            return (ev, b, pages, bars)
+        }.value
+        guard !Task.isCancelled else { return }
+        events = built.events
+        takeBpm = built.bpm
+        pages = built.pages
+        bars = built.bars
     }
 
     // MARK: Header (shared follow toggle)
@@ -251,7 +267,10 @@ struct FollowScoreView: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 6) {
+                    // LazyVStack (FIX 3): off-screen systems aren't drawn — a long score no longer
+                    // realizes dozens of ScorePageViews (and, with the single playhead below, no
+                    // longer runs one 10 Hz clock per system).
+                    LazyVStack(spacing: 6) {
                         ForEach(pages.indices, id: \.self) { i in
                             systemRow(i).id("score-system-\(i)")
                         }
@@ -259,6 +278,11 @@ struct FollowScoreView: View {
                     .padding(.vertical, 4)
                 }
                 .frame(height: 300)
+                // FIX 2 (gesture trap): while Follow is on, the APP drives the scroll — so turn
+                // OFF this inner scroll's user drag, and a drag over the score falls through to the
+                // outer page scroll instead of being trapped here. Programmatic scrollTo (the
+                // follow below) still works. Follow off ⇒ hand-scrolling the score returns.
+                .scrollDisabled(follow)
                 .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .accessibilityIdentifier("demux-instrumental-score")
                 // Follow: scroll the current system to center whenever it advances (a playback tick
@@ -278,7 +302,10 @@ struct FollowScoreView: View {
         let page = pages[i]
         return ScorePageView(page: page)
             .aspectRatio(page.size.width / page.size.height, contentMode: .fit)
-            .overlay { playhead(system: i, page: page) }
+            // FIX 3: ONE playhead for the whole score — only the CURRENT system carries the moving
+            // line, so a long score runs a single 10 Hz host-clock overlay instead of one per
+            // system. `currentSystem` is the follow poll's output (playing OR paused scrub).
+            .overlay { if i == currentSystem { playhead(system: i, page: page) } }
             .accessibilityIdentifier("score-system-\(i)")
     }
 

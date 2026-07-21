@@ -99,6 +99,42 @@ final class DemuxInstrumentalTests: XCTestCase {
         XCTAssertTrue(hasRest, "the silent region between chords is a rest, never a fabricated chord")
     }
 
+    // MARK: collision + clamp guards (FIX 4)
+
+    func testCollidingOnsetsKeepHigherConfidenceNotUnion() {
+        // Two sub-beat chords near the SAME beat both snap to onset 0 (start 0 and start 120 both
+        // round to the beat at 0 @120 BPM). The converter must keep ONE triad — the higher-
+        // confidence chord — not union both into a 6-note cluster (which ScoreQuantizer would fuse
+        // into a single chord item, silently dropping the other chord).
+        let strong = chord(0, false, 0, 200)      // C major, confidence 0.9
+        var weak = chord(5, false, 120, 300)      // F major, lower confidence
+        weak.confidence = 0.4
+        let events = DemuxInstrumental.events(chords: [strong, weak], grid: (120, 0, [])).events
+        XCTAssertEqual(Set(events.map(\.onMs)), [0], "both chords snapped to the same onset")
+        XCTAssertEqual(events.count, 3, "one triad survives, not two unioned into 6 notes")
+        XCTAssertEqual(Set(events.map(\.note)), [60, 64, 67], "kept C major — the higher-confidence chord")
+    }
+
+    func testCollidingOnsetsTieKeepsEarlierChord() {
+        // Equal confidence: the EARLIER chord (seen first in start order) holds the beat.
+        let first = chord(0, false, 0, 200)       // C major, conf 0.9
+        let second = chord(5, false, 120, 300)    // F major, conf 0.9 (same)
+        let events = DemuxInstrumental.events(chords: [first, second], grid: (120, 0, [])).events
+        XCTAssertEqual(events.count, 3)
+        XCTAssertEqual(Set(events.map(\.note)), [60, 64, 67], "the earlier chord wins a confidence tie")
+    }
+
+    func testSnapNeverPushesOnsetPastChordEnd() {
+        // A short chord ending just before the next beat: snapToBeat would land its start at 500,
+        // past the chord's own end (480). The onset must be clamped so it never sounds after the
+        // chord existed.
+        let events = DemuxInstrumental.events(chords: [chord(0, false, 470, 480)],
+                                              grid: (120, 0, [])).events
+        XCTAssertFalse(events.isEmpty)
+        XCTAssertTrue(events.allSatisfy { $0.onMs <= 480 },
+                      "onset clamped to the chord's own end (never snapped past it)")
+    }
+
     func testGuardsZeroBpmToDefault() {
         let (_, bpm) = DemuxInstrumental.events(chords: [chord(0, false, 0, 1000)], grid: (0, 0, []))
         XCTAssertEqual(bpm, 120)

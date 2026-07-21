@@ -14,13 +14,16 @@ struct DemuxTimelineView: View {
     let chords: [DemuxChordSegment]
     /// Sampled for the playhead (currentTime is deliberately non-Observable).
     let player: StemPlayer
+    /// The ONE shared demux Follow (lifted to StudioDemuxView) — the timeline, the drum-pattern
+    /// grid, and the instrumental score all track the SAME playhead under it. A scrub/manual
+    /// scroll disarms it (here); the ⌖ button re-arms it.
+    @Binding var follow: Bool
     /// Song-relative seek (the player owns any file offset mapping upstream).
     var onSeek: (Int) -> Void
     var onChordTap: (DemuxChordSegment) -> Void
 
     /// Zoom: points per second. The stepper walks the ladder; "fit" derives from width.
     @State private var pxPerSec: CGFloat = 10
-    @State private var follow = true
     /// Bumped by the ⌖ button — the strip (which owns the scroll proxy) centers the
     /// playhead once per bump, playing or paused.
     @State private var centerNonce = 0
@@ -104,13 +107,20 @@ struct DemuxTimelineView: View {
                 }
             }
             .task(id: followTaskKey) {
-                // Auto-follow: center the playhead's current second while playing. A polling
-                // task (not onChange) because currentTime is deliberately non-Observable.
+                // Auto-follow: center the playhead's current second. A polling task (not onChange)
+                // because currentTime is deliberately non-Observable. NO isPlaying gate — a PAUSED
+                // scrub (a bar tap in the drum/instrumental panels seeks this shared player) must
+                // recenter the strip too (the unified-follow spec). Only re-scroll when the second
+                // actually changes, so a paused hold doesn't animate every tick for nothing.
+                var lastSec = -1
                 while !Task.isCancelled {
-                    if follow, player.isPlaying {
+                    if follow {
                         let sec = Int(player.currentTime)
-                        withAnimation(.linear(duration: 0.3)) {
-                            proxy.scrollTo("demux-sec-\(sec)", anchor: .center)
+                        if sec != lastSec {
+                            lastSec = sec
+                            withAnimation(.linear(duration: 0.3)) {
+                                proxy.scrollTo("demux-sec-\(sec)", anchor: .center)
+                            }
                         }
                     }
                     try? await Task.sleep(nanoseconds: 500_000_000)

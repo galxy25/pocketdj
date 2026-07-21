@@ -54,6 +54,12 @@ struct StudioDemuxView: View {
     @State private var peaks: [Float] = []
     /// The shared synced player: single-mix mode loads one file, stem mode loads all four.
     @State private var player = StemPlayer()
+    /// ONE shared "follow the playhead" toggle, lifted here so the timeline, the drum-pattern
+    /// lane-grid, AND the instrumental score all scroll to the SAME playhead position under a
+    /// single Follow — including a paused scrub (each surface's poll reads `player.currentTime`,
+    /// which returns pausedAt while paused and is moved by seek(), with NO isPlaying gate). The
+    /// three panels' follow buttons are all views of this one state (toggling any toggles all).
+    @State private var demuxFollow = true
     /// The in-flight source resolution — stored so re-selection/tab-exit can cancel it
     /// (see select()).
     @State private var resolveTask: Task<Void, Never>?
@@ -327,7 +333,7 @@ struct StudioDemuxView: View {
         let doc = demux.document(for: source.key)
         transport
         DemuxTimelineView(durationMs: durationMs, peaks: peaks,
-                          chords: doc?.chords ?? [], player: player,
+                          chords: doc?.chords ?? [], player: player, follow: $demuxFollow,
                           onSeek: { seek(toMs: $0) },
                           onChordTap: { chordDetail = $0 })
         chordStatusRow(doc)
@@ -355,6 +361,7 @@ struct StudioDemuxView: View {
                 if drumBarsKey == source.key {
                     DemuxDrumPatternView(source: source, hits: hits, bars: drumBars,
                                          durationMs: durationMs, player: player,
+                                         follow: $demuxFollow,
                                          onSeek: { seek(toMs: $0) })
                 } else {
                     // Bars still resolving for THIS source — never render/export the new
@@ -470,7 +477,8 @@ struct StudioDemuxView: View {
                     DemuxInstrumentalView(source: source, chords: chords,
                                           bpm: instBpm, firstDownbeatMs: instFirstDownbeat,
                                           beatsMs: instBeatsMs, durationMs: durationMs,
-                                          player: player, onSeek: { seek(toMs: $0) })
+                                          player: player, follow: $demuxFollow,
+                                          onSeek: { seek(toMs: $0) })
                 } else {
                     statusRow(spinner: true, "Preparing the chord grid…", a11y: "demux-instrumental-preparing")
                 }

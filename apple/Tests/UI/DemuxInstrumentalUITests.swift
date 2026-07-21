@@ -53,7 +53,8 @@ final class DemuxInstrumentalUITests: XCTestCase {
         // ---- Extract: the chords-only panel mints a StudioTake (routed to the Instruments tab).
         let extract = revealDown("demux-instrumental-extract")
         XCTAssertTrue(extract.waitForExistence(timeout: 10), "Extract-instrumental button present")
-        XCTAssertTrue(app.any("demux-instrumental-score").exists, "synced score renders")
+        XCTAssertTrue(app.any("demux-instrumental-score").waitForExistence(timeout: 10),
+                      "synced score renders (quantized + laid out off the main actor)")
         extract.tap()
         let notice = app.any("demux-instrumental-notice")
         XCTAssertTrue(notice.waitForExistence(timeout: 10),
@@ -61,22 +62,28 @@ final class DemuxInstrumentalUITests: XCTestCase {
         snap("instrumental-2-extracted")
 
         // ---- Synced follow, PAUSED SCRUB: follow is on by default; tapping a bar chip seeks the
-        //      (paused) player, and the shared follow poll — which has no isPlaying gate — advances
-        //      the score's current system so it scroll-follows. Proves the spec's "scrub while
-        //      paused scrolls both". The non-lazy system rows always have frames, so this is a
-        //      NUMERIC assertion: system 0 rides up as the score scrolls forward.
+        //      (paused) shared player, and the un-gated follow poll advances the score's current
+        //      system so it scroll-follows — the spec's "scrub while paused scrolls both". With the
+        //      LazyVStack the far-up rows can recycle, so the robust probe is the SCRUB TARGET
+        //      system (2): the follow programmatically centers it, so after the scrub it MUST be
+        //      realized + on-screen. If it was already visible beforehand it also rides UP; if it
+        //      wasn't (taller iPad rows push it below the fold), its mere appearance is the proof —
+        //      nothing but the follow scroll could bring it on-screen from a top-anchored scroll.
         XCTAssertTrue(app.any("demux-sync-follow").exists, "shared follow toggle present")
-        let sys0 = app.any("score-system-0")
-        XCTAssertTrue(sys0.waitForExistence(timeout: 5), "score system 0 laid out")
-        let before = sys0.frame.minY
-        let bar = app.el("demux-instrumental-bar-8")   // 2 s bars ⇒ score measure 8 ⇒ system 2
+        let target = app.any("score-system-2")          // 2 s bars ⇒ score measure 8 ⇒ system 2
+        let existedBefore = target.exists
+        let beforeY: CGFloat = existedBefore ? target.frame.minY : .greatestFiniteMagnitude
+        let bar = app.el("demux-instrumental-bar-8")
         XCTAssertTrue(bar.waitForExistence(timeout: 5), "an on-screen bar chip to scrub to")
         bar.tap()
         sleep(2)                                        // the ~200 ms follow poll + scroll settle
-        let after = sys0.frame.minY
-        XCTAssertLessThan(after, before - 20,
-                          "a paused scrub follow-scrolled the score (system 0 moved up "
-                          + "\(before - after) pt)")
+        XCTAssertTrue(target.exists,
+                      "a paused scrub follow-scrolled the score to the scrubbed-to system (2)")
+        if existedBefore {
+            XCTAssertLessThan(target.frame.minY, beforeY - 20,
+                              "the scrubbed-to system rode up as the score follow-scrolled "
+                              + "(moved \(beforeY - target.frame.minY) pt)")
+        }
         snap("instrumental-3-following")
     }
 }

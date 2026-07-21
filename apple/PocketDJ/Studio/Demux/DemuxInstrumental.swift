@@ -54,19 +54,42 @@ enum DemuxInstrumental {
     /// Convert chord segments → a beat-quantized chord-comping event stream + the take's bpm.
     ///
     /// For each chord (in start order): count the beats it spans, snap its start to the nearest
-    /// beat, re-anchor to `firstDownbeatMs` (0 ms = beat 1, clamped ≥ 0), and emit the full triad
-    /// as same-onset events lasting `beats · 60000/bpm`. `take.bpm` = the grid's bpm.
+    /// beat (clamped to the chord's own end so it never sounds after the chord existed), re-anchor
+    /// to `firstDownbeatMs` (0 ms = beat 1, clamped ≥ 0), and emit the full triad as same-onset
+    /// events lasting `beats · 60000/bpm`. When two chords snap to the SAME onset only the
+    /// higher-confidence one is kept (never a union of both triads). `take.bpm` = the grid's bpm.
     nonisolated static func events(chords: [DemuxChordSegment], grid: Grid)
         -> (events: [StudioNoteEvent], bpm: Double) {
         let bpm = grid.bpm > 0 ? grid.bpm : 120
         let beatMs = 60_000.0 / bpm
-        var out: [StudioNoteEvent] = []
+        // ONE winner per snapped onset. Two sub-beat chords can snap to the SAME beat; emitting
+        // both triads at one onset would make ScoreQuantizer UNION them into a single 4–6-note
+        // cluster — silently dropping a chord from the score. Keep the higher-confidence chord
+        // (ties → the earlier one, seen first since we walk in start order), never the union.
+        var winners: [Int: (chord: DemuxChordSegment, offMs: Int)] = [:]
+        var onsetOrder: [Int] = []
         for chord in chords.sorted(by: { $0.startMs < $1.startMs }) {
             let beats = beatsSpanned(startMs: chord.startMs, endMs: chord.endMs, grid: grid)
-            let onMs = max(0, snapToBeat(ms: chord.startMs, grid: grid) - grid.firstDownbeatMs)
+            // Snapping to the NEAREST beat can push a short chord's start PAST its own end (a chord
+            // ending just before a beat) — clamp so the onset never lands after the chord existed.
+            let snapped = min(snapToBeat(ms: chord.startMs, grid: grid), chord.endMs)
+            let onMs = max(0, snapped - grid.firstDownbeatMs)
             let offMs = onMs + Int((Double(beats) * beatMs).rounded())
-            for note in chord.midiNotes(base: 60) {
-                out.append(StudioNoteEvent(onMs: onMs, offMs: offMs, note: note, velocity: 88))
+            if let existing = winners[onMs] {
+                if chord.confidence > existing.chord.confidence {
+                    winners[onMs] = (chord, offMs)   // a stronger chord claims this beat
+                }
+                // else keep the incumbent (higher-confidence, or the earlier chord on a tie).
+            } else {
+                winners[onMs] = (chord, offMs)
+                onsetOrder.append(onMs)
+            }
+        }
+        var out: [StudioNoteEvent] = []
+        for onMs in onsetOrder {
+            guard let w = winners[onMs] else { continue }
+            for note in w.chord.midiNotes(base: 60) {
+                out.append(StudioNoteEvent(onMs: onMs, offMs: w.offMs, note: note, velocity: 88))
             }
         }
         return (out, bpm)
