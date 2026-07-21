@@ -688,7 +688,7 @@ final class CollectionsStore {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
     /// Playlists in a folder (nil ⇒ top level), ordered by the user's chosen collection sort.
-    /// The name-only overload above is kept for the search path + other callers.
+    /// The name-only overload above is retained as a stable name-ordered helper (used by tests).
     func playlists(inFolder id: String?, sortedBy order: CollectionSortOrder) -> [Playlist] {
         order.sorted(playlists.filter { $0.folderId == id })
     }
