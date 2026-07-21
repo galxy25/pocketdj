@@ -78,6 +78,16 @@ correctly when none exist.)
 
 The picker surfaces your **last-used** playlist/pocket first (with a *last used* badge) and
 defaults to the sequence you last added into — fewer taps when you're building a set fast.
+On the native apps this has grown into a **Recent** section: the **last three** collections you
+added to, most-recent first, each a one-tap re-add (a deleted collection simply drops out of the
+row); tapping a playlist by name lands in its **default chapter**, with any extra chapters listed
+beneath for when you want a specific one.
+
+Every add is also **remembered as activity**: the native **History** screen carries a
+**Plays | Activity** segmented control, and the **Activity** side is a reverse-chronological
+timeline of how your crates were built — *"Added X to Y"*, *"Removed X from Y"*, plus hearts and
+un-hearts — kept in its own append-only, device-local log, separate from the play history. Tap a
+row to jump to the song.
 
 Below your own collections the native picker adds a **"From your sources"** section listing the
 playlists that came from Apple Music (and your other sources) — see
@@ -152,7 +162,7 @@ dormant **Mix suggestions** seam (coming soon). **Play again → a different tak
 
 **Affordances**
 - **⤓ Save CSV** — export the set via the native OS file picker (name + location).
-  Columns: `#, Artist, Title, BPM, Key, Length, Source, Sequence, Song ID` — the
+  Columns: `#, Artist, Title, BPM, Key, Length, Source, Sequence, Note, Song ID` — the
   **Song ID** lets a downstream process resolve each track's audio segment in O(1).
 - **Delete** — discard this take.
 - **Tap a track** — open its song detail ([Setlist — tap a track for song detail](#setlist--tap-a-track-for-song-detail)).
@@ -313,9 +323,16 @@ me a real, saved set list I can tweak, rip, and burn."
 
 ## Your playlists on top; folders to organize them
 
-**Your playlists come first.** The Playlists screen renders **your own playlists above** the
-**"From your sources"** section — the sets you build are what you reach for, so they sit at the
-top.
+**Yours | Shared tabs.** The Playlists screen splits into two segmented tabs: **Yours** — the
+playlists and pockets you build, plus your folders — and **Shared** — the read-only **"From your
+sources"** playlists. The sets you build are what you reach for, so **Yours** is where you land,
+with **Your playlists** on top; on **Shared**, the source playlists are **grouped by source**
+(Apple Music (Local), vinyl, imports…) into **collapsed-by-default** groups that **remember which
+ones you expanded**, so a giant source library stays one tidy row until you open it.
+
+**Sort them your way.** A toolbar **sort menu** orders the collection lists by **Recently
+played**, **A–Z**, or **Last updated** — the choice **persists** and applies to your playlists,
+your pockets, folder contents, and each Shared source group alike.
 
 **Folders.** You can group playlists into **folders**:
 
@@ -330,11 +347,12 @@ you left it collapsed** — so a long shelf of sets stays tidy. Folders ride alo
 to another device.
 
 **Search by name.** At the top of the Playlists screen is a **search bar** (the same one the
-Browser uses). Type any part of a name and the list narrows to matching **playlists, pockets,
-and "From your sources" playlists** — a case-insensitive substring match. While you're searching
-the **folders flatten away**: a match shows up under its section header no matter which folder
+Browser uses). Type any part of a name and the **active tab** narrows to its matches —
+**playlists and pockets** on Yours, **source playlists** on Shared; the field's prompt says
+which — a case-insensitive substring match. While you're searching the **folders and source
+groups flatten away**: a match shows up under its section header no matter which folder or group
 holds it, so you never have to remember where you filed something to find it. Clear the field and
-your folders and sections snap back; a search that matches nothing shows a plain "No Results".
+your folders and groups snap back; a search that matches nothing shows a plain "No Results".
 
 **User story:** "I've got a lot of sets — let me file them into folders I can fold shut, keep the
 ones I made up top where I actually look, and just type a few letters to pull up any set by name

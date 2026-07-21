@@ -17,7 +17,7 @@ the **HTTPS** a PWA service worker mandates and a same-origin **proxy** for Open
 
 | Bucket | Key objects | Written by | Read by |
 |---|---|---|---|
-| **web** `pocketdj-{dev,prod}-web-<acct>` | `current-index.json`, `apple-music-index.json`, `favorites-seed.json` (§5.5), `index.html` + hashed assets + `sw.js`, `/art/*`, `/lyrics/*` | `deploy.sh`, `mirror-art.sh` (profile `levi`) | all clients (via CloudFront) |
+| **web** `pocketdj-{dev,prod}-web-<acct>` | `current-index.json`, `apple-music-index.json`, `digital-index.json` ("My Digital", Ch. 3), `favorites-seed.json` (§5.5), `index.html` + hashed assets + `sw.js`, `/art/*`, `/lyrics/*` | `deploy.sh`, `mirror-art.sh` (profile `levi`) | all clients (via CloudFront) |
 | **rips** `pocketdj-rips-011183829623` | `rips/manifest.json`, `rips/<id>.mp3`, `rips/waveforms/<id>.png` | `rip-server.mjs`, `rip-one.mjs` (profile `levi`) | all clients (direct S3 https) |
 
 ```
@@ -111,7 +111,13 @@ converging on the shared backends.
 **Native endpoint config** (`apple/PocketDJ/Support/Config.swift`):
 - dev `https://djictbz9w796r.cloudfront.net`, prod `https://d2p4cubg6se03u.cloudfront.net`
 - rips `https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com`
-- rip server `https://levis-imac.tail2e2bdf.ts.net:10000` (PUBLIC via Tailscale Funnel
+- rip server + jukebox broker: **no shipped default URL** — `SettingsData.default` seeds
+  both `ripServerURL` and `jukeboxServerURL` **blank**, so `hasServer` is honestly false
+  out of the box and the server-dependent features show their "No rip server configured"
+  state until the user sets a URL in Settings (the previous baked-in default was a
+  personal-tailnet hostname inside the binary that made every server affordance render
+  enabled and then fail at request time). The *operator's* deployment remains
+  `https://levis-imac.tail2e2bdf.ts.net:10000` (PUBLIC via Tailscale Funnel
   since the beta-distribution promotion — tokened; rate limits exist behind
   `RIP_RATE_LIMIT=1`, default off; 443 remains the
   Tailnet-only `tailscale serve` mount. See
@@ -130,17 +136,19 @@ reviewable, and never hand-edited.
 ```
  apple/project.yml  →  xcodegen generate  →  PocketDJ.xcodeproj (never committed-by-hand)
    ONE app target  PocketDJ  (type: application)
-     supportedDestinations: [iOS, macOS]      ← multiplatform target, NOT destination:auto
-     TARGETED_DEVICE_FAMILY = "1,2"            ← iPhone (1) + iPad (2)
-     deploymentTarget: iOS 18.0 · macOS 15.0
+     supportedDestinations: [iOS, macOS, visionOS]  ← multiplatform target, NOT destination:auto
+     TARGETED_DEVICE_FAMILY = "1,2"  ·  [sdk=xros*] = "7"   ← iPhone (1) + iPad (2) + Vision Pro (7)
+     deploymentTarget: iOS 18.0 · macOS 15.0 · visionOS 2.0
      PRODUCT_BUNDLE_IDENTIFIER com.levi.pocketdj   DEVELOPMENT_TEAM EC27UF79GL (Automatic)
-     SPM: ZIPFoundation
+     SPM: ZIPFoundation      embeds: PocketDJWidgets extension (§10)
    + two test targets  PocketDJTests / PocketDJUITests  (.tests / .uitests)
 ```
 
-**Reading it.** One `application` target with **`supportedDestinations: [iOS, macOS]`**
-(XcodeGen's multiplatform form) times **`TARGETED_DEVICE_FAMILY "1,2"`** yields all three
-runtime shapes — iPhone, iPad, Mac — from a single build; platform forks in code are
+**Reading it.** One `application` target with **`supportedDestinations: [iOS, macOS,
+visionOS]`** (XcodeGen's multiplatform form) times **`TARGETED_DEVICE_FAMILY "1,2"`** (plus a
+per-SDK **`7`** override for the `xros*`/`xrsimulator*` slices — without it the built app is
+rejected as incompatible with the visionOS platform) yields all four
+runtime shapes — iPhone, iPad, Mac, Vision Pro — from a single build; platform forks in code are
 `#if os(iOS)` / `#if os(macOS)` (the toolbar transport §5.4 is the canonical example).
 The Mix DSP engine (Ch. 4 §7) is **first-party AVAudioEngine**, so the target links **no
 third-party audio SDK**; the only default SPM dependency is `ZIPFoundation` (the
@@ -152,6 +160,17 @@ against `generic/platform=iOS Simulator` (with `CODE_SIGNING_ALLOWED=NO`) or
 `platform=macOS` (built unsigned, then **ad-hoc** `codesign --sign -` + de-quarantine so
 the Mac `.app` opens) — automatic signing against team `EC27UF79GL` for device/archive
 builds.
+
+**Multi-window (⌘N, macOS + iPadOS).** The app's scene is a value-less
+**`WindowGroup(id: "main")`** — the explicit id is what lets `openWindow(id: "main")` open a
+genuinely *new* window (without it, `openWindow(id:)` has nothing to match and silently
+no-ops) — plus **`NewWindowCommands`** (`PocketDJApp.swift`), a `Commands` struct that
+**replaces** the `.newItem` command group (so macOS gets exactly one ⌘N binding rather than
+the framework's plus ours) and *adds* File ▸ New Window to iPadOS, which has no automatic
+one. It's gated on `\.supportsMultipleWindows`, so iPhone registers no ⌘N at all. Every
+store is `@State` on the App (created once in `init`) and injected into each window's
+`RootView`, so all windows share the **same** engines/collections; only per-window UI state
+(selected tab, `NavigationStack`) is independent.
 
 ---
 
@@ -218,7 +237,7 @@ but **does not yet exist** in `scripts/`.
 
 **How (worked example): correcting a key on iPhone.** `EditSongView` builds
 `SongEdit(key:"A minor", camelot:"8A")` → `EditsStore.setSong("sng_8c1d…", edit)` →
-`pocketdj-edits.json`: `{ "schemaVersion":1, "songs":{ "sng_8c1d…":{ "camelot":"8A",
+`pocketdj-edits.json`: `{ "schemaVersion":2, "songs":{ "sng_8c1d…":{ "camelot":"8A",
 "key":"A minor" } } }`. Every view renders `indexSong.applying(songEdit)`. Export →
 AirDrop to iMac → (once the merge tool ships) folded by the stable id into
 `current-index.json` → deploy → canonical everywhere.
@@ -248,8 +267,8 @@ catalog *can't* carry back).
 | Zip kind | Filename suffix | Manifest (key fields) | Entries |
 |---|---|---|---|
 | **backup** | `.pocketdj.zip` | `{app, kind:"backup", schemaVersion:1\|2, portable, exportedAt, counts}` | `manifest.json`, `sources.json`, `pockets.json`, `playlists.json`, `setlists.json`, **+portable:** `items.json` + `art/*.webp`, **+native:** `edits.json` |
-| **playlist** | `.playlist.pocketdj.zip` | `{app, kind:"playlist", schemaVersion:1, portable, exportedAt, playlistName, counts}` | `manifest.json`, `playlist.json`, `pockets.json` (DAG-expanded), **+portable:** `items.json` + `art/` + `setlists.json` |
-| **pocket** | `.pocket.pocketdj.zip` | `{app, kind:"pocket", schemaVersion:1, portable:false, exportedAt, pocketName, counts:{pockets,art}}` | `manifest.json`, `pocket.json` (root), `pockets.json` (DAG-expanded children) |
+| **playlist** | PWA `.playlist.pocketdj.zip` · native `.playlist.pdjcollection` | `{app, kind:"playlist", schemaVersion:1, portable, exportedAt, playlistName, counts}` | `manifest.json`, `playlist.json`, `pockets.json` (DAG-expanded), **+portable:** `items.json` + `art/` + `setlists.json` |
+| **pocket** | PWA `.pocket.pocketdj.zip` · native `.pocket.pdjcollection` | `{app, kind:"pocket", schemaVersion:1, portable:false, exportedAt, pocketName, counts:{pockets,art}}` | `manifest.json`, `pocket.json` (root), `pockets.json` (DAG-expanded children) |
 
 ```
                        manifest.json { app:"pocketdj", kind, schemaVersion, portable }
@@ -283,6 +302,23 @@ indexed catalog), so it's dropped, not adopted.
 - **PWA bundles** the catalog (`portable:true` backups) and now **also** writes `kind`
   + `edits.json`, so its export is a strict superset that native reads (extra entries
   are ignored on the native side).
+
+**The `.pdjcollection` file type (native).** The *bytes* of a native playlist/pocket
+export are the same zip envelope, but the file now self-identifies as a PocketDJ document:
+the custom UTI **`com.pocketdj.collection`** (`UTType.pocketDJCollection`, conforming to
+`public.zip-archive` — declared via `UTExportedTypeDeclarations` + `CFBundleDocumentTypes`
+in `project.yml`, §5.3), extension **`.pdjcollection`**. The extension is written
+**explicitly into the export filename** (`<name>.playlist.pdjcollection` /
+`<name>.pocket.pdjcollection` in `PlaylistsView`/`PocketsView`) because SwiftUI's
+`fileExporter` won't append a *custom* type's extension on-device — leaving it implicit
+shipped bare `.playlist` files with no type. The type fixes the cross-device import-picker
+grey-out (`allowedContentTypes` can name it, and since it conforms to `.zip` a plain-zip
+importer still accepts it) and makes Files / iMessage / AirDrop offer **"Open in
+PocketDJ"**: `PocketDJApp`'s `.onOpenURL` routes any *file* URL through security-scoped
+access into `CollectionsStore.importAny` (the same `kind`-routed importer the pickers
+use), parking a cold-launch tap until onboarding completes. **Backups keep the
+`.pocketdj.zip` suffix** (the exporter's `.zip` content type appends it), and the PWA
+keeps its `.pocketdj.zip` suffixes throughout.
 
 **The round-trip matrix** (what survives each direction). "Lossless" = every field the
 *source* client holds is preserved on import; "lossy" entries note exactly what drops.
@@ -465,7 +501,8 @@ injected into the SwiftUI environment in `PocketDJApp` alongside the other store
 ```
  PocketDJApp
    ├─ @State streaming = StreamingStore()  → .environment(streaming)
-   ├─ .onOpenURL { streaming.handleCallback($0) }      ← a provider's OAuth redirect (if any)
+   ├─ .onOpenURL — non-file URLs → streaming.handleCallback($0)   ← a provider's OAuth
+   │              redirect (if any); FILE URLs route to the collection-file import (§3.5)
    └─ .onChange(scenePhase): active → onScenePhaseActive()    (reconnectIfNeeded)
                              background → onScenePhaseBackground()  (disconnect)
 
@@ -561,12 +598,14 @@ re-run `xcodegen generate` after edits):
 | Key | Value / file | Why |
 |---|---|---|
 | `PRODUCT_BUNDLE_IDENTIFIER` | **`com.levi.pocketdj`** (was `net.pocketdj.app`; tests `.tests`, UI `.uitests`) | the App ID the MusicKit/ShazamKit App Services + signing are provisioned against (team `EC27UF79GL`) |
-| `CODE_SIGN_ENTITLEMENTS` | `PocketDJ/PocketDJ.entitlements` (**empty** — `<dict></dict>`) | MusicKit and ShazamKit use **no** `.entitlements` key; declaring `com.apple.developer.musickit`/`shazamkit` is invalid and breaks signing. MusicKit is enabled by the **MusicKit App Service** on the App ID; ShazamKit by the framework + mic string alone |
+| `CODE_SIGN_ENTITLEMENTS` | base `PocketDJ/PocketDJ.entitlements` — the **App Group** `group.com.levi.pocketdj` (widgets, §10) + **CloudKit** `iCloud.com.levi.pocketdj` (profile/session sync). Per-SDK overrides: macOS swaps in `PocketDJ-macOS.entitlements` (**App Sandbox** + network-client/mic/user-selected-files — the Mac App Store TestFlight requirement), iOS device *and* simulator swap in `PocketDJ-CarPlay.entitlements` (§9); all three carry the same group + iCloud keys | MusicKit and ShazamKit still use **no** `.entitlements` key; declaring `com.apple.developer.musickit`/`shazamkit` is invalid and breaks signing. MusicKit is enabled by the **MusicKit App Service** on the App ID; ShazamKit by the framework + mic string alone. CloudKit is the one capability that genuinely needs entitlement keys |
 | `INFOPLIST_KEY_NSMicrophoneUsageDescription` | "PocketDJ listens to identify the song that's playing." | mic prompt for the "?♪?" ShazamKit listen |
 | `INFOPLIST_KEY_NSAppleMusicUsageDescription` | "PocketDJ uses Apple Music to play and search tracks from your subscription." | the MusicKit consent prompt |
 | `PocketDJAppleMusicEnabled` (in the **base Info.plist**, not `INFOPLIST_KEY_*`) | **`YES`** | build-time gate that wakes `AppleMusicProvider` (still needs the portal MusicKit App Service to run on device). Must be a real Info.plist key — `INFOPLIST_KEY_PocketDJAppleMusicEnabled` no-ops because `INFOPLIST_KEY_*` only injects Apple's *known* keys |
 | `UIBackgroundModes` | **`[audio, fetch, processing]`** (was `[audio]`) | `audio` = background playback + lock-screen Now Playing (Ch. 5 §7, §11.3); **`fetch`** lets the `BGAppRefreshTask` (rip-reconcile) run; **`processing`** lets the `BGProcessingTask` (burn-drain) run — the **background-processing** feature (Ch. 5 §11). iOS-only; macOS ignores them |
 | `BGTaskSchedulerPermittedIdentifiers` | **`[com.levi.pocketdj.burn-drain, com.levi.pocketdj.rip-reconcile, com.levi.pocketdj.storage-prune]`** | the three BGTask identifiers the `AppDelegate` registers + submits (burn-drain reconcile, rips-manifest refresh, the storage manager's daily soft-cap prune); iOS refuses to register an identifier not declared here (Ch. 5 §11.2, §9.2) |
+| `UTExportedTypeDeclarations` + `CFBundleDocumentTypes` | UTI **`com.pocketdj.collection`** (ext `.pdjcollection`, conforms to `public.zip-archive`), claimed `LSHandlerRank: Owner` | the collection-file type (§3.5): import pickers can name it, Files/iMessage offer "Open in PocketDJ". Array/nested keys, so they live in the base `info:` block |
+| `LSSupportsOpeningDocumentsInPlace` | **`true`** | a document-typed app must declare how it opens files — its absence is upload warning **ITMS-90737**. `YES` is the only warning-clearing value valid on all three platforms (the macOS archiver rejects `NO`); safe because the importer takes security-scoped access and imports + discards, never editing the original |
 
 The `UIBackgroundModes` array can't be a scalar `INFOPLIST_KEY_*`, so `project.yml`
 declares it (and `BGTaskSchedulerPermittedIdentifiers`) in its base **`info:`** block;
@@ -712,11 +751,13 @@ favorites already sync through the **private** CloudKit database, so a non-owner
 The gate's job is narrower — keep a tester's ♥ out of the **tester's own** Apple Music account,
 and route them to the seed instead.
 
-**The allowlist ships EMPTY, on purpose.** `Config.ownerICloudHashes` is `[]` in the shipped
-source, which means *nobody* is the owner, which means **every install is favorites-local-only
-until the constant is bootstrapped by hand**. The hash can't be known before the app runs, so
+**The allowlist starts EMPTY and is bootstrapped by hand.** An empty
+`Config.ownerICloudHashes` fails closed — *nobody* is the owner, **every install is
+favorites-local-only** — which is how the source shipped until the constant was
+bootstrapped. The hash can't be known before the app runs, so
 **Settings ▸ Debug ▸ "Owner identity"** surfaces this device's hash with a Copy button; the
-loop is run → copy → paste into `Config` → ship. **Both** environments' hashes are required:
+loop is run → copy → paste into `Config` → ship — completed 2026-07-20, so the shipped set
+now carries the owner's (Levi's) hash. **Both** environments' hashes are required:
 `userRecordID` is container-scoped, so the CloudKit **Development** and **Production**
 containers yield different values, and a TestFlight build with only the dev hash silently
 falls through to local-only. The same panel shows the resolved gate state, `lastSyncedAtMs`,
@@ -1376,8 +1417,9 @@ the Lambda migration) is a **Tailscale Funnel** path-mount on the iMac
 **Reading it.** Funnel exposes *only* the `/jukebox` path of the local `:8788` service to the
 public internet over TLS — the rest of the machine (and the Tailnet-only rip server on its own
 host name) stays private. The rendered guest page bakes this base in (`JUKEBOX_PUBLIC_BASE`) for
-its POSTs, and the app targets the same base (`Config.jukeboxServerBase`, default
-`https://levis-imac.tail2e2bdf.ts.net/jukebox`; Settings ▸ Jukebox Hero overrides it). Because
+its POSTs, and the app targets whatever base is set in **Settings ▸ Jukebox Hero**
+(`SettingsData.jukeboxServerURL` — seeded **blank** like the rip-server URL, §2: no shipped
+default, so the Jukebox tab honestly reports no server until one is configured). Because
 that base is the *one* externally-visible coupling, the Lambda migration below is a single
 URL swap.
 
@@ -1390,10 +1432,12 @@ Lambda handler behind an **HTTP API Gateway** later — mirroring the search-pro
 HTTP API + a CloudFront `/jukebox-api/*` behavior is the path, as with the search proxy). A
 future `scripts/lambda/deploy-jukebox.sh` would pair that handler with a **DynamoDB/S3 storage
 adapter** and move the public base off Funnel — the interim `jukebox-server.mjs` process on the
-iMac is v1. This is tracked in the top-level [Status ▸ Ch. 7](../ARCHITECTURE.md#ch-7--distribution-clients--edits) deferred list.
+iMac is v1. This is tracked in the [Apple doc's Status ▸ Ch. 7](../ARCHITECTURE-APPLE.md#ch-7--distribution-clients--edits) deferred list.
 
 ---
 
 ## End of the book
 
-Back to the [top-level overview & table of contents](../ARCHITECTURE.md).
+Back to the [architecture index](../ARCHITECTURE.md), the
+[Apple + shared-core overview](../ARCHITECTURE-APPLE.md), or the
+[Android port plan](../ARCHITECTURE-ANDROID.md).

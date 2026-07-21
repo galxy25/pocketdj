@@ -6,7 +6,9 @@
 > **streaming-account** linking, the **two-way Apple Music favorites sync**,
 > **Siri / Shortcuts / Spotlight** voice and system
 > actions, **CarPlay** in the car, the **Now Playing widgets** on the home screen /
-> desktop, **Jukebox Hero** — a QR-code request line the whole room can scan — and the
+> desktop and the **♥ on the lock screen**, **⌘N multi-window** on Mac and iPad, the
+> **.pdjcollection** file that carries a collection between devices,
+> **Jukebox Hero** — a QR-code request line the whole room can scan — and the
 > **Settings** utilities — the storage manager, the owner-identity bootstrap, and a
 > remote-debug capture — plus one
 > easter egg. They all read the same
@@ -52,18 +54,19 @@ flanking a music note. Tap it and the app **listens through the mic** (ShazamKit
 - a hit **in your crate** opens a *"Heard it"* sheet — **"In your crate"** with an
   **Open song** deep-link straight into that song's detail,
 - a hit **not in your crate** shows the recognized title/artist/artwork as **"Not in
-  your crate"**, and — when Shazam returns an Apple Music id — notes *"A linked Apple
-  Music account can play this."*,
+  your crate"**, and — when Shazam returns an Apple Music id — an **Apple Music**
+  section appears below it: a one-tap **Connect Apple Music** if no account is linked
+  yet, or the open-album / add actions (next section) once one is,
 - if mic permission is **denied**, the button shakes, shows a `mic.slash`, and tapping
   it jumps to Settings.
 
 ### Not in your crate? Add it — and rip it to your crate
 
-When a song is **not in your crate** but you've linked **Apple Music**, the result sheet still gives you two ways to keep it. **Open album** deep-links to the album — straight into the album detail if it's already indexed in your catalog, or, if not, a synthesized album view built live from the recognized track's Apple Music metadata: cover art, full tracklist, and the song you just Shazamed highlighted among its neighbors. **＋ Add to Library** goes further — it adds the album's complete tracklist to your Apple Music library, then automatically **rips and burns** every track into your crate, so the whole album lands as offline-playable audio, not just a library entry.
+When a song is **not in your crate** but you've linked **Apple Music**, the result sheet still gives you two ways to keep it. **Open album** deep-links to the album — straight into the album detail if it's already indexed in your catalog, or, if not, a synthesized album view built live from the recognized track's Apple Music metadata: cover art, full tracklist, and the song you just Shazamed highlighted among its neighbors. **＋ Add to Apple Music** goes further — it adds the recognized song to your Apple Music library, then the app prepares your copy and saves it to this device ("Preparing your copy…" → "Saved to device"), so it lands as offline-playable audio, not just a library entry. The synthesized album view carries its own **Add album to Library** button that does the same for the whole album: every track added, then prepared and saved in one batched pass. (On the Mac, where no app can write the Music library, the sheet hands off instead — **Add in Apple Music** opens the album in the Music app.)
 
-The result is that a song identified in the wild — at a party, in a store, off someone else's speaker — can become a first-class member of your collection in one tap: found, added, ripped, and burned, no separate trip to go dig it up later.
+The result is that a song identified in the wild — at a party, in a store, off someone else's speaker — can become a first-class member of your collection in one tap: found, added, and saved to the device, no separate trip to go dig it up later.
 
-**User story:** "Shazam a song I don't own, hit ＋, and by the time I check back it's not just in my Apple Music library — it's ripped and burned into my crate, ready to mix."
+**User story:** "Shazam a song I don't own, hit ＋, and by the time I check back it's not just in my Apple Music library — it's saved on my device, ready to mix."
 
 Matching is title+artist **normalized** (so *"Café (Remastered 2011)"* still matches
 *"Cafe"*). On a build without ShazamKit it simply reads *"Recognition isn't available
@@ -128,18 +131,19 @@ Everything else behaves the way you'd expect: the ♥ is off in PocketDJ, off on
 devices, and the track stops being treated as loved. It's only Apple's own Favorite Songs list
 that keeps the entry. The app says so where it matters rather than letting you find out later.
 
-### Only one install syncs — and it ships switched off
+### Only one install syncs — everyone else stays local-only
 
 Two things make this safe for everyone who *isn't* the owner:
 
 - **Nothing about your favorites can reach anyone else, structurally.** They sync through your
   own private iCloud, not through the shared catalog — there is no path from your device to
   another DJ's, whatever the settings say.
-- **No install pushes anything to Apple Music unless it's explicitly been named as the
-  owner's.** The check has to be bootstrapped by hand (below), and a build ships with **nobody
-  named** — so every install is favorites-local-only out of the box. If the check can't be made
-  at all — no iCloud account, no network, an error of any kind — the answer is *"not the
-  owner"* and the app stays local-only. It errs toward doing nothing, always.
+- **No install pushes anything to Apple Music unless its iCloud account matches the owner
+  allowlist compiled into the app.** The allowlist was bootstrapped by hand (below) and names
+  exactly one person — the owner — so every other install is favorites-local-only out of the
+  box. If the check can't be made at all — no iCloud account, no network, an error of any
+  kind — the answer is *"not the owner"* and the app stays local-only. It errs toward doing
+  nothing, always.
 
 Which means: **a beta tester's ♥ never touch their own Apple Music account, and never touch
 anyone else's.** What a tester *does* get is a **starting set** — a one-time copy of the
@@ -149,18 +153,18 @@ have hearted, or deliberately un-hearted, is left exactly as you left it, and it
 once, not every launch. The owner's personal **vinyl** and **My Digital** hearts are never part
 of it — only Apple Music tracks travel.
 
-### Settings ▸ Debug ▸ Owner identity — the bootstrap
+### Settings ▸ Sync ▸ Favorites — the bootstrap
 
-The panel that turns the whole thing on lives in **Settings ▸ Debug**, under **Owner
-identity**:
+The panel that runs the whole thing lives in **Settings ▸ Sync**, under **Favorites** (it's a
+sync question, so it sits in the sync panel, not in Debug):
 
-- **iCloud hash** — this device's identifier for the check, shown as selectable text with a
-  **Copy hash** button. This is the value that gets written into the app's build and shipped;
-  until it is, nothing syncs to Apple Music. (Both the development and the TestFlight builds
-  produce **different** hashes, so both have to be captured.)
-- **Favorites sync** — a plain-language status line: *"Owner: two-way Apple Music sync on"* or
-  *"Not owner: favorites stay on this profile"*, plus the **last synced** time and the **last
-  error** if a pass failed.
+- **Status** — a plain-language line: *"Two-way Apple Music sync on"* or *"Local to this
+  profile"*, plus the **last synced** time and the **last error** if a pass failed, and a
+  **Sync favorites now** button that runs a pass on demand.
+- **iCloud hash** — this device's identifier for the owner check, shown as selectable text with
+  a **Copy hash** button. This is the value that gets written into the app's build and shipped;
+  an install syncs only when its hash matches. (Different CloudKit environments produce
+  **different** hashes, so the dev and TestFlight builds each have to be captured.)
 - **Export favorites seed…** — owner-only. Writes the starting-set file (the Apple-Music-sourced
   hearts, nothing personal) out through the normal save/share sheet, ready to publish for
   testers. It doesn't appear at all on a non-owner install, so a tester can't accidentally
@@ -172,8 +176,8 @@ holding the phone sees it at the moment they'd care.
 **Affordances**
 - **♥ anywhere** — favorites the song; on the owner's install it also stars and loves it in
   Apple Music.
-- **Settings ▸ Debug ▸ Owner identity** — copy this device's hash, read the sync status, see
-  the last error.
+- **Settings ▸ Sync ▸ Favorites** — read the sync status, run a pass now, copy this device's
+  hash, see the last error.
 - **Export favorites seed…** — owner-only; produces the testers' starting set.
 
 **User story:** "My hearts should be one thing, not two — what I love in the Music app and what
@@ -225,14 +229,15 @@ and find ninety minutes of it waiting in the app."
 
 Plug the phone into a CarPlay head unit and PocketDJ appears as a native CarPlay app — not a mirrored phone screen, but its own tab-bar UI driving the exact same **library, collections, and player** as the phone. There's no separate car catalog to sync: whatever's in your pockets and playlists on the phone is what's in the car. The root is a four-tab bar — **Playlists · Pockets · Albums · Artists** — sized for glance-and-tap use at the wheel. Playlists and Pockets list your collections and drill into their songs; **Albums** and **Artists** are A–Z-indexed lists with a quick alphabetical scroll index down the side, the keyboard-free way to jump straight to a name while driving instead of typing it. Tapping into a collection or album pushes its song list with **▶ Play all** and **🔀 Shuffle all** rows pinned above the tracks; tapping an artist plays their whole discography straight through. Tapping a song itself opens an action sheet — **Play now**, or **Add to pocket / playlist**, which lists destinations and confirms with "Added to \<name\>" — so building a collection is a two-tap job even at a stoplight.
 
-Because CarPlay drives the shared player, the car's system **Now Playing** screen always matches what's on the phone, down to the **Up Next** button, which opens an editable queue with **Play now · Remove · Play next · Move to end** actions (Play now jumps the set straight to that row) — CarPlay has no swipe gestures, so every queue edit is a tap-and-choose. There is deliberately **no Search tab**: head units block the keyboard while the car is moving (leaving the screen frozen), and the A–Z scroll indexes on Albums/Artists plus voice — "Play X in PocketDJ" via Siri — cover finding music hands-free far better than typing at the wheel ever could.
+Because CarPlay drives the shared player, the car's system **Now Playing** screen always matches what's on the phone — and it carries a **♥** button that favorites the current track, filled or outline to match, the same heart as everywhere else in the app. The **Up Next** button opens an editable queue with the current track pinned in its own **Now Playing** section on top (tap it to land back on the Now Playing card) and **Play now · Remove · Play next · Move to end** actions on every upcoming row (Play now jumps the set straight to that row) — CarPlay has no swipe gestures, so every queue edit is a tap-and-choose. There is deliberately **no Search tab**: head units block the keyboard while the car is moving (leaving the screen frozen), and the A–Z scroll indexes on Albums/Artists plus voice — "Play X in PocketDJ" via Siri — cover finding music hands-free far better than typing at the wheel ever could.
 
 **Affordances**
 - **Playlists / Pockets tabs** — list collections, drill into songs
 - **Albums / Artists tabs** — A–Z lists with a scroll index for keyboard-free browsing
 - **▶ Play all / 🔀 Shuffle all** — pinned rows atop any collection or album's song list
 - **Song action sheet** — Play now, or Add to pocket / playlist with a confirmation toast
-- **Up Next** — editable queue via Remove · Play next · Move to end
+- **♥ on Now Playing** — favorite the current track from the car's Now Playing screen
+- **Up Next** — current track pinned on top; editable queue via Play now · Remove · Play next · Move to end
 - **Voice** — "Play X in PocketDJ" via Siri replaces typed search at the wheel
 
 **User story:** "I get in the car, my phone connects, and the same crate I built at home is right there on the dash — I can flick to an artist, shuffle a pocket, or just tell Siri to play something, without ever looking away from the road for long."
@@ -252,7 +257,8 @@ in-app deck shows.
 Three sizes, one story:
 - **Small** — the cover with ⏯ and ⏭ underneath: the glanceable "what's on".
 - **Medium** — cover beside title/artist, the next track ("Up next: …"), and the
-  full transport row.
+  full transport row — ⏮ ⏯ ⏭ plus a **♥** that flips the current track's favorite
+  (accent-tinted when on), straight from the home screen.
 - **Large** — everything above plus an **Up Next** preview of the next four tracks
   in the queue, so you can see where the set is headed without opening the app.
 
@@ -262,15 +268,53 @@ streams (whose art lives in Apple's catalog, not ours), and the play/pause glyph
 mirrors the real audio state no matter where you pressed pause — the app, the
 lock screen, the menu-bar Now Playing, or the widget itself.
 
+The **lock screen** gets the same heart: the Now Playing card's **♥** (the system
+Favorite command) flips the current track's favorite without unlocking the phone,
+filled or outline to match — the very same state as the widget's, CarPlay's, and
+every row's ♥ in the app. (The Mix decks' lock-screen card keeps its own transport
+but leaves the heart out.)
+
 **Affordances**
 - **Cover + title + artist** — always-current, all three sizes
-- **⏮ ⏯ ⏭** — real transport (medium/large; small keeps ⏯ + ⏭)
+- **⏮ ⏯ ⏭ ♥** — real transport + favorite (medium/large; small keeps ⏯ + ⏭)
+- **♥ on the lock screen** — favorite the current track from the Now Playing card
 - **Up next line** (medium) / **Up Next ×4 preview** (large)
 - **Idle placeholder** — "Nothing playing" instead of an empty tile
 
 **User story:** "The set runs while I'm in another app — or another *room* — and the
 widget is my remote: glance for what's on, tap to pause, tap to skip, never opening
 the app at all."
+
+---
+
+## ⌘N — another window (Mac and iPad)
+
+On the Mac and iPad, **File ▸ New Window (⌘N)** opens a genuinely new PocketDJ
+window every time — run the Performance surface in one and the Mix decks in
+another, or park the Browser on a second Stage Manager tile. Every window shares
+the same stores and engines: one library, one player, one set of decks — a second
+window is another *view* of the same session, never a duplicate app fighting over
+the audio. (iPhone has no multi-window, so the command simply doesn't appear
+there.)
+
+**User story:** "Decks on the left of the screen, the crate on the right — ⌘N and
+I'm browsing for the next record without leaving the mix."
+
+---
+
+## A collection is a file — .pdjcollection
+
+Exporting a pocket, playlist, or set list writes a **.pdjcollection** file — a
+file type the operating system knows belongs to PocketDJ. That makes moving a
+collection between devices a plain file hand-off: **tap the file anywhere** — in
+the Files app, an iMessage thread, an AirDrop drop — and PocketDJ opens, imports
+it on the spot, and lands you on the imported collection. No picker, no digging
+through Settings. (Legacy `.zip` exports still open the same way.) Songs the
+receiving device's catalog doesn't know arrive as provisional "Imported" entries
+rather than being dropped.
+
+**User story:** "I text my warm-up set to a friend; they tap the bubble and it's a
+playlist in their PocketDJ before they've left the conversation."
 
 ---
 
@@ -347,7 +391,10 @@ A session **lasts 24 hours** and then quietly ends — the guest page shows it's
 folds it away — with a week's grace before the page is deleted entirely. If you're running a
 residency or a room you want live indefinitely, flip it **timeless** and it never expires.
 Ending it yourself is always one tap. Settings ▸ **Jukebox Hero** holds the server address and a
-health check, mirroring the rip-server rows.
+health check, mirroring the import-server rows, plus the default for **Require access token** —
+each new session seeds from that default on its create screen and can flip it per-session, live
+included. (The toggle is recorded on the session today; the enforcement — the guest page turning
+away anyone whose link doesn't carry the session's token — is still being wired up server-side.)
 
 **Affordances**
 - **Start / End Jukebox** — name a session, get a QR code; End closes it
@@ -358,6 +405,8 @@ health check, mirroring the rip-server rows.
   (public rips only), with a lock-screen card and auto-advancing tracks
 - **🕘 Previously played** — the guest page's reveal-button history of the whole set
 - **Timeless toggle** — opt out of the 24-hour expiry
+- **Require access token** — per-session toggle, seeded from the Settings ▸ Jukebox Hero
+  default (guest-side enforcement still in the works)
 
 **User story:** "It's my party and I'm on the decks. I throw a QR code up on the TV, and the
 room starts feeding me requests from their phones — I skim them, tap Play Next on the good
@@ -380,18 +429,26 @@ itself runs normally underneath.
 
 ## Settings ▸ Sync — one panel for staying current
 
-Two kinds of "keep me up to date" used to live in different places; now Settings has a single
-**Sync** row (the Storage-panel pattern — a navigable page with a back button) gathering both:
+Every kind of "keep me up to date" used to live in a different place; now Settings has a single
+**Sync** row (the Storage-panel pattern — a navigable page with a back button) gathering them
+all:
 
-- **Apple Music library** — the **Sync Apple Music library** button asks your Mac (via the rip
-  server) to check for newly-added music right now, with the result inline ("Library up to
-  date", or "12 new — applies after deploy"). The same check also runs automatically every
+- **Apple Music library** — the **Sync Apple Music library** button asks your Mac (via the
+  import server) to check for newly-added music right now, with the result inline ("Library up
+  to date", or "12 new — applies after deploy"). The same check also runs automatically every
   day at 04:00.
 - **Converted playlists & pockets** — the global **"Sync converted playlists & pockets"**
   toggle (on by default) plus a **"Sync from sources now"** button that runs one reconcile
   pass over every linked item immediately and reports how many changed. The footer counts how
   many of your collections are linked to a source ([Converted pockets & duplicated playlists
   stay in sync with their source](perform-pockets-playlists-setlists.md#converted-pockets--duplicated-playlists-stay-in-sync-with-their-source)).
+- **Apple Music playlist updates** — when you've added songs to an Apple Music playlist from
+  inside PocketDJ, this section (it appears only while there's something in flight) shows how
+  many are **waiting to send**, which **failed** and why, and a **Retry failed** button. The
+  footer explains the one surprise: the song reaches your real Apple Music library in seconds,
+  but PocketDJ's own view of that playlist only catches up at the next nightly library sync.
+- **Favorites** — the ♥ ⇄ Apple Music panel: sync status, **Sync favorites now**, and the
+  owner bootstrap ([Settings ▸ Sync ▸ Favorites — the bootstrap](#settings--sync--favorites--the-bootstrap)).
 
 **User story:** "When I wonder 'is the app caught up with my library?', I want one place to
 look — and one button to press."
@@ -452,9 +509,10 @@ keep me under it by tossing what I never play."
 ## Settings ▸ Debug — capture a debug session, ship it back
 
 Remote testing has a built-in feedback loop. **Settings ▸ Debug** (the last row) opens a small
-panel with three things on it: which **build** you're running, the **Owner identity** rows that
-bootstrap the Apple Music favorites sync ([Favorites and Apple Music](#favorites-and-apple-music--the-two-way-sync)),
-and one switch — **Capture debug log**.
+panel with two things on it: which **build** you're running, and one switch — **Capture debug
+log**. (The owner-identity rows that bootstrap the Apple Music favorites sync used to live
+here too; they've moved to **Settings ▸ Sync ▸ Favorites** —
+[Favorites and Apple Music](#favorites-and-apple-music--the-two-way-sync).)
 
 The **build** row is now a proper row rather than a footer line: the version and build number as
 selectable text with a **Copy version** button beside it, because the only reason to look at it

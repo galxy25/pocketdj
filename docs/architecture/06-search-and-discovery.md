@@ -186,6 +186,107 @@ read the same loaded catalog (Ch. 3) — grouping by **genre / BPM band / Camelo
 is pure client-side derivation over `SongItem.genre`, `bpm`, and `camelot` (the
 storybook §1–§4). No backend involvement; this is why discovery works fully offline.
 
+The native app adds two *outward* discovery surfaces on top: **Discover** (§5.1),
+which searches the whole Apple Music catalog and pulls songs/albums *into* the loaded
+catalog, and the **"?♪?" ShazamKit recognizer** (§5.2), which turns the song playing
+in the room back into a catalog row.
+
+### 5.1 Browse ▸ Discover — search the whole Apple Music catalog, ＋ Add it
+
+**Why.** Offline (§1) and online (§2–§4) search both cover what's already indexed.
+Discover searches the **entire Apple Music catalog** and lets ＋ Add materialize a hit
+— one song, or a whole album — as a first-class catalog citizen immediately.
+
+**Source of truth:**
+[`apple/PocketDJ/Views/BrowseDiscover.swift`](../../apple/PocketDJ/Views/BrowseDiscover.swift)
+(`DiscoverSearchModel` / `DiscoverAlbumSearchModel` debounce+merge, `DiscoverAddWording`,
+`DiscoverAlbumAddState`, the rows),
+[`apple/PocketDJ/State/RipsStore.swift`](../../apple/PocketDJ/State/RipsStore.swift)
+(`discoverSearch`/`discoverSearchAlbums`, `discoverAdd`/`discoverAddAlbum`, `fetchAlbumTracks`),
+[`apple/PocketDJ/State/DiscoverAddsStore.swift`](../../apple/PocketDJ/State/DiscoverAddsStore.swift)
+(provisional entries + the supersede `split`/`splitAlbums`), `scripts/rip-server.mjs`
+(`GET /search`, `GET /album-tracks`).
+
+```
+ Browse "Show" tabs:  Albums · Songs · Artists · DISCOVER
+   Discover rides BrowseState.searchMode == .discover (persisted) — NOT a 4th ItemKind,
+   so the filter/sort machinery never sees it. Nested Songs|Albums scope (session-only)
+   + "Refine by artist" (WIDENS the server term, NARROWS the hit list client-side).
+
+ 400 ms debounced query → TWO catalogs in parallel, merged, dedup by Apple Music store id:
+   • MusicKit catalog search (when authorized) — full coverage + real ranking, LEADS
+   • rip-server GET /search (entity=song|album — iTunes Search API proxy) — reachable by
+     every tester (no subscription); its SONG rows win ties (the server manifest is the
+     authority on ripped/url)
+
+ ＋ Add (song)   → library write (if canAddToLibrary) + requestRip("amrec_<storeId>") + poll
+                   → provisional DiscoverAddsStore entry → in the catalog NOW
+ ＋ Add (album)  → library write · tracks via MusicKit, else GET /album-tracks?id=<collectionId>
+                   → per-track amrec_ rip fan-out (ACCEPTED tracks only) → ONE batched
+                     provisional album "amrec_album_<collectionId>" + its songs
+                   row: ＋ → n/m spinner → ✓ Added  |  ⚠ n/m partial (settled with failures)
+
+ help text: DiscoverAddWording.addHelp(noun:, canAddToLibrary:, opensInMusic:)
+ supersede: a real indexed song/album with the same appleMusicId later REPLACES its twin
+```
+
+**Reading the diagram.** Discover is the fourth **Show** tab, but deliberately not a fourth
+`ItemKind` — it rides `BrowseState.searchMode` so the on-device filter/sort pipeline stays
+untouched; leaving the tab returns to device mode. Each keystroke (title field *or* artist
+refine) re-arms a **400 ms** debounce, then **two sources** run in parallel and merge, deduped
+by the Apple Music store id: **MusicKit** (full catalog coverage + real relevance — the iTunes
+proxy misses whole tracks) leads when the account is authorized; the **rip-server `/search`
+proxy** is reachable by every tester and, for songs, wins ties because the server manifest is
+the authority on ripped/streamable state.
+
+**＋ Add (song)** is two *independent* actions: save the song to the user's own Apple Music
+library (when the device can write it) and ask the rip server to prepare the user's copy via
+the standard `requestRip` path under the ad-hoc **`amrec_<storeId>`** id, following the job
+with the same background poll single-song rips use. Once the server accepts (or already holds
+the media), a **provisional `DiscoverAddsStore` entry** makes the song a catalog citizen
+immediately — browsable, collectable, burnable. **＋ Add (album)** expands the album into
+tracks (MusicKit when authorized, else the subscription-free `/album-tracks?id=<collectionId>`
+proxy) and fans each track out as a per-song `amrec_` rip; only **accepted** tracks are
+recorded (a per-track miss records nothing — no dead rows), and the provisional album + songs
+land in **one batched inject** so the ~90k-row live catalog rebuilds once, not per track. The
+row's trailing state is the pure, unit-tested `DiscoverAlbumAddState`: `adding (n/m)` →
+`added`, or **`partial (n/m)`** once every track is *terminal* (ready or failed) — a single
+track that never lands must not pin the spinner forever.
+
+**Capability-aware wording (F7).** The ＋ button's help text comes from one pure helper —
+`DiscoverAddWording.addHelp(noun:canAddToLibrary:opensInMusic:)` — shared by the song **and**
+album rows so the wording can't drift or overstate. On iOS/iPadOS with an authorized
+contributor it reads "Save this song/album to your Apple Music library and prepare your copy";
+on macOS `canAddToLibrary` is false, so an **album** (which carries a catalog URL) says "Open
+this album in Music and prepare your copy" (`add()` deep-links Music.app under exactly the
+`opensInMusic` condition), while a **song** hit carries no deep link and honestly says just
+"Prepare your copy."
+
+**Provisional → real: the supersede.** The provisional entries fold into the catalog as a
+**synthetic source appended after every real one** (`AppModel.withProvisionalSources`; merge
+is first-wins, so a real twin shadows without deleting). When the nightly indexer later lands
+the real song/album, `DiscoverAddsStore.split`/`splitAlbums` match provisional entries against
+the index **by `appleMusicId`** (songs: the track storeId; albums: the iTunes `collectionId`),
+exclude them, and return remap pairs — song supersedes remap collection references via
+`onDiscoverSupersede`; album supersedes only prune the provisional row (collections reference
+song ids, never album ids). The album half of this dedupe only works if the index carries
+album-level `appleMusicId`s: `scripts/resolve-apple-music-catalog.mjs` captures each track's
+`collectionId` alongside its `storeId` (legacy cache hits without one are re-resolved), and
+`scripts/fold-album-catalogid.mjs` stamps each album's `appleMusicId` from its member tracks'
+most-common `collectionId` as a fold over the existing index — which is what **activates** the
+Discover-album dedupe for albums the user already owns.
+
+### 5.2 The "?♪?" recognizer
+
+The **ShazamKit** listen-and-identify button sits at the top of the Browser list on the
+catalog tabs (Discover has its own refine row there instead): tap → mic listen → match →
+resolve against the loaded catalog, with a **＋ add → rip/burn** path for songs not in the
+crate. It is a client capability, documented with the other native-only sources in
+[Ch. 7 §5.2](./07-distribution-and-clients.md#52-shazamkit--the--recognizer); a
+not-in-crate ＋ add saves the song to the user's Apple Music library, then rips + burns the
+user's copy to this device under the same ad-hoc `amrec_<storeId>` id convention as §5.1
+(`AppleMusicRecognitionSection.add` → `BurnStore.startRipAndBurn`).
+
 ---
 
 ## 6. The native Browse filters — genre + collection membership
@@ -355,7 +456,9 @@ sort and the **~15 ms/render** full-catalog map that was removed from the render
 
 **Source of truth:**
 [`PlayHistoryStore.swift`](../../apple/PocketDJ/State/PlayHistoryStore.swift) (the durable log),
-[`HistoryView.swift`](../../apple/PocketDJ/Views/HistoryView.swift) (the timeline UI), and
+[`HistoryView.swift`](../../apple/PocketDJ/Views/HistoryView.swift) (the timeline UI),
+[`CollectionActivityStore.swift`](../../apple/PocketDJ/State/CollectionActivityStore.swift)
+(the add/heart/remove log behind the Activity segment, §8.1), and
 [`BrowseState.swift`](../../apple/PocketDJ/Browse/BrowseState.swift) (`historyMode` / `refreshExternal` reuse).
 User-facing counterpart: (STORYBOOK: [Play, Rip & Burn](../storybook/play-rip-burn.md)).
 
@@ -387,15 +490,49 @@ Each `PlayEvent` **snapshots** its `contextId`/`contextName` and `title`/`artist
 
 **The 20 000-event cap.** Unlike the aggregate stats (bounded by song count), an append-only log grows without bound, so `maxEvents` caps it at 20 000 and `trimToCap()` drops the **oldest** events past the cap (`removeFirst(overflow)`), rebuilding the `lastPlayedIndex`/`countIndex` derived maps. A monotonic `revision` (`&+=`) is bumped on every real mutation so the History view can key its recompute on the store even when `events.count` is pinned at the cap.
 
-**Shaped for a future cross-profile merge.** History is device-local, but every event carries a stable `UUID` and the `Document` carries an `installId` (minted once at first `init`, preserved across `clear()`). A merge is then just `union(events, by: id)` across installs re-sorted by `playedAt` — dedupe is by event id, so re-importing the same log twice is idempotent. `replaceAll` is the test/merge seam that swaps the whole log (re-caps, rebuilds indexes, persists).
+**Shaped for a cross-profile merge.** Every event carries a stable `UUID` and the `Document` carries an `installId` (minted once at first `init`, preserved across `clear()`). The log now rides the CloudKit profile sync — registered with `CloudSyncService` as `"play-history"`, with a whole-document LWW `reloadFromDisk` on pull (which adopts the cloud doc's `installId`). A true event-level merge stays one step away: `union(events, by: id)` re-sorted by `playedAt` — dedupe is by event id, so re-importing the same log twice is idempotent (`CollectionActivityStore.reloadFromDisk`, §8.1, already merges exactly this way). `replaceAll` is the test/merge seam that swaps the whole log (re-caps, rebuilds indexes, persists).
 
 **How `HistoryView` reuses the Browser.** Rather than a bespoke filter/sort engine, `HistoryView` drives its **own** `BrowseState` in `historyMode: true` under the distinct persistence key `"pdj.history.v1"`, so its filters/sort never clobber the Browser's. `historyMode` pins the state to song-kind, exposes the `historyOnly` `lastPlayedAt` field, and drops the collection-membership filter (rows are per-event, not per-song). The view seeds a default **Last-played** sort (`SortKey(field: "lastPlayedAt", dir: .desc)`) — most-recently-played first — and the `lastPlayedAt` field (`kind: .number`, op `.between`) powers a **date-range filter** ("played between May and August 2026") rendered as DatePickers in the `FilterSheet`.
 
 The base rows come from the event log, not the catalog: `buildItems()` runs on the main actor (it reads the live catalog to resolve title/album/artwork), producing `[BrowseItem]` plus parallel search keys, which are handed to `BrowseState` via `externalBase`. `refreshExternal(signature:baseKey:)` then reuses that built base across query/filter/sort edits (rebuilding only when `baseKey` changes) and runs the actual **filter/sort off the main actor** (`Task.detached`, with a 180 ms debounce on an active text query). Rendering is **incrementally paged** — only a growing prefix (`liveVisible`) of the filtered+sorted result set is handed to `ForEach`, extended as the last visible row appears — because the log can reach tens of thousands of events. The paging key deliberately excludes `catalogRevision` so a catalog load (which re-resolves row metadata) doesn't strand a scrolled-in budget back at page one.
 
-**Timeline vs By-song.** The `groupBySong` segmented toggle switches the base shape: **Timeline** emits one `BrowseItem` per event (`makeRow(e, count: 1)`), while **By song** collapses to one row per song — the latest event as the representative plus a play `count` (`counts[e.songId]`) shown as "N plays." Each row's accessory line reads `<PlaySource.label> · <contextName> · <relative time>`.
+**Timeline vs By-song.** The Plays timeline is **always per-event** now — the Timeline/By-song mode picker was removed (Levi, 2026-07-18: the two reads were indistinguishable in practice). The `groupBySong` plumbing survives, pinned `false`, so the grouped engine (one row per song — the latest event as the representative plus a play `count` shown as "N plays") remains one flag away if a future view wants it. Each row's accessory line reads `<PlaySource.label> · <contextName> · <relative time>`.
 
 **Entry points and seams.** History is reachable from anywhere via **⌘H** (`RootView.navigationShortcuts`'s hidden `"History-shadow"` button, which intentionally overrides the macOS system "Hide" shortcut) switching `section = .history`. The `PDJ_SEED_HISTORY` launch seam (`seedDemoIfRequested`, invoked from `RootView`) populates a deterministic handful of varied plays when the log is empty — self-contained (snapshot title/artist render before the catalog loads) and bypassing the re-count window via distinct timestamps; `PDJ_SEED_HISTORY_COUNT=N` seeds N distinct plays for exercising incremental paging.
+
+### 8.1 The Activity segment — the collection-activity log (F11)
+
+**Why a second store, not more `PlayEvent`s.** History now has **two timelines** behind a
+`Plays | Activity` segmented control (`HistoryView.HistoryTab`): song plays, and **collection
+activity** — "Added *X* to *Y*", "Hearted *Z*", "Removed heart from *Z*", "Removed *X* from
+*Y*". `PlayEvent` is deliberately song-play-centric (the 30 s re-count window, the
+`countIndex`/`lastPlayedIndex` aggregates feed recently-played reads), so an add/heart/remove
+is a different **kind** of fact and gets its own append-only store —
+`CollectionActivityStore`, persisted to `pocketdj-collection-activity.json` — with zero
+wipe-risk to the play log. A merged single timeline was rejected for the same reason: Plays
+rides `BrowseItem`, which is song-centric, and heart/remove rows have no clean song identity
+to filter/sort alongside plays. Accordingly the Browser filter/sort toolbar drives the Plays
+segment only (it is hidden on Activity); Activity is a plain **reverse-chronological** list —
+kind-specific SF Symbol + snapshot headline + relative time, tap-through when the `itemId`
+still resolves to a catalog song.
+
+The store mirrors the `PlayHistoryStore` idiom on purpose: same durable-JSON contract
+(atomic save, lenient decode-on-`init`, `PDJ_USE_FIXTURE` launch seam), the same
+20 000-event `maxEvents` cap with oldest-first trim, a monotonic `revision`, stable per-event
+`UUID`s + a document `installId`. `ActivityKind` raw values (`add`/`heart`/`unheart`/`remove`)
+are persisted tokens — never rename. Events **snapshot** `itemTitle`/`collectionName` at
+record time (rows survive renames/deletions; the live catalog title is preferred when the id
+still resolves); `collectionId`/`collectionKind`/`collectionName` are nil for heart events (a
+♥ isn't scoped to a collection).
+
+Feeding is hook-shaped: `CollectionsStore` fires `onActivity` from its **user-facing**
+add/remove paths (including the F11 **Recent** quick-add — `AddToCollectionView` surfaces the
+top-3 most-recent still-resolving add targets from `CollectionsStore.recentAddTargets`), and
+`FavoritesStore.onChanged` records heart/unheart for **user-originated** toggles only — sync
+echoes never log. One deliberate divergence from the play log: this store's cloud-sync
+`reloadFromDisk` (`"collection-activity"` registration) is a **union-by-event-id merge**, not
+a whole-document LWW replace — an append-only, aggregate-free log can merge losslessly, and
+LWW would let device B silently drop device A's local events.
 
 ---
 

@@ -198,6 +198,7 @@ manifest-driven stages, each streaming a JSONL shard, then merges + folds them.
      │   └─ synth-singles: fold leftover 12" singles
      ▼
  [2] lyrics              enrich-lyrics.mjs (Genius → AZLyrics), reject >20k-char dumps
+     │                   (scraped text is now the INTERIM fallback — whisper wins, §6)
      ▼
  [3] sentiment           local Gemma (LM Studio :1234)  OR  Claude agents
      ▼
@@ -216,7 +217,10 @@ enrich** queries the **Discogs API** (primary) and **Wikipedia** (fallback) from
 real **Chromium** page; unmatched albums are recovered by **Claude WebSearch backfill
 agents** (→ `web.jsonl`), and leftover 12" singles are folded by `synth-singles.mjs`.
 **[2] lyrics** scrapes Genius then AZLyrics, rejecting page-dumps over 20k chars (the
-robustness fix). **[3] sentiment** derives mood keywords from a **local Gemma** model
+robustness fix). Scraped text is now the **interim fallback only**: wherever a cloud
+**whisper transcript** exists (§6's lyrics side-channel), `scripts/fold-cloud-lyrics.mjs`
+*replaces* the scraped lyrics — index stamp (`lyricsSource='whisper'`) + CDN `/lyrics/<id>.txt`
+overwrite — and the only source that outranks whisper is `lyricsSource === 'manual'`. **[3] sentiment** derives mood keywords from a **local Gemma** model
 (LM Studio `127.0.0.1:1234`) or **Claude agents**. `pipeline.mjs merge` assembles all
 shards. **[4] audio** runs `audio_index.py` in the **`pocketdj-audio` Docker image**
 (librosa): silence-segment (`librosa.effects.split`), windowed BPM (`beat_track`) +
@@ -230,6 +234,15 @@ All fold steps (`apply-*.mjs`, `dedup-tracks`, `renumber-tracks`, `reattach-orph
 are **idempotent and keyed by `alb_*/sng_*` ids**, so re-runs never duplicate or
 downgrade matched data.
 
+One more out-of-band fold derives the **explicit flag** from lyrics:
+`enrich-explicit.mjs` classifies every lyriced song with a tiered **regex lexicon**
+first (`explicit-lexicon.mjs` — high-precision STRONG patterns ⇒ explicit, everything
+else confidently clean; word boundaries dodge the Scunthorpe problem), routing only the
+`uncertain` middle (context-sensitive words, censored masks, leetspeak) to a **local LM
+Studio model**; `apply-explicit.mjs` folds the per-song `{explicit, confidence,
+categories, source}` verdicts onto songs. Resumable JSONL shard, same as the other
+stages.
+
 ---
 
 ## 5. Audio analysis + art mirroring — the two write-back side-channels
@@ -241,8 +254,10 @@ offline-durable data.
 ```
                        ┌──────────────── BPM / KEY / CAMELOT ───────────────┐
  raw vinyl rip ──▶ analog-indexer audio stage (Docker librosa) ──▶ index.json audioTracks
- ripped mp3   ──▶ rip-server enqueueAnalysis → audio-analyze.mjs ──▶ rips/manifest.json
-                  (Docker librosa + ffmpeg waveform)                  {bpm,musicalKey,camelot,waveform}
+ ripped mp3   ──▶ rip-server enqueueAnalysis ──────────────────────▶ rips/manifest.json
+                  digital → offloadAnalysis → SQS cloud worker (§6)   {bpm,musicalKey,camelot,waveform}
+                  analog  → local audio-analyze.mjs (Docker librosa
+                            + ffmpeg waveform, concurrency 1)
                        └────────────────────────┬───────────────────┘
                                                 ▼ client refreshManifest()
                               applyAnalysisToCatalog(): FILL gaps only (never clobber)
@@ -256,8 +271,14 @@ offline-durable data.
 
 **Reading the diagram.** Two sources of BPM/key/Camelot: the **analog-indexer audio
 stage** (at index time → `audioTracks` in `index.json`) and the **rip server**
-post-hoc (`enqueueAnalysis()` → `audio-analyze.mjs`, same Docker/librosa analyzer +
-an `ffmpeg showwavespic` waveform → `rips/manifest.json`). The client's
+post-hoc (`enqueueAnalysis()` → `rips/manifest.json`). The post-hoc path forks by
+source: a **digital** manifest song is *offloaded to the cloud workers*
+(`offloadAnalysis()` → SQS, §6 — same librosa result, and the beat grid + waveform come
+back in the same pass; `POCKETDJ_ANALYSIS_OFFLOAD=0` reverts to local), while an
+**analog** song stays on the local concurrency-1 `audio-analyze.mjs` Docker path with
+`withKey=false` — its audio file is the shared album side, so the catalog's accurate
+per-song bpm/key are kept. `POST /backfill-analysis` (admin) sweeps every un-analyzed
+digital song into the offload queue. The client's
 `refreshManifest()` runs `applyAnalysisToCatalog()`, which **fills gaps only** —
 never overwriting an existing value with null — so accurate analog values are kept and
 only digital (null) songs get filled, then everything is filterable/sortable/on the
@@ -267,14 +288,16 @@ source, fetches it same-origin, and caches the blob in IndexedDB for offline use
 
 ---
 
-## 6. Beat-grid & stem analysis — two more rips-manifest side-channels
+## 6. Beat-grid, stem & lyrics analysis — three more rips-manifest side-channels
 
 **Why.** The Mix engine (Ch. 4 §7) needs two enrichments §5's analysis doesn't produce: a
 **measured beat grid** (a real downbeat phase + a tempo measured on the *exact* file that
-plays, for beat-matching) and **isolated stems** (vocals/drums/bass/other, for stem decks).
-Both are computed **out of band on the iMac** and folded into the **rips manifest** (not the
-catalog index), exactly like the post-rip bpm/key analysis — so they're durable, public, and
-client-readable without re-deriving anything on the phone.
+plays, for beat-matching) and **isolated stems** (vocals/drums/bass/other, for stem decks);
+the Demuxer needs a third — **timed lyrics** transcribed from the vocals stem. All are
+computed **out of band** — beat grids on the iMac, stems and lyrics (and §5's digital
+analysis) by default on an **autoscaling cloud worker fleet** fed by SQS — and folded into
+the **rips manifest** (not the catalog index), exactly like the post-rip bpm/key analysis —
+so they're durable, public, and client-readable without re-deriving anything on the phone.
 
 ```
                        ┌─────────────── BEAT GRID (librosa downbeat) ───────────────┐
@@ -284,32 +307,108 @@ client-readable without re-deriving anything on the phone.
                        └──────────────────────────┬─────────────────────────────────┘
                        ┌─────────────── STEMS (Demucs htdemucs v4) ─────────────────┐
  ripped mp3 / cut ──▶ rip-server POST /stemify (per-song) · /backfill-stems          │
-                       audio-stem.mjs → Demucs (native MPS · Docker-CPU fallback)     │
+                       offloadStem → SQS pocketdj-stem-jobs → stem-worker.mjs fleet   │
+                       (autoscaling EC2, scale-to-zero; local audio-stem.mjs Demucs   │
+                       [native MPS · Docker-CPU] only for /stemify-custom uploads     │
+                       or POCKETDJ_STEM_OFFLOAD=0)                                    │
                        → 4× mp3 256k → rips/stems/<songId>/<stem>.mp3 (PUBLIC)         │
                        └──────────────────────────┴──▶ manifest {stems,stemVersion,…} ┘
+                       ┌─────────────── LYRICS (faster-whisper, timed) ──────────────┐
+ vocals stem ──────▶ auto after a stems result folds · POST /lyricsify ·             │
+                       /backfill-lyrics → offloadLyrics → SQS → worker               │
+                       transcribe-one.py → rips/lyrics/<songId>.json                  │
+                       {words:[{text,startMs,endMs}]}                                 │
+                       └──────────────────────────┴─▶ manifest {lyrics,lyricsVersion,…}┘
                                                 ▼ client refreshManifest()
                               Mix engine: Sync rides beatGridBpm ; stem decks load stems
+                              fold-cloud-lyrics.mjs → catalog lyrics + CDN txt (whisper wins)
 ```
 
-**Reading the diagram.** Both passes are **rip-server endpoints** (Ch. 5 §15), not separate
+**Reading the diagram.** All passes are **rip-server endpoints** (Ch. 5 §15), not separate
 skills — the **beat-grid** stage re-runs the same librosa analyzer (`scripts/lib/audio-analyze.mjs`,
 `analyzeAudio(… withBeatgrid:true)`) to get a **downbeat grid** and writes `beatGridBpm`/
-`firstDownbeatMs`/`steady`/… onto the manifest entry; the **stem** stage shells to **Demucs**
-(`htdemucs`, v4, via `scripts/lib/audio-stem.mjs` + the Docker/Python assets under
-`.claude/skills/analog-indexer/stems/` — `Dockerfile` + `separate-one.py`, a sibling of the
-librosa `audio/` stage) to split each song into **four 256k-mp3 stems** uploaded to the
-**public** `rips/stems/<songId>/` prefix. Both source the **per-song** audio (a digital song's
-mp3, an analog song's per-song **cut** — never the shared album side) and both have **`/backfill-`**
-endpoints to sweep the whole corpus retroactively. The full pipelines (queues, runtimes,
-manifest fields, idempotency) live in [Ch. 5 §15](./05-playback-and-rip-on-demand.md#15-stems-end-to-end--server-stemify-offline-stem-store-and-stem-audition);
-the *data shape* they write is [Ch. 3 §4.3](./03-catalog-and-data-model.md#43-the-rips-manifest-beat-grid--stem-fields).
+`firstDownbeatMs`/`steady`/… onto the manifest entry; the **stem** stage splits each song
+with **Demucs** (`htdemucs`, v4) into **four 256k-mp3 stems** uploaded to the **public**
+`rips/stems/<songId>/` prefix; the **lyrics** stage runs **faster-whisper**
+(`small`/cpu/int8, `scripts/transcribe-one.py`) over the song's *vocals stem* — cut-derived,
+so word timestamps are already song-relative — into a timed-word sidecar
+`rips/lyrics/<songId>.json` (lines are derived client-side). All source the **per-song**
+audio (a digital song's mp3, an analog song's per-song **cut** — never the shared album
+side) and all have **`/backfill-`** endpoints to sweep the whole corpus retroactively.
+
+**Cloud offload (the default).** Manifest-song stems, lyrics, and digital analysis no longer
+run on the iMac: `offloadStem()`/`offloadLyrics()`/`offloadAnalysis()` send
+`{songId, srcKey, tasks:[…]}` jobs to the **SQS** queue `pocketdj-stem-jobs` through a
+bounded dispatcher (`POCKETDJ_OFFLOAD_DISPATCH_CONC`, default 12 concurrent sends), and
+`scripts/stem-worker.mjs --serve` consumes them on an **autoscaling EC2 fleet**
+(`pocketdj-stem-worker` launch template, m7i.large; Demucs + librosa + faster-whisper in one
+venv). `scripts/stem-autoscaler.mjs` (cron ~60 s) launches
+`min(MAX, ceil(visible/jobsPerWorker))` workers off the jobs-queue depth and **never scales
+down** — workers self-retire on idle → shutdown → instance-terminate, so the fleet
+**scales to zero**. Results post to `pocketdj-stem-results`; the rip server's
+`pumpStemResults()` folds them into the manifest (a DLQ pump fails poison jobs, and a
+worker-side S3 dedup skips already-done songs). Fresh rips auto-enqueue stems
+(`autoStemOnRip`, on by default with offload), and a folded stems result auto-enqueues
+lyrics. The **local** Demucs path (`scripts/lib/audio-stem.mjs` + the Docker/Python assets
+under `.claude/skills/analog-indexer/stems/` — `Dockerfile` + `separate-one.py`, a sibling
+of the librosa `audio/` stage) remains for **`/stemify-custom`** uploads (device-local
+audio never in the manifest) and as the `POCKETDJ_STEM_OFFLOAD=0` fallback.
+
+The full pipelines (queues, runtimes, manifest fields, idempotency) live in
+[Ch. 5 §15](./05-playback-and-rip-on-demand.md#15-stems-end-to-end--server-stemify-offline-stem-store-and-stem-audition)
+and `scripts/STEM-OFFLOAD.md`; the *data shape* they write is
+[Ch. 3 §4.3](./03-catalog-and-data-model.md#43-the-rips-manifest-beat-grid--stem-fields).
+Downstream of the lyrics sidecars, `scripts/fold-cloud-lyrics.mjs` surfaces the transcripts
+in the **catalog** lyrics system (index stamp + CDN `/lyrics/<id>.txt`) with the
+**whisper-wins** precedence described in §4.
+
+---
+
+## 7. Digital files — the "My Digital" source
+
+**Why.** A third source: raw audio files on disk (freshly-burned CDs, exports) that are in
+neither the vinyl crate nor the Apple Music library. Because §6's cloud workers already
+exist, this source needs **no local analysis at all** — the iMac is a *staging node only*.
+
+**What.** `scripts/index-digital-files.mjs` walks a folder convention
+(`<root>/<artist>/<album>/<track>.<ext>`; a file directly under an artist — or the root —
+is a single; `Disc N` siblings merge into one album with disc numbers; a loose image in an
+album folder is the cover, else embedded ID3 art). It produces **both** artifacts that make
+a song work end to end.
+
+```
+ burn root (<artist>/<album>/<track>.<ext>) ── index-digital-files.mjs walk
+     │  transcode 256k mp3 ──▶ S3 rips/<songId>.mp3 (PUBLIC)   cover ──▶ art/<albumId>.jpg
+     ▼
+ POST /ingest-digital  (rip-server = the single manifest writer)  ──▶ rips/manifest.json
+     │        └─ auto-enqueues CLOUD analysis (§6 workers); stems via /backfill-stems
+     ▼
+ public/digital-index.json (sourceName "My Digital", content-stable ids)
+     ▲
+ nightly: scripts/digital-sync-nightly.sh (launchd 05:00, sibling of am-sync-nightly)
+```
+
+**Reading the diagram.** The walker transcodes each track to a 256k mp3 and uploads it to
+the public rips bucket, so every song is **streamable + burnable from S3 with zero rip
+step**; manifest writes go **through the rip server's `POST /ingest-digital`** (the live
+in-memory manifest is the single writer — `rips/manifest.json` is never edited directly),
+and `/ingest-digital` **auto-enqueues cloud analysis** (bpm/key/Camelot + beat grid +
+waveform), so digital ingest never touches Docker. Stages are resumable and idempotent
+(stable content-derived ids; each stage skips already-done work). The nightly
+`digital-sync-nightly.sh` mirrors the Apple-Music nightly's robustness (dedicated
+always-on-`main` clone, single-instance lock, audit-trail commit **before** the S3 publish,
+shrink circuit breaker) but its "sync" is a filesystem walk — only new album folders do
+real work. Because the cloud fills bpm/key into the *manifest* minutes after ingest,
+`scripts/fold-cloud-analysis.mjs` restamps those values back into `digital-index.json`
+out-of-band so the catalog cards show them too (cloud wins for a digital song — it is the
+only analyzer; a missing manifest field never NULLs a catalog value).
 
 ---
 
 ## Where this feeds
 
-The output of this chapter is two JSON documents (`current-index.json`,
-`apple-music-index.json`) conforming to one shape. That shape is
+The output of this chapter is three JSON documents (`current-index.json`,
+`apple-music-index.json`, `digital-index.json`) conforming to one shape. That shape is
 [Chapter 3 — Catalog & Data Model](./03-catalog-and-data-model.md).
 
 ## Next
