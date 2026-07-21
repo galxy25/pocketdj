@@ -75,6 +75,12 @@ final class DiscoverAddsStore {
     /// `AppModel.injectDiscoverAlbumAdd`. Kept a SEPARATE arm from `onAdded` so the
     /// existing song path is untouched (back-compat).
     @ObservationIgnored var onAlbumAdded: ((IndexAlbum) -> Void)?
+    /// Fired ONCE for a batched ALBUM add — every provisional track song PLUS the album,
+    /// in a single call — so the app does ONE catalog rebuild instead of one per track
+    /// (`AppModel.injectDiscoverAlbumBatch`; the album twin of `ImportedSongsStore.onAdded`).
+    /// The per-row `onAdded`/`onAlbumAdded` arms are deliberately NOT fired on this path.
+    /// `album` is nil when the album already existed but new tracks landed (idempotent).
+    @ObservationIgnored var onAlbumBatchAdded: ((_ songs: [IndexSong], _ album: IndexAlbum?) -> Void)?
 
     init(fileURL: URL = DiscoverAddsStore.defaultURL()) {
         self.fileURL = fileURL
@@ -132,6 +138,32 @@ final class DiscoverAddsStore {
         albums.append(entry)
         save()
         onAlbumAdded?(Self.indexAlbum(entry))
+    }
+
+    /// Batched ALBUM add (the perf path for a fan-out album — mirrors `ImportedSongsStore.add`):
+    /// record every provisional track song (idempotent per songId) PLUS the album (idempotent
+    /// per albumId), persist ONCE, and fire a SINGLE `onAlbumBatchAdded` carrying the whole set.
+    /// The per-row `onAdded`/`onAlbumAdded` arms are NOT fired, so the app rebuilds the effective
+    /// catalog exactly once for the album, never once per track. `songs` are gated by the caller
+    /// (only tracks whose rip was accepted arrive here — no dead rows).
+    func addAlbumBatch(albumId: String, appleMusicId: String, title: String, artist: String,
+                       trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil,
+                       songs newSongs: [Entry]) {
+        let existing = Set(entries.map(\.songId))
+        let freshSongs = newSongs.filter { !existing.contains($0.songId) }
+        let albumIsNew = !albums.contains(where: { $0.albumId == albumId })
+        guard !freshSongs.isEmpty || albumIsNew else { return }
+        entries.append(contentsOf: freshSongs)
+        var albumEntry: AlbumEntry?
+        if albumIsNew {
+            let e = AlbumEntry(albumId: albumId, appleMusicId: appleMusicId, title: title,
+                               artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
+                               year: year, addedAtMs: Date().timeIntervalSince1970 * 1000)
+            albums.append(e)
+            albumEntry = e
+        }
+        save()
+        onAlbumBatchAdded?(freshSongs.map(Self.indexSong), albumEntry.map(Self.indexAlbum))
     }
 
     /// Drop superseded entries (their indexed replacements own the ids now).

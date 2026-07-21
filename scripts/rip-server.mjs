@@ -2083,10 +2083,14 @@ const server = http.createServer(async (req, res) => {
           id: String(t.trackId),
           title: t.trackName || '',
           artist: t.artistName || '',
+          discNumber: t.discNumber || null,
           trackNumber: t.trackNumber || null,
           durationMs: t.trackTimeMillis || null,
         }))
-        .sort((a, b) => (a.trackNumber || 0) - (b.trackNumber || 0));
+        // Multi-disc albums must order disc-major then track — a trackNumber-only sort
+        // interleaves disc 1 and disc 2 (both start at track 1). discNumber leads.
+        .sort((a, b) => (a.discNumber || 0) - (b.discNumber || 0)
+                     || (a.trackNumber || 0) - (b.trackNumber || 0));
       return send(res, 200, { id, tracks });
     } catch (e) {
       return send(res, 502, { error: `album-tracks failed: ${String(e?.message || e)}` });

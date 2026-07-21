@@ -521,9 +521,33 @@ struct DiscoverAlbumResultsList: View {
     }
 }
 
+/// Settlement state of a fanned-out album add (pure, so it's unit-testable off the view).
+/// An album is SETTLED once every track has reached a TERMINAL state — ready (in the rips
+/// manifest) OR failed (its rip job exhausted retries → `.error`). A settled album with
+/// fewer ready than total tracks is a PARTIAL result: a single track that never lands must
+/// NOT pin the row's spinner forever (the poll's 1-hour cap would never resolve it).
+enum DiscoverAlbumAddState: Equatable {
+    case adding(ready: Int, total: Int)   // still work in flight (non-terminal tracks remain)
+    case partial(ready: Int, total: Int)  // settled, but some tracks failed — surface n/m
+    case added                            // every track ready
+
+    /// `readyIds` = tracks present in the manifest; `erroredIds` = tracks whose rip job is
+    /// in a terminal `.error` phase (failed / retries exhausted). Empty `trackIds` ⇒ `.added`
+    /// (nothing to wait on — a legacy provisional album with no recorded tracks).
+    static func of(trackIds: [String], readyIds: Set<String>, erroredIds: Set<String>) -> DiscoverAlbumAddState {
+        let total = trackIds.count
+        let ready = trackIds.reduce(0) { $0 + (readyIds.contains($1) ? 1 : 0) }
+        let settled = trackIds.allSatisfy { readyIds.contains($0) || erroredIds.contains($0) }
+        if settled && ready >= total { return .added }
+        if settled { return .partial(ready: ready, total: total) }
+        return .adding(ready: ready, total: total)
+    }
+}
+
 /// One Discover album result row: artwork · title / artist · trailing action. The trailing
 /// action is state-driven: not added → ＋ Add · adding → spinner · added → per-track rip
-/// progress (n/m) → ✓ Added when every track's copy has landed.
+/// progress (n/m) → ✓ Added when every track's copy has landed; a settled-but-partial add
+/// (some tracks never prepared) surfaces n/m instead of an eternal spinner.
 private struct DiscoverAlbumRow: View {
     @Environment(RipsStore.self) private var rips
     @Environment(StreamingStore.self) private var streaming
@@ -573,16 +597,27 @@ private struct DiscoverAlbumRow: View {
     @ViewBuilder private var trailing: some View {
         if let entry = addedEntry {
             let ids = entry.trackIds ?? []
-            let done = ids.filter { rips.manifest[$0] != nil }.count
-            if !ids.isEmpty && done >= ids.count {
+            // Terminal = ready (manifest) OR failed (rip job in .error) — a track that never
+            // lands settles the album as PARTIAL rather than spinning forever.
+            let readyIds = Set(ids.filter { rips.manifest[$0] != nil })
+            let erroredIds = Set(ids.filter { rips.jobs[$0]?.phase == .error })
+            switch DiscoverAlbumAddState.of(trackIds: ids, readyIds: readyIds, erroredIds: erroredIds) {
+            case .added:
                 Label("Added", systemImage: "checkmark.circle.fill")
                     .labelStyle(.iconOnly).font(.title3).foregroundStyle(.green)
                     .accessibilityIdentifier("discover-album-add-\(index)")
                     .help("All tracks ready")
-            } else {
+            case let .partial(ready, total):
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text("\(ready)/\(total)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                }
+                .accessibilityIdentifier("discover-album-add-\(index)")
+                .help("\(ready) of \(total) tracks ready — the rest couldn’t be prepared")
+            case let .adding(ready, total):
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("\(done)/\(ids.count)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    Text("\(ready)/\(total)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 }
                 .accessibilityIdentifier("discover-album-add-\(index)")
             }

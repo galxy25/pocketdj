@@ -315,6 +315,114 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertNil(rips.discoverError)
     }
 
+    /// FIX 1 (perf): a fanned-out album add records the album + every accepted track in a
+    /// SINGLE batched inject — the per-row `onAdded`/`onAlbumAdded` arms must NOT fire (each
+    /// would drive a full catalog rebuild), only `onAlbumBatchAdded` fires exactly once with
+    /// the complete set.
+    func testDiscoverAddAlbumBatchesInOneInject() async {
+        let rips = makeStore()
+        let addsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dadds-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: addsURL) }
+        let adds = DiscoverAddsStore(fileURL: addsURL)
+        rips.discoverAdds = adds
+        var perRowSongInjects = 0, perRowAlbumInjects = 0, batchInjects = 0
+        var batchedSongIds: [String] = []
+        var batchedAlbumId: String?
+        adds.onAdded = { _ in perRowSongInjects += 1 }
+        adds.onAlbumAdded = { _ in perRowAlbumInjects += 1 }
+        adds.onAlbumBatchAdded = { songs, album in
+            batchInjects += 1
+            batchedSongIds = songs.map(\.id)
+            batchedAlbumId = album?.id
+        }
+        DiscoverURLProtocol.bodyByPath["/album-tracks"] = Data("""
+        { "id": "111", "tracks": [
+            { "id": "1", "title": "T1", "artist": "Daft Punk", "trackNumber": 1, "durationMs": 200000 },
+            { "id": "2", "title": "T2", "artist": "Daft Punk", "trackNumber": 2, "durationMs": 210000 },
+            { "id": "3", "title": "T3", "artist": "Daft Punk", "trackNumber": 3, "durationMs": 220000 }
+          ] }
+        """.utf8)
+        DiscoverURLProtocol.bodyByPath["/rip"] =
+            Data(#"{"jobId":"j","songId":"x","phase":"queued"}"#.utf8)
+        let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
+                                             title: "RAM", artist: "Daft Punk", year: 2013)
+        await rips.discoverAddAlbum(hit)
+
+        XCTAssertEqual(batchInjects, 1, "exactly ONE batched inject for the whole album")
+        XCTAssertEqual(perRowSongInjects, 0, "no per-track song inject (that would rebuild per track)")
+        XCTAssertEqual(perRowAlbumInjects, 0, "no per-row album inject")
+        // The single settle carries the COMPLETE set — album + all three accepted tracks.
+        XCTAssertEqual(batchedAlbumId, "amrec_album_111")
+        XCTAssertEqual(batchedSongIds.sorted(), ["amrec_1", "amrec_2", "amrec_3"])
+        XCTAssertEqual(adds.albums.first?.trackIds, ["amrec_1", "amrec_2", "amrec_3"])
+        XCTAssertEqual(adds.entries.map(\.songId).sorted(), ["amrec_1", "amrec_2", "amrec_3"])
+    }
+
+    /// FIX 2 (correctness): an album add where EVERY track rip comes back `.noServer` must
+    /// record NOTHING — no dead album row, no dead song rows (the tracks expand via a library
+    /// contributor, but with no rip server every `requestRip` is a miss).
+    func testDiscoverAddAlbumAllNoServerRecordsNothing() async {
+        let rips = makeStore(serverURL: "")   // no rip server → every requestRip → .noServer
+        let addsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dadds-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: addsURL) }
+        let adds = DiscoverAddsStore(fileURL: addsURL)
+        rips.discoverAdds = adds
+        var batchInjects = 0
+        adds.onAlbumBatchAdded = { _, _ in batchInjects += 1 }
+        // The library expands the tracklist (so descs is non-empty) even with no server.
+        let lib = AlbumTracksStub()
+        lib.tracks = [songRow("10", "A"), songRow("11", "B")]
+        let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
+                                             title: "RAM", artist: "Daft Punk")
+        await rips.discoverAddAlbum(hit, library: lib)
+
+        XCTAssertTrue(adds.entries.isEmpty, "no dead song rows on an all-miss add")
+        XCTAssertTrue(adds.albums.isEmpty, "no dead album row on an all-miss add")
+        XCTAssertEqual(batchInjects, 0, "nothing accepted ⇒ no inject")
+        XCTAssertNotNil(rips.discoverError, "the miss is surfaced")
+    }
+
+    /// FIX 4 (UX): an album settles when every track is TERMINAL (ready OR errored) — a
+    /// permanently-failed track yields a PARTIAL result (n/m), never an eternal spinner.
+    func testDiscoverAlbumAddStateTerminalSettling() {
+        let ids = ["a", "b", "c"]
+        // Still working: b/c neither ready nor errored → adding.
+        XCTAssertEqual(DiscoverAlbumAddState.of(trackIds: ids, readyIds: ["a"], erroredIds: []),
+                       .adding(ready: 1, total: 3))
+        // All ready → added.
+        XCTAssertEqual(DiscoverAlbumAddState.of(trackIds: ids, readyIds: ["a", "b", "c"], erroredIds: []),
+                       .added)
+        // 2 ready + 1 permanently errored → settled PARTIAL (no spinner), not adding.
+        XCTAssertEqual(DiscoverAlbumAddState.of(trackIds: ids, readyIds: ["a", "b"], erroredIds: ["c"]),
+                       .partial(ready: 2, total: 3))
+        // Every track errored → partial 0/3 (settled, distinct from an in-flight 0/3).
+        XCTAssertEqual(DiscoverAlbumAddState.of(trackIds: ids, readyIds: [], erroredIds: ["a", "b", "c"]),
+                       .partial(ready: 0, total: 3))
+        // Legacy album with no recorded tracks → added (nothing to wait on, no eternal spinner).
+        XCTAssertEqual(DiscoverAlbumAddState.of(trackIds: [], readyIds: [], erroredIds: []), .added)
+    }
+
+    /// A library contributor that expands an album into a fixed tracklist (for the
+    /// no-server fan-out test — the proxy `/album-tracks` needs a server, the library doesn't).
+    @MainActor private final class AlbumTracksStub: MusicLibraryContributor {
+        var tracks: [AppleMusicSongRow] = []
+        var kind: StreamingProviderKind { .appleMusic }
+        var canContribute: Bool { true }
+        var canAddToLibrary: Bool { false }
+        func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
+        func addSongToLibrary(storeID: String) async throws {}
+        func addAlbumToLibrary(storeID: String) async throws {}
+        func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { tracks }
+    }
+
+    private func songRow(_ id: String, _ title: String) -> AppleMusicSongRow {
+        AppleMusicSongRow(storeID: id, title: title, artist: "Daft Punk", albumTitle: "RAM",
+                          trackNumber: nil, year: nil, durationSeconds: 200, isExplicit: nil,
+                          artworkURL: nil)
+    }
+
     // MARK: Album search-model math (merge/dedup-by-collectionId, refine, ref→hit mapping)
 
     private func albumRef(_ id: String, _ artist: String) -> AppleMusicAlbumRef {

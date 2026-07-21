@@ -7,7 +7,8 @@
 //   • GET /search?entity=album           → album shape (collectionId → appleMusicId,
 //                                           amrec_album_<id>, title/artist/artwork/trackCount/year)
 //   • GET /album-tracks?id=<collectionId> → ordered track list (collection row dropped,
-//                                           tracks sorted by trackNumber, id = trackId)
+//                                           tracks sorted by (discNumber, trackNumber), id = trackId;
+//                                           multi-disc albums stay disc-major, not interleaved)
 //
 //   node scripts/test/discover-album-e2e.mjs
 import { spawn } from 'node:child_process';
@@ -50,6 +51,18 @@ const fake = http.createServer((req, res) => {
     }] });
   }
   if (u.pathname === '/lookup') {
+    const id = u.searchParams.get('id');
+    if (id === '2222') {
+      // Multi-disc album: collection row first (dropped), then tracks deliberately
+      // out of (disc, track) order and ACROSS discs — a trackNumber-only sort would
+      // interleave (disc-2 track-1 ahead of disc-1 track-2).
+      return j({ resultCount: 4, results: [
+        { wrapperType: 'collection', collectionId: 2222, collectionName: 'Double LP', artistName: 'DJ Multi' },
+        { wrapperType: 'track', kind: 'song', trackId: 92, trackName: 'D2T1', artistName: 'DJ Multi', discNumber: 2, trackNumber: 1, trackTimeMillis: 100000 },
+        { wrapperType: 'track', kind: 'song', trackId: 91, trackName: 'D1T2', artistName: 'DJ Multi', discNumber: 1, trackNumber: 2, trackTimeMillis: 110000 },
+        { wrapperType: 'track', kind: 'song', trackId: 90, trackName: 'D1T1', artistName: 'DJ Multi', discNumber: 1, trackNumber: 1, trackTimeMillis: 120000 },
+      ] });
+    }
     // collection row first (must be dropped), then two tracks OUT of order.
     return j({ resultCount: 3, results: [
       { wrapperType: 'collection', collectionId: 1440913169, collectionName: 'Random Access Memories', artistName: 'Daft Punk' },
@@ -128,6 +141,20 @@ async function main() {
     {
       const r = await fetch(`${base}/album-tracks`);
       ok(r.status === 400, 'GET /album-tracks with no id → 400');
+    }
+
+    // 5) Multi-disc ordering — sort by (discNumber, trackNumber), not trackNumber alone.
+    {
+      const r = await fetch(`${base}/album-tracks?id=2222`);
+      const body = await r.json();
+      const t = body.tracks || [];
+      ok(r.status === 200, 'GET /album-tracks (2-disc) → 200');
+      ok(t.length === 3, `collection row dropped, 3 tracks returned (${t.length})`);
+      const order = t.map((x) => x.id).join(',');
+      ok(order === '90,91,92', `disc-major order d1t1,d1t2,d2t1 — not interleaved (${order})`);
+      ok(t[0].discNumber === 1 && t[1].discNumber === 1 && t[2].discNumber === 2,
+        'discNumber present and disc-major');
+      ok(t[0].title === 'D1T1' && t[2].title === 'D2T1', 'titles follow the disc-major sort');
     }
   } finally {
     if (p.exitCode === null && p.signalCode === null) {

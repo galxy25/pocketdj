@@ -567,6 +567,10 @@ struct PocketDJApp: App {
         let discoverAdds = DiscoverAddsStore(fileURL: DiscoverAddsStore.launchURL())
         discoverAdds.onAdded = { [weak app] song in app?.injectDiscoverAdd(song) }
         discoverAdds.onAlbumAdded = { [weak app] album in app?.injectDiscoverAlbumAdd(album) }
+        // Batched album add: one rebuild for the whole fan-out (not one per track).
+        discoverAdds.onAlbumBatchAdded = { [weak app] songs, album in
+            app?.injectDiscoverAlbumBatch(songs: songs, album: album)
+        }
         app.discoverAdds = discoverAdds
         // A superseded provisional id must be rewritten EVERYWHERE it is referenced — the
         // collections AND the favorites — or a ♥ made on a Discover add silently detaches

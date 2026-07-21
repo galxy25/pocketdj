@@ -922,11 +922,14 @@ final class RipsStore {
 
     private struct DiscoverAlbumResponse: Decodable { var results: [DiscoverAlbumHit] }
 
-    /// One track from `GET /album-tracks` — the subscription-free expansion source.
+    /// One track from `GET /album-tracks` — the subscription-free expansion source. The
+    /// server returns tracks already ordered by (discNumber, trackNumber); `discNumber` is
+    /// carried for faithfulness (multi-disc albums), though the app consumes server order.
     struct AlbumTrack: Decodable, Equatable {
         var id: String
         var title: String
         var artist: String
+        var discNumber: Int? = nil
         var trackNumber: Int? = nil
         var durationMs: Int? = nil
     }
@@ -1032,13 +1035,15 @@ final class RipsStore {
             return
         }
 
-        // 3) Provisional album + per-track songs, and fan out the rips on the shared queue.
+        // 3) Fan out the per-track rips on the shared queue FIRST, collecting ONLY the tracks
+        //    whose rip was ACCEPTED (ready / queued / inflight). A track the server can't
+        //    prepare (.noServer / .unknown / .failed) is dropped — recording it would leave a
+        //    permanent unplayable row (mirrors discoverAdd's gating). Nothing is written to the
+        //    provisional store inside this loop, so the catalog is NOT rebuilt per track.
+        var accepted: [DiscoverAddsStore.Entry] = []
         var trackIds: [String] = []
+        let addedAt = Date().timeIntervalSince1970 * 1000
         for d in descs {
-            trackIds.append(d.songId)
-            discoverAdds?.add(songId: d.songId, appleMusicId: d.appleMusicId, title: d.title,
-                              artist: d.artist, album: hit.title, artworkUrl: hit.artworkUrl,
-                              durationMs: d.lengthMs)
             let outcome = await requestRip(songId: d.songId, title: d.title, artist: d.artist,
                                            appleMusicId: d.appleMusicId, lengthMs: d.lengthMs)
             switch outcome {
@@ -1046,13 +1051,34 @@ final class RipsStore {
                 await refreshManifest()
             case .queued, .inflight:
                 if let jobId = jobs[d.songId]?.jobId { pollToReady(songId: d.songId, jobId: jobId) }
-            case .noServer, .unknown, .failed:
-                break   // a per-track miss doesn't sink the whole album add
+            case .noServer:
+                discoverError = "No import server configured (Settings ▸ Import server)."
+                continue   // not accepted — no dead row
+            case .unknown, .failed:
+                continue   // a per-track miss records nothing — no dead row
             }
+            trackIds.append(d.songId)
+            accepted.append(DiscoverAddsStore.Entry(
+                songId: d.songId, appleMusicId: d.appleMusicId, title: d.title, artist: d.artist,
+                album: hit.title, artworkUrl: hit.artworkUrl, durationMs: d.lengthMs,
+                addedAtMs: addedAt))
         }
-        discoverAdds?.addAlbum(albumId: hit.albumId, appleMusicId: hit.appleMusicId,
-                               title: hit.title, artist: hit.artist, trackIds: trackIds,
-                               artworkUrl: hit.artworkUrl, year: hit.year)
+
+        // 4) ZERO tracks accepted (no server / all-miss) → record NOTHING: no dead album row,
+        //    no dead song rows. Surface why (unless a per-track step already set the reason).
+        guard !accepted.isEmpty else {
+            if discoverError == nil {
+                discoverError = "Add failed — the import server didn’t accept the request."
+            }
+            return
+        }
+
+        // 5) Record the provisional album + its ACCEPTED track songs in ONE batched inject so
+        //    the live catalog rebuilds exactly once for the whole album (FIX: was one rebuild
+        //    per track — 13+ synchronous ~90k-row rebuilds on a full album).
+        discoverAdds?.addAlbumBatch(albumId: hit.albumId, appleMusicId: hit.appleMusicId,
+                                    title: hit.title, artist: hit.artist, trackIds: trackIds,
+                                    artworkUrl: hit.artworkUrl, year: hit.year, songs: accepted)
     }
 
     /// Refresh a single song's job from `/jobs/<id>` (used by the recognizer rip→burn poll

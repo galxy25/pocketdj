@@ -293,6 +293,32 @@ final class AppModel {
         applyEdits()
     }
 
+    /// A Discover ALBUM BATCH landing while the catalog is LIVE: append every provisional
+    /// track song AND the album as raw rows of the synthetic source, then ONE effective
+    /// rebuild — an album add fans out to N tracks, and the ~90k-row rebuild is the per-batch
+    /// cost, never per-track (the album twin of `injectImported`, mirroring its one-rebuild
+    /// contract). Known ids are skipped. `album` is nil when only new tracks landed.
+    func injectDiscoverAlbumBatch(songs newSongs: [IndexSong], album: IndexAlbum?) {
+        var changed = false
+        for s in newSongs where rawSongsById[s.id] == nil && songsById[s.id] == nil {
+            rawSongs.append(s)
+            rawSongsById[s.id] = s
+            songSourceById[s.id] = DiscoverAddsStore.sourceName
+            changed = true
+        }
+        if let album, rawAlbumsById[album.id] == nil, albumsById[album.id] == nil {
+            rawAlbums.append(album)
+            rawAlbumsById[album.id] = album
+            albumSourceById[album.id] = DiscoverAddsStore.sourceName
+            changed = true
+        }
+        guard changed else { return }
+        if !availableSources.contains(DiscoverAddsStore.sourceName) {
+            availableSources.append(DiscoverAddsStore.sourceName)
+        }
+        applyEdits()
+    }
+
     /// An IMPORT landing while the catalog is LIVE: append every unknown row (songs AND
     /// their albums) as the "Imported" synthetic source, then ONE effective rebuild — a
     /// playlist import can carry hundreds of songs, and the edit-save rebuild is the
