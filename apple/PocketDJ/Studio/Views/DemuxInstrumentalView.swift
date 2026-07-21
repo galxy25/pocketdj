@@ -11,12 +11,30 @@ import AVFoundation
 /// BOTH the drum-pattern bar lattice AND the score's current system, including a scrub WHILE PAUSED
 /// (StemPlayer.currentTime returns pausedAt while paused and seek() updates it, so the follow poll
 /// has no isPlaying gate). Works off CHORDS ALONE — no stems required.
+/// What the panel builds the instrumental from: the chord timeline (comping — full triads) or the
+/// monophonic pitch-tracked melody notes (a single voice). Both flow through the SAME synced score
+/// + hand-off; only the events converter and the minted take's mode differ.
+enum DemuxInstrumentalContent: Equatable {
+    case comping(chords: [DemuxChordSegment])
+    case melody(notes: [DemuxMelodyNote])
+
+    var isMelody: Bool { if case .melody = self { return true }; return false }
+    var mode: String { isMelody ? "melody" : "comping" }
+    /// Cheap identity for the rebuild key (contents change ⇒ rebuild).
+    var elementCount: Int {
+        switch self {
+        case .comping(let c): return c.count
+        case .melody(let n):  return n.count
+        }
+    }
+}
+
 struct DemuxInstrumentalView: View {
     @Environment(StudioStore.self) private var studio
     @Environment(InstrumentPackStore.self) private var packs
 
     let source: DemuxSource
-    let chords: [DemuxChordSegment]
+    let content: DemuxInstrumentalContent
     /// The chords-only grid (measured beat lattice when the song has a sidecar, else a constant
     /// grid from `bpm`) — resolved by the caller off the render path.
     let bpm: Double
@@ -44,7 +62,7 @@ struct DemuxInstrumentalView: View {
 
     private var grid: DemuxInstrumental.Grid { (bpm, firstDownbeatMs, beatsMs) }
     private var rebuildKey: String {
-        "\(chords.count)#\(bpm)#\(firstDownbeatMs)#\(beatsMs.count)#\(durationMs)"
+        "\(content.mode)#\(content.elementCount)#\(bpm)#\(firstDownbeatMs)#\(beatsMs.count)#\(durationMs)"
     }
 
     var body: some View {
@@ -81,12 +99,16 @@ struct DemuxInstrumentalView: View {
     /// Task.detached discipline (StudioDemuxView.resolveDrumBars). Results assign back on the
     /// MainActor; a stale run (the key changed while we computed) drops its result.
     private func rebuild() async {
-        let chords = chords, grid = grid
+        let content = content, grid = grid
         let firstDownbeatMs = firstDownbeatMs, durationMs = durationMs
         let built = await Task.detached(priority: .userInitiated) {
             () -> (events: [StudioNoteEvent], bpm: Double,
                    pages: [ScorePage], bars: [DrumPatternDetector.Bar]) in
-            let (ev, b) = DemuxInstrumental.events(chords: chords, grid: grid)
+            let (ev, b): ([StudioNoteEvent], Double)
+            switch content {
+            case .comping(let chords): (ev, b) = DemuxInstrumental.events(chords: chords, grid: grid)
+            case .melody(let notes):   (ev, b) = DemuxInstrumental.melodyEvents(notes: notes, grid: grid)
+            }
             let doc = ScoreQuantizer.quantize(events: ev, bpm: b, instrument: .piano)
             let pages = ScoreLayout.systems(score: doc, instrument: .piano)
             let bars = DrumPatternDetector.bars(downbeatsMs: [], bpm: b,
@@ -135,8 +157,9 @@ struct DemuxInstrumentalView: View {
             }
             Button { extract() } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "pianokeys")
-                    Text("Extract instrumental").font(.callout.weight(.semibold))
+                    Image(systemName: content.isMelody ? "waveform.path" : "pianokeys")
+                    Text(content.isMelody ? "Extract melody" : "Extract instrumental")
+                        .font(.callout.weight(.semibold))
                     Spacer()
                 }
                 .padding(.horizontal, 12).padding(.vertical, 10)
@@ -146,9 +169,12 @@ struct DemuxInstrumentalView: View {
             }
             .buttonStyle(.plain).foregroundStyle(Theme.accent)
             .disabled(events.isEmpty)
-            .accessibilityIdentifier("demux-instrumental-extract")
-            Text("A chord-comping instrumental (full triads) → Instruments ▸ Instrumentals, "
-                 + "where you can edit it or play it with a different sound pack.")
+            .accessibilityIdentifier(content.isMelody ? "demux-melody-extract" : "demux-instrumental-extract")
+            Text(content.isMelody
+                 ? "A single-voice melody line → Instruments ▸ Instrumentals, where you can edit it, "
+                   + "play it with a different sound pack, or switch it to chord comping."
+                 : "A chord-comping instrumental (full triads) → Instruments ▸ Instrumentals, "
+                   + "where you can edit it or play it with a different sound pack.")
                 .font(.caption2).foregroundStyle(Theme.fgDim)
         }
     }
@@ -157,7 +183,10 @@ struct DemuxInstrumentalView: View {
     /// a silent placeholder file so reconcile keeps the record, then relocate + render the real
     /// audio in the background so it's audible everywhere, not just on Replay.
     private func extract() {
-        guard !events.isEmpty else { notice = "No chords to build an instrumental from."; return }
+        guard !events.isEmpty else {
+            notice = content.isMelody ? "No melody to build from." : "No chords to build an instrumental from."
+            return
+        }
         guard let takesDir = try? StudioFolders.appRoot(.takes) else {
             notice = "Couldn’t save — the instrumentals folder isn’t reachable."
             return
@@ -166,14 +195,17 @@ struct DemuxInstrumentalView: View {
         let fileName = StudioFolders.fileName(.takes, id: takeId)
         let dur = max(500, events.map(\.offMs).max() ?? 500)
         writePlaceholderTakeAudio(to: takesDir.appendingPathComponent(fileName), durationMs: dur)
+        // Record the Demux provenance so the take's context-menu switch (Instruments ▸
+        // Instrumentals) can re-extract the OTHER mode from the same source.
         studio.addTakeRelocating(StudioTake(id: takeId,
-                                            name: "\(source.displayName) · instrumental",
+                                            name: "\(source.displayName) · \(content.isMelody ? "melody" : "instrumental")",
                                             instrument: .piano,
                                             fileName: fileName, bpm: takeBpm, events: events,
                                             durationMs: dur,
-                                            createdAt: Date().timeIntervalSince1970 * 1000))
+                                            createdAt: Date().timeIntervalSince1970 * 1000,
+                                            demuxSourceKey: source.key, demuxMode: content.mode))
         Task { await StudioTakeRenderer.ensureRendered(takeId: takeId, studio: studio, packs: packs) }
-        notice = "Saved to Instruments ▸ Instrumentals — edit it or change its sound pack there."
+        notice = "Saved to Instruments ▸ Instrumentals — edit it, change its sound pack, or switch modes there."
     }
 
     /// A silent AAC placeholder so the take file exists (reconcile keeps it; replay uses events) —

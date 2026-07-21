@@ -21,6 +21,7 @@ final class DemuxStore {
     private(set) var chordRuns: Set<String> = []
     private(set) var transcriptRuns: Set<String> = []
     private(set) var drumRuns: Set<String> = []
+    private(set) var melodyRuns: Set<String> = []
 
     init(cacheDir: URL? = DemuxStore.defaultCacheDir()) {
         self.cacheDir = cacheDir
@@ -316,6 +317,32 @@ final class DemuxStore {
             doc.drumStatus = hits.isEmpty ? .failed : .done
             self.save(doc)
             self.drumRuns.remove(key)
+        }
+    }
+
+    /// Track the monophonic MELODY of a melodic stem (VOCALS, else `other`) and land the note line
+    /// on the source's document (the `analyzeDrumPattern` shape). No-op while a run for the same key
+    /// is in flight. `force` re-tracks over a done result. `release` (a held security scope on
+    /// `melodyURL`) is invoked when the run finishes. The heavy YIN pass runs off the main actor.
+    func analyzeMelody(source: DemuxSource, melodyURL: URL,
+                       force: Bool = false, release: (() -> Void)? = nil) {
+        let key = source.key
+        guard !melodyRuns.contains(key) else { release?(); return }
+        if !force, (documentCreating(for: source).melodyStatus ?? .none) == .done { release?(); return }
+        melodyRuns.insert(key)
+        var doc = documentCreating(for: source)
+        doc.melodyStatus = .running
+        save(doc)
+        Task {
+            let notes = await Task.detached(priority: .utility) {
+                MelodyTracker.detect(melodyURL: melodyURL)
+            }.value
+            release?()
+            var doc = self.documentCreating(for: source)
+            doc.melodyNotes = notes
+            doc.melodyStatus = notes.isEmpty ? .failed : .done
+            self.save(doc)
+            self.melodyRuns.remove(key)
         }
     }
 

@@ -171,6 +171,18 @@ struct DemuxDrumHit: Codable, Equatable, Hashable, Sendable {
     var strength: Double
 }
 
+// MARK: - Melody (monophonic pitch-tracked line)
+
+/// One tracked melody note (F8 slice B): a single MIDI pitch held over [startMs, endMs) on the
+/// stem/song clock, from `MelodyTracker`'s monophonic f0 pipeline. Cached on the `DemuxDocument`
+/// so the pitch tracker runs ONCE (the `drumHits` precedent); `DemuxInstrumental.melodyEvents`
+/// beat-quantizes it into a single-voice `StudioTake`.
+struct DemuxMelodyNote: Codable, Equatable, Hashable, Sendable {
+    var midi: Int
+    var startMs: Int
+    var endMs: Int
+}
+
 // MARK: - Document (persisted)
 
 /// Per-artifact lifecycle. `unavailable` is a terminal "can't on this device/source" (e.g. speech
@@ -210,6 +222,12 @@ struct DemuxDocument: Codable, Equatable {
     /// these; optionality IS the migration (the `transcriptCoveredMs` precedent).
     var drumStatus: DemuxArtifactStatus?
     var drumHits: [DemuxDrumHit]?
+
+    /// Monophonic melody extraction (VOCALS, else `other` stem → pitch-tracked notes). OPTIONAL —
+    /// optionality IS the migration (the `drumStatus`/`drumHits` precedent); NO schemaVersion bump,
+    /// so pre-existing cache docs decode intact.
+    var melodyStatus: DemuxArtifactStatus?
+    var melodyNotes: [DemuxMelodyNote]?
 
     /// For `.file` sources only: the copied-in audio's filename inside the demux-cache audio
     /// folder (catalog/Studio sources re-resolve their audio through their own stores).

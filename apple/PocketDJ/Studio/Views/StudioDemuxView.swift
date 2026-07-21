@@ -340,6 +340,7 @@ struct StudioDemuxView: View {
         stemsPanel(source)
         drumPatternPanel(source, doc)
         instrumentalPanel(source, doc)
+        melodyPanel(source, doc)
         cutSampleRow(source)
         // The CLOUD engine (whisper sidecars) shows for any song that has one — the
         // DemuxFeatures gate's documented exit criterion. On-device recognition stays
@@ -474,7 +475,7 @@ struct StudioDemuxView: View {
             VStack(alignment: .leading, spacing: 6) {
                 sectionTitle("Instrumental (chord comping)", icon: "pianokeys")
                 if instGridKey == source.key {
-                    DemuxInstrumentalView(source: source, chords: chords,
+                    DemuxInstrumentalView(source: source, content: .comping(chords: chords),
                                           bpm: instBpm, firstDownbeatMs: instFirstDownbeat,
                                           beatsMs: instBeatsMs, durationMs: durationMs,
                                           player: player, follow: $demuxFollow,
@@ -508,6 +509,88 @@ struct StudioDemuxView: View {
             }
         }
         return (120, 0, [])
+    }
+
+    // MARK: Melody (vocals/other stem → monophonic pitch-tracked single-voice StudioTake + score)
+
+    /// Parallel to the chord-comping panel, but the TRUE melody: gated on stems (the drum-panel
+    /// contract), it tracks the VOCALS stem (else `other`) with `MelodyTracker` and hands the
+    /// single-voice line to the SAME synced score + Instruments hand-off. The tracked notes cache
+    /// on the document (compute once, the `drumHits` precedent).
+    @ViewBuilder private func melodyPanel(_ source: DemuxSource, _ doc: DemuxDocument?) -> some View {
+        let status = doc?.melodyStatus ?? .none
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Instrumental (melody)", icon: "waveform.path")
+            if demux.melodyRuns.contains(source.key) {
+                statusRow(spinner: true, "Tracking the melody…", a11y: "demux-melody-running")
+            } else if status == .done, let notes = doc?.melodyNotes, !notes.isEmpty {
+                if instGridKey == source.key {
+                    DemuxInstrumentalView(source: source, content: .melody(notes: notes),
+                                          bpm: instBpm, firstDownbeatMs: instFirstDownbeat,
+                                          beatsMs: instBeatsMs, durationMs: durationMs,
+                                          player: player, follow: $demuxFollow,
+                                          onSeek: { seek(toMs: $0) })
+                } else {
+                    statusRow(spinner: true, "Preparing the beat grid…", a11y: "demux-melody-preparing")
+                }
+                HStack(spacing: 8) {
+                    Text("Tracked from the vocals stem (or “other” when there’s no vocal) — a solid, editable starting point.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                    Spacer()
+                    retryButton("demux-melody-rerun") { kickoffMelody(force: true) }
+                }
+            } else if status == .failed {
+                HStack(spacing: 8) {
+                    Text("No clear melody found in the stems.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                    retryButton("demux-melody-retry") { kickoffMelody(force: true) }
+                }
+            } else if stemState == .burned {
+                Button { kickoffMelody() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform.path.ecg")
+                        Text("Extract melody").font(.callout.weight(.semibold))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Theme.accent.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .accessibilityIdentifier("demux-melody-track")
+            } else {
+                Text("Download this track’s stems first — the melody reads the vocals (or “other”) stem.")
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("demux-melody-needs-stems")
+            }
+        }
+        // Resolve the shared beat grid for THIS source (same resolver + key the comping panel uses,
+        // so the melody panel works even when there are no chords to show the comping panel).
+        .task(id: "\(source.key)#melodygrid") {
+            guard instGridKey != source.key else { return }
+            let g = await resolveInstrumentalGrid(source)
+            guard isCurrent(source) else { return }
+            instBpm = g.bpm; instFirstDownbeat = g.firstDownbeatMs; instBeatsMs = g.beatsMs
+            instGridKey = source.key
+        }
+    }
+
+    /// Resolve the melodic stem (VOCALS, else `other`) and kick off the pitch tracker. Songs pull
+    /// from the burn folder (its security scope handed to `analyzeMelody`), custom audio from the
+    /// demux stems cache.
+    private func kickoffMelody(force: Bool = false) {
+        guard let source else { return }
+        if let songId = source.songId, let stems = burns.localStemURLs(forSong: songId) {
+            if let url = stems.urls["vocals"] ?? stems.urls["other"] {
+                demux.analyzeMelody(source: source, melodyURL: url, force: force, release: stems.release)
+            } else {
+                stems.release?()
+            }
+        } else if let stems = demux.localStemURLs(for: source.key),
+                  let url = stems["vocals"] ?? stems["other"] {
+            demux.analyzeMelody(source: source, melodyURL: url, force: force)
+        }
     }
 
     // MARK: Cut sample (the sampler's in/out region editor over THIS loaded audio)
