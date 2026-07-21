@@ -26,6 +26,7 @@ and the JSON Schema `.claude/skills/analog-indexer/schema/index.schema.json`.
   │   ├─ id "alb_"+sha1(normArtist|normAlbum|dupIndex)[:12]
   │   ├─ artist · name · genre? · year? · country?
   │   ├─ coverArt? (remote) · coverArtSources?[{type:'cdn'|'remote',url,cors?}]
+  │   ├─ appleMusicId?  (iTunes album collectionId; Discover-album supersede join — §1.1)
   │   ├─ trackList[] → IndexSong.id   · fileType? · pointer? · enrichment?
   │   ├─ audioTracks?[] {trackNumber,startMs,endMs,durationMs,bpm,key,camelot,keyStrength?}
   │   └─ audioDurationSec?
@@ -50,7 +51,10 @@ independent audio segmentation (count may differ from `trackList`). On the song,
 `bpm/key/camelot` come from the AUDIO stage and are **`null` until analyzed** (never
 `undefined`, so "pending" stays explicit); `appleMusicId` is the Apple catalog "adam
 id" minted by a separate **CATALOG stage** (§1.1) and is **`undefined` until resolved**;
-`pointer` links back to the raw file (`originalFilename`) and per-segment offsets.
+the *album's* `appleMusicId` is the iTunes **`collectionId`** (aggregated from its member
+tracks, §1.1) — the join key that lets a real indexed album supersede a provisional
+Discover album; `pointer` links back to the raw file (`originalFilename`) and per-segment
+offsets.
 
 **Import-time derivation.** When a client imports the index, it maps each
 `IndexAlbum`/`IndexSong` to the internal `AlbumItem`/`SongItem` and computes an
@@ -85,8 +89,9 @@ rate-limited crawl (~20–60/min). Coupling the two would chain a 1.6s job to a 
    per-song iTunes Search (trackId)           streaming Library.xml (re)parse
    → score best match (coreTitle, version     → bakes appleMusicId back onto each
      tags) → catalog-cache.ndjson  ───────▶     song from the cache (so a re-index
-   {id, storeId|null}  (resumable, paced,       never drops resolved ids; misses
-    adaptive 403/429 backoff)                    ignored)
+   {id, storeId|null, collectionId?}            never drops resolved ids; misses
+   (resumable, paced, adaptive 403/429          ignored) + album appleMusicId =
+    backoff)                                    most-common member collectionId
 ```
 
 **Source of truth:** [`scripts/resolve-apple-music-catalog.mjs`](../../scripts/resolve-apple-music-catalog.mjs).
@@ -105,6 +110,19 @@ treats it as a **candidate**: the native `AppleMusicProvider.resolve(_:)` verifi
 with a real MusicKit catalog fetch and **degrades to ripping** on a miss (Ch. 5 §8).
 The `--catalog-cache` flag on the indexer re-bakes resolved ids onto songs on every
 re-index, so the slow crawl's output survives a fast re-parse.
+
+**Albums get a catalog id from the same crawl.** The catalog row that yields a song's
+`trackId` also carries the album's **`collectionId`**, so the resolver records it next to
+`storeId` at zero extra network cost (a legacy cache hit with a `storeId` but no
+`collectionId` is **re-resolved** so the album id gets captured; its `storeId` still
+applies meanwhile). [`index-apple-music.mjs`](../../scripts/index-apple-music.mjs)
+aggregates the **most-common member `collectionId`** per album into `IndexAlbum.appleMusicId`,
+and [`scripts/fold-album-catalogid.mjs`](../../scripts/fold-album-catalogid.mjs) applies the
+same mode-per-album stamp as a **fold over an existing index** (dry-run by default,
+`--apply` writes) — no full `Library.xml` re-index needed. This is what activates the
+Discover-album dedupe for **owned** albums: a provisional Discover album (whose
+`appleMusicId` *is* an iTunes `collectionId`) is superseded by the real indexed album
+carrying the same id.
 
 ### 1.2 The CLOUD RE-INDEX — folding Apple Music truth into the analog catalog
 
@@ -292,8 +310,9 @@ The native app persists the whole collections graph as **one versioned, lenient-
 
 ```
  CollectionsDocument { schemaVersion, pockets[], playlists[], setlists[],
-                       folders:[PlaylistFolder]  (v3),  lastAddTarget? }
-   collectionsSchemaVersion = 6      additive-only · lenient (missing version ⇒ v0; missing lists ⇒ [])
+                       folders:[PlaylistFolder]  (v3),  lastAddTarget?,
+                       recentAddTargets?:[AddTarget]  (UNVERSIONED additive — see below) }
+   collectionsSchemaVersion = 7      additive-only · lenient (missing version ⇒ v0; missing lists ⇒ [])
 
  CollectionsMigration.migrate(doc):                      runs when doc.schemaVersion < current
    v1 → v2   pockets gain ordered notes:[PocketNote]    (each older pocket gets notes:[])
@@ -311,6 +330,10 @@ The native app persists the whole collections graph as **one versioned, lenient-
              sourcePlaylistId? + sourceName?   which catalog playlist Convert / Duplicate created it from
              sourceSongIds?                    the source membership at the last sync (3-way-merge base)
              sourceSyncEnabled?                per-item opt-out (nil ⇒ enabled) · sourceSyncedAt?
+   v6 → v7   pockets AND playlists gain lastPlayedAt? (epoch ms) — stamped by
+             CollectionsStore.markPlayed on ▶ Play, OUTSIDE mutatePocket/mutatePlaylist so
+             updatedAt (the "Last updated" signal) is never disturbed; powers the
+             "Recently played" collection sort (nil ⇒ never played ⇒ sorts last); no-op remap
 ```
 
 **Reading it.** `schemaVersion` is bumped on any shape change and
@@ -369,6 +392,19 @@ re-index and a manual "Sync from sources now" pass), the **per-item** `sourceSyn
 (`syncPocketFromSourceNow` / `syncPlaylistFromSourceNow`) which ignore both. An item whose
 source playlist is **missing** from a refresh (source disabled, playlist deleted upstream) is
 left untouched — a vanished source never silently wipes the user's copy.
+
+**`recentAddTargets` — the Recent quick-add MRU (unversioned additive).** The document also
+carries an optional **`recentAddTargets: [AddTarget]?`** — the last few "Add to…" targets,
+most-recent first, **deduped by `(kind, id)` ignoring `sequenceId`** (a re-add to another
+chapter refreshes the row, freshest chapter wins) and capped at
+`CollectionsStore.maxRecentTargets = 10`; `AddToCollectionView` surfaces the top **3**
+resolvable entries as one-tap quick-add rows. It is deliberately **not** a schema bump:
+additive-optional with lenient decode (`try?` ⇒ nil ⇒ `[]` in the store), so a pre-F11
+document loads with every collection intact, and it rides the **same** collections CloudSync
+as `lastAddTarget` (the top-of-list entry is exactly that value), so the MRU syncs across
+devices. Both are updated together at the `addSong(_:to:)` / `addAlbum(_:to:)` choke points
+(one write); the read-only *source*-playlist add path deliberately touches **neither**, so a
+"Last used" repeat can never silently drop the Apple Music write-back half of that add.
 
 **Folders survive import / merge / backup.** Because a folder is pure id+name, it carries
 cleanly through every transfer path (`CollectionsStore.importCollection` + the backup zip):
@@ -612,6 +648,48 @@ appleMusicId` map, so a seeded ♥ is still pushable if that install later becom
 `version` is monotonic (the exporter stamps a UNIX timestamp) and `applySeed` only applies a
 version **greater** than the stored `seedVersion`, which is what makes the seed a one-time
 event rather than a per-launch overwrite.
+
+## 6. Collection activity — the append-only add/♥/remove log
+
+**Why its own store, and not `PlayHistoryStore`.** The play log's `PlayEvent` is
+deliberately song-play-centric — a 30s same-song re-count window plus the count/last-played
+indexes that feed the "recently played" sort (Ch. 6). An **add / heart / unheart / remove**
+is a different *kind* of fact (no re-count window, no per-song aggregate), so bolting it onto
+`PlayEvent` would corrupt those reads. It gets its own append-only document with zero
+wipe-risk to the play log.
+
+**Source of truth:**
+[`apple/PocketDJ/State/CollectionActivityStore.swift`](../../apple/PocketDJ/State/CollectionActivityStore.swift)
+and the wiring in [`PocketDJApp.swift`](../../apple/PocketDJ/PocketDJApp.swift).
+
+```
+ Application Support/pocketdj-collection-activity.json
+   Document { schemaVersion = 1, installId, events:[ActivityEvent] }   lenient decode
+     ActivityEvent { id:UUID, at(ms), kind:'add'|'heart'|'unheart'|'remove',
+                     itemId, itemTitle?  (SNAPSHOT at record time),
+                     collectionId? collectionKind? collectionName?  (nil for ♥ — not scoped) }
+   maxEvents = 20_000  (append-only, oldest dropped past the cap)
+
+ fed by two hooks (PocketDJApp.init):
+   CollectionsStore.onActivity   add/remove  (emitted at the add/remove choke points)
+   FavoritesStore.onChanged      heart/unheart  (the same user-originated-only callback §5)
+ consumed by HistoryView — a Plays | Activity segmented control; Activity is the
+   newest-first timeline ("Added X to Y" · "♥ Hearted Z" · "Removed X from Y")
+```
+
+**Reading it.** Same durable-JSON idiom as its siblings (atomic save, decode-on-init,
+`PDJ_USE_FIXTURE` launch seam, a monotonic `revision` the view keys recomputes on).
+`itemTitle` / `collectionName` are **snapshots** at record time, so a row stays readable
+after the item leaves the catalog or the collection is renamed/deleted (Studio
+`smp_`/`lp_`/`ptn_`/`tk_` items have no catalog song — their title is snapshotted too, or
+the row falls back to the id). The stable per-event `UUID` plus a document `installId` make
+cross-device merge a clean **`union(by: id)`** — and that is exactly what the CloudSync pull
+does: the `"collection-activity"` registration's `reloadFromDisk` **deliberately diverges**
+from the whole-document LWW replace the other stores use, instead **unioning** the disk
+doc's events into memory by event id (idempotent, re-sorted chronologically) and saving —
+a wholesale replace would let device B's log silently overwrite device A's local events.
+`clear()` deletes the on-disk file entirely (the AccountDeletionService "no residual file"
+contract), keeping the install identity.
 
 ## Next
 

@@ -21,6 +21,12 @@ So the whole architecture collapses to one sentence:
 > the same static documents and the same rip API. There is no application server.
 > The "API" is mostly files.**
 
+One elastic footnote keeps the sentence honest: the heaviest DSP — Demucs stem
+separation, librosa audio analysis, Whisper lyric transcription — is offloaded by the
+rip server to **scale-to-zero EC2 workers via SQS** (Ch. 5). But those workers are
+stateless muscle, not an application server: their results fold straight back into
+the same static manifest files, so the principle survives.
+
 Internalize that and every later chapter is just a refinement of it.
 
 ## The system at a glance
@@ -42,6 +48,7 @@ Internalize that and every later chapter is just a refinement of it.
                   │ S3 web bucket ── CloudFront   │    │  S3 rips bucket (public)│
                   │  current-index.json           │    │  rips/manifest.json     │
                   │  apple-music-index.json       │    │  rips/<id>.mp3 + waves  │
+                  │  digital-index.json           │    │  rips/stems/<id>/*      │
                   │  /art/* · app shell · sw.js   │    └────────────┬──────────┘
                   │  OpenSearch proxy (/pocketdj) │                 │
                   └───────────┬──────────────────┘                 │
@@ -57,11 +64,14 @@ Internalize that and every later chapter is just a refinement of it.
 
 **Reading the diagram.** The **iMac** (Tailscale name `levis-imac`) is the only
 machine that *produces* anything. Three concerns live on it: (1) the **Filesystem**
-holding source media — vinyl rips named `*Raw.mp3` and the exported Apple Music
-`Library.xml`; (2) the **Indexers**, Node scripts (some shelling to a Docker/librosa
+holding source media — vinyl rips named `*Raw.mp3`, the exported Apple Music
+`Library.xml`, and the "My Digital" raw-audio file trees that
+`scripts/index-digital-files.mjs` ingests; (2) the **Indexers**, Node scripts (some shelling to a Docker/librosa
 container) that turn media into JSON, plus `deploy.sh` which pushes results to AWS;
 and (3) the **Rip server**, a long-running Node HTTP service (`scripts/rip-server.mjs`)
-run as a launchd agent on port 8787 and exposed over **Tailscale HTTPS**. Music.app +
+run as a launchd agent on port 8787 and exposed to the open internet over **Tailscale
+Funnel HTTPS** (Funnel's :10000 port → 8787; public-by-default posture, token-gated —
+`scripts/setup-rip-funnel.sh` provisions the tokens; `RIP_PUBLIC=0` opts out). Music.app +
 Audio Hijack (driven by AppleScript + Shortcuts) are how it captures Apple Music
 audio in real time. The agent reads its vinyl raw files from the external
 **`POCKETDJ_ANALOG_BASE` = `/Volumes/RipBurnMix`** (set in its launchd plist; requires
@@ -89,7 +99,9 @@ catalog from CloudFront, play from the rips bucket, and search the `aoss` collec
 | **S3 rips bucket** | AWS us-west-2 | Public-read audio cache (`rips/<id>.mp3` + per-song cuts + `rips/stems/<id>/*` + manifest) | 5 |
 | **Web PWA** | browser (installable) | A device-local IndexedDB copy of the catalog + collections | 7 |
 | **SwiftUI apps** | iPhone/iPad/Mac | A device-local catalog + a versioned edits overlay | 7 |
-| **Rip server API** | iMac, exposed via Tailscale | Creating rips on demand; the job state machine | 5 |
+| **Rip server API** | iMac, public via Tailscale Funnel (token-gated) | Creating rips on demand; the job state machine; dispatching cloud DSP jobs | 5 |
+| **Cloud DSP workers** | AWS (SQS + scale-to-zero EC2) | Demucs stems, librosa analysis, Whisper lyrics — results folded back into the rips manifest | 5 |
+| **Jukebox broker** (`scripts/jukebox-server.mjs`) | iMac, Funnel-exposed | The guest request line (QR page ↔ app-as-DJ) + radio page | 7 |
 | **Filesystem (analog sources)** | iMac | The ground-truth vinyl audio (`*Raw`) | 2 |
 | **Apple Music `Library.xml`** | iMac | The digital library + Persistent IDs | 2 |
 | **AppleScript / Shortcuts "API"** | iMac | Driving Music.app + Audio Hijack to capture audio | 2, 5 |
@@ -101,22 +113,29 @@ catalog from CloudFront, play from the rips bucket, and search the `aoss` collec
 Every album and song has a **stable, content-derived id**:
 
 ```
- albumId = "alb_" + sha1(normArtist | normAlbum | dupIndex)[:12]
- songId  = "sng_" + sha1(albumId | track | disc)[:12]            # analog
- songId  = "sng_" + sha1("digital" | sourceName | persistentID)[:12]  # Apple Music
+ albumId = "alb_" + sha1(normArtist | normAlbum | dupIndex)[:12]              # analog
+ albumId = "alb_" + sha1("digital" | sourceName | normArtist | normAlbum)[:12] # digital
+ songId  = "sng_" + sha1(albumId | disc | track)[:12]        # analog + "My Digital" files
+ songId  = "sng_" + sha1("digital" | sourceName | persistentID)[:12]  # Apple Music (Local)
 ```
 
 Because ids are derived from content (not random, not row-order), **re-running any
 indexer is idempotent**, an **edit keyed by an id is unambiguous on every client and
 every source**, and the same album owned on **vinyl *and* in Apple Music never
-collides** (the digital id is namespaced by source). This single decision is what
-lets the "files-as-API" model work without a coordinating server: the id *is* the
-coordination.
+collides** (digital album and song ids are namespaced by source). This single decision
+is what lets the "files-as-API" model work without a coordinating server: the id *is*
+the coordination. It even coordinates **across users**: a playlist zip imported from
+another profile carries its song ids verbatim, and the global rips manifest, stems,
+and analysis artifacts all key on that id (`ImportedSongsStore`, Ch. 7). The one
+deliberate exception is `amrec_…` — ad-hoc, per-device ids minted for Discover/Shazam
+captures that aren't in any index yet; they are remapped onto a real catalog id when
+one claims the same Apple Music id.
 
 ## How the pieces serve the goal (the throughline)
 
-- **Diverse sources** → Chapter 2 ingests vinyl + Apple Music (+ a streaming seam)
-  into one shape.
+- **Diverse sources** → Chapter 2 ingests vinyl + Apple Music (Local) + "My Digital"
+  file trees (+ a streaming seam) into one shape; cross-user **Imported** transfers
+  (Ch. 7) reuse the same shape and id discipline.
 - **Personal catalog** → Chapter 3 is the data model that one shape becomes.
 - **Playlists you produce** → Chapter 4 is pockets → playlists → setlists, and the
   realize engine, **and the two-deck Mix engine** (where **AI auto-*building* lands next**).

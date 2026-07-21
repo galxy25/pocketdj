@@ -51,6 +51,11 @@ manifest in memory.
 | `POST /backfill-cuts` · `POST /retag-cuts` | analog per-song CUT export / re-tag (§14) | `{ ok, candidates }` |
 | `POST /backfill-beatgrids` | compute measured beat grids over the corpus (§15.1) | `{ ok, candidates }` |
 | `POST /stemify` `{songId}` · `/stemify-collection` `{songIds[]}` · `/stemify-cancel` `{songIds[]}` · `/backfill-stems` | Demucs 4-stem separation (§15) | `StemJobView` / counts |
+| `POST /stemify-custom` | separate a caller-supplied audio file (Demux "custom" source) — always runs **locally**, never offloaded | `StemJobView` |
+| `POST /lyricsify` `{songId}` · `POST /backfill-lyrics` | timed-lyrics transcription off the burned **vocals stem** (cloud workers, faster-whisper) | `{ ok }` / counts |
+| `POST /backfill-analysis` | re-run bpm/key/beat-grid analysis where the manifest lacks it (catches Docker-broken `bpm:null` entries) | `{ ok, candidates }` |
+| `GET /search` · `GET /album-tracks` | catalog song/**album** search + album track expansion for the Discover ＋Add flow (Ch. 6) | matches / track list |
+| `POST /ingest-digital` · `POST /am-sync` | "My Digital" raw-audio ingest (Ch. 2) · Apple-Music-library sync hook | `{ ok, … }` |
 
 Auth is an **optional** bearer token (`RIP_TOKEN`): all gated routes go through one
 shared `authed()` check that is **permissive (public) when no token is configured** — so
@@ -58,7 +63,15 @@ during development the server runs **tokenless / public** for frictionless integ
 testing. `/rip` and `/rip-collection` sit below the *same* gate, so they are public (or
 gated) **identically**; there is no `/rip-collection`-specific fail-closed branch. The HLS
 media path (`/hls`) also accepts `?token=` because a native player can't set an
-Authorization header. (The legacy progressive-mp3 `/stream/<id>.mp3` route has been
+Authorization header. Above the user tier sits an **admin tier** (`RIP_ADMIN_TOKEN`;
+`adminAuthed()` collapses to the global gate when no dedicated admin token is set): the
+corpus-scale mutation routes in `ADMIN_PATHS` — the mass backfills (`/backfill-cuts`,
+`/retag-cuts`, `/backfill-beatgrids`, `/backfill-stems`, `/backfill-analysis`,
+`/backfill-lyrics`), `/stemify-collection`, `/analysis`, `/ingest-digital`, `/am-sync` —
+answer **403** (authenticated, wrong tier) to a non-admin caller, while the single-song
+verbs (`/rip`, `/stemify`, `/lyricsify`, cancel/status/jobs/HLS) stay first-class app
+features any beta user can reach. The optional per-IP rate limiter (`RIP_RATE_LIMIT=1`,
+default **off**) applies only to user-tier requests — admin automation is exempt. (The legacy progressive-mp3 `/stream/<id>.mp3` route has been
 **removed** — iOS needs HLS, and the durable public mp3 covers every non-live play.)
 `version` is `RIP_PROTOCOL = 2`; the client
 (`EXPECTED_RIP_VERSION = 2`, `RipServerService.expectedVersion = 2`) shows an
@@ -168,7 +181,10 @@ the **live HLS** stream (red ● LIVE) *while capture continues*. Both reach
 **uploading** (`aws s3 cp` to `rips/<id>.mp3`) and register manifest entries (analog
 registers **every** song of the album from one upload, each with its `startMs` for
 auto-seek). **ready** publishes `url = https://pocketdj-rips-…/rips/<id>.mp3` and
-enqueues background analysis. Any failure → **error**.
+enqueues background analysis — which for a **digital** entry now offloads by default to
+the cloud analysis workers (§15; analog analysis stays local) — and, with
+`autoStemOnRip` (§15), auto-queues Stemify for the freshly-ripped song(s). Any failure →
+**error**.
 
 **Durability.** An accepted `/rip` writes `<tmp>/queue/<songId>.json`, deleted only on
 terminal (ready/error) — so a pending rip **survives a restart** (`resumePending()`
@@ -204,7 +220,7 @@ seconds).
                                                             floor 90s … ceil 30min )
 
  on terminal error → retryable = phase==='error' && !canceled
-                                  && isTransient(job,msg) && attempt < maxAttempts(5)
+                                  && isTransient(job,msg) && attempt < maxAttempts(6)
    isTransient:  /unknown songId/ → false (PERMANENT)
                  /no analog file reference/ → false (PERMANENT)
                  canceled → false
@@ -212,7 +228,7 @@ seconds).
                        spawn/exit, generic capture failure) → TRUE
    retryable → scheduleRetry(): bump attempt, KEEP resourceKey inflight across the gap,
                re-persist the durable queue record, setTimeout(backoffMs[attempt-1]) → enqueue
-               backoffMs = [30s, 2m, 8m, 8m]   (index by attempt-1, clamped to last)
+               backoffMs = [30s, 2m, 5m, 10m, 15m]   (index by attempt-1, clamped to last; ≈32m tail)
    not retryable → terminal 'error' (gave-up logged), pump() drains the next job
 ```
 
@@ -232,12 +248,14 @@ detached process group reaps the worker and its grandchildren) and rejects with
 the server classifies it via **`isTransient`**: an *unknown song* or *no analog file
 reference* is **permanent** (and a cancel is never a retry), so it stays failed;
 **everything else** — a missing analog drive/file, an aws/network error, the watchdog
-timeout, a spawn/exit failure — is **transient** and, within the `maxAttempts` (5)
-budget, **`scheduleRetry()`** bumps the `attempt`, **keeps the `resourceKey` marked
+timeout, a spawn/exit failure — is **transient** and, within the `maxAttempts` (6 total
+tries) budget, **`scheduleRetry()`** bumps the `attempt`, **keeps the `resourceKey` marked
 inflight across the backoff gap** (so single-flight holds and a duplicate `/rip` still
 joins), re-persists the durable queue record with the bumped attempt, and `setTimeout`s
-a re-`enqueue` after a **capped exponential backoff** (`[30s, 2m, 8m, 8m]`, indexed by
-`attempt-1` and clamped to the last). Crucially the retry is scheduled **without holding
+a re-`enqueue` after a **capped exponential backoff** (`[30s, 2m, 5m, 10m, 15m]`, indexed
+by `attempt-1` and clamped to the last — the ≈32-minute tail is deliberately the
+eventual-consistency window for the recognizer's add-to-library flow, where a just-added
+track reaches the Mac's Music library via iCloud sync minutes later). Crucially the retry is scheduled **without holding
 the worker** — `pump()` is free to run the next queued song during the backoff window —
 so one flaky job can't starve the rest. A cancel landing in the backoff window
 supersedes the pending retry (the timer checks `job.canceled` + that the `resourceKey`
@@ -324,7 +342,8 @@ off.
                    firstBeatMs?, firstDownbeatMs?, beatGridBpm?, beatsPerBar?,   // BEAT GRID (§15.1)
                    tempoConfidence?, tempoVar?, steady?, beatgrid?, analysisVersion?,
                    stems?:{vocals,drums,bass,other}, stemModel?, stemVersion?,    // STEMS (§15)
-                   stemFormat?, stemmedAt?, stemBytes? }
+                   stemFormat?, stemmedAt?, stemBytes?,
+                   lyrics?, lyricsModel?, lyricsVersion?, lyricsAt? }   // timed-LYRICS sidecar key
 
  JobView { jobId, songId, phase:RipPhase, message?, url?, error?,
            streamUrl?(/hls/<id>/index.m3u8), progress?{elapsedMs,totalMs,pct,indeterminate} }
@@ -341,7 +360,11 @@ playback is unchanged (album `key` + `startMs` seek). Two further analysis group
 **additively** (every field optional, so older entries decode unchanged): the **beat grid**
 (`beatGridBpm`/`firstDownbeatMs`/`steady` + the rest, the measured downbeat grid the Mix
 engine's Sync rides — §15.1) and the **stem** keys (`stems:{vocals,drums,bass,other}` + the
-Demucs provenance — §15). `JobView` is the client-facing job projection: `phase` (the
+Demucs provenance — §15). A fourth additive group is the cloud **timed-lyrics** stamp:
+`lyrics` is the S3 **sidecar key** (`rips/lyrics/<songId>.json` — the beatgrid-sidecar
+pattern; the words live in S3, not the manifest) plus `lyricsModel`/`lyricsVersion`/
+`lyricsAt` provenance, produced by the faster-whisper cloud workers off the vocals stem
+and consumed by the Demuxer's transcript view. `JobView` is the client-facing job projection: `phase` (the
 `RipPhase` enum), an optional `streamUrl` once live HLS is ready, and `progress` (definite
 for a real-time digital capture, `indeterminate` otherwise). Stem jobs poll their own
 `StemJobView` off a dedicated stem queue (§15).
@@ -1216,6 +1239,38 @@ public SF Symbol exists).
   `lengthMs` else `player.duration`), sampled at 1 Hz on its own paused-with-playback
   timeline. iPhone landscape (`verticalSizeClass == .compact`) drops the
   record and keeps the functional rows.
+- **The Mix mini-panel — `NowPlayingMixPanel` + `NowPlayingDSP` (swap-on-touch DSP)**:
+  a collapsible "Mix" section on the deck (`np-mix-panel`, collapsed by default via
+  `@AppStorage("nowPlayingMixExpanded")`) exposing **tempo / pitch / gain / effects /
+  stems for the currently-playing track**. Shown ONLY when
+  `SetlistPlayer.mixAvailable(mixActive:)` passes — the actual playing source is a
+  **local file** (`currentTrackMixable`: burned or studio, keyed off
+  `rips.nowPlaying.url.isFileURL` so an AM stream / live HLS / rip stream never offers
+  mix even when a burned copy also exists) AND no Mix-tab session is active
+  (`mix.isRunning || mix.autoMixing` — one DSP surface at a time); otherwise the whole
+  section is hidden, never greyed. Normal playback is a plain `AVPlayer` with no DSP
+  surface, so the **first control touch** calls `SetlistPlayer.engageMix()`
+  (idempotent): it hands the track's audio off the AVPlayer into
+  [`NowPlayingDSP`](../../apple/PocketDJ/Playback/NowPlayingDSP.swift) **at the current
+  position** — a single-deck fork of the `MixEngine` deck chain (`AVAudioPlayerNode →
+  inputMixer → TimePitch → DynamicsProcessor → EQ(filter+gain) → Reverb →
+  Delay(flanger) → limiter`, plus 4 stem nodes summing into the same `inputMixer`) with
+  a `StemPlayer`-style render-clock scrubber — opening the file silent first
+  (`play:false`) so the card gets a real duration, then claiming the system card via
+  `player.beginExternalNowPlaying` (the same one-card-writer mechanism the AM handoff
+  uses), and only then sounding the DSP, so exactly one engine plays during the swap.
+  Control state is **ephemeral** — `resetControls()` on every track change; the DSP's
+  `onReachedEnd` mirrors `handleEnded` (honors per-track repeats, then advances, tearing
+  the DSP down first so the next track plays through the AVPlayer, which reclaims the
+  card); a Mix-tab session going active while engaged tears the handoff down
+  (`observeMixSessionForEngagement`) since the hidden panel would otherwise be a second
+  audio source. The panel reuses the Mix tab's `DeckSlider`/`EffectButton` components,
+  bound to the DSP instead of a deck.
+- **♥ favorite** — the transport row's trailing edge carries the current track's ♥
+  (`favoriteToggle`, the same reusable control every song row uses, reading/writing
+  `FavoritesStore`); hidden while the deck is idle, and a track with no Apple Music id
+  (vinyl / My Digital / Studio) still favorites local-only. The same ♥ rides the lock
+  screen (§11.3) and the CarPlay Now Playing template.
 - **Live queue edits — the `SetlistPlayer` seam** (§10's queue is otherwise
   immutable): `upcoming` (= `queue[(index+1)...]`), `moveUpcoming(fromOffsets:toOffset:)`
   (offsets CLAMPED to the live tail — a track ending mid-drag must not trap),
@@ -1454,6 +1509,22 @@ is running — so the lock screen / Control Center / AirPods / CarPlay **auto-ad
 setlist while the screen is off**, and the commands stay disabled (reject input) when no
 set is running. `setNextPreviousEnabled` toggles them with the sequencer's lifecycle.
 
+The command center also carries the **♥ `likeCommand`** (localized title "Favorite", a
+single feedback toggle, not a like/dislike pair): its handler (`handleLikeCommand`,
+extracted for unit-testability like `checkEndBoundary`) is guarded by the **same
+single-owner `NowPlayingArbiter` check as play/pause** — only the engine that owns the
+card may flip the favorite (a second uncoordinated writer of the shared command center
+reproduces the "ghost second card" bug) — and flips the current track's favorite through
+injected closures (`toggleCurrentFavorite` / `isCurrentFavorite`, wired once at launch
+from `FavoritesStore` + the catalog so the engine stays decoupled from the favorites
+layer, the `artworkURLsProvider` pattern). `updateNowPlayingInfo` re-pushes
+`likeCommand.isActive` (the filled-heart state) on every card write —
+`refreshFavoriteState` re-runs it when a favorite changes elsewhere in the app — and
+clearing the card resets `isActive` to false so a favorited track's fill can't stick to
+the next one. CarPlay's Now Playing template shows the same heart
+(`CarPlayModel.isCurrentFavorite`/`toggleCurrentFavorite`; CarPlay buttons are immutable,
+so a state change **replaces** the button).
+
 ---
 
 ## 12. Global device / cloud playback MODE — `PlaybackMode` + the shared `playLocal` helper
@@ -1570,7 +1641,10 @@ kind a cloud/digital rip produces; an analog rip keeps the catalog's per-song va
 never triggers a fold). If so it calls **`requestPublicFold`**, which **debounces** to a
 single **trailing** run (1.5s) so a whole-collection cloud rip's many back-to-back analyses
 coalesce into **one** fold, and runs it **single-flight** (a request arriving mid-run
-re-fires exactly one trailing run). The fold itself is **in-process** (no detached node),
+re-fires exactly one trailing run). With the cloud analysis offload (§15) the "analysis
+completed" trigger has two more mouths: **`pumpStemResults`** fires the same
+`requestPublicFold` when it folds a cloud worker's bpm/key result for a cloud-analog
+entry, and so does an external **`POST /analysis`** submit. The fold itself is **in-process** (no detached node),
 running **inside the analysis flow** over the **in-memory catalog** + the warm library
 index + the live manifest — a fast metadata pass. It reuses the **same pure
 `foldCloudReindex`** the offline CLI uses (extracted into `scripts/lib/cloud-reindex-fold.mjs`
@@ -1715,13 +1789,19 @@ librosa `audio/` stage); the device side in
 [`docs/design/stems-demucs-stemify-spec.md`](../design/stems-demucs-stemify-spec.md).
 
 ```
- SERVER — POST /stemify {songId}  (or /stemify-collection, /backfill-stems[stale-only])
+ SERVER — POST /stemify {songId}  (or /stemify-collection, /backfill-stems[stale-only];
+        autoStemOnRip default-ON: every completed rip auto-queues its song(s) unprompted)
    source-select (mirrors beatgrid): digital → its rips/<id>.mp3 ; analog → its CUT rips/<id>.cut.mp3
         (stems are PER-SONG, keyed by songId — an analog song stems its cut, NEVER the album side)
-   dedicated concurrency-1 stemQ  (durable intent <tmp>/stem-queue/<songId>.json,
-        watchdog ~30min, STEM_MAX_ATTEMPTS=3 poison cap, DEFERS while a real-time capture runs)
+   OFFLOAD (the default; POCKETDJ_STEM_OFFLOAD=0 reverts): offloadStem → SQS jobs queue →
+        autoscaling EC2 stem workers (scripts/stem-worker.mjs, scale-to-0 when idle; the worker
+        DEDUPs — skips Demucs when the song's stems already exist on S3) → results queue →
+        pumpStemResults folds the manifest (and chains a LYRICS job off the fresh vocals stem)
+   LOCAL path (offload off · always for /stemify-custom): dedicated concurrency-1 stemQ
+        (durable intent <tmp>/stem-queue/<songId>.json, watchdog ~30min,
+        STEM_MAX_ATTEMPTS=3 poison cap, DEFERS while a real-time capture runs)
    Demucs htdemucs (v4 default; POCKETDJ_DEMUCS_MODEL) → 4 stems vocals/drums/bass/other, mp3 256k
-        runtime: native MPS on Apple Silicon (default) · Docker-CPU pocketdj-stems (fallback)
+        local runtime: native MPS on Apple Silicon · Docker-CPU pocketdj-stems (fallback)
    aws s3 cp → rips/stems/<songId>/<stem>.mp3   (PUBLIC rips/ prefix)
    applyStems(entry): stems{vocals,drums,bass,other}=keys · stemModel · stemVersion(=1) ·
                       stemFormat · stemmedAt · stemBytes      (additive; presence ⇒ stemmed)
@@ -1731,19 +1811,36 @@ librosa `audio/` stage); the device side in
    Mix stem decks (Ch.4 §7.6)  ·  SongDetail stem-audition panel (§15.2)
 ```
 
-**Reading it — the server.** `/stemify` (per-song), `/stemify-collection` (batch, capped),
-`/stemify-cancel` (Stop), and `/backfill-stems` (re-stem only stale/missing) all feed a
-**dedicated concurrency-1 `stemQ`** that is separate from the rip queue, with its own
-durable per-`songId` intent dir, a ~30-min watchdog, a `STEM_MAX_ATTEMPTS = 3` poison-input
-cap, and a gate that **defers stemming while a real-time rip capture is running** (CPU/GPU
-contention). The source is **per-song**: a digital song stems its own mp3, an analog song
-stems its **per-song cut** (§14) — never the shared album side — so stems are always keyed by
-`songId`. Separation runs **Demucs `htdemucs`** (v4, the one `POCKETDJ_DEMUCS_MODEL` knob;
-4-stem only) producing **`vocals`/`drums`/`bass`/`other` as 256 kbps mp3**, preferring the
-**native MPS** runtime on the Apple-Silicon iMac and falling back to a **Docker-CPU**
+**Reading it — the server.** `/stemify` (per-song), `/stemify-collection` (batch, capped,
+admin-tier §2), `/stemify-cancel` (Stop), and `/backfill-stems` (re-stem only stale/missing)
+feed the pipeline — and **`autoStemOnRip`** (default-on when offload is on;
+`POCKETDJ_AUTO_STEM_ON_RIP`) auto-queues every freshly-completed rip's song(s) unprompted,
+so new rips arrive pre-stemmed (→ pre-lyric'd). The source is **per-song**: a digital song
+stems its own mp3, an analog song stems its **per-song cut** (§14) — never the shared album
+side — so stems are always keyed by `songId`. Separation is **offloaded by default**
+(`POCKETDJ_STEM_OFFLOAD=0` reverts): `offloadStem` sends the job to an **SQS jobs queue**
+consumed by **autoscaling EC2 stem workers** ([`scripts/stem-worker.mjs`](../../scripts/stem-worker.mjs),
+scale-to-0 when idle; sends ride a bounded-concurrency dispatcher,
+`POCKETDJ_OFFLOAD_DISPATCH_CONC`), the worker **dedups** (skips Demucs when the song's stems
+already exist on S3), and **`pumpStemResults`** long-polls the results queue and folds the
+stamp into the manifest — surviving restarts, honoring cancel tombstones, and **chaining a
+lyrics job** off the fresh vocals stem (`offloadLyrics`, the faster-whisper timed-words
+sidecar of §5); a DLQ pump surfaces poisoned jobs. The same worker fleet also runs the
+**digital audio-analysis offload** (`POCKETDJ_ANALYSIS_OFFLOAD`, default on — bpm/key/
+beat-grid/waveform for digital entries; analog analysis stays local), whose results fold
+through the identical pump, with **`POST /backfill-analysis`** re-queueing entries whose
+analysis is missing/broken. The **local path** — used when offload is off, and **always**
+for `/stemify-custom` (a caller-supplied file with no manifest entry) — is the dedicated
+concurrency-1 `stemQ`, separate from the rip queue, with its own durable per-`songId`
+intent dir, a ~30-min watchdog, a `STEM_MAX_ATTEMPTS = 3` poison-input cap, and a gate that
+**defers stemming while a real-time rip capture is running** (CPU/GPU contention). Either
+runtime executes **Demucs `htdemucs`** (v4, the one `POCKETDJ_DEMUCS_MODEL` knob; 4-stem
+only) producing **`vocals`/`drums`/`bass`/`other` as 256 kbps mp3** — locally preferring
+the **native MPS** runtime on the Apple-Silicon iMac and falling back to a **Docker-CPU**
 (`pocketdj-stems`) image. The four files upload to the **public** `rips/stems/<songId>/`
-prefix and `applyStems` folds the additive `stems`/`stemModel`/`stemVersion`/`stemFormat`/
-`stemmedAt`/`stemBytes` fields onto the manifest entry (§5) **only after all four upload**.
+prefix and `applyStems` (or the results-pump fold) stamps the additive
+`stems`/`stemModel`/`stemVersion`/`stemFormat`/`stemmedAt`/`stemBytes` fields onto the
+manifest entry (§5) **only after all four upload**.
 `GET /health` advertises the capability as a plain **`stems: true`** flag — no `RIP_PROTOCOL`
 bump, since the fields are additive and old clients simply ignore them. Stemming is
 **idempotent** (already-stemmed at the current version+model ⇒ skip).

@@ -53,8 +53,8 @@ waveform). Analog stays rip-then-play (already faster than real time).
 
 The app and rip server do a small **version handshake** (`/health`): if the server is
 reachable but **outdated** (e.g. its process predates a code update), the app shows a
-transient banner — *"Rip server is outdated — restart it for live streaming"* — that
-auto-dismisses after 5 s, instead of silently failing to stream.
+transient banner — *"Rip server is outdated — restart it on the iMac for live
+streaming"* — that auto-dismisses after 5 s, instead of silently failing to stream.
 
 ### Settings ▸ Rip server
 
@@ -132,7 +132,11 @@ from the lock screen or the car works too: iOS actually hands that ⏭ to Apple'
 player (which just stops its one-song queue), and PocketDJ notices within half a second
 and moves the set to the next track — instead of freezing paused on the old song. **⏮
 goes back a track** the same way once you're past the first ~10 seconds of a song
-(before that it restarts the current song — the classic near-the-top ⏮ behavior).
+(before that it restarts the current song — the classic near-the-top ⏮ behavior). The
+card also carries a **♥** — favorite / unfavorite the *current* track straight from the
+lock screen or Control Center, the same heart every song row wears ([♥ Favorites](explore-and-discover.md#-favorites--mark-the-ones-you-love));
+CarPlay's Now Playing card gets the same heart button. (The Mix tab's card is the one
+place without it — a running mix has no single track to heart.)
 
 **User story:** "I found the record — now let me actually hear it, right here, without
 leaving the list — and scrub to the drop."
@@ -170,7 +174,11 @@ album, and full metadata** — the same kind of mixer-ready sidecar the desktop 
 produces. Burning the same set again is smart: it re-downloads only what's **missing or
 stale** (e.g. a track you re-ripped, or whose BPM/key was re-analyzed since), and skips
 everything still current. Progress shows as *"Burning 6 of 10,"* ending in a summary like
-*"Burned 6 of 10 — 4 not yet ripped."*
+*"Burned 6 of 10 — 4 not yet ripped."* A burn also pulls down each song's **four
+separated stems** (vocals / drums / bass / other) and its **beat-grid sidecar** whenever
+they exist in the cache — so the Mix tab's stem decks and the beat-locked pulse work fully
+offline ([Mix & Stems](mix-and-stems.md)) — and the summary counts them: *"… — 6 with
+stems, 6 with beat grids."*
 
 **Where you'll see them.** The pair appears on the playlist detail, the pocket detail, the
 setlist detail, and the read-only "From your sources" list — anywhere you've gathered a set
@@ -461,12 +469,21 @@ Top to bottom:
   platter **freezes in place** (no rewind-to-twelve-o'clock); resume and it picks up from
   the same groove. Unknown tempo ⇒ classic 33⅓.
 - **⏮ ⏯ ⏭ transport** — the same prev/play-pause/next that works from the lock screen.
-  A small **⟲ history button** rides the row's left edge: tap it and a **Previously
+  The current track's **♥** rides the row's right edge — the same reusable favorite
+  control every song row carries ([♥ Favorites](explore-and-discover.md#-favorites--mark-the-ones-you-love));
+  a vinyl / My Digital / Studio track still hearts, local-only, exactly like its Browse
+  row. A small **⟲ history button** rides the row's left edge: tap it and a **Previously
   played** section unfolds between the deck and Up next — every track this run has
   already spun, newest first. Long-press a played row to **Play now** (jump straight
   back onto it — a whole ⏮-walk in one tap; everything between returns to Up next) or
   **Play again next / last** (queue a fresh copy without touching the needle). Tap ⟲
   again to fold it away; the choice sticks across launches.
+- **A collapsible Mix mini-panel** directly below the transport — tempo, pitch, gain,
+  effects and per-stem faders for the *currently-playing* track, without leaving the
+  deck for the Mix tab. It appears only when the track is a local, mixable file and no
+  Mix-tab session is playing (hidden entirely otherwise, collapsed by default); the
+  first touch of any control hands the audio into the mix engine at the current
+  position, and the tweaks reset when the track changes ([Mix & Stems](mix-and-stems.md)).
 - **Up next** — the not-yet-played queue of the playing collection. **Drag to reorder**
   (Reorder button on iPhone) or **✕ / swipe to remove**; edits touch only what hasn't
   played yet, so the current track never skips or restarts.
@@ -501,7 +518,7 @@ neighboring tab icons.
 dropped on **every** platform) unless you'd navigated
 somewhere before — then it **reopens wherever you last left off**. On the Mac it always opens
 on the **Mix** tab, ready to DJ. And where the sparkle would sit, **iPad, Mac and Vision Pro**
-show a **＋ New Window** button — tap it to open a second window (run Performance in one,
+show a **＋ New Window** button — tap it to open a second window (run Producer in one,
 Mix in another); it's the on-screen twin of **⌘N** / File ▸ New Window. iPhone, which can't
 display two windows, hides it.
 
