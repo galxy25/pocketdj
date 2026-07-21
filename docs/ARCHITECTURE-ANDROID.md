@@ -1,9 +1,11 @@
 # PocketDJ — Architecture (Android)
 
 > **LIVING DOCUMENT.** This is the plan-and-progress record for the Android port,
-> updated as each phase is implemented. Today **nothing is implemented** — every
-> section below is marked *Status: Planned (Phase N)*. When a phase lands, its
-> sections flip to *Built* with the same per-component honesty as the
+> updated as each phase is implemented. **Phase 1 is built** (branch
+> `feat/android-phase1`, 2026-07-21): Browser (incl. Settings) + History +
+> Jukebox Hero over the core catalog/playback layers, verified end-to-end on the
+> `pocketdj` emulator against the live CloudFront catalog. Later-phase sections
+> remain *Planned* with the same per-component honesty as the
 > [Apple doc's Status ledger](./ARCHITECTURE-APPLE.md#status--whats-built-by-component).
 
 The **shared backend/system core** — sources, indexers, S3/CloudFront, the SQS/EC2
@@ -74,23 +76,32 @@ own Settings rows rather than front-loading them).
 
 ## Status — by component (mirroring the Apple doc)
 
-### Ch. 1 — Foundations · *Status: Planned (Phase 1)*
+### Ch. 1 — Foundations · *Status: Built (Phase 1)*
 Android consumes the shared entities, the files-as-API spine, and the
 content-derived ids **unchanged** — no Android-side id minting, no new document
-shapes. The client stack (decision 2) and catalog plumbing (decision 5) land here:
-fetch + disk-cache the catalog documents, decode with kotlinx.serialization, render
-art with Coil.
+shapes. Built: `data/config/Endpoints.kt` (prod CloudFront base + per-source index
+URLs + art/rips/lyrics URL builders), one lenient `PdjJson` for every remote and
+on-disk doc, `AppSettingsStore` (Preferences DataStore, corruption-handled,
+transactional edits), implementation contracts extracted from the iOS app into
+`android/specs/*.md` (catalog / playback / browse / history / jukebox).
 
 ### Ch. 2 — Ingest & Enrichment · *Status: Shared backend — no Android work*
 All ingest/enrichment runs on the iMac + cloud workers and publishes to S3; Android
 only ever reads the outputs. Nothing to port. (Client-visible enrichment fields —
 bpm/key/beat grids/lyrics — arrive with the catalog in Phase 1.)
 
-### Ch. 3 — Catalog & Data Model · *Status: Planned (Phase 1 catalog · Phase 2 collections)*
-Phase 1: the read-side catalog model + the offline-first disk cache (decision 5).
-Phase 2: the collections document (pockets/playlists/setlists) and the favorites
-document — **device-local only** at first, since there is no CloudKit on Android;
-cross-device profile sync is deferred (open question: S3-backed sync).
+### Ch. 3 — Catalog & Data Model · *Status: Catalog Built (Phase 1) · Collections Planned (Phase 2)*
+Built: lean lenient index models, `CatalogService` (ETag/Last-Modified conditional
+GET — live-verified 304s against prod — atomic disk cache), `CatalogRepository`
+(render-from-cache-instantly, non-destructive refresh with per-source last-good
+substitution so a failed fetch can never shrink a rendered catalog, queued-refresh
+on concurrent source changes), `MergedCatalog` multi-source merge with
+ids-travel-verbatim. `PlayHistoryStore`: additive-optional JSON doc, atomic writes,
+corrupt-quarantine-to-`.bak` + unreadable-salvage (union-by-event-id) so transient
+IO can never destroy the log. Phase 2: the collections document
+(pockets/playlists/setlists) and favorites — **device-local only** at first, since
+there is no CloudKit on Android; cross-device profile sync is deferred (open
+question: S3-backed sync).
 
 ### Ch. 4 — Performance Engine · *Status: Planned (Phase 2 realize · Phase 3 Mix · Phase 4 Producer)*
 Phase 2: pockets → playlists → setlists and the `realize()` engine over the shared
@@ -98,27 +109,45 @@ collection shapes. Phase 3: the two-deck **Mix** engine — the DSP substrate
 (Media3/AudioTrack vs Oboe/native) is chosen at the start of this phase. Phase 4:
 the **Producer** (Studio) surfaces.
 
-### Ch. 5 — Playback & Rip-on-Demand · *Status: Planned (Phase 1 core · later phases grow it)*
-Phase 1: Media3/ExoPlayer + MediaSession playback (decision 4) of public rips/burns
-and rip-on-demand against the unchanged rip-server API — remembering the sources
-reality: an AM-only track with no public rip is metadata-only on Android. Offline
-burns, setlist transport, and stem playback follow with the phases that need them
-(Playlists → Mix → Producer). Android Auto lands after phone playback is solid, as
-the CarPlay-parity step.
+### Ch. 5 — Playback & Rip-on-Demand · *Status: Core Built (Phase 1) · grows with later phases*
+Built: `PlaybackService` (Media3 ExoPlayer inside a `MediaSessionService`,
+media-notification transport) + `PlaybackController` facade (play by songId via the
+public rips manifest, album-context queueing, `StateFlow` now-playing state,
+app-wide error snackbar), the docked mini-player bar, play-event bus → History
+(iOS-parity dedup semantics; Browse singles tagged `browser`, album queues tagged
+`album`). Rip-on-demand against the user-configured rip server with
+transient-poll-resilient await (only 10 consecutive failures abort). AM-only
+tracks with no public rip render metadata-only, exactly per the sources reality.
+Offline burns, setlist transport, and stem playback follow with the phases that
+need them (Playlists → Mix → Producer). Android Auto lands after phone playback
+is solid, as the CarPlay-parity step.
 
-### Ch. 6 — Search & Discovery · *Status: Planned (Phase 1)*
-The **Browser** tab (browse kinds, filters, online aoss search through the same
-CloudFront proxy) and **History** are Phase 1 scope. The web star map is a
-PWA-only surface — no Android port planned.
+### Ch. 6 — Search & Discovery · *Status: Browser + History Built (Phase 1) · online search deferred*
+Built: **Browser** — Albums|Songs kinds, grid/list layouts, device search, filter
+sheet (genre/BPM/Camelot/source), multi-key **sort sheet** (BPM numeric, Camelot
+wheel-rank, nulls-last; engine ported bit-for-bit from iOS `BrowseModel`), album
+detail + song detail sheet, and a **persisted browse session** (kind/filters/
+sort/layout survive process death; lenient snapshot doc, 400 ms debounce).
+**History** — Plays timeline w/ search, Newest/Oldest sort, date-range filter,
+row → song detail, per-context labels; the Activity segment is a selectable
+Phase-2 placeholder. **Deferred:** online **aoss** search (the Settings toggle was
+deliberately removed rather than shipping a dead control — wire the CloudFront
+SigV4 proxy + credential fields when it lands). The web star map is a PWA-only
+surface — no Android port planned.
 
-### Ch. 7 — Distribution & Clients · *Status: Planned (Phase 1 skeleton)*
-The Gradle root under `android/` (decisions 1–3) is the Phase 1 skeleton.
-**Jukebox Hero** (the app as DJ against the unchanged broker API) is Phase 1 scope.
-The distribution channel (Play internal testing vs direct APK — the TestFlight
-analogue) is an open question. Apple-specific system surfaces (widgets, App
-Intents/Siri, CloudKit profiles, MusicKit favorites sync) have **no Android
-counterpart planned yet**; they are listed here so their absence is a recorded
-decision, not an oversight.
+### Ch. 7 — Distribution & Clients · *Status: Skeleton + Jukebox Built (Phase 1)*
+Built: the Gradle root under `android/` (decisions 1–3; AGP 8.9.1 / Gradle 8.13
+wrapper / Kotlin 2.1 / Compose BOM 2025.01.00), the 6-tab shell, and the
+`android-build` / `android-test` / `android-emu` skills (verified commands).
+**Jukebox Hero DJ-side**: broker session open, locally-rendered QR of the guest
+URL (zxing-core), lifecycle-aware request polling, accept→play / deny with
+thread-safe decision bookkeeping, honest state posts (a failed player read skips
+the post rather than reporting idle), played-history section, graceful
+not-configured/unreachable states. The distribution channel (Play internal
+testing vs direct APK — the TestFlight analogue) is still an open question.
+Apple-specific system surfaces (widgets, App Intents/Siri, CloudKit profiles,
+MusicKit favorites sync) have **no Android counterpart planned yet**; they are
+listed here so their absence is a recorded decision, not an oversight.
 
 ---
 

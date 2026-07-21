@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- White vinyl record (a "DJ" glyph) centered inside the adaptive-icon safe zone. -->
+    <!-- Record body: white disc, r=30 at (54,54). -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,54 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0 z" />
+    <!-- Label: accent-blue center so it reads as a recessed record label, r=11. -->
+    <path
+        android:fillColor="#6EA8FF"
+        android:pathData="M43,54 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 z" />
+    <!-- Spindle hole: tiny white dot, r=2.5. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M51.5,54 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0 z" />
+</vector>
