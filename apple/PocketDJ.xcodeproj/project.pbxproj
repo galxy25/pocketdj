@@ -295,6 +295,7 @@
 		D8257404BF15796C515B4AC2 /* PlaybackSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD97F42760C5BD35799FF51D /* PlaybackSessionTests.swift */; };
 		D94F04111FDA1A08CB4FCE85 /* IntentServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 908C309108D71A8E1FDC9DBD /* IntentServices.swift */; };
 		D95DC2FF67168FE19BE4AFE4 /* ImportedSongsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EAA62ECD6F524DC1F495A60 /* ImportedSongsStore.swift */; };
+		DAB75E026C40AC67286EB2CB /* DemuxLyricGenerationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 029E55BE504590AF50C79152 /* DemuxLyricGenerationTests.swift */; };
 		DCA26E59196FA608F846B04A /* EditSongView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB73F62005924C8274EE434 /* EditSongView.swift */; };
 		DCFB5FC480A6E8D0C9154DAF /* CollectionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6B0D327765BAA9E778489FD /* CollectionsUITests.swift */; };
 		DEC807B4D22B0DF18ABF7BBC /* SMFWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D96AAD5B322D1E24EB05B1 /* SMFWriterTests.swift */; };
@@ -388,6 +389,7 @@
 		0029684BDA7DC34827547955 /* EditSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditSchema.swift; sourceTree = "<group>"; };
 		00E1FCB41FE33110D9894711 /* EditsFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditsFile.swift; sourceTree = "<group>"; };
 		027D9207F27E99DB6D901080 /* Fixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fixtures.swift; sourceTree = "<group>"; };
+		029E55BE504590AF50C79152 /* DemuxLyricGenerationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxLyricGenerationTests.swift; sourceTree = "<group>"; };
 		02AE25A0F889C29EFF74A434 /* MixSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixSessionsView.swift; sourceTree = "<group>"; };
 		03308285792BC711ACEE2733 /* Format.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Format.swift; sourceTree = "<group>"; };
 		04695760188BA9DCF11A76AB /* PocketDJWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PocketDJWidgets.entitlements; sourceTree = "<group>"; };
@@ -824,6 +826,7 @@
 				BF7BCE3590F102AC79B4A74F /* CuePlumbingTests.swift */,
 				965C2BB9FBBCAB3DF71E888F /* DemuxCloudLyricsTests.swift */,
 				1463698BF7377961243141EC /* DemuxInstrumentalTests.swift */,
+				029E55BE504590AF50C79152 /* DemuxLyricGenerationTests.swift */,
 				494A29267BF1E47AA92BE17D /* DemuxMelodySwitchTests.swift */,
 				0885F3744213F8187192B18C /* DemuxTests.swift */,
 				47341CD32CABE6F1D9A79054 /* DemuxTranscriberChunkTests.swift */,
@@ -1594,6 +1597,7 @@
 				9AEF31B8C7E8AEC3F66292F3 /* CuePlumbingTests.swift in Sources */,
 				C2ED9BFABA86D3F6F44BBA35 /* DemuxCloudLyricsTests.swift in Sources */,
 				22DBCC37C8F90A55EA2D974F /* DemuxInstrumentalTests.swift in Sources */,
+				DAB75E026C40AC67286EB2CB /* DemuxLyricGenerationTests.swift in Sources */,
 				0A048AF0DED167E8F14A121E /* DemuxMelodySwitchTests.swift in Sources */,
 				622BEFCF94097199A6D682C7 /* DemuxTests.swift in Sources */,
 				05CF89454BADE3EC679A04A6 /* DemuxTranscriberChunkTests.swift in Sources */,
