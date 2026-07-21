@@ -687,6 +687,15 @@ final class CollectionsStore {
         pockets.filter { $0.folderId == id }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
+    /// Playlists in a folder (nil ⇒ top level), ordered by the user's chosen collection sort.
+    /// The name-only overload above is retained as a stable name-ordered helper (used by tests).
+    func playlists(inFolder id: String?, sortedBy order: CollectionSortOrder) -> [Playlist] {
+        order.sorted(playlists.filter { $0.folderId == id })
+    }
+    /// Pockets in a folder (nil ⇒ top level), ordered by the user's chosen collection sort.
+    func pockets(inFolder id: String?, sortedBy order: CollectionSortOrder) -> [Pocket] {
+        order.sorted(pockets.filter { $0.folderId == id })
+    }
 
     @discardableResult
     func createFolder(_ name: String) -> PlaylistFolder {
@@ -1075,7 +1084,10 @@ final class CollectionsStore {
     /// (spec §8), unlike the rip/CSV-facing `songIds(forPlaylist:)`.
     @discardableResult
     func playNow(playlistId: String, shuffle: Bool = false) -> Setlist? {
-        playNow(songIds: playableIds(forPlaylist: playlistId),
+        // Stamp "recently played" here — the single funnel every collection-play entry point
+        // (detail views, CarPlay, Siri/App Intents via IntentServices.playPlaylist) routes through.
+        markPlayed(playlistId: playlistId)
+        return playNow(songIds: playableIds(forPlaylist: playlistId),
                 name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
                 repeats: playlistRepeatMap(playlistId), originId: playlistId)
     }
@@ -1083,7 +1095,10 @@ final class CollectionsStore {
     /// `playableIds` for the same reason as the playlist variant above.
     @discardableResult
     func playNow(pocketId: String, shuffle: Bool = false) -> Setlist? {
-        playNow(songIds: playableIds(forPocket: pocketId),
+        // Stamp "recently played" here — the single funnel every pocket-play entry point
+        // (PocketsView, CarPlay, Siri/App Intents via IntentServices.playPocket) routes through.
+        markPlayed(pocketId: pocketId)
+        return playNow(songIds: playableIds(forPocket: pocketId),
                 name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
                 repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId)
     }
@@ -1528,6 +1543,25 @@ final class CollectionsStore {
     private func mutatePlaylist(_ id: String, _ body: (inout Playlist) -> Void) {
         guard let i = playlists.firstIndex(where: { $0.id == id }) else { return }
         body(&playlists[i]); playlists[i].updatedAt = now; save()
+    }
+
+    // MARK: Recently-played stamps
+    //
+    // ▶ Play stamps `lastPlayedAt` for the "Recently played" collection sort. Deliberately
+    // written + save()d DIRECTLY (NOT through mutatePlaylist/mutatePocket) so `updatedAt` —
+    // the distinct "Last updated" signal — is never disturbed by playback. Missing id ⇒ no-op
+    // (read-only source playlists have no editable record to stamp — recently-played is scoped
+    // to the user's own playlists/pockets).
+
+    /// Stamp a playlist's `lastPlayedAt` = now, WITHOUT touching `updatedAt`.
+    func markPlayed(playlistId id: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == id }) else { return }
+        playlists[i].lastPlayedAt = now; save()
+    }
+    /// Stamp a pocket's `lastPlayedAt` = now, WITHOUT touching `updatedAt`.
+    func markPlayed(pocketId id: String) {
+        guard let i = pockets.firstIndex(where: { $0.id == id }) else { return }
+        pockets[i].lastPlayedAt = now; save()
     }
     private func save() {
         let doc = CollectionsDocument(schemaVersion: collectionsSchemaVersion, pockets: pockets,

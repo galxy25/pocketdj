@@ -1,6 +1,62 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The Playlists screen's top-level tab: YOUR editable collections vs the read-only
+/// SHARED source-derived playlists ("From your sources"). Mirrors BrowseView's segmented
+/// Show-tabs. Persisted UI-ONLY in `@AppStorage("pdj.playlists.mode")` — NEVER in the
+/// collections schema (it is view state, not collection data).
+enum PlaylistMode: String, CaseIterable, Identifiable {
+    case user, shared
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .user:   return "Yours"
+        case .shared: return "Shared"
+        }
+    }
+
+    /// Whether this tab has any search match, given the per-kind match counts — the seam that
+    /// re-scopes the `.searchable` results (and the "no matches" placeholder) to the active tab:
+    /// User ignores source matches, Shared ignores playlist/pocket matches.
+    func hasMatches(playlists: Int, pockets: Int, sources: Int) -> Bool {
+        switch self {
+        case .user:   return playlists > 0 || pockets > 0
+        case .shared: return sources > 0
+        }
+    }
+}
+
+/// Pure, testable helpers for the Shared tab's per-source grouping + collapse memory.
+/// (Extracted from the view so the grouping/ordering + the expanded-set persistence are
+/// unit-testable without SwiftUI.)
+enum PlaylistSources {
+    /// Group source playlists by `sourceName`, ordered by `availableSources` (first-seen source
+    /// order); any source not in that list is appended alphabetically. O(n) over a small array.
+    static func grouped(_ playlists: [SourcePlaylist],
+                        availableSources: [String]) -> [(source: String, playlists: [SourcePlaylist])] {
+        let byName = Dictionary(grouping: playlists, by: \.sourceName)
+        var result: [(source: String, playlists: [SourcePlaylist])] = []
+        for name in availableSources {
+            if let group = byName[name] { result.append((name, group)) }
+        }
+        let known = Set(availableSources)
+        for name in byName.keys.filter({ !known.contains($0) }).sorted() {
+            if let group = byName[name] { result.append((name, group)) }
+        }
+        return result
+    }
+
+    /// The EXPANDED source names, stored as a `[String]` (inverse of the folder-collapse key:
+    /// here MISSING ⇒ collapsed, so the collapse-by-default default needs no seeding).
+    static let expandedKey = "pdj.sources.expanded"
+    static func loadExpanded(from defaults: UserDefaults = .standard) -> Set<String> {
+        Set(defaults.stringArray(forKey: expandedKey) ?? [])
+    }
+    static func persistExpanded(_ names: Set<String>, to defaults: UserDefaults = .standard) {
+        defaults.set(Array(names), forKey: expandedKey)
+    }
+}
+
 /// Collections — playlists (ordered chapters) and pockets (reusable groupings), both
 /// organized into optional collapsible FOLDERS (folders are heterogeneous: they hold
 /// BOTH playlists and pockets). Your editable collections render ABOVE the read-only
@@ -10,7 +66,13 @@ struct PlaylistsView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(IntentServices.self) private var intents
+    @Environment(SettingsStore.self) private var settings
     @Binding var path: NavigationPath
+    /// USER | SHARED tab — persisted UI-only (outside the collections schema).
+    @AppStorage("pdj.playlists.mode") private var mode: PlaylistMode = .user
+    /// EXPANDED source names for the Shared tab's per-source DisclosureGroups (missing ⇒
+    /// collapsed = default). Inverted clone of the folder-collapse persistence below.
+    @State private var expandedSources: Set<String> = PlaylistSources.loadExpanded()
     // Playlist dialogs
     @State private var newName = ""
     @State private var showNew = false
@@ -47,22 +109,22 @@ struct PlaylistsView: View {
         name.range(of: trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 
-    // Filtered, name-ordered result lists — computed only while searching. Search FLATTENS
-    // the folder hierarchy: a match surfaces regardless of which folder holds it, so finding
-    // a playlist by name never means expanding folders first.
+    // Filtered result lists — computed only while searching, ordered by the chosen collection
+    // sort. Search FLATTENS the folder hierarchy: a match surfaces regardless of which folder
+    // holds it, so finding a playlist by name never means expanding folders first.
     private var matchingPlaylists: [Playlist] {
-        collections.playlists.filter { matchesQuery($0.name) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        settings.collectionSort.sorted(collections.playlists.filter { matchesQuery($0.name) })
     }
     private var matchingPockets: [Pocket] {
-        collections.pockets.filter { matchesQuery($0.name) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        settings.collectionSort.sorted(collections.pockets.filter { matchesQuery($0.name) })
     }
     private var matchingSources: [SourcePlaylist] {
-        indexPlaylists.filter { matchesQuery($0.name) }
+        settings.collectionSort.sorted(indexPlaylists.filter { matchesQuery($0.name) })
     }
-    private var hasAnyMatch: Bool {
-        !matchingPlaylists.isEmpty || !matchingPockets.isEmpty || !matchingSources.isEmpty
+    /// Whether the ACTIVE tab has any search match (drives the per-tab "no matches" placeholder).
+    private var hasAnyMatchInMode: Bool {
+        mode.hasMatches(playlists: matchingPlaylists.count,
+                        pockets: matchingPockets.count, sources: matchingSources.count)
     }
 
     /// The Siri "Create Pocket" build status — the async build's ONLY user-visible
@@ -110,25 +172,11 @@ struct PlaylistsView: View {
     var body: some View {
         VStack(spacing: 0) {
             pocketBuilderBanner
-            if collections.playlists.isEmpty && collections.pockets.isEmpty && indexPlaylists.isEmpty {
-                emptyState
-            } else {
-                List {
-                    if isSearching {
-                        searchResultsSections
-                    } else {
-                        yourPlaylistsSection
-                        yourPocketsSection
-                        ForEach(collections.foldersOrdered()) { folder in
-                            folderSection(folder)
-                        }
-                        sourcesSection
-                    }
-                }
-            }
+            modeTabsPicker
+            content
         }
         .navigationTitle("Playlists")
-        .searchable(text: $query, prompt: "Search playlists and pockets")
+        .searchable(text: $query, prompt: searchPrompt)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .scrollContentBackground(.hidden).background(Theme.bg)
         .toolbar { toolbarContent }
@@ -179,9 +227,60 @@ struct PlaylistsView: View {
         }
     }
 
+    // MARK: - Mode tabs + content
+
+    /// USER | SHARED segmented tabs, docked at the TOP of the screen (mirrors BrowseView's
+    /// `showTabsPicker`). Search + the list below scope to the selected tab.
+    private var modeTabsPicker: some View {
+        Picker("Mode", selection: $mode) {
+            ForEach(PlaylistMode.allCases) { m in Text(m.label).tag(m) }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .accessibilityIdentifier("playlist-mode-picker")
+    }
+
+    /// The tab prompt so the search field advertises what it scopes to.
+    private var searchPrompt: String {
+        mode == .user ? "Search playlists and pockets" : "Search source playlists"
+    }
+
+    /// The list body, gated on the active tab. While searching, only the active tab's matches
+    /// show (`searchResultsSections` branches on `mode`); otherwise the tab's own sections, each
+    /// with its own empty state so a user with no own collections still sees a populated Shared tab.
+    @ViewBuilder private var content: some View {
+        if isSearching {
+            List { searchResultsSections }
+        } else {
+            switch mode {
+            case .user:
+                if collections.playlists.isEmpty && collections.pockets.isEmpty {
+                    userEmptyState
+                } else {
+                    List { userSections }
+                }
+            case .shared:
+                if indexPlaylists.isEmpty {
+                    sharedEmptyState
+                } else {
+                    List { sharedSections }
+                }
+            }
+        }
+    }
+
     // MARK: - Sections
 
-    private var emptyState: some View {
+    /// USER tab — your editable playlists + pockets + folders (no source rows).
+    @ViewBuilder private var userSections: some View {
+        yourPlaylistsSection
+        yourPocketsSection
+        ForEach(collections.foldersOrdered()) { folder in
+            folderSection(folder)
+        }
+    }
+
+    private var userEmptyState: some View {
         ContentUnavailableView {
             Label("No collections yet", systemImage: "music.note.list")
         } description: {
@@ -192,12 +291,22 @@ struct PlaylistsView: View {
                 Button("New Pocket") { showNewPocket = true }.buttonStyle(.bordered)
             }
         }
+        .accessibilityIdentifier("playlists-user-empty")
+    }
+
+    private var sharedEmptyState: some View {
+        ContentUnavailableView {
+            Label("No source playlists", systemImage: "music.note.list")
+        } description: {
+            Text("Playlists from your enabled sources (Apple Music, vinyl, imports…) appear here. Enable a source in Settings, or add playlists to one.")
+        }
+        .accessibilityIdentifier("playlists-shared-empty")
     }
 
     /// YOUR (editable) top-level PLAYLISTS — those NOT in any folder. Own header, distinct
     /// from pockets and from the read-only "From your sources" section. Rendered first.
     @ViewBuilder private var yourPlaylistsSection: some View {
-        let top = collections.playlists(inFolder: nil)
+        let top = collections.playlists(inFolder: nil, sortedBy: settings.collectionSort)
         Section("Your playlists") {
             if collections.playlists.isEmpty {
                 Text("No playlists yet — tap + to create one.")
@@ -214,7 +323,7 @@ struct PlaylistsView: View {
     /// playlists. Hidden entirely when you have no pockets at all (no empty "Pockets" header).
     @ViewBuilder private var yourPocketsSection: some View {
         if !collections.pockets.isEmpty {
-            let top = collections.pockets(inFolder: nil)
+            let top = collections.pockets(inFolder: nil, sortedBy: settings.collectionSort)
             Section("Pockets") {
                 if top.isEmpty {
                     Text("All your pockets are in folders below.")
@@ -227,8 +336,8 @@ struct PlaylistsView: View {
 
     /// One collapsible FOLDER (flat) of playlists AND pockets, name-ordered. Collapse state persists.
     @ViewBuilder private func folderSection(_ folder: PlaylistFolder) -> some View {
-        let plMembers = collections.playlists(inFolder: folder.id)
-        let pkMembers = collections.pockets(inFolder: folder.id)
+        let plMembers = collections.playlists(inFolder: folder.id, sortedBy: settings.collectionSort)
+        let pkMembers = collections.pockets(inFolder: folder.id, sortedBy: settings.collectionSort)
         let memberCount = plMembers.count + pkMembers.count
         Section {
             DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
@@ -255,17 +364,34 @@ struct PlaylistsView: View {
         }
     }
 
-    /// The read-only "From your sources" section, now rendered LAST (below your collections).
-    @ViewBuilder private var sourcesSection: some View {
-        if !indexPlaylists.isEmpty {
-            Section {
-                ForEach(indexPlaylists) { sp in sourceRow(sp) }
-            } header: {
-                Text("From your sources")
-            } footer: {
-                Text("Read-only playlists from your enabled sources. Play one, or duplicate it into an editable playlist.")
+    /// SHARED tab — the read-only source playlists, GROUPED BY SOURCE into collapse-by-default,
+    /// remember-my-expansions DisclosureGroups (inverse of the folder-collapse pattern below:
+    /// EXPANDED names are persisted, so missing ⇒ collapsed). Groups follow `availableSources`
+    /// order; each group's members honor the chosen collection sort.
+    @ViewBuilder private var sharedSections: some View {
+        Section {
+            ForEach(groupedSources, id: \.source) { group in
+                DisclosureGroup(isExpanded: sourceExpansion(group.source)) {
+                    ForEach(settings.collectionSort.sorted(group.playlists)) { sp in sourceRow(sp) }
+                } label: {
+                    HStack {
+                        Label(group.source, systemImage: "shippingbox").foregroundStyle(Theme.accent2)
+                        Spacer()
+                        Text("\(group.playlists.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                    .accessibilityIdentifier("source-group-\(group.source)")
+                }
             }
+        } header: {
+            Text("From your sources")
+        } footer: {
+            Text("Read-only playlists from your enabled sources. Play one, or duplicate it into an editable playlist.")
         }
+    }
+
+    /// Source playlists grouped by source, ordered for display (see `PlaylistSources.grouped`).
+    private var groupedSources: [(source: String, playlists: [SourcePlaylist])] {
+        PlaylistSources.grouped(indexPlaylists, availableSources: app.availableSources)
     }
 
     /// One read-only source-playlist row (shared by the sources section and search results).
@@ -294,25 +420,30 @@ struct PlaylistsView: View {
     /// and source playlists, each under its own header, folder nesting collapsed away. An
     /// empty match set shows a "No matches" placeholder so the list is never a blank void.
     @ViewBuilder private var searchResultsSections: some View {
-        if !hasAnyMatch {
+        if !hasAnyMatchInMode {
             Section {
                 ContentUnavailableView.search(text: trimmedQuery)
                     .accessibilityIdentifier("playlists-search-empty")
             }
         } else {
-            if !matchingPlaylists.isEmpty {
-                Section("Your playlists") {
-                    ForEach(matchingPlaylists) { pl in playlistRow(pl) }
+            switch mode {
+            case .user:
+                if !matchingPlaylists.isEmpty {
+                    Section("Your playlists") {
+                        ForEach(matchingPlaylists) { pl in playlistRow(pl) }
+                    }
                 }
-            }
-            if !matchingPockets.isEmpty {
-                Section("Pockets") {
-                    ForEach(matchingPockets) { pk in pocketRow(pk) }
+                if !matchingPockets.isEmpty {
+                    Section("Pockets") {
+                        ForEach(matchingPockets) { pk in pocketRow(pk) }
+                    }
                 }
-            }
-            if !matchingSources.isEmpty {
-                Section("From your sources") {
-                    ForEach(matchingSources) { sp in sourceRow(sp) }
+            case .shared:
+                // Search flattens the per-source grouping: a match surfaces regardless of source.
+                if !matchingSources.isEmpty {
+                    Section("From your sources") {
+                        ForEach(matchingSources) { sp in sourceRow(sp) }
+                    }
                 }
             }
         }
@@ -417,7 +548,30 @@ struct PlaylistsView: View {
 
     // MARK: - Toolbar + folder dialogs
 
+    /// The collection SORT control — one tap picks Recently played / A–Z / Last updated,
+    /// write-through-persisted in Settings. Applies to the User tab's collections and each
+    /// Shared-tab source group's members.
+    private var sortMenu: some View {
+        Menu {
+            ForEach(CollectionSortOrder.allCases) { order in
+                Button {
+                    settings.collectionSort = order
+                    settings.persist()
+                } label: {
+                    Label(order.label,
+                          systemImage: settings.collectionSort == order ? "checkmark" : order.systemImage)
+                }
+                .accessibilityIdentifier("collection-sort-\(order.rawValue)")
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+        }
+        .help("Sort collections")
+        .accessibilityIdentifier("collection-sort-menu")
+    }
+
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) { sortMenu }
         ToolbarItem(placement: .primaryAction) {
             Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
                 .help("Import a playlist or pocket export")
@@ -464,6 +618,18 @@ struct PlaylistsView: View {
             set: { expanded in
                 if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
                 persistCollapsed()
+            })
+    }
+
+    /// A binding into `expandedSources` for a Shared-tab source DisclosureGroup, persisting on
+    /// change. INVERSE of `folderExpansion`: presence in the set = EXPANDED, so a source not yet
+    /// touched (absent) reads as collapsed — the requested collapse-by-default.
+    private func sourceExpansion(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedSources.contains(name) },
+            set: { expanded in
+                if expanded { expandedSources.insert(name) } else { expandedSources.remove(name) }
+                PlaylistSources.persistExpanded(expandedSources)
             })
     }
 }

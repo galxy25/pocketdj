@@ -51,7 +51,14 @@ import Foundation
 //   `sourceSyncedAt` stamps the last applied sync.
 //   Additive + lenient: a v5 doc migrates forward (all nil ⇒ a hand-made item, never
 //   synced); a v6 doc loads degraded on a v5 app (unknown keys ignored, members intact).
-let collectionsSchemaVersion = 6
+// v6 → v7: pockets AND playlists gained an optional `lastPlayedAt: Double?` (epoch ms) —
+//   stamped by `CollectionsStore.markPlayed(...)` when the user hits ▶ Play on the
+//   collection, powering the "Recently played" collection sort. Deliberately stamped
+//   OUTSIDE `mutatePocket/mutatePlaylist`, so it never disturbs `updatedAt` (the "Last
+//   updated" signal). Additive + lenient: a v6 doc migrates forward (lastPlayedAt nil ⇒
+//   never played ⇒ sorts last under Recently-played); a v7 doc loads degraded on a v6 app
+//   (the unknown key is simply ignored, members intact).
+let collectionsSchemaVersion = 7
 
 enum PocketKind: String, Codable, Hashable, Sendable { case harmonic, performance }
 
@@ -114,6 +121,10 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var sourceSyncEnabled: Bool?
     /// Epoch ms of the last sync that CHANGED the pocket (or refreshed the snapshot). nil = never.
     var sourceSyncedAt: Double?
+    /// v7: epoch ms of the last time the user hit ▶ Play on this pocket — the "Recently played"
+    /// sort key. Stamped by `CollectionsStore.markPlayed(pocketId:)` (NOT via `mutatePocket`, so
+    /// `updatedAt` stays a pure membership/rename signal). nil ⇒ never played ⇒ sorts last.
+    var lastPlayedAt: Double?
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
@@ -127,20 +138,21 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats,
-             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, createdAt, updatedAt
+             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, lastPlayedAt,
+             createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
          notes: [PocketNote] = [], folderId: String? = nil, songRepeats: [String: Int] = [:],
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
-         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
+         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil, lastPlayedAt: Double? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
         self.notes = notes; self.folderId = folderId; self.songRepeats = songRepeats
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
-        self.sourceSyncedAt = sourceSyncedAt
+        self.sourceSyncedAt = sourceSyncedAt; self.lastPlayedAt = lastPlayedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
@@ -160,6 +172,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         sourceSongIds = try? c.decode([String].self, forKey: .sourceSongIds)
         sourceSyncEnabled = try? c.decode(Bool.self, forKey: .sourceSyncEnabled)
         sourceSyncedAt = try? c.decode(Double.self, forKey: .sourceSyncedAt)
+        lastPlayedAt = try? c.decode(Double.self, forKey: .lastPlayedAt)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -319,6 +332,10 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var sourceSongIds: [String]?
     var sourceSyncEnabled: Bool?
     var sourceSyncedAt: Double?
+    /// v7: epoch ms of the last time the user hit ▶ Play on this playlist — the "Recently played"
+    /// sort key. Stamped by `CollectionsStore.markPlayed(playlistId:)` (NOT via `mutatePlaylist`,
+    /// so `updatedAt` stays a pure membership/rename signal). nil ⇒ never played ⇒ sorts last.
+    var lastPlayedAt: Double?
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
@@ -329,7 +346,7 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, sequences, targetMs, folderId,
-             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt,
+             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, lastPlayedAt,
              createdAt, updatedAt
     }
 
@@ -338,13 +355,13 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     init(id: String, name: String, description: String? = nil, sequences: [PlaylistNode],
          targetMs: Int? = nil, folderId: String? = nil,
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
-         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
+         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil, lastPlayedAt: Double? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.description = description
         self.sequences = sequences; self.targetMs = targetMs; self.folderId = folderId
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
-        self.sourceSyncedAt = sourceSyncedAt
+        self.sourceSyncedAt = sourceSyncedAt; self.lastPlayedAt = lastPlayedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
@@ -366,6 +383,7 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
         sourceSongIds = try c.decodeIfPresent([String].self, forKey: .sourceSongIds)
         sourceSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .sourceSyncEnabled)
         sourceSyncedAt = try c.decodeIfPresent(Double.self, forKey: .sourceSyncedAt)
+        lastPlayedAt = try c.decodeIfPresent(Double.self, forKey: .lastPlayedAt)
         createdAt = try c.decode(Double.self, forKey: .createdAt)
         updatedAt = try c.decode(Double.self, forKey: .updatedAt)
     }
@@ -575,6 +593,10 @@ enum CollectionsMigration {
         //   defaults them all to nil (hand-made item, never synced), so the mapping
         //   forward is the no-op identity. Kept explicit so the version bump is visible +
         //   the seam exists for any future provenance-shape transform.
+        // v6 → v7: pockets AND playlists gained optional `lastPlayedAt` (the "Recently played"
+        //   sort key). Older items simply have none — lenient decode already defaults it to nil
+        //   (never played), so the mapping forward is the NO-OP IDENTITY. Kept explicit so the
+        //   version bump is visible + the seam exists for any future playback-stat transform.
         doc.schemaVersion = collectionsSchemaVersion
         return doc
     }
@@ -602,3 +624,17 @@ enum CollectionsFactory {
                  createdAt: now, updatedAt: now)
     }
 }
+
+// MARK: - Collection sorting
+
+/// The fields the user-selectable collection sort (`CollectionSortOrder`) needs from a
+/// listable collection. Playlists + pockets conform directly; read-only source playlists
+/// conform with neutral defaults (no timestamps) so the SAME comparator can order them.
+protocol CollectionSortable {
+    var name: String { get }
+    var updatedAt: Double { get }
+    var lastPlayedAt: Double? { get }
+}
+
+extension Playlist: CollectionSortable {}
+extension Pocket: CollectionSortable {}
