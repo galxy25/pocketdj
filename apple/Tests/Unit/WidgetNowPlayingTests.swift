@@ -175,6 +175,24 @@ final class WidgetNowPlayingTests: XCTestCase {
         h.seq.stop()
     }
 
+    /// App-was-quit path: with no live deck restored yet, the ♥ falls back to the snapshot the
+    /// widget was actually showing (persisted in the App Group) — including its Apple Music id —
+    /// instead of silently dropping the tap.
+    func testWidgetToggleFavoriteFallsBackToSnapshotWhenQuit() throws {
+        try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group unavailable in this run")
+        let h = makeSyncHarness()                      // seq idle, rips/AM empty ⇒ currentBase().songId == nil
+        var snap = NowPlayingSnapshot.empty
+        snap.title = "Z"; snap.songId = "z"; snap.appleMusicId = "am_z"
+        NowPlayingShared.write(snap)                   // what the widget last displayed
+        defer { NowPlayingShared.write(.empty) }
+
+        XCTAssertFalse(h.favorites.isFavorite("z"))
+        WidgetPlaybackController.shared.toggleFavorite?()               // resolver returns nil for "z" ⇒ uses snapshot id
+        XCTAssertTrue(h.favorites.isFavorite("z"))
+        XCTAssertEqual(h.favorites.entry("z")?.appleMusicId, "am_z")   // snapshot's catalog id carried through
+        h.seq.stop()
+    }
+
     /// With the current track already favorited, a fresh `WidgetSync` publishes a snapshot whose
     /// `isFavorite`/`appleMusicId` reflect the store (its `init` publishes synchronously).
     func testPublishReflectsFavoriteState() throws {

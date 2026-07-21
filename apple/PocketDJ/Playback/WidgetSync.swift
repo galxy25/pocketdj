@@ -85,9 +85,16 @@ final class WidgetSync {
     /// (and only when) the user is the owner and the song carries a catalog id. The observation in
     /// `arm()` (`favorites.favoriteIds`) then republishes the snapshot so the ♥ glyph reflects it.
     private func toggleFavoriteForCurrent() {
-        guard let songId = currentBase().songId else { return }
+        // Prefer the live current track. If the app is mid-cold-launch with no deck restored
+        // yet (the app-was-quit widget-tap path), fall back to the snapshot the widget was
+        // actually showing when the ♥ was tapped — persisted in the App Group — so a favorite
+        // tapped while quit targets that track instead of being silently dropped.
+        let base = currentBase()
+        let snap = base.songId == nil ? NowPlayingShared.read() : nil
+        guard let songId = base.songId ?? snap?.songId else { return }
+        let catalogId = appleMusicId(songId) ?? snap?.appleMusicId
         NPLog.trace("widgetSync toggleFavorite songId=\(songId)")
-        favorites.toggle(songId, appleMusicId: appleMusicId(songId))
+        favorites.toggle(songId, appleMusicId: catalogId)
     }
 
     /// Drain a transport command a widget tap dropped while the app was fully quit — call when
