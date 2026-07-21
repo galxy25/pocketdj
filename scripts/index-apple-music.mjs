@@ -36,8 +36,26 @@ import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 const INDEX_SCHEMA_VERSION = '1.0.0';
+
+// Robust "mode" over an album's per-track catalog ids: returns the most-common
+// NON-EMPTY value (String), so one mistagged track can't hijack the album's identity.
+// Returns undefined when no track carries a value (ties resolve to the first-seen).
+// This is the album `appleMusicId` (the iTunes collectionId) the client joins on to
+// supersede a provisional Discover album. Exported for unit testing.
+export function mostCommonNonEmpty(values) {
+  const counts = new Map(); // insertion order → first-seen wins ties
+  for (const v of values) {
+    if (v == null || v === '') continue;
+    const k = String(v);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  let best, bestN = 0;
+  for (const [k, n] of counts) if (n > bestN) { bestN = n; best = k; }
+  return best;
+}
 
 // ---------- args ----------
 function parseArgs(argv) {
@@ -140,13 +158,22 @@ async function main() {
   // cache is ndjson keyed by song id; we bake the `appleMusicId` back onto each
   // song here so a re-index never drops the resolved ids. Misses (storeId:null)
   // are simply ignored.
-  const catalogIds = new Map(); // songId -> storeId
+  const catalogIds = new Map(); // songId -> storeId (per-song adam id → song.appleMusicId)
+  // Per-song album catalog id (the iTunes `collectionId`), captured by the same
+  // resolver pass. Aggregated per-album below into the album's `appleMusicId` so a
+  // provisional Discover album is superseded by the real indexed one. Older cache
+  // records without `collectionId` simply contribute nothing → album id undefined.
+  const collectionIds = new Map(); // songId -> album collectionId
   if (args.catalogCache && existsSync(expand(args.catalogCache))) {
     for (const ln of readFileSync(expand(args.catalogCache), 'utf8').split('\n')) {
       if (!ln.trim()) continue;
-      try { const o = JSON.parse(ln); if (o.id && o.storeId) catalogIds.set(o.id, o.storeId); } catch { /* skip */ }
+      try {
+        const o = JSON.parse(ln); // ndjson; last line for an id wins (Map.set)
+        if (o.id && o.storeId) catalogIds.set(o.id, o.storeId);
+        if (o.id && o.collectionId) collectionIds.set(o.id, String(o.collectionId));
+      } catch { /* skip */ }
     }
-    console.error(`  catalog cache: ${catalogIds.size} resolved appleMusicId(s)`);
+    console.error(`  catalog cache: ${catalogIds.size} resolved appleMusicId(s), ${collectionIds.size} album collectionId(s)`);
   }
 
   // ---- output: stream songs to disk; keep albums + a trackID->songId map in memory ----
@@ -331,6 +358,9 @@ async function main() {
   const albumArr = [...albums.values()].map((a) => ({
     id: a.id, artist: a.artist, name: a.name,
     genre: a.genre, year: a.year,
+    // album catalog id = the most-common collectionId across this album's tracks
+    // (undefined when no track resolved one → JSON.stringify omits it, backward-compatible).
+    appleMusicId: mostCommonNonEmpty(a.trackList.map((e) => collectionIds.get(e.sid))),
     trackList: a.trackList
       .sort((x, y) => x.disc - y.disc || x.track - y.track)
       .map((e) => e.sid),
@@ -398,4 +428,6 @@ async function main() {
   console.error(`  albums=${albumArr.length} songs=${songCount} playlists=${resolvedPlaylists.length} explicit=${explicitCount} localFiles=${withLocation}`);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (import.meta.url === (process.argv[1] ? pathToFileURL(process.argv[1]).href : '')) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}
