@@ -39,6 +39,15 @@ struct SourcePlaylist: Identifiable, Hashable {
     var songIds: [String] { playlist.songIds }
 }
 
+/// Read-only source playlists carry no membership/playback timestamps, so under
+/// `CollectionSortOrder` they order by NAME for every option (the `updatedAt == 0` /
+/// `lastPlayedAt == nil` neutral defaults collapse Recently-played + Last-updated to the
+/// name tie-break) — the same comparator the editable collections use.
+extension SourcePlaylist: CollectionSortable {
+    var updatedAt: Double { 0 }
+    var lastPlayedAt: Double? { nil }
+}
+
 struct Manifest: Decodable {
     let source: String?
     let generatedAt: String?

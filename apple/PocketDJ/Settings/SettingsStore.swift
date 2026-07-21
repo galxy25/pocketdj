@@ -44,6 +44,50 @@ enum MixDeckLayout: String, Codable, Hashable, Sendable, CaseIterable, Identifia
     }
 }
 
+/// How the Playlists screen orders the user's collections (and each Shared-tab source group).
+/// Persisted in `SettingsStore.collectionSort` as the raw string; `.name` (A–Z) is the default
+/// on a fresh install AND on upgrade (a missing key coalesces to it). Mirrors `MixDeckLayout`.
+enum CollectionSortOrder: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
+    case recentlyPlayed, name, lastUpdated
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .recentlyPlayed: return "Recently played"
+        case .name:           return "A–Z"
+        case .lastUpdated:    return "Last updated"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .recentlyPlayed: return "clock.arrow.circlepath"
+        case .name:           return "textformat"
+        case .lastUpdated:    return "pencil.and.list.clipboard"
+        }
+    }
+
+    /// Order a list of collections by this sort. `.name` = localizedCaseInsensitiveCompare;
+    /// `.lastUpdated` = newest `updatedAt` first (tie-break name); `.recentlyPlayed` = newest
+    /// `lastPlayedAt` first — never-played (nil ⇒ 0) sort LAST — then `updatedAt`, then name.
+    func sorted<T: CollectionSortable>(_ items: [T]) -> [T] {
+        switch self {
+        case .name:
+            return items.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .lastUpdated:
+            return items.sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        case .recentlyPlayed:
+            return items.sorted { lhs, rhs in
+                let l = lhs.lastPlayedAt ?? 0, r = rhs.lastPlayedAt ?? 0
+                if l != r { return l > r }
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        }
+    }
+}
+
 /// A configurable catalog source (name + index URL + whether it's shown).
 struct SourceConfig: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
@@ -123,6 +167,9 @@ final class SettingsStore {
     /// default, best in portrait), or one-at-a-time with ‹ › switchers. macOS ignores it (always
     /// side-by-side). See `MixDeckLayout` + `MixView.deckArea`.
     var mixDeckLayout: MixDeckLayout
+    /// How the Playlists screen orders the user's collections + each Shared-tab source group.
+    /// Persisted (per-device — Settings isn't CloudSync-registered); default `.name` (A–Z).
+    var collectionSort: CollectionSortOrder
     /// The last-visited section's rawValue ("" = the home menu) — iOS relaunches
     /// reopen there ("open to wherever you last left off"); macOS ignores it
     /// (always lands on Mix). Written by RootView on every section change.
@@ -220,6 +267,7 @@ final class SettingsStore {
         self.cueOutputChannel = data.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         self.beatPulseEnabled = data.beatPulseEnabled ?? false
         self.mixDeckLayout = data.mixDeckLayout.flatMap(MixDeckLayout.init(rawValue:)) ?? .stacked
+        self.collectionSort = data.collectionSort.flatMap(CollectionSortOrder.init(rawValue:)) ?? .name
         self.lastSection = data.lastSection
         self.storageSoftCapGB = data.storageSoftCapGB
         self.lastStoragePruneAt = data.lastStoragePruneAt
@@ -353,6 +401,7 @@ final class SettingsStore {
             cueOutputChannel: cueOutputChannel.rawValue,
             beatPulseEnabled: beatPulseEnabled,
             mixDeckLayout: mixDeckLayout.rawValue,
+            collectionSort: collectionSort.rawValue,
             lastSection: lastSection,
             storageSoftCapGB: storageSoftCapGB,
             lastStoragePruneAt: lastStoragePruneAt,
@@ -404,6 +453,7 @@ final class SettingsStore {
         cueOutputChannel = d.cueOutputChannel.flatMap(CueChannel.init(rawValue:)) ?? .right
         beatPulseEnabled = d.beatPulseEnabled ?? false
         mixDeckLayout = d.mixDeckLayout.flatMap(MixDeckLayout.init(rawValue:)) ?? .stacked
+        collectionSort = d.collectionSort.flatMap(CollectionSortOrder.init(rawValue:)) ?? .name
         lastSection = d.lastSection
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
@@ -471,6 +521,9 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode — the iOS Mix deck-layout "view mode". Stored as the
     /// enum's raw string; coalesced to `.stacked` at the read sites.
     var mixDeckLayout: String?
+    /// Optional so older blobs still decode — the Playlists collection sort. Stored as the
+    /// enum's raw string; coalesced to `.name` (A–Z) at the read sites (default on upgrade).
+    var collectionSort: String?
     /// Optional so older blobs still decode (nil = never persisted = home).
     var lastSection: String?
     /// Storage soft cap in decimal GB. Optional-by-design even when current: nil IS the
@@ -529,6 +582,7 @@ struct SettingsData: Codable {
         cueOutputChannel: CueChannel.right.rawValue,
         beatPulseEnabled: false,
         mixDeckLayout: MixDeckLayout.stacked.rawValue,
+        collectionSort: nil,
         lastSection: nil,
         storageSoftCapGB: nil,
         lastStoragePruneAt: nil,
