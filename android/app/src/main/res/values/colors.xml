@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- PocketDJ brand accent (from apple/PocketDJ/Support/Theme.swift: Color(hex: 0x6ea8ff)). -->
+    <color name="pdj_accent">#6EA8FF</color>
+    <!-- Darkest navy background from the web app CSS palette (#07101f). -->
+    <color name="pdj_background">#07101F</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Base theme for a Compose-only app. We extend a platform Material theme
+      (no Material Components dependency needed) and let Compose + enableEdgeToEdge()
+      own the actual colors and system-bar handling. windowBackground is our dark
+      navy so there is no white flash before the first Compose frame.
+    -->
+    <style name="Theme.PocketDJ" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/pdj_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
