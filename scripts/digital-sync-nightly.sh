@@ -6,7 +6,9 @@
 # dedicated always-on-main clone, single-instance lock, audit-trail-before-S3 ordering,
 # a deploy marker for the crash-between-commit-and-publish hole, and a shrink circuit
 # breaker — but the "sync" is a filesystem walk of the burn root instead of a Music.app
-# query, and the work is HEAVY (transcode + audio analysis + S3 upload + stems).
+# query, and the work is transcode + S3 upload. Audio ANALYSIS (bpm/key/beat-grid) and
+# stems are CLOUD-only now: the indexer stages+uploads the mp3, and POST /ingest-digital
+# auto-enqueues cloud analysis — so this script no longer touches Docker.
 #
 # INCREMENTAL BY WORK DIR: scripts/index-digital-files.mjs rebuilds the whole index from
 # a full walk each run, but its transcode/analyze/upload stages SKIP anything already done
@@ -50,15 +52,9 @@ STATE_DIR="$HOME/.pocketdj/digital-sync"
 MARKER="$STATE_DIR/last-published-index.sha256"
 PROFILE="${AWS_PROFILE:-levi}"
 REGION="${AWS_REGION:-us-west-2}"
-# Audio analysis (bpm/key/beat-grid) runs in the `pocketdj-audio` Docker image. The unattended
-# 05:00 run auto-starts Docker Desktop if the daemon is down (set POCKETDJ_SKIP_DOCKER_START to
-# disable). If it still can't come up in time we index with --no-analyze — leaving those songs
-# UNANALYZED (re-analyzed on a later run when Docker is up) rather than caching bpm=null, which
-# analyzed.jsonl would then SKIP forever. A LaunchAgent runs in the user's GUI session, so `open`
-# works unattended; enabling Docker Desktop "start at login" avoids the cold-start wait entirely.
-START_DOCKER=1
-[ -n "${POCKETDJ_SKIP_DOCKER_START:-}" ] && START_DOCKER=0
-DOCKER_WAIT_SECS="${POCKETDJ_DOCKER_WAIT_SECS:-150}"
+# NOTE: audio analysis (bpm/key/beat-grid) is CLOUD-only now — the indexer no longer runs the
+# `pocketdj-audio` Docker image, and POST /ingest-digital auto-enqueues each un-analyzed song to
+# the SQS workers. So this script no longer babysits Docker (no ensure_docker / --no-analyze).
 # Dev web bucket + CloudFront that serve "My Digital" (art uploaded during the walk; the
 # index published here in ship()). CF dev distribution = E123GKAO9JVETP.
 CF_DEV="E123GKAO9JVETP"
@@ -85,24 +81,6 @@ norm_hash() {
       if(j&&j.manifest)delete j.manifest.generatedAt;
       process.stdout.write(crypto.createHash("sha256").update(JSON.stringify(j)).digest("hex"));
     }catch(e){process.stdout.write("ERR")}' "$1"
-}
-# Ensure the Docker daemon is reachable (audio analysis needs the pocketdj-audio image).
-# Returns 0 if up, 1 if not. Best-effort: launches Docker Desktop in the background (‑g, no
-# foreground steal) and polls `docker info` up to $DOCKER_WAIT_SECS. Never aborts the run —
-# the caller falls back to --no-analyze on a non-zero return.
-ensure_docker() {
-  command -v docker >/dev/null 2>&1 || { log "docker CLI not on PATH — cannot analyze"; return 1; }
-  if docker info >/dev/null 2>&1; then return 0; fi
-  if [ "$START_DOCKER" != 1 ]; then log "Docker daemon down and auto-start disabled (POCKETDJ_SKIP_DOCKER_START)"; return 1; fi
-  log "Docker daemon down — launching Docker Desktop…"
-  open -ga Docker >/dev/null 2>&1 || open -a Docker >/dev/null 2>&1 || { log "⚠ could not launch Docker Desktop"; return 1; }
-  local waited=0
-  while ! docker info >/dev/null 2>&1; do
-    if [ "$waited" -ge "$DOCKER_WAIT_SECS" ]; then log "⚠ Docker not ready after ${DOCKER_WAIT_SECS}s"; return 1; fi
-    sleep 5; waited=$((waited + 5))
-  done
-  log "✓ Docker ready after ~${waited}s"
-  return 0
 }
 song_count() {
   "$NODE" -e '
@@ -134,8 +112,8 @@ trap cleanup EXIT
 # ---- clone-mode bootstrap ---------------------------------------------------------
 # Not already in the clone → sync it to origin/main and re-exec the CLONE's copy of this
 # script, so the running code is always fresh main regardless of the dev checkout's branch
-# (this very repo is often on a feature branch). No `npm ci`: the indexer + audio-analyze +
-# es-index use only Node built-ins (heavy lifting is ffmpeg/Docker/aws, all system tools).
+# (this very repo is often on a feature branch). No `npm ci`: the indexer + es-index use only
+# Node built-ins (heavy lifting is ffmpeg/aws system tools; audio analysis is offloaded to cloud).
 CLONE_DIR="${POCKETDJ_NIGHTLY_CLONE_DIR-$HOME/.pocketdj/digital-sync-clone}"
 if [ -n "$CLONE_DIR" ] && [ "${POCKETDJ_NIGHTLY_IN_CLONE:-0}" != "1" ]; then
   if [ "$DRY_RUN" = 1 ]; then
@@ -227,20 +205,13 @@ ship() {
 }
 
 # ---- index (incremental: only new album folders do heavy work) --------------------
+# The indexer only transcodes+uploads the mp3 and POSTs /ingest-digital; audio analysis is
+# CLOUD-only (auto-enqueued on ingest → SQS workers → manifest fold), so there is no Docker
+# to babysit here. Stems are kicked separately below (/backfill-stems).
 log "indexing digital root: $ROOT"
 COMMITTED_SONGS="$(song_count "$REPO/$INDEX")"
-# Make sure Docker is up so the analysis stage works; else index without analysis (deferred,
-# NOT null-cached). Skipped in dry-run (starting Docker is a real side effect).
-ANALYZE_ARGS=()
-if [ "$DRY_RUN" = 1 ]; then
-  echo "DRYRUN: ensure Docker (audio analysis) is running before indexing" | tee -a "$LOG"
-elif ! ensure_docker; then
-  log "⚠ indexing WITHOUT analysis (--no-analyze) — bpm/key/beat-grid deferred to a run with Docker up"
-  ANALYZE_ARGS=(--no-analyze)
-fi
 run "$NODE" "$REPO/scripts/index-digital-files.mjs" \
   --root "$ROOT" --env dev --work "$WORK" --rip-server "$RIP_SERVER" --no-publish \
-  ${ANALYZE_ARGS[@]+"${ANALYZE_ARGS[@]}"} \
   2>&1 | tee -a "$LOG"
 
 if [ "$DRY_RUN" = 1 ]; then log "(dry-run) stop before change detection / commit"; exit 0; fi

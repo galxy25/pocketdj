@@ -2292,6 +2292,7 @@ const server = http.createServer(async (req, res) => {
     const body = await readJson(req);
     const entries = Array.isArray(body.entries) ? body.entries : [];
     let added = 0, updated = 0, skipped = 0;
+    const toAnalyze = []; // digital entries that arrived WITHOUT analysis → self-heal via the cloud
     for (const a of entries) {
       if (!a.songId || !a.key) { skipped++; continue; }
       const existed = !!manifest[a.songId];
@@ -2312,6 +2313,12 @@ const server = http.createServer(async (req, res) => {
       if (a.bpm != null || a.musicalKey != null || a.beatgrid) e.analyzed = true;
       manifest[a.songId] = e;
       existed ? updated++ : added++;
+      // SELF-HEALING cloud analysis: the digital indexer now only stages+uploads the mp3 (no local
+      // Docker/librosa pass), so an entry arrives with no bpm/beat grid. wantAnalysis flags it and
+      // enqueueAnalysis offloads it to the cloud workers (offloadAnalysis → SQS); pumpStemResults
+      // folds bpm/key/camelot/beat grid/waveform back into the manifest. An entry that ALREADY
+      // carries analysis (bpm etc.) is skipped — same idempotent gate /backfill-analysis uses.
+      if (wantAnalysis(e)) toAnalyze.push(a.songId);
       // Register/refresh a minimal catalog record so acceptStem (consumed by /backfill-stems) finds
       // the song this process lifetime; public/digital-index.json in RIP_SOURCES makes it durable
       // across restarts (loadCatalog). Refresh on EVERY ingest (not just first) so a re-ingest with
@@ -2329,7 +2336,8 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (added || updated) await saveManifest();
-    return send(res, 200, { ok: true, added, updated, skipped, total: entries.length, cached: Object.keys(manifest).length });
+    for (const id of toAnalyze) enqueueAnalysis(id); // fire-and-forget: SQS offload (or local conc-1 if offload off)
+    return send(res, 200, { ok: true, added, updated, skipped, total: entries.length, analysisQueued: toAnalyze.length, cached: Object.keys(manifest).length });
   }
   // POST /am-sync — kick an Apple Music (Local) library check and return IMMEDIATELY with a
   // jobId (mirrors POST /rip's accept-and-poll shape). The check runs fire-and-forget; the
