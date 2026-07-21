@@ -484,6 +484,12 @@ simulator/fixture path can't stream-mix. Stem files themselves come from the rip
 server's `/stemify` endpoints (next section). Background audio + background-URLSession
 rips/burns also only fully verify on real hardware.
 
+The **Now Playing** card carries a **Mix mini-panel** (`Playback/NowPlayingDSP.swift` +
+`Views/NowPlayingMixPanel.swift`): for a mixable **local** track (and only when no full
+Mix session is active) it **swaps the plain `AVPlayer` for the `AVAudioEngine` DSP graph
+on first touch**, exposing stem/effects/tempo/pitch/gain for that one track and resetting
+per track — so, like the Mix decks, it needs a **burned** local file to exercise.
+
 ## Backend services (rip server · stems)
 
 Two host-local services (the user's M-series **iMac**) feed both clients. Neither is
@@ -507,7 +513,26 @@ curl localhost:8787/health        # RIP_PORT=8787; RIP_TOKEN is the bearer (empt
 ```
 
 It also hosts the **`/stemify`** endpoints (per-song / collection stem separation),
-which need the stem runtime provisioned once (below).
+which need the stem runtime provisioned once (below), and the **Discover** search
+proxy: **`GET /search?q=&entity=song|album`** (an iTunes Search proxy, so beta clients
+need one base URL + token; `entity=album` returns album hits keyed by `appleMusicId` =
+iTunes `collectionId`) plus **`GET /album-tracks?id=<collectionId>`** (expands an album
+into its ordered, disc-major tracklist via the iTunes lookup API). Together these let
+the app's **Browse ▸ Discover** album mode **＋ Add** an album — fanning out a per-track
+`amrec_` rip through the same durable `/rip` queue — with **no Apple Music
+subscription** (the MusicKit `albumTracks` path needs auth; the proxy is the fallback).
+
+### Digital ("My Digital") ingest — analysis is cloud-only
+
+`scripts/index-digital-files.mjs` ingests loose raw-audio files, but the iMac is now a
+**staging node only**: it transcodes + uploads the mp3 and `POST /ingest-digital`s the
+entry **without** BPM/key/beat-grid/waveform. `/ingest-digital` self-heals by
+**offloading the analysis to the cloud workers** (SQS), which fold the result into
+`rips/manifest.json` — so digital ingest **never touches Docker/librosa locally**. The
+Mix decks read bpm/beat-grid straight from the manifest; to backfill the Browse **card**
+bpm/key into the catalog index run **`scripts/fold-cloud-analysis.mjs`** (the digital
+equivalent of the analog in-process cloud fold; digital-only + side-output by default,
+`--apply`/`--upload` to ship).
 
 ### Stem runtime
 

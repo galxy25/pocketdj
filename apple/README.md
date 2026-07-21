@@ -95,6 +95,17 @@ get an on-device transcript + chord timeline + stems on a scrubbable synced over
 own `Studio/` engines, separate from the `Performance/` realize engine, and its
 samples/loops/sequences ride pockets/playlists as collection items).
 
+Also shipped: the **Playlists** screen's **Yours / Shared** tabs with per-source
+collapse-and-remember and a persisted **Recently played / A–Z / Last updated** sort
+(playing a saved setlist stamps its parent's "recently played"); a **Mix mini-panel on
+Now Playing** (`NowPlayingDSP` — swap-on-touch `AVPlayer`→`AVAudioEngine` DSP giving
+stem/effects/tempo/pitch/gain for the current local track); **Discover** album + song
+search & **＋ Add** (per-track rip fan-out, subscription-free via the rip-server proxy);
+the Demux **Extract instrumental** (beat-quantized chord comping ↔ on-device true-melody,
+long-press/right-click switch, synced follow-score); **Samples folders** in the Producer
+tab; and the **♥ favorite** on the Now Playing card, the lock screen / Control Center
+(`MPRemoteCommandCenter.likeCommand`), the **Now Playing widget**, and **CarPlay**.
+
 > **On-device testing note.** Stem playback and the Mix decks read **local files**, so
 > testing them needs a Setlist **burned** to the on-device Burns folder first (the
 > simulator/fixture path can't stream-mix). Background audio + background URLSession

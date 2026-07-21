@@ -111,6 +111,30 @@ treated as a read failure (`POCKETDJ_ALLOW_PLAYLIST_SHRINK=1` overrides). Playli
 in Music always ship — **empty is a state, not a deletion** (the OTG lesson: a mid-edit
 playlist momentarily resolving to zero members must not ship as a deletion).
 
+## Album `appleMusicId` (for Discover dedupe)
+
+The Apple-Music indexer now emits an **album-level `appleMusicId`** (the iTunes
+`collectionId`) alongside each song's catalog id. This is what closes the loop on the
+**Discover ▸ Albums** add flow (see
+[`streaming-integration.md` §5](./streaming-integration.md#5-discover--catalog-song-and-album-search--add)):
+a Discover-added album is **provisional** (`amrec_album_<collectionId>`), and once you
+own the album for real, the indexed album carrying the **same** id **supersedes** the
+provisional one — no duplicate.
+
+For albums that are already in the committed index, there's no need to re-run the full
+`Library.xml` indexer to backfill the id. **`scripts/fold-album-catalogid.mjs`** stamps
+it as a fast fold: it reads the per-track `collectionId`s captured by
+`resolve-apple-music-catalog.mjs` (`index-out/apple-music/catalog-cache.ndjson`) and, for
+each album, takes the **most-common non-empty** member `collectionId` (the same
+mode-per-album rule `index-apple-music.mjs` uses) as the album's `appleMusicId`.
+
+```bash
+# dry-run (reports how many albums WOULD be stamped):
+node scripts/fold-album-catalogid.mjs
+# write it (defaults: public/apple-music-index.json + the catalog-cache ndjson):
+node scripts/fold-album-catalogid.mjs --apply
+```
+
 ## Retired (legacy)
 
 The previous **change-set → full-rebuild** pipeline is retired:
