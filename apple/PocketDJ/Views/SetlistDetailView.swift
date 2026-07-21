@@ -63,6 +63,10 @@ struct SetlistDetailView: View {
 
     /// Start (or restart) THIS set on the shared sequencer, tagged with its id.
     private func startThisSet(_ setlist: Setlist) {
+        // Playing a saved setlist also stamps its PARENT playlist's "recently played"
+        // (no-ops for the reserved Now-Playing set and transient source-playlist realizations,
+        // whose playlistId isn't a user playlist).
+        collections.markPlayed(playlistId: setlist.playlistId)
         sequencer.play(playableItems(setlist), sourceSetlistId: setlistId)
     }
 
