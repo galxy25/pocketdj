@@ -61,7 +61,21 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.coil.compose)
 
+    // Playback: Media3/ExoPlayer + MediaSession (locked decision 4). HLS for the
+    // rip server's live-stream path (playback.md §4.5).
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.exoplayer.hls)
+    implementation(libs.androidx.media3.session)
+
+    // Settings persistence (additive-safe Preferences DataStore).
+    implementation(libs.androidx.datastore.preferences)
+
+    // QR generation for Jukebox Hero (jukebox.md §6.1) — pure-Java, offline.
+    implementation(libs.zxing.core)
+
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 }

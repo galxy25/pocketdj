@@ -1,0 +1,98 @@
+{
+  "manifest": {
+    "source": "analog",
+    "generatedAt": "2026-07-01T00:00:00Z",
+    "sourceName": "My Vinyl",
+    "schemaVersion": 7,
+    "sourceType": "vinyl",
+    "deferredFields": ["lyrics"],
+    "cloudReindex": { "enabled": true },
+    "counts": { "albums": 2, "songs": 4, "withAudio": 2 }
+  },
+  "albums": [
+    {
+      "id": "alb_aaa111bbb222",
+      "artist": "The Synth Owls",
+      "name": "Night Circuit",
+      "coverArt": "https://images.example.com/night-circuit.jpg",
+      "coverArtSources": [
+        { "type": "cdn", "url": "/art/alb_aaa111bbb222.jpg", "cors": true },
+        { "type": "remote", "url": "https://images.example.com/night-circuit.jpg", "cors": false }
+      ],
+      "genre": "Electronic",
+      "year": 1984,
+      "country": "US",
+      "trackList": ["sng_000000000001", "sng_000000000002"],
+      "fileType": "mp3",
+      "audioTracks": [
+        { "trackNumber": 1, "startMs": 0, "endMs": 215000, "durationMs": 215000, "bpm": 118.2, "key": "G minor", "camelot": "6A", "keyStrength": 0.81 },
+        { "trackNumber": 2, "startMs": 215000, "endMs": 431000, "durationMs": 216000, "bpm": null, "key": null }
+      ],
+      "audioDurationSec": 431.0,
+      "appleMusicId": "123456789",
+      "pointer": { "path": "TheSynthOwlsNightCircuitRaw.mp3" },
+      "enrichment": { "notes": "unmodelled subtree the decoder must skip" },
+      "indexing": { "pass": 3 }
+    },
+    {
+      "id": "alb_ccc333ddd444",
+      "artist": "aurora fields",
+      "name": "Meadow Tape",
+      "coverArt": null,
+      "genre": null,
+      "year": null,
+      "trackList": ["sng_000000000003", "sng_000000000004"]
+    }
+  ],
+  "songs": [
+    {
+      "id": "sng_000000000001",
+      "albumId": "alb_aaa111bbb222",
+      "artist": "The Synth Owls",
+      "name": "Neon Runway",
+      "trackNumber": 1,
+      "year": 1984,
+      "sentimentKeywords": ["nocturnal", "driving"],
+      "explicit": false,
+      "bpm": 118.2,
+      "key": "G minor",
+      "camelot": "6A",
+      "length": 215000,
+      "fileType": "mp3",
+      "lyricsStatus": "found",
+      "lyrics": null,
+      "lyricsSource": "scraper",
+      "sentimentSource": "model",
+      "explicitSource": "regex",
+      "cloudReindex": { "at": 1750000000000 }
+    },
+    {
+      "id": "sng_000000000002",
+      "albumId": "alb_aaa111bbb222",
+      "artist": "The Synth Owls",
+      "name": "Terminal Glow",
+      "trackNumber": 2,
+      "bpm": null,
+      "key": null,
+      "camelot": null,
+      "length": 216000
+    },
+    {
+      "id": "sng_000000000003",
+      "albumId": "alb_ccc333ddd444",
+      "artist": "aurora fields",
+      "name": "Clover",
+      "bpm": null
+    },
+    {
+      "id": "sng_000000000004",
+      "albumId": "alb_ccc333ddd444",
+      "artist": "aurora fields",
+      "name": "Dew Point",
+      "appleMusicId": "1771724281"
+    }
+  ],
+  "playlists": [
+    { "id": "pl_morning_spin", "name": "Morning Spin", "songIds": ["sng_000000000001", "sng_000000000004"] }
+  ]
+}
