@@ -67,6 +67,9 @@ struct PocketDJApp: App {
     /// playing set keeps advancing after the user leaves the screen to build other collections.
     /// Only starting a different collection (a fresh `play`) stops it.
     @State private var setlistPlayer: SetlistPlayer
+    /// F4 — the single-deck DSP engine the Now Playing mix mini-panel drives. App-scoped (like every
+    /// engine) and wired into `SetlistPlayer` so the AVPlayer↔DSP hand-off is owned by the sequencer.
+    @State private var nowPlayingDSP: NowPlayingDSP
     /// Durable playback session: the sequencer's real-time snapshot (queue + index + position)
     /// so a force-quit/restart rehydrates the Now Playing deck. Constructed here WITHOUT any
     /// disk read (the visionOS first-frame lesson) — the snapshot is read later, by
@@ -243,6 +246,12 @@ struct PocketDJApp: App {
         // App-scoped Play-All sequencer (survives navigation — see the property comment).
         let setlistPlayer = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
         _setlistPlayer = State(initialValue: setlistPlayer)
+        // F4 Now Playing mix mini-panel: a single-deck DSP engine sharing the SAME BurnStore (it
+        // resolves the on-disk burned file + stems for the CURRENT track). The sequencer owns the
+        // AVPlayer↔DSP hand-off, so wire it in here (app-scoped, like every other engine).
+        let nowPlayingDSP = NowPlayingDSP(burns: burns)
+        setlistPlayer.dsp = nowPlayingDSP
+        _nowPlayingDSP = State(initialValue: nowPlayingDSP)
         // Durable playback session — the sequencer writes every structural change + a throttled
         // position refresh into it, so the deck survives force-quit/restart. No disk I/O here.
         let playbackSession = PlaybackSessionStore(fileURL: PlaybackSessionStore.launchURL())
@@ -740,6 +749,7 @@ struct PocketDJApp: App {
                 .environment(burns)
                 .environment(coordinator)
                 .environment(setlistPlayer)
+                .environment(nowPlayingDSP)
                 .environment(albumArt)
                 .environment(lyrics)
                 .environment(demux)

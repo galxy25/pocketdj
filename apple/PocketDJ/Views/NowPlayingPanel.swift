@@ -365,6 +365,10 @@ struct NowPlayingPanel: View {
                         #endif
                 }
                 transport
+                // F4 — the collapsible Mix mini-panel. Self-gates on `SetlistPlayer.mixAvailable`
+                // (hidden entirely for a non-mixable current track or while a Mix session plays),
+                // collapsed by default.
+                NowPlayingMixPanel()
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)

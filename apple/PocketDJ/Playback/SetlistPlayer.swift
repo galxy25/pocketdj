@@ -94,6 +94,12 @@ final class SetlistPlayer {
     /// "Next" control so the set never silently freezes on it.
     private(set) var waitingForLive = false
 
+    /// F4 — true while the Now Playing mix mini-panel has swapped the current track's audio off the
+    /// `AVPlayer` into `NowPlayingDSP` (the DSP owns the audio; the AVPlayer is idle, and the system
+    /// Now Playing card is published on the DSP's behalf via `PlayerEngine.beginExternalNowPlaying`,
+    /// so there is still exactly ONE card writer). Ephemeral — reset to false on every track change.
+    private(set) var mixEngaged = false
+
     /// CRITIC-D — set when a DEVICE-mode run finished without EVER loading a single burned
     /// file (the whole queue was unplayable on-device). One-shot, non-optional signal the
     /// playback surface reads to show a transient "no burned files" banner — so device mode
@@ -126,6 +132,11 @@ final class SetlistPlayer {
     /// unresolvable song — no end event would ever fire for it.
     var studioResolve: ((String) -> (url: URL, release: (() -> Void)?, title: String, lengthMs: Int)?)?
 
+    /// F4 SEAM (wired at app init): the single-deck DSP engine the Now Playing mix mini-panel drives.
+    /// nil in unit tests that don't exercise the hand-off. The sequencer owns the AVPlayer↔DSP swap so
+    /// end-advance, the durable session, and the single-owner lock-screen card stay coherent across it.
+    @ObservationIgnored var dsp: NowPlayingDSP?
+
     init(player: PlayerEngine, rips: RipsStore, burns: BurnStore, coordinator: PlaybackCoordinator) {
         self.player = player
         self.rips = rips
@@ -147,6 +158,7 @@ final class SetlistPlayer {
         withObservationTracking {
             _ = player.isPlaying
             _ = coordinator.appleMusic.isPlaying
+            _ = dsp?.isPlaying          // F4: while the DSP owns audio, its play/pause drives the session
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -205,6 +217,7 @@ final class SetlistPlayer {
 
     /// Stop the sequence + clear now-playing; resets so the toolbar flips back to Play.
     func stop() {
+        endMixEngagement()                 // F4: drop any DSP hand-off before tearing the run down
         isRunning = false
         waitingForLive = false
         player.onTrackEnded = nil          // release ownership of the shared hook
@@ -384,6 +397,79 @@ final class SetlistPlayer {
         Task { await playCurrent() }
     }
 
+    // MARK: - F4 Mix mini-panel (AVPlayer ↔ NowPlayingDSP hand-off)
+
+    /// Whether the CURRENT track can be mixed — i.e. the actual playing source is a LOCAL file (a
+    /// burned or studio track), not Apple Music, not a live stream, not a rip STREAM of an also-burned
+    /// song. Keyed off `RipsStore.nowPlaying.url` being a file URL (the source the player ACTUALLY
+    /// loaded), so a stream never offers mix even when a burned copy also exists. The Mix-tab exclusion
+    /// (one DSP surface at a time) is applied by the caller via `mixAvailable(mixActive:)`.
+    var currentTrackMixable: Bool {
+        guard isRunning, index < queue.count, !isHeldForResume else { return false }
+        guard coordinator.activeBackend != .appleMusic, !player.isLive else { return false }
+        guard let np = rips.nowPlaying, np.songId == queue[index].id, !np.live, np.url.isFileURL else { return false }
+        // A local file is playing (burned OR studio). Studio ids have no BurnStore file but ARE local.
+        return StudioFactory.isStudioId(np.songId) || burns.localURL(forSong: np.songId) != nil
+    }
+
+    /// The full F4 eligibility gate: mixable current track AND no active Mix-tab session (mutually
+    /// exclusive — one DSP surface). The view passes `mix.isRunning || mix.autoMixing` for `mixActive`.
+    func mixAvailable(mixActive: Bool) -> Bool { currentTrackMixable && !mixActive }
+
+    /// FIRST touch of a mix control: swap the current track's audio off the `AVPlayer` into
+    /// `NowPlayingDSP` AT the current position, and publish the DSP's card through `PlayerEngine`'s
+    /// external-source path so the lock-screen/CarPlay card keeps exactly ONE writer (the same
+    /// mechanism the Apple Music hand-off uses). Idempotent — a no-op once engaged, or when the track
+    /// isn't mixable / the DSP isn't wired. A brief, possibly-audible transition is accepted.
+    func engageMix() {
+        guard isRunning, index < queue.count, !mixEngaged, let dsp, currentTrackMixable,
+              let np = rips.nowPlaying else { return }
+        let it = queue[index]
+        let startSec = Double(np.startMs ?? 0) / 1000
+        let atSeconds = max(0, player.currentTime - startSec)   // AVPlayer clock is absolute-in-file
+        let wasPlaying = player.isPlaying
+        // Idle the AVPlayer + claim the card FIRST (beginExternalNowPlaying pauses it + replaces its
+        // item), so the two engines don't both sound during the swap; the DSP then starts the audio.
+        dsp.onReachedEnd = { [weak self] in self?.handleDSPEnded() }
+        player.beginExternalNowPlaying(
+            title: it.title, artist: it.artist, songId: it.id,
+            durationSeconds: it.lengthMs.map { Double($0) / 1000 } ?? dsp.duration,
+            position: { [weak dsp] in dsp?.currentTime ?? 0 },
+            isPlaying: { [weak dsp] in dsp?.isPlaying ?? false },
+            play: { [weak dsp] in dsp?.resume() },
+            pause: { [weak dsp] in dsp?.pause() })
+        dsp.engage(url: np.url, startMs: np.startMs, lengthMs: it.lengthMs,
+                   atSeconds: atSeconds, songId: it.id, play: wasPlaying)
+        mixEngaged = true
+        NPLog.trace("setlist ENGAGE mix → DSP id=\(it.id) at=\(Int(atSeconds))s playing=\(wasPlaying)")
+        persistSession()
+    }
+
+    /// The DSP's slice reached its natural end (while it owns the audio) — mirror `handleEnded`: honor
+    /// the per-track repeat count, else advance. Either way the DSP is torn down first so the next
+    /// track (or the repeat) plays cleanly through the AVPlayer.
+    private func handleDSPEnded() {
+        guard mixEngaged, isRunning, index < queue.count else { return }
+        endMixEngagement()
+        if currentPlaysRemaining > 1 {
+            currentPlaysRemaining -= 1
+            Task { await playCurrent(fresh: false) }   // reloads the AVPlayer for the repeat
+            return
+        }
+        advanceToNext()
+    }
+
+    /// Tear down the DSP hand-off WITHOUT reloading (the caller — a track change / repeat / stop — then
+    /// loads the next source through the AVPlayer, which reclaims the card via `player.load`). Resets
+    /// the ephemeral control state. A no-op when not engaged.
+    private func endMixEngagement() {
+        guard mixEngaged else { return }
+        dsp?.onReachedEnd = nil
+        dsp?.disengage()
+        dsp?.resetControls()
+        mixEngaged = false
+    }
+
     // MARK: - Internals
 
     /// The absolute position (ms) at which a track that SHARES a multi-song file should
@@ -453,6 +539,9 @@ final class SetlistPlayer {
         guard let npId = am ? coordinator.appleMusic.nowPlaying?.songId : rips.nowPlaying?.songId,
               queue[index].id != npId else { return }
         guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
+        // F4: a manual row ▶ of a DIFFERENT track took the audio over the AVPlayer (its play path
+        // already reclaimed the card) — tear down any orphaned DSP engagement so it stops sounding.
+        endMixEngagement()
         NPLog.trace("setlist ADOPT jump → index \(pos) id=\(npId) via \(am ? "appleMusic" : "rip")")
         // A manual member play makes a RESTORED (held) deck live: real audio is sounding, so
         // arm the end hooks + position sampler exactly as a resume would.
@@ -568,6 +657,10 @@ final class SetlistPlayer {
     /// boundaries and history behave exactly like a normal start.
     private func playCurrent(fresh: Bool = true, resumeAtMs: Int? = nil) async {
         guard isRunning, index < queue.count else { return }
+        // F4: a NEW track (index moved) supersedes any Now Playing mix engagement — tear the DSP down
+        // and reset controls BEFORE loading the new source (the load reclaims the card off the AVPlayer).
+        // A repeat / hand-back (fresh: false) keeps the current engagement.
+        if fresh { endMixEngagement() }
         // A fresh track (index moved) arms its repeat counter; a repeat (fresh: false) keeps the
         // already-decremented one so it counts down to a single remaining play.
         if fresh { currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount) }
@@ -776,6 +869,7 @@ final class SetlistPlayer {
     /// NowPlayingPanel routing rule). A held (restored, not yet resumed) deck is never playing.
     private func sessionIsPlaying() -> Bool {
         if isHeldForResume { return false }
+        if mixEngaged, let dsp { return dsp.isPlaying }   // F4: DSP owns the audio
         return coordinator.activeBackend == .appleMusic ? coordinator.appleMusic.isPlaying
                                                         : player.isPlaying
     }
@@ -786,6 +880,9 @@ final class SetlistPlayer {
     /// held, the pending resume position IS the position.
     private func sessionPositionMs() -> Int {
         if isHeldForResume { return pendingResumeMs ?? 0 }
+        // F4: the DSP clock is already SONG-RELATIVE (it schedules the song's slice from 0), so no
+        // shared-album startMs subtraction — unlike the AVPlayer clock below.
+        if mixEngaged, let dsp { return max(0, Int(dsp.currentTime * 1000)) }
         if coordinator.activeBackend == .appleMusic {
             return max(0, Int(coordinator.appleMusic.positionSeconds * 1000))
         }

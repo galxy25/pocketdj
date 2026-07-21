@@ -1310,7 +1310,8 @@ private struct BeatPulseView: View {
 /// One −/＋ fine-adjust button, flanking a slider, that nudges `value` by `step` (clamped to
 /// `range`). Disabled at the relevant bound. `onInteract` lets a host with an idle-revert timer
 /// (the chip flip / popover) reset it on each tap so careful stepping doesn't dismiss mid-adjust.
-private struct StepButton: View {
+// Reused by the F4 Now Playing mix mini-panel (NowPlayingMixPanel) — hence internal, not private.
+struct StepButton: View {
     enum Dir { case dec, inc }
     let dir: Dir
     let value: Double
@@ -1346,7 +1347,8 @@ private struct StepButton: View {
 /// A labelled slider (title + live value) FLANKED by −/＋ steppers for finer-grain adjustment than a
 /// drag. A manual `Binding` pushes straight into the engine. `tint`/`valueColor`/`accessibilityValueText`
 /// let the Vol slider signal a >100% boost without being color-only.
-private struct DeckSlider: View {
+// Reused by the F4 Now Playing mix mini-panel (NowPlayingMixPanel) — hence internal, not private.
+struct DeckSlider: View {
     let title: String
     let display: String
     let value: Double
@@ -1482,7 +1484,8 @@ private struct DeckVUMeter: View {
 /// dial the wet amount right there. After 3 s with no interaction it flips back to the labelled
 /// button, keeping you in the flow. Flipping to the slider also enables the effect (so the dial is
 /// immediately audible). Accent-filled + "selected" when the effect is on.
-private struct EffectButton: View {
+// Reused by the F4 Now Playing mix mini-panel (NowPlayingMixPanel) — hence internal, not private.
+struct EffectButton: View {
     let effect: MixEngine.Effect
     let isOn: Bool
     let strength: Double
@@ -1588,7 +1591,8 @@ private struct EffectButton: View {
 /// A fixed-width popover slider — used on iPhone PORTRAIT to dial an effect's strength or a stem's
 /// volume, wide enough to actually drag (the in-place chip flip is too narrow there). Dismisses on
 /// an outside tap (native popover) OR after 3 s with no slider interaction.
-private struct ChipStrengthPopover: View {
+// Reused by the F4 Now Playing mix mini-panel (NowPlayingMixPanel) — hence internal, not private.
+struct ChipStrengthPopover: View {
     let title: String
     let systemImage: String
     let tint: Color
