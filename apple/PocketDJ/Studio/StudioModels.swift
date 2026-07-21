@@ -226,6 +226,11 @@ struct StudioSample: Codable, Identifiable, Hashable, Sendable {
     var renderedFileName: String?
     var renderedRevision: Int?
     var renderedWasUserFolder: Bool?
+    /// F9: the sample folder this sample belongs to (a `StudioSampleFolder` `sfld_…` id), or nil =
+    /// Unfiled. ADDITIVE + OPTIONAL organizational metadata: a legacy document with no `folderId`
+    /// key decodes to nil (Unfiled), and a `folderId` pointing at a folder no longer in the
+    /// document reads as Unfiled at the view layer — never a decode failure, never a wipe.
+    var folderId: String?
 
     /// Whether the render cache exists (per the record) AND matches the current edit revision.
     /// Disk existence is still checked at resolve time (`StudioStore.localURLForPlayback`).
@@ -243,18 +248,19 @@ struct StudioSample: Codable, Identifiable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, fileName, wasUserFolder, createdAt, durationMs, source, grid, edit
-        case renderRevision, renderedFileName, renderedRevision, renderedWasUserFolder
+        case renderRevision, renderedFileName, renderedRevision, renderedWasUserFolder, folderId
     }
     init(id: String, name: String, fileName: String, wasUserFolder: Bool = false,
          createdAt: Double = 0, durationMs: Int = 0, source: StudioSource = .mic,
          grid: StudioGrid? = nil, edit: StudioSampleEdit = .neutral, renderRevision: Int = 0,
          renderedFileName: String? = nil, renderedRevision: Int? = nil,
-         renderedWasUserFolder: Bool? = nil) {
+         renderedWasUserFolder: Bool? = nil, folderId: String? = nil) {
         self.id = id; self.name = name; self.fileName = fileName
         self.wasUserFolder = wasUserFolder; self.createdAt = createdAt
         self.durationMs = durationMs; self.source = source; self.grid = grid; self.edit = edit
         self.renderRevision = renderRevision; self.renderedFileName = renderedFileName
         self.renderedRevision = renderedRevision; self.renderedWasUserFolder = renderedWasUserFolder
+        self.folderId = folderId
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -271,6 +277,34 @@ struct StudioSample: Codable, Identifiable, Hashable, Sendable {
         renderedFileName = try? c.decode(String.self, forKey: .renderedFileName)
         renderedRevision = try? c.decode(Int.self, forKey: .renderedRevision)
         renderedWasUserFolder = try? c.decode(Bool.self, forKey: .renderedWasUserFolder)
+        // Additive/optional: absent ⇒ nil (Unfiled) — the wipe-safety default.
+        folderId = try? c.decode(String.self, forKey: .folderId)
+    }
+}
+
+// MARK: - Sample folder (F9 — flat organizational grouping)
+
+/// A flat, named folder for organizing SAMPLES (spec F9) — mirrors `PlaylistFolder`. Membership is
+/// by `StudioSample.folderId` (ONE folder per sample; nil = Unfiled), so a folder carries no member
+/// list — it's just an id + name + timestamps. DEVICE-LOCAL like the sample audio (Studio is
+/// deliberately not in the CloudSync registry). Lenient/all-optional decode per the studio doctrine
+/// (every field `try?` + default), so a future build's document never bricks this one.
+struct StudioSampleFolder: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "sfld_…" — NON-collection-riding (like cue_/slc_)
+    var name: String
+    var createdAt: Double = 0
+    var updatedAt: Double = 0
+
+    enum CodingKeys: String, CodingKey { case id, name, createdAt, updatedAt }
+    init(id: String, name: String, createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newSampleFolderId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
 }
 
@@ -679,6 +713,9 @@ struct StudioDocument: Codable, Sendable {
     var takes: [StudioTake] = []
     var cues: [StudioCue] = []
     var slices: [StudioSlice] = []
+    /// F9: flat sample folders (device-local). New OPTIONAL collection: a legacy document with no
+    /// `folders` key decodes to `[]`, and the list decodes per-element lossily like every other.
+    var folders: [StudioSampleFolder] = []
     /// On-device DETECTED musical key (Camelot code) per performance item, keyed by studio id
     /// (`smp_`/`lp_`/`ptn_`/`tk_`). Populated by `StudioAnalyzer` when an item is added to a
     /// collection; consumed for harmonic mix-glide. A parallel map (not a per-model field) so it
@@ -686,14 +723,15 @@ struct StudioDocument: Codable, Sendable {
     var keys: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, samples, loops, patterns, takes, cues, slices, keys
+        case schemaVersion, samples, loops, patterns, takes, cues, slices, folders, keys
     }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
-         cues: [StudioCue] = [], slices: [StudioSlice] = [], keys: [String: String] = [:]) {
+         cues: [StudioCue] = [], slices: [StudioSlice] = [],
+         folders: [StudioSampleFolder] = [], keys: [String: String] = [:]) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
         self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
-        self.keys = keys
+        self.folders = folders; self.keys = keys
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -709,6 +747,8 @@ struct StudioDocument: Codable, Sendable {
         cues = ((try? c.decode([StudioLossyBox<StudioCue>].self, forKey: .cues)) ?? [])
             .compactMap(\.value)
         slices = ((try? c.decode([StudioLossyBox<StudioSlice>].self, forKey: .slices)) ?? [])
+            .compactMap(\.value)
+        folders = ((try? c.decode([StudioLossyBox<StudioSampleFolder>].self, forKey: .folders)) ?? [])
             .compactMap(\.value)
         keys = (try? c.decode([String: String].self, forKey: .keys)) ?? [:]
     }
@@ -728,6 +768,10 @@ enum StudioFactory {
     /// Slices are audition-only MARKERS on a sample — like `cue_`, NEVER in `studioPrefixes` (a
     /// slice id never rides a collection array; "Make pad" bakes a real `smp_` sample instead).
     static func newSliceId() -> String { "slc_" + uid() }
+    /// Sample folders are organizational metadata (F9). Like `cue_`/`slc_`, a folder id NEVER rides
+    /// a collection's string array, so `sfld_` is deliberately NOT in `studioPrefixes` — adding it
+    /// there would leak folder ids into the rip/realize guards.
+    static func newSampleFolderId() -> String { "sfld_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore

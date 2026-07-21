@@ -43,6 +43,9 @@ final class StudioStore {
     private(set) var takes: [StudioTake] = []
     private(set) var cues: [StudioCue] = []
     private(set) var slices: [StudioSlice] = []
+    /// F9: flat sample folders (device-local). Membership is by `StudioSample.folderId`; the
+    /// Samples sub-tab groups off these.
+    private(set) var folders: [StudioSampleFolder] = []
     /// On-device detected key (Camelot) per performance item — see `StudioDocument.keys`.
     private(set) var keys: [String: String] = [:]
 
@@ -73,6 +76,7 @@ final class StudioStore {
             takes = doc.takes
             cues = doc.cues
             slices = doc.slices
+            folders = doc.folders
             keys = doc.keys
         }
     }
@@ -209,6 +213,69 @@ final class StudioStore {
     /// Does a sample still exist? Loops show the "source removed" note (and disable re-slicing)
     /// off this — the dangling `sampleId` itself is kept forever (flag, never delete).
     func sampleExists(_ id: String) -> Bool { sample(id) != nil }
+
+    // MARK: - Sample folders (F9 — flat, device-local; membership via StudioSample.folderId)
+    //
+    // Mirrors CollectionsStore's playlist-folder CRUD (flat, one folder per member, delete
+    // re-homes members). Pure in-document metadata: a "move" sets a string — NO audio file is
+    // ever touched, so folder ops are trivial and stay on @MainActor. Every mutation ends with
+    // saveNow() (folder edits are discrete, not slider-streamed).
+
+    func sampleFolder(_ id: String) -> StudioSampleFolder? { folders.first { $0.id == id } }
+
+    /// Folders, name-ordered (case-insensitive) for stable display — the CollectionsStore rule.
+    func sampleFoldersOrdered() -> [StudioSampleFolder] {
+        folders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The samples in a folder (nil ⇒ Unfiled), newest-first — the Samples tab is a creation
+    /// surface, so the sample you just made sorts to the top. "Unfiled" is DEFENSIVE: a sample
+    /// whose `folderId` points at a folder no longer in the document (a dangling id) also reads as
+    /// Unfiled, so it can never vanish from the UI (deleteSampleFolder re-homes members, but a
+    /// hand-edited / future document might still carry one).
+    func samples(inFolder id: String?) -> [StudioSample] {
+        let known = Set(folders.map(\.id))
+        return samples.filter { s in
+            if let fid = s.folderId, known.contains(fid) { return fid == id }
+            return id == nil   // nil folderId, or a dangling id ⇒ Unfiled
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    @discardableResult
+    func createSampleFolder(_ name: String) -> StudioSampleFolder {
+        let f = StudioSampleFolder(id: StudioFactory.newSampleFolderId(),
+                                   name: name.trimmingCharacters(in: .whitespaces),
+                                   createdAt: nowMs, updatedAt: nowMs)
+        folders.append(f)
+        saveNow()
+        return f
+    }
+
+    func renameSampleFolder(_ id: String, to name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        folders[i].name = n
+        folders[i].updatedAt = nowMs
+        saveNow()
+    }
+
+    /// Delete a folder; its member samples fall back to Unfiled (folderId ⇒ nil). NO sample record
+    /// or audio file is deleted — a folder is pure organizational metadata (the CollectionsStore
+    /// deleteFolder contract).
+    func deleteSampleFolder(_ id: String) {
+        folders.removeAll { $0.id == id }
+        for i in samples.indices where samples[i].folderId == id {
+            samples[i].folderId = nil
+        }
+        saveNow()
+    }
+
+    /// Move a sample into a folder (nil ⇒ Unfiled). In-memory only — the audio never moves.
+    func setSampleFolder(_ sampleId: String, folderId: String?) {
+        guard let i = samples.firstIndex(where: { $0.id == sampleId }) else { return }
+        samples[i].folderId = folderId
+        saveNow()
+    }
 
     // MARK: - Loops
 
@@ -997,7 +1064,8 @@ final class StudioStore {
 
     private func snapshotDocument() -> StudioDocument {
         StudioDocument(schemaVersion: studioSchemaVersion, samples: samples, loops: loops,
-                       patterns: patterns, takes: takes, cues: cues, slices: slices, keys: keys)
+                       patterns: patterns, takes: takes, cues: cues, slices: slices,
+                       folders: folders, keys: keys)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.
