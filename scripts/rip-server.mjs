@@ -62,6 +62,8 @@ const CFG = {
   rateLimit: process.env.RIP_RATE_LIMIT === '1',
   // Browse ▸ Discover search proxy target (env-overridable so tests can stub it).
   searchBase: process.env.RIP_SEARCH_BASE || 'https://itunes.apple.com/search',
+  // Browse ▸ Discover album-track expansion target (iTunes lookup — env-overridable for tests).
+  lookupBase: process.env.RIP_LOOKUP_BASE || 'https://itunes.apple.com/lookup',
   profile: process.env.AWS_PROFILE || 'levi',
   region: process.env.AWS_REGION || 'us-west-2',
   bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
@@ -2007,15 +2009,39 @@ const server = http.createServer(async (req, res) => {
   if (path === '/search' && req.method === 'GET') {
     const q = (url.searchParams.get('q') || '').trim();
     if (!q) return send(res, 400, { error: 'q required' });
+    // `entity` selects the result shape. DEFAULT 'song' keeps every OLD app build (which
+    // omits the param) getting the exact song envelope it always did — do not change that.
+    // 'album' proxies iTunes' album search and maps the collection shape for Discover ▸ Albums.
+    const entity = (url.searchParams.get('entity') || 'song').trim() === 'album' ? 'album' : 'song';
     const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '25', 10) || 25, 1), 50);
     try {
       const it = new URL(CFG.searchBase);
       it.searchParams.set('term', q);
-      it.searchParams.set('entity', 'song');
+      it.searchParams.set('entity', entity);
       it.searchParams.set('limit', String(limit));
       const r = await fetch(it, { signal: AbortSignal.timeout(10_000) });
       if (!r.ok) return send(res, 502, { error: `itunes search ${r.status}` });
       const data = await r.json();
+      if (entity === 'album') {
+        // Album hits carry the collectionId (the appleMusicId the add flow synthesizes a
+        // provisional catalog album + per-track amrec_ rips under). No ripped/url — an album
+        // is a bag of per-track rips, so ripped-state is tracked per song, not per album.
+        const results = (data.results || []).filter((t) => t.collectionId).map((t) => {
+          const cid = String(t.collectionId);
+          const year = t.releaseDate ? (Number(String(t.releaseDate).slice(0, 4)) || null) : null;
+          return {
+            appleMusicId: cid,
+            albumId: `amrec_album_${cid}`,
+            title: t.collectionName || '',
+            artist: t.artistName || '',
+            artworkUrl: t.artworkUrl100 || null,
+            trackCount: t.trackCount || null,
+            year,
+            url: t.collectionViewUrl || null,
+          };
+        });
+        return send(res, 200, { results });
+      }
       const results = (data.results || []).filter((t) => t.trackId).map((t) => {
         const songId = `amrec_${t.trackId}`;
         const entry = manifest[songId];
@@ -2034,6 +2060,40 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { results });
     } catch (e) {
       return send(res, 502, { error: `search failed: ${String(e?.message || e)}` });
+    }
+  }
+  // GET /album-tracks?id=<collectionId> — expand an Apple-Music album into its ordered
+  // tracks via the iTunes lookup API (`?id=<collectionId>&entity=song`). This lets album
+  // "＋ Add" fan out per-track amrec_ rips WITHOUT an Apple Music subscription (the MusicKit
+  // albumTracks path needs auth; testers without it fall back to this proxy). The first
+  // lookup row is the collection itself (wrapperType 'collection') — dropped; tracks follow.
+  if (path === '/album-tracks' && req.method === 'GET') {
+    const id = (url.searchParams.get('id') || '').trim();
+    if (!id) return send(res, 400, { error: 'id required' });
+    try {
+      const it = new URL(CFG.lookupBase);
+      it.searchParams.set('id', id);
+      it.searchParams.set('entity', 'song');
+      const r = await fetch(it, { signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) return send(res, 502, { error: `itunes lookup ${r.status}` });
+      const data = await r.json();
+      const tracks = (data.results || [])
+        .filter((t) => t.wrapperType === 'track' && t.kind === 'song' && t.trackId)
+        .map((t) => ({
+          id: String(t.trackId),
+          title: t.trackName || '',
+          artist: t.artistName || '',
+          discNumber: t.discNumber || null,
+          trackNumber: t.trackNumber || null,
+          durationMs: t.trackTimeMillis || null,
+        }))
+        // Multi-disc albums must order disc-major then track — a trackNumber-only sort
+        // interleaves disc 1 and disc 2 (both start at track 1). discNumber leads.
+        .sort((a, b) => (a.discNumber || 0) - (b.discNumber || 0)
+                     || (a.trackNumber || 0) - (b.trackNumber || 0));
+      return send(res, 200, { id, tracks });
+    } catch (e) {
+      return send(res, 502, { error: `album-tracks failed: ${String(e?.message || e)}` });
     }
   }
   // POST /rip {songId} — single-song rip-on-demand (also the F1 stream-through

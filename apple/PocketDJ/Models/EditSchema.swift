@@ -170,7 +170,7 @@ extension IndexAlbum {
                           genre: e.genre ?? genre, year: e.year ?? year, country: e.country ?? country,
                           trackList: trackList, fileType: fileType,
                           audioTracks: Self.overlayAudio(audioTracks, e.audioTracks),
-                          audioDurationSec: audioDurationSec)
+                          audioDurationSec: audioDurationSec, appleMusicId: appleMusicId)
     }
 
     /// Overlay per-segment audio edits onto detected segments, overriding only the

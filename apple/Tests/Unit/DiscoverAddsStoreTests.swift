@@ -19,6 +19,13 @@ final class DiscoverAddsStoreTests: XCTestCase {
         return try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization.data(withJSONObject: obj))
     }
 
+    /// An INDEXED album carrying an appleMusicId (IndexAlbum is Decodable-only).
+    private func indexedAlbum(id: String, appleMusicId: String) -> IndexAlbum {
+        let obj: [String: Any] = ["id": id, "name": "N", "artist": "A", "trackList": [String](),
+                                  "appleMusicId": appleMusicId]
+        return try! JSONDecoder().decode(IndexAlbum.self, from: try! JSONSerialization.data(withJSONObject: obj))
+    }
+
     func testAddIsIdempotentPersistsAndInjects() {
         let s = store()
         var injected: [IndexSong] = []
@@ -84,6 +91,109 @@ final class DiscoverAddsStoreTests: XCTestCase {
         s.reloadFromDisk()
         XCTAssertEqual(s.entries.map(\.songId), ["amrec_1", "amrec_2"])
         XCTAssertEqual(injected, ["amrec_2"], "only the pulled-in entry injects")
+    }
+
+    // MARK: Provisional ALBUM support
+
+    func testAddAlbumRoundTripsAndInjects() {
+        let s = store()
+        var injected: [IndexAlbum] = []
+        s.onAlbumAdded = { injected.append($0) }
+        s.addAlbum(albumId: "amrec_album_1", appleMusicId: "1", title: "RAM", artist: "Daft Punk",
+                   trackIds: ["amrec_10", "amrec_11"], artworkUrl: "https://a/1.jpg", year: 2013)
+        // Idempotent per albumId.
+        s.addAlbum(albumId: "amrec_album_1", appleMusicId: "1", title: "RAM", artist: "Daft Punk")
+        XCTAssertEqual(s.albums.count, 1)
+        XCTAssertEqual(injected.count, 1)
+        XCTAssertEqual(injected[0].id, "amrec_album_1")
+        XCTAssertEqual(injected[0].appleMusicId, "1")
+        XCTAssertEqual(injected[0].trackList, ["amrec_10", "amrec_11"])
+        XCTAssertEqual(injected[0].year, 2013)
+        // Round-trip on the same file.
+        let reloaded = DiscoverAddsStore(fileURL: s.syncFileURL)
+        XCTAssertEqual(reloaded.albums.map(\.albumId), ["amrec_album_1"])
+        XCTAssertEqual(reloaded.albums.first?.trackIds, ["amrec_10", "amrec_11"])
+    }
+
+    /// WIPE-SAFETY: a document written before album support (NO `albums` key) must decode
+    /// with every existing song entry intact — the schema-wipe lesson (albums is optional).
+    func testOldDocumentWithoutAlbumsKeyDecodesIntact() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-old-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let legacy = """
+        { "schemaVersion": 1, "entries": [
+            { "songId": "amrec_1", "appleMusicId": "1", "title": "Old", "artist": "X", "addedAtMs": 0 }
+          ] }
+        """
+        try Data(legacy.utf8).write(to: url)
+        let s = DiscoverAddsStore(fileURL: url)
+        XCTAssertEqual(s.entries.map(\.songId), ["amrec_1"], "legacy song entries survive (no wipe)")
+        XCTAssertTrue(s.albums.isEmpty)
+        // Adding an album must not disturb the existing song entry on the next round-trip.
+        s.addAlbum(albumId: "amrec_album_9", appleMusicId: "9", title: "New", artist: "Y")
+        let reloaded = DiscoverAddsStore(fileURL: url)
+        XCTAssertEqual(reloaded.entries.map(\.songId), ["amrec_1"])
+        XCTAssertEqual(reloaded.albums.map(\.albumId), ["amrec_album_9"])
+    }
+
+    func testSplitAlbumsSupersedesByAppleMusicId() {
+        let albums = [
+            DiscoverAddsStore.AlbumEntry(albumId: "amrec_album_1", appleMusicId: "1", title: "A", artist: "X", addedAtMs: 0),
+            DiscoverAddsStore.AlbumEntry(albumId: "amrec_album_2", appleMusicId: "2", title: "B", artist: "Y", addedAtMs: 0),
+        ]
+        let split = DiscoverAddsStore.splitAlbums(albums, indexedByAppleMusicId: ["1": "alb_real1"])
+        XCTAssertEqual(split.keep.map(\.albumId), ["amrec_album_2"])
+        XCTAssertEqual(split.superseded.map(\.from), ["amrec_album_1"])
+        XCTAssertEqual(split.superseded.map(\.to), ["alb_real1"])
+        // An album claiming ITSELF must never self-supersede.
+        let selfSplit = DiscoverAddsStore.splitAlbums(albums, indexedByAppleMusicId: ["1": "amrec_album_1"])
+        XCTAssertEqual(selfSplit.keep.count, 2)
+        XCTAssertTrue(selfSplit.superseded.isEmpty)
+    }
+
+    func testSyntheticIndexEmitsProvisionalAlbums() {
+        let songs = [DiscoverAddsStore.Entry(songId: "amrec_10", appleMusicId: "10", title: "T", artist: "A", addedAtMs: 0)]
+        let albums = [DiscoverAddsStore.AlbumEntry(albumId: "amrec_album_1", appleMusicId: "1", title: "RAM",
+                                                   artist: "DP", trackIds: ["amrec_10"], addedAtMs: 0)]
+        let idx = DiscoverAddsStore.syntheticIndex(songs, albums: albums)
+        XCTAssertEqual(idx.albums.map(\.id), ["amrec_album_1"])
+        XCTAssertEqual(idx.albums.first?.appleMusicId, "1")
+        XCTAssertEqual(idx.songs.map(\.id), ["amrec_10"])
+        // The default (song-only) overload still emits no albums — existing callers unchanged.
+        XCTAssertTrue(DiscoverAddsStore.syntheticIndex(songs).albums.isEmpty)
+    }
+
+    /// supersede-by-appleMusicId REPLACES a provisional Discover album with the real indexed
+    /// album (no duplicate) and reports the remap pair.
+    func testWithProvisionalSourcesSupersedesProvisionalAlbum() {
+        let albums = [
+            DiscoverAddsStore.AlbumEntry(albumId: "amrec_album_6", appleMusicId: "6", title: "Landed",
+                                         artist: "L", trackIds: [], addedAtMs: 0),
+            DiscoverAddsStore.AlbumEntry(albumId: "amrec_album_7", appleMusicId: "7", title: "New",
+                                         artist: "N", trackIds: [], addedAtMs: 0),
+        ]
+        let base = IndexJSON(manifest: Manifest(source: "t", generatedAt: nil, sourceName: "Test", counts: nil),
+                             albums: [indexedAlbum(id: "alb_real6", appleMusicId: "6")], songs: [])
+        let r = AppModel.withProvisionalSources(discover: [], discoverAlbums: albums,
+                                                importedSongs: [], importedAlbums: [], indexes: [base])
+        XCTAssertEqual(r.indexes.count, 2, "surviving album rides a synthetic source")
+        XCTAssertEqual(r.indexes[1].manifest.sourceName, DiscoverAddsStore.sourceName)
+        XCTAssertEqual(r.indexes[1].albums.map(\.id), ["amrec_album_7"], "landed album (6) excluded")
+        XCTAssertEqual(r.discoverAlbumSuperseded.map(\.from), ["amrec_album_6"])
+        XCTAssertEqual(r.discoverAlbumSuperseded.map(\.to), ["alb_real6"])
+    }
+
+    func testReloadFromDiskInjectsNewAlbums() {
+        let s = store()
+        s.addAlbum(albumId: "amrec_album_1", appleMusicId: "1", title: "A", artist: "X")
+        let other = DiscoverAddsStore(fileURL: s.syncFileURL)
+        other.addAlbum(albumId: "amrec_album_2", appleMusicId: "2", title: "B", artist: "Y")
+        var injected: [String] = []
+        s.onAlbumAdded = { injected.append($0.id) }
+        s.reloadFromDisk()
+        XCTAssertEqual(s.albums.map(\.albumId), ["amrec_album_1", "amrec_album_2"])
+        XCTAssertEqual(injected, ["amrec_album_2"], "only the pulled-in album injects")
     }
 
     // MARK: Collections remap

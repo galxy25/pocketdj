@@ -331,7 +331,7 @@ final class BurnStoreTests: XCTestCase {
         let album = IndexAlbum(id: "alb_1", artist: "Aria", name: "Night Drive", coverArt: nil,
                                coverArtSources: nil, genre: "Electronic", year: 2020, country: "US",
                                trackList: ["sng_1"], fileType: "mp3", audioTracks: nil,
-                               audioDurationSec: nil)
+                               audioDurationSec: nil, appleMusicId: nil)
         // The manifest entry's analyzed bpm/key/camelot must WIN over the catalog values.
         let entry = RipsStore.ManifestEntry(key: "rips/sng_1.mp3", source: "digital",
                                             bpm: 128, musicalKey: "A minor", camelot: "8A")

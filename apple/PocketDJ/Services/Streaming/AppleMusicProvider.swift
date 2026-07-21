@@ -182,6 +182,23 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
         }
     }
 
+    /// ALBUM catalog search for Discover ▸ Albums — mirrors `search` but requests
+    /// `[Album.self]` and maps via the existing `albumRef(from:)` (→ `AppleMusicAlbumRef`).
+    func searchAlbums(_ query: String, limit: Int = 25) async throws -> [AppleMusicAlbumRef] {
+        guard isAvailable else { throw StreamingError.notConfigured }
+        guard MusicAuthorization.currentStatus == .authorized else { throw StreamingError.notLinked }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        do {
+            var req = MusicCatalogSearchRequest(term: q, types: [MusicKit.Album.self])
+            req.limit = min(max(limit, 1), 25)
+            let resp = try await req.response()
+            return resp.albums.map(Self.albumRef(from:))
+        } catch {
+            throw StreamingError.network(error)
+        }
+    }
+
     // MARK: SongRecognizer
 
     /// Resolving needs an authorized, subscription-backed session.

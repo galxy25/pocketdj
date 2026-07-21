@@ -43,7 +43,7 @@ final class BurnFilenameTests: XCTestCase {
     private func album(_ id: String, artist: String, name: String, genre: String?, year: Int?) -> IndexAlbum {
         IndexAlbum(id: id, artist: artist, name: name, coverArt: nil, coverArtSources: nil,
                    genre: genre, year: year, country: nil, trackList: [], fileType: nil,
-                   audioTracks: nil, audioDurationSec: nil)
+                   audioTracks: nil, audioDurationSec: nil, appleMusicId: nil)
     }
 
     override func setUp() {
