@@ -72,6 +72,14 @@ struct StudioDemuxView: View {
     /// hits on the old song's bars would render — and export — a wrong pattern.
     @State private var drumBars: [DrumPatternDetector.Bar] = []
     @State private var drumBarsKey: String?
+    /// The chords-only beat grid the "Extract instrumental" panel builds from (measured beat
+    /// lattice when the song has a sidecar, else a constant grid from bpm). Resolved off the render
+    /// path and keyed to the source (a stale async resolve must never label another source's grid
+    /// as this one's — the drumBarsKey discipline).
+    @State private var instBpm: Double = 120
+    @State private var instFirstDownbeat = 0
+    @State private var instBeatsMs: [Int] = []
+    @State private var instGridKey: String?
     /// A cloud lyrics-sidecar download in flight (drives the panel's fetching row).
     @State private var cloudLyricsFetching = false
 
@@ -325,6 +333,7 @@ struct StudioDemuxView: View {
         chordStatusRow(doc)
         stemsPanel(source)
         drumPatternPanel(source, doc)
+        instrumentalPanel(source, doc)
         cutSampleRow(source)
         // The CLOUD engine (whisper sidecars) shows for any song that has one — the
         // DemuxFeatures gate's documented exit criterion. On-device recognition stays
@@ -446,6 +455,51 @@ struct StudioDemuxView: View {
             }
         }
         return []
+    }
+
+    // MARK: Instrumental (chord blocks → beat-quantized chord-comping StudioTake + synced score)
+
+    /// Parallel to the drum-pattern panel, but built from the CHORD timeline ALONE (no stems):
+    /// gated on `chordStatus == .done`. Renders the synced-playback panel (shared follow → bars +
+    /// score) and the "Extract instrumental" hand-off to the Instruments tab.
+    @ViewBuilder private func instrumentalPanel(_ source: DemuxSource, _ doc: DemuxDocument?) -> some View {
+        if doc?.chordStatus == .done, let chords = doc?.chords, !chords.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                sectionTitle("Instrumental (chord comping)", icon: "pianokeys")
+                if instGridKey == source.key {
+                    DemuxInstrumentalView(source: source, chords: chords,
+                                          bpm: instBpm, firstDownbeatMs: instFirstDownbeat,
+                                          beatsMs: instBeatsMs, durationMs: durationMs,
+                                          player: player, onSeek: { seek(toMs: $0) })
+                } else {
+                    statusRow(spinner: true, "Preparing the chord grid…", a11y: "demux-instrumental-preparing")
+                }
+            }
+            // Resolve the chords-only grid once per source (song beat-grid sidecar → measured
+            // lattice; else a constant grid). Keyed to the source so a stale resolve can't apply
+            // one source's grid to another (the drumBars discipline).
+            .task(id: "\(source.key)#inst") {
+                guard instGridKey != source.key else { return }
+                let g = await resolveInstrumentalGrid(source)
+                guard isCurrent(source) else { return }
+                instBpm = g.bpm; instFirstDownbeat = g.firstDownbeatMs; instBeatsMs = g.beatsMs
+                instGridKey = source.key
+            }
+        }
+    }
+
+    /// The instrumental's beat grid — CHORDS ALONE (no stems). A catalog song uses its beat-grid
+    /// sidecar (measured per-beat `beatsMs` + tempo + phase); everything else falls to a steady
+    /// 120-BPM grid anchored at 0 (deterministic, and what the seeded fixture uses).
+    private func resolveInstrumentalGrid(_ src: DemuxSource) async -> DemuxInstrumental.Grid {
+        if let songId = src.songId {
+            var sc = burns.localBeatGrid(forSong: songId)
+            if sc == nil { sc = await burns.burnBeatGrid(forSong: songId) }
+            if let sc, let bpm = sc.beatGridBpm, bpm > 0 {
+                return (bpm, sc.firstDownbeatMs ?? 0, sc.beatsMs)
+            }
+        }
+        return (120, 0, [])
     }
 
     // MARK: Cut sample (the sampler's in/out region editor over THIS loaded audio)
@@ -781,6 +835,8 @@ struct StudioDemuxView: View {
         peaks = []
         drumBars = []
         drumBarsKey = nil
+        instBeatsMs = []
+        instGridKey = nil
     }
 
     private func resolve(_ src: DemuxSource) async {
