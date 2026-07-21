@@ -23,6 +23,15 @@ protocol StreamingSearch {
     /// Whether search is usable right now (e.g. the account is authorized).
     var canSearch: Bool { get }
     func search(_ query: String, limit: Int) async throws -> [StreamingTrack]
+    /// ALBUM catalog search — Browse ▸ Discover ▸ Albums. Provider-neutral result
+    /// (`AppleMusicAlbumRef`, the same value type the recognizer album flow uses).
+    /// Defaulted to `[]` so only providers that actually offer album search implement it.
+    func searchAlbums(_ query: String, limit: Int) async throws -> [AppleMusicAlbumRef]
+}
+
+extension StreamingSearch {
+    /// Default: no album search. Overridden by `AppleMusicProvider`.
+    func searchAlbums(_ query: String, limit: Int) async throws -> [AppleMusicAlbumRef] { [] }
 }
 
 /// Errors surfaced to the UI so Settings can show an actionable message

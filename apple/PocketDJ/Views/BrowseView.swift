@@ -26,6 +26,10 @@ struct BrowseView: View {
     @State private var online = OnlineSearchModel()
     @Environment(StreamingStore.self) private var streaming
     @State private var discover = DiscoverSearchModel()
+    @State private var discoverAlbums = DiscoverAlbumSearchModel()
+    /// Discover's nested Songs/Albums scope. Ephemeral (per-session) — not persisted, so no
+    /// BrowseState schema change; entering Discover always starts on Songs (the shipping default).
+    @State private var discoverScope: DiscoverScope = .song
     /// Discover's ARTIST refine (the title rides the shared search field).
     @State private var discoverArtist = ""
     @State private var showFilter = false
@@ -75,8 +79,13 @@ struct BrowseView: View {
             showTabsPicker
 
             if effectiveDiscover {
+                discoverScopePicker
                 discoverRefineRow
-                DiscoverResultsList(model: discover, query: browse.query, artist: discoverArtist)
+                if discoverScope == .album {
+                    DiscoverAlbumResultsList(model: discoverAlbums, query: browse.query, artist: discoverArtist)
+                } else {
+                    DiscoverResultsList(model: discover, query: browse.query, artist: discoverArtist)
+                }
             } else {
                 shazamRow
                 content
@@ -105,7 +114,7 @@ struct BrowseView: View {
             // huge). Invalidating the committed key makes `liveVisible` fall back to a page.
             visibleKey = ""
             if browse.searchOnline { triggerOnline() } else { online.cancel() }
-            if effectiveDiscover { triggerDiscover() } else { discover.cancel() }
+            if effectiveDiscover { triggerDiscover() } else { discover.cancel(); discoverAlbums.cancel() }
         }
         .onChange(of: browse.query) {
             if browse.searchOnline { triggerOnline() }
@@ -113,6 +122,13 @@ struct BrowseView: View {
         }
         .onChange(of: discoverArtist) {
             if effectiveDiscover { triggerDiscover() }
+        }
+        // Flipping the nested Songs/Albums scope re-runs the search for the current query in
+        // the new scope, and stops the other scope's in-flight model.
+        .onChange(of: discoverScope) {
+            guard effectiveDiscover else { return }
+            if discoverScope == .album { discover.cancel() } else { discoverAlbums.cancel() }
+            triggerDiscover()
         }
         // "Search PocketDJ for …" (the system.search intent): the term is parked on
         // the intents bridge; consume it into the search field — whether the browser
@@ -170,8 +186,29 @@ struct BrowseView: View {
     /// in either the title search or the artist refine). MusicKit rides along when the
     /// device is authorized — full-catalog coverage the iTunes proxy can't match.
     private func triggerDiscover() {
-        discover.searchDebounced(browse.query, artist: discoverArtist, rips: rips,
-                                 catalog: streaming.appleMusicProvider)
+        if discoverScope == .album {
+            discoverAlbums.searchDebounced(browse.query, artist: discoverArtist, rips: rips,
+                                           catalog: streaming.appleMusicProvider)
+        } else {
+            discover.searchDebounced(browse.query, artist: discoverArtist, rips: rips,
+                                     catalog: streaming.appleMusicProvider)
+        }
+    }
+
+    /// Discover's nested search scope — Songs (the shipping default) or Albums. Ephemeral
+    /// (mirrors the `showTab` idiom but session-only, so no BrowseState schema change).
+    private enum DiscoverScope: String { case song, album }
+
+    /// The nested Songs/Albums segmented scope, INSIDE the Discover panel (mirrors
+    /// `showTabsPicker`; branches the results area between the song and album lists).
+    private var discoverScopePicker: some View {
+        Picker("Discover scope", selection: $discoverScope) {
+            Text("Songs").tag(DiscoverScope.song)
+            Text("Albums").tag(DiscoverScope.album)
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16).padding(.bottom, 6)
+        .accessibilityIdentifier("discover-scope-picker")
     }
 
     // Extracted sub-views (the type-checker-budget rule: keep `body` small).

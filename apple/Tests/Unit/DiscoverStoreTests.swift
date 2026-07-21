@@ -257,6 +257,104 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertEqual(narrowed.map(\.artist), ["Daft Punk", "daft punk & friends"])
         XCTAssertTrue(DiscoverSearchModel.refine(hits, artist: "prodigy").isEmpty)
     }
+
+    // MARK: Discover ▸ ALBUMS — search decode (entity=album) + add fan-out
+
+    func testDiscoverSearchAlbumsDecodesAndSendsEntityAlbum() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/search"] = Data("""
+        { "results": [
+            { "appleMusicId": "111", "albumId": "amrec_album_111", "title": "Random Access Memories",
+              "artist": "Daft Punk", "artworkUrl": "https://art/111.jpg", "trackCount": 13,
+              "year": 2013, "url": "https://music.apple.com/album/111" }
+          ] }
+        """.utf8)
+        let hits = await rips.discoverSearchAlbums("random access", limit: 25)
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertNil(rips.discoverError)
+        XCTAssertEqual(hits[0].id, "amrec_album_111")
+        XCTAssertEqual(hits[0].appleMusicId, "111")
+        XCTAssertEqual(hits[0].title, "Random Access Memories")
+        XCTAssertEqual(hits[0].trackCount, 13)
+        XCTAssertEqual(hits[0].year, 2013)
+        XCTAssertEqual(hits[0].url, "https://music.apple.com/album/111")
+        // Request shape: GET /search?q=…&entity=album&limit=… with the bearer token.
+        let req = DiscoverURLProtocol.last(path: "/search")
+        XCTAssertEqual(req?.httpMethod, "GET")
+        let query = req?.url?.query ?? ""
+        XCTAssertTrue(query.contains("entity=album"), "album search must set entity=album: \(query)")
+        XCTAssertEqual(req?.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+    }
+
+    func testDiscoverAddAlbumFansOutPerTrackRips() async {
+        let rips = makeStore()
+        let addsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dadds-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: addsURL) }
+        let adds = DiscoverAddsStore(fileURL: addsURL)
+        rips.discoverAdds = adds
+        // No library contributor → the server /album-tracks expansion drives the fan-out.
+        DiscoverURLProtocol.bodyByPath["/album-tracks"] = Data("""
+        { "id": "111", "tracks": [
+            { "id": "1", "title": "T1", "artist": "Daft Punk", "trackNumber": 1, "durationMs": 200000 },
+            { "id": "2", "title": "T2", "artist": "Daft Punk", "trackNumber": 2, "durationMs": 210000 }
+          ] }
+        """.utf8)
+        DiscoverURLProtocol.bodyByPath["/rip"] =
+            Data(#"{"jobId":"j","songId":"x","phase":"queued"}"#.utf8)
+        let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
+                                             title: "RAM", artist: "Daft Punk", year: 2013)
+        await rips.discoverAddAlbum(hit)
+        XCTAssertEqual(DiscoverURLProtocol.count(path: "/album-tracks"), 1, "expands once via the proxy")
+        XCTAssertEqual(DiscoverURLProtocol.count(path: "/rip"), 2, "one rip per track")
+        // Provisional album + its per-track songs recorded.
+        XCTAssertEqual(adds.albums.map(\.albumId), ["amrec_album_111"])
+        XCTAssertEqual(adds.albums.first?.trackIds, ["amrec_1", "amrec_2"])
+        XCTAssertEqual(adds.albums.first?.appleMusicId, "111")
+        XCTAssertEqual(adds.entries.map(\.songId).sorted(), ["amrec_1", "amrec_2"])
+        XCTAssertNil(rips.discoverError)
+    }
+
+    // MARK: Album search-model math (merge/dedup-by-collectionId, refine, ref→hit mapping)
+
+    private func albumRef(_ id: String, _ artist: String) -> AppleMusicAlbumRef {
+        AppleMusicAlbumRef(storeID: id, title: "Album\(id)", artist: artist, year: 2013,
+                           artworkURL: URL(string: "https://a/\(id).jpg"),
+                           url: URL(string: "https://music/\(id)"))
+    }
+
+    private func serverAlbum(_ id: String) -> RipsStore.DiscoverAlbumHit {
+        RipsStore.DiscoverAlbumHit(appleMusicId: id, albumId: "amrec_album_\(id)",
+                                   title: "S\(id)", artist: "Srv")
+    }
+
+    func testAlbumHitMappingFromRef() {
+        let h = DiscoverAlbumSearchModel.hit(from: albumRef("111", "Daft Punk"))
+        XCTAssertEqual(h.appleMusicId, "111")
+        XCTAssertEqual(h.albumId, "amrec_album_111")
+        XCTAssertEqual(h.title, "Album111")
+        XCTAssertEqual(h.artist, "Daft Punk")
+        XCTAssertEqual(h.year, 2013)
+        XCTAssertEqual(h.artworkUrl, "https://a/111.jpg")
+        XCTAssertEqual(h.url, "https://music/111")
+    }
+
+    func testAlbumMergeDedupesByCollectionId() {
+        let catalog = [DiscoverAlbumSearchModel.hit(from: albumRef("1", "A")),
+                       DiscoverAlbumSearchModel.hit(from: albumRef("2", "A"))]
+        let server = [serverAlbum("2"), serverAlbum("3")]
+        let merged = DiscoverAlbumSearchModel.merge(catalog: catalog, server: server)
+        XCTAssertEqual(merged.map(\.appleMusicId), ["1", "2", "3"], "catalog leads, proxy-only follows, no dupes")
+        XCTAssertEqual(merged[1].title, "Album2", "catalog row wins on a collectionId tie")
+        XCTAssertEqual(DiscoverAlbumSearchModel.merge(catalog: [], server: server).map(\.appleMusicId), ["2", "3"])
+    }
+
+    func testAlbumRefineNarrowsByArtist() {
+        let hits = [DiscoverAlbumSearchModel.hit(from: albumRef("1", "Daft Punk")),
+                    DiscoverAlbumSearchModel.hit(from: albumRef("2", "Pendulum"))]
+        XCTAssertEqual(DiscoverAlbumSearchModel.refine(hits, artist: "daft").map(\.appleMusicId), ["1"])
+        XCTAssertEqual(DiscoverAlbumSearchModel.refine(hits, artist: "").count, 2, "empty refine passes through")
+    }
 }
 
 /// Scriptable, request-recording `URLProtocol` standing in for the rip server —

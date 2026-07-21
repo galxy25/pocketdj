@@ -35,22 +35,52 @@ final class DiscoverAddsStore {
         var id: String { songId }
     }
 
+    /// A provisional ALBUM add — the album twin of `Entry`. Browsable/collectable NOW
+    /// (its per-track `amrec_` rips land as `Entry` songs); superseded by the real
+    /// indexed album via `appleMusicId` once the nightly indexer lands it.
+    struct AlbumEntry: Codable, Equatable, Identifiable {
+        /// Provisional album id (`amrec_album_<collectionId>`).
+        var albumId: String
+        /// Apple Music album store id (iTunes collectionId) — the SUPERSEDE join key.
+        var appleMusicId: String
+        var title: String
+        var artist: String
+        /// The per-track provisional song ids this album expanded into (`amrec_<trackId>`).
+        var trackIds: [String]?
+        var artworkUrl: String?
+        var year: Int?
+        var addedAtMs: Double
+        var id: String { albumId }
+    }
+
     private struct Document: Codable {
         var schemaVersion: Int = 1
         var entries: [Entry] = []
+        /// OPTIONAL by design — Swift's synthesized Decodable ignores default values and
+        /// throws on a MISSING non-optional key, which would silently wipe every existing
+        /// Discover add saved by an app version that predates album support. An old document
+        /// with no `albums` key decodes with `albums == nil` (the session-wipe lesson).
+        var albums: [AlbumEntry]? = nil
     }
 
     private(set) var entries: [Entry] = []
+    private(set) var albums: [AlbumEntry] = []
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (same-URL doctrine as the other stores).
     var syncFileURL: URL { fileURL }
     /// Fired for each NEW entry (local add or cloud pull) — the app wires this to
     /// `AppModel.injectDiscoverAdd` so the live catalog updates without a full reload.
     @ObservationIgnored var onAdded: ((IndexSong) -> Void)?
+    /// Fired for each NEW album (local add or cloud pull) — wired to
+    /// `AppModel.injectDiscoverAlbumAdd`. Kept a SEPARATE arm from `onAdded` so the
+    /// existing song path is untouched (back-compat).
+    @ObservationIgnored var onAlbumAdded: ((IndexAlbum) -> Void)?
 
     init(fileURL: URL = DiscoverAddsStore.defaultURL()) {
         self.fileURL = fileURL
-        entries = Self.decode(fileURL)
+        let doc = Self.decodeDoc(fileURL)
+        entries = doc.entries
+        albums = doc.albums ?? []
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -70,10 +100,12 @@ final class DiscoverAddsStore {
         return defaultURL()
     }
 
-    private nonisolated static func decode(_ url: URL) -> [Entry] {
+    private nonisolated static func decode(_ url: URL) -> [Entry] { decodeDoc(url).entries }
+
+    private nonisolated static func decodeDoc(_ url: URL) -> Document {
         guard let data = try? Data(contentsOf: url),
-              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return [] }
-        return doc.entries
+              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return Document() }
+        return doc
     }
 
     /// Record an add (idempotent per songId) and hand the injected catalog row to the app.
@@ -88,6 +120,20 @@ final class DiscoverAddsStore {
         onAdded?(Self.indexSong(entry))
     }
 
+    /// Record an album add (idempotent per albumId) and hand the injected catalog album to
+    /// the app. The per-track songs are recorded separately via `add(songId:…)` so they are
+    /// individually browsable/rippable; this row is what makes the ALBUM itself a citizen.
+    func addAlbum(albumId: String, appleMusicId: String, title: String, artist: String,
+                  trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil) {
+        guard !albums.contains(where: { $0.albumId == albumId }) else { return }
+        let entry = AlbumEntry(albumId: albumId, appleMusicId: appleMusicId, title: title,
+                               artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
+                               year: year, addedAtMs: Date().timeIntervalSince1970 * 1000)
+        albums.append(entry)
+        save()
+        onAlbumAdded?(Self.indexAlbum(entry))
+    }
+
     /// Drop superseded entries (their indexed replacements own the ids now).
     func remove(ids: [String]) {
         guard !ids.isEmpty else { return }
@@ -96,20 +142,35 @@ final class DiscoverAddsStore {
         save()
     }
 
+    /// Drop superseded ALBUM entries (the real indexed album owns the identity now).
+    func remove(albumIds ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let gone = Set(ids)
+        albums.removeAll { gone.contains($0.albumId) }
+        save()
+    }
+
     /// Empty the provisional catalog: reset in-memory state and remove the persisted
     /// file (swallowing file-not-found like the rest of the store).
     func clear() {
         entries = []
+        albums = []
         try? FileManager.default.removeItem(at: fileURL)
     }
 
     /// Re-decode after CloudSyncService pulled a newer copy, surfacing any NEW entries
-    /// through `onAdded` so the live catalog follows the pull.
+    /// (songs AND albums) through `onAdded`/`onAlbumAdded` so the live catalog follows the pull.
     func reloadFromDisk() {
-        let before = Set(entries.map(\.songId))
-        entries = Self.decode(fileURL)
-        for e in entries where !before.contains(e.songId) {
+        let beforeSongs = Set(entries.map(\.songId))
+        let beforeAlbums = Set(albums.map(\.albumId))
+        let doc = Self.decodeDoc(fileURL)
+        entries = doc.entries
+        albums = doc.albums ?? []
+        for e in entries where !beforeSongs.contains(e.songId) {
             onAdded?(Self.indexSong(e))
+        }
+        for a in albums where !beforeAlbums.contains(a.albumId) {
+            onAlbumAdded?(Self.indexAlbum(a))
         }
     }
 
@@ -125,12 +186,23 @@ final class DiscoverAddsStore {
         return try! JSONDecoder().decode(IndexSong.self, from: data)
     }
 
-    /// The synthetic SOURCE the multi-source catalog merge consumes. No albums —
-    /// provisional adds are singles until the indexer lands the real album entry.
-    nonisolated static func syntheticIndex(_ entries: [Entry]) -> IndexJSON {
+    /// Album entry → catalog album (`IndexAlbum` is Decodable-only — the same decode idiom;
+    /// `coverArt` takes the absolute artwork URL, `appleMusicId` carries the supersede join key).
+    nonisolated static func indexAlbum(_ e: AlbumEntry) -> IndexAlbum {
+        var obj: [String: Any] = ["id": e.albumId, "name": e.title, "artist": e.artist,
+                                  "appleMusicId": e.appleMusicId, "trackList": e.trackIds ?? []]
+        if let v = e.artworkUrl { obj["coverArt"] = v }
+        if let v = e.year { obj["year"] = v }
+        let data = try! JSONSerialization.data(withJSONObject: obj)
+        return try! JSONDecoder().decode(IndexAlbum.self, from: data)
+    }
+
+    /// The synthetic SOURCE the multi-source catalog merge consumes — songs plus any
+    /// provisional albums added in album mode (default empty preserves every existing caller).
+    nonisolated static func syntheticIndex(_ entries: [Entry], albums albumEntries: [AlbumEntry] = []) -> IndexJSON {
         IndexJSON(manifest: Manifest(source: "discover-adds", generatedAt: nil,
                                      sourceName: sourceName, counts: nil),
-                  albums: [], songs: entries.map(indexSong), playlists: nil)
+                  albums: albumEntries.map(indexAlbum), songs: entries.map(indexSong), playlists: nil)
     }
 
     /// The SUPERSEDE split (pure): entries whose Apple Music id is claimed by an
@@ -150,8 +222,28 @@ final class DiscoverAddsStore {
         return (keep, superseded)
     }
 
+    /// The album twin of `split` (pure): provisional albums whose Apple Music id is claimed
+    /// by an INDEXED album yield to it — returns the survivors plus the (provisional →
+    /// indexed) id pairs. An album claiming ITSELF (the synthetic source in a later pass)
+    /// never self-supersedes.
+    nonisolated static func splitAlbums(_ albums: [AlbumEntry], indexedByAppleMusicId: [String: String])
+        -> (keep: [AlbumEntry], superseded: [(from: String, to: String)]) {
+        var keep: [AlbumEntry] = []
+        var superseded: [(from: String, to: String)] = []
+        for a in albums {
+            if let indexedId = indexedByAppleMusicId[a.appleMusicId], indexedId != a.albumId {
+                superseded.append((from: a.albumId, to: indexedId))
+            } else {
+                keep.append(a)
+            }
+        }
+        return (keep, superseded)
+    }
+
     private func save() {
-        let doc = Document(entries: entries)
+        // Persist `albums` only when non-empty so a song-only store keeps writing the exact
+        // legacy document shape (older app versions decode it unchanged).
+        let doc = Document(entries: entries, albums: albums.isEmpty ? nil : albums)
         if let data = try? JSONEncoder().encode(doc) {
             try? data.write(to: fileURL, options: .atomic)
         }

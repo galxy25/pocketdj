@@ -901,6 +901,160 @@ final class RipsStore {
         }
     }
 
+    // MARK: Discover — Apple Music ALBUM search + add (entity=album / per-track fan-out)
+
+    /// One `GET /search?entity=album` result: an Apple Music catalog ALBUM hit — metadata
+    /// only. `appleMusicId` is the iTunes collectionId; `albumId` is the provisional catalog
+    /// album id (`amrec_album_<collectionId>`) the add flow synthesizes. No ripped/url: an
+    /// album is a bag of per-track `amrec_` rips, tracked per song, not per album.
+    struct DiscoverAlbumHit: Decodable, Identifiable, Equatable {
+        var appleMusicId: String
+        var albumId: String
+        var title: String
+        var artist: String
+        var artworkUrl: String? = nil
+        var trackCount: Int? = nil
+        var year: Int? = nil
+        /// Apple Music deep link (`collectionViewUrl`) — the macOS "add" fallback opens this.
+        var url: String? = nil
+        var id: String { albumId }
+    }
+
+    private struct DiscoverAlbumResponse: Decodable { var results: [DiscoverAlbumHit] }
+
+    /// One track from `GET /album-tracks` — the subscription-free expansion source.
+    struct AlbumTrack: Decodable, Equatable {
+        var id: String
+        var title: String
+        var artist: String
+        var trackNumber: Int? = nil
+        var durationMs: Int? = nil
+    }
+
+    private struct AlbumTracksResponse: Decodable { var tracks: [AlbumTrack] }
+
+    /// Search the Apple Music catalog for ALBUMS via `/search?entity=album`. Same error
+    /// doctrine as `discoverSearch` (returns [] + sets `discoverError`, never throws).
+    func discoverSearchAlbums(_ query: String, limit: Int = 25) async -> [DiscoverAlbumHit] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { discoverError = nil; return [] }
+        guard hasServer else {
+            discoverError = "No import server configured (Settings ▸ Import server)."
+            return []
+        }
+        guard var comps = URLComponents(string: "\(serverUrl)/search") else {
+            discoverError = "Invalid import server URL (Settings ▸ Import server)."
+            return []
+        }
+        comps.queryItems = [URLQueryItem(name: "q", value: q),
+                            URLQueryItem(name: "entity", value: "album"),
+                            URLQueryItem(name: "limit", value: String(limit))]
+        guard let url = comps.url else {
+            discoverError = "Invalid import server URL (Settings ▸ Import server)."
+            return []
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12
+        applyAuth(&req, token: token)
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else { discoverError = "Search failed."; return [] }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                discoverError = "The import server rejected the request — check Settings ▸ Import server token."
+                return []
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                discoverError = "Search failed (\(http.statusCode))."; return []
+            }
+            let hits = try JSONDecoder().decode(DiscoverAlbumResponse.self, from: data).results
+            discoverError = nil
+            return hits
+        } catch {
+            discoverError = "Import server unreachable (Settings ▸ Import server)."
+            return []
+        }
+    }
+
+    /// Expand an album into its ordered tracks via `GET /album-tracks?id=<collectionId>` —
+    /// the subscription-free fallback used when MusicKit `albumTracks` isn't available.
+    /// Returns [] on any failure (the caller decides how to surface an empty expansion).
+    func fetchAlbumTracks(collectionId: String) async -> [AlbumTrack] {
+        let id = collectionId.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty, hasServer,
+              var comps = URLComponents(string: "\(serverUrl)/album-tracks") else { return [] }
+        comps.queryItems = [URLQueryItem(name: "id", value: id)]
+        guard let url = comps.url else { return [] }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12
+        applyAuth(&req, token: token)
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return [] }
+            return try JSONDecoder().decode(AlbumTracksResponse.self, from: data).tracks
+        } catch { return [] }
+    }
+
+    /// "＋ Add" for a Discover ALBUM — three app-side actions:
+    ///   1. Add the album to the user's own Apple Music library when this device can write it
+    ///      (on macOS `canAddToLibrary` is false — the caller opens the Music.app deep link
+    ///      instead, mirroring the Shazam macOS fallback; this method just skips the write).
+    ///   2. Expand the album into tracks — MusicKit `albumTracks` when authorized, else the
+    ///      subscription-free `/album-tracks` proxy — and fan each track out as a per-song
+    ///      `amrec_` rip through the EXISTING single-flight `requestRip` queue.
+    ///   3. Record a PROVISIONAL album (+ each track as a provisional song) in
+    ///      `DiscoverAddsStore` so the album + its songs are browsable/collectable NOW.
+    /// Never throws; failures land in `discoverError`. Split out from the view like `discoverAdd`.
+    func discoverAddAlbum(_ hit: DiscoverAlbumHit, library: (any MusicLibraryContributor)? = nil) async {
+        // 1) Library write (non-macOS only — canAddToLibrary is false on macOS).
+        if let library, library.canAddToLibrary {
+            try? await library.addAlbumToLibrary(storeID: hit.appleMusicId)
+        }
+
+        // 2) Expand tracks — MusicKit first (needs auth), else the free proxy.
+        var descs: [(songId: String, title: String, artist: String, appleMusicId: String, lengthMs: Int?)] = []
+        if let library, library.canContribute {
+            let rows = await library.albumTracks(albumStoreID: hit.appleMusicId)
+            descs = rows.map { r in
+                (songId: "amrec_\(r.storeID)", title: r.title, artist: r.artist,
+                 appleMusicId: r.storeID,
+                 lengthMs: r.durationSeconds.map { Int(($0 * 1000).rounded()) })
+            }
+        }
+        if descs.isEmpty {
+            let tracks = await fetchAlbumTracks(collectionId: hit.appleMusicId)
+            descs = tracks.map { t in
+                (songId: "amrec_\(t.id)", title: t.title, artist: t.artist,
+                 appleMusicId: t.id, lengthMs: t.durationMs)
+            }
+        }
+        guard !descs.isEmpty else {
+            discoverError = "Couldn’t read the album’s tracks — try again."
+            return
+        }
+
+        // 3) Provisional album + per-track songs, and fan out the rips on the shared queue.
+        var trackIds: [String] = []
+        for d in descs {
+            trackIds.append(d.songId)
+            discoverAdds?.add(songId: d.songId, appleMusicId: d.appleMusicId, title: d.title,
+                              artist: d.artist, album: hit.title, artworkUrl: hit.artworkUrl,
+                              durationMs: d.lengthMs)
+            let outcome = await requestRip(songId: d.songId, title: d.title, artist: d.artist,
+                                           appleMusicId: d.appleMusicId, lengthMs: d.lengthMs)
+            switch outcome {
+            case .ready:
+                await refreshManifest()
+            case .queued, .inflight:
+                if let jobId = jobs[d.songId]?.jobId { pollToReady(songId: d.songId, jobId: jobId) }
+            case .noServer, .unknown, .failed:
+                break   // a per-track miss doesn't sink the whole album add
+            }
+        }
+        discoverAdds?.addAlbum(albumId: hit.albumId, appleMusicId: hit.appleMusicId,
+                               title: hit.title, artist: hit.artist, trackIds: trackIds,
+                               artworkUrl: hit.artworkUrl, year: hit.year)
+    }
+
     /// Refresh a single song's job from `/jobs/<id>` (used by the recognizer rip→burn poll
     /// so a server-side failure short-circuits instead of waiting out the timeout).
     /// Returns the latest phase, or the last-known phase when there's no job/the fetch fails.

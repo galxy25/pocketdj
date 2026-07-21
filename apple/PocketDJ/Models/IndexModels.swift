@@ -91,6 +91,12 @@ struct IndexAlbum: Decodable, Identifiable, Hashable {
     let fileType: String?
     let audioTracks: [AudioTrack]?
     let audioDurationSec: Double?
+    /// Apple Music album store id (the iTunes `collectionId`) — the SUPERSEDE join key
+    /// that lets a real indexed album cleanly replace a provisional Discover album with
+    /// the same catalog identity (mirrors `IndexSong.appleMusicId`). OPTIONAL: absent on
+    /// every existing indexed album, and the album indexers emit it only where an iTunes
+    /// collectionId is resolvable. A bare numeric string when present.
+    let appleMusicId: String?
 
     var hasAudioAnalysis: Bool { !(audioTracks ?? []).isEmpty }
 

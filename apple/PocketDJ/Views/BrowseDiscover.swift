@@ -369,3 +369,253 @@ private struct DiscoverRow: View {
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 }
+
+// ============================================================================
+// MARK: - Discover ▸ Albums (nested scope)
+// ============================================================================
+
+/// The album twin of `DiscoverSearchModel` — same @MainActor @Observable + off-main
+/// debounced task shape (400 ms, cancel-on-retrigger). Never searches synchronously in a
+/// view body: the catalog/network work runs inside the `@ObservationIgnored` Task (the
+/// main-thread-hang lesson). Two album sources merge by collectionId: the rip-server
+/// `/search?entity=album` proxy (reachable by every tester) and MusicKit album search
+/// (full catalog coverage when the account is authorized).
+@MainActor
+@Observable
+final class DiscoverAlbumSearchModel {
+    enum State: Equatable { case idle, loading, loaded }
+
+    var state: State = .idle
+    private(set) var hits: [RipsStore.DiscoverAlbumHit] = []
+    @ObservationIgnored private var task: Task<Void, Never>?
+
+    func searchDebounced(_ query: String, artist: String = "", rips: RipsStore,
+                         catalog: (any StreamingSearch)? = nil) {
+        task?.cancel()
+        guard let term = DiscoverSearchModel.term(title: query, artist: artist) else {
+            hits = []; state = .idle; return
+        }
+        let refine = artist.trimmingCharacters(in: .whitespaces)
+        task = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, let self else { return }
+            self.state = .loading
+            async let proxyHits = rips.discoverSearchAlbums(term)
+            var catalogHits: [RipsStore.DiscoverAlbumHit] = []
+            if let catalog, catalog.canSearch {
+                let albums = (try? await catalog.searchAlbums(term, limit: 25)) ?? []
+                catalogHits = albums.map(Self.hit(from:))
+            }
+            let merged = Self.merge(catalog: catalogHits, server: await proxyHits)
+            guard !Task.isCancelled else { return }
+            self.hits = Self.refine(merged, artist: refine)
+            self.state = .loaded
+        }
+    }
+
+    /// Map a MusicKit album reference into the Discover album row shape (the
+    /// `amrec_album_<collectionId>` provisional-id convention).
+    static func hit(from ref: AppleMusicAlbumRef) -> RipsStore.DiscoverAlbumHit {
+        RipsStore.DiscoverAlbumHit(appleMusicId: ref.storeID,
+                                   albumId: "amrec_album_\(ref.storeID)",
+                                   title: ref.title,
+                                   artist: ref.artist,
+                                   artworkUrl: ref.artworkURL?.absoluteString,
+                                   trackCount: nil,
+                                   year: ref.year,
+                                   url: ref.url?.absoluteString)
+    }
+
+    /// Merge doctrine: MusicKit's ranking leads; proxy-only albums follow. Dedup by the
+    /// Apple Music collectionId (an album has no ripped/url authority to hand back, so the
+    /// catalog row simply wins on a tie).
+    static func merge(catalog: [RipsStore.DiscoverAlbumHit],
+                      server: [RipsStore.DiscoverAlbumHit]) -> [RipsStore.DiscoverAlbumHit] {
+        var seen = Set<String>()
+        var out: [RipsStore.DiscoverAlbumHit] = []
+        for h in catalog where seen.insert(h.appleMusicId).inserted { out.append(h) }
+        for h in server where seen.insert(h.appleMusicId).inserted { out.append(h) }
+        return out
+    }
+
+    /// Client-side artist narrowing — the iTunes term search matches across fields.
+    static func refine(_ hits: [RipsStore.DiscoverAlbumHit], artist: String) -> [RipsStore.DiscoverAlbumHit] {
+        let a = artist.trimmingCharacters(in: .whitespaces)
+        guard !a.isEmpty else { return hits }
+        return hits.filter { $0.artist.localizedCaseInsensitiveContains(a) }
+    }
+
+    func cancel() { task?.cancel(); task = nil; hits = []; state = .idle }
+}
+
+/// Browse ▸ Discover ▸ Albums results. Mirrors `DiscoverResultsList`; branches the results
+/// area when the nested Songs/Albums scope is on Albums.
+struct DiscoverAlbumResultsList: View {
+    @Environment(RipsStore.self) private var rips
+    let model: DiscoverAlbumSearchModel
+    let query: String
+    var artist: String = ""
+
+    var body: some View {
+        Group {
+            if DiscoverSearchModel.term(title: query, artist: artist) == nil {
+                hint
+            } else {
+                switch model.state {
+                case .idle, .loading: loading
+                case .loaded:
+                    if let message = rips.discoverError {
+                        failure(message)
+                    } else if model.hits.isEmpty {
+                        noMatches
+                    } else {
+                        list
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
+    }
+
+    private var hint: some View {
+        ContentUnavailableView {
+            Label("Discover albums", systemImage: "square.stack")
+        } description: {
+            Text("Search Apple Music for an album — ＋ Add saves it to your Apple Music library and prepares your copy of every track.")
+        }
+        .accessibilityIdentifier("discover-album-hint")
+    }
+
+    private var loading: some View {
+        VStack(spacing: 12) { ProgressView(); Text("Searching Apple Music…").foregroundStyle(Theme.fgDim) }
+    }
+
+    private var noMatches: some View {
+        ContentUnavailableView {
+            Label("No albums", systemImage: "magnifyingglass")
+        } description: {
+            Text("No album in the Apple Music catalog matched “\(query)”.")
+        }
+        .accessibilityIdentifier("discover-album-empty")
+    }
+
+    private func failure(_ message: String) -> some View {
+        ContentUnavailableView {
+            Label("Discover unavailable", systemImage: "wifi.exclamationmark")
+        } description: { Text(message) }
+        .accessibilityIdentifier("discover-album-error")
+    }
+
+    private var list: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(Array(model.hits.enumerated()), id: \.element.id) { index, hit in
+                    DiscoverAlbumRow(hit: hit, index: index)
+                    Divider().overlay(Theme.border)
+                }
+            }
+            .padding(.horizontal, 8)
+        }
+        .accessibilityIdentifier("discover-album-list")
+    }
+}
+
+/// One Discover album result row: artwork · title / artist · trailing action. The trailing
+/// action is state-driven: not added → ＋ Add · adding → spinner · added → per-track rip
+/// progress (n/m) → ✓ Added when every track's copy has landed.
+private struct DiscoverAlbumRow: View {
+    @Environment(RipsStore.self) private var rips
+    @Environment(StreamingStore.self) private var streaming
+    @Environment(\.openURL) private var openURL
+    let hit: RipsStore.DiscoverAlbumHit
+    let index: Int
+    @State private var adding = false
+
+    /// The provisional album entry once the add has recorded it (nil until then).
+    private var addedEntry: DiscoverAddsStore.AlbumEntry? {
+        rips.discoverAdds?.albums.first { $0.albumId == hit.albumId }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            artwork
+            VStack(alignment: .leading, spacing: 2) {
+                Text(hit.title).font(.callout.weight(.semibold)).foregroundStyle(Theme.fg).lineLimit(1)
+                Text(subtitle).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
+            }
+            Spacer()
+            trailing
+        }
+        .padding(.horizontal, 8).padding(.vertical, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("discover-album-row-\(index)")
+    }
+
+    private var subtitle: String {
+        var parts = [hit.artist]
+        if let y = hit.year { parts.append(String(y)) }
+        if let n = hit.trackCount { parts.append("\(n) tracks") }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private var artwork: some View {
+        AsyncImage(url: hit.artworkUrl.flatMap(URL.init(string:))) { image in
+            image.resizable().scaledToFill()
+        } placeholder: {
+            RoundedRectangle(cornerRadius: 6).fill(Theme.border)
+                .overlay(Image(systemName: "square.stack").foregroundStyle(Theme.fgDim))
+        }
+        .frame(width: 46, height: 46)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder private var trailing: some View {
+        if let entry = addedEntry {
+            let ids = entry.trackIds ?? []
+            let done = ids.filter { rips.manifest[$0] != nil }.count
+            if !ids.isEmpty && done >= ids.count {
+                Label("Added", systemImage: "checkmark.circle.fill")
+                    .labelStyle(.iconOnly).font(.title3).foregroundStyle(.green)
+                    .accessibilityIdentifier("discover-album-add-\(index)")
+                    .help("All tracks ready")
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("\(done)/\(ids.count)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                }
+                .accessibilityIdentifier("discover-album-add-\(index)")
+            }
+        } else if adding {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Adding…").font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            .accessibilityIdentifier("discover-album-add-\(index)")
+        } else {
+            Button { add() } label: { Label("Add", systemImage: "plus") }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("discover-album-add-\(index)")
+                .help("Save this album to your Apple Music library and prepare your copy")
+        }
+    }
+
+    /// Add = library write (non-macOS) + per-track rip fan-out + provisional album. On
+    /// macOS the library write is unavailable, so open the album in Music.app (the Shazam
+    /// macOS fallback) and let the rip fan-out proceed.
+    private func add() {
+        let h = hit
+        let lib = streaming.providers.libraryContributors.first
+        #if os(macOS)
+        if (lib?.canAddToLibrary ?? false) == false, let u = h.url.flatMap(URL.init(string:)) {
+            openURL(u)
+        }
+        #endif
+        adding = true
+        Task {
+            await rips.discoverAddAlbum(h, library: lib)
+            adding = false
+        }
+    }
+}

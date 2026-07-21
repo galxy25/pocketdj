@@ -566,6 +566,7 @@ struct PocketDJApp: App {
         // entry supersedes it later (AppModel.withDiscoverAdds → collections remap).
         let discoverAdds = DiscoverAddsStore(fileURL: DiscoverAddsStore.launchURL())
         discoverAdds.onAdded = { [weak app] song in app?.injectDiscoverAdd(song) }
+        discoverAdds.onAlbumAdded = { [weak app] album in app?.injectDiscoverAlbumAdd(album) }
         app.discoverAdds = discoverAdds
         // A superseded provisional id must be rewritten EVERYWHERE it is referenced — the
         // collections AND the favorites — or a ♥ made on a Discover add silently detaches

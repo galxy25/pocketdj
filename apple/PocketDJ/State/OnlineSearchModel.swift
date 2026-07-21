@@ -154,7 +154,7 @@ final class OnlineSearchModel {
             return .album(IndexAlbum(id: h.id, artist: h.artist ?? "", name: h.title ?? "",
                                      coverArt: nil, coverArtSources: nil, genre: h.genre,
                                      year: h.year, country: nil, trackList: [], fileType: nil,
-                                     audioTracks: nil, audioDurationSec: nil), source: src)
+                                     audioTracks: nil, audioDurationSec: nil, appleMusicId: nil), source: src)
         } else {
             let src = app.source(ofSong: h.id) ?? h.source
             if let song = app.songsById[h.id] {
