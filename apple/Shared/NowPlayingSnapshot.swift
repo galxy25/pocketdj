@@ -21,6 +21,14 @@ struct NowPlayingSnapshot: Codable, Equatable {
     var coverVersion: Int
     /// The not-yet-played tail of the running set (empty for a single-track play or idle).
     var upNext: [Track]
+    /// Whether the current track is favorited — drives the widget's ♥ (heart.fill / heart) glyph.
+    /// Decode-tolerant (see `init(from:)`): a stale blob written by an OLD app build that predates
+    /// this field decodes with `false` rather than fail-decoding the whole snapshot to `.empty`.
+    var isFavorite: Bool
+    /// The current track's Apple Music catalog id when it has one (nil for vinyl / My Digital /
+    /// Studio). Carried so a widget ♥ reaches Apple Music via the owner-gated sync; a local track
+    /// without one still favorites, it just never syncs upstream.
+    var appleMusicId: String?
 
     struct Track: Codable, Equatable, Identifiable {
         /// Per-row identity (the setlist `Item.uid`), so repeats render as distinct rows.
@@ -30,9 +38,40 @@ struct NowPlayingSnapshot: Codable, Equatable {
         var artist: String
     }
 
+    init(isPlaying: Bool, hasContent: Bool, title: String, artist: String, songId: String?,
+         coverVersion: Int, upNext: [Track], isFavorite: Bool = false, appleMusicId: String? = nil) {
+        self.isPlaying = isPlaying
+        self.hasContent = hasContent
+        self.title = title
+        self.artist = artist
+        self.songId = songId
+        self.coverVersion = coverVersion
+        self.upNext = upNext
+        self.isFavorite = isFavorite
+        self.appleMusicId = appleMusicId
+    }
+
+    /// Custom decode ONLY to tolerate blobs written before `isFavorite`/`appleMusicId` existed:
+    /// the two new keys are `decodeIfPresent` so a stale snapshot from an older app build still
+    /// decodes (missing `isFavorite` → false) instead of throwing and yielding `.empty`. Every
+    /// pre-existing key stays required, exactly as the synthesized decoder had them.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isPlaying = try c.decode(Bool.self, forKey: .isPlaying)
+        hasContent = try c.decode(Bool.self, forKey: .hasContent)
+        title = try c.decode(String.self, forKey: .title)
+        artist = try c.decode(String.self, forKey: .artist)
+        songId = try c.decodeIfPresent(String.self, forKey: .songId)
+        coverVersion = try c.decode(Int.self, forKey: .coverVersion)
+        upNext = try c.decode([Track].self, forKey: .upNext)
+        isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        appleMusicId = try c.decodeIfPresent(String.self, forKey: .appleMusicId)
+    }
+
     static let empty = NowPlayingSnapshot(isPlaying: false, hasContent: false,
                                           title: "", artist: "", songId: nil,
-                                          coverVersion: 0, upNext: [])
+                                          coverVersion: 0, upNext: [],
+                                          isFavorite: false, appleMusicId: nil)
 }
 
 /// The shared App Group container the app writes and the widget reads. One place owns the

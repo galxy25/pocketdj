@@ -248,12 +248,6 @@ struct PocketDJApp: App {
         let playbackSession = PlaybackSessionStore(fileURL: PlaybackSessionStore.launchURL())
         setlistPlayer.sessionStore = playbackSession
         _playbackSession = State(initialValue: playbackSession)
-        // Bridge the Now Playing state to the widget extension (App Group snapshot + cover) and
-        // wire the widget's ⏮/⏯/⏭ buttons back to the sequencer + player. Uses the SAME art
-        // resolver as the lock-screen card. Constructed here so it publishes from first launch.
-        _widgetSync = State(initialValue: WidgetSync(
-            setlist: setlistPlayer, player: player, rips: rips, coordinator: coordinator,
-            artCandidates: { [weak app] in app?.album(forSongId: $0)?.artCandidates ?? [] }))
         // Lazy streaming cover art: resolve an album's art via the Apple Music provider
         // (recognize one of its tracks by catalog id → its artwork URL). Ready only when
         // the provider can resolve; both gated so the default build never hits the network.
@@ -538,6 +532,16 @@ struct PocketDJApp: App {
         }
         _favorites = State(initialValue: favorites)
         _favoritesSync = State(initialValue: favoritesSync)
+
+        // Bridge the Now Playing state to the widget extension (App Group snapshot + cover) and
+        // wire the widget's ⏮/⏯/⏭/♥ buttons back to the sequencer + player + favorites. Uses the
+        // SAME art resolver as the lock-screen card. Constructed AFTER `favorites` (which the ♥
+        // needs) so it publishes with the favorite state from first launch.
+        _widgetSync = State(initialValue: WidgetSync(
+            setlist: setlistPlayer, player: player, rips: rips, coordinator: coordinator,
+            artCandidates: { [weak app] in app?.album(forSongId: $0)?.artCandidates ?? [] },
+            favorites: favorites,
+            appleMusicId: { [weak app] in app?.songsById[$0]?.appleMusicId }))
 
         // ── Apple Music playlist write-back ────────────────────────────────────
         // Adding a song to a SOURCE (Apple Music) playlist writes locally and queues the
