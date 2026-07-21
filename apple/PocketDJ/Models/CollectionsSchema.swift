@@ -523,19 +523,29 @@ struct CollectionsDocument: Codable, Sendable {
     var setlists: [Setlist]           // frozen Play→realize instances (optional/back-compat)
     var folders: [PlaylistFolder]     // v3: flat playlist folders (optional/back-compat)
     var lastAddTarget: AddTarget?     // "Add-to remembers last"
+    /// The last few "Add to…" targets, most-recent first (the Recent quick-add row). ADDITIVE-
+    /// OPTIONAL by design: an older document lacking the key decodes to nil (→ [] in the store),
+    /// so it can NEVER wipe the rest of the document. Rides the SAME collections CloudSync as
+    /// `lastAddTarget` (the top-of-list entry is exactly that value), so the MRU syncs across
+    /// devices. Deduped by (kind,id) IGNORING sequenceId; capped in the store.
+    var recentAddTargets: [AddTarget]?
 
     init(schemaVersion: Int = collectionsSchemaVersion,
          pockets: [Pocket] = [], playlists: [Playlist] = [], setlists: [Setlist] = [],
-         folders: [PlaylistFolder] = [], lastAddTarget: AddTarget? = nil) {
+         folders: [PlaylistFolder] = [], lastAddTarget: AddTarget? = nil,
+         recentAddTargets: [AddTarget]? = nil) {
         self.schemaVersion = schemaVersion
         self.pockets = pockets
         self.playlists = playlists
         self.setlists = setlists
         self.folders = folders
         self.lastAddTarget = lastAddTarget
+        self.recentAddTargets = recentAddTargets
     }
 
-    enum CodingKeys: String, CodingKey { case schemaVersion, pockets, playlists, setlists, folders, lastAddTarget }
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, pockets, playlists, setlists, folders, lastAddTarget, recentAddTargets
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -548,6 +558,9 @@ struct CollectionsDocument: Codable, Sendable {
         setlists = (try? c.decode([Setlist].self, forKey: .setlists)) ?? []
         folders = (try? c.decode([PlaylistFolder].self, forKey: .folders)) ?? []
         lastAddTarget = try? c.decode(AddTarget.self, forKey: .lastAddTarget)
+        // Additive-optional: absent in any pre-F11 document → nil (the `try?` also absorbs a
+        // malformed value), so an old blob still yields all its collections intact.
+        recentAddTargets = try? c.decode([AddTarget].self, forKey: .recentAddTargets)
     }
 }
 

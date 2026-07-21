@@ -482,16 +482,21 @@ struct AddToPlaylistIntent {
         guard services.app.songsById[song.id] != nil else {
             throw PocketDJIntentError.songNotFound
         }
+        // Route through the SAME user-facing choke point the in-app "Add to…" uses
+        // (`addSong(_:to:)`) so a Siri/Shortcuts add logs exactly one History▸Activity
+        // event AND updates the Recent quick-add MRU — the low-level add(toPocket:)/
+        // add(toPlaylist:) skipped both. There's no chapter/sequence here (Siri adds to
+        // the collection, not a specific chapter), so a bare AddTarget is correct.
         if playlist.id.hasPrefix("pkt_") {
             guard services.collections.pocket(playlist.id) != nil else {
                 throw PocketDJIntentError.pocketNotFound
             }
-            services.collections.addSong(song.id, toPocket: playlist.id)
+            services.collections.addSong(song.id, to: AddTarget(kind: .pocket, id: playlist.id))
         } else {
             guard services.collections.playlist(playlist.id) != nil else {
                 throw PocketDJIntentError.playlistNotFound
             }
-            services.collections.addSong(song.id, toPlaylist: playlist.id)
+            services.collections.addSong(song.id, to: AddTarget(kind: .playlist, id: playlist.id))
         }
         return .result(dialog: "Added \(song.title) to \(playlist.title).")
     }
