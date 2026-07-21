@@ -17,35 +17,38 @@
 // and uploads:
 //   - rips/<songId>.mp3            256k audio  (PUBLIC rips bucket)
 //   - art/<albumId>.jpg            256px cover (web/catalog bucket)
-//   - rips/analysis/<songId>.json + rips/waveforms/<songId>.png (via analyzeAudio)
+// The iMac is now ONLY a STAGING node: it transcodes+uploads the mp3 and POSTs
+// /ingest-digital. Audio ANALYSIS (bpm/key/camelot + beat grid + waveform) is NO LONGER
+// computed here — /ingest-digital self-heals by offloading it to the cloud workers (SQS),
+// which fold the result back into the manifest. So digital ingest never touches Docker.
 // Manifest writes go THROUGH the rip-server's POST /ingest-digital (the live
 // in-memory manifest is the single writer — never edit rips/manifest.json directly).
 //
 // Stages are resumable & idempotent (stable content-derived ids; each stage skips
-// already-done work). Stems are NOT done here — trigger POST /backfill-stems after.
+// already-done work). Stems + analysis are NOT done here — analysis auto-enqueues on
+// ingest; trigger POST /backfill-stems after for stems.
 //
 // Usage:
 //   node scripts/index-digital-files.mjs --root "/Volumes/RipBurnMix 1/Pocket DJ" \
 //        [--source-name "My Digital"] [--artist BANKS] [--limit N] \
-//        [--no-analyze] [--no-ingest] [--no-publish] [--dry-run] [--env dev]
+//        [--no-ingest] [--no-publish] [--dry-run] [--env dev]
 // ---------------------------------------------------------------------------
 import { execFileSync } from 'node:child_process';
 import {
-  readdirSync, existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync,
+  readdirSync, existsSync, mkdirSync, writeFileSync, readFileSync, statSync,
 } from 'node:fs';
 import { join, basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { normalize } from '../.claude/skills/analog-indexer/lib/normalize.js';
-import { analyzeAudio } from './lib/audio-analyze.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // ---------------- args ----------------
 function parseArgs(argv) {
   const a = { root: null, sourceName: 'My Digital', artist: null, limit: 0, env: 'dev',
-    analyze: true, ingest: true, publish: true, dryRun: false,
+    ingest: true, publish: true, dryRun: false,
     work: join(homedir(), '.pocketdj', 'digital'),
     ripServer: process.env.RIP_SERVER_URL || 'http://127.0.0.1:8787',
     bucket: 'pocketdj-rips-011183829623', region: 'us-west-2', profile: 'levi' };
@@ -59,7 +62,7 @@ function parseArgs(argv) {
     else if (k === '--env') a.env = next();
     else if (k === '--work') a.work = next();
     else if (k === '--rip-server') a.ripServer = next();
-    else if (k === '--no-analyze') a.analyze = false;
+    else if (k === '--no-analyze') { /* accepted no-op: analysis is cloud-only now (kept so old callers don't break) */ }
     else if (k === '--no-ingest') a.ingest = false;
     else if (k === '--no-publish') a.publish = false;
     else if (k === '--dry-run') a.dryRun = true;
@@ -170,13 +173,6 @@ const SCALE = "scale='if(gt(iw,ih),256,-2)':'if(gt(iw,ih),-2,256)'"; // longest 
 async function main() {
   const W = ARGS.work;
   for (const d of ['audio', 'art']) mkdirSync(join(W, d), { recursive: true });
-  const analyzedPath = join(W, 'analyzed.jsonl');
-  const analyzedCache = new Map();
-  if (existsSync(analyzedPath)) {
-    for (const line of readFileSync(analyzedPath, 'utf8').split('\n').filter(Boolean)) {
-      try { const r = JSON.parse(line); analyzedCache.set(r.songId, r); } catch { /* skip */ }
-    }
-  }
 
   const ACCT = ARGS.bucket.split('-').pop(); // 011183829623
   const WEB_BUCKET = `pocketdj-${ARGS.env}-web-${ACCT}`;
@@ -236,11 +232,11 @@ async function main() {
     }
   }
 
-  // ---- pass 2: transcode + art + upload + analyze; build index + ingest entries ----
+  // ---- pass 2: transcode + art + upload; build index + ingest entries (analysis is CLOUD) ----
   const idxAlbums = [];
   const idxSongs = [];
   const entries = []; // for POST /ingest-digital
-  let nTranscoded = 0; let nUploaded = 0; let nAnalyzed = 0; let nArt = 0;
+  let nTranscoded = 0; let nUploaded = 0; let nArt = 0;
 
   const aws = (args) => execFileSync('aws', [...args, '--profile', ARGS.profile, '--region', ARGS.region], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   const s3size = (key, bucket) => { try { const o = JSON.parse(aws(['s3api', 'head-object', '--bucket', bucket, '--key', key])); return Number(o.ContentLength) || 0; } catch { return -1; } };
@@ -292,37 +288,22 @@ async function main() {
         catch (e) { console.error(`  ! upload failed: ${key}: ${e.message}`); continue; }
       }
 
-      // --- analyze (BPM/key/camelot + beat grid + waveform), resumable via analyzed.jsonl ---
-      let an = analyzedCache.get(t.songId) || null;
-      if (ARGS.analyze && !ARGS.dryRun && !an && bytes > 0) {
-        try {
-          const r = await analyzeAudio({ file: mp3, songId: t.songId, bucket: ARGS.bucket, region: ARGS.region, profile: ARGS.profile, withKey: true, withWaveform: true, withBeatgrid: true });
-          const got = { songId: t.songId, bpm: r.bpm, musicalKey: r.musicalKey, camelot: r.camelot, waveform: r.waveform, beatgrid: r.beatgrid, beatgridKey: r.beatgridKey };
-          // analyzeAudio is best-effort and NEVER throws — a Docker/ffmpeg failure returns all-null.
-          // Caching that would mark the song "analyzed" and skip it forever. Only cache a real result
-          // so a transient failure (Docker down) is retried on the next run.
-          if (got.bpm == null && got.musicalKey == null && !got.beatgrid && !got.waveform) {
-            console.error(`  ~ analysis empty (will retry next run): ${t.songId}`);
-          } else {
-            an = got;
-            appendFileSync(analyzedPath, JSON.stringify(an) + '\n');
-            analyzedCache.set(t.songId, an); nAnalyzed++;
-          }
-        } catch (e) { console.error(`  ! analyze failed: ${t.songId}: ${e.message}`); }
-      }
+      // --- analysis (BPM/key/camelot + beat grid + waveform) is CLOUD-ONLY now ---
+      // The entry is ingested WITHOUT analysis; POST /ingest-digital sees the missing bpm and
+      // enqueueAnalysis()es it to the cloud workers (SQS), which fold bpm/key/camelot/beatgrid/
+      // waveform back into the manifest. Browse-card bpm/key comes from scripts/fold-cloud-analysis.mjs
+      // (restamps the manifest values into digital-index.json), so these stay null at build time.
 
       // --- index song + ingest entry ---
       idxSongs.push({
         id: t.songId, albumId: alb.id, artist: t.songArtist, name: t.title,
         trackNumber: t.track, year: alb.year || null,
-        bpm: an?.bpm ?? null, key: an?.musicalKey ?? null, camelot: an?.camelot ?? null,
+        bpm: null, key: null, camelot: null,
         length: durationMs, fileType: 'mp3', pointer: { disc: t.disc, track: t.track, timestamps: null },
       });
       entries.push({
         songId: t.songId, key, source: 'digital', albumId: alb.id, ext: 'mp3',
         durationMs, bytes: bytes || null, name: t.title, artist: t.songArtist,
-        bpm: an?.bpm ?? null, musicalKey: an?.musicalKey ?? null, camelot: an?.camelot ?? null,
-        waveform: an?.waveform ?? null, beatgrid: an?.beatgrid ?? null, beatgridKey: an?.beatgridKey ?? null,
       });
       trackList.push(t.songId);
     }
@@ -344,7 +325,7 @@ async function main() {
   if (!ARGS.dryRun) writeFileSync(outIndex, JSON.stringify(index));
   else writeFileSync(join(W, 'dry-index.json'), JSON.stringify(index));   // for id-churn diffing
   console.error(`  index: ${idxAlbums.length} albums, ${idxSongs.length} songs`);
-  console.error(`  transcoded=${nTranscoded} uploaded=${nUploaded} art=${nArt} analyzed=${nAnalyzed}`);
+  console.error(`  transcoded=${nTranscoded} uploaded=${nUploaded} art=${nArt} (analysis: cloud, auto-enqueued on ingest)`);
 
   if (ARGS.dryRun) {
     for (const al of idxAlbums) {
