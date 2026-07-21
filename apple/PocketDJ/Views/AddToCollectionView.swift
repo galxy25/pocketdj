@@ -31,6 +31,13 @@ struct AddToCollectionView: View {
 
     private var isStudio: Bool { if case .studio = item { return true }; return false }
 
+    /// The Recent quick-add targets: the store's MRU, filtered to those that STILL RESOLVE
+    /// (`lastTargetLabel != nil` ⇒ the pocket/playlist still exists), capped at the top 3. The
+    /// store keeps a deeper buffer so a deleted collection dropping out still fills the row.
+    private var recentTargets: [AddTarget] {
+        Array(collections.recentAddTargets.filter { collections.lastTargetLabel($0) != nil }.prefix(3))
+    }
+
     /// The song id being added, or nil for albums / studio items. Source-playlist adds are
     /// song-only: an album has no single Apple Music track to write back, and a studio
     /// sample has no Apple Music identity at all.
@@ -73,18 +80,23 @@ struct AddToCollectionView: View {
                     }
                 }
 
-                if let last = collections.lastAddTarget, let label = collections.lastTargetLabel(last) {
-                    Section("Last used") {
-                        Button { addTo(last); dismiss() } label: {
-                            HStack {
-                                Image(systemName: last.kind == .pocket ? "rectangle.stack" : "music.note.list")
-                                    .foregroundStyle(Theme.accent2)
-                                Text(label).foregroundStyle(Theme.fg)
-                                Spacer()
-                                Image(systemName: "arrow.uturn.left").foregroundStyle(Theme.fgDim)
+                // RECENT quick-add (F11): the last few collections you added to, most-recent
+                // first — one tap re-adds. Supersedes the single "Last used" row. Filtered to
+                // targets that still RESOLVE (a deleted collection drops out) and capped at 3.
+                if !recentTargets.isEmpty {
+                    Section("Recent") {
+                        ForEach(Array(recentTargets.enumerated()), id: \.offset) { idx, target in
+                            Button { addTo(target); dismiss() } label: {
+                                HStack {
+                                    Image(systemName: target.kind == .pocket ? "rectangle.stack" : "music.note.list")
+                                        .foregroundStyle(Theme.accent2)
+                                    Text(collections.lastTargetLabel(target) ?? "").foregroundStyle(Theme.fg)
+                                    Spacer()
+                                    Image(systemName: "arrow.uturn.left").foregroundStyle(Theme.fgDim)
+                                }
                             }
+                            .accessibilityIdentifier("recent-add-\(idx)")
                         }
-                        .accessibilityIdentifier("add-last")
                     }
                 }
 

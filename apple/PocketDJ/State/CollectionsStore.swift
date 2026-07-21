@@ -12,6 +12,15 @@ final class CollectionsStore {
     private(set) var setlists: [Setlist] = []
     private(set) var folders: [PlaylistFolder] = []
     private(set) var lastAddTarget: AddTarget?
+    /// The last few "Add to…" targets, MOST-RECENT FIRST (the Recent quick-add row). Deduped by
+    /// (kind,id) IGNORING sequenceId + capped at `maxRecentTargets` — the top entry mirrors
+    /// `lastAddTarget`. Persisted on the collections document (rides the same CloudSync), so the
+    /// MRU follows the user across devices. Kept a few deeper than the UI shows (see the cap) so a
+    /// deleted collection dropping out still leaves enough resolvable entries to fill the row.
+    private(set) var recentAddTargets: [AddTarget] = []
+    /// How many recent targets we retain. The Recent row shows the top 3 that still resolve; the
+    /// surplus is a buffer so a stale/deleted entry falling off the front doesn't empty the row.
+    static let maxRecentTargets = 10
 
     /// MONOTONIC restart token for the reserved "Now Playing" setlist. Bumped on every
     /// `playNow` (even when the same list re-plays / Shuffle re-orders) so an on-screen
@@ -44,6 +53,26 @@ final class CollectionsStore {
     /// playlist/pocket vocabulary. Nil during init (decode/seed never fires it).
     var onChange: (() -> Void)?
 
+    /// A user ADD/REMOVE of an item to/from a collection — the collection-activity-history seam
+    /// (F11). Mirrors `onChange`: wired at launch to `CollectionActivityStore.record` so the store
+    /// stays UI-agnostic + unit-testable (a test sets a counting closure). Fired ONLY from the
+    /// user-facing choke points (`addSong(_:to:)` / `addAlbum(_:to:)` / `removeSong(fromPocket:)`
+    /// / `removeAlbum(fromPocket:)` / `removeNode(fromPlaylist:)`) — NEVER from source-sync
+    /// reconcile (which mutates the arrays directly) or from a decode/seed. HEART events are logged
+    /// separately from the app's `FavoritesStore.onChanged`, not here.
+    var onActivity: ((ActivityHook) -> Void)?
+
+    /// The payload of an `onActivity` emission — a user add/remove, snapshotted at fire time.
+    struct ActivityHook {
+        enum Kind: String { case add, remove }
+        var kind: Kind
+        var itemId: String
+        var itemTitle: String?
+        var collectionId: String?
+        var collectionKind: String?    // AddTarget.Kind raw ("pocket" / "playlist")
+        var collectionName: String?
+    }
+
     /// STUDIO SEAM (spec §8, wired at app init by the integrator to `StudioStore`):
     /// resolve a studio id (`smp_`/`lp_`/`ptn_`) to its display metadata — title plus
     /// the REAL lengthMs (mandatory: a 4-second loop must never count or realize as the
@@ -67,6 +96,7 @@ final class CollectionsStore {
             setlists = doc.setlists
             folders = doc.folders
             lastAddTarget = doc.lastAddTarget
+            recentAddTargets = doc.recentAddTargets ?? []
         }
         // LIFECYCLE: drop any stale reserved "Now Playing" setlist persisted last session
         // so it never shows on launch (it's a per-session, reusable scratch set).
@@ -173,7 +203,9 @@ final class CollectionsStore {
         mutatePocket(id) { $0.notes.move(fromOffsets: from, toOffset: to) }
     }
     func removeSong(_ songId: String, fromPocket id: String) {
+        let name = pocket(id)?.name
         mutatePocket(id) { $0.songIds.removeAll { $0 == songId }; $0.songRepeats[songId] = nil }
+        emitRemoveActivity(itemId: songId, collectionId: id, kind: .pocket, name: name)
     }
     /// Set a pocket member's repeat (loop) count. A count ≤ 1 clears the key.
     func setSongRepeat(_ songId: String, count: Int, inPocket id: String) {
@@ -183,7 +215,11 @@ final class CollectionsStore {
     func repeatCount(forSong songId: String, inPocket id: String) -> Int {
         CollectionMembership.normalizedRepeat(pocket(id)?.songRepeats[songId])
     }
-    func removeAlbum(_ albumId: String, fromPocket id: String) { mutatePocket(id) { $0.albumIds.removeAll { $0 == albumId } } }
+    func removeAlbum(_ albumId: String, fromPocket id: String) {
+        let name = pocket(id)?.name
+        mutatePocket(id) { $0.albumIds.removeAll { $0 == albumId } }
+        emitRemoveActivity(itemId: albumId, collectionId: id, kind: .pocket, name: name)
+    }
     func removeChildPocket(_ childId: String, fromPocket id: String) { mutatePocket(id) { $0.childPocketIds.removeAll { $0 == childId } } }
 
     /// True if making `child` a child of `parent` would create a cycle (parent is
@@ -274,7 +310,21 @@ final class CollectionsStore {
         return 1
     }
     func removeNode(_ nodeId: String, fromPlaylist id: String) {
+        // Snapshot the removed node's underlying item id + title BEFORE the mutation, so the
+        // activity row names what left (a text/cue node has no item id → fall back to nodeId).
+        let removed = playlist(id)?.sequences.lazy.compactMap { $0.children?.first { $0.nodeId == nodeId } }.first
+        let itemId = removed?.songId ?? removed?.albumId ?? removed?.pocketId ?? nodeId
+        let name = playlist(id)?.name
         mutatePlaylist(id) { pl in for i in pl.sequences.indices { pl.sequences[i].children?.removeAll { $0.nodeId == nodeId } } }
+        emitRemoveActivity(itemId: itemId, collectionId: id, kind: .playlist, name: name)
+    }
+
+    /// Log a user REMOVE to the activity history (nil-safe when the seam is unwired).
+    private func emitRemoveActivity(itemId: String, collectionId: String,
+                                    kind: AddTarget.Kind, name: String?) {
+        onActivity?(ActivityHook(kind: .remove, itemId: itemId, itemTitle: activityTitle(itemId),
+                                 collectionId: collectionId, collectionKind: kind.rawValue,
+                                 collectionName: name))
     }
 
     /// Reorder a node within its chapter's `children` by `delta` (-1 up, +1 down).
@@ -730,6 +780,29 @@ final class CollectionsStore {
 
     func setLastAddTarget(_ target: AddTarget?) { lastAddTarget = target; save() }
 
+    /// Push `target` onto the front of the recent-add MRU: dedupe by (kind,id) IGNORING
+    /// `sequenceId` (re-adding to a different chapter of the same playlist is the SAME target for
+    /// this row, and the freshest chapter wins), move-to-front, cap at `maxRecentTargets`. Mutates
+    /// the array only — the following `setLastAddTarget` save() persists it (both are called from
+    /// the `addSong(_:to:)`/`addAlbum(_:to:)` choke points, so there's exactly one write).
+    private func noteRecentTarget(_ target: AddTarget) {
+        recentAddTargets.removeAll { $0.kind == target.kind && $0.id == target.id }
+        recentAddTargets.insert(target, at: 0)
+        if recentAddTargets.count > Self.maxRecentTargets {
+            recentAddTargets.removeLast(recentAddTargets.count - Self.maxRecentTargets)
+        }
+    }
+
+    /// A display title snapshot for an added/removed item id — catalog song, catalog album, or a
+    /// Studio item (`smp_`/`lp_`/`ptn_`/`tk_`) via the studio seam. nil when nothing resolves
+    /// (the activity row then falls back to the id), so this is always safe to call.
+    private func activityTitle(_ id: String) -> String? {
+        if let s = app?.songsById[id] { return s.name }
+        if let a = app?.albumsById[id] { return a.name }
+        if StudioFactory.isStudioId(id), let info = studioLookup?(id) { return info.title }
+        return nil
+    }
+
     /// The Add-to sheet's seam. Like `addSong(toPocket:)`, the id is prefix-agnostic:
     /// `AddToCollectionView.Item.studio` routes its `smp_`/`lp_`/`ptn_` ids straight
     /// through here (spec §8) — the string-array plumbing needs no studio-specific twin.
@@ -743,14 +816,26 @@ final class CollectionsStore {
         case .playlist:
             addSong(songId, toPlaylist: target.id, sequenceId: target.sequenceId, repeatCount: repeatCount)
         }
+        noteRecentTarget(target)
         setLastAddTarget(target)
+        emitAddActivity(itemId: songId, target: target)
     }
     func addAlbum(_ albumId: String, to target: AddTarget) {
         switch target.kind {
         case .pocket:   addAlbum(albumId, toPocket: target.id)
         case .playlist: addAlbum(albumId, toPlaylist: target.id, sequenceId: target.sequenceId)
         }
+        noteRecentTarget(target)
         setLastAddTarget(target)
+        emitAddActivity(itemId: albumId, target: target)
+    }
+
+    /// Log a user ADD to the activity history (nil-safe when the seam is unwired). Resolves the
+    /// collection name from the live target so the row reads standalone even after a rename/delete.
+    private func emitAddActivity(itemId: String, target: AddTarget) {
+        onActivity?(ActivityHook(kind: .add, itemId: itemId, itemTitle: activityTitle(itemId),
+                                 collectionId: target.id, collectionKind: target.kind.rawValue,
+                                 collectionName: lastTargetLabel(target)))
     }
 
     /// "Pocket" or "Playlist › Chapter" for the remembered target — nil if it's gone.
@@ -1566,7 +1651,8 @@ final class CollectionsStore {
     private func save() {
         let doc = CollectionsDocument(schemaVersion: collectionsSchemaVersion, pockets: pockets,
                                       playlists: playlists, setlists: setlists,
-                                      folders: folders, lastAddTarget: lastAddTarget)
+                                      folders: folders, lastAddTarget: lastAddTarget,
+                                      recentAddTargets: recentAddTargets.isEmpty ? nil : recentAddTargets)
         if let data = try? CollectionsCodec.encode(doc) { try? data.write(to: fileURL, options: .atomic) }
         onChange?()
     }
@@ -1582,6 +1668,7 @@ final class CollectionsStore {
         setlists = doc.setlists
         folders = doc.folders
         lastAddTarget = doc.lastAddTarget
+        recentAddTargets = doc.recentAddTargets ?? []
         setlists.removeAll { $0.id == nowPlayingSetlistId || $0.playlistId == nowPlayingPlaylistId }
         onChange?()
     }
@@ -1597,6 +1684,7 @@ final class CollectionsStore {
         setlists = []
         folders = []
         lastAddTarget = nil
+        recentAddTargets = []
         try? FileManager.default.removeItem(at: fileURL)
         onChange?()
     }

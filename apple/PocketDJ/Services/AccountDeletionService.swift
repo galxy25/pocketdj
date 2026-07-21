@@ -40,7 +40,8 @@ final class AccountDeletionService {
     /// added here too, or its cloud copy would survive an account deletion.
     static let cloudDocKeys: [String] = [
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
-        "mix-sessions", "playback-session", "mix-decks", "discover-adds", "imported-songs",
+        "collection-activity", "mix-sessions", "playback-session", "mix-decks",
+        "discover-adds", "imported-songs",
     ]
 
     private static let log = Logger(subsystem: "com.levi.pocketdj", category: "account-deletion")
@@ -66,6 +67,7 @@ final class AccountDeletionService {
     private let favorites: FavoritesStore
     private let playStats: PlayStatsStore
     private let playHistory: PlayHistoryStore
+    private let collectionActivity: CollectionActivityStore
     private let edits: EditsStore
     private let discoverAdds: DiscoverAddsStore
     private let importedSongs: ImportedSongsStore
@@ -92,6 +94,7 @@ final class AccountDeletionService {
          favorites: FavoritesStore,
          playStats: PlayStatsStore,
          playHistory: PlayHistoryStore,
+         collectionActivity: CollectionActivityStore,
          edits: EditsStore,
          discoverAdds: DiscoverAddsStore,
          importedSongs: ImportedSongsStore,
@@ -115,6 +118,7 @@ final class AccountDeletionService {
         self.favorites = favorites
         self.playStats = playStats
         self.playHistory = playHistory
+        self.collectionActivity = collectionActivity
         self.edits = edits
         self.discoverAdds = discoverAdds
         self.importedSongs = importedSongs
@@ -172,6 +176,7 @@ final class AccountDeletionService {
         favorites.clear()
         playStats.clear()
         playHistory.clear()
+        collectionActivity.clear()
         edits.clearAll()
         discoverAdds.clear()
         importedSongs.clear()

@@ -110,6 +110,9 @@ struct PocketDJApp: App {
     /// funnels in; the storage manager's soft-cap prune orders by least-recently-played.
     @State private var playStats: PlayStatsStore
     @State private var playHistory: PlayHistoryStore
+    /// Device-local, append-only COLLECTION ACTIVITY log (F11) — add/heart/unheart/remove events
+    /// behind the History view's Activity segment. Its own synced JSON, distinct from the play log.
+    @State private var collectionActivity: CollectionActivityStore
     /// The Settings ▸ Storage prune engine: when the user sets a soft cap, a once-a-day
     /// pass evicts least-recently-played burned media until the footprint fits. Cap unset
     /// (default) ⇒ never deletes anything on its own.
@@ -299,6 +302,16 @@ struct PocketDJApp: App {
         // Append-only play TIMELINE (History mode) — distinct from the aggregate playStats above.
         let playHistory = PlayHistoryStore(fileURL: PlayHistoryStore.launchURL())
         _playHistory = State(initialValue: playHistory)
+        let collectionActivity = CollectionActivityStore(fileURL: CollectionActivityStore.launchURL())
+        _collectionActivity = State(initialValue: collectionActivity)
+        // ADD / REMOVE activity: the collections store fires `onActivity` from its user-facing
+        // add/remove choke points (never from source-sync reconcile). Record synchronously here.
+        collections.onActivity = { [weak collectionActivity] hook in
+            collectionActivity?.record(kind: hook.kind == .add ? .add : .remove,
+                                       itemId: hook.itemId, itemTitle: hook.itemTitle,
+                                       collectionId: hook.collectionId, collectionKind: hook.collectionKind,
+                                       collectionName: hook.collectionName)
+        }
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
         _storage = State(initialValue: storage)
         // ── Studio (Performance tab) stores + engines ──────────────────────────
@@ -543,7 +556,14 @@ struct PocketDJApp: App {
         // for user-originated changes (never a cloud pull or the seed), and `pushNow` is a
         // silent no-op for a non-owner or a song with no Apple Music identity — so this is
         // safe to wire unconditionally on every install.
-        favorites.onChanged = { [weak favoritesSync] entry in
+        favorites.onChanged = { [weak favoritesSync, weak collectionActivity, weak app] entry in
+            // HEART activity (F11): `onChanged` fires ONLY for user-originated toggles (never a
+            // cloud pull / seed), so this is the exact user-only choke point. Synchronous record on
+            // the main actor — NOT inside the AM-push Task — using `entry.favorited` to pick heart
+            // vs unheart. A CarPlay ♥ routes through here too (no separate CarPlay add surface).
+            collectionActivity?.record(kind: entry.favorited ? .heart : .unheart,
+                                       itemId: entry.songId,
+                                       itemTitle: app?.songsById[entry.songId]?.name)
             Task { await favoritesSync?.pushNow(entry) }
         }
         // Lock-screen ♥ (F10): the engine owns the system Now Playing card + the shared remote
@@ -668,6 +688,7 @@ struct PocketDJApp: App {
         }
         cloudSync.register("play-stats", fileURL: playStats.syncFileURL) { [weak playStats] in playStats?.reloadFromDisk() }
         cloudSync.register("play-history", fileURL: playHistory.syncFileURL) { [weak playHistory] in playHistory?.reloadFromDisk() }
+        cloudSync.register("collection-activity", fileURL: collectionActivity.syncFileURL) { [weak collectionActivity] in collectionActivity?.reloadFromDisk() }
         cloudSync.register("mix-sessions", fileURL: mixSessions.syncFileURL) { [weak mixSessions] in mixSessions?.reloadFromDisk() }
         cloudSync.register("playback-session", fileURL: playbackSession.syncFileURL)
         cloudSync.register("mix-decks", fileURL: mixDeckSession.syncFileURL)
@@ -702,7 +723,8 @@ struct PocketDJApp: App {
             cloudDatabase: CKCloudDocDatabase(),
             cloudDeleteEnabled: { !fixtureRun },
             collections: collections, favorites: favorites, playStats: playStats,
-            playHistory: playHistory, edits: edits, discoverAdds: discoverAdds,
+            playHistory: playHistory, collectionActivity: collectionActivity,
+            edits: edits, discoverAdds: discoverAdds,
             importedSongs: importedSongs, playlistWriteBack: playlistWriteBack,
             mixSessions: mixSessions, playbackSession: playbackSession,
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
@@ -765,6 +787,7 @@ struct PocketDJApp: App {
                 .environment(mixRecorder)
                 .environment(playStats)
                 .environment(playHistory)
+                .environment(collectionActivity)
                 .environment(storage)
                 .environment(studio)
                 .environment(studioEngine)

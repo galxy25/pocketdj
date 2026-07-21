@@ -650,4 +650,144 @@ final class CollectionsStoreTests: XCTestCase {
                                 isText: true, repeatCount: 5)
         XCTAssertEqual(text.shownMs, 0)
     }
+
+    // MARK: Recent-add MRU (F11 Part A)
+
+    func testRecentAddTargetsPushMoveToFrontAndDedupeByKindId() {
+        let s = store()
+        let a = s.createPocket("A"), b = s.createPocket("B")
+        let pl = s.createPlaylist("Set")
+        let seq0 = pl.sequences[0].nodeId
+        s.addSong("sng_1", to: AddTarget(kind: .pocket, id: a.id))
+        s.addSong("sng_2", to: AddTarget(kind: .pocket, id: b.id))
+        s.addAlbum("alb_1", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: seq0))
+        // Most-recent first: playlist, B, A.
+        XCTAssertEqual(s.recentAddTargets.map(\.id), [pl.id, b.id, a.id])
+        // Re-adding A moves it to the FRONT (no duplicate entry).
+        s.addSong("sng_3", to: AddTarget(kind: .pocket, id: a.id))
+        XCTAssertEqual(s.recentAddTargets.map(\.id), [a.id, pl.id, b.id])
+        XCTAssertEqual(s.recentAddTargets.count, 3)
+    }
+
+    /// Dedupe IGNORES sequenceId: re-adding to a DIFFERENT chapter of the same playlist is the same
+    /// MRU target (freshest chapter wins), never a second row.
+    func testRecentAddDedupeIgnoresSequenceId() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        let seq0 = pl.sequences[0].nodeId
+        s.addSequence("Encore", toPlaylist: pl.id)
+        let seq1 = s.playlist(pl.id)!.sequences[1].nodeId
+        s.addSong("sng_1", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: seq0))
+        s.addSong("sng_2", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: seq1))
+        XCTAssertEqual(s.recentAddTargets.count, 1)
+        XCTAssertEqual(s.recentAddTargets.first?.sequenceId, seq1)   // freshest chapter
+    }
+
+    func testRecentAddTargetsCapAtTen() {
+        let s = store()
+        var ids: [String] = []
+        for i in 0..<15 {
+            let p = s.createPocket("P\(i)"); ids.append(p.id)
+            s.addSong("sng_\(i)", to: AddTarget(kind: .pocket, id: p.id))
+        }
+        XCTAssertEqual(s.recentAddTargets.count, CollectionsStore.maxRecentTargets)
+        // The 10 MOST RECENT survive (newest first).
+        XCTAssertEqual(s.recentAddTargets.map(\.id), Array(ids.reversed().prefix(10)))
+    }
+
+    /// A source-playlist add (`addSong(_:toIndexPlaylist:)`) must NOT touch the MRU — consistent
+    /// with `lastAddTarget` (that path deliberately skips the remembered target).
+    func testSourceAddDoesNotRecordRecent() {
+        let s = store()
+        let src = SourcePlaylist(playlist: IndexPlaylist(id: "ipl_1", name: "AM Mix", songIds: []),
+                                 sourceName: "Apple Music (Local)")
+        _ = s.addSong("sng_1", toIndexPlaylist: src, appleMusicId: nil)
+        XCTAssertTrue(s.recentAddTargets.isEmpty)
+        XCTAssertNil(s.lastAddTarget)
+    }
+
+    func testRecentAddTargetsRoundTrip() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-recent-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let s1 = CollectionsStore(fileURL: url)
+        let a = s1.createPocket("A"), b = s1.createPocket("B")
+        s1.addSong("sng_1", to: AddTarget(kind: .pocket, id: a.id))
+        s1.addSong("sng_2", to: AddTarget(kind: .pocket, id: b.id))
+        let s2 = CollectionsStore(fileURL: url)
+        XCTAssertEqual(s2.recentAddTargets.map(\.id), [b.id, a.id])
+    }
+
+    /// WIPE-SAFETY: an OLD collections document lacking `recentAddTargets` decodes with every
+    /// collection intact and the MRU defaulting to [] (never a crash / never a wipe).
+    func testOldDocWithoutRecentDecodesWithCollectionsIntact() throws {
+        let old = """
+        { "schemaVersion": 7,
+          "pockets": [ { "id": "pkt_1", "name": "Soul", "songIds": ["sng_1"] } ],
+          "playlists": [], "lastAddTarget": { "kind": "pocket", "id": "pkt_1" } }
+        """
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-oldrecent-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        try Data(old.utf8).write(to: url)
+        let s = CollectionsStore(fileURL: url)
+        XCTAssertEqual(s.pocket("pkt_1")?.songIds, ["sng_1"])   // collections survived
+        XCTAssertEqual(s.lastAddTarget?.id, "pkt_1")
+        XCTAssertTrue(s.recentAddTargets.isEmpty)               // additive default
+    }
+
+    // MARK: Activity hooks (F11 Part B — CollectionsStore.onActivity)
+
+    func testAddFiresOneAddActivity() {
+        let s = store()
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        let p = s.createPocket("Soul")
+        s.addSong("sng_1", to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .add)
+        XCTAssertEqual(events.first?.itemId, "sng_1")
+        XCTAssertEqual(events.first?.collectionId, p.id)
+        XCTAssertEqual(events.first?.collectionKind, "pocket")
+        XCTAssertEqual(events.first?.collectionName, "Soul")
+    }
+
+    func testRemoveSongFiresOneRemoveActivity() {
+        let s = store()
+        let p = s.createPocket("Soul")
+        s.addSong("sng_1", toPocket: p.id)
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        s.removeSong("sng_1", fromPocket: p.id)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .remove)
+        XCTAssertEqual(events.first?.itemId, "sng_1")
+        XCTAssertEqual(events.first?.collectionKind, "pocket")
+    }
+
+    func testRemoveNodeFiresOneRemoveActivityWithUnderlyingItemId() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        s.addSong("sng_1", toPlaylist: pl.id)
+        let nodeId = s.playlist(pl.id)!.sequences[0].children!.first!.nodeId
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        s.removeNode(nodeId, fromPlaylist: pl.id)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .remove)
+        XCTAssertEqual(events.first?.itemId, "sng_1")           // underlying song id, not nodeId
+        XCTAssertEqual(events.first?.collectionKind, "playlist")
+    }
+
+    /// A source-sync RECONCILE mutates the arrays directly (not via removeSong/removeNode), so it
+    /// must fire NO activity — a catalog refresh can't spam the history.
+    func testReconcileFiresNoActivity() {
+        let s = store()
+        let p = s.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"]))
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        // Source now DROPS sng_2 and ADDS sng_3 → reconcile removes/appends directly.
+        let changed = s.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_3"])])
+        XCTAssertEqual(changed, 1)
+        XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1", "sng_3"])   // reconcile did mutate
+        XCTAssertTrue(events.isEmpty)                                 // …but fired no activity
+    }
 }

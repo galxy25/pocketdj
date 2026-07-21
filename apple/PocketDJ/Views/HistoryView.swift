@@ -12,8 +12,16 @@ import SwiftUI
 struct HistoryView: View {
     @Environment(AppModel.self) private var app
     @Environment(PlayHistoryStore.self) private var history
+    @Environment(CollectionActivityStore.self) private var activity
     @Environment(CollectionsStore.self) private var collections
     @Binding var path: NavigationPath
+
+    /// History has two timelines: song PLAYS (the existing filter/sort/paged Browser machinery) and
+    /// collection ACTIVITY (add/heart/remove — F11). A segmented control switches between them; the
+    /// Plays side is untouched. A merge was rejected because Plays rides `BrowseItem`, which is
+    /// song-centric — heart/remove rows have no clean song identity to sort/filter alongside plays.
+    enum HistoryTab: String, CaseIterable { case plays = "Plays", activity = "Activity" }
+    @State private var tab: HistoryTab = .plays
 
     /// History's own filter/sort state — distinct persistence key so it never clobbers the
     /// Browser's, defaulting to most-recently-played first.
@@ -81,16 +89,100 @@ struct HistoryView: View {
 
     @ViewBuilder private var content: some View {
         VStack(spacing: 0) {
-            // The Timeline/By-song mode picker is GONE (Levi 2026-07-18: the two reads
-            // were indistinguishable in practice) — History is always the timeline. The
-            // groupBySong plumbing stays (false forever) so the grouped engine remains
-            // one flag away if a future view wants it.
-            if browse.displayItems.isEmpty {
-                emptyState
-            } else {
-                historyList
+            Picker("History", selection: $tab) {
+                ForEach(HistoryTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal).padding(.vertical, 8)
+            .accessibilityIdentifier("history-tab-picker")
+
+            switch tab {
+            case .plays:
+                // The Timeline/By-song mode picker is GONE (Levi 2026-07-18: the two reads
+                // were indistinguishable in practice) — Plays is always the timeline. The
+                // groupBySong plumbing stays (false forever) so the grouped engine remains
+                // one flag away if a future view wants it.
+                if browse.displayItems.isEmpty {
+                    emptyState
+                } else {
+                    historyList
+                }
+            case .activity:
+                activityContent
             }
         }
+    }
+
+    // MARK: - Activity timeline (F11)
+
+    /// Activity events, NEWEST FIRST (the log is append-only oldest→newest). Its own simple list —
+    /// distinct rows per kind, an SF Symbol + relative time, tap → the item where the id resolves
+    /// to a catalog song. Deliberately outside the Browser filter/sort machinery (those are song-
+    /// play concepts); this is a plain reverse-chronological read.
+    @ViewBuilder private var activityContent: some View {
+        if activity.events.isEmpty {
+            activityEmptyState
+        } else {
+            List {
+                ForEach(activity.events.reversed()) { event in
+                    activityRow(event)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if let song = app.songsById[event.itemId] { path.append(song) } }
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    private func activityRow(_ e: CollectionActivityStore.ActivityEvent) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: e.kind.symbol)
+                .font(.system(size: 16))
+                .foregroundStyle(e.kind == .heart ? Theme.accent : Theme.accent2)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(activityHeadline(e)).font(.callout).foregroundStyle(Theme.fg).lineLimit(2)
+                Text(Self.relative(e.at)).font(.caption2).foregroundStyle(Theme.fgDim)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("activity-row")
+    }
+
+    /// "Added <item> to <collection>" / "Hearted <item>" / "Removed heart from <item>" /
+    /// "Removed <item> from <collection>", from the event's snapshots (falls back to the id).
+    private func activityHeadline(_ e: CollectionActivityStore.ActivityEvent) -> String {
+        let item = displayTitle(e)
+        let coll = e.collectionName ?? "a collection"
+        switch e.kind {
+        case .add:     return "Added \(item) to \(coll)"
+        case .heart:   return "Hearted \(item)"
+        case .unheart: return "Removed heart from \(item)"
+        case .remove:  return "Removed \(item) from \(coll)"
+        }
+    }
+
+    /// Prefer the LIVE catalog title (fresh renames), fall back to the event's snapshot, then the id.
+    private func displayTitle(_ e: CollectionActivityStore.ActivityEvent) -> String {
+        if let s = app.songsById[e.itemId] { return "“\(s.name)”" }
+        if let a = app.albumsById[e.itemId] { return "“\(a.name)”" }
+        if let t = e.itemTitle, !t.isEmpty { return "“\(t)”" }
+        return e.itemId
+    }
+
+    private var activityEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "tray.full")
+                .font(.system(size: 40)).foregroundStyle(Theme.fgDim)
+            Text("No collection activity yet").font(.headline).foregroundStyle(Theme.fg)
+            Text("Adding a song to a playlist or pocket, hearting a song, or removing one shows up here.")
+                .font(.caption).foregroundStyle(Theme.fgDim)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+        .accessibilityIdentifier("activity-empty")
     }
 
     /// The paged list: renders only the current `liveVisible` prefix of the full result set and
@@ -166,14 +258,17 @@ struct HistoryView: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
-                .accessibilityIdentifier("history-sort")
-            Button { showFilter = true } label: {
-                Image(systemName: browse.activeFilterCount > 0
-                      ? "line.3.horizontal.decrease.circle.fill"
-                      : "line.3.horizontal.decrease.circle")
+            // Sort/filter drive the Plays timeline only — hidden on the Activity segment.
+            if tab == .plays {
+                Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
+                    .accessibilityIdentifier("history-sort")
+                Button { showFilter = true } label: {
+                    Image(systemName: browse.activeFilterCount > 0
+                          ? "line.3.horizontal.decrease.circle.fill"
+                          : "line.3.horizontal.decrease.circle")
+                }
+                .accessibilityIdentifier("history-filter")
             }
-            .accessibilityIdentifier("history-filter")
         }
     }
 
