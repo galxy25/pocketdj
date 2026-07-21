@@ -9,7 +9,7 @@
 > nothing here streams — so a mix, stems and all, works in a basement with no signal. The
 > Mix engine is **app-scoped**, so a mix keeps playing while you leave the tab and come
 > back. The systems-side complement is
-> [Performance Engine [Solar system — audio-tracks popup](explore-and-discover.md#solar-system--audio-tracks-popup) (the Mix engine)](../architecture/04-performance-engine.md#7-the-mix-engine--the-two-deck-dj-board-native).
+> [the Mix engine (architecture)](../architecture/04-performance-engine.md#7-the-mix-engine--the-two-deck-dj-board-native).
 > These sections are prose-only — no screenshots captured yet.
 
 ## The Mix tab — two decks, one screen
@@ -34,11 +34,14 @@ menu** to point that deck at a **pocket** or **set list**; the two decks can sha
 hold its own. **Tap the header** (or **long-press / right-click** it) to open the **track-loader
 sheet** — a searchable picker (by **artist · title · album**) of that source's burned tracks. If the
 collection isn't burned yet, the sheet says so: *only burned songs can be mixed — burn the collection
-first.*
+first.* Tracks you've already spun this session are **hidden from the loader** by default — a
+**"Show N played"** toggle brings them back, each marked ✓ (**Settings ▸ Mix ▸ Auto-hide played
+tracks** turns the hiding off).
 
 **The header reads like a deck.** Once loaded it shows a **waveform** image, the **album artwork**,
-the **title · artist**, and a **key | BPM** chip — the Camelot key when known, otherwise the BPM — so
-each deck shows at a glance what's cued and whether the two will mix.
+the **title · artist**, and a **key + BPM** readout — the Camelot chip when known, beside the
+**measured beat-grid BPM** to one decimal (the exact number Sync beat-matches on, falling back to the
+rounded catalog BPM) — so each deck shows at a glance what's cued and whether the two will mix.
 
 **User story:** "Give me two real decks on my phone, loaded straight from the crates I already burned
 for offline — pick a pocket per deck and drop a record on each."
@@ -55,15 +58,21 @@ Under each deck's header sits its control stack:
   tab — [Cue points — tap to drop the needle](studio.md#cue-points--tap-to-drop-the-needle)), they appear right under the scrubber as up to eight **colour-coded chips** (two rows of
   four, each chip the cue's stable colour); tap one to **jump the deck straight to that cue**,
 - the **Lead · Sync · Reset** row (beat-matching — [Lead & Sync — beat-matching to a reference deck](#lead--sync--beat-matching-to-a-reference-deck); the **Stems** toggle joins it for a stemmed
-  track — [Stems II — the Mix stem decks](#stems-ii--the-mix-stem-decks-the-coloured-22-grid)),
+  track — [Stems II — the Mix stem decks](#stems-ii--the-mix-stem-decks-the-coloured-22-grid) — and
+  the **∞ loop** and **🎧 cue (PFL)** chips ride the same row, both below),
 - a **Tempo** slider — live **time-stretch** from **0.5× to 2.0×** with **pitch preserved**,
 - a **Pitch** slider — **±12 semitones** with **tempo preserved** (independent of the tempo slider),
 - a **VU meter** — a level bar above the volume slider showing how hot the deck is running, with a
   live peak-dB readout; **long-press** (iOS) / **right-click** (macOS) it to switch between a
   **PRE-fader** reading (the deck's level *before* the volume/crossfader — for gain-staging) and a
   **POST-fader** reading (what the deck actually sends to the mix, the default),
-- a **Vol** slider (0–100%),
+- a **Vol** slider — **0–200%**: past 100% it's a real **gain boost** (the value turns gold with a
+  **+dB** readout — not colour-only), backed by the deck EQ's global gain and a **master limiter**;
+  a drag **snaps to unity** as it passes 100%,
 - a **per-deck play/pause** for cueing one side on its own.
+
+Every deck slider (Tempo · Pitch · Vol) is bookended by **− / ＋ steppers**, so a value can be
+nudged one step at a time when a finger-drag is too coarse.
 
 **Reset (↺)** wipes the deck back to neutral — clears tempo, pitch, every effect and the volume trim,
 then rewinds — so you can recover a deck to a clean state in one tap. **Long-press** (iOS) /
@@ -71,6 +80,22 @@ then rewinds — so you can recover a deck to a clean state in one tap. **Long-p
 further: it **ejects the loaded track entirely** — stopping playback and returning the whole deck to
 its **empty zero state** — for when you want to start the side over from nothing, not just re-neutralise
 the track that's on it.
+
+**Loop (∞).** Right of the stem toggle sits the **∞ loop** chip. **Tap** it and the deck snaps back
+to the previous boundary and repeats a **2-unit loop** — **2 beats** when the track has a beat grid,
+**2 seconds** when it doesn't; tap again to release. **Long-press** (iOS) / **right-click** (macOS)
+opens a fixed-width popover with a **1–32** length slider plus **← →** nudges that walk the loop's
+**start** and **end** edges one unit at a time (touching any of them engages the loop — you dial
+what you can hear). Repeats are **pre-queued so the seam never clicks**, a **stem deck loops all
+four stems in sync**, and an engaged loop is treated as a **hand-mix hold** — the Auto-DJ never
+crossfades out from under it until you release.
+
+**Cue (🎧 — pre-fade listen).** Just left of Reset, the **headphones chip** sends that deck to the
+**cue channel**, so you can monitor it without touching the house mix; **long-press / right-click**
+opens its own **cue-level** slider, independent of the deck's Vol fader. The cue is a **stereo
+channel split**: **Settings ▸ Mix ▸ Cue output channel** routes the cue to one side (default
+**right**) and leaves the house mix on the other — a splitter cable gives you a booth feed. It's
+also why a recorded mix never contains what you were cueing ([Record your mix — the session recording](#record-your-mix--the-session-recording)).
 
 **User story:** "Stretch a track to match a tempo without chipmunking it, nudge its key by a few
 semitones to mix in harmonically, scrub to the drop — reset the deck clean when I want to start over,
@@ -122,6 +147,11 @@ Crucially, the match prefers each song's **MEASURED beat-grid BPM** (from the ri
 on the *exact* burned file) over the catalog's **rounded** BPM — so a sync doesn't slowly drift the
 way it would off a `120`-vs-`119.7` rounding error. **Sync** is only enabled when there's a Lead that
 isn't this deck and **both decks have a known BPM**.
+
+**See the beat — the pulse ring.** Flip on **Settings ▸ Mix ▸ Beat pulse** (off by default) and each
+deck's border **flashes on every beat** — downbeats brighter — **phase-locked to the true audio
+playhead** on the track's real measured beat grid, so even a tempo-drifting record pulses on its
+actual beats and you can eyeball-align the two decks while beat-matching.
 
 **User story:** "Pick one deck as the reference, hit Sync on the other, and have it actually lock —
 to the tempo I measured off the record, not a rounded guess — with the downbeats lined up to mix on."
@@ -184,6 +214,11 @@ Pause for a bathroom break's worth of hand-mixing → Resume → repeat until su
 **Auto mode points both decks at the collection.** The moment you're in Auto with a collection chosen,
 **both decks' load-source is set to that collection** — so when you Pause and want to hand-load more
 tracks, the track browser is already scoped to the right crate on each deck, no re-picking.
+
+**Skip — advance on your schedule.** While the Auto-DJ runs, a full-width **"Skip to next"** button
+sits under the master transport. A **single tap** crossfades to the next queued track over the
+**Settings ▸ Mix skip-fade** (default **15 s** — a deliberate, musical switch); a **double-tap** runs
+the **fast 5 s sweep**.
 
 **Run it from your pocket — the lock-screen card is mix-native.** While the Mix is what's playing,
 the **lock screen / Control Center card** shows the live deck's track **with its album cover** — and
@@ -274,7 +309,34 @@ on my phone — so I can mute, solo and remix in a venue with no bars and no ser
 
 ---
 
+## The Mix mini-panel — deck powers on the Now Playing screen
+
+You don't have to open the Mix tab to reach the DSP. The **Now Playing deck** carries a collapsible
+**"Mix" mini-panel** (a chevron header, collapsed by default) exposing **Tempo · Pitch · Gain**
+sliders (the same ranges and − / ＋ steppers as a Mix deck), the same **2×2 effects grid**, and —
+when the current track's stems are burned — a **Stems** toggle with the four mute / volume pads,
+all acting on the **track that's playing right now**.
+
+It appears **only when it can actually work**: the current track must be a **local (burned / mixable)**
+file, and no Mix-tab session may be actively playing (one DSP surface at a time). Otherwise the
+section is **hidden entirely — never greyed**. The **first control you touch** performs a
+**swap-on-touch hand-off**: the track's audio moves from the plain player into the mix DSP graph
+**at the current position** (a small "engaged" dot lights on the header), and from then on every
+tempo, pitch, gain, effect and stem move is live. The tweaks are **ephemeral** — everything resets
+to neutral on the next track, so a nudged pitch never haunts the rest of the set list.
+
+**User story:** "The song playing right now needs the vocal dropped and a little more low end —
+flip open Mix on the Now Playing screen, mute the vocal stem, ride the gain, and it all snaps back
+to normal on the next track."
+
+---
+
 ## Record your mix — the session recording
+
+Every sitting at the decks is a named **session** — a pill at the top of the Mix screen shows the
+current session's name (**tap to rename**; **long-press / right-click** for the full menu: Rename ·
+New Session · All Sessions). The toolbar **✕** files the current session away to Sessions and opens
+a fresh one.
 
 A **record button** (the ⏺ record icon) sits in the **Mix toolbar**. Tap it and it **pulses a purple→
 red gradient** while it captures the **audio of your mix** — the house output, exactly what an audience
@@ -330,14 +392,22 @@ the **Sessions** screen, so a set can be **replayed move by move** (the raw mate
 an auto-mix model). The timeline is built to actually read:
 
 - **It wraps to fill the screen** instead of scrolling forever to the right — **5 moves per row on
-  Mac, 3 on iPad** — with **arrows between the nodes** (→ along a row, then ↵ down to the next) so the
-  **left-to-right-then-down** order is unmistakable.
+  Mac, 3 on iPad** (iPhone lays the cards out one per row, top to bottom) — with **arrows between the
+  nodes** (→ along a row, then ↵ down to the next) so the **left-to-right-then-down** order is
+  unmistakable.
+- **It plays back against the clock.** A replay transport up top — **▶ / ⏸**, a **scrub slider**, and
+  a **0.5× / 1× / 2× / 4×** speed menu — walks the highlight through the moves in recorded time,
+  auto-scrolling the timeline to the current action; tapping any non-load node jumps the replay
+  playhead to that moment.
 - **Glides are one compact node, not a blur of ticks.** An auto-mix bend (or a crossfade) — which is
   thousands of tiny moves under the hood — shows as a single **"glide"** node reading **from → to**
   with its **average rate of change**, so an automated sweep reads as one gesture, while a human's
   subtler hand-moves are still captured change by change. (The **crossfader** is captured the same way.)
 - **Tap a "load" node** (long-press isn't needed — a tap) and the track's **song-metadata card** pops
   up, so you can see exactly *what* was dropped at that point in the set.
+
+A session's **played tracks** also export as a **tracklist CSV** — named after the session — from
+the session screen's toolbar, the universal hand-off to notes, a promoter, or another DJ tool.
 
 **User story:** "Open a past session and actually read it — the moves wrap across the screen in order,
 each auto-glide is one clean from→to node instead of a thousand ticks, and I can tap any track I loaded

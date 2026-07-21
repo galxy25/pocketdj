@@ -18,8 +18,8 @@ two complementary takes on the same data: the visual star map and the precise br
 The screens below follow a natural journey: **discover** (star map → solar system),
 **look up** (browser → single album), then **maintain** (edit modals, settings). Web
 screenshots are from the real local app at mobile width (402×874) unless labeled
-*desktop*; the native-only surfaces (artist discography, play history, the Browse
-filter sheet) are described in prose.
+*desktop*; the native-only surfaces (artist discography, Discover, play history, the
+Browse filter sheet) are described in prose.
 
 ## Star map — genre mode (mobile grid)
 
@@ -446,7 +446,7 @@ sorting by BPM, key, genre, year, or title behaves the same offline or online.
 
 ## Browse by Artist — the whole discography, one tap
 
-The Browser's top-level picker isn't just **Albums** and **Songs** — a third segment, **Artists** (⌘3), lists one row per distinct album-artist: name, an "N albums · M songs" count, and a representative cover pulled from their catalog. This list is always computed on-device, even when online search is active, since OpenSearch only indexes albums and songs. Tapping an artist opens an **Artist detail** screen — a header with the artist's name, the same "N albums · M songs" line, and two prominent buttons, **▶ Play all** and **🔀 Shuffle all**, that queue the artist's entire discography — every track across every one of their albums — straight into the reusable Now Playing set, either in catalog order or shuffled. Below the header, each album lists as a normal row that opens straight into that album's own detail screen. The feature is cross-platform on iPhone, iPad, and Mac, and the same on-device Artists list powers the **Artists** tab in CarPlay.
+The Browser's top-level **Show** picker isn't just **Albums** and **Songs** — a third segment, **Artists** (⌘3), lists one row per distinct album-artist: name, an "N albums · M songs" count, and a representative cover pulled from their catalog. This list is always computed on-device, even when online search is active, since OpenSearch only indexes albums and songs. Tapping an artist opens an **Artist detail** screen — a header with the artist's name, the same "N albums · M songs" line, and two prominent buttons, **▶ Play all** and **🔀 Shuffle all**, that queue the artist's entire discography — every track across every one of their albums — straight into the reusable Now Playing set, either in catalog order or shuffled. Below the header, each album lists as a normal row that opens straight into that album's own detail screen. The feature is cross-platform on iPhone, iPad, and Mac, and the same on-device Artists list powers the **Artists** tab in CarPlay.
 
 **Affordances**
 - **Artists segment (⌘3)** — a third Browser kind alongside Albums and Songs, always on-device.
@@ -459,19 +459,67 @@ The Browser's top-level picker isn't just **Albums** and **Songs** — a third s
 
 ---
 
+## Discover — search all of Apple Music, ＋ Add it to your crate
+
+The Show picker's **fourth** segment, **Discover**, turns the Browser outward: instead
+of filtering what you own, it searches the **entire Apple Music catalog**. Type a title
+into the shared search box — plus an optional **"Refine by artist"** field under the
+tabs — and results arrive from **two sources merged**: MusicKit's full-catalog search
+(when your Apple Music account is authorized) leads with its relevance ranking, and the
+rip server's search proxy fills in, so every tester gets results even without a
+subscription. A nested **Songs / Albums** sub-toggle flips between track hits and
+whole-album hits (each entry always starts on Songs); the Discover tab itself is
+remembered across launches like the other Show tabs.
+
+Every result row's trailing action tells its state: **＋ Add** for something new, a
+spinner with the live phase ("Queued," "Searching…," "Ripping…") while your copy is
+being prepared, then **▶** — playable right in the results list through the standard
+play path, with the same inline player strip the Browser rows get. An **album** ＋ Add
+fans out per-track: the row counts **n/m** as each track's copy lands, settles to a
+green **✓ Added** when all of them do, or an honest **n/m** partial marker when some
+tracks couldn't be prepared (never an eternal spinner).
+
+The ＋'s help wording is **capability-aware**, shared by the song and album rows so it
+can't overstate: on iPhone/iPad with an authorized subscription it reads *"Save this
+song/album to your Apple Music library and prepare your copy"*; on a Mac — which can't
+write the Apple Music library — an album ＋ **opens the album in Music.app** instead
+(and still prepares your copies), and a song ＋ simply *"Prepare your copy."*
+Long-press (or right-click) a ready row to **Play Next / Play Last** into the running
+Now Playing queue, or **Add to Catalog** immediately. Discover adds live as
+**provisional** catalog entries — full citizens you can play, collect, and burn — and
+when the same song or album later shows up in your synced library (matched by its
+Apple Music id, which the indexer now stamps on **albums** as well as songs), the
+provisional copy quietly folds away instead of duplicating what you own.
+
+**Affordances**
+- **Discover** — the fourth Show segment, alongside Albums / Songs / Artists.
+- **Songs / Albums** sub-toggle + **Refine by artist** — scope and narrow the catalog search.
+- **＋ Add** — save to your Apple Music library (where the device can) and prepare your
+  own copy; album adds fan out per track (n/m → ✓ Added).
+- **▶ on a ready row** — play immediately; the inline player appears under the row.
+- **Long-press a ready row** — Play Next / Play Last / Add to Catalog.
+
+**User story:** "I heard something that isn't in my crate yet — find it in the whole
+Apple Music catalog, and one ＋ makes it mine: saved to my library, my own copy
+prepared, playable right from the results."
+
+---
+
 ## History — every play, timestamped
 
-A **History** view is one shortcut away from anywhere in the app — **⌘H**, or the clock-with-arrow (⏱) icon — and opens onto a scrollable timeline of every song you've played, wherever you played it: **Browser**, **Playlist**, **Pocket**, **Album**, **Set list**, **Mix**, **Artist**. A **Timeline / By song** segmented toggle switches the whole view between one row per play event and one row per song. Each row is the same song row you already know from the Browser, with a context line underneath — "Mix · Friday Night Mix · 2h ago," relative time and all — and, in By-song mode, an "N plays" badge standing in for the timestamp. Play the same track twice within about 30 seconds — a restart, a seek back to the top — and it collapses to a single entry; that's one listen, not two.
+A **History** view is one shortcut away from anywhere in the app — **⌘H**, or the clock-with-arrow (⏱) icon — and opens onto two timelines behind a **Plays / Activity** segmented toggle. **Plays** is a scrollable timeline of every song you've played, wherever you played it: **Browser**, **Playlist**, **Pocket**, **Album**, **Set list**, **Mix**, **Artist** — one row per play event (an earlier "By song" grouping mode was retired; the timeline is the one read). Each row is the same song row you already know from the Browser, with a context line underneath — "Mix · Friday Night Mix · 2h ago," relative time and all. Play the same track twice within about 30 seconds — a restart, a seek back to the top — and it collapses to a single entry; that's one listen, not two.
 
-History runs on the Browser's own **filter & sort** machinery, so every filter and sort you already trust — genre, BPM, key, source — works here too, plus two History-only additions: a **Last played** sort (the default, most recent first) and a **date-range filter** for things like "played between May and August." The log itself is durable and append-only, written straight through relaunches, and caps at 20,000 entries so it never grows unbounded. An empty state tells you which kind of empty you're looking at — "No plays yet" for a history with nothing in it, "No plays match your filters" when the log has entries but your filters have hidden all of them.
+The Plays timeline runs on the Browser's own **filter & sort** machinery, so every filter and sort you already trust — genre, BPM, key, source — works here too, plus two History-only additions: a **Last played** sort (the default, most recent first) and a **date-range filter** for things like "played between May and August." The log itself is durable and append-only, written straight through relaunches, and caps at 20,000 entries so it never grows unbounded. An empty state tells you which kind of empty you're looking at — "No plays yet" for a history with nothing in it, "No plays match your filters" when the log has entries but your filters have hidden all of them.
+
+**Activity** is the collection side of the story: a plain newest-first feed of what you've *done* to your crate — "Added *song* to *playlist*," "Hearted *song*," "Removed heart from *song*," "Removed *song* from *pocket*" — each with its own glyph and a relative timestamp. Tapping an entry opens the song wherever it still resolves in the catalog. It's deliberately outside the filter/sort machinery (those are play concepts), so the sort and filter toolbar buttons hide while Activity is showing.
 
 **Affordances**
 - **⌘H / ⏱** — opens History from anywhere.
-- **Timeline / By song** — one row per play event, or one row per song with a play count.
-- **Last played sort** — most-recent-first, the History default.
-- **Date-range filter** — narrow the timeline to a window.
+- **Plays / Activity** — song plays, or collection activity (adds, hearts, un-hearts, removals).
+- **Last played sort** — most-recent-first, the Plays default.
+- **Date-range filter** — narrow the Plays timeline to a window.
 
-**User story:** "Show me everything I've actually played — across every crate and every surface — sorted by when, so I can find that one track I mixed in on Friday without remembering which pocket it lived in."
+**User story:** "Show me everything I've actually played — across every crate and every surface — sorted by when, so I can find that one track I mixed in on Friday without remembering which pocket it lived in — and what I've been adding and hearting while I dig."
 
 ---
 
@@ -560,12 +608,13 @@ On the Mac (and an iPad keyboard), the Browser is fully **keyboard-drivable**:
 - **↑ / ↓** move a **focus cursor** that highlights a row — across the **song list**
   *and* the **album grid/list** (the album grid walks album order linearly). It works
   **live during search**: type a query, then arrow into the results.
-- **⌘P** plays (or pauses/resumes) the **focused song**.
+- **⌥⌘P** plays (or pauses/resumes) the **focused song** (plain ⌘P belongs to the
+  Performance tab).
 - **Return** or **⌘O** **opens** the focused item — an album → its detail, a song →
   its song detail — the same destination a click reaches.
 
-Other shortcuts round it out: **⌘1 / ⌘2** Albums / Songs, **⌘L** focus search,
-**⌘V** grid/list, **⌥⌘F** Filter, **⌥⌘S** Sort.
+Other shortcuts round it out: **⌘1 / ⌘2 / ⌘3** Albums / Songs / Artists, **⌘L** focus
+search, **⌘V** grid/list, **⌥⌘F** Filter, **⌥⌘S** Sort.
 
 **User story:** "On a laptop I want to fly — Spotlight-style: type, arrow down,
-hit Return to open or ⌘P to play, hands never leaving the keyboard."
+hit Return to open or ⌥⌘P to play, hands never leaving the keyboard."

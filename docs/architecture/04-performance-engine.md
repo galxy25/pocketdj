@@ -1052,11 +1052,14 @@ rehydrate at launch **held** — audio never auto-plays.
 > **"Performance Engine,"** means the **realize pipeline** (§1–§6): pockets → playlists
 > → setlists, the pure `realize(seed)` that freezes a template into a set. The **Studio**
 > documented here is a *different* thing that happens to share the word: it is the
-> user-facing **Performance tab** — a fourth top-level tab
-> (`RootView.Section.performance = "Performance"`,
-> [`apple/PocketDJ/Views/RootView.swift`](../../apple/PocketDJ/Views/RootView.swift),
-> SF Symbol `pianokeys`) for **making your own material** — samples, loops, a step
-> sequencer, virtual instruments, and per-track cue points. The names collide everywhere
+> user-facing **Producer tab** — a top-level tab, renamed from "Performance" in 2026-07:
+> the visible `title` reads **Producer**, while the persisted token stays
+> `RootView.Section.performance = "Performance"` forever
+> ([`apple/PocketDJ/Views/RootView.swift`](../../apple/PocketDJ/Views/RootView.swift),
+> SF Symbol `pianokeys`) — for **making your own material** across **six sub-tabs**
+> (`StudioSubTab`, `PerformanceView.swift`): samples, loops, a 16-step sequencer,
+> virtual instruments, per-track cue points, and the **Demuxer** (noted just below,
+> before §8.1). The names collide everywhere
 > (`PocketDJ/Performance/` is already the realize engine's directory; a type named
 > `Performance` is taken by `RealizeEngine.swift`; `sequencer` already means the
 > `SetlistPlayer`), so the feature ships under a deliberate **`Studio` prefix**:
@@ -1071,6 +1074,22 @@ rehydrate at launch **held** — audio never auto-plays.
 > of the app but adds new device-local artifact classes (samples, loops, patterns, takes,
 > instrument packs). The PWA has no Studio UI; where a studio id reaches a shared consumer
 > the behaviour degrades gracefully (§8.6).
+
+**The sixth sub-tab — Demuxer (brief).** Producer ▸ **Demuxer**
+([`StudioDemuxView.swift`](../../apple/PocketDJ/Studio/Views/StudioDemuxView.swift) + the
+`Demux*` panel views and the engines in
+[`apple/PocketDJ/Studio/Demux/`](../../apple/PocketDJ/Studio/Demux/)) loads any audio — a
+catalog track, a studio sample/loop/instrumental, or an imported file — and demuxes it into
+time-synced metadata: an on-device dominant-**chord** timeline (`ChordDetector`, chromagram →
+staff notation / guitar shapes), a **lyrics**/speech transcript of the burned **vocals stem**
+(Apple Speech via `DemuxTranscriber`, fully on-device, with a user-triggered
+**Generate / Retry / Resume lyrics** button for tracks with no words yet; cloud
+faster-whisper words are used when the catalog already carries them), the four separated
+**stems** with live mute/solo, a **drum-pattern** detector whose bars can be sent to the
+16-step sequencer as a remix loop (`DrumPatternDetector`), **Cut Sample** (carve the loaded
+audio straight into an `smp_` sample), and chord-comping / true-melody **instrumental
+extraction** into the Instruments tab (`DemuxInstrumental`, `MelodyTracker`). Stem
+*separation* itself stays server-only (Demucs — Ch. 5 §15); the demux analyses run on-device.
 
 ### 8.1 The data layer — `StudioStore`, `StudioFolders`, `StudioModels`
 
@@ -1091,9 +1110,11 @@ records against files.
 
 ```
  pocketdj-studio.json  (Application Support, ONE versioned lenient document)
-   { schemaVersion, samples[], loops[], patterns[], takes[], cues[] }
+   { schemaVersion, samples[], loops[], patterns[], takes[], cues[], slices[], folders[], keys{} }
+     (slices → §8.7 pads · folders → sample folders below · keys → the §8.8 Camelot map)
    off-main versioned writer · flush() · launchURL() PDJ_USE_FIXTURE seam   (MixSessionStore shape)
-   ids minted by StudioFactory:  smp_ · lp_ · ptn_ · tk_  (+ uuid);  cues use cue_ (NOT a collection id)
+   ids minted by StudioFactory:  smp_ · lp_ · ptn_ · tk_  (+ uuid) = studioPrefixes (collection-riding);
+     cue_ · slc_ · sfld_ are NON-riding (never inside a collection's id arrays)
 
  StudioFamily (StudioFolders.swift):  samples · loops · sequences · takes · instruments
    userRelocatable   samples/loops/sequences/takes → TRUE   instruments → FALSE (packs always app-managed)
@@ -1122,7 +1143,7 @@ because dropping the record without deleting the file would orphan the file fore
 a deleted target) are **flagged, never auto-deleted** — the UI shows a "source removed" note
 and the artifact keeps playing from its own rendered file.
 
-The five model types are **`StudioSample`** (`source: .track(songId,startMs,endMs) | .mic |
+The core model types are **`StudioSample`** (`source: .track(songId,startMs,endMs) | .mic |
 .take(takeId)`, a non-destructive `edit`, an optional beat `grid`), **`StudioLoop`** (a
 beat-window slice with an **authoritative `frames: Int64`** count — see §8.2),
 **`StudioPattern`** (16-step rows over sample/loop targets, on-demand bounce + `bounceDirty`),
@@ -1133,7 +1154,22 @@ can't be re-sliced" and the pattern rows that "will be muted." The **"Use as sam
 take COPIES the audio file** — a sample never depends on the take file continuing to exist.
 `StudioStoreTests` cover delete-with-referrers, cue-max-8, lenient decode, and
 reconcile-with-an-unreachable-root; `StudioFoldersTests` cover family root resolution and the
-strict-shape filename discipline.
+strict-shape filename discipline. (Two later additions ride the same document: `StudioSlice`
+performance pads — §8.7 — and the `keys` detected-Camelot map — §8.8.)
+
+**Sample folders (F9).** Samples can be organized into flat, device-local **folders**:
+**`StudioSampleFolder`** (`sfld_…` id + name + `createdAt`/`updatedAt`; membership is by
+`StudioSample.folderId`, **one folder per sample**, nil ⇒ Unfiled, so a folder carries no
+member list) lives as the document's top-level `folders` list with the same per-element lossy
+decode. The Samples tab groups by folder — collapsible sections whose collapsed ids persist
+across launches — with create / rename / delete dialogs (the `PlaylistsView` folder-dialog
+precedent) and a per-sample **Move** submenu whose "New folder…" creates and files in one
+step. A folder is **pure organizational metadata**: deleting one drops its members back to
+Unfiled and never touches a sample record or audio file (the audio never moves on disk), and a
+dangling `folderId` simply reads as Unfiled. The CRUD lives on `StudioStore`
+(`createSampleFolder` / `renameSampleFolder` / `deleteSampleFolder` / `setSampleFolder`,
+mirroring `CollectionsStore`'s playlist-folder shape). Not to be confused with
+`StudioFolders.swift` — the *storage-family* root resolver below.
 
 **Storage families.** `StudioFolders` generalizes `SessionFolders` (Ch. 4 §7.12): the
 app-managed roots are `Application Support/studio/{samples,loops,sequences,takes,
@@ -1449,8 +1485,9 @@ track.
 
 **Source of truth:**
 [`apple/PocketDJ/Models/CollectionsSchema.swift`](../../apple/PocketDJ/Models/CollectionsSchema.swift)
-(`collectionsSchemaVersion = 5`, the per-element lossy `[PlaylistNode]`/`[Playlist]`
-decoders — Ch. 3 §3.1),
+(`collectionsSchemaVersion` — the studio integration was the v4→v5 bump; later, unrelated
+features have since taken it to **7** (v6 source-sync provenance, v7 `lastPlayedAt`) — and the
+per-element lossy `[PlaylistNode]`/`[Playlist]` decoders — Ch. 3 §3.1),
 [`apple/PocketDJ/State/CollectionsStore.swift`](../../apple/PocketDJ/State/CollectionsStore.swift)
 (`playableIds(...)`, `songIds(forSetlist:)` studio exclusion, `studioLookup`, the realize
 synthetic-entry helper),
@@ -1466,7 +1503,8 @@ synthetic-entry helper),
 
  INSURANCE (shipped now): per-element LOSSY decode at EVERY [PlaylistNode] site (chapter children AND nested
    `children` recursion) AND the [Playlist] list itself — one unknown-kind node drops THAT node only, never a
-   chapter/list/document (FailableBox → compactMap, CollectionsSchema.swift).  collectionsSchemaVersion = 5, no-op migration.
+   chapter/list/document (FailableBox → compactMap, CollectionsSchema.swift).  This was the v4→v5 bump, no-op migration
+   (the version has since moved on to 7 for unrelated features — Ch. 3 §3.1).
 
  PER-CONSUMER RESOLUTION (studio ids behave like TEXT nodes for anything talking to money/infra):
    SetlistPlayer playback / playNow      RESOLVED via StudioStore (local file, scope release)  ← playableIds()
@@ -1490,7 +1528,9 @@ future kinds safe is shipped now** (Ch. 3 §3.1): a **per-element lossy array de
 *every* `[PlaylistNode]` site — chapter children **and** the nested `children` recursion — and
 at the `[Playlist]` list itself, via a `FailableBox` that swallows a failed element into `nil`
 and `compactMap`s it away, so one unknown-kind node drops **that node only**, never a chapter,
-a list, or the document. `collectionsSchemaVersion` bumps to **5** with a no-op migration.
+a list, or the document. `collectionsSchemaVersion` bumped to **5** with a no-op migration (later, unrelated
+features have since taken it to **7**: v6 source-sync provenance, v7 `lastPlayedAt` —
+Ch. 3 §3.1).
 `CollectionsLossyDecodeTests` prove an unknown kind at the top level, as a chapter child, and
 as a nested grandchild all survive a decode+save round trip with siblings and other playlists
 intact.

@@ -1,29 +1,31 @@
-# Performance — The Studio
+# Producer — The Studio
 
 > Part of the [PocketDJ Product Storybook](../STORYBOOK.md). Everything else in the
 > product is about *records* — finding them, shaping them into a set, ripping, burning
 > and mixing them. **The Studio is where you make your own.** The native iPhone / iPad /
-> Mac app carries a fifth top-level tab — **Performance** (the piano-keys icon) — a
+> Mac app carries a fifth top-level tab — **Producer** (the piano-keys icon; it began
+> life as *Performance*) — a
 > little studio for your own material: **sample** any track or an external input, slice
 > beat-synced **loops**, program a 16-step **sequencer**, play seven **virtual
-> instruments** and keep the take as a **score** or an **instrumental**, and drop **cue
-> points** on any track. Samples, loops, sequences and instrumentals become **collection
+> instruments** and keep the take as a **score** or an **instrumental**, drop **cue
+> points** on any track, and **demux** any audio into lyrics, chords, a drum pattern
+> and a melody. Samples, loops, sequences and instrumentals become **collection
 > items** that live in your pockets and playlists beside real records.
 >
 > The Studio is **native-only** (the web client simply skips a studio item in a shared
 > collection) and reads the **same catalog, rips and collections** as everything else: a
 > sample is carved from the *same* rip a burn would download, a cue seeks the *same*
 > file a row ▶ plays. The systems-side complement is
-> [Performance Engine [Single-album view](explore-and-discover.md#single-album-view-albumid) (the Studio)](../architecture/04-performance-engine.md#8-the-performance-tab-studio--distinct-from-the-realize-engine-above).
+> [Performance Engine — the Studio](../architecture/04-performance-engine.md#8-the-performance-tab-studio--distinct-from-the-realize-engine-above).
 > These sections are prose-only — no screenshots captured yet.
 
-## The Performance tab — a studio in your pocket
+## The Producer tab — a studio in your pocket
 
-The native app has a **fifth top-level tab**: **Performance** (the **piano-keys** icon, beside
-Browser · Playlists · Mix · Settings), and **⌘P** jumps straight to it. That one physical key has three deliberate homes: **⌘P**
-opens Performance, **⇧⌘P** opens Playlists, and **⌥⌘P** is Browser's play-focused ▶.
+The native app has a **fifth top-level tab**: **Producer** (the **piano-keys** icon, beside
+Browser · History · Playlists · Mix · Jukebox Hero · Settings), and **⌘P** jumps straight to it. That one physical key has three deliberate homes: **⌘P**
+opens Producer, **⇧⌘P** opens Playlists, and **⌥⌘P** is Browser's play-focused ▶.
 
-Inside, a **segmented picker** across the top splits the Studio into **five sub-tabs**, and **⌘1–⌘5**
+Inside, a **segmented picker** across the top splits the Studio into **six sub-tabs**, and **⌘1–⌘6**
 step between them (scoped to this tab, so they never fight Browser's own ⌘1/⌘2):
 
 **Affordances**
@@ -32,8 +34,9 @@ step between them (scoped to this tab, so they never fight Browser's own ⌘1/�
 - **Sequencer** (⌘3, grid) — a 16-step drum-machine grid over your samples and loops.
 - **Instruments** (⌘4, piano-keys) — play and record the virtual instruments.
 - **Cues** (⌘5, flag) — set jump-to points on any track.
+- **Demuxer** (⌘6, waveform-under-a-magnifier) — take any audio apart: lyrics, chords, stems, drum pattern, melody.
 
-On a **narrow iPhone in portrait** the five segments show **just their symbols** (five text labels
+On a **narrow iPhone in portrait** the six segments show **just their symbols** (six text labels
 won't fit); a **wider** screen shows symbol *and* word. The Studio **remembers the sub-tab** you were
 last on and reopens there, and — the toolbar-overflow lesson from Playlists — its important controls
 stay **in the content**, never buried behind a `•••`.
@@ -52,7 +55,7 @@ A **sample** is a piece of audio you own — carved out of a song in your crate,
 ones already on your device — then land in the **region editor**: the song's **waveform** (drawn from
 the local file when there is one), **start and end handles**, **in / out** mark buttons you can tap
 while it auditions, and **fine nudges** (±10 ms, or ±1 beat when the song's grid is known; on iPhone
-portrait the fine controls pop into the fixed-width popover from [Export a tracklist — PocketDJ or CSV](perform-pockets-playlists-setlists.md#export-a-tracklist--pocketdj-or-csv)). How the Studio *reaches* the
+portrait the fine controls pop into the fixed-width popover from [the effects grid](mix-and-stems.md#the-effects-grid--tap-to-toggle-dial-the-strength)). How the Studio *reaches* the
 audio depends on what you've already got, and it never dead-ends:
 
 - **Burned** — it carves straight from the on-device file.
@@ -76,7 +79,7 @@ A Studio sample doesn't have to come from the built-in mic. The **Record-sample*
 
 ### More sample sources — a file, a download, or the stems
 
-Beyond a track or the microphone, a small **⤓ menu** on the Samples bar opens two more
+Beyond a track or the microphone, a small **⤓ menu** on the Samples bar opens more
 doors. **Import audio file…** opens the system file browser — pick any mp3 / m4a / wav /
 aiff / caf and it's transcoded and dropped in as a new sample (a purchased, DRM'd track is
 politely refused — it can't become a sample). **From downloaded track** is the offline
@@ -98,6 +101,17 @@ counting it out.
 live through the Studio's chain, and **none of it written into the file** until something that needs a
 finished file asks for one (a loop, a sequenced hit, or playing the sample inside a collection).
 Change an edit and the render just refreshes.
+
+### Folders — file your crate of samples
+
+A growing crate needs shelves. A **folder button** on the Samples bar (the folder-with-a-＋
+glyph) creates a named **sample folder**, and every sample's context menu grows a **Move to
+folder** submenu — pick a folder, pick **Unfiled**, or pick **New folder…** to create one and
+file the sample into it in the same gesture. Folders are **collapsible groups** in the list
+(the app remembers which you've folded, across launches), and a folder's own menu lets you
+**rename** or **delete** it — deleting a folder just un-files its samples, it never touches
+audio. Folders are purely **organizational**: the sample's file **never moves on disk**, so a
+relocated samples folder, a burn, or a sequencer row never notices you tidied up.
 
 ### Slice a sample into pads
 
@@ -145,6 +159,15 @@ own ringing tail, the classic mono-voice feel. On a **narrow iPhone** the 16 ste
 of 8** with a group separator every four steps so your thumb can find the beat; a **wide** screen
 lays all 16 in a single line. You can **bounce** a pattern to a single audio file whenever you want a
 finished loop of the whole thing (it re-bounces the moment you edit it).
+
+Each hit has a **trigger mode**, too. Long-press (or right-click) any lit step for its menu:
+flip it between **one-shot** (play once, the default) and **loop until retriggered**, and give
+it a **Fit-to-steps** span — stretch the sample to last exactly **1 / 2 / 3 / 4 / 6 / 8 / 12 /
+16 steps** (or leave it its natural length) at the pattern's tempo. A looping step wears a tiny **repeat** glyph, a fitted one a **×N** badge, and the
+off-cells a fit sweeps through carry a faint wash so its musical footprint reads at a glance.
+And a row isn't married to its sound: a **retarget** menu on the row swaps in **any other
+sample or loop** while the steps, modes and gain all stay — program the pattern once, morph
+the kit under it.
 
 It's also **forgiving of your own housekeeping**: a row whose sample or loop you later **deleted**
 shows up as a **muted "missing" row** and is simply **skipped** — never a crash — and a pattern with
@@ -246,6 +269,75 @@ the flag for the drop — and it's there, whether that track's burned on my phon
 
 ---
 
+## Demuxer — take a record apart
+
+The **sixth sub-tab** points the Studio the other way: instead of building something new, the
+**Demuxer** takes existing audio **apart**. Pick a source — a **catalog track** (burned ones
+listed first, with the same **burn-on-demand** ladder the sampler uses; a track with no
+prepared audio is honestly "nothing to demux", never a silent fetch), a piece of **Performance
+media** (a sample, loop or take), or an **imported audio file** — and it resolves to a local
+file whose 0:00 is the *song's* 0:00 (an analog album side is carved to just this song, once).
+
+**The timeline.** A scrubbable **waveform** with the **chord timeline** laid over it as colored
+blocks — the dominant chords, heard **on the device** (a chromagram detector, no server). **Tap
+a chord block** for its detail sheet: the chord as **notation** on treble and bass staves, or as
+a **guitar shape**. A transport (play/pause, restart, clock) drives it, and one shared
+**Follow** toggle keeps every panel — timeline, drum grid, score — scrolled to the same
+playhead, even while paused and scrubbing.
+
+**Stems.** Flip the **Stems** switch and the four separated parts (**drums · bass · vocals ·
+other**) become live **mute/solo rows**. Stems degrade gracefully: already **burned** → play
+now; **stemmed server-side** → one-tap download; **not stemmed yet** → create them on the
+import server (custom audio uploads your local file for separation). There is **no on-device
+separation** — Demucs runs on the server — so with no server configured the panel says so
+plainly.
+
+**Lyrics.** A catalog song with a **cloud lyrics sidecar** (whisper, transcribed from its
+vocals stem by the offload workers) fetches it automatically — timed **karaoke words** you can
+tap to jump the playhead, with **Regenerate** always one tap away. A source *without* a cloud
+sidecar gets a **Generate lyrics** button instead: it runs the **on-device transcriber over the
+burned vocals stem** (far better recognition than the full mix, which is why it asks you to
+download the stems first), words appear **as they arrive**, and the button honestly becomes
+**Regenerate**, **Retry** (nothing recognized — probably instrumental) or **Resume** (a run the
+app died in the middle of picks up where it left off).
+
+**Drum pattern.** With the stems on the device, **Extract drum pattern** listens to the drums
+(+ bass) stems and lays the hits out on a **bar-by-bar grid** — **kick · snare · perc · other**
+lanes plus a **bass** lane — on the song's *measured* downbeats when it has a beat-grid
+sidecar, an estimated grid when it doesn't. Then the remix move: **Send bar N to Sequencer**
+exports the selected bar as a real **16-step pattern**, complete with kit samples carved from
+the song itself — and from there the sequencer's **retarget** menu morphs any lane onto a
+sample cut from a *different* record.
+
+**Instrumental & melody.** Two panels turn the analysis into something you can *play*. The
+**chord-comping instrumental** needs no stems at all — it beat-quantizes the chord timeline
+into full triads on the song's grid, shown as synced **bars + a scrolling score** under the
+shared Follow. The **melody** panel needs the stems: **Extract melody** pitch-tracks the
+**vocals** stem (or "other" when there's no vocal) into a single-voice line on the same synced
+score. Either one, **Extract** hands off a real take to **Instruments ▸ Instrumentals** — edit
+it on the staff, change its sound pack, sample it, file it in a collection. And because the
+take remembers its demux source, its context menu can later **switch modes** — comping ↔
+melody — re-extracting the other reading of the same song in place.
+
+**Cut sample.** A **scissors** row drops you into the sampler's region editor over *this*
+audio — a catalog song gets the full carve flow (stem-mix included), an import or Studio item
+gets in/out points over the file — closing the loop back to the start of this chapter.
+
+**Affordances**
+- **Source picker** — burned-first tracks, Performance media, Imported audio; search across all three.
+- **Chord timeline** — on-device detection; tap a block for staves or a guitar shape.
+- **Stems switch** — live mute/solo; download or create stems on the import server.
+- **Generate lyrics** — on-device transcription from the vocals stem; cloud sidecars fetched automatically; Regenerate / Retry / Resume.
+- **Extract drum pattern** — lane grid on measured bars; **Send bar to Sequencer** with carved kit samples.
+- **Extract instrumental / melody** — chord comping (no stems) or pitch-tracked melody (stems) → a take in Instruments; comping ↔ melody switchable later.
+- **Cut sample** — the region editor over the loaded audio.
+
+**User story:** "I load the record, watch its chords roll by, solo the drums, pull one bar out
+as a pattern, extract the melody as a take I can edit on the staff — and generate the lyrics
+from its vocal stem — all off the same screen."
+
+---
+
 ## Studio in your collections & storage — where your creations live
 
 Your Studio creations are **first-class collection items**. A **sample, loop, sequence or
@@ -278,9 +370,10 @@ bridge" in some other set — they're already on the device, so there's nothing 
 push to the public cache.
 
 **Storage.** Settings ▸ Storage grows a **folder picker** for each user-relocatable family —
-**samples**, **loops**, **sequences** — plus **usage rows** for those three and for **takes** and
-**instrument packs**, and a **delete-all** for each family. **Takes and instrument packs stay
-app-managed** (no folder to lose them in), and the same safety rules as your burns apply: the Studio
+**samples**, **loops**, **sequences**, **takes** — plus **usage rows** for those four and for
+**instrument packs**, and a **delete-all** for each family. **Instrument packs stay
+app-managed** (no folder to lose them in; a take records into app storage and only *moves* to
+your folder once it's cleanly finished), and the same safety rules as your burns apply: the Studio
 **only ever counts and deletes files it wrote**, so your own audio in a folder you pointed it at is
 never touched, and it **never auto-prunes** anything you made.
 
@@ -290,7 +383,7 @@ never touched, and it **never auto-prunes** anything you made.
 - **N× repeat capsule** — tap for presets (1/2/3/4/6/8/16); also on the row's context menu.
 - **PocketDJ name** (Settings) — the artist credited on your studio rows; blank shows "Studio."
 - **Camelot key** — detected on-device when an item joins a collection, enabling Mix-deck loading and glide.
-- **Storage folder pickers** — per-family location + usage + delete-all for samples, loops, sequences.
+- **Storage folder pickers** — per-family location + usage + delete-all for samples, loops, sequences, takes.
 
 **User story:** "My loop sits in tomorrow's warmup playlist right next to real records, set to play
 twice before the set moves on, its key already worked out so it glides into whatever's next on the
