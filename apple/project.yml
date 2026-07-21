@@ -100,10 +100,13 @@ targets:
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.pocketdj.collection
-        # NOTE: no LSSupportsOpeningDocumentsInPlace key — its default (absent) is "open as a
-        # copy in the app Inbox", which is what we want (import + discard). Setting it to NO
-        # is REJECTED by the macOS archiver (only absent/YES are valid there), and this plist
-        # is shared across iOS/macOS/visionOS.
+        # Document-based apps MUST declare how they open files (else ITMS-90737 on upload).
+        # We declare in-place support: importCollectionFile() takes security-scoped access
+        # (url.startAccessingSecurityScopedResource) before collections.importAny, so an
+        # in-place URL is read correctly; we import + discard (never edit the original).
+        # YES is the only warning-clearing value valid on all three platforms — NO is REJECTED
+        # by the macOS archiver, and this plist is shared across iOS/macOS/visionOS.
+        LSSupportsOpeningDocumentsInPlace: true
     dependencies:
       - package: ZIPFoundation
       # Embed the Now Playing widget extension into the app (all supported platforms).
