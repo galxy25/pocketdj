@@ -213,7 +213,11 @@ async function main() {
   const todo = [];
   for (const s of songs) {
     const c = cache.get(s.id);
-    if (c && c.storeId) { s.appleMusicId = c.storeId; continue; }
+    // Skip a cache HIT only once it ALSO carries the album `collectionId` (added for the
+    // Discover-album dedupe). A legacy hit with storeId but no collectionId is re-resolved
+    // so the album id gets captured; its storeId is still applied meanwhile.
+    if (c && c.storeId && c.collectionId) { s.appleMusicId = c.storeId; continue; }
+    if (c && c.storeId) s.appleMusicId = c.storeId;                 // keep the song id while we re-resolve for collectionId
     if (c && !c.storeId && !args.retryMisses) continue; // known miss, skip
     todo.push(s);
   }
