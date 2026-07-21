@@ -103,6 +103,14 @@ final class PlayerEngine {
     /// `onTrackEnded`); nil ⇒ no set is running, so the commands are disabled + reject input.
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
+    /// The lock-screen / Control Center ♥ (`MPRemoteCommandCenter.likeCommand`) drives these.
+    /// Injected once at launch (mirroring `artworkURLsProvider`) from the favorites store + the
+    /// catalog: `toggleCurrentFavorite` flips the CURRENT track's favorite (resolving its Apple
+    /// Music id for the owner-gated push); `isCurrentFavorite` reports the state so the card's ♥
+    /// renders filled/outline. nil in tests that don't wire them (the command then no-ops). The
+    /// engine stays decoupled from the favorites/catalog layer — same pattern as the art provider.
+    @ObservationIgnored var toggleCurrentFavorite: (() -> Void)?
+    @ObservationIgnored var isCurrentFavorite: (() -> Bool)?
     /// The end-of-track NotificationCenter observer, re-registered per loaded item.
     private var endObserver: NSObjectProtocol?
     /// The AVAudioSession interruption observer (iOS) — re-activates + resumes after a call /
@@ -497,7 +505,25 @@ final class PlayerEngine {
             guard let self, NowPlayingArbiter.shared.isActive(self), let onPrevious = self.onPrevious else { return .commandFailed }
             onPrevious(); return .success
         }
+        // The ♥ — a SINGLE feedback toggle (not a like/dislike pair). Registered behind the SAME
+        // single-owner arbiter guard as play/pause: a second uncoordinated writer of the shared
+        // command center reproduces the documented "ghost second card" bug. Its handler flips the
+        // current track's favorite through the injected closure (nil ⇒ no-op); `isActive` (the
+        // filled-heart state) is re-pushed by `updateNowPlayingInfo` on every card write.
+        center.likeCommand.isEnabled = true
+        center.likeCommand.localizedTitle = "Favorite"
+        center.likeCommand.addTarget { [weak self] _ in
+            guard let self, NowPlayingArbiter.shared.isActive(self),
+                  let toggle = self.toggleCurrentFavorite else { return .commandFailed }
+            toggle(); return .success
+        }
     }
+
+    /// Re-push the Now Playing card so the ♥ (`likeCommand.isActive`) reflects a favorite that
+    /// changed OUTSIDE a transport event (the in-app row, the widget, an Apple Music pull). Wired
+    /// to the shared favorites observer; a plain re-run of `updateNowPlayingInfo`, which is guarded
+    /// (arbiter-owned + non-idle) so it's a no-op when this engine doesn't own the card.
+    func refreshFavoriteState() { updateNowPlayingInfo() }
 
     /// Push current track metadata + playback position to the Now Playing card. Skipped
     /// for a live stream's duration (it has none); the card still shows title + artist.
@@ -530,6 +556,10 @@ final class PlayerEngine {
         // system "Now Playing" app) and watchOS rely on it, not just the info dict's PlaybackRate.
         // Without it a phone-started track shows on the CarPlay dashboard but not in Now Playing.
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        // The lock-screen ♥ fill state — pushed on every card write (this method re-runs on each
+        // load/play/pause/seek AND on a favorite change via refreshFavoriteState). Reads through
+        // the injected closure; stays false when unwired (tests) or no current song.
+        MPRemoteCommandCenter.shared().likeCommand.isActive = isCurrentFavorite?() ?? false
     }
 
     /// Resolve + fetch the current track's cover art and attach it to the Now Playing card.

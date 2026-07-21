@@ -185,6 +185,33 @@ final class CarPlayModel {
         return UpNextItem(uid: it.uid, title: it.title, artist: it.artist, albumId: app.songsById[it.id]?.albumId)
     }
 
+    /// The current track's song id (nil when idle) — the identity every favorite op keys on.
+    /// Read straight off `queue[index]` like `nowPlaying()`, so it's correct for an Apple Music
+    /// set too (which never sets `rips.nowPlaying`).
+    private func currentSongId() -> String? {
+        let p = services.setlistPlayer
+        guard p.isRunning, p.index < p.queue.count else { return nil }
+        return p.queue[p.index].id
+    }
+
+    // MARK: - Favorite (the ♥ on the CarPlay Now Playing template)
+
+    /// Is the currently-playing track favorited? Drives the heart button's filled/outline glyph.
+    /// False when nothing is playing.
+    func isCurrentFavorite() -> Bool {
+        guard let id = currentSongId() else { return false }
+        return services.favorites.isFavorite(id)
+    }
+
+    /// Flip the current track's favorite — resolves its Apple Music catalog id (nil for vinyl /
+    /// My Digital / Studio, still favorited local-only) and calls `FavoritesStore.toggle`, whose
+    /// `onChanged` reaches Apple Music only for an owner install carrying a catalog id. A no-op
+    /// when nothing is playing.
+    func toggleCurrentFavorite() {
+        guard let id = currentSongId() else { return }
+        services.favorites.toggle(id, appleMusicId: app.songsById[id]?.appleMusicId)
+    }
+
     func removeFromQueue(uid: UUID) { services.setlistPlayer.removeUpcoming(uids: [uid]) }
     func playNext(uid: UUID) { services.setlistPlayer.moveUpcomingNext(uid: uid) }
     func moveToEnd(uid: UUID) { services.setlistPlayer.moveUpcomingToEnd(uid: uid) }

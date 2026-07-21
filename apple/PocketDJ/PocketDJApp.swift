@@ -530,6 +530,19 @@ struct PocketDJApp: App {
         favorites.onChanged = { [weak favoritesSync] entry in
             Task { await favoritesSync?.pushNow(entry) }
         }
+        // Lock-screen ♥ (F10): the engine owns the system Now Playing card + the shared remote
+        // command center, so it drives `MPRemoteCommandCenter.likeCommand`. These two closures are
+        // the ONLY favorites/catalog knowledge it gets — the current track's id comes from the
+        // engine's own `nowPlayingSongId`, its catalog id from `songsById` (nil ⇒ still favorited
+        // local-only). Same injection pattern as `artworkURLsProvider` above.
+        player.toggleCurrentFavorite = { [weak player, weak favorites, weak app] in
+            guard let player, let favorites, let songId = player.nowPlayingSongId else { return }
+            favorites.toggle(songId, appleMusicId: app?.songsById[songId]?.appleMusicId)
+        }
+        player.isCurrentFavorite = { [weak player, weak favorites] in
+            guard let player, let favorites, let songId = player.nowPlayingSongId else { return false }
+            return favorites.isFavorite(songId)
+        }
         _favorites = State(initialValue: favorites)
         _favoritesSync = State(initialValue: favoritesSync)
 
@@ -684,7 +697,7 @@ struct PocketDJApp: App {
         // One bridge instance carries the live stores to intents + entity queries.
         let intents = IntentServices(app: app, settings: settings, collections: collections,
                                      setlistPlayer: setlistPlayer, mix: mix, burns: burns,
-                                     studio: studio, rips: rips)
+                                     studio: studio, rips: rips, favorites: favorites)
         // ONBOARDING VETO (R4): Siri/Shortcuts/CarPlay cold-launch without RootView (and
         // its gate) — mutating intents must not write synced documents mid-onboarding.
         intents.onboardingIncomplete = { [weak onboarding] in !(onboarding?.isComplete ?? true) }

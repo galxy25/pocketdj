@@ -256,6 +256,47 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
+    /// F10: the Now Playing deck carries the ♥ for the CURRENT track (the reusable
+    /// FavoriteToggle, keyed favorite-toggle-<songId>). A tap flips it, does NOT disturb the
+    /// deck, and reaches disk — proven by a relaunch that decodes the persisted favorite.
+    /// (The lock-screen + CarPlay hearts are not headless-testable; verified on-device.)
+    func testNowPlayingDeckFavoriteTogglesAndPersists() throws {
+        #if os(macOS)
+        throw XCTSkip("deck favorite exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launch()
+
+        let panel = app.any("now-playing-panel")
+        XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
+
+        // The current track is "Pulse" (sng_2) — its ♥ rides the transport.
+        let heart = app.el("favorite-toggle-sng_2")
+        XCTAssertTrue(heart.waitForExistence(timeout: 8), "the deck's current track carries a ♥")
+        // Normalize: an aborted earlier run can leave it favorited on disk.
+        if heart.label == "Unfavorite" { heart.tap() }
+        XCTAssertEqual(app.el("favorite-toggle-sng_2").label, "Favorite", "starts unfavorited")
+
+        app.el("favorite-toggle-sng_2").tap()
+        XCTAssertEqual(app.el("favorite-toggle-sng_2").label, "Unfavorite", "one tap favorites the current track")
+        // The deck must not have been disturbed by the ♥ tap.
+        XCTAssertTrue(app.staticTexts["Pulse"].exists, "the ♥ tap stays on the deck")
+        attach("np-deck-favorite")
+
+        // Relaunch KEEPING the favorites document — proves the ♥ reached disk, not just view state.
+        app.terminate()
+        app.launchEnvironment["PDJ_KEEP_FIXTURE_FAVORITES"] = "1"
+        app.launch()
+        XCTAssertTrue(app.any("now-playing-panel").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.el("favorite-toggle-sng_2").waitForExistence(timeout: 8))
+        XCTAssertEqual(app.el("favorite-toggle-sng_2").label, "Unfavorite",
+                       "the ♥ was persisted and re-decoded at launch")
+        // Clean up: un-favorite so a re-run starts from the base state.
+        app.el("favorite-toggle-sng_2").tap()
+        XCTAssertEqual(app.el("favorite-toggle-sng_2").label, "Favorite")
+        #endif
+    }
+
     private func attach(_ name: String) {
         let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         att.name = name

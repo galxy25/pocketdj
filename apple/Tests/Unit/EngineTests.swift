@@ -222,3 +222,76 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(idx.songs[0].camelot, "8A")
     }
 }
+
+/// F10 lock-screen ♥ — the `MPRemoteCommandCenter.likeCommand` handler routes through the two
+/// injected closures (`toggleCurrentFavorite` / `isCurrentFavorite`), wired in PocketDJApp from the
+/// favorites store + the catalog. The command render/tap itself (MediaPlayer UI) needs on-device
+/// verification, but the closure wiring — the part with the logic — is unit-testable: invoke the
+/// closures exactly as the handler does and assert the FavoritesStore state.
+@MainActor
+final class PlayerEngineFavoriteTests: XCTestCase {
+    private func wire(_ player: PlayerEngine, _ favorites: FavoritesStore, appleMusicId: String? = nil) {
+        // Mirror PocketDJApp.init's wiring: the current song is the engine's own nowPlayingSongId;
+        // the catalog id (nil ⇒ still favorited local-only) rides the toggle for the owner push.
+        player.toggleCurrentFavorite = { [weak player, weak favorites] in
+            guard let player, let favorites, let id = player.nowPlayingSongId else { return }
+            favorites.toggle(id, appleMusicId: appleMusicId)
+        }
+        player.isCurrentFavorite = { [weak player, weak favorites] in
+            guard let player, let favorites, let id = player.nowPlayingSongId else { return false }
+            return favorites.isFavorite(id)
+        }
+    }
+
+    func testInjectedClosuresToggleTheStoreForTheCurrentTrack() {
+        let favURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-pe-fav-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: favURL) }
+        let favorites = FavoritesStore(fileURL: favURL)
+        let player = PlayerEngine()
+        wire(player, favorites, appleMusicId: "am_9")
+
+        // No current song → both closures are inert (the idle lock-screen case).
+        XCTAssertFalse(player.isCurrentFavorite?() ?? true)
+        player.toggleCurrentFavorite?()
+        XCTAssertTrue(favorites.favoriteIds.isEmpty, "a ♥ with no current track is a no-op")
+
+        // Load a track (sets nowPlayingSongId) — the URL never has to actually play for the
+        // favorite path, which keys only on the id.
+        let dummy = FileManager.default.temporaryDirectory.appendingPathComponent("none.mp3")
+        player.load(url: dummy, live: false, startMs: nil, title: "Neon", artist: "Aria", songId: "sng_9")
+
+        XCTAssertFalse(player.isCurrentFavorite?() ?? true, "starts unfavorited")
+        player.toggleCurrentFavorite?()
+        XCTAssertTrue(favorites.isFavorite("sng_9"))
+        XCTAssertTrue(player.isCurrentFavorite?() ?? false)
+        XCTAssertEqual(favorites.entry("sng_9")?.appleMusicId, "am_9",
+                       "the catalog id rides the toggle for the owner-gated push")
+
+        // Re-pushing the card (the observer's refreshFavoriteState path) must not crash and leaves
+        // the state intact.
+        player.refreshFavoriteState()
+        XCTAssertTrue(favorites.isFavorite("sng_9"))
+
+        player.toggleCurrentFavorite?()
+        XCTAssertFalse(favorites.isFavorite("sng_9"), "second tap un-favorites")
+        player.stop()
+    }
+
+    /// A track with NO Apple Music id (vinyl / My Digital / Studio) still favorites — local-only.
+    func testLocalOnlyTrackFavoritesWithNilCatalogId() {
+        let favURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-pe-fav2-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: favURL) }
+        let favorites = FavoritesStore(fileURL: favURL)
+        let player = PlayerEngine()
+        wire(player, favorites, appleMusicId: nil)
+
+        let dummy = FileManager.default.temporaryDirectory.appendingPathComponent("none.mp3")
+        player.load(url: dummy, live: false, startMs: nil, title: "Vinyl Cut", artist: "Local", songId: "vinyl_1")
+        player.toggleCurrentFavorite?()
+        XCTAssertTrue(favorites.isFavorite("vinyl_1"))
+        XCTAssertNil(favorites.entry("vinyl_1")?.appleMusicId, "local-only favorite carries no catalog id")
+        player.stop()
+    }
+}

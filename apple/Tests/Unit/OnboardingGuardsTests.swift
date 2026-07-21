@@ -73,9 +73,13 @@ final class OnboardingGuardsTests: XCTestCase {
             .appendingPathComponent("pdj-veto-studio-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: studioURL) }
         let studio = StudioStore(fileURL: studioURL)
+        let favURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-veto-fav-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: favURL) }
+        let favorites = FavoritesStore(fileURL: favURL)
         let services = IntentServices(app: app, settings: settings, collections: collections,
                                       setlistPlayer: sequencer, mix: mix, burns: burns,
-                                      studio: studio, rips: rips)
+                                      studio: studio, rips: rips, favorites: favorites)
 
         let pl = collections.createPlaylist("Set")
         collections.addSong("sng_1", toPlaylist: pl.id)
