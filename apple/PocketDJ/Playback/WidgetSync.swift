@@ -24,6 +24,12 @@ final class WidgetSync {
     /// Resolves a song id → its ordered cover-art candidate URLs (same source the lock-screen
     /// card uses: `AppModel.album(forSongId:)?.artCandidates`).
     private let artCandidates: (String) -> [URL]
+    /// Per-profile favorites store — the widget's ♥ toggles the current track here, and the
+    /// published snapshot reflects `isFavorite` from it.
+    private let favorites: FavoritesStore
+    /// Resolves a song id → its Apple Music catalog id (nil for vinyl / My Digital / Studio),
+    /// so a widget ♥ carries the id `FavoritesStore.toggle` needs for the owner-gated push.
+    private let appleMusicId: (String) -> String?
 
     private var lastPublished: NowPlayingSnapshot?
     /// Cover identity = songId + its (late-arriving) AM artwork URL — see `publish()`.
@@ -32,16 +38,21 @@ final class WidgetSync {
     private var coverToken = 0
 
     init(setlist: SetlistPlayer, player: PlayerEngine, rips: RipsStore,
-         coordinator: PlaybackCoordinator, artCandidates: @escaping (String) -> [URL]) {
+         coordinator: PlaybackCoordinator, artCandidates: @escaping (String) -> [URL],
+         favorites: FavoritesStore, appleMusicId: @escaping (String) -> String?) {
         self.setlist = setlist
         self.player = player
         self.rips = rips
         self.coordinator = coordinator
         self.artCandidates = artCandidates
+        self.favorites = favorites
+        self.appleMusicId = appleMusicId
         // Wire the widget's transport buttons → the SAME entry points the lock screen uses.
         WidgetPlaybackController.shared.toggle = { [weak self] in self?.transportToggle() }
         WidgetPlaybackController.shared.next = { [weak setlist] in setlist?.skipNext() }
         WidgetPlaybackController.shared.previous = { [weak setlist] in setlist?.skipPrevious() }
+        // The widget's ♥ flips the CURRENT track's favorite — same store the in-app control uses.
+        WidgetPlaybackController.shared.toggleFavorite = { [weak self] in self?.toggleFavoriteForCurrent() }
         // Drain a widget transport command the INSTANT it arrives (a widget click doesn't
         // foreground the app, so we can't wait for scenePhase — the Darwin notification does).
         WidgetCommandBridge.onCommand = { [weak self] in
@@ -69,6 +80,23 @@ final class WidgetSync {
         else { player.toggle() }
     }
 
+    /// Flip the CURRENT track's favorite — resolves the running song id + its Apple Music catalog
+    /// id and calls `FavoritesStore.toggle`, whose `onChanged` already reaches Apple Music when
+    /// (and only when) the user is the owner and the song carries a catalog id. The observation in
+    /// `arm()` (`favorites.favoriteIds`) then republishes the snapshot so the ♥ glyph reflects it.
+    private func toggleFavoriteForCurrent() {
+        // Prefer the live current track. If the app is mid-cold-launch with no deck restored
+        // yet (the app-was-quit widget-tap path), fall back to the snapshot the widget was
+        // actually showing when the ♥ was tapped — persisted in the App Group — so a favorite
+        // tapped while quit targets that track instead of being silently dropped.
+        let base = currentBase()
+        let snap = base.songId == nil ? NowPlayingShared.read() : nil
+        guard let songId = base.songId ?? snap?.songId else { return }
+        let catalogId = appleMusicId(songId) ?? snap?.appleMusicId
+        NPLog.trace("widgetSync toggleFavorite songId=\(songId)")
+        favorites.toggle(songId, appleMusicId: catalogId)
+    }
+
     /// Drain a transport command a widget tap dropped while the app was fully quit — call when
     /// the app becomes active (`scenePhase == .active`). Stale commands are discarded by `drain`.
     func drainPendingCommand(now: TimeInterval) {
@@ -78,6 +106,7 @@ final class WidgetSync {
         case .toggle:   transportToggle()
         case .next:     setlist.skipNext()
         case .previous: setlist.skipPrevious()
+        case .favorite: toggleFavoriteForCurrent()
         }
     }
 
@@ -97,6 +126,9 @@ final class WidgetSync {
             // missed the artwork URL arriving and drifted out of sync on play/pause.
             _ = coordinator.appleMusic.nowPlaying
             _ = coordinator.appleMusic.isPlaying
+            // A ♥ toggled ANYWHERE (widget, in-app row, an Apple Music pull) must republish so the
+            // widget's heart fills/empties — reading the derived set arms the tracking on it.
+            _ = favorites.favoriteIds
         } onChange: { [weak self] in
             Task { @MainActor in self?.publish(); self?.arm() }
         }
@@ -151,9 +183,14 @@ final class WidgetSync {
                 refreshCover(for: base.songId)
             }
         }
+        // Favorite state + the current track's Apple Music id ride the snapshot so the widget's ♥
+        // reflects the store and a widget-originated toggle carries the id the push needs.
+        let isFavorite = base.songId.map { favorites.isFavorite($0) } ?? false
+        let amCatalogId = base.songId.flatMap { appleMusicId($0) }
         let snap = NowPlayingSnapshot(isPlaying: playing, hasContent: base.hasContent,
                                       title: base.title, artist: base.artist, songId: base.songId,
-                                      coverVersion: coverVersion, upNext: base.upNext)
+                                      coverVersion: coverVersion, upNext: base.upNext,
+                                      isFavorite: isFavorite, appleMusicId: amCatalogId)
         guard snap != lastPublished else { return }
         lastPublished = snap
         NPLog.trace("widgetSync publish title=\(snap.title) playing=\(snap.isPlaying) hasContent=\(snap.hasContent) upNext=\(snap.upNext.count) coverV=\(snap.coverVersion) groupOK=\(NowPlayingShared.defaults != nil)")

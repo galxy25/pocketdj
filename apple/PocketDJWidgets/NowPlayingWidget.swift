@@ -122,9 +122,12 @@ private struct TitleBlock: View {
     }
 }
 
-/// The ⏮ ⏯ ⏭ row — each is a `Button(intent:)` so a tap runs the AudioPlaybackIntent.
+/// The ⏮ ⏯ ⏭ ♥ row — each is a `Button(intent:)` so a tap runs the AudioPlaybackIntent.
+/// The ♥ flips the current track's favorite state (tinted accent when on); a local-only track
+/// (no Apple Music id) favorites identically, it just never syncs upstream.
 private struct TransportRow: View {
     let isPlaying: Bool
+    let isFavorite: Bool
     var iconSize: CGFloat = 18
     var body: some View {
         HStack(spacing: 22) {
@@ -137,6 +140,11 @@ private struct TransportRow: View {
             Button(intent: NowPlayingNextIntent()) {
                 Image(systemName: "forward.fill")
             }
+            Button(intent: NowPlayingFavoriteIntent()) {
+                Image(systemName: isFavorite ? "heart.fill" : "heart")
+                    .foregroundStyle(isFavorite ? Color.accentColor : Color.primary)
+            }
+            .accessibilityIdentifier("widget-favorite-toggle")
         }
         .font(.system(size: iconSize, weight: .semibold))
         .buttonStyle(.plain)
@@ -180,7 +188,7 @@ private struct MediumView: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                TransportRow(isPlaying: entry.snapshot.isPlaying)
+                TransportRow(isPlaying: entry.snapshot.isPlaying, isFavorite: entry.snapshot.isFavorite)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -196,7 +204,7 @@ private struct LargeView: View {
                 TitleBlock(title: entry.snapshot.title, artist: entry.snapshot.artist)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            TransportRow(isPlaying: entry.snapshot.isPlaying, iconSize: 20)
+            TransportRow(isPlaying: entry.snapshot.isPlaying, isFavorite: entry.snapshot.isFavorite, iconSize: 20)
                 .frame(maxWidth: .infinity)
 
             if entry.snapshot.upNext.isEmpty {
@@ -245,5 +253,6 @@ extension NowPlayingSnapshot {
             .init(id: "1", songId: "a", title: "Outro", artist: "M83"),
             .init(id: "2", songId: "b", title: "Reunion", artist: "M83"),
             .init(id: "3", songId: "c", title: "Wait", artist: "M83"),
-        ])
+        ],
+        isFavorite: true, appleMusicId: nil)
 }

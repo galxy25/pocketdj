@@ -16,13 +16,15 @@ final class WidgetPlaybackController {
     /// Advance / step back in the running set (mirrors the lock-screen ⏭/⏮).
     var next: (() -> Void)?
     var previous: (() -> Void)?
+    /// Flip the CURRENT track's favorite (♥) state (mirrors the in-app `FavoriteToggle`).
+    var toggleFavorite: (() -> Void)?
 }
 
 /// Cross-process fallback: when a transport intent runs in the widget-extension process (the
 /// app was fully quit), it can't reach the live `WidgetPlaybackController`, so it drops the
 /// command into the shared App Group and the app drains it the moment it next becomes active.
 enum WidgetCommandChannel {
-    enum Command: String { case toggle, next, previous }
+    enum Command: String { case toggle, next, previous, favorite }
     private static let key = "pendingTransportCommand"
     private static let atKey = "pendingTransportCommandAt"
 
@@ -84,6 +86,7 @@ private func dispatchWidgetTransport(_ command: WidgetCommandChannel.Command) {
     case .toggle:   inProcess = c.toggle
     case .next:     inProcess = c.next
     case .previous: inProcess = c.previous
+    case .favorite: inProcess = c.toggleFavorite
     }
     // Which PROCESS an intent ran in is the crux of widget-button debugging: in the app
     // process the closure is wired (direct drive); in the widget process it's nil → the
@@ -115,6 +118,15 @@ struct NowPlayingPreviousIntent: AudioPlaybackIntent {
     static var title: LocalizedStringResource = "Previous Track"
     @MainActor func perform() async throws -> some IntentResult {
         dispatchWidgetTransport(.previous)
+        return .result()
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingFavoriteIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "Favorite"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.favorite)
         return .result()
     }
 }
