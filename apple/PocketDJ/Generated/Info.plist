@@ -41,6 +41,8 @@
 	<string>1</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>PocketDJAppleMusicEnabled</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
