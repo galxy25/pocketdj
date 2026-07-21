@@ -158,10 +158,14 @@ final class CollectionActivityStore {
     }
 
     /// Wipe the log (account deletion / clear history). Keeps the install identity.
+    /// Deletes the on-disk document entirely (no residual empty-but-present JSON) so the
+    /// AccountDeletionService "each store removes its persisted file" contract holds — the
+    /// same true no-residual wipe as CollectionsStore/FavoritesStore.clear(). `removeItem`
+    /// swallows a missing file exactly like `decode`/`save` swallow their I/O errors.
     func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
         events = []
         revision &+= 1
-        save()
     }
 
     // MARK: - Internals
@@ -176,14 +180,27 @@ final class CollectionActivityStore {
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }
     }
 
-    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
-    /// (whole-document LWW). Adopts the cloud doc's installId too, like PlayHistoryStore.
+    /// Re-adopt the on-disk document after CloudSyncService pulled a newer cloud copy.
+    ///
+    /// DELIBERATELY DIVERGES from PlayHistoryStore's whole-document LWW replace: this is an
+    /// APPEND-ONLY, aggregate-free EVENT log, so a wholesale replace would let device B's log
+    /// OVERWRITE device A's local events (a real user add/heart/remove silently lost). Instead we
+    /// UNION the disk doc's events into the in-memory log by event id (idempotent — re-importing
+    /// the same log is a no-op), keep ALL of them, and re-sort chronologically. This is strictly
+    /// better than LWW here (no lost events) and O(n). We keep our OWN installId (this install
+    /// continues to exist and merges peers in — mirrors `merge(with:)`, which also leaves it be),
+    /// and we `save()` so the merged log is durable and rides the next push back up (the LWW
+    /// reload can skip the save because it only re-reads what's already on disk; the union produces
+    /// a superset that isn't yet persisted).
     func reloadFromDisk() {
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
-        events = doc.events
-        installId = doc.installId
+        var byId = Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for e in doc.events where byId[e.id] == nil { byId[e.id] = e }
+        events = byId.values.sorted { $0.at < $1.at }
+        if events.count > Self.maxEvents { trimToCap() }
         revision &+= 1
+        save()
     }
 }
 

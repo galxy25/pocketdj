@@ -790,4 +790,45 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(s.pocket(p.id)?.songIds, ["sng_1", "sng_3"])   // reconcile did mutate
         XCTAssertTrue(events.isEmpty)                                 // …but fired no activity
     }
+
+    /// FIX 1: the iOS-27 App-Intent add path now routes through the `addSong(_:to:)` choke point
+    /// (AddTarget) — the SAME call `AddToPlaylistIntent.perform()` makes — so a Siri/Shortcuts add
+    /// emits exactly one add activity AND updates the Recent MRU + lastAddTarget, exactly like an
+    /// in-app add (the old low-level add(toPlaylist:)/add(toPocket:) path did neither).
+    func testIntentAddPathFiresActivityAndUpdatesMRU() {
+        let s = store()
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        let pl = s.createPlaylist("Warmup")
+        // Exactly the call the intent's playlist branch now makes (no chapter → bare AddTarget).
+        s.addSong("sng_1", to: AddTarget(kind: .playlist, id: pl.id))
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .add)
+        XCTAssertEqual(events.first?.itemId, "sng_1")
+        XCTAssertEqual(events.first?.collectionId, pl.id)
+        XCTAssertEqual(events.first?.collectionKind, "playlist")
+        XCTAssertEqual(s.recentAddTargets.first?.id, pl.id)   // MRU updated
+        XCTAssertEqual(s.lastAddTarget?.id, pl.id)
+        XCTAssertTrue(s.playlist(pl.id, contains: "sng_1"))   // song actually added
+    }
+
+    /// FIX 5: removing a nested child pocket from its parent is a user removal of an item from a
+    /// collection, so it fires exactly one remove activity (itemId = child id, itemTitle = its
+    /// name, collection = the parent) — like removeSong/removeAlbum/removeNode.
+    func testRemoveChildPocketFiresOneRemoveActivity() {
+        let s = store()
+        let parent = s.createPocket("Parent")
+        let child = s.createPocket("Child")
+        XCTAssertTrue(s.addChildPocket(child.id, toPocket: parent.id))
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        s.removeChildPocket(child.id, fromPocket: parent.id)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .remove)
+        XCTAssertEqual(events.first?.itemId, child.id)
+        XCTAssertEqual(events.first?.itemTitle, "Child")       // the child pocket's name
+        XCTAssertEqual(events.first?.collectionId, parent.id)  // scoped to the parent
+        XCTAssertEqual(events.first?.collectionKind, "pocket")
+        XCTAssertEqual(events.first?.collectionName, "Parent")
+    }
 }

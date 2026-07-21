@@ -220,7 +220,16 @@ final class CollectionsStore {
         mutatePocket(id) { $0.albumIds.removeAll { $0 == albumId } }
         emitRemoveActivity(itemId: albumId, collectionId: id, kind: .pocket, name: name)
     }
-    func removeChildPocket(_ childId: String, fromPocket id: String) { mutatePocket(id) { $0.childPocketIds.removeAll { $0 == childId } } }
+    /// Remove a nested child pocket from its parent — a user removal of an item from a
+    /// collection, so it logs one remove activity like removeSong/removeAlbum/removeNode
+    /// (itemId = the child pocket id, itemTitle = its name, collection = the parent).
+    func removeChildPocket(_ childId: String, fromPocket id: String) {
+        let parentName = pocket(id)?.name
+        let childName = pocket(childId)?.name   // the child pocket itself survives; only the ref goes
+        mutatePocket(id) { $0.childPocketIds.removeAll { $0 == childId } }
+        emitRemoveActivity(itemId: childId, collectionId: id, kind: .pocket,
+                           name: parentName, itemTitle: childName)
+    }
 
     /// True if making `child` a child of `parent` would create a cycle (parent is
     /// reachable from child via childPocketIds).
@@ -320,9 +329,13 @@ final class CollectionsStore {
     }
 
     /// Log a user REMOVE to the activity history (nil-safe when the seam is unwired).
+    /// `itemTitle` overrides the catalog snapshot for items the catalog can't name (e.g. a
+    /// child pocket id, which resolves to no catalog song); nil ⇒ resolve via `activityTitle`.
     private func emitRemoveActivity(itemId: String, collectionId: String,
-                                    kind: AddTarget.Kind, name: String?) {
-        onActivity?(ActivityHook(kind: .remove, itemId: itemId, itemTitle: activityTitle(itemId),
+                                    kind: AddTarget.Kind, name: String?,
+                                    itemTitle: String? = nil) {
+        onActivity?(ActivityHook(kind: .remove, itemId: itemId,
+                                 itemTitle: itemTitle ?? activityTitle(itemId),
                                  collectionId: collectionId, collectionKind: kind.rawValue,
                                  collectionName: name))
     }
@@ -832,10 +845,21 @@ final class CollectionsStore {
 
     /// Log a user ADD to the activity history (nil-safe when the seam is unwired). Resolves the
     /// collection name from the live target so the row reads standalone even after a rename/delete.
+    /// Uses the PLAIN collection name (not `lastTargetLabel`'s "› Chapter" form) so an ADD and a
+    /// REMOVE of the same list read consistently ("Added X to Set" / "Removed X from Set").
     private func emitAddActivity(itemId: String, target: AddTarget) {
         onActivity?(ActivityHook(kind: .add, itemId: itemId, itemTitle: activityTitle(itemId),
                                  collectionId: target.id, collectionKind: target.kind.rawValue,
-                                 collectionName: lastTargetLabel(target)))
+                                 collectionName: plainCollectionName(target)))
+    }
+
+    /// The PLAIN collection name (pocket/playlist `.name`, no chapter suffix) for a target — the
+    /// shared source both ADD and REMOVE activity rows name the list from (FIX 4). nil if it's gone.
+    private func plainCollectionName(_ target: AddTarget) -> String? {
+        switch target.kind {
+        case .pocket:   return pocket(target.id)?.name
+        case .playlist: return playlist(target.id)?.name
+        }
     }
 
     /// "Pocket" or "Playlist › Chapter" for the remembered target — nil if it's gone.

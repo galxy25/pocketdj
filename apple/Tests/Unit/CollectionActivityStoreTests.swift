@@ -140,4 +140,42 @@ final class CollectionActivityStoreTests: XCTestCase {
         XCTAssertEqual(store.events.count, 2)
         XCTAssertEqual(store.events.last?.kind, .heart)
     }
+
+    /// FIX 2: a CloudSync pull lands device B's rival log on disk that does NOT carry device A's
+    /// local event. reloadFromDisk must UNION (keep BOTH the local and the disk-only events),
+    /// never wholesale-replace (which would silently lose device A's local add/heart/remove).
+    func testReloadFromDiskUnionsRivalEventsNotReplaces() throws {
+        let (store, url) = makeStore()
+        // Device A's local-only event (in memory + on disk).
+        store.record(kind: .add, itemId: "sng_A", collectionName: "Set", at: 1_000)
+        // Simulate a cloud pull overwriting the file with device B's log — a DIFFERENT event that
+        // does not include device A's local one.
+        let rival = CollectionActivityStore.ActivityEvent(
+            id: UUID(), at: 2_000, kind: .heart, itemId: "sng_B",
+            itemTitle: nil, collectionId: nil, collectionKind: nil, collectionName: nil)
+        let diskDoc = CollectionActivityStore.Document(installId: "device-b", events: [rival])
+        try JSONEncoder().encode(diskDoc).write(to: url, options: .atomic)
+
+        store.reloadFromDisk()
+        // UNION, not replace: device A's local event survives AND device B's rival is adopted,
+        // re-sorted chronologically.
+        XCTAssertEqual(store.events.count, 2)
+        XCTAssertEqual(store.events.map(\.itemId), ["sng_A", "sng_B"])
+        // The union is persisted back so it rides the next push up.
+        let reloaded = CollectionActivityStore(fileURL: url)
+        XCTAssertEqual(reloaded.events.map(\.itemId), ["sng_A", "sng_B"])
+    }
+
+    /// FIX 3: clear() deletes the persisted file entirely (no residual empty JSON), matching the
+    /// AccountDeletionService "each store removes its file" contract, and keeps the install id.
+    func testClearRemovesPersistedFile() {
+        let (store, url) = makeStore()
+        store.record(kind: .add, itemId: "sng_1", at: 1_000)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        let install = store.installId
+        store.clear()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))   // no residual file
+        XCTAssertTrue(store.events.isEmpty)
+        XCTAssertEqual(store.installId, install)
+    }
 }
