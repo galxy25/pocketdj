@@ -21,6 +21,11 @@ A **tab bar** (`CPTabBarTemplate`) with five tabs:
 (phone or CarPlay) because the engines set `MPNowPlayingInfoCenter.playbackState`. Its **Up Next**
 button shows the running queue; tap a row to **Play now / Remove / Play next / Move to end**
 ("Play now" shifts playback straight to that exact queue row and returns to the Now Playing card).
+The card also carries a **♥ favorite** toggle (a `CPNowPlayingImageButton`, `heart` /
+`heart.fill` — CarPlay buttons are immutable, so a state change rebuilds the whole
+`nowPlayingButtons` array) that flips the current track's favorite through the same shared
+`IntentServices` closure the in-app card and the lock-screen `likeCommand` use — so a ♥ set
+in the car reflects everywhere and, for the owner, rides the Apple Music sync.
 
 Everything plays through the same unified sequencer the phone uses (via `IntentServices`), so the
 head unit's `CPNowPlayingTemplate` and the phone stay in sync. Playing any playlist/pocket/artist

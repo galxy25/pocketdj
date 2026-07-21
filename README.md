@@ -97,6 +97,11 @@ way, take the whole thing offline.
   clickable **waveform**) to a cache so every later play is instant, from anywhere.
 - **Stream.** Catalog songs matched to **Apple Music** stream directly from your
   subscription; **⤓ Download** saves any track to a location you choose.
+- **Discover & add.** Search the **Apple Music catalog** by **song _or_ album** and
+  **＋ Add** the result into your crate. Adding a song rips just that track; adding an
+  **album** fans out a **per-track rip** of every song (no Apple Music subscription
+  needed — the rip server expands the album's tracklist itself) and materializes a
+  provisional album that the real indexed album later supersedes by shared catalog id.
 - **Burn it offline.** **Burn** a song, a setlist, or a whole collection to a
   **folder you choose** (or app storage) for fully-offline playback — background
   downloads survive app suspension, and the burn includes per-song cuts **and the
@@ -114,6 +119,19 @@ PocketDJ is built to *perform* a crate, not just browse it:
   per-item notes. Any collection can be **Ripped**, **Burned**, or **Stemified** in
   one action.
 
+The **Playlists screen** splits into **Yours** and **Shared** tabs — your own
+collections versus the ones mirrored from your sources' playlists, where each source
+**group collapses and remembers** its open/closed state. **Sort** either tab by
+**Recently played**, **A–Z**, or **Last updated** (your choice is remembered); playing
+a saved setlist also stamps its **parent** playlist's "recently played", and that
+recently-played history rides your **per-profile** iCloud collection document so it
+follows you across devices.
+
+- **♥ Favorite** any song, and the heart is everywhere the music is — the in-app
+  **Now Playing** card, the **lock screen / Control Center** (a like-style toggle), the
+  **Now Playing widget**, and **CarPlay**. Favorites are per-profile and, when you're
+  the owner, sync two-way with your Apple Music library.
+
 ## Mix — two decks, in your pocket
 
 The native app's **Mix** tab is a real two-deck DJ console driven by a first-party
@@ -129,6 +147,12 @@ audio engine (no third-party SDK):
   each track's **measured beat grid** over the catalog BPM.
 - **Auto-Mix (auto-DJ).** Flip to **Auto**, pick a collection, and PocketDJ mixes it
   end-to-end across the two decks with timed crossfades, loading the next track ahead.
+
+**Mix from Now Playing.** When a mixable **local** track is playing (and no full Mix
+session is running), the **Now Playing** card reveals a **mini mixer** — PocketDJ
+**swaps its plain player for the Mix DSP engine on your first touch**, giving you
+**stems, effects, tempo, pitch, and gain** for the current track without leaving the
+player. It resets for each new song.
 
 ### Stems
 
@@ -146,6 +170,21 @@ Songs can be separated into four **stems** — **vocals · drums · bass · othe
 Stems are created server-side (a **Stemify** action) and **burned locally** for
 playback, so stem mixing — like everything else — works fully offline.
 
+## Produce — the Studio
+
+The native app's **Producer** tab is a small studio (samples, beat-synced loops, a
+16-step sequencer, MIDI instruments, cue points) plus the **Demux** workbench. Two
+things you can do there:
+
+- **Extract an instrumental.** In **Demux**, turn any track into a playable
+  instrumental — either a **beat-quantized chord comping** (chords played in time on
+  the song's grid) or an **on-device true-melody** line (pitch-tracked note-for-note),
+  with a **long-press / right-click** to switch between them. Its **follow-score**
+  scrolls in sync right alongside the drum pattern.
+- **Organize your samples.** The **Samples** view supports **folders** — create,
+  rename, and delete them, and **move** samples in (an always-present *Unfiled*
+  section holds the rest).
+
 ## Take it with you
 
 Everything in the web app lives in your device's local storage — no account, no
@@ -161,7 +200,10 @@ tracklist, length, explicit flag, lyrics, and mood/sentiment keywords. Separate
 stages analyze the actual audio to fill in **BPM, musical key, Camelot code,
 per-segment timestamps**, a **beat grid** (downbeats, for sync), and **stems**;
 **digital** libraries are imported straight from an **Apple Music** (iTunes)
-`Library.xml`. Anything a stage can't determine stays blank and is editable in the
+`Library.xml`, and loose **raw audio files** ("My Digital") are ingested by *staging*
+the audio to the cloud — the iMac only transcodes and uploads, and the **cloud workers**
+run the BPM / key / beat-grid / waveform analysis, so digital ingest never needs a local
+audio toolchain. Anything a stage can't determine stays blank and is editable in the
 app. See [`.claude/skills/analog-indexer/SKILL.md`](.claude/skills/analog-indexer/SKILL.md).
 
 ## Privacy

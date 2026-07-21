@@ -102,7 +102,10 @@ toggles offline. A few capabilities can't be fully exercised there and need an
 - **Mix decks + Stems** read **local audio files**, so a Setlist must be **burned**
   to the on-device Burns folder first; the simulator can't stream-mix or audition
   stems. (Stem files come from the rip server's `/stemify` endpoints; see
-  *Stem runtime* in the repo-root `Development.md`.)
+  *Stem runtime* in the repo-root `Development.md`.) The **Now Playing mix mini-panel**
+  (`NowPlayingDSP`, swap-on-touch `AVPlayer`→`AVAudioEngine`) reads that same burned
+  local file, so it too only fully exercises on device. (Its pure DSP + toggle logic is
+  unit-tested — `NowPlayingDSPTests`.)
 - **Background audio** (playback continuing when backgrounded — the `UIBackgroundModes`
   `audio` mode) and **background-URLSession rips/burns** (the `fetch`/`processing`
   BGTasks) behave differently in the simulator; confirm them on the phone.

@@ -173,6 +173,27 @@ file is empty) — the streaming + recognition modules are entirely behind
 
 ---
 
+## 5. Discover — catalog song **and album** search + Add
+
+Browse's **Discover** mode searches the Apple Music catalog and lets you **＋ Add** a
+result into your crate. It does **not** go through MusicKit (which needs a signed-in
+subscription); it rides the **rip server** so a beta tester with no Apple Music account
+can still add music. Two proxy endpoints (iTunes Search / Lookup, annotated against the
+live rip manifest) back it — see [`Development.md`](../Development.md#running-the-rip-server):
+
+- **`GET /search?q=&entity=song|album&limit=`** — the default `entity=song` returns the
+  exact song envelope older builds already expect; `entity=album` returns album hits keyed
+  by **`appleMusicId`** (the iTunes `collectionId`).
+- **`GET /album-tracks?id=<collectionId>`** — expands an album into its ordered,
+  **disc-major** tracklist.
+
+**Adding.** A **song** add is the existing `POST /rip` with an ad-hoc `amrec_` descriptor.
+An **album** add expands the tracklist and **fans out a per-track rip**, materializing a
+**provisional** catalog album (`amrec_album_<collectionId>`). When that album is later
+indexed for real, its emitted **album `appleMusicId`** (same `collectionId`) lets the real
+album **supersede/dedupe** the provisional one — see
+[`apple-music-sync.md`](./apple-music-sync.md#album-applemusicid-for-discover-dedupe).
+
 ## TL;DR — what YOU must configure
 
 - **Apple Music:** portal → enable the **MusicKit App Service** on `com.levi.pocketdj`

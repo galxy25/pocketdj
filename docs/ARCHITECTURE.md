@@ -110,7 +110,10 @@ stream; the remaining misses fall back to ripping and are listed in
 `apple-music-catalog-misses.csv`, which the `backfill-rip` skill local-rips through
 `/rip-collection`); the measured **beat-grid** pass (`/backfill-beatgrids`); **Demucs
 stems** (`/stemify`, `/backfill-stems`); the **cloud re-index** fold (tight `am-match`,
-per-field cloud precedence).
+per-field cloud precedence); **cloud-only digital analysis** — `index-digital-files.mjs`
+stages "My Digital" audio to S3 only, and `/ingest-digital` auto-enqueues the bpm/key/
+beat-grid/waveform analysis to the cloud workers (no local Docker/librosa), with
+`scripts/fold-cloud-analysis.mjs` restamping those values into the digital catalog cards.
 
 ### Ch. 3 — Catalog & Data Model
 **Built:** the index-JSON indexer↔app contract; the internal on-device model; collections
@@ -125,7 +128,12 @@ foreign songs browse/realize/play/burn-with-stems by the id that traveled — re
 shadow provisional twins by merge order, never by deletion; the per-profile **favorites**
 document (`pocketdj-favorites.json` — `favorited:false` tombstones, `atMs` reconcile
 tie-break, a derived `favoriteIds` Set for the ~90k-row filter, CloudSync-registered, and
-absent from every backup/interchange zip) plus the public `favorites-seed.json` shape.
+absent from every backup/interchange zip) plus the public `favorites-seed.json` shape;
+the **v6→v7** additive `lastPlayedAt: Double?` on pockets **and** playlists (the
+"recently played" stamp, set outside `mutate*` so it never disturbs `updatedAt`, and
+carried on the per-profile CloudKit collections document); and the **album `appleMusicId`**
+(iTunes `collectionId`, emitted by the AM indexer / folded by `fold-album-catalogid.mjs`)
+that lets a real owned album **supersede** a provisional Discover-added album by shared id.
 
 ### Ch. 4 — Performance Engine
 **Built:** `realize()` (seeded sampling + harmonic autofill); iTunes mirroring; the reusable
@@ -136,7 +144,15 @@ beat pulse · pre/post VU meters · portrait deck-layout view modes); the **Stud
 tab (samples · loops · 16-step sequencer · MIDI instruments with score / PDF / MIDI ·
 cue points · **instrumentals** rendered to real audio · **on-device key detection** ·
 performance items as first-class **collection tracks**); the Siri **"Create Pocket"** builder —
-the AI seam's first shipped consumer.
+the AI seam's first shipped consumer; the **Now Playing mix mini-panel** (`NowPlayingDSP` —
+swap the plain `AVPlayer` for the Mix `AVAudioEngine` graph on first touch, exposing
+stem/effects/tempo/pitch/gain for the current **local** track, hidden unless mixable + no
+active Mix session, reset per track); the Demux **Extract instrumental** (beat-quantized
+chord **comping** ↔ on-device **true-melody** via YIN pitch-tracking, long-press/right-click
+switch, synced follow-score beside the drum pattern); Studio **Samples folders**
+(create/rename/delete + move samples, additive schema, an always-present *Unfiled* section);
+and the **Playlists** screen's **Yours / Shared** tabs, per-source collapse-and-remember, and
+persisted **Recently played / A–Z / Last updated** sort (setlist Play stamps the parent).
 **Deferred:** AI-curated auto-*building* of the set itself (the seams exist —
 `SetlistTrack.mixSuggestions`, `PocketKind:'performance'`, and the `realize()` autofill
 boundary an AI sequencer would extend); Studio **network + BLE MIDI**; the **PWA Studio UI**
@@ -168,7 +184,10 @@ modes; online pagination (`from`/`size` + `track_total_hits`) + server-side sort
 **Artists** browse kind + shuffle-by-artist; the **Play History** timeline
 (`PlayHistoryStore`, append-only); the tri-state **favorite** filter (Any / only / not
 favorited — a read-time layer deliberately outside the results memo key); on-device Browse
-paging + the results memo; the star map.
+paging + the results memo; the **Discover** album + song search (the rip-server `/search`
+proxy, `entity=song|album`) with **＋ Add** — a song rips one track, an album expands via
+`/album-tracks` and fans out per-track `amrec_` rips (subscription-free), materializing a
+provisional album the real indexed album later supersedes; the star map.
 
 ### Ch. 7 — Distribution, Clients & Edits
 **Built:** the S3 / CloudFront public-read content host; the PWA + a **single universal SwiftUI
@@ -187,7 +206,10 @@ holds the entire launch pipeline (`OnboardingStore` tri-state marker; CloudSync 
 mutating intents refused until it resolves; reinstalls and the mushroom-cloud reset re-run
 it, updates never see it; visionOS auto-completes while the blank-first-window bug is open);
 the **♥ favorites** surface (one shared `FavoriteToggle` on song rows / song detail / album
-track table) with **two-way Apple Music sync** (§5.5 — the `MusicDataRequest` Web-API path:
+track table, plus the **Now Playing** card, the **lock screen / Control Center**
+`MPRemoteCommandCenter.likeCommand`, the **Now Playing widget**, and **CarPlay** — all
+driving the same per-profile store through injected closures) with **two-way Apple Music
+sync** (§5.5 — the `MusicDataRequest` Web-API path:
 ★ + love rating out, loves in) and the **playlist write-back** queue (§5.6 — an add to an
 Apple Music source playlist carried up to the real library playlist; iOS/visionOS only, macOS
 settles jobs local-only).
