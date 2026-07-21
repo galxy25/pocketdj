@@ -209,6 +209,26 @@ struct DiscoverResultsList: View {
     }
 }
 
+/// Capability-aware help text for a Discover "＋ Add" (song or album). The ＋ always prepares
+/// your own copy (the per-track rip). Where the device can write the Apple Music library
+/// (`canAddToLibrary` — iOS/iPadOS with an authorized subscription) it ALSO saves the item
+/// there. On macOS `canAddToLibrary` is false: no library write happens — an album, which
+/// carries a catalog URL, is opened in Music.app instead (`opensInMusic`); a song hit carries
+/// no deep link, so the ＋ just prepares the copy. Pure + platform-agnostic → unit-testable,
+/// and shared by `DiscoverRow` and `DiscoverAlbumRow` so their wording can't drift or overstate
+/// the macOS library write (F7).
+enum DiscoverAddWording {
+    static func addHelp(noun: String, canAddToLibrary: Bool, opensInMusic: Bool) -> String {
+        if canAddToLibrary {
+            return "Save this \(noun) to your Apple Music library and prepare your copy"
+        } else if opensInMusic {
+            return "Open this \(noun) in Music and prepare your copy"
+        } else {
+            return "Prepare your copy"
+        }
+    }
+}
+
 /// One Discover result row: artwork · title / artist · album · duration · trailing
 /// action. The trailing action is state-driven per songId: ripped → ▶ (standard play
 /// path) · rip job in flight → spinner + phase · else → ＋ Add.
@@ -225,6 +245,12 @@ private struct DiscoverRow: View {
     /// (the add-completion `refreshManifest` is what moves a row here live).
     private var ripped: Bool { hit.ripped == true || rips.manifest[hit.songId] != nil }
     private var phase: RipsStore.Phase? { rips.jobs[hit.songId]?.phase }
+
+    /// Whether this device can write the user's Apple Music library — false on macOS (and on
+    /// any device with no authorized Apple Music contributor). Drives the ＋ help wording.
+    private var canAddToLibrary: Bool {
+        streaming.providers.libraryContributors.first?.canAddToLibrary ?? false
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -332,11 +358,12 @@ private struct DiscoverRow: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .accessibilityIdentifier("discover-add-\(index)")
-            // #TOUPDATE: honest once (a) discoverAdd asks the server to prepare only the
-            // user's own cloud-library media instead of capturing from Apple Music, and
-            // (b) the ＋ is gated on `canAddToLibrary` — false on macOS, where no library
-            // write happens at all, so today this help overstates the library half there.
-            .help("Save to your Apple Music library and prepare your copy")
+            // Capability-aware, honest on macOS: an unripped song hit carries no Apple Music
+            // deep link (`hit.url` is nil), so the macOS ＋ can't open in Music — it just
+            // prepares the copy. `opensInMusic: false` reflects that.
+            .help(DiscoverAddWording.addHelp(noun: "song",
+                                             canAddToLibrary: canAddToLibrary,
+                                             opensInMusic: false))
         }
     }
 
@@ -561,6 +588,23 @@ private struct DiscoverAlbumRow: View {
         rips.discoverAdds?.albums.first { $0.albumId == hit.albumId }
     }
 
+    /// Whether this device can write the user's Apple Music library — false on macOS (and on
+    /// any device with no authorized Apple Music contributor). Drives the ＋ help wording.
+    private var canAddToLibrary: Bool {
+        streaming.providers.libraryContributors.first?.canAddToLibrary ?? false
+    }
+
+    /// The macOS ＋ fallback deep-links the album into Music.app (see `add()`): only when the
+    /// library can't be written AND we have a catalog URL to open. Mirrors `add()`'s condition
+    /// exactly so the help text matches the behavior.
+    private var opensInMusic: Bool {
+        #if os(macOS)
+        return canAddToLibrary == false && hit.url != nil
+        #else
+        return false
+        #endif
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             artwork
@@ -632,7 +676,12 @@ private struct DiscoverAlbumRow: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .accessibilityIdentifier("discover-album-add-\(index)")
-                .help("Save this album to your Apple Music library and prepare your copy")
+                // Capability-aware, honest on macOS: no library write there — the ＋ opens the
+                // album in Music.app (see `add()`) and prepares copies, so it must NOT claim a
+                // library save (F7). Same helper + capability check as the song row.
+                .help(DiscoverAddWording.addHelp(noun: "album",
+                                                 canAddToLibrary: canAddToLibrary,
+                                                 opensInMusic: opensInMusic))
         }
     }
 

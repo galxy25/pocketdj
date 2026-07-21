@@ -258,6 +258,29 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertTrue(DiscoverSearchModel.refine(hits, artist: "prodigy").isEmpty)
     }
 
+    // MARK: ＋Add help wording — capability-aware, honest on macOS (F7); shared song+album helper
+
+    func testDiscoverAddHelpWordingByCapability() {
+        // Library-writable device (iOS/iPadOS w/ subscription): save to library + prepare a copy.
+        XCTAssertEqual(
+            DiscoverAddWording.addHelp(noun: "song", canAddToLibrary: true, opensInMusic: false),
+            "Save this song to your Apple Music library and prepare your copy")
+        XCTAssertEqual(
+            DiscoverAddWording.addHelp(noun: "album", canAddToLibrary: true, opensInMusic: false),
+            "Save this album to your Apple Music library and prepare your copy")
+
+        // macOS album: can't write the library → opens in Music (deep-link). Must NOT overstate
+        // a library write — the exact F7 finding.
+        let macAlbum = DiscoverAddWording.addHelp(noun: "album", canAddToLibrary: false, opensInMusic: true)
+        XCTAssertEqual(macAlbum, "Open this album in Music and prepare your copy")
+        XCTAssertFalse(macAlbum.contains("library"), "macOS help must not claim a library write (F7)")
+
+        // macOS song: no deep link available for an unripped hit → just prepares the copy.
+        let macSong = DiscoverAddWording.addHelp(noun: "song", canAddToLibrary: false, opensInMusic: false)
+        XCTAssertEqual(macSong, "Prepare your copy")
+        XCTAssertFalse(macSong.contains("library"), "macOS help must not claim a library write (F7)")
+    }
+
     // MARK: Discover ▸ ALBUMS — search decode (entity=album) + add fan-out
 
     func testDiscoverSearchAlbumsDecodesAndSendsEntityAlbum() async {
