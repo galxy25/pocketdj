@@ -202,6 +202,41 @@ enum DemuxArtifactStatus: String, Codable {
     case none, done, failed, unavailable, running
 }
 
+/// The user-facing state of the Demuxer's LYRIC-GENERATION trigger (the "Generate/Regenerate
+/// lyrics" button over the VOCALS stem). A pure projection of the persisted transcript status +
+/// whether a run is in flight + whether the vocals stem is on the device — so the button's
+/// initial-vs-retry logic is unit-testable without a view (the `DemuxTakeSwitch.targetMode`
+/// idiom). The trigger drives the same on-device `DemuxTranscriber` run-machine the transcript
+/// panel uses (`DemuxStore.analyzeTranscript`), just from an explicit, vocals-stem-gated button.
+enum DemuxLyricButtonState: Equatable {
+    case running        // a transcription is in flight — spinner, no button
+    case needsStems     // no vocals stem on device — download-stems hint, nothing to trigger
+    case generate       // never transcribed — "Generate lyrics"
+    case regenerate     // lyrics already exist — render them + "Regenerate"
+    case retry          // failed, or done-empty (probably instrumental) — "Retry"
+    case resume         // persisted `.running` with no live run (app died mid-run) — "Resume"
+    case unavailable    // on-device transcription unsupported (permission / locale)
+}
+
+enum DemuxLyricButton {
+    /// Map the persisted transcript state to the trigger's button state. A live run wins over
+    /// everything (the spinner); otherwise, with no vocals stem there is nothing to run; then the
+    /// persisted status decides initial-vs-retry-vs-resume.
+    static func state(status: DemuxArtifactStatus?, hasWords: Bool,
+                      running: Bool, hasVocals: Bool) -> DemuxLyricButtonState {
+        if running { return .running }
+        guard hasVocals else { return .needsStems }
+        switch status ?? .none {
+        case .running:                 return .resume
+        case .unavailable:             return .unavailable
+        case .failed:                  return .retry
+        case .done where hasWords:     return .regenerate
+        case .done:                    return .retry      // done-empty: instrumental, but retryable
+        case .none:                    return .generate
+        }
+    }
+}
+
 /// Everything the Demuxer derived for one audio source. One JSON file per source key.
 struct DemuxDocument: Codable, Equatable {
     var schemaVersion: Int = demuxSchemaVersion

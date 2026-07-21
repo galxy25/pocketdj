@@ -344,9 +344,123 @@ struct StudioDemuxView: View {
         cutSampleRow(source)
         // The CLOUD engine (whisper sidecars) shows for any song that has one — the
         // DemuxFeatures gate's documented exit criterion. On-device recognition stays
-        // env-gated (too sparse over music to ship as "lyrics").
-        if DemuxFeatures.lyricsEnabled || cloudLyricsAvailable(source, doc) {
+        // env-gated (too sparse over the FULL MIX to ship as "lyrics").
+        let cloud = cloudLyricsAvailable(source, doc)
+        if DemuxFeatures.lyricsEnabled || cloud {
             transcriptPanel(doc)
+        }
+        // The user-triggered on-device lyric generator — the shipped path when there's NO cloud
+        // sidecar (the cloud panel owns that case) and the env dev-seam is off. Unlike the full
+        // mix, it runs over the isolated VOCALS stem (much better recognition), so it's gated on
+        // the stems being on the device — exactly like the drum/melody extract panels.
+        if !DemuxFeatures.lyricsEnabled && !cloud {
+            lyricsPanel(source, doc)
+        }
+    }
+
+    // MARK: Lyrics (vocals stem → on-device DemuxTranscriber → timed karaoke words)
+
+    /// Parallel to the melody panel, but it TRANSCRIBES: gated on the vocals stem (the drum/melody
+    /// contract), the button runs the on-device `DemuxTranscriber` over the isolated VOCALS stem
+    /// (`DemuxStore.analyzeTranscript`, off @MainActor, incremental + resumable). The button reads
+    /// "Generate lyrics" the first time, "Regenerate" once words exist, and "Retry"/"Resume" after
+    /// a failed/interrupted run — `DemuxLyricButton.state` decides. Results persist on the SAME
+    /// additive transcript fields the cloud path writes (words / status / coverage), no schema bump.
+    @ViewBuilder private func lyricsPanel(_ source: DemuxSource, _ doc: DemuxDocument?) -> some View {
+        let state = DemuxLyricButton.state(status: doc?.transcriptStatus,
+                                           hasWords: !(doc?.words.isEmpty ?? true),
+                                           running: demux.transcriptRuns.contains(source.key),
+                                           hasVocals: stemState == .burned)
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Lyrics", icon: "music.mic")
+            switch state {
+            case .running:
+                statusRow(spinner: true, "Transcribing the vocals…", a11y: "demux-transcribing")
+                // Words land per finished window — show them AS THEY ARRIVE.
+                if let words = doc?.words, !words.isEmpty {
+                    DemuxLyricsView(words: words, player: player) { seek(toMs: $0) }
+                }
+            case .needsStems:
+                Text("Download this track’s stems first — lyrics are read from the vocals stem.")
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("demux-lyrics-needs-stems")
+            case .generate:
+                generateLyricsButton("Generate lyrics", a11y: "demux-generate-lyrics")
+            case .regenerate:
+                if let diag = doc?.transcriptDiag {
+                    Text(diag).font(.caption2).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("demux-lyrics-diag")
+                }
+                DemuxLyricsView(words: doc?.words ?? [], player: player) { seek(toMs: $0) }
+                HStack(spacing: 8) {
+                    Spacer()
+                    lyricTextButton("Regenerate", "demux-lyrics-regenerate") { kickoffLyrics(force: true) }
+                }
+            case .retry:
+                HStack(spacing: 8) {
+                    Text(doc?.transcriptStatus == .failed
+                         ? "Couldn’t transcribe the vocals stem."
+                         : "No words recognized — probably instrumental.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("demux-lyrics-empty")
+                    lyricTextButton("Retry", "demux-lyrics-retry") { kickoffLyrics(force: true) }
+                }
+            case .resume:
+                HStack(spacing: 8) {
+                    Text("Transcription was interrupted.").font(.caption).foregroundStyle(Theme.fgDim)
+                    Spacer()
+                    lyricTextButton("Resume", "demux-lyrics-resume") { kickoffLyrics() }
+                }
+                if let words = doc?.words, !words.isEmpty {
+                    DemuxLyricsView(words: words, player: player) { seek(toMs: $0) }
+                }
+            case .unavailable:
+                Text("On-device transcription isn’t available (permission or language).")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("demux-lyrics-unavailable")
+            }
+        }
+    }
+
+    /// The accent-tinted primary trigger (the melody/drum "Extract …" button idiom).
+    private func generateLyricsButton(_ title: String, a11y: String) -> some View {
+        Button { kickoffLyrics() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "music.mic")
+                Text(title).font(.callout.weight(.semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(Theme.accent.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundStyle(Theme.accent)
+        .accessibilityIdentifier(a11y)
+    }
+
+    /// A small borderless text button with a custom label (the `retryButton` idiom, arbitrary title).
+    private func lyricTextButton(_ title: String, _ a11y: String,
+                                 action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .font(.caption).buttonStyle(.borderless).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier(a11y)
+    }
+
+    /// Resolve the VOCALS stem (songs from the burn folder — its security scope handed to the run;
+    /// custom audio from the demux stems cache) and kick off the on-device transcription over it.
+    /// `force` re-runs the whole file; otherwise a persisted `.running` run resumes from coverage.
+    private func kickoffLyrics(force: Bool = false) {
+        guard let source else { return }
+        if let songId = source.songId, let stems = burns.localStemURLs(forSong: songId) {
+            if let vocals = stems.urls["vocals"] {
+                demux.analyzeTranscript(source: source, url: vocals, durationMs: durationMs,
+                                        force: force, release: stems.release)
+            } else {
+                stems.release?()
+            }
+        } else if let vocals = demux.localStemURLs(for: source.key)?["vocals"] {
+            demux.analyzeTranscript(source: source, url: vocals, durationMs: durationMs, force: force)
         }
     }
 
