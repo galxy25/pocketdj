@@ -46,7 +46,11 @@ async function main() {
   const albums = idx.albums || [];
   let stamped = 0, already = 0;
   for (const a of albums) {
-    const cid = mostCommonNonEmpty((a.trackList || []).map((e) => collectionIds.get(e.sid)));
+    // trackList entries are plain song-id strings in the published index
+    // (older builds used {sid} objects — accept both).
+    const cid = mostCommonNonEmpty(
+      (a.trackList || []).map((e) => collectionIds.get(typeof e === 'string' ? e : e && e.sid)),
+    );
     if (!cid) continue;
     if (a.appleMusicId === cid) { already++; continue; }
     a.appleMusicId = cid; stamped++;
