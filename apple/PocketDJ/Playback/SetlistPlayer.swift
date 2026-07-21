@@ -137,6 +137,16 @@ final class SetlistPlayer {
     /// end-advance, the durable session, and the single-owner lock-screen card stay coherent across it.
     @ObservationIgnored var dsp: NowPlayingDSP?
 
+    /// F4 SEAM (wired at app init): reads whether a Mix-tab session (deck / Auto-DJ) is active —
+    /// `MixEngine.isRunning || autoMixing`. A Mix session and the Now Playing mix panel are mutually
+    /// exclusive (one DSP surface at a time), so when this flips TRUE the panel HIDES; but a live DSP
+    /// engagement would keep rendering a hidden, uncontrollable second audio source. Setting the seam
+    /// arms the observation (`didSet`), which tears the engagement down the moment a Mix session starts.
+    /// nil in unit tests that don't exercise the mutual exclusion (no cost then).
+    @ObservationIgnored var mixSessionActive: (() -> Bool)? {
+        didSet { observeMixSessionForEngagement() }
+    }
+
     init(player: PlayerEngine, rips: RipsStore, burns: BurnStore, coordinator: PlaybackCoordinator) {
         self.player = player
         self.rips = rips
@@ -428,9 +438,15 @@ final class SetlistPlayer {
         let startSec = Double(np.startMs ?? 0) / 1000
         let atSeconds = max(0, player.currentTime - startSec)   // AVPlayer clock is absolute-in-file
         let wasPlaying = player.isPlaying
-        // Idle the AVPlayer + claim the card FIRST (beginExternalNowPlaying pauses it + replaces its
-        // item), so the two engines don't both sound during the swap; the DSP then starts the audio.
         dsp.onReachedEnd = { [weak self] in self?.handleDSPEnded() }
+        // 1) Open the file WITHOUT sounding yet (`play: false`) so `dsp.duration` is known — the
+        //    AVPlayer is still the only voice at this instant, so no double-audio. This must precede
+        //    the card publish so a per-song local track whose catalog `lengthMs` is nil still gets a
+        //    real card duration (the DSP slice length) instead of a 0-length card with no scrubber.
+        dsp.engage(url: np.url, startMs: np.startMs, lengthMs: it.lengthMs,
+                   atSeconds: atSeconds, songId: it.id, play: false)
+        // 2) Idle the AVPlayer + claim the card (beginExternalNowPlaying pauses it + replaces its item),
+        //    now with the correct duration in hand — single card writer preserved.
         player.beginExternalNowPlaying(
             title: it.title, artist: it.artist, songId: it.id,
             durationSeconds: it.lengthMs.map { Double($0) / 1000 } ?? dsp.duration,
@@ -438,8 +454,9 @@ final class SetlistPlayer {
             isPlaying: { [weak dsp] in dsp?.isPlaying ?? false },
             play: { [weak dsp] in dsp?.resume() },
             pause: { [weak dsp] in dsp?.pause() })
-        dsp.engage(url: np.url, startMs: np.startMs, lengthMs: it.lengthMs,
-                   atSeconds: atSeconds, songId: it.id, play: wasPlaying)
+        // 3) Only now that the AVPlayer is idle, start the DSP audio if we were playing — so exactly one
+        //    engine ever sounds during the swap.
+        if wasPlaying { dsp.resume() }
         mixEngaged = true
         NPLog.trace("setlist ENGAGE mix → DSP id=\(it.id) at=\(Int(atSeconds))s playing=\(wasPlaying)")
         persistSession()
@@ -468,6 +485,25 @@ final class SetlistPlayer {
         dsp?.disengage()
         dsp?.resetControls()
         mixEngaged = false
+    }
+
+    /// Observe the Mix-tab session seam; when it flips ACTIVE while the Now Playing mix panel is
+    /// engaged, tear the DSP hand-off down (the panel hides in that state, so a still-rendering DSP
+    /// would be a hidden second audio source alongside the Mix decks). Hands the current track's audio
+    /// backend back to the idle AVPlayer via `endMixEngagement`. Self-re-arming one-shot tracking
+    /// (mirrors `observeNowPlaying`), first armed by the `mixSessionActive` `didSet`. A no-op — so it
+    /// never loops — when no seam is wired, nothing is engaged, or the session isn't active.
+    @MainActor
+    private func observeMixSessionForEngagement() {
+        withObservationTracking {
+            _ = mixSessionActive?()
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.observeMixSessionForEngagement()
+                if self.mixEngaged, self.mixSessionActive?() == true { self.endMixEngagement() }
+            }
+        }
     }
 
     // MARK: - Internals
@@ -538,10 +574,15 @@ final class SetlistPlayer {
         let am = coordinator.activeBackend == .appleMusic
         guard let npId = am ? coordinator.appleMusic.nowPlaying?.songId : rips.nowPlaying?.songId,
               queue[index].id != npId else { return }
-        guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
-        // F4: a manual row ▶ of a DIFFERENT track took the audio over the AVPlayer (its play path
-        // already reclaimed the card) — tear down any orphaned DSP engagement so it stops sounding.
+        // F4 (double-audio guard): ANY nowPlaying change to a DIFFERENT track means the AVPlayer / AM
+        // now owns that track's audio (its play path already reclaimed the card) — so tear down any
+        // orphaned DSP engagement here, BEFORE the not-in-set early return below. Otherwise a NON-member
+        // single-row play (a Browse/collection single) would return early with the DSP still rendering
+        // the OLD set track → two songs at once. A non-member play thus stops the DSP while leaving the
+        // set index untouched (matching pre-F4, where the single reused the same AVPlayer and stopped
+        // the set audio); the in-set adopt below then proceeds unchanged.
         endMixEngagement()
+        guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
         NPLog.trace("setlist ADOPT jump → index \(pos) id=\(npId) via \(am ? "appleMusic" : "rip")")
         // A manual member play makes a RESTORED (held) deck live: real audio is sounding, so
         // arm the end hooks + position sampler exactly as a resume would.

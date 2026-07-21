@@ -2,7 +2,6 @@ import Foundation
 import Observation
 import AVFoundation
 import AudioToolbox        // DynamicsProcessor AU parameter ids + AudioUnitSetParameter (compressor)
-import QuartzCore
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -62,9 +61,25 @@ final class NowPlayingDSP {
     /// Bumped on every (re)schedule/stop so a stale completion can't flip state after the fact.
     @ObservationIgnored private var generation = 0
 
-    // MARK: Host-clock scrubber (song-relative seconds; NOT observed → ~10 Hz ticks don't relayout)
+    // MARK: Render-clock scrubber (song-relative seconds; NOT observed → position reads don't relayout)
+    //
+    // Derived from the PLAYING node's render clock (`playerTime.sampleTime`), NOT wall time — exactly
+    // like `MixEngine.truePlayhead`. The player renders SOURCE samples at `rate×` wall speed (the
+    // downstream time-stretch pulls faster/slower), so `sampleTime / sr` already advances at the true
+    // tempo — no rate rebasing needed, and it stays drift-free against what you actually hear. Pure
+    // wall-clock would diverge at any tempo ≠ 1× (a pause→resume would seek to the wrong spot and the
+    // lock-screen elapsed / durable-session position would be wrong). `pausedAt` is the fallback the
+    // getter returns while paused or before the scheduled voice has begun rendering.
 
-    @ObservationIgnored private var playStartHost: Double = 0   // CACurrentMediaTime at song position 0
+    /// The node whose render clock IS the playhead — the single file's `player`, or (in stem mode) the
+    /// lead stem node. nil when nothing is scheduled. Not `weak`: every node here is already owned by
+    /// `self` (the `player` `let` / the `stemNodes` dictionary), so a plain ref makes no retain cycle.
+    @ObservationIgnored private var clockNode: AVAudioPlayerNode?
+    /// `clockNode`'s file sample rate (a stem can differ from the main file's).
+    @ObservationIgnored private var clockSR: Double = 0
+    /// The SONG-relative seconds at which `clockNode`'s CURRENT scheduled segment begins — added back
+    /// to `sampleTime / sr` (which resets to 0 on every `scheduleSegment`) to recover song position.
+    @ObservationIgnored private var segStartSongSeconds: Double = 0
     @ObservationIgnored private var pausedAt: Double = 0
 
     // MARK: Ephemeral control state (observed — the panel binds to these)
@@ -109,10 +124,27 @@ final class NowPlayingDSP {
     func isStemMuted(_ name: String) -> Bool { _stemMuted.contains(name) }
     func stemVolume(_ name: String) -> Double { _stemVol[name] ?? 1.0 }
 
-    /// Current song-relative position (seconds), sampled off the host clock (non-observable).
+    /// Current song-relative position (seconds), read off the PLAYING node's render clock (drift-free,
+    /// rate-scaled; non-observable). Falls back to `pausedAt` while paused or before the scheduled
+    /// voice has begun rendering — mirrors `MixEngine.truePlayhead`'s nil→`position` fallback.
     var currentTime: Double {
-        let t = isPlaying ? (CACurrentMediaTime() - playStartHost) : pausedAt
+        let t = (isPlaying ? livePlayhead() : nil) ?? pausedAt
         return min(max(0, t), duration)
+    }
+
+    /// The live render-clock playhead (song-relative seconds), or nil when the clock node isn't
+    /// rendering yet (just scheduled / inside the +60 ms start lead / no audio device). `sampleTime` is
+    /// in the node's own sample rate and resets to 0 each `scheduleSegment`, so add back
+    /// `segStartSongSeconds`; the time-stretch rate is already baked into how fast it advances, so a
+    /// plain divide by the file rate yields SOURCE seconds at any tempo (the `MixEngine.truePlayhead`
+    /// contract). A negative `sampleTime` (the node is scheduled but hasn't reached its start host time)
+    /// reads as nil so the getter stays on `pausedAt` until real rendering begins.
+    private func livePlayhead() -> Double? {
+        guard let node = clockNode, clockSR > 0,
+              let nodeTime = node.lastRenderTime,
+              let pt = node.playerTime(forNodeTime: nodeTime),
+              pt.sampleTime >= 0 else { return nil }
+        return segStartSongSeconds + Double(pt.sampleTime) / clockSR
     }
 
     /// True once the audio graph built + started (false on a headless host with no audio device —
@@ -230,6 +262,9 @@ final class NowPlayingDSP {
         stemsAvailable = false
         pausedAt = 0
         duration = 0
+        clockNode = nil
+        clockSR = 0
+        segStartSongSeconds = 0
         return pos
     }
 
@@ -393,6 +428,11 @@ final class NowPlayingDSP {
         let frame = min(max(segStartFrame, segStartFrame + AVAudioFramePosition(pos * sampleRate)), segEndFrame)
         let count = segEndFrame - frame
         guard count > 0 else { return false }
+        // The single file's render clock is the playhead: this segment begins at song-second
+        // (frame − segStartFrame)/sr (≈ the clamped `pos`).
+        clockNode = player
+        clockSR = sampleRate
+        segStartSongSeconds = Double(frame - segStartFrame) / sampleRate
         let gen = generation
         player.scheduleSegment(f, startingFrame: frame, frameCount: AVAudioFrameCount(count), at: nil) { [weak self] in
             Task { @MainActor in self?.handleReachedEnd(gen) }
@@ -406,6 +446,7 @@ final class NowPlayingDSP {
         let gen = generation
         let lead = stemFiles["vocals"] != nil ? "vocals" : stemFiles.keys.sorted().first
         var any = false
+        var chosenClock: (node: AVAudioPlayerNode, sr: Double)?
         for (name, f) in stemFiles {
             guard let node = stemNodes[name] else { continue }
             node.stop()
@@ -419,6 +460,12 @@ final class NowPlayingDSP {
                 Task { @MainActor in self?.handleReachedEnd(gen) }
             }
             any = true
+            // Playhead clock: prefer the LEAD stem (which also owns the end handler); fall back to the
+            // first scheduled stem if the lead had nothing to schedule at this position.
+            if isLead || chosenClock == nil { chosenClock = (node, sr) }
+        }
+        if any, let c = chosenClock {
+            clockNode = c.node; clockSR = c.sr; segStartSongSeconds = pos
         }
         return any
     }
@@ -444,7 +491,8 @@ final class NowPlayingDSP {
         guard !voices.isEmpty else { isPlaying = false; pausedAt = min(max(0, pos), duration); return }
         let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.06))
         for n in voices { n.play(at: when) }
-        playStartHost = CACurrentMediaTime() - pos
+        // No `playStartHost` rebase: `currentTime` now rides the node render clock (rate-scaled,
+        // drift-free). `pausedAt` seeds the pre-render fallback at the segment's start position.
         pausedAt = pos
         isPlaying = true
     }

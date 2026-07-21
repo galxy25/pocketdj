@@ -332,6 +332,108 @@ final class NowPlayingDSPTests: XCTestCase {
         XCTAssertFalse(dsp.isEngaged, "the DSP handed the audio back to the AVPlayer")
         XCTAssertEqual(dsp.rate, 1.0, "controls reset on the track change (ephemeral)")
     }
+
+    // MARK: - FIX 2: the playhead is rate-scaled (render clock, not wall clock)
+
+    /// The DSP position must ride the node's render clock, so at any tempo ≠ 1× it tracks the AUDIBLE
+    /// position (a pure wall clock would advance at 1× and diverge — the pause/resume seek jump + wrong
+    /// lock-screen elapsed + wrong durable-session position the review flagged).
+    func testPositionAdvancesAtTheCurrentRate() async throws {
+        let d = makeDSP()
+        let url = try makeSineWAV(seconds: 6)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 0, songId: "x", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        d.setRate(2.0)
+        XCTAssertEqual(d.timePitchRate, 2.0, accuracy: 1e-5)
+        // Let the render clock settle into the 2× region, then measure the position advance over a
+        // known wall-time window. At 2× tempo the SOURCE position advances ~2× wall time.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let t0 = d.currentTime
+        try await Task.sleep(nanoseconds: 500_000_000)   // 0.5 s of wall time
+        let t1 = d.currentTime
+        XCTAssertGreaterThan(t0, 0, "the render clock advanced from 0")
+        XCTAssertEqual(t1 - t0, 1.0, accuracy: 0.35,
+                       "at 2× tempo, 0.5 s of wall time advances ~1.0 s of source (a wall clock would give ~0.5)")
+        d.disengage()
+    }
+
+    // MARK: - FIX 1: a non-member play tears the engaged DSP down (the double-audio guard)
+
+    /// With the panel engaged on a SET track, a non-member single-row play (a Browse/collection single)
+    /// changes `nowPlaying` to a track that is NOT in the running set. The orphaned DSP must be torn
+    /// down — otherwise it keeps rendering the OLD set track and two songs sound at once. Pure
+    /// SetlistPlayer wiring (no audio device needed): `engageMix` sets the flag, and the nowPlaying
+    /// change drives the teardown BEFORE the not-in-set early return.
+    func testNonMemberPlayTearsDownEngagedMix() async {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.dsp = makeDSP()
+        addTeardownBlock { @MainActor in seq.stop() }
+        await burn(rips, burns, songId: "np_guard")
+
+        seq.play([.init(id: "np_guard", title: "Guard", artist: "A")])
+        await waitUntil("burnt file playing") { rips.nowPlaying?.songId == "np_guard" }
+        XCTAssertTrue(seq.currentTrackMixable)
+
+        seq.engageMix()
+        XCTAssertTrue(seq.mixEngaged, "the mix engaged the current set track")
+
+        // A non-member single-row play takes the audio over the AVPlayer and points nowPlaying at a
+        // track that is NOT in the set.
+        let single = FileManager.default.temporaryDirectory
+            .appendingPathComponent("np-single-\(UUID().uuidString).mp3")
+        rips.setNowPlaying(.init(songId: "not_in_set", title: "Single", artist: "B",
+                                 url: single, live: false, startMs: nil, seekMs: nil, waveform: nil))
+        await waitUntil("the orphaned DSP tore down") { seq.mixEngaged == false }
+        XCTAssertFalse(seq.mixEngaged, "a non-member play tears the engaged DSP down — no double audio")
+        XCTAssertEqual(seq.index, 0, "the non-member play left the set index unchanged (not adopted)")
+    }
+
+    // MARK: - Node-completion DSP end advances the set across the swap (needs an audio device)
+
+    /// A short WAV engaged into the DSP: when its slice plays to the natural end, the node completion
+    /// handler fires `handleDSPEnded`, which tears the engagement down and advances the set index —
+    /// headless auto-advance ACROSS the AVPlayer→DSP swap (the review's "not headless-testable" claim
+    /// was overstated: the end fires from a real node completion handler).
+    func testDSPNaturalEndAdvancesTheSet() async throws {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let dsp = makeDSP()
+        seq.dsp = dsp
+        addTeardownBlock { @MainActor in seq.stop() }
+        // Track 0 is the mixable current track; track 1 has a burned file so the set holds at index 1
+        // once advanced (rather than skipping a dead source on to end-of-set).
+        await burn(rips, burns, songId: "np_end1")
+        await burn(rips, burns, songId: "np_end2")
+
+        seq.play([.init(id: "np_end1", title: "End1", artist: "A"),
+                  .init(id: "np_end2", title: "End2", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "np_end1" }
+
+        // Point the DSP source at a REAL short WAV (engage opens THIS; the burned fixture is only
+        // placeholder bytes and just satisfies the mixable gate). Same songId ⇒ not an adopt.
+        let wav = try makeSineWAV(seconds: 0.3)
+        defer { try? FileManager.default.removeItem(at: wav) }
+        rips.setNowPlaying(.init(songId: "np_end1", title: "End1", artist: "A",
+                                 url: wav, live: false, startMs: nil, seekMs: nil, waveform: nil))
+        XCTAssertTrue(seq.currentTrackMixable)
+
+        seq.engageMix()
+        try XCTSkipUnless(dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(dsp.isEngaged, "engaged the real WAV off the AVPlayer")
+        if !dsp.isPlaying { dsp.resume() }   // ensure the slice actually plays to its end
+        XCTAssertTrue(dsp.isPlaying)
+
+        await waitUntil("DSP node-completion advanced the set index") { seq.index == 1 }
+        XCTAssertEqual(seq.index, 1, "the DSP's natural end advanced the set")
+        XCTAssertFalse(seq.mixEngaged, "the engagement was torn down before advancing")
+        XCTAssertFalse(dsp.isEngaged, "the DSP handed the audio back")
+    }
 }
 
 /// A tiny URLProtocol stub for these tests: serves the burned mp3 bytes for `rips/*.mp3` and drives

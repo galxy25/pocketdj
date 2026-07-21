@@ -272,6 +272,13 @@ struct PocketDJApp: App {
         let mix = MixEngine(burns: burns)
         mix.recorder = mixSessions
         mix.artworkURLsProvider = artworkURLsProvider
+        // F4: a Mix-tab session (deck / Auto-DJ) starting must tear down a live Now Playing mix
+        // engagement — the panel hides then, so the DSP would otherwise keep rendering a hidden second
+        // audio source. Setting this seam arms the sequencer's observation of `isRunning`/`autoMixing`.
+        setlistPlayer.mixSessionActive = { [weak mix] in
+            guard let mix else { return false }
+            return mix.isRunning || mix.autoMixing
+        }
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
         // Durable mix-deck session — the engine writes every structural deck / auto-queue change
