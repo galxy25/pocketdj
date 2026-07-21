@@ -575,6 +575,121 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNotNil(store.sample("smp_user"))
     }
 
+    // MARK: - Sample folders (F9)
+
+    /// createSampleFolder mints an `sfld_` id, name-orders, and persists across a reload.
+    func testCreateSampleFolderMintsIdAndPersists() {
+        let store = StudioStore(fileURL: storeURL)
+        let drums = store.createSampleFolder("Drums")
+        XCTAssertTrue(drums.id.hasPrefix("sfld_"))
+        XCTAssertFalse(StudioFactory.isStudioId(drums.id), "sfld_ must NOT ride collections")
+        _ = store.createSampleFolder("Bass")
+        // Name-ordered (case-insensitive): Bass before Drums.
+        XCTAssertEqual(store.sampleFoldersOrdered().map(\.name), ["Bass", "Drums"])
+        XCTAssertNotNil(store.sampleFolder(drums.id))
+
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.sampleFoldersOrdered().map(\.name), ["Bass", "Drums"])
+        XCTAssertTrue(reloaded.sampleFolder(drums.id)?.id.hasPrefix("sfld_") ?? false)
+    }
+
+    /// renameSampleFolder updates the name (trimmed); a blank rename is a no-op, not a wipe.
+    func testRenameSampleFolder() {
+        let store = StudioStore(fileURL: storeURL)
+        let f = store.createSampleFolder("Old")
+        store.renameSampleFolder(f.id, to: "  New Name  ")
+        XCTAssertEqual(store.sampleFolder(f.id)?.name, "New Name")
+        store.renameSampleFolder(f.id, to: "   ")               // blank ⇒ no-op
+        XCTAssertEqual(store.sampleFolder(f.id)?.name, "New Name")
+        store.renameSampleFolder("sfld_missing", to: "X")       // unknown id ⇒ no-op
+        XCTAssertEqual(store.folders.count, 1)
+    }
+
+    /// deleteSampleFolder re-homes its member samples to Unfiled (folderId ⇒ nil) and deletes NO
+    /// sample records and NO audio files.
+    func testDeleteSampleFolderRehomesMembersDeletesNothing() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let name = try writeFile(.samples, id: "smp_a")           // a real audio file on disk
+        store.addSample(makeSample("smp_a"))
+        let f = store.createSampleFolder("Drums")
+        store.setSampleFolder("smp_a", folderId: f.id)
+        XCTAssertEqual(store.sample("smp_a")?.folderId, f.id)
+
+        store.deleteSampleFolder(f.id)
+
+        XCTAssertNil(store.sampleFolder(f.id))                    // folder gone
+        XCTAssertNotNil(store.sample("smp_a"))                    // sample RECORD kept
+        XCTAssertNil(store.sample("smp_a")?.folderId)             // re-homed to Unfiled
+        let appRoot = try StudioFolders.appRoot(.samples)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appRoot.appendingPathComponent(name).path),
+                      "the audio file must NOT be touched by a folder delete")
+    }
+
+    /// setSampleFolder + samples(inFolder:) partition correctly (nil ⇒ Unfiled).
+    func testSetSampleFolderPartitions() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(makeSample("smp_a"))
+        store.addSample(makeSample("smp_b"))
+        store.addSample(makeSample("smp_c"))
+        let f = store.createSampleFolder("Drums")
+        store.setSampleFolder("smp_a", folderId: f.id)
+        store.setSampleFolder("smp_b", folderId: f.id)
+
+        XCTAssertEqual(Set(store.samples(inFolder: f.id).map(\.id)), ["smp_a", "smp_b"])
+        XCTAssertEqual(store.samples(inFolder: nil).map(\.id), ["smp_c"])
+        // Moving back to Unfiled repartitions.
+        store.setSampleFolder("smp_a", folderId: nil)
+        XCTAssertEqual(store.samples(inFolder: f.id).map(\.id), ["smp_b"])
+        XCTAssertEqual(Set(store.samples(inFolder: nil).map(\.id)), ["smp_a", "smp_c"])
+    }
+
+    /// A save→reload round-trip preserves both the `folders` collection and each sample's `folderId`.
+    func testSampleFoldersRoundTripPreservesFolderId() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(makeSample("smp_a"))
+        let f = store.createSampleFolder("Drums")
+        store.setSampleFolder("smp_a", folderId: f.id)
+        store.flush()
+
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.sampleFoldersOrdered().map(\.name), ["Drums"])
+        XCTAssertEqual(reloaded.sample("smp_a")?.folderId, f.id)
+        XCTAssertEqual(reloaded.samples(inFolder: f.id).map(\.id), ["smp_a"])
+    }
+
+    /// WIPE-SAFETY: a LEGACY document with NO `folders` key and samples with NO `folderId` decodes
+    /// fully intact — folders default to `[]`, folderId to nil (Unfiled). No discarding version bump.
+    func testLegacyDocumentWithoutFoldersDecodesIntact() throws {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "samples": [
+            {"id": "smp_a", "name": "Legacy", "fileName": "sample-smp_a.m4a", "durationMs": 1000}
+          ]
+        }
+        """
+        try Data(json.utf8).write(to: storeURL)
+        let store = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(store.samples.count, 1)
+        XCTAssertEqual(store.sample("smp_a")?.name, "Legacy")
+        XCTAssertNil(store.sample("smp_a")?.folderId)            // absent key ⇒ nil (Unfiled)
+        XCTAssertTrue(store.folders.isEmpty)                     // absent collection ⇒ []
+        XCTAssertEqual(store.samples(inFolder: nil).map(\.id), ["smp_a"])
+    }
+
+    /// A sample referencing a folder id that isn't in the document (deleted / hand-edited) reads as
+    /// Unfiled — it never vanishes from the UI.
+    func testSampleWithDeletedFolderIdReadsAsUnfiled() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(makeSample("smp_a"))
+        store.setSampleFolder("smp_a", folderId: "sfld_ghost")   // no such folder exists
+        XCTAssertTrue(store.folders.isEmpty)
+        XCTAssertEqual(store.samples(inFolder: nil).map(\.id), ["smp_a"],
+                       "a dangling folderId must surface under Unfiled")
+        XCTAssertEqual(store.sampleFoldersOrdered().count, 0)
+    }
+
     // MARK: Id minting
 
     func testIdMintingAndIsStudioId() {
@@ -583,6 +698,7 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertTrue(StudioFactory.newPatternId().hasPrefix("ptn_"))
         XCTAssertTrue(StudioFactory.newTakeId().hasPrefix("tk_"))
         XCTAssertTrue(StudioFactory.newCueId().hasPrefix("cue_"))
+        XCTAssertTrue(StudioFactory.newSampleFolderId().hasPrefix("sfld_"))
         // Minted uuids are lowercase (CollectionsFactory convention).
         let minted = StudioFactory.uid()
         XCTAssertEqual(minted, minted.lowercased())
@@ -591,9 +707,10 @@ final class StudioStoreTests: XCTestCase {
         for p in StudioFactory.studioPrefixes {
             XCTAssertTrue(StudioFactory.isStudioId(p + "x"))
         }
-        // Catalog songs and cues are NOT collection-riding studio ids.
+        // Catalog songs, cues, slices, and sample folders are NOT collection-riding studio ids.
         XCTAssertFalse(StudioFactory.isStudioId("sng_1"))
         XCTAssertFalse(StudioFactory.isStudioId("cue_abc"))
         XCTAssertFalse(StudioFactory.isStudioId("pkt_abc"))
+        XCTAssertFalse(StudioFactory.isStudioId("sfld_abc"))
     }
 }

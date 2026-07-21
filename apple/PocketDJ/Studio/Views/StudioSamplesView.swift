@@ -46,6 +46,18 @@ struct StudioSamplesView: View {
     /// The sample whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
     @State private var addRef: StudioAddRef?
 
+    // F9 — sample folders (create / rename / delete + move-into). Device-local; NO audio moves.
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    /// When "New folder…" is chosen from a sample's Move submenu, the new folder is created AND
+    /// this sample is moved into it (nil ⇒ a plain "New folder" from the bar, just create).
+    @State private var pendingMoveSampleId: String?
+    @State private var renamingFolderId: String?
+    @State private var folderNameDraft = ""
+    @State private var deletingFolderId: String?
+    /// Collapsed sample-folder ids, persisted across launches (missing ⇒ expanded).
+    @State private var collapsed: Set<String> = StudioSamplesView.loadCollapsed()
+
     /// Newest first — this is a creation surface: the sample you just made is the one you want.
     private var samples: [StudioSample] { studio.samples.sorted { $0.createdAt > $1.createdAt } }
 
@@ -54,15 +66,12 @@ struct StudioSamplesView: View {
             creationBar
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
-            if samples.isEmpty {
+            // Empty state only when there is nothing at all — a folder with no samples still needs
+            // its section shown so the user can move samples in / manage it.
+            if studio.samples.isEmpty && studio.folders.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(samples) { s in row(s) }
-                    }
-                    .padding(12)
-                }
+                sampleList
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -102,6 +111,111 @@ struct StudioSamplesView: View {
             Text("This sample lives in your samples folder, which isn't reachable right now. "
                  + "Reconnect the folder (Settings ▸ Storage) and try again — nothing was deleted.")
         }
+        // F9 — sample-folder create / rename / delete (the PlaylistsView FolderDialogs precedent).
+        .alert("New folder", isPresented: $showNewFolder) {
+            TextField("Name", text: $newFolderName)
+            Button("Create") {
+                let n = newFolderName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty {
+                    let f = studio.createSampleFolder(n)
+                    // Chosen from a sample's Move submenu ⇒ file that sample into the new folder.
+                    if let sid = pendingMoveSampleId { studio.setSampleFolder(sid, folderId: f.id) }
+                }
+                newFolderName = ""; pendingMoveSampleId = nil
+            }
+            Button("Cancel", role: .cancel) { newFolderName = ""; pendingMoveSampleId = nil }
+        }
+        .alert("Rename folder", isPresented: folderRenameBinding) {
+            TextField("Name", text: $folderNameDraft)
+            Button("Save") {
+                if let id = renamingFolderId { studio.renameSampleFolder(id, to: folderNameDraft) }
+                renamingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingFolderId = nil }
+        }
+        .confirmationDialog("Delete this folder?", isPresented: folderDeleteBinding,
+                            titleVisibility: .visible) {
+            Button("Delete folder", role: .destructive) {
+                if let id = deletingFolderId { studio.deleteSampleFolder(id) }
+                deletingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { deletingFolderId = nil }
+        } message: {
+            Text("The folder's samples move back to Unfiled. No samples or audio are deleted.")
+        }
+    }
+
+    // MARK: Folder-grouped list (Unfiled section + one collapsible DisclosureGroup per folder)
+
+    private var sampleList: some View {
+        List {
+            unfiledSection
+            ForEach(studio.sampleFoldersOrdered()) { folder in
+                folderSection(folder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+    }
+
+    /// The Unfiled section — samples with no folder (or a dangling one). Always shown (it's the
+    /// default home + the drop target for "Move to Unfiled").
+    @ViewBuilder private var unfiledSection: some View {
+        let unfiled = studio.samples(inFolder: nil)
+        Section {
+            if unfiled.isEmpty {
+                Text("No unfiled samples.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(unfiled) { s in sampleListRow(s) }
+            }
+        } header: {
+            Text("Unfiled").foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    /// One collapsible FOLDER of samples, name-ordered. Collapse state persists (UserDefaults).
+    @ViewBuilder private func folderSection(_ folder: StudioSampleFolder) -> some View {
+        let members = studio.samples(inFolder: folder.id)
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if members.isEmpty {
+                    Text("Empty folder — move a sample in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                        .listRowBackground(Color.clear)
+                }
+                ForEach(members) { s in sampleListRow(s) }
+            } label: {
+                HStack {
+                    Label(folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
+                    Spacer()
+                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                // The id rides the LABEL (a leaf), never the Section/DisclosureGroup container —
+                // a container id would clobber descendant ids on macOS (the StemAuditionPanel trap).
+                .accessibilityIdentifier("folder-\(folder.id)")
+                .contextMenu {
+                    Button {
+                        folderNameDraft = folder.name; renamingFolderId = folder.id
+                    } label: { Label("Rename folder", systemImage: "pencil") }
+                        .accessibilityIdentifier("folder-rename-\(folder.id)")
+                    Button(role: .destructive) { deletingFolderId = folder.id } label: {
+                        Label("Delete folder", systemImage: "trash")
+                    }
+                        .accessibilityIdentifier("folder-delete-\(folder.id)")
+                }
+            }
+        }
+    }
+
+    /// A sample row as a list item — the shared `row(_:)` (which OWNS the `sample-row-<id>` +
+    /// context-menu ids) with list chrome stripped so the card look survives inside the List.
+    private func sampleListRow(_ s: StudioSample) -> some View {
+        row(s)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
     }
 
     // MARK: Wiring (views push dependencies in — the MixRecorder pattern, no app-init coupling)
@@ -169,6 +283,20 @@ struct StudioSamplesView: View {
             }
             .foregroundStyle(Theme.accent)
             .accessibilityIdentifier("sample-add-menu")
+
+            // F9 — new sample folder (organizational; the two primary buttons + their ids stay put).
+            Button {
+                newFolderName = ""; pendingMoveSampleId = nil; showNewFolder = true
+            } label: {
+                Image(systemName: "folder.badge.plus")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Theme.accent2.opacity(0.18), in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Theme.accent2)
+            .accessibilityIdentifier("sample-new-folder")
 
             Spacer()
 
@@ -243,6 +371,38 @@ struct StudioSamplesView: View {
                 Label("Rename", systemImage: "pencil")
             }
             .accessibilityIdentifier("sample-rename-\(s.id)")
+            // F9 — file this sample into a folder (or Unfiled / a brand-new folder). Sets a
+            // string only; the audio never moves.
+            Menu {
+                ForEach(studio.sampleFoldersOrdered()) { f in
+                    Button { studio.setSampleFolder(s.id, folderId: f.id) } label: {
+                        if s.folderId == f.id {
+                            Label(f.name, systemImage: "checkmark")
+                        } else {
+                            Text(f.name)
+                        }
+                    }
+                    .accessibilityIdentifier("move-to-\(f.id)-\(s.id)")
+                }
+                Divider()
+                Button { studio.setSampleFolder(s.id, folderId: nil) } label: {
+                    if s.folderId == nil {
+                        Label("Unfiled", systemImage: "checkmark")
+                    } else {
+                        Text("Unfiled")
+                    }
+                }
+                .accessibilityIdentifier("move-to-unfiled-\(s.id)")
+                Button {
+                    pendingMoveSampleId = s.id; newFolderName = ""; showNewFolder = true
+                } label: {
+                    Label("New folder…", systemImage: "folder.badge.plus")
+                }
+                .accessibilityIdentifier("move-to-new-\(s.id)")
+            } label: {
+                Label("Move to folder", systemImage: "folder")
+            }
+            .accessibilityIdentifier("sample-move-\(s.id)")
             Button {
                 addRef = StudioAddRef(id: s.id, title: s.name)
                 let sid = s.id
@@ -294,6 +454,35 @@ struct StudioSamplesView: View {
 
     private var importErrorBinding: Binding<Bool> {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
+    }
+
+    // MARK: Folder bindings + collapse persistence (the PlaylistsView precedent)
+
+    private var folderRenameBinding: Binding<Bool> {
+        Binding(get: { renamingFolderId != nil }, set: { if !$0 { renamingFolderId = nil } })
+    }
+
+    private var folderDeleteBinding: Binding<Bool> {
+        Binding(get: { deletingFolderId != nil }, set: { if !$0 { deletingFolderId = nil } })
+    }
+
+    /// NEW key (device-local, distinct from the playlist-folder key) per the spec.
+    private static let collapsedKey = "pdj.sampleFolders.collapsed"
+    private static func loadCollapsed() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [])
+    }
+    private func persistCollapsed() {
+        UserDefaults.standard.set(Array(collapsed), forKey: StudioSamplesView.collapsedKey)
+    }
+    /// A binding into `collapsed` for a folder's DisclosureGroup, persisting on change (presence
+    /// in the set = COLLAPSED, so a never-touched folder reads as expanded).
+    private func folderExpansion(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsed.contains(id) },
+            set: { expanded in
+                if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                persistCollapsed()
+            })
     }
 
     // MARK: File import (arbitrary audio → transcode → new grid-less sample)

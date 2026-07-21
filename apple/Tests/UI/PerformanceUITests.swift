@@ -203,6 +203,45 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// F9 — folder create + move end-to-end through the UI. Uses the sample's Move submenu
+    /// "New folder…" path (creates the folder AND files this sample into it in one action,
+    /// so no dynamic folder id needs predicting), then asserts the folder renders with the
+    /// sample under it. Proves the new folder wiring is live, not just the store logic.
+    func testSampleFolderCreateAndMove() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: alert/menu folder flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(0)
+        let row = app.any("sample-row-smp_fixture")
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "seeded sample should start in Unfiled")
+        snap("f9-samples-unfiled")
+
+        // Long-press → row context menu → Move to folder submenu → New folder…
+        row.press(forDuration: 1.2)
+        let moveMenu = app.any("sample-move-smp_fixture")
+        XCTAssertTrue(moveMenu.waitForExistence(timeout: 5), "row menu should offer Move to folder")
+        moveMenu.tap()
+        let newInSubmenu = app.any("move-to-new-smp_fixture")
+        XCTAssertTrue(newInSubmenu.waitForExistence(timeout: 5), "submenu should offer New folder…")
+        newInSubmenu.tap()
+
+        // New-folder alert → name it → Create (also files smp_fixture into the new folder).
+        let field = app.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "New folder alert should show a name field")
+        field.tap()
+        field.typeText("Roadtrip")
+        app.alerts.buttons["Create"].tap()
+
+        // The folder appears (default-expanded) with the moved sample under it.
+        XCTAssertTrue(app.staticTexts["Roadtrip"].waitForExistence(timeout: 8),
+                      "the new folder should render in the samples list")
+        XCTAssertTrue(app.any("sample-row-smp_fixture").waitForExistence(timeout: 5),
+                      "the moved sample should be visible under the new folder")
+        snap("f9-sample-in-folder")
+        #endif
+    }
+
     func testSliceEditorAutoSliceAndPad() throws {
         #if os(macOS)
         throw XCTSkip("macOS: sheet/slice flow exercised on iOS")
