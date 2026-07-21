@@ -284,9 +284,11 @@ enum MelodyTracker {
 
     /// Clean a raw note line into a "solid starting point": SNAP each note's pitch class to the
     /// nearest scale degree (kills semitone jitter; a no-op when `scalePCs` is empty) then
-    /// OCTAVE-CORRECT — fold a note more than a fifth from the previous note by ±12 when that
-    /// closes the gap, killing the octave errors monophonic trackers are prone to. Continuity is
-    /// anchored to the already-corrected previous note.
+    /// OCTAVE-CORRECT — fold ONLY a NEAR-OCTAVE slip (an interval > 10 semitones from the previous
+    /// corrected note, i.e. almost certainly a tracker octave jump) back by ±12, killing the octave
+    /// errors monophonic trackers are prone to WITHOUT flattening or inverting genuine leaps: a real
+    /// sixth or seventh (≤ 10 st) is left intact. Continuity is anchored to the already-corrected
+    /// previous note.
     nonisolated static func snapToScale(notes: [DemuxMelodyNote], scalePCs: [Int]) -> [DemuxMelodyNote] {
         guard !notes.isEmpty else { return [] }
         // Sorted-unique so a two-sided tie (every chromatic tone is ±1 from both neighbours in a
@@ -310,10 +312,13 @@ enum MelodyTracker {
                     if abs(bestDelta) <= 6 { m += bestDelta }
                 }
             }
-            // Octave-correct against the previous (already corrected) note.
+            // Octave-correct against the previous (already corrected) note: fold by ±12 ONLY when
+            // the interval is a NEAR-OCTAVE slip (> 10 semitones — a minor-7th-or-wider jump that a
+            // monophonic tracker almost always mis-octaves), leaving genuine sixths/sevenths (≤ 10)
+            // untouched so a real ascending leap isn't flattened or inverted downward.
             if let p = prevMidi {
-                while m - p > 7 { m -= 12 }
-                while p - m > 7 { m += 12 }
+                while m - p > 10 { m -= 12 }
+                while p - m > 10 { m += 12 }
             }
             out.append(DemuxMelodyNote(midi: m, startMs: note.startMs, endMs: note.endMs))
             prevMidi = m

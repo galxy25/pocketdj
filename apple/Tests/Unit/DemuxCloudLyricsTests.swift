@@ -89,7 +89,7 @@ final class DemuxCloudLyricsTests: XCTestCase {
     // MARK: - Document back-compat (all new fields optional)
 
     func testV1DocumentWithoutNewFieldsStillDecodes() throws {
-        // A pre-feature cache doc: no transcriptEngine, no drumStatus/drumHits.
+        // A pre-feature cache doc: no transcriptEngine, no drumStatus/drumHits, no melody fields.
         let v1 = """
         {"schemaVersion":1,"sourceKey":"sng_old","displayName":"Old","durationMs":1000,
          "transcriptStatus":"done","words":[],"chordStatus":"none","chords":[]}
@@ -98,11 +98,18 @@ final class DemuxCloudLyricsTests: XCTestCase {
         XCTAssertNil(doc.transcriptEngine)
         XCTAssertNil(doc.drumStatus)
         XCTAssertNil(doc.drumHits)
+        // F8 slice B melody fields are additive-OPTIONAL (no schemaVersion bump) — a v1 doc that
+        // predates them must decode with both nil, never fail (the wipe-safety guarantee asserted
+        // directly, not just transitively through the equality round-trip below).
+        XCTAssertNil(doc.melodyStatus)
+        XCTAssertNil(doc.melodyNotes)
         // And the new fields round-trip once set.
         var d2 = doc
         d2.transcriptEngine = "cloud"
         d2.drumStatus = .done
         d2.drumHits = [DemuxDrumHit(ms: 10, kind: .kick, strength: 0.5)]
+        d2.melodyStatus = .done
+        d2.melodyNotes = [DemuxMelodyNote(midi: 60, startMs: 0, endMs: 500)]
         let back = try JSONDecoder().decode(DemuxDocument.self, from: JSONEncoder().encode(d2))
         XCTAssertEqual(back, d2)
     }

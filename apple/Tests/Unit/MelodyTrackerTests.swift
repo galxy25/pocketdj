@@ -106,6 +106,21 @@ final class MelodyTrackerTests: XCTestCase {
         XCTAssertEqual(out.map(\.midi), [60, 64, 67, 65], "real stepwise motion survives intact")
     }
 
+    func testOctaveCorrectionPreservesSixthButFoldsOctave() {
+        // FIX 3: the fold now corrects ONLY near-octave slips (> 10 st), not "any leap over a
+        // fifth". A genuine ascending minor sixth (60 → 68, +8 st) is a REAL interval — it must
+        // survive intact; the old ">a fifth" fold pulled 68 down to 56, INVERTING the ascending
+        // sixth into a descending major third.
+        let sixth = MelodyTracker.snapToScale(notes: [note(60), note(68)], scalePCs: [])
+        XCTAssertEqual(sixth.map(\.midi), [60, 68],
+                       "an ascending minor sixth is a real leap, not an octave slip — left intact")
+        // A true ±12 octave error IS still folded back onto the melody's register.
+        let octaveUp = MelodyTracker.snapToScale(notes: [note(60), note(72)], scalePCs: [])
+        XCTAssertEqual(octaveUp.map(\.midi), [60, 60], "a +12 octave error folds back down")
+        let octaveDown = MelodyTracker.snapToScale(notes: [note(60), note(48)], scalePCs: [])
+        XCTAssertEqual(octaveDown.map(\.midi), [60, 60], "a −12 octave error folds back up")
+    }
+
     // MARK: - End-to-end over a synthesized single-tone stem (the seed-fixture shape)
 
     /// A 2 s 220 Hz tone (the PDJ_SEED_DEMUX melody-smoke shape) tracks to a sustained MIDI-57

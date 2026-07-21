@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import PocketDJ
 
 /// F8 slice B — the comping↔melody switch's persistence + store-level re-extract.
@@ -112,5 +113,72 @@ final class DemuxMelodySwitchTests: XCTestCase {
         let melody = StudioTake(id: "b", name: "", fileName: "", demuxSourceKey: "k", demuxMode: "melody")
         XCTAssertEqual(DemuxTakeSwitch.targetMode(for: comping), "melody")
         XCTAssertEqual(DemuxTakeSwitch.targetMode(for: melody), "comping")
+    }
+
+    // MARK: - On-demand YIN-from-stem branch (empty melody cache + a real stem present)
+
+    /// Write a `seconds`-long mono `freq`-Hz tone into a `.caf` at `url` (the MelodyTracker test's
+    /// synthesized-tone shape) so the streamed YIN pass tracks a real note off it.
+    private func writeTone(to url: URL, seconds: Double, freq: Double = 220) throws {
+        let sr = 44_100.0
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: fmt.settings)
+        let total = AVAudioFrameCount(sr * seconds)
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: total)!
+        buf.frameLength = total
+        let p = buf.floatChannelData![0]
+        for i in 0..<Int(total) { p[i] = 0.5 * Float(sin(2 * .pi * freq * Double(i) / sr)) }
+        try file.write(from: buf)
+    }
+
+    /// FIX 5(b): the on-demand melody branch of `switchMode` — a take with NO cached melody notes
+    /// but whose custom source has REAL stems on disk tracks the vocals stem live (streamed YIN),
+    /// lands melody events on the take, flips its mode, AND caches the tracked notes on the doc.
+    func testSwitchToMelodyTracksFromStemWhenCacheEmpty() async throws {
+        // Own cacheDir so we can seed the demux stems cache the store reads back.
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-demux-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: cacheDir) }
+        let demux = DemuxStore(cacheDir: DemuxStore.defaultCacheDir(cacheDir))
+        let burns = BurnStore(rips: RipsStore(), fileURL: tempURL("json"))
+        let studio = StudioStore(fileURL: tempURL("json"))
+        let packs = InstrumentPackStore()
+
+        // A custom (imported) source key: NOT a catalog song, so resolveGrid stays offline and the
+        // stem is read from the demux cache (not the burn folder).
+        let key = "dmx_stemtest"
+        var doc = demux.documentCreating(for: .file(id: key, name: "stem-src"))
+        doc.chords = [DemuxChordSegment(rootPC: 0, minor: false, startMs: 0, endMs: 2_000, confidence: 0.9)]
+        doc.chordStatus = .done
+        demux.save(doc)                                  // NO melodyNotes — the cache is empty
+        XCTAssertNil(demux.document(for: key)?.melodyNotes, "precondition: no cached melody")
+
+        // Seed all four stems (localStemURLs is all-or-nothing) with a real 220 Hz vocals tone.
+        let stemsDir = DemuxStore.stemsDir(under: cacheDir, key: key)!
+        for name in StemPlayer.stems {
+            try writeTone(to: stemsDir.appendingPathComponent("\(name).caf"), seconds: 2)
+        }
+        XCTAssertNotNil(demux.localStemURLs(for: key), "precondition: the four stems resolve")
+
+        let compingEvents = DemuxInstrumental.events(chords: doc.chords, grid: (120, 0, [])).events
+        studio.addTake(StudioTake(id: "tk_stem", name: "x", fileName: "f.m4a", bpm: 120,
+                                  events: compingEvents, durationMs: 2_000, createdAt: 0,
+                                  demuxSourceKey: key, demuxMode: "comping"))
+
+        try await DemuxTakeSwitch.switchMode(take: studio.take("tk_stem")!, demux: demux,
+                                             burns: burns, studio: studio, packs: packs)
+
+        let switched = studio.take("tk_stem")!
+        XCTAssertEqual(switched.demuxMode, "melody", "the take flipped to melody")
+        XCTAssertFalse(switched.scoreEvents.isEmpty,
+                       "the on-demand YIN pass produced a melody line from the stem")
+        // 220 Hz → MIDI 57 (A3): the tracked line lands on that register (assert on the LONGEST
+        // event, robust to any brief onset artifact — the MelodyTrackerTests dominant-note idiom).
+        let dominant = switched.scoreEvents.max { ($0.offMs - $0.onMs) < ($1.offMs - $1.onMs) }
+        XCTAssertEqual(dominant?.note, 57, "220 Hz stem → MIDI 57")
+        // The tracked notes are CACHED on the doc (compute-once), so a re-switch reuses them.
+        XCTAssertEqual(demux.document(for: key)?.melodyStatus, .done)
+        XCTAssertFalse(demux.document(for: key)?.melodyNotes?.isEmpty ?? true,
+                       "the tracked notes are cached on the demux document")
     }
 }

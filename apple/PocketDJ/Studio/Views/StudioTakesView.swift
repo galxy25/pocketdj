@@ -84,7 +84,7 @@ struct StudioTakesView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(take.name.isEmpty ? "Untitled instrumental" : take.name)
                         .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
-                    Text("\(take.instrument.displayName) · \(Fmt.duration(take.durationMs)) · \(Fmt.bpm(take.bpm)) BPM · \(take.events.count) note\(take.events.count == 1 ? "" : "s")")
+                    Text("\(take.instrument.displayName) · \(Fmt.duration(take.durationMs)) · \(Fmt.bpm(take.bpm)) BPM · \(take.scoreEvents.count) note\(take.scoreEvents.count == 1 ? "" : "s")")
                         .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 }
                 Spacer()
@@ -369,7 +369,11 @@ enum DemuxTakeSwitch {
                     MelodyTracker.detect(melodyURL: url)
                 }.value
                 guard !tracked.isEmpty else { throw SwitchError.noMelody }
-                var updated = doc
+                // RE-FETCH the current doc after the multi-second YIN await — a concurrent Demuxer
+                // analysis (chords / words / drumHits) for the SAME source may have landed while we
+                // tracked, and saving the pre-await snapshot would clobber it. Cache just the melody
+                // fields onto the fresh copy (the `DemuxStore.analyzeMelody` re-fetch discipline).
+                var updated = demux.document(for: key) ?? doc
                 updated.melodyNotes = tracked
                 updated.melodyStatus = .done
                 demux.save(updated)
@@ -386,8 +390,13 @@ enum DemuxTakeSwitch {
     }
 
     /// The demux source's beat grid — a catalog song's beat-grid sidecar (measured lattice), else
-    /// a steady 120-BPM grid at 0 (custom audio; matches the extraction-time resolver).
+    /// a steady 120-BPM grid at 0 (custom audio). ONLY catalog-song keys reach the network: a
+    /// custom source (studio `smp_/lp_/ptn_/tk_` or imported `dmx_`) has no server-side sidecar, so
+    /// firing `burnBeatGrid` for it just 404s/times-out before falling back. Short-circuiting on the
+    /// song predicate matches `StudioDemuxView.resolveInstrumentalGrid` (which guards on `songId`)
+    /// so the SAME take quantizes identically online and offline.
     static func resolveGrid(key: String, burns: BurnStore) async -> DemuxInstrumental.Grid {
+        guard DemuxSource.isSongKey(key) else { return (120, 0, []) }
         var sc = burns.localBeatGrid(forSong: key)
         if sc == nil { sc = await burns.burnBeatGrid(forSong: key) }
         if let sc, let bpm = sc.beatGridBpm, bpm > 0 {

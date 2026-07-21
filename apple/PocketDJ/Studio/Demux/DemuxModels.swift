@@ -59,6 +59,15 @@ enum DemuxSource: Equatable {
         if case .song(let id, _, _) = self { return id }
         return nil
     }
+
+    /// Whether a bare source KEY (as stored on a take's `demuxSourceKey`, where the enum case is
+    /// no longer available) is a CATALOG SONG — the only sources with a server-side beat-grid /
+    /// stem sidecar (the rip-server pipeline is keyed by song id). Studio items
+    /// (`smp_/lp_/ptn_/tk_`) and imported files (`dmx_`) are custom audio and must never fire a
+    /// sidecar fetch. Mirrors `songId != nil` for callers that only hold the string key.
+    static func isSongKey(_ key: String) -> Bool {
+        !StudioFactory.isStudioId(key) && !key.hasPrefix("dmx_")
+    }
 }
 
 // MARK: - Transcript
