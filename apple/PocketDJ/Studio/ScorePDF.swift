@@ -281,6 +281,38 @@ enum ScoreLayout {
         return pages
     }
 
+    /// Lay each system onto its OWN page (no header, height = one system block) — for the
+    /// scroll-follow score view (F8), where the ScrollViewReader must scrollTo a system by index.
+    /// The follow view anchors on REAL layout cells (`.id` per system row), never `.offset`
+    /// targets whose layout frame collapses to the origin (the documented demux scroll bug), so
+    /// each system needs its own laid page. Same per-system geometry as `paginate`; only the
+    /// header + multi-system pagination are dropped.
+    nonisolated static func systems(score: ScoreDocument, instrument: InstrumentKey,
+                                    metrics m: Metrics = .a4) -> [ScorePage] {
+        let s = m.staffSpacing
+        let stripH = 4 * s
+        let plan = score.clefPlan
+        let blockH = plan == .grandStaff
+            ? m.ledgerPad + stripH + m.grandStaffGap + stripH + m.ledgerPad
+            : m.ledgerPad + stripH + m.ledgerPad
+        let left = m.margin
+        let right = m.pageSize.width - m.margin
+        var pages: [ScorePage] = []
+        for start in stride(from: 0, to: score.measures.count, by: m.measuresPerSystem) {
+            let chunk = Array(score.measures[start..<min(start + m.measuresPerSystem,
+                                                         score.measures.count)])
+            var glyphs: [ScoreGlyph] = []
+            var sys: [LaidSystem] = []
+            // y = 0: `appendSystem` seats the strips at `ledgerPad`, so the whole system fits in
+            // [0, blockH] — a self-contained one-system page the follow view stacks vertically.
+            appendSystem(chunk, plan: plan, startIndex: start, y: 0, left: left, right: right,
+                         m: m, into: &glyphs, systems: &sys)
+            pages.append(ScorePage(size: CGSize(width: m.pageSize.width, height: blockH),
+                                   glyphs: glyphs, systems: sys))
+        }
+        return pages
+    }
+
     // MARK: System / item layout
 
     /// One system: staff lines + clefs + barlines for `measures`, then every item's glyphs.

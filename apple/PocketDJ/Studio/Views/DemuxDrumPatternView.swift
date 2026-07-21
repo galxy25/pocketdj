@@ -19,14 +19,14 @@ struct DemuxDrumPatternView: View {
     /// The demuxer's shared player — the grid FOLLOWS playback like the lyrics/chord panels:
     /// the displayed bar tracks the playing bar and a highlight column marches the 16 steps.
     let player: StemPlayer
+    /// The ONE shared demux Follow (lifted to StudioDemuxView) — the drum-pattern grid, the
+    /// instrumental score, and the timeline all track the SAME playhead under it, so enabling
+    /// Follow scrolls BOTH the lane-grid's bar and the score's system to the current playhead.
+    @Binding var follow: Bool
     /// Tap a step cell → seek there (the lyrics tap-line contract).
     var onSeek: (Int) -> Void = { _ in }
 
     @State private var selectedBar = 0
-    /// Follow playback (default on): the displayed bar auto-advances with the playhead while
-    /// playing. Selecting a bar SEEKS playback to it (two-way sync), so follow never fights a
-    /// manual pick; the chip exists to freeze the grid on one bar while the song plays on.
-    @State private var follow = true
     /// Quantized lanes per bar — computed once per (hits, bars) pair, not per render.
     @State private var grid: [[DemuxDrumKind: [Bool]]] = []
     @State private var exporting = false
@@ -55,13 +55,16 @@ struct DemuxDrumPatternView: View {
             // Land on the first bar that actually has hits (intros are often empty).
             if let first = grid.firstIndex(where: { !$0.isEmpty }) { selectedBar = first }
         }
-        // FOLLOW: advance the displayed bar with playback. Bar-granularity state writes only
-        // (once per ~2 s bar) — the fast intra-bar column highlight lives in a TimelineView
-        // overlay so this poll never invalidates the grid mid-tap (the lyrics-scroll pattern).
+        // FOLLOW: advance the displayed bar with the playhead. NO isPlaying gate — a PAUSED scrub
+        // (a bar/step tap here, or the score's/timeline's, seeks the shared player) must move the
+        // lane-grid too, so the grid and the score land on the SAME bar/time (the unified-follow
+        // spec). Bar-granularity state writes only (once per ~2 s bar) — the fast intra-bar column
+        // highlight lives in a TimelineView overlay so this poll never invalidates the grid
+        // mid-tap (the lyrics-scroll pattern).
         .task(id: follow) {
             guard follow else { return }
             while !Task.isCancelled {
-                if player.isPlaying, !bars.isEmpty {
+                if !bars.isEmpty {
                     let ms = Int(player.currentTime * 1_000)
                     if let bi = DrumPatternDetector.barIndex(forMs: ms, bars: bars), bi != selectedBar {
                         selectedBar = bi
