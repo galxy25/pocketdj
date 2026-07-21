@@ -3018,6 +3018,15 @@ final class MixEngine {
         // interlude (song audition / setlist) flips the same shared commands off via its own lifecycle,
         // and without this the skips would stay dead for the remainder of a running auto-mix.
         setLockScreenSkipCommandsEnabled(autoMixing)
+        // The Mix/Auto-DJ card offers NO ♥ (a live blend has no single "current track" the like layer can
+        // own). DISABLE the shared `likeCommand` while THIS engine owns the card — mirrors the ⏭/⏮ dance
+        // above so the ♥ appears ONLY on the standalone player's card, whose owner (`PlayerEngine`) can
+        // actually service it. `PlayerEngine` re-enables it whenever IT reclaims the card. Also drop any
+        // stale fill so a previously-favorited player track's heart doesn't linger on the Mix card. Diffed
+        // so a same-value set doesn't churn the shared command center on every position tick.
+        let like = MPRemoteCommandCenter.shared().likeCommand
+        if like.isEnabled { like.isEnabled = false }
+        if like.isActive { like.isActive = false }
         refreshArtworkIfNeeded(for: track.songId)
         let playing = isPlaying(deck)
         var info: [String: Any] = [

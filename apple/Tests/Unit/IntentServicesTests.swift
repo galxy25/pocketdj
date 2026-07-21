@@ -39,9 +39,13 @@ final class IntentServicesTests: XCTestCase {
             .appendingPathComponent("pdj-intents-studio-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: studioURL) }
         let studio = StudioStore(fileURL: studioURL)
+        let favURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-fav-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: favURL) }
+        let favorites = FavoritesStore(fileURL: favURL)
         let services = IntentServices(app: app, settings: settings, collections: collections,
                                       setlistPlayer: sequencer, mix: mix, burns: burns,
-                                      studio: studio, rips: rips)
+                                      studio: studio, rips: rips, favorites: favorites)
         return (services, collections, app)
     }
 

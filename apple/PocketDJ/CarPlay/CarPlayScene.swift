@@ -29,6 +29,12 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 /// through the shared sequencer, so the head unit's Now Playing matches the phone.
 @MainActor
 final class CarPlayController {
+    /// The live controller for the connected head unit (nil when no CarPlay scene is up). The
+    /// app-scoped favorites observer (WidgetSync) fans a ♥ change out to this so the Now Playing
+    /// heart rebuilds — CarPlay's own scene runs OUTSIDE the SwiftUI environment, so a single
+    /// shared observer reaches it through this weak hook rather than a second observation.
+    static weak var current: CarPlayController?
+
     private let interfaceController: CPInterfaceController
     private var model: CarPlayModel?
     /// Tiny artwork cache (albumId → image) so re-browsing doesn't refetch.
@@ -39,6 +45,7 @@ final class CarPlayController {
 
     init(interfaceController: CPInterfaceController) {
         self.interfaceController = interfaceController
+        CarPlayController.current = self
     }
 
     func start() {
@@ -87,6 +94,26 @@ final class CarPlayController {
         let np = CPNowPlayingTemplate.shared
         np.isUpNextButtonEnabled = true
         np.add(nowPlayingObserver)
+        refreshNowPlayingButtons()
+    }
+
+    /// Build the ♥ button for the shared Now Playing template, filled/outline by the current
+    /// track's favorite state. CarPlay buttons are IMMUTABLE — a state change means REPLACING the
+    /// whole `nowPlayingButtons` array (see `refreshNowPlayingButtons`), not mutating a button.
+    private func heartButton() -> CPNowPlayingImageButton {
+        let on = model?.isCurrentFavorite() ?? false
+        let image = UIImage(systemName: on ? "heart.fill" : "heart") ?? UIImage()
+        return CPNowPlayingImageButton(image: image) { [weak self] _ in
+            self?.model?.toggleCurrentFavorite()
+            self?.refreshNowPlayingButtons()   // rebuild — the tapped button can't mutate in place
+        }
+    }
+
+    /// Rebuild the Now Playing template's buttons — called on BOTH a track change AND a favorite
+    /// change (via the shared favorites observer → `CarPlayController.current`), because the heart
+    /// glyph depends on both and the button objects are immutable.
+    func refreshNowPlayingButtons() {
+        CPNowPlayingTemplate.shared.updateNowPlayingButtons([heartButton()])
     }
 
     // MARK: - List templates

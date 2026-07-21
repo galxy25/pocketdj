@@ -103,6 +103,14 @@ final class PlayerEngine {
     /// `onTrackEnded`); nil ⇒ no set is running, so the commands are disabled + reject input.
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
+    /// The lock-screen / Control Center ♥ (`MPRemoteCommandCenter.likeCommand`) drives these.
+    /// Injected once at launch (mirroring `artworkURLsProvider`) from the favorites store + the
+    /// catalog: `toggleCurrentFavorite` flips the CURRENT track's favorite (resolving its Apple
+    /// Music id for the owner-gated push); `isCurrentFavorite` reports the state so the card's ♥
+    /// renders filled/outline. nil in tests that don't wire them (the command then no-ops). The
+    /// engine stays decoupled from the favorites/catalog layer — same pattern as the art provider.
+    @ObservationIgnored var toggleCurrentFavorite: (() -> Void)?
+    @ObservationIgnored var isCurrentFavorite: (() -> Bool)?
     /// The end-of-track NotificationCenter observer, re-registered per loaded item.
     private var endObserver: NSObjectProtocol?
     /// The AVAudioSession interruption observer (iOS) — re-activates + resumes after a call /
@@ -225,6 +233,7 @@ final class PlayerEngine {
         // shared commands for its auto-mix skip mapping, so reclaiming the card must restore the
         // collection semantics (⏮ previous / ⏭ next while a set runs, disabled otherwise).
         setNextPreviousEnabled(onNext != nil)
+        setLikeCommandEnabled(true)            // reclaim heals the ♥ if a Mix interlude disabled it
         player.play()
         updateNowPlayingInfo()
     }
@@ -251,6 +260,7 @@ final class PlayerEngine {
         guard player.currentItem != nil else { NPLog.trace("engine.play REFUSED (idle)"); return }
         NowPlayingArbiter.shared.claim(self)
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
+        setLikeCommandEnabled(true)             // …and heals the ♥ a Mix card interlude disabled
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
@@ -331,6 +341,7 @@ final class PlayerEngine {
 
         NowPlayingArbiter.shared.claim(self)          // own the card + remote commands
         setNextPreviousEnabled(onNext != nil)         // ⏭/⏮ advance the set
+        setLikeCommandEnabled(true)                   // iOS AM card offers the ♥ (PlayerEngine owns it)
         refreshArtwork(for: songId)                   // async cover fetch → re-pushes the card
         updateNowPlayingInfo()
         startExternalTicker()
@@ -460,6 +471,17 @@ final class PlayerEngine {
         center.previousTrackCommand.isEnabled = enabled
     }
 
+    /// Enable/disable the lock-screen ♥ (`likeCommand`) — PlayerEngine OWNS the like, so every arbiter
+    /// claim re-asserts it (mirrors `setNextPreviousEnabled` above). The Mix engine DISABLES this SAME
+    /// process-global command while IT owns the card (Mix offers no like — the "Mix/Auto-DJ card = like
+    /// OMITTED" rule), so reclaiming the card must HEAL the ♥ back on — otherwise it would stay dead for
+    /// the rest of a PlayerEngine-owned track after a Mix interlude flipped it off. Diffed so a same-value
+    /// set doesn't churn the shared command center.
+    func setLikeCommandEnabled(_ enabled: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        if center.likeCommand.isEnabled != enabled { center.likeCommand.isEnabled = enabled }
+    }
+
     // MARK: - Lock-screen / Control Center (MPNowPlayingInfoCenter + remote commands)
 
     /// Wire the remote command center once: the lock screen, Control Center, AirPods,
@@ -497,7 +519,36 @@ final class PlayerEngine {
             guard let self, NowPlayingArbiter.shared.isActive(self), let onPrevious = self.onPrevious else { return .commandFailed }
             onPrevious(); return .success
         }
+        // The ♥ — a SINGLE feedback toggle (not a like/dislike pair). Registered behind the SAME
+        // single-owner arbiter guard as play/pause: a second uncoordinated writer of the shared
+        // command center reproduces the documented "ghost second card" bug. Its handler flips the
+        // current track's favorite through the injected closure (nil ⇒ no-op); `isActive` (the
+        // filled-heart state) is re-pushed by `updateNowPlayingInfo` on every card write.
+        center.likeCommand.isEnabled = true
+        center.likeCommand.localizedTitle = "Favorite"
+        center.likeCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            return self.handleLikeCommand()
+        }
     }
+
+    /// The lock-screen ♥ handler body, extracted from the command target for unit-testability (the
+    /// MediaPlayer command can't be invoked directly in a headless test — same reason `checkEndBoundary`
+    /// is extracted). Guarded by the SAME single-owner arbiter check as play/pause: only the engine that
+    /// OWNS the card may flip the favorite, so a second uncoordinated writer of the shared command center
+    /// (the "ghost second card" bug) is rejected. nil `toggleCurrentFavorite` (tests / unwired) also fails.
+    /// Returns the exact status the command target reports.
+    func handleLikeCommand() -> MPRemoteCommandHandlerStatus {
+        guard NowPlayingArbiter.shared.isActive(self),
+              let toggle = toggleCurrentFavorite else { return .commandFailed }
+        toggle(); return .success
+    }
+
+    /// Re-push the Now Playing card so the ♥ (`likeCommand.isActive`) reflects a favorite that
+    /// changed OUTSIDE a transport event (the in-app row, the widget, an Apple Music pull). Wired
+    /// to the shared favorites observer; a plain re-run of `updateNowPlayingInfo`, which is guarded
+    /// (arbiter-owned + non-idle) so it's a no-op when this engine doesn't own the card.
+    func refreshFavoriteState() { updateNowPlayingInfo() }
 
     /// Push current track metadata + playback position to the Now Playing card. Skipped
     /// for a live stream's duration (it has none); the card still shows title + artist.
@@ -530,6 +581,10 @@ final class PlayerEngine {
         // system "Now Playing" app) and watchOS rely on it, not just the info dict's PlaybackRate.
         // Without it a phone-started track shows on the CarPlay dashboard but not in Now Playing.
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        // The lock-screen ♥ fill state — pushed on every card write (this method re-runs on each
+        // load/play/pause/seek AND on a favorite change via refreshFavoriteState). Reads through
+        // the injected closure; stays false when unwired (tests) or no current song.
+        MPRemoteCommandCenter.shared().likeCommand.isActive = isCurrentFavorite?() ?? false
     }
 
     /// Resolve + fetch the current track's cover art and attach it to the Now Playing card.
@@ -569,6 +624,10 @@ final class PlayerEngine {
         NPLog.trace("engine card CLEAR (+resign)")
         MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        // Reset the ♥ fill: nil-ing the card leaves `likeCommand.isActive` stuck TRUE, so a favorited
+        // track's filled heart would bleed into the next owner / the idle lock screen. This is the sole
+        // resign funnel, so clearing it here also covers the resign path.
+        MPRemoteCommandCenter.shared().likeCommand.isActive = false
         NowPlayingArbiter.shared.resign(self)                           // release so the Mix can reclaim
     }
 }

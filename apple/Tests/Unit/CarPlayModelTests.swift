@@ -29,9 +29,12 @@ final class CarPlayModelTests: XCTestCase {
         let studioURL = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-cp-studio-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: studioURL) }
         let studio = StudioStore(fileURL: studioURL)
+        let favURL = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-cp-fav-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: favURL) }
+        let favorites = FavoritesStore(fileURL: favURL)
         let services = IntentServices(app: app, settings: settings, collections: collections,
                                       setlistPlayer: sequencer, mix: MixEngine(burns: burns), burns: burns,
-                                      studio: studio, rips: rips)
+                                      studio: studio, rips: rips, favorites: favorites)
         return (CarPlayModel(services: services), services, collections)
     }
 
@@ -222,6 +225,41 @@ final class CarPlayModelTests: XCTestCase {
         collections.addSong("sng_2", toPlaylist: pl.id)     // update the playlist…
         await model.playPlaylist(id: pl.id)                 // …replay → fresh snapshot includes it
         XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_1", "sng_2"])
+    }
+
+    // MARK: Favorite (the ♥ on the CarPlay Now Playing template)
+
+    /// The heart reads/writes the CURRENT track's favorite through the shared FavoritesStore,
+    /// keyed on `queue[index]` (so it's correct for an Apple Music set too). Idle ⇒ false + no-op.
+    func testCurrentFavoriteReflectsAndTogglesTheStore() async {
+        let (model, services, _) = await makeModel()
+        // Idle: nothing playing → not favorited, and a toggle is a safe no-op.
+        XCTAssertFalse(model.isCurrentFavorite())
+        model.toggleCurrentFavorite()
+        XCTAssertTrue(services.favorites.favoriteIds.isEmpty)
+
+        services.setlistPlayer.play([.init(id: "sng_1", title: "Neon", artist: "Aria"),
+                                     .init(id: "sng_2", title: "Pulse", artist: "Aria")])
+        XCTAssertFalse(model.isCurrentFavorite(), "the current track starts unfavorited")
+
+        model.toggleCurrentFavorite()                       // ♥ the current track (sng_1)
+        XCTAssertTrue(model.isCurrentFavorite())
+        XCTAssertTrue(services.favorites.isFavorite("sng_1"))
+        // The catalog id rides the toggle so an owner push can run — sng_1 carries one in TestData.
+        XCTAssertEqual(services.favorites.entry("sng_1")?.appleMusicId,
+                       services.app.songsById["sng_1"]?.appleMusicId)
+
+        model.toggleCurrentFavorite()                       // un-♥
+        XCTAssertFalse(model.isCurrentFavorite())
+        XCTAssertFalse(services.favorites.isFavorite("sng_1"))
+
+        // The heart tracks the CURRENT track: advance, and it reads the next song's state.
+        services.setlistPlayer.skipNext()                   // now on sng_2
+        XCTAssertFalse(model.isCurrentFavorite())
+        services.favorites.toggle("sng_2", appleMusicId: nil)
+        XCTAssertTrue(model.isCurrentFavorite(), "heart follows the current track to sng_2")
+        XCTAssertFalse(services.favorites.isFavorite("sng_1"), "…and sng_1 stayed un-favorited")
+        services.setlistPlayer.stop()
     }
 
     // MARK: Add-to

@@ -130,8 +130,23 @@ final class WidgetSync {
             // widget's heart fills/empties — reading the derived set arms the tracking on it.
             _ = favorites.favoriteIds
         } onChange: { [weak self] in
-            Task { @MainActor in self?.publish(); self?.arm() }
+            Task { @MainActor in self?.publish(); self?.fanOutNowPlayingFavorite(); self?.arm() }
         }
+    }
+
+    /// F10 fan-out — the SINGLE now-playing-state observer (this `arm()`) is also what keeps the ♥
+    /// in sync on the OTHER now-playing surfaces, so a favorite (or track) change anywhere reflects
+    /// everywhere without a second observation:
+    ///   • in-app SwiftUI ♥ — updates itself off `FavoritesStore` (@Observable), nothing to do here;
+    ///   • lock screen — re-push the system card so `likeCommand.isActive` (the ♥ fill) is current;
+    ///   • CarPlay — rebuild the immutable Now Playing heart button (no-op when no head unit).
+    /// Fires on track changes too (the arm tracks `currentSongId`/`index`), which is exactly when
+    /// both surfaces must re-evaluate the NEW track's favorite state.
+    private func fanOutNowPlayingFavorite() {
+        player.refreshFavoriteState()
+        #if os(iOS)
+        CarPlayController.current?.refreshNowPlayingButtons()
+        #endif
     }
 
     // MARK: - Publish

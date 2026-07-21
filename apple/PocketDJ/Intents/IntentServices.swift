@@ -42,6 +42,11 @@ final class IntentServices {
     let burns: BurnStore
     let studio: StudioStore
     let rips: RipsStore
+    /// Per-profile favorites (the ♥). The CarPlay scene runs OUTSIDE the SwiftUI environment
+    /// (a separate `UIScene`), so it reaches the live store through this bridge — the same
+    /// gateway CarPlay already uses for every other store. `CarPlayModel` toggles the current
+    /// track's favorite here (its `onChanged` reaches Apple Music only for an owner install).
+    let favorites: FavoritesStore
     /// Async "Create pocket" builder — kept observable so UI can surface progress later.
     let pocketBuilder: PocketBuilderService
 
@@ -79,7 +84,7 @@ final class IntentServices {
 
     init(app: AppModel, settings: SettingsStore, collections: CollectionsStore,
          setlistPlayer: SetlistPlayer, mix: MixEngine, burns: BurnStore, studio: StudioStore,
-         rips: RipsStore) {
+         rips: RipsStore, favorites: FavoritesStore) {
         self.app = app
         self.settings = settings
         self.collections = collections
@@ -88,6 +93,7 @@ final class IntentServices {
         self.burns = burns
         self.studio = studio
         self.rips = rips
+        self.favorites = favorites
         self.pocketBuilder = PocketBuilderService(app: app, collections: collections)
         Self.shared = self
     }

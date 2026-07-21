@@ -291,9 +291,24 @@ struct NowPlayingPanel: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Theme.accent)
-        // The history toggle rides the leading edge so the ⏮⏯⏭ trio stays centered.
+        // History toggle on the leading edge, the ♥ on the trailing edge, so the ⏮⏯⏭ trio
+        // stays centered between them.
         .frame(maxWidth: .infinity)
         .overlay(alignment: .leading) { historyToggle }
+        .overlay(alignment: .trailing) { favoriteToggle }
+    }
+
+    /// ♥ — the current track's favorite, the SAME reusable control every song row uses (reads
+    /// FavoritesStore, keyed on songId + appleMusicId, `.borderless` for macOS). Hidden when the
+    /// deck is idle (no current item to favorite). A track with no Apple Music id (vinyl / My
+    /// Digital / Studio) still favorites — local-only — exactly like its Browse row.
+    @ViewBuilder private var favoriteToggle: some View {
+        if let item = currentItem {
+            FavoriteToggle(songId: item.id,
+                           appleMusicId: app.songsById[item.id]?.appleMusicId,
+                           font: .subheadline)
+                .padding(.trailing, 12)
+        }
     }
 
     /// ⟲ — reveals the durable session's already-played tracks between the deck and Up Next.
@@ -660,6 +675,7 @@ struct NowPlayingMiniBar: View {
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
+    @Environment(AppModel.self) private var app
     /// Flips the collapse state back off (owned by RootView's @AppStorage).
     var expand: () -> Void
 
@@ -675,6 +691,12 @@ struct NowPlayingMiniBar: View {
                 .lineLimit(1)
                 .accessibilityIdentifier("np-mini-title")
             Spacer(minLength: 8)
+            // The current track's ♥ — the same reusable control, compact. Hidden while idle.
+            if let current {
+                FavoriteToggle(songId: current.id,
+                               appleMusicId: app.songsById[current.id]?.appleMusicId,
+                               font: .footnote)
+            }
             Button { sequencer.skipPrevious() } label: {
                 Image(systemName: "backward.fill").font(.footnote)
             }
