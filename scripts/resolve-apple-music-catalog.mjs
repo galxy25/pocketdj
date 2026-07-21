@@ -30,6 +30,7 @@ import { createReadStream, mkdirSync, readFileSync, writeFileSync, renameSync, e
 import { createInterface } from 'node:readline';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 const expand = (p) => (p && p.startsWith('~') ? p.replace(/^~/, homedir()) : p);
 
@@ -86,8 +87,8 @@ function versionTags(s) {
 const setEq = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
 
 // ---------- match scoring ----------
-// Pick the best catalog row for a library song. Returns {storeId, ...} or null.
-function bestMatch(song, albumName, results) {
+// Pick the best catalog row for a library song. Returns {storeId, collectionId, ...} or null.
+export function bestMatch(song, albumName, results) {
   const aArtist = normalize(song.artist);
   const aTitle = normalize(song.name);
   const aCore = coreTitle(song.name);
@@ -123,6 +124,11 @@ function bestMatch(song, albumName, results) {
   if (!best || bestScore < 35) return null;
   return {
     storeId: String(best.trackId),
+    // The SAME catalog row that gives the song's trackId also carries the album's
+    // catalog id (`collectionId`). Capturing it lets index-apple-music.mjs emit each
+    // album's `appleMusicId`, so a provisional Discover album is cleanly superseded by
+    // the real indexed one. Undefined when the row has no collectionId (older/partial rows).
+    collectionId: best.collectionId != null ? String(best.collectionId) : undefined,
     matchArtist: best.artistName,
     matchTitle: best.trackName,
     matchAlbum: best.collectionName,
@@ -225,7 +231,11 @@ async function main() {
       misses++;
     } else {
       const m = bestMatch(s, albumName.get(s.albumId), results);
-      if (m) { s.appleMusicId = m.storeId; hits++; rec = { id: s.id, storeId: m.storeId, matchTitle: m.matchTitle, matchArtist: m.matchArtist, matchAlbum: m.matchAlbum }; }
+      // `collectionId` (the album catalog id) is written next to `storeId`; JSON.stringify
+      // omits it when undefined, so the record stays backward-compatible. On re-runs, cache
+      // HITS are skipped below (never re-appended), so an already-captured collectionId is
+      // preserved as-is; older records lacking it simply resolve to no album id — expected.
+      if (m) { s.appleMusicId = m.storeId; hits++; rec = { id: s.id, storeId: m.storeId, collectionId: m.collectionId, matchTitle: m.matchTitle, matchArtist: m.matchArtist, matchAlbum: m.matchAlbum }; }
       else { misses++; rec = { id: s.id, storeId: null }; }
       appendFileSync(cachePath, JSON.stringify(rec) + '\n');
     }
@@ -250,4 +260,6 @@ async function main() {
   console.error(`  resolved this run: hits=${hits} miss=${misses}  total with appleMusicId: ${withId}/${songs.length}`);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (import.meta.url === (process.argv[1] ? pathToFileURL(process.argv[1]).href : '')) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}
