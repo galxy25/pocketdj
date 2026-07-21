@@ -94,4 +94,34 @@ enum DemuxInstrumental {
         }
         return (out, bpm)
     }
+
+    /// Convert monophonic MELODY notes (F8 slice B) → a beat-quantized single-voice event stream +
+    /// the take's bpm. Mirrors `events(chords:grid:)` — same `beatsSpanned` hold, same `snapToBeat`
+    /// onset, same `firstDownbeatMs` re-anchor — but emits ONE `StudioNoteEvent` per note (NO triad)
+    /// and keeps the line MONOPHONIC: when two notes snap to the same onset only the LONGER-sounding
+    /// one survives (ties → the earlier note), so the score never fuses two pitches into a chord.
+    /// `take.bpm` = the grid's bpm.
+    nonisolated static func melodyEvents(notes: [DemuxMelodyNote], grid: Grid)
+        -> (events: [StudioNoteEvent], bpm: Double) {
+        let bpm = grid.bpm > 0 ? grid.bpm : 120
+        let beatMs = 60_000.0 / bpm
+        var winners: [Int: StudioNoteEvent] = [:]
+        var onsetOrder: [Int] = []
+        for note in notes.sorted(by: { $0.startMs < $1.startMs }) {
+            let beats = beatsSpanned(startMs: note.startMs, endMs: note.endMs, grid: grid)
+            let snapped = min(snapToBeat(ms: note.startMs, grid: grid), note.endMs)
+            let onMs = max(0, snapped - grid.firstDownbeatMs)
+            let offMs = onMs + Int((Double(beats) * beatMs).rounded())
+            let ev = StudioNoteEvent(onMs: onMs, offMs: offMs, note: note.midi, velocity: 90)
+            if let existing = winners[onMs] {
+                // Monophony: keep the longer note on a collision (ties → the earlier, seen first).
+                if (offMs - onMs) > (existing.offMs - existing.onMs) { winners[onMs] = ev }
+            } else {
+                winners[onMs] = ev
+                onsetOrder.append(onMs)
+            }
+        }
+        let out = onsetOrder.compactMap { winners[$0] }
+        return (out, bpm)
+    }
 }

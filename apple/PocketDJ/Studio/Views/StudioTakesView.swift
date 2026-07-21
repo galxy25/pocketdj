@@ -10,6 +10,12 @@ struct StudioTakesView: View {
     @Environment(StudioStore.self) private var studio
     @Environment(InstrumentEngine.self) private var instruments
     @Environment(InstrumentPackStore.self) private var packs
+    @Environment(DemuxStore.self) private var demux
+    @Environment(BurnStore.self) private var burns
+
+    /// Takes whose comping↔melody re-extract is in flight (F8 slice B) — drives the disabled state
+    /// so a second tap can't race the switch.
+    @State private var switchingIds: Set<String> = []
 
     @State private var renamingId: String?
     @State private var nameDraft = ""
@@ -78,7 +84,7 @@ struct StudioTakesView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(take.name.isEmpty ? "Untitled instrumental" : take.name)
                         .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
-                    Text("\(take.instrument.displayName) · \(Fmt.duration(take.durationMs)) · \(Fmt.bpm(take.bpm)) BPM · \(take.events.count) note\(take.events.count == 1 ? "" : "s")")
+                    Text("\(take.instrument.displayName) · \(Fmt.duration(take.durationMs)) · \(Fmt.bpm(take.bpm)) BPM · \(take.scoreEvents.count) note\(take.scoreEvents.count == 1 ? "" : "s")")
                         .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
                 }
                 Spacer()
@@ -127,6 +133,16 @@ struct StudioTakesView: View {
         }
         .contextMenu {   // right-click (macOS) / long-press (iOS) — swipe parity
             Button { beginRename(take) } label: { Label("Rename…", systemImage: "pencil") }
+            // F8 slice B: flip a Demux instrumental between chord-comping and true melody by
+            // re-extracting the OTHER mode from the same demux source (only for demux takes).
+            if take.demuxSourceKey != nil {
+                Button { switchMode(take) } label: {
+                    Label(take.demuxMode == "melody" ? "Switch to comping" : "Switch to melody",
+                          systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(switchingIds.contains(take.id))
+                .accessibilityIdentifier("demux-switch-mode-\(take.id)")
+            }
             Button { useAsSample(take) } label: { Label("Sample from instrumental", systemImage: "waveform.badge.plus") }
                 .disabled(samplingIds.contains(take.id) || take.scoreEvents.isEmpty)
             Button {
@@ -147,6 +163,25 @@ struct StudioTakesView: View {
     private func beginRename(_ take: StudioTake) {
         nameDraft = take.name
         renamingId = take.id
+    }
+
+    // MARK: Switch mode (comping ↔ melody, F8 slice B)
+
+    /// Re-extract the OTHER mode from the take's demux source and REPLACE its events in place
+    /// (the score/replay re-render). A clear message when melody is requested but the source's
+    /// stems are gone (never a silent no-op).
+    private func switchMode(_ take: StudioTake) {
+        guard !switchingIds.contains(take.id) else { return }
+        switchingIds.insert(take.id)
+        Task {
+            do {
+                try await DemuxTakeSwitch.switchMode(take: take, demux: demux, burns: burns,
+                                                     studio: studio, packs: packs)
+            } catch {
+                errorText = DemuxTakeSwitch.message(for: error)
+            }
+            switchingIds.remove(take.id)
+        }
     }
 
     // MARK: Sample from instrumental (spec §2/§7 — the take → sample → loop path)
@@ -282,6 +317,123 @@ enum StudioTakeRenderer {
             studio.setTakeRendered(takeId, fileName: fileName, wasUserFolder: dest.isUserFolder)
         } catch {
             // Leave uncached — the raw file still resolves for playback (see the doc comment).
+        }
+    }
+}
+
+// MARK: - Comping ↔ melody switch (F8 slice B)
+
+/// Re-extracts a Demux instrumental take between chord-comping and true melody from its recorded
+/// demux source, then REPLACES the take's events + flips its mode + re-renders. The ONE place the
+/// take-context-menu switch happens (unit-tested at the store level). Comping reads the demux doc's
+/// chords; melody reads the CACHED tracked notes (compute-once), tracking the vocals/other stem
+/// on-demand only when the cache is empty — and surfacing a clear error when the stems are gone.
+@MainActor
+enum DemuxTakeSwitch {
+    enum SwitchError: Error {
+        case noSource        // the take carries no demuxSourceKey
+        case noDoc           // the demux document is gone (source never demuxed / cache cleared)
+        case noChords        // comping requested but the doc has no chords
+        case noMelody        // melody tracked to nothing
+        case needStems       // melody requested, no cached notes AND no local stems to track
+    }
+
+    /// The mode the switch would produce for `take` (the opposite of its current mode).
+    static func targetMode(for take: StudioTake) -> String {
+        (take.demuxMode == "melody") ? "comping" : "melody"
+    }
+
+    /// Perform the switch. Throws `SwitchError` (mapped to copy by `message(for:)`).
+    static func switchMode(take: StudioTake, demux: DemuxStore, burns: BurnStore,
+                           studio: StudioStore, packs: InstrumentPackStore) async throws {
+        guard let key = take.demuxSourceKey else { throw SwitchError.noSource }
+        guard let doc = demux.document(for: key) else { throw SwitchError.noDoc }
+        let target = targetMode(for: take)
+        let grid = await resolveGrid(key: key, burns: burns)
+
+        let events: [StudioNoteEvent]
+        if target == "comping" {
+            guard !doc.chords.isEmpty else { throw SwitchError.noChords }
+            events = DemuxInstrumental.events(chords: doc.chords, grid: grid).events
+        } else {
+            let notes: [DemuxMelodyNote]
+            if let cached = doc.melodyNotes, !cached.isEmpty {
+                notes = cached
+            } else {
+                guard let stem = resolveMelodyStem(key: key, burns: burns, demux: demux) else {
+                    throw SwitchError.needStems
+                }
+                defer { stem.release?() }
+                let url = stem.url
+                let tracked = await Task.detached(priority: .utility) {
+                    MelodyTracker.detect(melodyURL: url)
+                }.value
+                guard !tracked.isEmpty else { throw SwitchError.noMelody }
+                // RE-FETCH the current doc after the multi-second YIN await — a concurrent Demuxer
+                // analysis (chords / words / drumHits) for the SAME source may have landed while we
+                // tracked, and saving the pre-await snapshot would clobber it. Cache just the melody
+                // fields onto the fresh copy (the `DemuxStore.analyzeMelody` re-fetch discipline).
+                var updated = demux.document(for: key) ?? doc
+                updated.melodyNotes = tracked
+                updated.melodyStatus = .done
+                demux.save(updated)
+                notes = tracked
+            }
+            events = DemuxInstrumental.melodyEvents(notes: notes, grid: grid).events
+        }
+        guard !events.isEmpty else {
+            throw target == "comping" ? SwitchError.noChords : SwitchError.noMelody
+        }
+        studio.setTakeEvents(take.id, events: events)
+        studio.setTakeDemuxMode(take.id, mode: target)
+        await StudioTakeRenderer.ensureRendered(takeId: take.id, studio: studio, packs: packs)
+    }
+
+    /// The demux source's beat grid — a catalog song's beat-grid sidecar (measured lattice), else
+    /// a steady 120-BPM grid at 0 (custom audio). ONLY catalog-song keys reach the network: a
+    /// custom source (studio `smp_/lp_/ptn_/tk_` or imported `dmx_`) has no server-side sidecar, so
+    /// firing `burnBeatGrid` for it just 404s/times-out before falling back. Short-circuiting on the
+    /// song predicate matches `StudioDemuxView.resolveInstrumentalGrid` (which guards on `songId`)
+    /// so the SAME take quantizes identically online and offline.
+    static func resolveGrid(key: String, burns: BurnStore) async -> DemuxInstrumental.Grid {
+        guard DemuxSource.isSongKey(key) else { return (120, 0, []) }
+        var sc = burns.localBeatGrid(forSong: key)
+        if sc == nil { sc = await burns.burnBeatGrid(forSong: key) }
+        if let sc, let bpm = sc.beatGridBpm, bpm > 0 {
+            return (bpm, sc.firstDownbeatMs ?? 0, sc.beatsMs)
+        }
+        return (120, 0, [])
+    }
+
+    /// The melodic stem (VOCALS, else `other`): a song's from the burn folder (its scope handed
+    /// back via `release`), custom audio from the demux stems cache.
+    static func resolveMelodyStem(key: String, burns: BurnStore, demux: DemuxStore)
+        -> (url: URL, release: (() -> Void)?)? {
+        if let stems = burns.localStemURLs(forSong: key),
+           let url = stems.urls["vocals"] ?? stems.urls["other"] {
+            return (url, stems.release)
+        }
+        if let stems = demux.localStemURLs(for: key),
+           let url = stems["vocals"] ?? stems["other"] {
+            return (url, nil)
+        }
+        return nil
+    }
+
+    static func message(for error: Error) -> String {
+        switch error {
+        case SwitchError.noSource:
+            return "This instrumental wasn’t made in the Demuxer, so it can’t switch modes."
+        case SwitchError.noDoc:
+            return "The Demuxer data for this instrumental’s source is gone — re-open it in the Demuxer."
+        case SwitchError.noChords:
+            return "No chords were detected for this source, so there’s no comping to switch to."
+        case SwitchError.noMelody:
+            return "No clear melody could be tracked from this source’s stems."
+        case SwitchError.needStems:
+            return "Download this track’s stems first — the melody is tracked from the vocals (or “other”) stem."
+        default:
+            return "Couldn’t switch this instrumental’s mode."
         }
     }
 }

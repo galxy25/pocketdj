@@ -26,6 +26,14 @@ enum KeyDetector {
     /// Detect from a 12-bin pitch-class profile (any nonnegative weights; index 0 = C). Returns the
     /// Camelot code + a 0…1 confidence (the best correlation, remapped from [-1,1]). nil when empty.
     nonisolated static func detect(chroma: [Double]) -> (camelot: String, strength: Double)? {
+        guard let k = keyPC(chroma: chroma) else { return nil }
+        let camelot = k.major ? majorCamelot[k.tonic] : minorCamelot[k.tonic]
+        return (camelot, k.strength)
+    }
+
+    /// The raw best-fitting key: tonic pitch class (0 = C … 11 = B), major/minor, and a 0…1
+    /// confidence. The shared back end of `detect(chroma:)` and `scale(chroma:)`. nil when empty.
+    nonisolated static func keyPC(chroma: [Double]) -> (tonic: Int, major: Bool, strength: Double)? {
         guard chroma.count == 12, chroma.reduce(0, +) > 0 else { return nil }
         var bestPc = 0, bestMajor = true, bestScore = -Double.greatestFiniteMagnitude
         for tonic in 0..<12 {
@@ -36,8 +44,21 @@ enum KeyDetector {
             if cMaj > bestScore { bestScore = cMaj; bestPc = tonic; bestMajor = true }
             if cMin > bestScore { bestScore = cMin; bestPc = tonic; bestMajor = false }
         }
-        let camelot = bestMajor ? majorCamelot[bestPc] : minorCamelot[bestPc]
-        return (camelot, max(0, min(1, (bestScore + 1) / 2)))
+        return (bestPc, bestMajor, max(0, min(1, (bestScore + 1) / 2)))
+    }
+
+    /// Diatonic scale intervals (semitones from the tonic): major, else natural minor.
+    nonisolated static func scalePitchClasses(tonic: Int, major: Bool) -> [Int] {
+        let steps = major ? [0, 2, 4, 5, 7, 9, 11] : [0, 2, 3, 5, 7, 8, 10]
+        let t = ((tonic % 12) + 12) % 12
+        return steps.map { ($0 + t) % 12 }
+    }
+
+    /// The 7 scale pitch classes of the best-fitting key for a chroma profile (the MelodyTracker
+    /// scale-snap target). nil when the profile is empty.
+    nonisolated static func scale(chroma: [Double]) -> [Int]? {
+        guard let k = keyPC(chroma: chroma) else { return nil }
+        return scalePitchClasses(tonic: k.tonic, major: k.major)
     }
 
     /// Instrumental key: an EXACT pitch-class histogram from MIDI note events, weighted by each

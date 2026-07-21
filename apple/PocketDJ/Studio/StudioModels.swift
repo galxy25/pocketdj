@@ -605,18 +605,28 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     var renderedFileName: String?
     var renderedWasUserFolder: Bool?
 
+    /// Demux provenance (F8 slice B — the comping↔melody switch). `demuxSourceKey` is the
+    /// `DemuxDocument` key the take was extracted from (so the switch re-reaches the chords /
+    /// stem); `demuxMode` is "comping" or "melody". BOTH nil for a take that isn't a Demux
+    /// instrumental. Additive-OPTIONAL (the `editedEvents` precedent) — NO schemaVersion bump, so
+    /// an old take without them decodes intact.
+    var demuxSourceKey: String?
+    var demuxMode: String?
+
     enum CodingKeys: String, CodingKey {
         case id, name, instrument, fileName, wasUserFolder, bpm, events, durationMs, createdAt, editedEvents
-        case renderedFileName, renderedWasUserFolder
+        case renderedFileName, renderedWasUserFolder, demuxSourceKey, demuxMode
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
          wasUserFolder: Bool = false, bpm: Double = 120, events: [StudioNoteEvent] = [],
          durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil,
-         renderedFileName: String? = nil, renderedWasUserFolder: Bool? = nil) {
+         renderedFileName: String? = nil, renderedWasUserFolder: Bool? = nil,
+         demuxSourceKey: String? = nil, demuxMode: String? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
         self.wasUserFolder = wasUserFolder; self.bpm = bpm; self.events = events
         self.durationMs = durationMs; self.createdAt = createdAt; self.editedEvents = editedEvents
         self.renderedFileName = renderedFileName; self.renderedWasUserFolder = renderedWasUserFolder
+        self.demuxSourceKey = demuxSourceKey; self.demuxMode = demuxMode
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -634,6 +644,8 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
             .compactMap(\.value)
         renderedFileName = try? c.decode(String.self, forKey: .renderedFileName)
         renderedWasUserFolder = try? c.decode(Bool.self, forKey: .renderedWasUserFolder)
+        demuxSourceKey = try? c.decode(String.self, forKey: .demuxSourceKey)
+        demuxMode = try? c.decode(String.self, forKey: .demuxMode)
     }
 }
 

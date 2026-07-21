@@ -518,6 +518,16 @@ final class StudioStore {
         saveNow()
     }
 
+    /// Flip a Demux instrumental's mode flag ("comping"/"melody") after the comping↔melody switch
+    /// re-extracts its events (F8 slice B). Provenance only — the events are set separately by
+    /// `setTakeEvents`; this records which converter last produced them so the context-menu label
+    /// and the next switch read the right direction.
+    func setTakeDemuxMode(_ id: String, mode: String?) {
+        guard let i = takes.firstIndex(where: { $0.id == id }) else { return }
+        takes[i].demuxMode = mode
+        saveNow()
+    }
+
     /// Drop a take's edits — the score reverts to deriving from the raw performance.
     func revertTakeEdits(_ id: String) {
         guard let i = takes.firstIndex(where: { $0.id == id }), takes[i].editedEvents != nil else { return }

@@ -144,6 +144,46 @@ final class DemuxInstrumentalTests: XCTestCase {
         XCTAssertTrue(DemuxInstrumental.events(chords: [], grid: (120, 0, [])).events.isEmpty)
     }
 
+    // MARK: melodyEvents — monophonic, one event per onset, re-anchored (F8 slice B)
+
+    private func mnote(_ midi: Int, _ start: Int, _ end: Int) -> DemuxMelodyNote {
+        DemuxMelodyNote(midi: midi, startMs: start, endMs: end)
+    }
+
+    func testMelodyEmitsOneEventPerNoteNeverATriad() {
+        let notes = [mnote(60, 0, 500), mnote(62, 500, 1000), mnote(64, 1000, 1500)]
+        let (events, bpm) = DemuxInstrumental.melodyEvents(notes: notes, grid: (120, 0, []))
+        XCTAssertEqual(bpm, 120)
+        XCTAssertEqual(events.count, 3, "one event per note — a single voice, never a triad")
+        XCTAssertEqual(events.map(\.note), [60, 62, 64])
+        XCTAssertEqual(events.map(\.onMs), [0, 500, 1000])
+        for e in events { XCTAssertEqual(e.offMs - e.onMs, 500, "each 1-beat note is 500 ms @120") }
+    }
+
+    func testMelodyReanchorsToFirstDownbeat() {
+        // Beat 1 at 500 ms: a note starting there lands at onMs 0.
+        let events = DemuxInstrumental.melodyEvents(notes: [mnote(67, 500, 1500)],
+                                                    grid: (120, 500, [])).events
+        XCTAssertEqual(events.map(\.onMs), [0])
+        XCTAssertEqual(events.first?.note, 67)
+    }
+
+    func testMelodyMonophonicOnCollisionKeepsLongerNote() {
+        // Two notes snapping to the SAME onset (0 and 120 ms both round to beat 0 @120) must NOT
+        // produce two same-onset events (which ScoreQuantizer would fuse into a chord) — the
+        // longer-sounding note wins, keeping the line monophonic.
+        let long = mnote(60, 0, 900)     // ~2 beats
+        let short = mnote(72, 120, 260)  // ~1 beat, snaps to onset 0 too
+        let events = DemuxInstrumental.melodyEvents(notes: [long, short], grid: (120, 0, [])).events
+        XCTAssertEqual(Set(events.map(\.onMs)), [0], "both snapped to the same onset")
+        XCTAssertEqual(events.count, 1, "exactly one event survives the collision — never a chord")
+        XCTAssertEqual(events.first?.note, 60, "the longer-sounding note holds the beat")
+    }
+
+    func testMelodyNoNotesYieldsNoEvents() {
+        XCTAssertTrue(DemuxInstrumental.melodyEvents(notes: [], grid: (120, 0, [])).events.isEmpty)
+    }
+
     // MARK: playhead → score system mapping (the follow view's clock math)
 
     func testSystemIndexMapsPlayheadToSystem() {
