@@ -26,7 +26,6 @@ struct NowPlayingPanel: View {
     @Environment(BurnStore.self) private var burns
     @Environment(CollectionsStore.self) private var collections
     @Environment(IntentServices.self) private var intents
-    @Environment(FavoritesStore.self) private var favorites
     #if os(iOS)
     // Size classes are iOS-only (unavailable on plain macOS) — guard the env read.
     @Environment(\.verticalSizeClass) private var vSize
@@ -676,7 +675,6 @@ struct NowPlayingMiniBar: View {
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
-    @Environment(FavoritesStore.self) private var favorites
     @Environment(AppModel.self) private var app
     /// Flips the collapse state back off (owned by RootView's @AppStorage).
     var expand: () -> Void

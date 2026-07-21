@@ -233,6 +233,7 @@ final class PlayerEngine {
         // shared commands for its auto-mix skip mapping, so reclaiming the card must restore the
         // collection semantics (⏮ previous / ⏭ next while a set runs, disabled otherwise).
         setNextPreviousEnabled(onNext != nil)
+        setLikeCommandEnabled(true)            // reclaim heals the ♥ if a Mix interlude disabled it
         player.play()
         updateNowPlayingInfo()
     }
@@ -259,6 +260,7 @@ final class PlayerEngine {
         guard player.currentItem != nil else { NPLog.trace("engine.play REFUSED (idle)"); return }
         NowPlayingArbiter.shared.claim(self)
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
+        setLikeCommandEnabled(true)             // …and heals the ♥ a Mix card interlude disabled
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
@@ -339,6 +341,7 @@ final class PlayerEngine {
 
         NowPlayingArbiter.shared.claim(self)          // own the card + remote commands
         setNextPreviousEnabled(onNext != nil)         // ⏭/⏮ advance the set
+        setLikeCommandEnabled(true)                   // iOS AM card offers the ♥ (PlayerEngine owns it)
         refreshArtwork(for: songId)                   // async cover fetch → re-pushes the card
         updateNowPlayingInfo()
         startExternalTicker()
@@ -468,6 +471,17 @@ final class PlayerEngine {
         center.previousTrackCommand.isEnabled = enabled
     }
 
+    /// Enable/disable the lock-screen ♥ (`likeCommand`) — PlayerEngine OWNS the like, so every arbiter
+    /// claim re-asserts it (mirrors `setNextPreviousEnabled` above). The Mix engine DISABLES this SAME
+    /// process-global command while IT owns the card (Mix offers no like — the "Mix/Auto-DJ card = like
+    /// OMITTED" rule), so reclaiming the card must HEAL the ♥ back on — otherwise it would stay dead for
+    /// the rest of a PlayerEngine-owned track after a Mix interlude flipped it off. Diffed so a same-value
+    /// set doesn't churn the shared command center.
+    func setLikeCommandEnabled(_ enabled: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        if center.likeCommand.isEnabled != enabled { center.likeCommand.isEnabled = enabled }
+    }
+
     // MARK: - Lock-screen / Control Center (MPNowPlayingInfoCenter + remote commands)
 
     /// Wire the remote command center once: the lock screen, Control Center, AirPods,
@@ -513,10 +527,21 @@ final class PlayerEngine {
         center.likeCommand.isEnabled = true
         center.likeCommand.localizedTitle = "Favorite"
         center.likeCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self),
-                  let toggle = self.toggleCurrentFavorite else { return .commandFailed }
-            toggle(); return .success
+            guard let self else { return .commandFailed }
+            return self.handleLikeCommand()
         }
+    }
+
+    /// The lock-screen ♥ handler body, extracted from the command target for unit-testability (the
+    /// MediaPlayer command can't be invoked directly in a headless test — same reason `checkEndBoundary`
+    /// is extracted). Guarded by the SAME single-owner arbiter check as play/pause: only the engine that
+    /// OWNS the card may flip the favorite, so a second uncoordinated writer of the shared command center
+    /// (the "ghost second card" bug) is rejected. nil `toggleCurrentFavorite` (tests / unwired) also fails.
+    /// Returns the exact status the command target reports.
+    func handleLikeCommand() -> MPRemoteCommandHandlerStatus {
+        guard NowPlayingArbiter.shared.isActive(self),
+              let toggle = toggleCurrentFavorite else { return .commandFailed }
+        toggle(); return .success
     }
 
     /// Re-push the Now Playing card so the ♥ (`likeCommand.isActive`) reflects a favorite that
@@ -599,6 +624,10 @@ final class PlayerEngine {
         NPLog.trace("engine card CLEAR (+resign)")
         MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        // Reset the ♥ fill: nil-ing the card leaves `likeCommand.isActive` stuck TRUE, so a favorited
+        // track's filled heart would bleed into the next owner / the idle lock screen. This is the sole
+        // resign funnel, so clearing it here also covers the resign path.
+        MPRemoteCommandCenter.shared().likeCommand.isActive = false
         NowPlayingArbiter.shared.resign(self)                           // release so the Mix can reclaim
     }
 }
