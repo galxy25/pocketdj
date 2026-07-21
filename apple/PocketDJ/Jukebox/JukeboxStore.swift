@@ -129,14 +129,18 @@ final class JukeboxStore {
     /// `state.json`) and start the session loop. Errors land on `lastError`.
     /// `timeless: false` (the default party) auto-ends after 24 h and is sweeper-deleted
     /// at 7 days — all server-side.
-    func start(name: String, timeless: Bool = false) async {
+    func start(name: String, timeless: Bool = false, requiresToken: Bool = true) async {
         guard session == nil, !starting else { return }
         starting = true
         defer { starting = false }
         lastError = nil
         do {
-            let s = try await client.create(name: name, timeless: timeless)
+            let s = try await client.create(name: name, timeless: timeless, requiresToken: requiresToken)
             session = s
+            // Record the caller's intent even though the server doesn't echo/mint the guest
+            // token yet (#TOUPDATE on JukeboxSessionInfo.requiresToken) — so the live toggle
+            // and the "code required" UI reflect what was requested.
+            if session?.requiresToken == nil { session?.requiresToken = requiresToken }
             persistSession()
             hearEnabled = false   // every party starts as a view-only request line
             seq = 0
@@ -182,6 +186,19 @@ final class JukeboxStore {
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    /// Flip whether the live session requires a per-session guest access token.
+    ///
+    /// #TOUPDATE: this only updates local state today — flipping the token on a live session
+    /// means the server must mint (or revoke) the guest token and re-publish the guest page +
+    /// state.json, which jukebox-server.mjs does not do yet. When it does, wire this to a
+    /// `client.configure`-style `/config` call (carrying the current `timeless` so it isn't
+    /// clobbered) and merge the server-confirmed value, exactly like `setTimeless`.
+    func setRequiresToken(_ on: Bool) {
+        guard session != nil else { return }
+        session?.requiresToken = on
+        persistSession()
     }
 
     private func persistSession() {

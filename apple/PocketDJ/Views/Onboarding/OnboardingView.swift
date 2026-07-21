@@ -274,7 +274,14 @@ private struct OnboardingAppleMusicStage: View {
             OnboardingCard {
                 Label("Sign in with Apple Music", systemImage: "music.note")
                     .font(.headline)
-                Text("Stream full songs instantly from your Apple Music subscription while your rips are being made. Without it, songs still play through the rip server.")
+                // #TOUPDATE: "nothing is ever captured from it" — rip-server.mjs:798 routes every
+                // non-analog song to Apple Music capture unconditionally ("Digital songs always
+                // capture from Apple Music"), and :549 captures an analog song on an exact library
+                // match. Both paths must fail closed on Apple-Music-sourced ids before this is true.
+                // The deleted second sentence ("Without it, songs still play through the rip
+                // server") described serving a shared corpus to subscription-less testers as the
+                // designed fallback — it does not come back.
+                Text("Play full songs straight from your Apple Music subscription. Apple Music is playback only — nothing is ever captured, recorded, or downloaded from it.")
                     .font(.callout).foregroundStyle(Theme.fgDim)
                 if let provider = streaming.appleMusicProvider {
                     statusRow(provider)
@@ -334,14 +341,30 @@ private struct OnboardingSourcesStage: View {
 
     var body: some View {
         VStack(spacing: 14) {
+            // #TOUPDATE: "the records you've imported" — the Vinyl source must stop subscribing to
+            // the PocketDJ-published catalog index that is seeded into every new install
+            // (Config.indexURL, wired at SettingsStore.applyOnboardingSources:295). Until each
+            // install starts empty and fills only from that user's own imports, this card calls
+            // someone else's records the user's.
             sourceCard(icon: "opticaldisc", title: "Vinyl", on: $vinyl,
-                       detail: "The digitized vinyl catalog — every ripped record.",
+                       detail: "Your vinyl, digitized — the records you've imported, analyzed for tempo, key, and mood.",
                        a11y: "onboarding-source-vinyl")
+            // #TOUPDATE: "Your digital files" / "your own copy" — today "My Digital" subscribes to
+            // the published digital-index.json (Config.digitalIndexURL) and its rows resolve to a
+            // FLAT, public-read rips/<songId>.mp3 namespace shared across every install. Needs a
+            // per-user index, a per-user key prefix, and an authenticated request on the server
+            // before any install has a copy that is its own.
             sourceCard(icon: "externaldrive", title: "Digital", on: $digital,
-                       detail: "The digital library — pre-ripped, streams and burns with no rip step.",
+                       detail: "Your digital files — your own copy, prepared ahead of time, so it plays and downloads with no extra step.",
                        a11y: "onboarding-source-digital")
+            // #TOUPDATE: "Your Apple Music library" / "nothing is captured from it" — the shipped
+            // apple-music-index.json is one published library indexed from a single Library.xml,
+            // not the installing user's; and rip-server.mjs:798 still routes every non-analog song
+            // to Apple Music capture unconditionally (analog on an exact library match, :549).
+            // The index must become per-user AND both capture paths must fail closed on
+            // Apple-Music-sourced ids before this card is honest.
             sourceCard(icon: "antenna.radiowaves.left.and.right", title: "Streaming", on: $streaming,
-                       detail: "The Apple Music library catalog (about a 33 MB index download).",
+                       detail: "Your Apple Music library — metadata only, about a 33 MB download. These songs play through Apple Music; nothing is captured from it.",
                        a11y: "onboarding-source-streaming")
             if !(vinyl || digital || streaming) {
                 Text("Pick at least one source — the browser needs a catalog to show.")

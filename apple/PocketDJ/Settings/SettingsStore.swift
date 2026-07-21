@@ -69,6 +69,13 @@ final class SettingsStore {
     var jukeboxServerURL: String
     /// Optional server-level bearer for creating jukeboxes (JUKEBOX_TOKEN on the server).
     var jukeboxToken: String
+    /// Default for whether a NEW jukebox session requires a per-session guest access token
+    /// (each session's create-view toggle seeds from this and can override it). ON by default
+    /// so a session is admits-only by default rather than open to anyone with the link.
+    /// #TOUPDATE: the server (jukebox-server.mjs) must mint the guest token, bake it into the
+    /// guest URL, and refuse tokenless guest requests — until then this flag rides the create
+    /// call as intent but does not yet gate anyone.
+    var jukeboxTokensRequiredByDefault: Bool
     /// When on, every rip the app requests asks the server to try capturing the song from
     /// the Apple Music library on the iMac (cloud), falling back to the analog (vinyl)
     /// source when there's no Apple Music match or the capture fails. No-op for songs that
@@ -186,9 +193,18 @@ final class SettingsStore {
         let data = SettingsStore.load(from: defaults)
         self.sources = data.sources
         self.ripServerURL = data.ripServerURL
+        // UI-test seam: the shipping default rip-server URL is blank (features stay
+        // dormant until the user configures a server), so tests that exercise a
+        // configured-server state seed one via PDJ_RIP_SERVER_URL. No env var → no
+        // change, so this is inert in every real build. (Mirrors PDJ_MIX_DECK_LAYOUT.)
+        if let fixtureRip = ProcessInfo.processInfo.environment["PDJ_RIP_SERVER_URL"],
+           !fixtureRip.isEmpty {
+            self.ripServerURL = fixtureRip
+        }
         self.ripToken = data.ripToken
-        self.jukeboxServerURL = data.jukeboxServerURL ?? Config.jukeboxServerBase.absoluteString
+        self.jukeboxServerURL = data.jukeboxServerURL ?? ""
         self.jukeboxToken = data.jukeboxToken ?? ""
+        self.jukeboxTokensRequiredByDefault = data.jukeboxTokensRequiredByDefault ?? true
         self.ripFromCloud = data.ripFromCloud ?? false
         self.playbackMode = data.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         self.searchAccessKeyID = data.searchAccessKeyID
@@ -326,6 +342,7 @@ final class SettingsStore {
         let snapshot = SettingsData(
             sources: sources, ripServerURL: ripServerURL, ripToken: ripToken,
             jukeboxServerURL: jukeboxServerURL, jukeboxToken: jukeboxToken,
+            jukeboxTokensRequiredByDefault: jukeboxTokensRequiredByDefault,
             ripFromCloud: ripFromCloud, playbackMode: playbackMode.rawValue,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint, burnFolderBookmark: burnFolderBookmark,
@@ -370,8 +387,9 @@ final class SettingsStore {
         let d = SettingsData.default
         sources = d.sources
         ripServerURL = d.ripServerURL; ripToken = d.ripToken
-        jukeboxServerURL = d.jukeboxServerURL ?? Config.jukeboxServerBase.absoluteString
+        jukeboxServerURL = d.jukeboxServerURL ?? ""
         jukeboxToken = d.jukeboxToken ?? ""
+        jukeboxTokensRequiredByDefault = d.jukeboxTokensRequiredByDefault ?? true
         ripFromCloud = d.ripFromCloud ?? false
         playbackMode = d.playbackMode.flatMap(PlaybackMode.init(rawValue:)) ?? .cloud
         searchAccessKeyID = d.searchAccessKeyID; searchSecretKey = d.searchSecretKey
@@ -416,9 +434,11 @@ struct SettingsData: Codable {
     var ripServerURL: String
     var ripToken: String
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode —
-    /// Jukebox Hero server base (nil ⇒ `Config.jukeboxServerBase`) + creation token.
+    /// Jukebox Hero server base (nil ⇒ blank, i.e. no server configured) + creation token.
     var jukeboxServerURL: String?
     var jukeboxToken: String?
+    /// Optional so older blobs decode (a missing key ⇒ nil ⇒ the `?? true` default applies).
+    var jukeboxTokensRequiredByDefault: Bool?
     /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — a
     /// non-optional Bool would fail decode and silently reset ALL settings to defaults
     /// (load() falls back to .default via `try?`). Coalesced to false at the read sites.
@@ -485,10 +505,15 @@ struct SettingsData: Codable {
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
-        ripServerURL: Config.ripServerBase.absoluteString,
+        // #TOUPDATE: no shipped default rip/jukebox server URL — seeded BLANK so `hasServer`
+        // is honestly false out of the box (server features show "No rip server configured"
+        // until the user sets a URL). This also keeps the old personal-tailnet hostname out of
+        // the shipped binary. Set these to the first-party PocketDJ cloud endpoint once it exists.
+        ripServerURL: "",
         ripToken: "",
-        jukeboxServerURL: Config.jukeboxServerBase.absoluteString,
+        jukeboxServerURL: "",
         jukeboxToken: "",
+        jukeboxTokensRequiredByDefault: true,
         ripFromCloud: false,
         playbackMode: PlaybackMode.cloud.rawValue,
         searchAccessKeyID: "",

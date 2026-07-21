@@ -317,6 +317,26 @@ final class CloudSyncService {
         if let data = try? JSONEncoder().encode(st) { try? data.write(to: stateURL, options: .atomic) }
     }
 
+    /// Full local reset (Settings ▸ Storage "Erase everything" / re-onboarding): drop the
+    /// in-sync watermark and delete the persisted state file, then sweep every
+    /// `<name>.pre-cloud` backup that `applyPull` left in Application Support. Without this a
+    /// document the user just erased would be resurrected — either re-pushed off a stale
+    /// watermark or restored from its `.pre-cloud` copy. The synced docs themselves are NOT
+    /// removed here (the orchestrator clears those via each store); CloudKit is untouched.
+    /// File-not-found is swallowed, matching `applyPull` / `saveState`.
+    func clearLocalSyncState() {
+        let fm = FileManager.default
+        pushedMtimeMs = [:]
+        try? fm.removeItem(at: stateURL)
+        for entry in entries {
+            let backup = entry.fileURL.appendingPathExtension("pre-cloud")
+            try? fm.removeItem(at: backup)
+        }
+        lastSyncAt = nil
+        lastSummary = nil
+        lastError = nil
+    }
+
     private nonisolated static var deviceName: String {
         #if os(macOS)
         Host.current().localizedName ?? "Mac"

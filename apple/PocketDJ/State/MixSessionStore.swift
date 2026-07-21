@@ -366,6 +366,38 @@ final class MixSessionStore: MixSessionRecorder {
         saveNow()
     }
 
+    /// Storage manager — FULL wipe: delete EVERY captured recording's audio AND every session log
+    /// (played + events), remove the persisted document, and reset the observed state to a single
+    /// fresh empty session so the UI updates immediately. Composes `deleteAllRecordings` (audio) with
+    /// a clean slate; never throws (a missing file is swallowed like `launchURL`).
+    func clear(bookmark: Data? = nil) {
+        // Reset the observed state to empty FIRST, then re-establish the always-a-current invariant
+        // with a fresh Session 1 (mirrors `delete`'s re-establish) — so the audio sweep's own save
+        // below snapshots the clean slate, and any write that races the file removal is already empty.
+        sessions.removeAll()
+        currentId = ""
+        counter = 0
+        recEvents = []
+        recPlayed = []
+        recStartedAt = 0
+        recSeq = 0
+        hasActivity = false
+        resumePendingReanchor = false
+        playedRevision &+= 1     // observed → loader checkmarks/auto-hide refresh
+        startNewSession(save: false)
+        // Delete EVERY captured take's audio (the filesystem sweep is prefix-based, independent of the
+        // now-cleared metadata; its own data-safety rules still protect an unreachable user folder).
+        deleteAllRecordings(bookmark: bookmark)
+        // Remove the persisted document, advancing the writer watermark (mirrors `flush`) so an
+        // in-flight async write can't regress the wipe. Swallow file-not-found like `launchURL`.
+        saveTask?.cancel(); saveTask = nil
+        saveVersion += 1
+        let v = saveVersion
+        let w = writer
+        try? FileManager.default.removeItem(at: fileURL)
+        Task { await w.markWritten(v) }
+    }
+
     // MARK: - Internals
 
     /// Snapshot the live hot buffer back into the current session's value in `sessions`, optionally

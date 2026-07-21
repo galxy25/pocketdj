@@ -9,6 +9,10 @@ struct JukeboxClient {
     var baseURL: String
     /// Server-level bearer for `POST /jukebox` (empty = server runs open).
     var token: String
+    /// The signed-in profile's durable id (`ProfileStore.id`), snapshotted when this client is
+    /// built (the struct is rebuilt per call from the live id). Empty ⇒ no profile header.
+    /// Rides as `X-PocketDJ-Profile` on every jukebox call (see `request`).
+    var profileId: String = ""
     var session: URLSession = .shared
 
     enum ClientError: Error, LocalizedError {
@@ -44,6 +48,8 @@ struct JukeboxClient {
         if let bearer, !bearer.isEmpty {
             req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }
+        // Per-user identity rides alongside the (host-key or server) bearer on every call.
+        PDJIdentityHeaders.apply(to: &req, profileId: profileId)
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONEncoder().encode(body)
@@ -68,11 +74,15 @@ struct JukeboxClient {
     /// Create a jukebox: the server mints ids, renders + uploads the guest page, and
     /// seeds `state.json`. Longer timeout — the create does two S3 uploads.
     /// `timeless: false` ⇒ the default lifecycle (auto-end 24 h, sweeper-deleted at 7 d).
-    func create(name: String, timeless: Bool) async throws -> JukeboxSessionInfo {
-        struct Body: Encodable { let name: String; let timeless: Bool }
+    /// `requiresToken` asks the server to mint a per-session guest access token and bake it
+    /// into the returned `url`. #TOUPDATE: the server ignores this field today (it returns a
+    /// bare public URL); it rides the create call as intent so the plumbing is ready when
+    /// jukebox-server.mjs starts minting + enforcing the guest token.
+    func create(name: String, timeless: Bool, requiresToken: Bool) async throws -> JukeboxSessionInfo {
+        struct Body: Encodable { let name: String; let timeless: Bool; let requiresToken: Bool }
         return try await run(
             try request("/jukebox", method: "POST", bearer: token,
-                        body: Body(name: name, timeless: timeless), timeout: 30),
+                        body: Body(name: name, timeless: timeless, requiresToken: requiresToken), timeout: 30),
             as: JukeboxSessionInfo.self)
     }
 

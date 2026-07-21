@@ -96,6 +96,13 @@ final class DiscoverAddsStore {
         save()
     }
 
+    /// Empty the provisional catalog: reset in-memory state and remove the persisted
+    /// file (swallowing file-not-found like the rest of the store).
+    func clear() {
+        entries = []
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     /// Re-decode after CloudSyncService pulled a newer copy, surfacing any NEW entries
     /// through `onAdded` so the live catalog follows the pull.
     func reloadFromDisk() {

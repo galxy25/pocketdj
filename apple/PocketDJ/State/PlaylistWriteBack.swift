@@ -442,6 +442,22 @@ final class PlaylistWriteBack {
         save()
     }
 
+    /// Empty the whole outbound queue and delete its backing document — a full wipe.
+    ///
+    /// DEVICE-LOCAL and irreversible: this log is never cloud-synced (see the type doc), so
+    /// there is no other copy to restore from. Any still-`.queued` write is abandoned; the
+    /// local duplicate add it recorded stands, and the safety property holds (a dropped
+    /// write-back only ever leaves a song local, never removes one). Resets the @Observable
+    /// state in-memory so Settings ▸ Sync empties immediately, then removes the file the same
+    /// forgiving way `launchURL()` does — `try?` swallows a not-yet-written document.
+    func clear() {
+        jobs = []
+        resolvedPlaylistIds = [:]
+        lastError = nil
+        resolutionWarning = nil
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     /// Re-decode after an external write (parity with the other durable stores; this
     /// document is NOT cloud-synced, so in practice only tests call it).
     func reloadFromDisk() {

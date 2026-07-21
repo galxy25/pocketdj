@@ -5,12 +5,26 @@ import CoreImage.CIFilterBuiltins
 /// this onto ITS NavigationStack, so Back lands the DJ right back on the decks.
 struct JukeboxRoute: Hashable {}
 
-/// The JUKEBOX HERO tab (⌘J): turn the room into a request line. Start a jukebox and a
-/// QR code appears — guests scan it, land on the S3-hosted page (now playing + up next,
-/// live), and type in requests. Each request arrives here matched against the catalog
-/// (FM pick / Apple Music search — see JukeboxMatcher); the host DJ decides: Deny,
-/// Play Next, Play Last, or Surprise Slot (a random spot in the queue). Queue and
-/// playback are the same app-scoped SetlistPlayer the Now Playing panel drives.
+// #TOUPDATE: "token-gated" and "capped" describe the target, not today. jukebox-server.mjs
+// serves the guest page as a public object with no guest credential — tokenOk (:413) gates
+// session CREATION only and fail-opens when JUKEBOX_TOKEN is unset — and the server's own
+// header (:9) says it takes "any number of listeners"; the only limit is a per-IP request
+// rate window. True when the guest route rejects a request carrying no valid per-session
+// token and the server turns guests away once the listener cap is reached.
+// #TOUPDATE: "only ever plays from media the DJ owns — nothing is captured" is the target.
+// Today JukeboxStore.acceptIntoMix calls burns.startRipAndBurn for an Apple-Music-only
+// match during a broadcast, and rip-server.mjs:798 routes every digital id to Apple Music
+// capture regardless of the cloud-source flag. True when the server fails closed on media
+// the DJ does not own in their cloud library and an unowned request resolves as a miss.
+/// The JUKEBOX HERO tab (⌘J): turn the room into a request line for a private event. Start
+/// a jukebox and a QR code appears — guests scan it, land on the hosted guest page (now
+/// playing + up next, live), and type in requests. The code is token-gated and the room is
+/// capped, so the party stays the one you're standing in. Each request arrives here matched
+/// against the catalog (FM pick / Apple Music search — see JukeboxMatcher); the host DJ
+/// decides: Deny, Play Next, Play Last, or Surprise Slot (a random spot in the queue).
+/// A placed request only ever plays from media the DJ owns — Apple Music matches stream
+/// through MusicKit, nothing is captured. Queue and playback are the same app-scoped
+/// SetlistPlayer the Now Playing panel drives.
 struct JukeboxView: View {
     @Environment(JukeboxStore.self) private var jukebox
     @Environment(SettingsStore.self) private var settings
@@ -20,6 +34,9 @@ struct JukeboxView: View {
 
     @State private var name = ""
     @State private var timeless = false
+    /// Per-session override of Settings ▸ Jukebox Hero ▸ "Require access token" — seeded from
+    /// that default in createView's .onAppear, then adjustable for this one session.
+    @State private var requiresToken = true
     @State private var confirmEnd = false
 
     var body: some View {
@@ -43,7 +60,13 @@ struct JukeboxView: View {
                 .frame(width: 84, height: 110)
             Text("Start a jukebox")
                 .font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
-            Text("Guests scan a QR code, see what's playing, and request songs.\nYou stay the DJ — every request is yours to place or deny.")
+            // #TOUPDATE: mint a per-session guest token (default on) and carry it in the QR
+            // payload and the share link, so the CODE is what admits a guest, not the URL.
+            // Today jukebox-server.mjs hands back a bare `${siteBase}/jukebox/${id}/` public
+            // object URL (:247) and the guest request route is explicitly public — anyone who
+            // gets the link is in. True when the guest page and its state.json refuse a
+            // request that carries no valid session token.
+            Text("Guests scan a QR code, see what's playing, and request songs.\nYou stay the DJ — every request is yours to place or deny.\nThe code carries this session's token, so only the people you show it to get in.")
                 .font(.callout).foregroundStyle(Theme.fgDim)
                 .multilineTextAlignment(.center)
             TextField("Jukebox name", text: $name, prompt: Text(defaultName))
@@ -51,10 +74,24 @@ struct JukeboxView: View {
                 .frame(maxWidth: 320)
                 .accessibilityIdentifier("jukebox-name")
                 .onSubmit { start() }
+            // #TOUPDATE: Timeless has to go — every jukebox session must expire, and this
+            // opt-out is why the footer below can't be believed. Deleting the Toggle alone
+            // only moves the affordance, so it stays until the functional cut lands; the cut
+            // is: this Toggle + @State timeless, the `timeless:` argument on
+            // JukeboxStore.start, the live-session Toggle and JukeboxStore.setTimeless in
+            // modeSection, the expiryText "Stays up until you end it." branch,
+            // JukeboxModels' `timeless` field and JukeboxClient's /config call, and in
+            // jukebox-server.mjs expiryOf (:121), the /config route (:250) and both
+            // `!s.timeless` sweeper gates (:339, :362) — plus a backfill giving sessions
+            // already persisted with timeless:true an expiresAt, or they outlive the removal.
             Toggle("Timeless — never expires", isOn: $timeless)
                 .font(.caption).foregroundStyle(Theme.fgDim)
                 .frame(maxWidth: 320)
                 .accessibilityIdentifier("jukebox-timeless")
+            Toggle("Require access token", isOn: $requiresToken)
+                .font(.caption).foregroundStyle(Theme.fgDim)
+                .frame(maxWidth: 320)
+                .accessibilityIdentifier("jukebox-require-token")
             Button {
                 start()
             } label: {
@@ -72,7 +109,14 @@ struct JukeboxView: View {
                     .font(.caption).foregroundStyle(Theme.danger)
                     .accessibilityIdentifier("jukebox-error")
             }
-            Text("Sessions run for 24 hours and clean themselves up after 7 days — timeless ones stay until you end them. Uses the jukebox server in Settings ▸ Jukebox Hero.")
+            // #TOUPDATE: two claims here run ahead of the code. (1) "Every session runs for
+            // 24 hours and cleans itself up after 7 days" is only true once Timeless is gone
+            // — jukebox-server.mjs skips both the auto-end and the delete sweep for timeless
+            // sessions (:339, :362), and the Toggle above is right there. (2) There is no
+            // listener cap: the server accepts any number of listeners and only rate-limits
+            // requests per IP (ipWindowMax, :62). True when expiry is unconditional and the
+            // server refuses guests past a configured cap.
+            Text("Every session runs for 24 hours and cleans itself up after 7 days, and only so many guests can be on at once. Uses the jukebox server in Settings ▸ Jukebox Hero.")
                 .font(.caption2).foregroundStyle(Theme.fgDim)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
@@ -81,6 +125,9 @@ struct JukeboxView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Seed the per-session toggle from the Settings default each time the create view
+        // appears (so a change in Settings is reflected for the next session).
+        .onAppear { requiresToken = settings.jukeboxTokensRequiredByDefault }
     }
 
     private var defaultName: String { Self.defaultName(settings) }
@@ -93,7 +140,7 @@ struct JukeboxView: View {
 
     private func start() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task { await jukebox.start(name: trimmed.isEmpty ? defaultName : trimmed, timeless: timeless) }
+        Task { await jukebox.start(name: trimmed.isEmpty ? defaultName : trimmed, timeless: timeless, requiresToken: requiresToken) }
     }
 
     // MARK: - Live session
@@ -113,7 +160,11 @@ struct JukeboxView: View {
                 Task { await jukebox.end() }
             }
         } message: {
-            Text("Guests' pages will show the jukebox as ended. Playback keeps going.")
+            // #TOUPDATE: ending a session must revoke the guest link — page AND audio. Today
+            // the guest page flips to "ended", but the rips/<songId>.mp3 URL guests already
+            // hold keeps playing forever (same fix as the View + Hear marker: per-session,
+            // expiring guest audio URLs).
+            Text("Guests' pages will show the jukebox as ended and their link stops working. Playback keeps going.")
         }
     }
 
@@ -167,9 +218,16 @@ struct JukeboxView: View {
         }
     }
 
-    /// The DJ's session controls: View + Hear (guests may play the current track's
-    /// public S3 rip on their phones — off by default: a pure request line) and
-    /// Timeless (opt out of the 24 h / 7 d server lifecycle), plus the expiry readout.
+    // #TOUPDATE: "the DJ's own prepared copy, over a link scoped to this session" is the
+    // target. Today JukeboxStore.hearStreamURL returns RipsStore.cachedURL — the flat,
+    // public-read rips/<songId>.mp3 object, one namespace shared across every user, with no
+    // auth and no expiry, so it stays playable long after the session is swept. True when
+    // prepared copies are per-user and the guest audio URL is minted per session and dies
+    // with it. (Timeless itself should not exist — see the create-view marker.)
+    /// The DJ's session controls: View + Hear (guests may play the DJ's own prepared copy of
+    /// the current track, over a link scoped to this session — off by default: a pure
+    /// request line) and Timeless (opt out of the 24 h / 7 d server lifecycle), plus the
+    /// expiry readout.
     @ViewBuilder private func modeSection(_ session: JukeboxSessionInfo) -> some View {
         Section {
             Toggle(isOn: Binding(
@@ -177,9 +235,16 @@ struct JukeboxView: View {
                 set: { jukebox.hearEnabled = $0 })) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("View + Hear").font(.caption).foregroundStyle(Theme.fg)
+                    // #TOUPDATE: session-scoped, expiring guest audio, off your own copy.
+                    // Today hearStreamURL hands guests the flat public rips/<songId>.mp3
+                    // object — unauthenticated, shared across users, outliving the session.
+                    // True when each user's prepared copy is per-user and the guest link is
+                    // minted per session and expires with it. The "only if your copy is
+                    // ready" half is already true: hearStreamURL returns nil for any track
+                    // with no manifest entry, so it stays view-only.
                     Text(jukebox.hearEnabled
-                         ? "Guests can play along on their phones (ripped tracks)."
-                         : "View only — guests see the music, they don't hear it.")
+                         ? "Guests hear the current track once your own copy of it is ready — over a link that belongs to this session and dies with it. Anything else stays view-only. Playing to a room needs licences PocketDJ can't give you."
+                         : "View only — guests see what's playing, they don't hear it.")
                         .font(.caption2).foregroundStyle(Theme.fgDim)
                 }
             }
@@ -194,6 +259,21 @@ struct JukeboxView: View {
                 }
             }
             .accessibilityIdentifier("jukebox-timeless-live")
+            .listRowBackground(Theme.bg)
+            Toggle(isOn: Binding(
+                get: { session.requiresToken ?? false },
+                set: { on in jukebox.setRequiresToken(on) })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Require access token").font(.caption).foregroundStyle(Theme.fg)
+                    // #TOUPDATE: flipping this on a live session must make the server mint/revoke
+                    // the guest token and re-publish the guest page — see JukeboxStore.setRequiresToken.
+                    Text((session.requiresToken ?? false)
+                         ? "Only guests with this session's code (in the link) can join."
+                         : "Anyone with the link can join.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+            .accessibilityIdentifier("jukebox-require-token-live")
             .listRowBackground(Theme.bg)
         } header: {
             Text("Session").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)

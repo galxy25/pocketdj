@@ -97,6 +97,19 @@ final class ProfileStore {
         onNameApplied?(name)
     }
 
+    /// Account deletion: erase this device's persisted profile and mint a BRAND-NEW identity
+    /// (fresh random `id`, empty name, new `createdAtMs`) so a re-created account starts clean.
+    /// Swallows a missing file like the rest of the store, resets @Observable state so the UI
+    /// updates immediately, then persists the fresh document (and mirrors the empty name out).
+    func reset() {
+        try? FileManager.default.removeItem(at: fileURL)
+        id = UUID().uuidString
+        name = ""
+        createdAtMs = Date().timeIntervalSince1970 * 1000
+        save()
+        onNameApplied?(name)
+    }
+
     private func save() {
         let doc = Document(id: id, name: name, createdAtMs: createdAtMs)
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }

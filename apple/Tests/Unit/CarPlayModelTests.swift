@@ -112,6 +112,10 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertEqual(Set(model.artists().map(\.title)), ["Aria", "Bento", "Cobalt"])
         XCTAssertEqual(model.albums(byArtist: "Aria").map(\.id), ["alb_1"])
         XCTAssertEqual(model.artists().first { $0.title == "Aria" }?.subtitle, "1 album · 3 songs")
+        // The Artists tab now pushes a FLAT song list (depth 2, not artist → albums → songs)
+        // to stay within CarPlay's audio-app template-depth limit — see CarPlayScene.
+        XCTAssertEqual(model.songs(byArtist: "Aria").map(\.id), ["sng_1", "sng_2", "sng_3"])
+        XCTAssertTrue(model.songs(byArtist: "Aria").allSatisfy(\.isSong))
 
         await model.playArtist(name: "Aria")
         XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_1", "sng_2", "sng_3"])

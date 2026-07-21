@@ -90,6 +90,13 @@ final class PlayStatsStore {
         stats = doc.stats
     }
 
+    /// Wipe all play history: reset the in-memory map (so the UI updates immediately) and
+    /// remove the persisted document. `try?` swallows a missing file, mirroring `save()`.
+    func clear() {
+        stats = [:]
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     private func save() {
         let doc = Document(stats: stats)
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }
