@@ -51,6 +51,14 @@ final class CollectionActivityStore {
         var collectionId: String?
         var collectionKind: String?    // AddTarget.Kind raw ("pocket" / "playlist"); nil for heart
         var collectionName: String?
+        /// The `installId` of the device that ORIGINATED this event, stamped at record time.
+        /// ADDITIVE-OPTIONAL (older/peer events have none → nil). Load-bearing for the Apple Music
+        /// write-back BACKFILL: because this log is cloud-synced (a peer device's adds are UNIONed
+        /// in via `reloadFromDisk`), a backfill that re-drove EVERY add would re-deliver an add
+        /// another device already pushed upstream — a duplicate in the real Apple Music playlist,
+        /// since the write-back queue that would dedup it is deliberately device-local. So the
+        /// backfill only re-drives events this install originated (nil ⇒ legacy, treated as local).
+        var originInstallId: String?
     }
 
     /// The persisted, versioned document. LENIENT decode (like the collections document): a
@@ -129,7 +137,7 @@ final class CollectionActivityStore {
         guard !itemId.isEmpty else { return nil }
         let event = ActivityEvent(id: UUID(), at: nowMs, kind: kind, itemId: itemId, itemTitle: itemTitle,
                                   collectionId: collectionId, collectionKind: collectionKind,
-                                  collectionName: collectionName)
+                                  collectionName: collectionName, originInstallId: installId)
         events.append(event)
         if events.count > Self.maxEvents { trimToCap() }
         revision &+= 1

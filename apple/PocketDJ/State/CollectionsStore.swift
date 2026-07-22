@@ -73,6 +73,29 @@ final class CollectionsStore {
         var collectionName: String?
     }
 
+    /// APPLE-MUSIC WRITE-BACK SEAM (two-way source sync, Levi 2026-07-22). Wired at app init
+    /// to `PlaylistWriteBack.enqueue` + `runSoon` (behind its own `canWriteBack` gate). Called
+    /// from the user-facing add choke point (`addSong(_:to:)`) whenever a song lands in a
+    /// collection that was CONVERTED (pocket) or DUPLICATED (playlist) from an Apple Music
+    /// "From your sources" playlist, so the add reaches the REAL Apple Music library playlist —
+    /// not just the on-device copy.
+    ///
+    /// THE BUG THIS FIXES: write-back used to fire ONLY from the "From your sources" row in the
+    /// Add sheet (`addSong(_:toIndexPlaylist:)`). A song added straight to a converted pocket
+    /// therefore stayed on-device forever and never appeared in Apple Music. The provenance a
+    /// converted pocket already carries (`sourcePlaylistId`/`sourceName`/`sourceSongIds`) is
+    /// exactly enough to make it a first-class two-way citizen; this seam is the missing wire.
+    ///
+    /// A SEAM, not a direct `PlaylistWriteBack` reference, for the same reason as `onActivity` /
+    /// `studioLookup`: the store stays free of MusicKit and unit-testable with no account. nil
+    /// in tests / on platforms that can't write — the local add still stands, exactly as before.
+    ///
+    /// Returns TRUE when a NEW job was queued, FALSE when nothing was (this build can't write,
+    /// or an equivalent job is already queued/delivered — the queue dedups on id+song). The
+    /// per-add caller ignores it; `backfillSourceWriteBacks` sums it into a "newly queued" count.
+    var enqueueSourceWriteBack: ((_ indexPlaylistId: String, _ playlistName: String,
+                                  _ songId: String, _ appleMusicId: String?) -> Bool)?
+
     /// STUDIO SEAM (spec §8, wired at app init by the integrator to `StudioStore`):
     /// resolve a studio id (`smp_`/`lp_`/`ptn_`) to its display metadata — title plus
     /// the REAL lengthMs (mandatory: a 4-second loop must never count or realize as the
@@ -841,6 +864,7 @@ final class CollectionsStore {
         noteRecentTarget(target)
         setLastAddTarget(target)
         emitAddActivity(itemId: songId, target: target)
+        writeBackAddIfSourced(songId, target: target)
     }
     func addAlbum(_ albumId: String, to target: AddTarget) {
         switch target.kind {
@@ -850,6 +874,124 @@ final class CollectionsStore {
         noteRecentTarget(target)
         setLastAddTarget(target)
         emitAddActivity(itemId: albumId, target: target)
+    }
+
+    // MARK: Two-way source sync — push a converted/duplicated collection's add upstream
+
+    /// Resolve `target`'s Apple Music provenance and, if this collection came from an Apple
+    /// Music "From your sources" playlist, push the just-added song up to that real library
+    /// playlist. No-op for a plain (non-sourced) collection. Deliberately NOT called for
+    /// ALBUM adds: an album is stored as a ref, not expanded to catalog tracks, and the
+    /// source-row path doesn't write albums back either.
+    private func writeBackAddIfSourced(_ songId: String, target: AddTarget) {
+        _ = writeBackSong(songId, forTargetKind: target.kind, collectionId: target.id)
+    }
+
+    /// Resolve a collection's Apple Music provenance from its id + kind, then decide whether to
+    /// write `songId` back. Shared by the per-add path and the backfill. Returns TRUE only when a
+    /// NEW upstream job was queued.
+    @discardableResult
+    private func writeBackSong(_ songId: String, forTargetKind kind: AddTarget.Kind,
+                              collectionId: String) -> Bool {
+        switch kind {
+        case .pocket:
+            guard let p = pocket(collectionId) else { return false }
+            return writeBackAddedSong(songId, sourcePlaylistId: p.sourcePlaylistId,
+                                      sourceName: p.sourceName, sourceSnapshot: p.sourceSongIds,
+                                      collectionName: p.name)
+        case .playlist:
+            guard let pl = playlist(collectionId) else { return false }
+            return writeBackAddedSong(songId, sourcePlaylistId: pl.sourcePlaylistId,
+                                      sourceName: pl.sourceName, sourceSnapshot: pl.sourceSongIds,
+                                      collectionName: pl.name)
+        }
+    }
+
+    /// The write-back decision, factored out so pocket and playlist share it verbatim. Fires
+    /// the seam only when there is genuinely an Apple Music playlist owed a song — every guard
+    /// below is a real reason NOT to write, mirroring `addSong(_:toIndexPlaylist:)`'s eligibility:
+    ///   • the collection carries Apple Music provenance (`sourcePlaylistId` + Apple Music source);
+    ///   • the song has an Apple Music store id — a vinyl / My Digital / Studio id has no upstream;
+    ///   • the song is NOT already in the source SNAPSHOT. The snapshot IS Apple Music's membership
+    ///     as of the last catalog refresh, so a song already in it is already upstream and re-adding
+    ///     would DUPLICATE the track (`MusicLibrary.add` is not idempotent). This is the same guard
+    ///     `AddToCollectionView.addToSource` applies via the live source membership, but read from
+    ///     the locally-stored snapshot so it holds offline too.
+    /// The seam itself (wired in the app) applies the final `canWriteBack` gate and dedups
+    /// queued/delivered jobs, so this stays purely about "is an upstream write owed at all".
+    /// Returns TRUE only when the seam actually queued a NEW job.
+    @discardableResult
+    private func writeBackAddedSong(_ songId: String, sourcePlaylistId: String?,
+                                    sourceName: String?, sourceSnapshot: [String]?,
+                                    collectionName: String) -> Bool {
+        guard let enqueue = enqueueSourceWriteBack,
+              let plId = sourcePlaylistId,
+              PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return false }
+        let amId = (app?.songsById[songId]?.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
+        guard !amId.isEmpty else { return false }
+        guard !(sourceSnapshot ?? []).contains(songId) else { return false }
+        // The join key is the source playlist id; the NAME is only the first-resolve bootstrap
+        // (`PlaylistWriteBack` remembers the MusicKit id thereafter). Prefer the live source
+        // playlist's current name (drift-proof), falling back to the collection's own name — its
+        // value at convert/duplicate time — when the catalog isn't loaded, because `enqueue`
+        // rejects an empty name.
+        let name = liveSourcePlaylist(id: plId, sourceName: sourceName)?.name ?? collectionName
+        return enqueue(plId, name, songId, amId)
+    }
+
+    /// The default look-back for the write-back backfill, and the ceiling the UI clamps to.
+    static let writeBackBackfillDefaultDays = 2
+    static let writeBackBackfillMaxDays = 90
+
+    /// BACKFILL the outbound Apple Music write-back from the collection ACTIVITY history: for
+    /// every ADD in the last `days` days to a converted pocket / duplicated Apple Music
+    /// collection, re-drive the same write-back decision the per-add path makes now. This
+    /// recovers adds made BEFORE the write-back wiring existed, or while offline / signed out —
+    /// the case the user hits after upgrading. Driven off the activity log (not raw membership)
+    /// so it can be time-bounded and so it mirrors exactly what History ▸ Collection shows.
+    ///
+    /// IDEMPOTENT by construction: the per-(collection,song) pair is considered once, a song
+    /// still in the source snapshot is skipped (already upstream), and `PlaylistWriteBack.enqueue`
+    /// dedups against queued/delivered jobs — so running it twice, or overlapping with the
+    /// per-add path, queues nothing extra. A song since REMOVED from the collection is skipped
+    /// (its add was undone). Returns the number of songs NEWLY queued.
+    ///
+    /// LOCAL-ORIGIN ONLY. The activity log is CLOUD-SYNCED — a peer device's adds are merged in —
+    /// but the write-back queue that dedups deliveries is deliberately device-local, so re-driving
+    /// a PEER's add here would re-deliver a write another device already made (a duplicate in the
+    /// real Apple Music playlist). So only events THIS install originated are considered; a legacy
+    /// event with no origin (recorded before attribution existed) is treated as local — those are
+    /// exactly the pre-wiring adds this backfill is meant to recover, and the transport's own
+    /// "already in the playlist?" check is the backstop against a legacy add a peer already sent.
+    @discardableResult
+    func backfillSourceWriteBacks(from events: [CollectionActivityStore.ActivityEvent],
+                                  days: Int, localInstallId: String?,
+                                  nowMs: Double = Date().timeIntervalSince1970 * 1000) -> Int {
+        guard enqueueSourceWriteBack != nil else { return 0 }
+        let clampedDays = min(max(days, 1), Self.writeBackBackfillMaxDays)
+        let sinceMs = nowMs - Double(clampedDays) * 86_400_000
+        var seen = Set<String>()
+        var queued = 0
+        // Newest-first so a re-add after a remove is judged on the LATEST add's timestamp.
+        for e in events.reversed() where e.kind == .add && e.at >= sinceMs {
+            // Skip a peer device's attributed add (see LOCAL-ONLY note); nil origin = legacy = local.
+            guard e.originInstallId == nil || e.originInstallId == localInstallId else { continue }
+            guard let cid = e.collectionId, !e.itemId.isEmpty,
+                  let kind = e.collectionKind.flatMap(AddTarget.Kind.init(rawValue:)) else { continue }
+            let key = cid + "\u{1}" + e.itemId
+            guard seen.insert(key).inserted else { continue }
+            // The song must still BE in the collection — an add later undone by a remove owes
+            // Apple Music nothing. (`writeBackSong` itself skips a missing collection.)
+            let stillMember: Bool = {
+                switch kind {
+                case .pocket:   return pocket(cid)?.songIds.contains(e.itemId) ?? false
+                case .playlist: return playlist(cid, contains: e.itemId)
+                }
+            }()
+            guard stillMember else { continue }
+            if writeBackSong(e.itemId, forTargetKind: kind, collectionId: cid) { queued += 1 }
+        }
+        return queued
     }
 
     /// Log a user ADD to the activity history (nil-safe when the seam is unwired). Resolves the
