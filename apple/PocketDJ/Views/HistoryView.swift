@@ -1,14 +1,19 @@
 import SwiftUI
 
-/// History mode — a scrollable timeline of every song you've played, in whichever Mix /
-/// Playlist / Pocket / Set list / Browser it happened in, with the SAME filter + sort controls
-/// as the Browser PLUS a "Last played" sort (most/least recently) and a date-range filter
-/// ("played between May and August 2026"). Opened from anywhere with ⌘H.
+/// History mode — a scrollable timeline of what you've done: every song you've played (in whichever
+/// Mix / Playlist / Pocket / Set list / Browser it happened in) AND every collection change (adding
+/// a song, hearting/unhearting, removing), with the Browser's filter + sort controls on the plays.
+/// Opened from anywhere with ⌘H.
 ///
-/// It reuses the Browser's filter/sort machinery by driving its own `BrowseState` in
-/// `historyMode`: the base rows come from the append-only `PlayHistoryStore` (one row per play
-/// event in Timeline mode; one row per song in Group-by-song mode) instead of the catalog, and
-/// the heavy filter/sort still runs OFF the main actor (see `BrowseState.refreshExternal`).
+/// Three views over two event streams:
+///  • **Playback** — song PLAYS from the append-only `PlayHistoryStore`, driven through the Browser's
+///    own filter/sort/paged machinery (see `BrowseState.refreshExternal`, which runs off the main actor).
+///  • **Collection** — collection ACTIVITY (add / heart / unheart / remove) from `CollectionActivityStore`.
+///  • **Unified** (default) — both streams interleaved newest-first.
+///
+/// The tab control shows the TWO views you're NOT currently in — tap one to switch. So from Unified you
+/// see [Playback | Collection]; from either single view you see [the other | Unified] to cross over or
+/// return to the combined timeline.
 struct HistoryView: View {
     @Environment(AppModel.self) private var app
     @Environment(PlayHistoryStore.self) private var history
@@ -16,12 +21,17 @@ struct HistoryView: View {
     @Environment(CollectionsStore.self) private var collections
     @Binding var path: NavigationPath
 
-    /// History has two timelines: song PLAYS (the existing filter/sort/paged Browser machinery) and
-    /// collection ACTIVITY (add/heart/remove — F11). A segmented control switches between them; the
-    /// Plays side is untouched. A merge was rejected because Plays rides `BrowseItem`, which is
-    /// song-centric — heart/remove rows have no clean song identity to sort/filter alongside plays.
-    enum HistoryTab: String, CaseIterable { case plays = "Plays", activity = "Activity" }
-    @State private var tab: HistoryTab = .plays
+    enum HistoryTab: String, CaseIterable {
+        case unified = "Unified", playback = "Playback", collection = "Collection"
+        var symbol: String {
+            switch self {
+            case .unified:    return "square.stack.3d.up.fill"
+            case .playback:   return "play.circle.fill"
+            case .collection: return "rectangle.stack.fill"
+            }
+        }
+    }
+    @State private var tab: HistoryTab = .unified
 
     /// History's own filter/sort state — distinct persistence key so it never clobbers the
     /// Browser's, defaulting to most-recently-played first.
@@ -39,6 +49,13 @@ struct HistoryView: View {
     /// `recomputeSignature` it was grown against so a filter/sort/mode change restarts paging.
     @State private var visibleCount = BrowsePaging.pageSize
     @State private var visibleKey = ""
+
+    /// The merged Unified timeline (newest-first), rebuilt off `unifiedSignature`. Kept in state
+    /// (not a computed property) so the O(n) merge+sort runs only when its inputs change, and only
+    /// while the Unified tab is showing.
+    @State private var unified: [HistoryEntry] = []
+    @State private var uVisibleCount = BrowsePaging.pageSize
+    @State private var uVisibleKey = ""
 
     /// Recompute signature: the CATALOG revision (rows resolve title/album/artwork from the live
     /// catalog, so a load/edit while History is on screen must re-fire), the event-log revision,
@@ -67,6 +84,14 @@ struct HistoryView: View {
     /// a filter/sort/mode switch never renders the previous set's large prefix.
     private var liveVisible: Int { visibleKey == pagingKey ? visibleCount : BrowsePaging.pageSize }
 
+    /// Unified rebuilds when the catalog, either event stream, the search query, or the tab changes
+    /// (the tab is included so switching TO Unified triggers a build; the build no-ops for other tabs).
+    private var unifiedSignature: String {
+        "\(tab)-\(app.catalogRevision)-\(history.revision)-\(activity.revision)-\(browse.query)"
+    }
+    private var unifiedPagingKey: String { "\(history.revision)-\(activity.revision)-\(browse.query)-\(unified.count)" }
+    private var liveUnifiedVisible: Int { uVisibleKey == unifiedPagingKey ? uVisibleCount : BrowsePaging.pageSize }
+
     var body: some View {
         content
             .navigationTitle("History")
@@ -85,21 +110,21 @@ struct HistoryView: View {
                 browse.externalBase = buildItems
                 await browse.refreshExternal(signature: recomputeSignature, baseKey: baseKey)
             }
+            .task(id: unifiedSignature) {
+                guard tab == .unified else { return }
+                unified = buildUnified()
+            }
     }
 
     @ViewBuilder private var content: some View {
         VStack(spacing: 0) {
-            Picker("History", selection: $tab) {
-                ForEach(HistoryTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal).padding(.vertical, 8)
-            .accessibilityIdentifier("history-tab-picker")
-
+            tabBar
             switch tab {
-            case .plays:
+            case .unified:
+                unifiedContent
+            case .playback:
                 // The Timeline/By-song mode picker is GONE (Levi 2026-07-18: the two reads
-                // were indistinguishable in practice) — Plays is always the timeline. The
+                // were indistinguishable in practice) — Playback is always the timeline. The
                 // groupBySong plumbing stays (false forever) so the grouped engine remains
                 // one flag away if a future view wants it.
                 if browse.displayItems.isEmpty {
@@ -107,24 +132,141 @@ struct HistoryView: View {
                 } else {
                     historyList
                 }
-            case .activity:
+            case .collection:
                 activityContent
             }
         }
     }
 
-    // MARK: - Activity timeline (F11)
+    // MARK: - Tab control (two destinations = the views you're NOT in)
 
-    /// Activity events, NEWEST FIRST (the log is append-only oldest→newest). Its own simple list —
-    /// distinct rows per kind, an SF Symbol + relative time, tap → the item where the id resolves
-    /// to a catalog song. Deliberately outside the Browser filter/sort machinery (those are song-
-    /// play concepts); this is a plain reverse-chronological read.
+    private var altTabs: [HistoryTab] {
+        switch tab {
+        case .unified:    return [.playback, .collection]
+        case .playback:   return [.collection, .unified]
+        case .collection: return [.playback, .unified]
+        }
+    }
+
+    /// Custom two-button control (not a segmented `Picker`) so it renders prominently and identically
+    /// on iOS, macOS, and visionOS. Each button is a destination; tapping switches the view and the
+    /// pair re-renders to the two views you can now reach.
+    private var tabBar: some View {
+        HStack(spacing: 8) {
+            ForEach(altTabs, id: \.self) { t in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { tab = t }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: t.symbol).font(.system(size: 13, weight: .semibold))
+                        Text(t.rawValue).font(.subheadline.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.fg)
+                .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Theme.accent.opacity(0.25), lineWidth: 1)
+                )
+                .accessibilityIdentifier("history-tab-\(t.rawValue.lowercased())")
+            }
+        }
+        .padding(.horizontal).padding(.vertical, 8)
+        // NB: no container accessibilityIdentifier here — a parent id absorbs the child buttons'
+        // identifiers and makes `history-tab-<mode>` unqueryable in XCUITest.
+    }
+
+    // MARK: - Unified timeline (plays + activity interleaved)
+
+    @ViewBuilder private var unifiedContent: some View {
+        if unified.isEmpty {
+            unifiedEmptyState
+        } else {
+            let page = Array(unified.prefix(liveUnifiedVisible))
+            List {
+                ForEach(page) { entry in
+                    unifiedRow(entry)
+                        .onAppear { onUnifiedRowAppear(entry, rendered: page) }
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    @ViewBuilder private func unifiedRow(_ entry: HistoryEntry) -> some View {
+        switch entry {
+        case .play(_, let song, let play):
+            row(song: song, play: play)
+                .contentShape(Rectangle())
+                .onTapGesture { path.append(song) }
+        case .activity(let e):
+            activityRow(e)
+                .contentShape(Rectangle())
+                .onTapGesture { if let song = app.songsById[e.itemId] { path.append(song) } }
+        }
+    }
+
+    /// Merge plays + activity into one newest-first timeline, filtered by the search query
+    /// (title/artist for plays; item title + collection name for activity). Runs on the main actor
+    /// (reads the catalog); paged on render, so only a prefix is ever materialized into rows.
+    private func buildUnified() -> [HistoryEntry] {
+        let q = browse.query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        var entries: [HistoryEntry] = []
+        entries.reserveCapacity(history.events.count + activity.events.count)
+        for e in history.events {
+            let (item, key) = makeRow(e, count: 1)
+            guard case .song(let song, _, _, _, let play) = item, let play else { continue }
+            if q.isEmpty || key.contains(q) {
+                entries.append(.play(eventId: e.id, song: song, play: play))
+            }
+        }
+        for ev in activity.events where q.isEmpty || activitySearchKey(ev).contains(q) {
+            entries.append(.activity(ev))
+        }
+        entries.sort { $0.at > $1.at }
+        return entries
+    }
+
+    private func onUnifiedRowAppear(_ entry: HistoryEntry, rendered: [HistoryEntry]) {
+        guard entry.id == rendered.last?.id, liveUnifiedVisible < unified.count else { return }
+        uVisibleCount = BrowsePaging.grow(liveUnifiedVisible, upTo: unified.count)
+        uVisibleKey = unifiedPagingKey
+    }
+
+    private var unifiedEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 40)).foregroundStyle(Theme.fgDim)
+            Text(history.events.isEmpty && activity.events.isEmpty ? "No history yet" : "Nothing matches your search")
+                .font(.headline).foregroundStyle(Theme.fg)
+            Text("Songs you play — and changes you make to your collections (adds, hearts, removals) — show up here together.")
+                .font(.caption).foregroundStyle(Theme.fgDim)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+        .accessibilityIdentifier("history-unified-empty")
+    }
+
+    // MARK: - Collection activity timeline (F11)
+
+    /// Activity events, NEWEST FIRST (the log is append-only oldest→newest), filtered by the search
+    /// query. Its own simple list — distinct rows per kind, an SF Symbol + relative time, tap → the
+    /// item where the id resolves to a catalog song.
     @ViewBuilder private var activityContent: some View {
-        if activity.events.isEmpty {
+        let q = browse.query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let events = q.isEmpty
+            ? Array(activity.events.reversed())
+            : activity.events.reversed().filter { activitySearchKey($0).contains(q) }
+        if events.isEmpty {
             activityEmptyState
         } else {
             List {
-                ForEach(activity.events.reversed()) { event in
+                ForEach(events) { event in
                     activityRow(event)
                         .contentShape(Rectangle())
                         .onTapGesture { if let song = app.songsById[event.itemId] { path.append(song) } }
@@ -163,6 +305,11 @@ struct HistoryView: View {
         }
     }
 
+    private func activitySearchKey(_ e: CollectionActivityStore.ActivityEvent) -> String {
+        (displayTitle(e) + "\n" + (e.collectionName ?? ""))
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
     /// Prefer the LIVE catalog title (fresh renames), fall back to the event's snapshot, then the id.
     private func displayTitle(_ e: CollectionActivityStore.ActivityEvent) -> String {
         if let s = app.songsById[e.itemId] { return "“\(s.name)”" }
@@ -184,6 +331,8 @@ struct HistoryView: View {
         .padding()
         .accessibilityIdentifier("activity-empty")
     }
+
+    // MARK: - Playback (plays) timeline
 
     /// The paged list: renders only the current `liveVisible` prefix of the full result set and
     /// grows the budget as the last rendered row scrolls into view.
@@ -258,8 +407,8 @@ struct HistoryView: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            // Sort/filter drive the Plays timeline only — hidden on the Activity segment.
-            if tab == .plays {
+            // Sort/filter drive the Playback timeline only — hidden on Unified and Collection.
+            if tab == .playback {
                 Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
                     .accessibilityIdentifier("history-sort")
                 Button { showFilter = true } label: {
@@ -347,5 +496,25 @@ struct HistoryView: View {
 
     private static func relative(_ epochMs: Double) -> String {
         relativeFormatter.localizedString(for: Date(timeIntervalSince1970: epochMs / 1000), relativeTo: Date())
+    }
+}
+
+/// A single row in the unified History timeline: either a song play (reusing the play row) or a
+/// collection-activity event, each carrying its own timestamp for the merge sort.
+private enum HistoryEntry: Identifiable {
+    case play(eventId: UUID, song: IndexSong, play: PlayRef)
+    case activity(CollectionActivityStore.ActivityEvent)
+
+    var id: String {
+        switch self {
+        case .play(let eid, _, _): return "p:\(eid.uuidString)"
+        case .activity(let e):     return "a:\(e.id.uuidString)"
+        }
+    }
+    var at: Double {
+        switch self {
+        case .play(_, _, let p): return p.playedAt
+        case .activity(let e):   return e.at
+        }
     }
 }

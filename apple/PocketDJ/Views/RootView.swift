@@ -61,7 +61,11 @@ struct RootView: View {
         /// User-visible sidebar/menu label. Diverges from `rawValue` only where a tab was
         /// renamed after its token was pinned (Performance → Producer).
         var title: String {
-            self == .performance ? "Producer" : rawValue
+            switch self {
+            case .performance: return "Producer"      // token stays "Performance"
+            case .playlists:   return "Collections"    // token stays "Playlists" (2026-07 rename)
+            default:           return rawValue
+            }
         }
         var icon: String {
             switch self {
@@ -425,15 +429,15 @@ struct RootView: View {
                 .keyboardShortcut("h", modifiers: .command)
             Button("Settings-shadow") { section = .settings }
                 .keyboardShortcut(",", modifiers: .command)
-            // ⌘P → Performance, ⇧⌘P → Playlists (spec §0's collision table): plain ⌘P
-            // belonged to Playlists, but the Performance tab claims it — and one key must
-            // never have two live registrations (the ⌘L ambiguity lesson in BrowseView),
-            // so Playlists moves to ⇧⌘P and Browse's play-focused moves to ⌥⌘P. The
-            // shadow LABELS keep their names — they are load-bearing XCUITest queries.
+            // ⌘P → Performance. The shadow LABELS keep their names — they are load-bearing
+            // XCUITest queries — even though the Playlists tab is now titled "Collections".
             Button("Performance-shadow") { section = .performance }
                 .keyboardShortcut("p", modifiers: .command)
+            // ⌘C → the Collections tab (was ⇧⌘P). NOTE: ⌘C is the system Copy shortcut; this
+            // registers it as a tab jump. Levi asked for the C-for-Collections mnemonic — if it
+            // ever shadows Copy in a focused text field, ⌘L is the conflict-free alternative.
             Button("Playlists-shadow") { section = .playlists }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .keyboardShortcut("c", modifiers: .command)
             // ⌘M → Mix. On macOS this INTENTIONALLY overrides the system "minimize" shortcut
             // (the user asked for it); the Mix tab exists on iPhone, iPad, AND Mac.
             Button("Mix-shadow") { section = .mix }
