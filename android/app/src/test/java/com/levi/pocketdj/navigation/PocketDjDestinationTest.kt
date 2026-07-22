@@ -11,7 +11,7 @@ class PocketDjDestinationTest {
     fun bottomNav_hasSixTabsInProductOrder() {
         val labels = PocketDjDestination.bottomNav.map { it.label }
         assertEquals(
-            listOf("Browse", "History", "Jukebox", "Playlists", "Mix", "Producer"),
+            listOf("Browse", "History", "Jukebox", "Collections", "Mix", "Producer"),
             labels,
         )
     }

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
@@ -40,10 +41,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -78,35 +77,39 @@ import com.levi.pocketdj.di.AppGraph
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * One derived timeline row (specs/history.md §5): identity is the EVENT id —
- * a song played three times is three rows. Title/artist resolve live-catalog
- * first, event snapshot second, so history outlives the catalog.
- */
-private data class HistoryRow(
-    val eventId: String,
-    val songId: String,
-    val title: String,
-    val artist: String,
-    val artUrl: String?,
-    val source: PlaySource,
-    val contextName: String?,
-    val playedAtMs: Long,
-    /** Total plays of this song in the log (badge shows only when > 1). */
-    val playCount: Int,
-)
-
 private const val PAGE_SIZE = 120
 
 /** One selected day covers the whole day — the range end is exclusive +24 h. */
 private const val DAY_MS = 24L * 60 * 60 * 1000
 
 /**
- * History tab (specs/history.md §5–§7): `Plays | Activity` segments — Plays is
- * the play timeline with search ("Search title or artist"), sort (last-played
- * asc/desc) and the played-between date-range filter (§6 P1 minimum); Activity
- * is the LIVE collection-activity log ([ActivityContent],
- * specs/activity-favorites.md §5).
+ * The three History views. Default is [UNIFIED]; the tab bar always offers the
+ * two you're NOT currently in ([altTabs]) — iOS `HistoryView.HistoryTab` parity.
+ */
+private enum class HistoryTab(val label: String, val icon: ImageVector) {
+    UNIFIED("Unified", Icons.Filled.Layers),
+    PLAYBACK("Playback", Icons.Filled.PlayCircle),
+    COLLECTION("Collection", Icons.AutoMirrored.Filled.QueueMusic),
+}
+
+/** The two destinations shown as tabs from the current view (never the current one). */
+private fun HistoryTab.altTabs(): List<HistoryTab> = when (this) {
+    HistoryTab.UNIFIED -> listOf(HistoryTab.PLAYBACK, HistoryTab.COLLECTION)
+    HistoryTab.PLAYBACK -> listOf(HistoryTab.COLLECTION, HistoryTab.UNIFIED)
+    HistoryTab.COLLECTION -> listOf(HistoryTab.PLAYBACK, HistoryTab.UNIFIED)
+}
+
+/**
+ * History tab — THREE views over two event streams (iOS `HistoryView` parity):
+ *  • Unified (default) — song plays + collection activity interleaved newest-first.
+ *  • Playback — the play timeline with search, sort (last-played asc/desc) and the
+ *    played-between date-range filter (§6 P1 minimum).
+ *  • Collection — the LIVE collection-activity log ([ActivityContent],
+ *    specs/activity-favorites.md §5).
+ *
+ * The tab control is a custom TWO-button row of the views you're NOT in; tapping
+ * one switches to it. The shared search query filters every view; sort + the
+ * date-range filter stay Playback-only.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -123,8 +126,8 @@ fun HistoryScreen(
     val catalogState by graph.catalogRepository.state.collectAsState()
     val catalog = catalogState.catalog ?: MergedCatalog.EMPTY
 
-    // 0 = Plays, 1 = Activity (live per specs/activity-favorites.md §5).
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    // Default view is Unified; the two-button bar offers the other two (iOS parity).
+    var tab by rememberSaveable { mutableStateOf(HistoryTab.UNIFIED) }
 
     // History-only search/sort/filter state (never shared with Browse's, §6.4).
     var query by rememberSaveable { mutableStateOf("") }
@@ -134,9 +137,9 @@ fun HistoryScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     var showRangeDialog by remember { mutableStateOf(false) }
 
-    // Filter/sort compute over up to 20k rows runs off the main thread, keyed
-    // on (history revision, catalog identity, filter/sort signature) — never on
-    // events.size, which pins at the cap (specs/history.md §5).
+    // Playback filter/sort compute over up to 20k rows runs off the main thread,
+    // keyed on (history revision, catalog identity, filter/sort signature) — never
+    // on events.size, which pins at the cap (specs/history.md §5).
     val rows by produceState(
         initialValue = emptyList<HistoryRow>(),
         historyState.revision,
@@ -148,106 +151,100 @@ fun HistoryScreen(
     ) {
         val events = historyState.events
         value = withContext(Dispatchers.Default) {
-            buildRows(events, catalog, store, query, newestFirst, rangeStartMs, rangeEndMs)
+            buildRows(events, catalog, store::playCount, query, newestFirst, rangeStartMs, rangeEndMs)
         }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        SingleChoiceSegmentedButtonRow(
+        HistoryTabBar(current = tab, onSelect = { tab = it })
+
+        // Search filters every view; sort + date-range controls are Playback-only.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .testTag("history-tab-picker"),
+                .padding(horizontal = 12.dp),
         ) {
-            SegmentedButton(
-                selected = selectedTab == 0,
-                onClick = { selectedTab = 0 },
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-            ) { Text("Plays") }
-            SegmentedButton(
-                selected = selectedTab == 1,
-                onClick = { selectedTab = 1 },
-                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                modifier = Modifier.testTag("history-tab-activity"),
-            ) { Text("Activity") }
-        }
-        when (selectedTab) {
-            0 -> {
-                // Search + toolbar (Plays segment only, §6.3).
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
-                ) {
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        singleLine = true,
-                        placeholder = { Text("Search title or artist") },
-                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                        trailingIcon = {
-                            if (query.isNotEmpty()) {
-                                IconButton(onClick = { query = "" }) {
-                                    Icon(Icons.Filled.Close, contentDescription = "Clear search")
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("history-search"),
-                    )
-                    Box {
-                        IconButton(
-                            onClick = { showSortMenu = true },
-                            modifier = Modifier.testTag("history-sort"),
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
-                        }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(if (newestFirst) "✓ Newest first" else "Newest first") },
-                                onClick = {
-                                    newestFirst = true
-                                    showSortMenu = false
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (!newestFirst) "✓ Oldest first" else "Oldest first") },
-                                onClick = {
-                                    newestFirst = false
-                                    showSortMenu = false
-                                },
-                            )
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                placeholder = { Text("Search title or artist") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
                         }
                     }
-                    val rangeActive = rangeStartMs != null || rangeEndMs != null
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("history-search"),
+            )
+            if (tab == HistoryTab.PLAYBACK) {
+                Box {
                     IconButton(
-                        onClick = { showRangeDialog = true },
-                        modifier = Modifier.testTag("history-filter"),
+                        onClick = { showSortMenu = true },
+                        modifier = Modifier.testTag("history-sort"),
                     ) {
-                        Icon(
-                            Icons.Filled.FilterList,
-                            contentDescription = "Filter by date",
-                            tint = if (rangeActive) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
+                        Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
+                    }
+                    DropdownMenu(
+                        expanded = showSortMenu,
+                        onDismissRequest = { showSortMenu = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(if (newestFirst) "✓ Newest first" else "Newest first") },
+                            onClick = {
+                                newestFirst = true
+                                showSortMenu = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (!newestFirst) "✓ Oldest first" else "Oldest first") },
+                            onClick = {
+                                newestFirst = false
+                                showSortMenu = false
                             },
                         )
                     }
                 }
-                PlaysTimeline(
-                    rows = rows,
-                    hasAnyEvents = historyState.events.isNotEmpty(),
-                    onSongClick = onSongClick,
-                )
+                val rangeActive = rangeStartMs != null || rangeEndMs != null
+                IconButton(
+                    onClick = { showRangeDialog = true },
+                    modifier = Modifier.testTag("history-filter"),
+                ) {
+                    Icon(
+                        Icons.Filled.FilterList,
+                        contentDescription = "Filter by date",
+                        tint = if (rangeActive) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                }
             }
-            else -> ActivityContent(
+        }
+
+        when (tab) {
+            HistoryTab.UNIFIED -> UnifiedTimeline(
+                playEvents = historyState.events,
+                historyRevision = historyState.revision,
+                playStore = store,
                 catalog = catalog,
+                query = query,
+                onSongClick = onSongClick,
+            )
+            HistoryTab.PLAYBACK -> PlaysTimeline(
+                rows = rows,
+                hasAnyEvents = historyState.events.isNotEmpty(),
+                onSongClick = onSongClick,
+            )
+            HistoryTab.COLLECTION -> ActivityContent(
+                catalog = catalog,
+                query = query,
                 onSongClick = onSongClick,
             )
         }
@@ -291,6 +288,121 @@ fun HistoryScreen(
                 },
                 modifier = Modifier.weight(1f),
             )
+        }
+    }
+}
+
+/**
+ * Custom two-button tab control (not a fixed 3-segment picker): each button is a
+ * DESTINATION — one of the two views you can switch TO — so the current view is
+ * never shown. Tapping switches and the pair re-renders (iOS parity).
+ */
+@Composable
+private fun HistoryTabBar(current: HistoryTab, onSelect: (HistoryTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        current.altTabs().forEach { destination ->
+            OutlinedButton(
+                onClick = { onSelect(destination) },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("history-tab-${destination.label.lowercase()}"),
+            ) {
+                Icon(
+                    imageVector = destination.icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(destination.label)
+            }
+        }
+    }
+}
+
+/**
+ * Unified timeline (iOS parity): song plays + collection activity interleaved
+ * newest-first, filtered by the shared [query]. Loads the activity store lazily
+ * (its first read decodes the whole log — kept off-main, like [ActivityContent]);
+ * merges off the main thread; renders a growing page prefix.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UnifiedTimeline(
+    playEvents: List<PlayEvent>,
+    historyRevision: Int,
+    playStore: PlayHistoryStore,
+    catalog: MergedCatalog,
+    query: String,
+    onSongClick: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember { AppGraph.get(context) }
+
+    val activityStore by produceState<CollectionActivityStore?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) { graph.collectionActivity }
+    }
+    val store = activityStore ?: return
+    val activityState by store.state.collectAsState()
+
+    // Seed NULL so the first frame renders nothing rather than flashing the empty
+    // state before the merge finishes on Dispatchers.Default. Keyed on both stream
+    // revisions + catalog identity + query (never events.size — pins at the cap).
+    val entriesOrNull by produceState<List<HistoryEntry>?>(
+        initialValue = null,
+        historyRevision,
+        activityState.revision,
+        catalog,
+        query,
+    ) {
+        val plays = playEvents
+        val acts = activityState.events
+        value = withContext(Dispatchers.Default) {
+            buildUnified(plays, acts, catalog, playStore::playCount, query)
+        }
+    }
+    val entries = entriesOrNull ?: return
+
+    if (entries.isEmpty()) {
+        val hasAny = playEvents.isNotEmpty() || activityState.events.isNotEmpty()
+        EmptyState(
+            icon = Icons.Filled.History,
+            title = if (hasAny) "Nothing matches your search" else "No history yet",
+            caption = "Songs you play — and changes you make to your collections " +
+                "(adds, hearts, removals) — show up here together.",
+            testTag = if (hasAny) "history-unified-no-matches" else "history-unified-empty",
+        )
+        return
+    }
+
+    // Render a growing prefix (History can hold 20k+ combined events); a catalog
+    // refresh must not reset a scrolled-in budget.
+    var pageBudget by rememberSaveable { mutableIntStateOf(PAGE_SIZE) }
+    val visible = if (entries.size > pageBudget) entries.subList(0, pageBudget) else entries
+
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(visible, key = { it.id }) { entry ->
+            when (entry) {
+                is HistoryEntry.Play -> PlayRow(
+                    row = entry.row,
+                    onClick = { onSongClick(entry.row.songId) },
+                )
+                is HistoryEntry.Activity -> ActivityRow(
+                    row = entry.row,
+                    onSongClick = onSongClick,
+                )
+            }
+        }
+        if (entries.size > visible.size) {
+            item(key = "unified-load-more") {
+                // Composing the sentinel = the last page scrolled in; grow.
+                LaunchedEffect(pageBudget) { pageBudget += PAGE_SIZE }
+                Spacer(Modifier.height(48.dp))
+            }
         }
     }
 }
@@ -447,15 +559,17 @@ private fun ArtThumb(artUrl: String?) {
 }
 
 /**
- * LIVE Activity segment (specs/activity-favorites.md §5): a plain
- * reverse-chronological list of collection acts — deliberately OUTSIDE the
- * Plays search/sort/filter machinery. Rows resolve titles live-catalog-first
- * (snapshot second), tap through to song detail only when the item still
- * resolves, and render all four kinds even though P2 emits add/remove only.
+ * LIVE Collection segment (specs/activity-favorites.md §5): a reverse-chronological
+ * list of collection acts — outside the Playback sort/date-range machinery but,
+ * like every History view, honouring the shared search [query] (item title or
+ * collection name). Rows resolve titles live-catalog-first (snapshot second), tap
+ * through to song detail only when the item still resolves, and render all four
+ * kinds even though P2 emits add/remove only.
  */
 @Composable
 private fun ActivityContent(
     catalog: MergedCatalog,
+    query: String,
     onSongClick: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -469,16 +583,17 @@ private fun ActivityContent(
     val activityState by store.state.collectAsState()
 
     // Recompute keys off the store's revision (never events.size — pins at the
-    // cap) plus catalog identity for live-title resolution. Seed NULL (not empty)
-    // so the first frame renders nothing rather than flashing the empty state
-    // before buildActivityRows finishes on Dispatchers.Default.
+    // cap) plus catalog identity for live-title resolution and the search query.
+    // Seed NULL (not empty) so the first frame renders nothing rather than
+    // flashing the empty state before buildActivityRows finishes on Default.
     val rowsOrNull by produceState<List<ActivityRowUi>?>(
         initialValue = null,
         activityState.revision,
         catalog,
+        query,
     ) {
         val events = activityState.events
-        value = withContext(Dispatchers.Default) { buildActivityRows(events, catalog) }
+        value = withContext(Dispatchers.Default) { buildActivityRows(events, catalog, query) }
     }
     val rows = rowsOrNull ?: return
 
@@ -614,49 +729,4 @@ private fun relativeTime(playedAtMs: Long): String {
         DateUtils.MINUTE_IN_MILLIS,
         DateUtils.FORMAT_ABBREV_RELATIVE,
     ).toString()
-}
-
-/**
- * Rows with live-catalog-first, snapshot-second resolution, filtered by the
- * search query (title or artist, case-folded) and the played-between range
- * ([rangeStartMs] inclusive, [rangeEndMs] exclusive), sorted by playedAt in
- * the requested direction (§6.4).
- */
-private fun buildRows(
-    events: List<PlayEvent>,
-    catalog: MergedCatalog,
-    store: PlayHistoryStore,
-    query: String,
-    newestFirst: Boolean,
-    rangeStartMs: Long?,
-    rangeEndMs: Long?,
-): List<HistoryRow> {
-    val needle = query.trim()
-    val ordered = if (newestFirst) events.asReversed() else events
-    return ordered.mapNotNull { event ->
-        val playedAtMs = event.playedAt.toLong()
-        if (rangeStartMs != null && playedAtMs < rangeStartMs) return@mapNotNull null
-        if (rangeEndMs != null && playedAtMs >= rangeEndMs) return@mapNotNull null
-        val song = catalog.songsById[event.songId]
-        val title = song?.name ?: event.title ?: event.songId
-        val artist = song?.artist ?: event.artist ?: ""
-        if (needle.isNotEmpty() &&
-            !title.contains(needle, ignoreCase = true) &&
-            !artist.contains(needle, ignoreCase = true)
-        ) {
-            return@mapNotNull null
-        }
-        val album = song?.albumId?.let { catalog.albumsById[it] }
-        HistoryRow(
-            eventId = event.id,
-            songId = event.songId,
-            title = title,
-            artist = artist,
-            artUrl = album?.artCandidates()?.firstOrNull(),
-            source = event.source,
-            contextName = event.contextName,
-            playedAtMs = playedAtMs,
-            playCount = store.playCount(event.songId),
-        )
-    }
 }
