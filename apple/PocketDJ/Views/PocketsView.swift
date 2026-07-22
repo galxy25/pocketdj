@@ -93,7 +93,7 @@ struct PocketDetailView: View {
                             // a VStack so the panel's taps reach it (not the link) and the
                             // 1:1 element↔row mapping `onMove` relies on is preserved.
                             VStack(spacing: 0) {
-                                NavigationLink(value: song) { CollectionSongRow(song: song) }
+                                NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: pocket.syncsWithSource) }
                                 InlinePlayerSlot(songId: song.id)
                             }
                             .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
@@ -268,14 +268,36 @@ struct PocketDetailView: View {
             get: { pocket?.syncsWithSource ?? false },
             set: { collections.setSourceSyncEnabled($0, forPocket: pocketId) })
         Divider()
-        Toggle(isOn: syncBinding) {
-            Label("Sync with source", systemImage: "arrow.triangle.2.circlepath")
+        Section(sourceLinkHeader) {
+            Toggle(isOn: syncBinding) {
+                Label("Sync with source", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .accessibilityIdentifier("pocket-sync-toggle")
+            Button(action: syncFromSourceNow) {
+                Label("Sync from source now", systemImage: "arrow.clockwise")
+            }
+            .accessibilityIdentifier("pocket-sync-now")
+            // Re-link (Levi 2026-07-22): a pocket that converted from a playlist can point at the
+            // WRONG playlist or carry a stale membership snapshot, so its adds silently read as
+            // "already in the source" and never reach Apple Music. Re-linking re-snapshots the
+            // chosen playlist's CURRENT membership, turning the pocket's extra songs back into
+            // write-back candidates (then Settings ▸ Sync ▸ "Send my adds" pushes them).
+            if !linkableSources.isEmpty {
+                Button { showLinkPicker = true } label: {
+                    Label("Re-link to Apple Music playlist…", systemImage: "link")
+                }
+                .accessibilityIdentifier("pocket-relink-source")
+            }
         }
-        .accessibilityIdentifier("pocket-sync-toggle")
-        Button(action: syncFromSourceNow) {
-            Label("Sync from source now", systemImage: "arrow.clockwise")
+    }
+
+    /// ⋯-menu header for a linked pocket — names the Apple Music playlist it's tied to so the user
+    /// can eyeball whether the linkage is correct. Falls back when the source isn't loaded.
+    private var sourceLinkHeader: String {
+        if let name = collections.sourcePlaylist(forPocket: pocketId)?.name {
+            return "Linked to “\(name)”"
         }
-        .accessibilityIdentifier("pocket-sync-now")
+        return "Apple Music link"
     }
 
     /// Manual sync + user feedback (runs regardless of the auto-sync toggles).

@@ -1102,7 +1102,7 @@ struct PlaylistDetailView: View {
                 // BELOW it, both in a VStack so the panel's taps don't hit the link and the
                 // 1:1 element↔row mapping `onMove`/`onDelete` rely on is preserved.
                 VStack(spacing: 0) {
-                    NavigationLink(value: song) { CollectionSongRow(song: song) }
+                    NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false) }
                     InlinePlayerSlot(songId: song.id)
                 }
             } else if let id = node.songId, StudioFactory.isStudioId(id) {
