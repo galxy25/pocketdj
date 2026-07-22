@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.config.Endpoints
 import java.io.IOException
@@ -41,6 +42,20 @@ data class AppSettings(
     val jukeboxTokensRequiredByDefault: Boolean = true,
     val onlineSearchEnabled: Boolean = false,
     val installId: String = "",
+    // Playlists-tab UI state (specs/playlists-ui.md §9 — persisted OUTSIDE the
+    // collections document). Tokens/semantics mirror the iOS keys exactly.
+    /** `CollectionSortOrder` raw token; missing ⇒ "name" (fresh install AND upgrade). */
+    val collectionSort: String = "name",
+    /** Yours/Shared tab: "user" | "shared"; missing ⇒ "user". */
+    val playlistsMode: String = "user",
+    /** COLLAPSED folder ids — missing/absent ⇒ expanded (folders default OPEN). */
+    val collapsedFolderIds: Set<String> = emptySet(),
+    /**
+     * EXPANDED source names — missing/absent ⇒ collapsed (Shared groups default
+     * CLOSED). Deliberately the INVERSE of the folder key so the default needs
+     * no seeding.
+     */
+    val expandedSourceNames: Set<String> = emptySet(),
 ) {
     val hasRipServer: Boolean get() = ripServerUrl.isNotBlank()
 
@@ -92,6 +107,10 @@ class AppSettingsStore(
         val ONLINE_SEARCH_ENABLED = booleanPreferencesKey("onlineSearchEnabled")
         val INSTALL_ID = stringPreferencesKey("installId")
         val BROWSE_SNAPSHOT_JSON = stringPreferencesKey("browseSnapshotJson")
+        val COLLECTION_SORT = stringPreferencesKey("collectionSort")
+        val PLAYLISTS_MODE = stringPreferencesKey("playlistsMode")
+        val COLLAPSED_FOLDER_IDS = stringSetPreferencesKey("collapsedFolderIds")
+        val EXPANDED_SOURCE_NAMES = stringSetPreferencesKey("expandedSourceNames")
     }
 
     /** Live settings; IO errors surface as defaults rather than a crash. */
@@ -110,6 +129,10 @@ class AppSettingsStore(
         jukeboxTokensRequiredByDefault = prefs[Keys.JUKEBOX_TOKENS_REQUIRED] ?: true,
         onlineSearchEnabled = prefs[Keys.ONLINE_SEARCH_ENABLED] ?: false,
         installId = prefs[Keys.INSTALL_ID] ?: "",
+        collectionSort = prefs[Keys.COLLECTION_SORT] ?: "name",
+        playlistsMode = prefs[Keys.PLAYLISTS_MODE] ?: "user",
+        collapsedFolderIds = prefs[Keys.COLLAPSED_FOLDER_IDS] ?: emptySet(),
+        expandedSourceNames = prefs[Keys.EXPANDED_SOURCE_NAMES] ?: emptySet(),
     )
 
     private fun decodeSources(raw: String?): List<SourceConfig> {
@@ -184,6 +207,37 @@ class AppSettingsStore(
 
     suspend fun setOnlineSearchEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.ONLINE_SEARCH_ENABLED] = enabled }
+    }
+
+    /** Persist the Playlists collection-sort token (`CollectionSortOrder.token`). */
+    suspend fun setCollectionSort(token: String) {
+        dataStore.edit { it[Keys.COLLECTION_SORT] = token }
+    }
+
+    /** Persist the Playlists Yours/Shared tab ("user" | "shared"). */
+    suspend fun setPlaylistsMode(mode: String) {
+        dataStore.edit { it[Keys.PLAYLISTS_MODE] = mode }
+    }
+
+    /**
+     * Toggle one folder's collapsed state. Transactional (like [updateSources])
+     * so two quick toggles can't lose the first write.
+     */
+    suspend fun setFolderCollapsed(folderId: String, collapsed: Boolean) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.COLLAPSED_FOLDER_IDS] ?: emptySet()
+            prefs[Keys.COLLAPSED_FOLDER_IDS] =
+                if (collapsed) current + folderId else current - folderId
+        }
+    }
+
+    /** Toggle one Shared source group's expanded state (inverse-set semantics). */
+    suspend fun setSourceExpanded(sourceName: String, expanded: Boolean) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.EXPANDED_SOURCE_NAMES] ?: emptySet()
+            prefs[Keys.EXPANDED_SOURCE_NAMES] =
+                if (expanded) current + sourceName else current - sourceName
+        }
     }
 
     /**

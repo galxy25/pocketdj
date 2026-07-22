@@ -77,14 +77,32 @@ class MergedCatalogTest {
     }
 
     @Test
-    fun playlists_flattenedSourceTagged_dedupedById() {
+    fun playlists_flattenedSourceTagged_dedupedByIdAndSource() {
         val merged = MergedCatalog.merge(listOf(vinylDoc, secondDoc))
-        assertEquals(2, merged.playlists.size)
-        val first = merged.playlists.first { it.playlist.id == "pl_1" }
-        assertEquals("Spin", first.playlist.name) // first occurrence won
-        assertEquals("My Vinyl", first.sourceName)
+        // (id, sourceName) identity: pl_1 exists in BOTH sources and both copies
+        // are kept side by side (iOS parity — provenance matching needs the
+        // sourceName qualifier, specs/collections-schema.md §8.4).
+        assertEquals(3, merged.playlists.size)
+        val vinylCopy = merged.playlists.first { it.playlist.id == "pl_1" && it.sourceName == "My Vinyl" }
+        assertEquals("Spin", vinylCopy.playlist.name)
+        val collectionCopy = merged.playlists.first { it.playlist.id == "pl_1" && it.sourceName == "Collection" }
+        assertEquals("Dup", collectionCopy.playlist.name)
         val second = merged.playlists.first { it.playlist.id == "pl_2" }
         assertEquals("Collection", second.sourceName)
+    }
+
+    @Test
+    fun playlists_sameIdWithinOneSource_firstOccurrenceWins() {
+        val doc = IndexJson(
+            manifest = IndexManifest(sourceName = "My Vinyl"),
+            playlists = listOf(
+                IndexPlaylist(id = "pl_1", name = "First"),
+                IndexPlaylist(id = "pl_1", name = "Shadow"),
+            ),
+        )
+        val merged = MergedCatalog.merge(listOf(doc))
+        assertEquals(1, merged.playlists.size)
+        assertEquals("First", merged.playlists.single().playlist.name)
     }
 
     @Test

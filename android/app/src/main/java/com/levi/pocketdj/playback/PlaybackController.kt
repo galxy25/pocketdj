@@ -46,6 +46,27 @@ sealed interface PlayOutcome {
     data class Failed(val message: String) : PlayOutcome
 }
 
+/** Result of asking the controller to play a whole ordered queue (P2 setlists). */
+sealed interface QueueOutcome {
+    /**
+     * The queue started. When [skippedEntryCount] > 0 the UI should surface
+     * "Playing m of n — k not playable on Android" ([QueuePlan.Plan.skippedSummary]).
+     */
+    data class Started(
+        val playableEntryCount: Int,
+        val skippedEntryCount: Int,
+        val requestedEntryCount: Int,
+    ) : QueueOutcome
+
+    /**
+     * Every row was unplayable — the iOS "nothing playable" banner case: fail
+     * with a message, never start silently.
+     */
+    data class NothingPlayable(val requestedEntryCount: Int) : QueueOutcome
+
+    data class Failed(val message: String) : QueueOutcome
+}
+
 /**
  * The app-facing playback facade (specs/playback.md §3, §5): resolves songIds
  * through the rips manifest, builds the Media3 queue (album context with
@@ -174,6 +195,59 @@ class PlaybackController(
             playContext = PlayContext.album(album.id, album.name),
         )
     }
+
+    /**
+     * Play an ordered queue of song ids (a realized setlist / Now Playing run —
+     * specs/realize-play.md §6.3). Resolution happens at queue-BUILD time via
+     * [QueuePlan]: manifest hits stream (with analog clip windows), everything
+     * else is SKIPPED (P2 cut: no per-row rip-on-demand inside a queue run).
+     * Per-item repeatCount expands into consecutive duplicate items.
+     *
+     * [playContext] is captured once for the whole run (the iOS captured-origin
+     * doctrine) — build it from `CollectionsStore.historyContext(...)` so
+     * History attributes rows to the right playlist/pocket/setlist.
+     *
+     * [startEntryIndex] addresses the ORIGINAL entry list (pre-skip,
+     * pre-repeat); playback starts at the first playable entry at or after it.
+     */
+    suspend fun playQueue(
+        entries: List<QueuePlan.QueueEntry>,
+        playContext: PlayContext,
+        startEntryIndex: Int = 0,
+    ): QueueOutcome {
+        val merged = catalog.state.value.catalog
+        val plan = QueuePlan.build(entries) { songId ->
+            PlayResolver.resolve(songId, rips.entry(songId), false)
+        }
+        if (plan.isEmpty) return QueueOutcome.NothingPlayable(entries.size)
+
+        val items = plan.items.map { planned ->
+            val song = merged?.songsById?.get(planned.songId)
+            val album = song?.albumId?.let { merged.albumsById[it] }
+            mediaItem(
+                songId = planned.songId,
+                action = planned.action,
+                song = song,
+                album = album,
+                playContext = playContext,
+            )
+        }
+        var startIndex = plan.items.indexOfFirst { it.entryIndex >= startEntryIndex }
+        if (startIndex < 0) startIndex = 0
+        setQueueAndPlay(items, startIndex)
+        return QueueOutcome.Started(
+            playableEntryCount = plan.playableEntryCount,
+            skippedEntryCount = plan.skippedEntryCount,
+            requestedEntryCount = plan.requestedEntryCount,
+        )
+    }
+
+    /** Convenience: queue a frozen setlist's playable rows in frozen order. */
+    suspend fun playSetlist(
+        setlist: com.levi.pocketdj.data.collections.Setlist,
+        playContext: PlayContext,
+        startEntryIndex: Int = 0,
+    ): QueueOutcome = playQueue(QueuePlan.entriesForSetlist(setlist), playContext, startEntryIndex)
 
     suspend fun pause() = withController { it.pause() }
     suspend fun resume() = withController { it.play() }

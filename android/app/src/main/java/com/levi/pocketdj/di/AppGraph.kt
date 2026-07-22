@@ -5,8 +5,11 @@ import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.emptyPreferences
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.activity.ActivityKind
+import com.levi.pocketdj.data.activity.CollectionActivityStore
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.CatalogService
+import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
@@ -104,6 +107,39 @@ class AppGraph private constructor(context: Context) {
 
     /** The History seam: collect `playEvents.events` and record each one. */
     val playEvents: PlayEventBus = PlayEventBus
+
+    /**
+     * The collection-activity log (History ▸ Activity). Lazy — construction
+     * reads its JSON doc from disk; first touch should be off-main.
+     */
+    val collectionActivity: CollectionActivityStore by lazy {
+        CollectionActivityStore(File(appContext.filesDir, CollectionActivityStore.FILE_NAME))
+    }
+
+    /**
+     * The collections store (pockets / playlists / setlists / folders). Lazy —
+     * construction reads `pocketdj-collections.json`. The activity seam is
+     * wired HERE (spec: the store fires its hook only from user-facing add/
+     * remove choke points; this wiring just records what arrives).
+     */
+    val collections: CollectionsStore by lazy {
+        CollectionsStore(File(appContext.filesDir, CollectionsStore.FILE_NAME)).also { store ->
+            store.catalogProvider = { catalogRepository.state.value.catalog }
+            store.onActivity = { hook ->
+                collectionActivity.record(
+                    kind = when (hook.kind) {
+                        CollectionsStore.ActivityHook.Kind.ADD -> ActivityKind.ADD
+                        CollectionsStore.ActivityHook.Kind.REMOVE -> ActivityKind.REMOVE
+                    },
+                    itemId = hook.itemId,
+                    itemTitle = hook.itemTitle,
+                    collectionId = hook.collectionId,
+                    collectionKind = hook.collectionKind,
+                    collectionName = hook.collectionName,
+                )
+            }
+        }
+    }
 
     init {
         // Restore + persist the Browse view-state (kind/filters/sort/layout/mode,

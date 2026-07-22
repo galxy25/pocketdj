@@ -16,7 +16,13 @@ data class MergedCatalog(
     val albums: List<IndexAlbum>,
     /** Deduped songs in catalog (merge) order. */
     val songs: List<IndexSong>,
-    /** Source playlists, flattened + source-tagged, deduped by playlist id. */
+    /**
+     * Source playlists, flattened + source-tagged, deduped by (playlist id,
+     * source name) — playlist ids are unique only WITHIN a source namespace, so
+     * same-id playlists from different sources stay side by side (iOS parity;
+     * provenance matching requires the sourceName qualifier —
+     * specs/collections-schema.md §8.4).
+     */
     val playlists: List<SourcePlaylist>,
     val albumsById: Map<String, IndexAlbum>,
     val songsById: Map<String, IndexSong>,
@@ -62,7 +68,8 @@ data class MergedCatalog(
         fun merge(documents: List<IndexJson>): MergedCatalog {
             val albumsById = LinkedHashMap<String, IndexAlbum>()
             val songsById = LinkedHashMap<String, IndexSong>()
-            val playlistsById = LinkedHashMap<String, SourcePlaylist>()
+            // Keyed by (id, sourceName) — NOT id alone (see the `playlists` doc).
+            val playlistsByKey = LinkedHashMap<Pair<String, String>, SourcePlaylist>()
             val sourceOfAlbum = HashMap<String, String>()
             val sourceOfSong = HashMap<String, String>()
             val sourceNames = LinkedHashSet<String>()
@@ -83,7 +90,7 @@ data class MergedCatalog(
                     }
                 }
                 for (playlist in doc.playlists.orEmpty()) {
-                    playlistsById.putIfAbsent(playlist.id, SourcePlaylist(playlist, sourceName))
+                    playlistsByKey.putIfAbsent(playlist.id to sourceName, SourcePlaylist(playlist, sourceName))
                 }
                 if (contributed) sourceNames.add(sourceName)
             }
@@ -96,7 +103,7 @@ data class MergedCatalog(
             return MergedCatalog(
                 albums = sortedAlbums,
                 songs = songsById.values.toList(),
-                playlists = playlistsById.values.toList(),
+                playlists = playlistsByKey.values.toList(),
                 albumsById = albumsById,
                 songsById = songsById,
                 sourceOfAlbum = sourceOfAlbum,

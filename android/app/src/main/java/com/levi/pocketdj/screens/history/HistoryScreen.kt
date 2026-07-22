@@ -19,13 +19,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.HeartBroken
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.DatePickerDialog
@@ -64,6 +68,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.levi.pocketdj.data.activity.ActivityKind
+import com.levi.pocketdj.data.activity.CollectionActivityStore
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.history.PlayEvent
 import com.levi.pocketdj.data.history.PlayHistoryStore
@@ -99,8 +105,8 @@ private const val DAY_MS = 24L * 60 * 60 * 1000
  * History tab (specs/history.md §5–§7): `Plays | Activity` segments — Plays is
  * the play timeline with search ("Search title or artist"), sort (last-played
  * asc/desc) and the played-between date-range filter (§6 P1 minimum); Activity
- * is a Phase 2 stub ([ActivityContent]) whose segment is selectable so the P2
- * seam is visible.
+ * is the LIVE collection-activity log ([ActivityContent],
+ * specs/activity-favorites.md §5).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -117,7 +123,7 @@ fun HistoryScreen(
     val catalogState by graph.catalogRepository.state.collectAsState()
     val catalog = catalogState.catalog ?: MergedCatalog.EMPTY
 
-    // 0 = Plays, 1 = Activity (P2 placeholder — selectable, per §7).
+    // 0 = Plays, 1 = Activity (live per specs/activity-favorites.md §5).
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
     // History-only search/sort/filter state (never shared with Browse's, §6.4).
@@ -240,7 +246,10 @@ fun HistoryScreen(
                     onSongClick = onSongClick,
                 )
             }
-            else -> ActivityContent()
+            else -> ActivityContent(
+                catalog = catalog,
+                onSongClick = onSongClick,
+            )
         }
     }
 
@@ -438,18 +447,113 @@ private fun ArtThumb(artUrl: String?) {
 }
 
 /**
- * Phase 2 seam (specs/history.md §7): standalone composable that will take the
- * collection-activity store when it exists — P2 drops in real rows without
- * touching the Plays side.
+ * LIVE Activity segment (specs/activity-favorites.md §5): a plain
+ * reverse-chronological list of collection acts — deliberately OUTSIDE the
+ * Plays search/sort/filter machinery. Rows resolve titles live-catalog-first
+ * (snapshot second), tap through to song detail only when the item still
+ * resolves, and render all four kinds even though P2 emits add/remove only.
  */
 @Composable
-private fun ActivityContent() {
-    EmptyState(
-        icon = Icons.Filled.History,
-        title = "No collection activity yet",
-        caption = "Adding a song to a playlist or pocket, hearting a song, or removing one shows up here.",
-        testTag = "history-activity-empty",
-    )
+private fun ActivityContent(
+    catalog: MergedCatalog,
+    onSongClick: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember { AppGraph.get(context) }
+
+    // First touch of the lazy store reads its JSON doc — keep it off-main.
+    val activityStore by produceState<CollectionActivityStore?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) { graph.collectionActivity }
+    }
+    val store = activityStore ?: return
+    val activityState by store.state.collectAsState()
+
+    // Recompute keys off the store's revision (never events.size — pins at the
+    // cap) plus catalog identity for live-title resolution. Seed NULL (not empty)
+    // so the first frame renders nothing rather than flashing the empty state
+    // before buildActivityRows finishes on Dispatchers.Default.
+    val rowsOrNull by produceState<List<ActivityRowUi>?>(
+        initialValue = null,
+        activityState.revision,
+        catalog,
+    ) {
+        val events = activityState.events
+        value = withContext(Dispatchers.Default) { buildActivityRows(events, catalog) }
+    }
+    val rows = rowsOrNull ?: return
+
+    if (rows.isEmpty()) {
+        EmptyState(
+            icon = Icons.Filled.History,
+            title = "No collection activity yet",
+            caption = "Adding a song to a playlist or pocket, hearting a song, or removing one shows up here.",
+            testTag = "history-activity-empty",
+        )
+        return
+    }
+
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(rows, key = { it.eventId }) { row ->
+            ActivityRow(row = row, onSongClick = onSongClick)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActivityRow(row: ActivityRowUi, onSongClick: (String) -> Unit) {
+    // Tap → song detail only when the itemId resolves; otherwise inert.
+    val songId = row.songId
+    Surface(
+        onClick = { songId?.let(onSongClick) },
+        enabled = songId != null,
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("activity-row"),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            Icon(
+                imageVector = row.kind.icon(),
+                contentDescription = null,
+                tint = if (row.kind == ActivityKind.HEART) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = row.headline,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = relativeTime(row.atMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** Nearest Material icons to the iOS SF Symbols per kind (§2 mapping). */
+private fun ActivityKind.icon(): ImageVector = when (this) {
+    ActivityKind.ADD -> Icons.Filled.AddCircleOutline
+    ActivityKind.HEART -> Icons.Filled.Favorite
+    ActivityKind.UNHEART -> Icons.Filled.HeartBroken
+    ActivityKind.REMOVE -> Icons.Filled.RemoveCircleOutline
 }
 
 @Composable

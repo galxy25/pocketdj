@@ -180,4 +180,32 @@ class AppSettingsStoreTest {
         assertEquals("bpm", snap.sortKeys[0].field)
         assertFalse(snap.sortKeys[0].ascending)
     }
+
+    @Test
+    fun playlistsUiState_defaultsAndRoundTrip() = runBlocking {
+        val (store, _) = newStore("playlists-ui")
+        // Defaults (specs/playlists-ui.md §9): name sort, Yours tab, folders
+        // expanded (empty collapsed set), Shared groups collapsed (empty
+        // expanded set — the deliberate inverse-key semantics).
+        val defaults = store.current()
+        assertEquals("name", defaults.collectionSort)
+        assertEquals("user", defaults.playlistsMode)
+        assertTrue(defaults.collapsedFolderIds.isEmpty())
+        assertTrue(defaults.expandedSourceNames.isEmpty())
+
+        store.setCollectionSort("recentlyPlayed")
+        store.setPlaylistsMode("shared")
+        store.setFolderCollapsed("fld_1", collapsed = true)
+        store.setFolderCollapsed("fld_2", collapsed = true)
+        store.setFolderCollapsed("fld_1", collapsed = false)
+        store.setSourceExpanded("Apple Music (Local)", expanded = true)
+        store.setSourceExpanded("My Vinyl", expanded = true)
+        store.setSourceExpanded("My Vinyl", expanded = false)
+
+        val settings = store.current()
+        assertEquals("recentlyPlayed", settings.collectionSort)
+        assertEquals("shared", settings.playlistsMode)
+        assertEquals(setOf("fld_2"), settings.collapsedFolderIds)
+        assertEquals(setOf("Apple Music (Local)"), settings.expandedSourceNames)
+    }
 }

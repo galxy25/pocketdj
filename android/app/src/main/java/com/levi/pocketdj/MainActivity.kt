@@ -44,8 +44,14 @@ import com.levi.pocketdj.screens.browse.AlbumDetailScreen
 import com.levi.pocketdj.screens.browse.BrowseScreen
 import com.levi.pocketdj.screens.browse.MiniPlayerBar
 import com.levi.pocketdj.screens.browse.SongDetailSheet
+import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.screens.history.HistoryScreen
 import com.levi.pocketdj.screens.jukebox.JukeboxScreen
+import com.levi.pocketdj.screens.playlists.PlaylistDetailScreen
+import com.levi.pocketdj.screens.playlists.PlaylistsScreen
+import com.levi.pocketdj.screens.playlists.PocketDetailScreen
+import com.levi.pocketdj.screens.playlists.SetlistDetailScreen
+import com.levi.pocketdj.screens.playlists.SourcePlaylistDetailScreen
 import com.levi.pocketdj.screens.settings.SettingsScreen
 import com.levi.pocketdj.ui.theme.PocketDjTheme
 import kotlinx.coroutines.launch
@@ -71,8 +77,22 @@ class MainActivity : ComponentActivity() {
 
 const val SETTINGS_ROUTE = "settings"
 const val ALBUM_ROUTE = "album/{albumId}"
+const val PLAYLIST_ROUTE = "playlist/{playlistId}"
+const val POCKET_ROUTE = "pocket/{pocketId}"
+const val SETLIST_ROUTE = "setlist/{setlistId}?autoplay={autoplay}"
+const val SOURCE_PLAYLIST_ROUTE = "sourcePlaylist/{playlistId}/{sourceName}"
 
 fun albumRoute(albumId: String): String = "album/${android.net.Uri.encode(albumId)}"
+
+fun playlistRoute(playlistId: String): String = "playlist/${android.net.Uri.encode(playlistId)}"
+
+fun pocketRoute(pocketId: String): String = "pocket/${android.net.Uri.encode(pocketId)}"
+
+fun setlistRoute(setlistId: String, autoplay: Boolean): String =
+    "setlist/${android.net.Uri.encode(setlistId)}?autoplay=$autoplay"
+
+fun sourcePlaylistRoute(playlistId: String, sourceName: String): String =
+    "sourcePlaylist/${android.net.Uri.encode(playlistId)}/${android.net.Uri.encode(sourceName)}"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,13 +116,21 @@ fun PocketDjApp() {
     }
 
     val currentTab = PocketDjDestination.bottomNav.firstOrNull { it.route == currentRoute }
-    val onSettings = currentRoute == SETTINGS_ROUTE
-    val onAlbum = currentRoute == ALBUM_ROUTE
-    val title = when {
-        onSettings -> "Settings"
-        onAlbum -> "Album"
-        currentTab != null -> currentTab.label
-        else -> "PocketDJ"
+    // Any non-tab route is a pushed detail screen: back arrow + its own title.
+    val onDetail = currentTab == null && currentRoute != null
+    val title = when (currentRoute) {
+        SETTINGS_ROUTE -> "Settings"
+        ALBUM_ROUTE -> "Album"
+        PLAYLIST_ROUTE -> "Playlist"
+        POCKET_ROUTE -> "Pocket"
+        SETLIST_ROUTE ->
+            if (backStackEntry?.arguments?.getString("setlistId") == NOW_PLAYING_SETLIST_ID) {
+                "Now Playing"
+            } else {
+                "Set list"
+            }
+        SOURCE_PLAYLIST_ROUTE -> "Source playlist"
+        else -> currentTab?.label ?: "PocketDJ"
     }
 
     Scaffold(
@@ -111,7 +139,7 @@ fun PocketDjApp() {
             TopAppBar(
                 title = { Text(title) },
                 navigationIcon = {
-                    if (onSettings || onAlbum) {
+                    if (onDetail) {
                         IconButton(onClick = { navController.popBackStack() }) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
@@ -179,14 +207,79 @@ fun PocketDjApp() {
             composable(PocketDjDestination.Jukebox.route) {
                 JukeboxScreen()
             }
+            composable(PocketDjDestination.Playlists.route) {
+                PlaylistsScreen(
+                    onOpenPlaylist = { id -> navController.navigate(playlistRoute(id)) },
+                    onOpenPocket = { id -> navController.navigate(pocketRoute(id)) },
+                    onOpenSourcePlaylist = { id, sourceName ->
+                        navController.navigate(sourcePlaylistRoute(id, sourceName))
+                    },
+                )
+            }
             listOf(
-                PocketDjDestination.Playlists,
                 PocketDjDestination.Mix,
                 PocketDjDestination.Producer,
             ).forEach { dest ->
                 composable(dest.route) {
                     PlaceholderScreen(title = dest.label, phase = dest.phase)
                 }
+            }
+            composable(
+                route = PLAYLIST_ROUTE,
+                arguments = listOf(navArgument("playlistId") { type = NavType.StringType }),
+            ) { entry ->
+                PlaylistDetailScreen(
+                    playlistId = entry.arguments?.getString("playlistId").orEmpty(),
+                    onOpenSetlist = { id, autoplay -> navController.navigate(setlistRoute(id, autoplay)) },
+                    onOpenPocket = { id -> navController.navigate(pocketRoute(id)) },
+                    onOpenAlbum = { albumId -> navController.navigate(albumRoute(albumId)) },
+                    onDeleted = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = POCKET_ROUTE,
+                arguments = listOf(navArgument("pocketId") { type = NavType.StringType }),
+            ) { entry ->
+                PocketDetailScreen(
+                    pocketId = entry.arguments?.getString("pocketId").orEmpty(),
+                    onOpenPocket = { id -> navController.navigate(pocketRoute(id)) },
+                    onOpenAlbum = { albumId -> navController.navigate(albumRoute(albumId)) },
+                    onOpenSetlist = { id, autoplay -> navController.navigate(setlistRoute(id, autoplay)) },
+                    onDeleted = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = SETLIST_ROUTE,
+                arguments = listOf(
+                    navArgument("setlistId") { type = NavType.StringType },
+                    navArgument("autoplay") {
+                        type = NavType.BoolType
+                        defaultValue = false
+                    },
+                ),
+            ) { entry ->
+                SetlistDetailScreen(
+                    setlistId = entry.arguments?.getString("setlistId").orEmpty(),
+                    autoplay = entry.arguments?.getBoolean("autoplay") == true,
+                    onDeleted = { navController.popBackStack() },
+                    onOpenAlbum = { albumId -> navController.navigate(albumRoute(albumId)) },
+                )
+            }
+            composable(
+                route = SOURCE_PLAYLIST_ROUTE,
+                arguments = listOf(
+                    navArgument("playlistId") { type = NavType.StringType },
+                    navArgument("sourceName") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                SourcePlaylistDetailScreen(
+                    playlistId = entry.arguments?.getString("playlistId").orEmpty(),
+                    sourceName = entry.arguments?.getString("sourceName").orEmpty(),
+                    onOpenSetlist = { id, autoplay -> navController.navigate(setlistRoute(id, autoplay)) },
+                    onOpenPlaylist = { id -> navController.navigate(playlistRoute(id)) },
+                    onOpenPocket = { id -> navController.navigate(pocketRoute(id)) },
+                    onOpenAlbum = { albumId -> navController.navigate(albumRoute(albumId)) },
+                )
             }
             composable(
                 route = ALBUM_ROUTE,
