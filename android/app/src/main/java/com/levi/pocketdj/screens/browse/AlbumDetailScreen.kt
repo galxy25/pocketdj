@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,12 +38,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayOutcome
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
 import kotlinx.coroutines.launch
 
 /**
@@ -69,6 +74,7 @@ fun AlbumDetailScreen(
     val preparingId by graph.playbackController.preparingSongId.collectAsState()
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
+    var showAddSheet by remember { mutableStateOf(false) }
 
     // Resolve the latest album by id from the catalog on every render (§8).
     val catalog = catalogState.catalog
@@ -125,24 +131,37 @@ fun AlbumDetailScreen(
                                     "${tracks.size} tracks",
                                 ).joinToString(" · "),
                             )
-                            if (anyPlayable) {
-                                Spacer(Modifier.height(12.dp))
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            when (val outcome = graph.playbackController.playAlbum(album.id)) {
-                                                is PlayOutcome.Failed ->
-                                                    snackbar.showSnackbar(outcome.message)
-                                                is PlayOutcome.NotPlayable ->
-                                                    snackbar.showSnackbar("No import server configured (Settings)")
-                                                else -> Unit
+                            Spacer(Modifier.height(12.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (anyPlayable) {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                when (val outcome = graph.playbackController.playAlbum(album.id)) {
+                                                    is PlayOutcome.Failed ->
+                                                        snackbar.showSnackbar(outcome.message)
+                                                    is PlayOutcome.NotPlayable ->
+                                                        snackbar.showSnackbar("No import server configured (Settings)")
+                                                    else -> Unit
+                                                }
                                             }
-                                        }
-                                    },
+                                        },
+                                    ) {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Play")
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                // Add-to-Collection launch point (specs/playlists-ui.md §8.1).
+                                FilledTonalIconButton(
+                                    onClick = { showAddSheet = true },
+                                    modifier = Modifier.testTag("album-add-to-collection"),
                                 ) {
-                                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Play")
+                                    Icon(
+                                        Icons.Filled.AddCircleOutline,
+                                        contentDescription = "Add album to collection",
+                                    )
                                 }
                             }
                         }
@@ -176,6 +195,13 @@ fun AlbumDetailScreen(
             songId = songId,
             onDismiss = { detailSongId = null },
             snackbar = snackbar,
+        )
+    }
+
+    if (showAddSheet) {
+        AddToCollectionSheet(
+            item = AddToItem.Album(albumId),
+            onDismiss = { showAddSheet = false },
         )
     }
 }

@@ -33,6 +33,23 @@ data class PlayContext(
 
         fun album(albumId: String, albumName: String?) =
             PlayContext(SOURCE_ALBUM, contextId = albumId, contextName = albumName)
+
+        // P2 companions (specs/realize-play.md §7): for queue runs the
+        // contextId is the RUN's setlist id (`set_now_playing` for ▶/🔀 runs,
+        // the frozen setlist's own id otherwise) and the contextName is the
+        // originating collection's name — the values History persists.
+
+        fun playlist(setlistId: String, name: String?) =
+            PlayContext(SOURCE_PLAYLIST, contextId = setlistId, contextName = name)
+
+        fun pocket(setlistId: String, name: String?) =
+            PlayContext(SOURCE_POCKET, contextId = setlistId, contextName = name)
+
+        fun setlist(setlistId: String, name: String?) =
+            PlayContext(SOURCE_SETLIST, contextId = setlistId, contextName = name)
+
+        fun artist(artistKey: String, name: String?) =
+            PlayContext(SOURCE_ARTIST, contextId = artistKey, contextName = name)
     }
 }
 

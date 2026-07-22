@@ -1,7 +1,8 @@
 package com.levi.pocketdj.screens.browse
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,6 +64,8 @@ import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -110,6 +113,9 @@ fun BrowseScreen(
     var showFilterSheet by remember { mutableStateOf(false) }
     var showSortSheet by remember { mutableStateOf(false) }
     var detailSongId by remember { mutableStateOf<String?>(null) }
+    // Long-press add-to-collection target (specs/playlists-ui.md §8; the
+    // long-press launch point is an Android addition to the iOS ＋-only set).
+    var addItem by remember { mutableStateOf<AddToItem?>(null) }
 
     Box(modifier = modifier.fillMaxSize()) {
         when {
@@ -145,6 +151,8 @@ fun BrowseScreen(
                     onShowSort = { showSortSheet = true },
                     onOpenAlbum = onOpenAlbum,
                     onOpenSong = { detailSongId = it },
+                    onAddSong = { addItem = AddToItem.Song(it) },
+                    onAddAlbum = { addItem = AddToItem.Album(it) },
                     onPlaySong = { songId ->
                         // Songs-list ▶ with no album in view = a Browser single
                         // (specs/history.md §4) — never an album-context queue.
@@ -193,6 +201,10 @@ fun BrowseScreen(
             onOpenAlbum = onOpenAlbum,
         )
     }
+
+    addItem?.let { item ->
+        AddToCollectionSheet(item = item, onDismiss = { addItem = null })
+    }
 }
 
 @Composable
@@ -212,6 +224,8 @@ private fun BrowseContent(
     onShowSort: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenSong: (String) -> Unit,
+    onAddSong: (String) -> Unit,
+    onAddAlbum: (String) -> Unit,
     onPlaySong: (String) -> Unit,
 ) {
     // Debounced query (~180 ms, specs/browse.md §4.1).
@@ -396,7 +410,11 @@ private fun BrowseContent(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         items(visible, key = { it.album.id }) { row ->
-                            AlbumGridCard(row, onClick = { onOpenAlbum(row.album.id) })
+                            AlbumGridCard(
+                                row,
+                                onClick = { onOpenAlbum(row.album.id) },
+                                onLongClick = { onAddAlbum(row.album.id) },
+                            )
                         }
                         if (visible.size < results.albums.size) {
                             item(key = "pager") {
@@ -407,7 +425,11 @@ private fun BrowseContent(
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(visible, key = { it.album.id }) { row ->
-                            AlbumListRow(row, onClick = { onOpenAlbum(row.album.id) })
+                            AlbumListRow(
+                                row,
+                                onClick = { onOpenAlbum(row.album.id) },
+                                onLongClick = { onAddAlbum(row.album.id) },
+                            )
                         }
                         if (visible.size < results.albums.size) {
                             item(key = "pager") {
@@ -429,6 +451,7 @@ private fun BrowseContent(
                                 row = row,
                                 onClick = { onOpenSong(row.song.id) },
                                 onPlay = { onPlaySong(row.song.id) },
+                                onLongClick = { onAddSong(row.song.id) },
                             )
                         }
                         if (visible.size < results.songs.size) {
@@ -491,11 +514,16 @@ private fun PagingTrigger(visibleCount: Int, onGrow: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumGridCard(row: AlbumRow, onClick: () -> Unit) {
+private fun AlbumGridCard(
+    row: AlbumRow,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     Column(
         modifier = Modifier
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .fillMaxWidth(),
     ) {
         AlbumArt(
@@ -526,12 +554,17 @@ private fun AlbumGridCard(row: AlbumRow, onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumListRow(row: AlbumRow, onClick: () -> Unit) {
+private fun AlbumListRow(
+    row: AlbumRow,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
@@ -564,6 +597,7 @@ private fun AlbumListRow(row: AlbumRow, onClick: () -> Unit) {
  * duration, play affordance. Metadata-only rows are dimmed with no ▶
  * (sources-reality rule).
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BrowseSongRow(
     row: SongRow,
@@ -571,6 +605,8 @@ fun BrowseSongRow(
     onPlay: () -> Unit,
     modifier: Modifier = Modifier,
     zebra: Boolean = false,
+    /** Long-press → Add to collection (null keeps the row tap-only). */
+    onLongClick: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -584,7 +620,7 @@ fun BrowseSongRow(
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .fillMaxWidth()
             .let { base ->
                 if (zebra) {
