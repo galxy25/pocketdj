@@ -204,23 +204,45 @@ function sanitizeUpNext(list) {
 // replaces one (sanitized) track with a DIFFERENT one (or with nothing), the outgoing track
 // is appended to the session's played log. Deriving here (instead of trusting a client-sent
 // list) covers every host source — setlist deck, Auto-DJ mix, single rip plays — with zero
-// wire-protocol change, and logs what guests actually saw as Now Playing (a DJ skipping back
-// re-logs the re-played track, radio-style). Same title+artist = a position tick, not a
-// transition. Persisted in session.json so the log survives restarts; a restart only ever
-// costs the one in-flight track (nowPlaying reloads as null → no bogus append either).
+// wire-protocol change. ONE row per track, not one per play/pause: same title+artist is a
+// position tick (never logged), and a repeat of the track we most recently logged (a
+// pause→null→resume cycle, an end-of-track reset, a ⏮) folds into that existing row instead
+// of duplicating it. Persisted in session.json so the log survives restarts; a restart only
+// ever costs the one in-flight track (nowPlaying reloads as null → no bogus append either).
 function notePlayed(s, next) {
   const prev = s.nowPlaying;
   if (!prev || !prev.title) return;
-  if (next && next.title === prev.title && next.artist === prev.artist) {
-    // Same track: a position tick — EXCEPT a hard rewind to the intro, which is a
-    // back-to-back replay (the DJ queued the same song again, or ⏮ at the top of the
-    // set): that first spin deserves its own history entry. Small nudges and forward
-    // ticks are not transitions; Mix broadcasts post no position (0 → 0, never trips).
-    const rewound = num(prev.positionMs) > 30_000 && num(next.positionMs) < 10_000;
-    if (!rewound) return;
+  // Same track still current = a position tick: a play/pause/resume, a seek, a loop, or
+  // the end-of-track position reset. None of these is a transition — a song only becomes
+  // history when a DIFFERENT track (or nothing) takes over. We deliberately do NOT treat
+  // a rewind-to-intro as a fresh spin: restarts/replays of the current song are not logged.
+  if (next && next.title === prev.title && next.artist === prev.artist) return;
+  // Collapse consecutive repeats of the SAME outgoing track into one row. A pause that
+  // cleared now-playing to null, an end-of-track reset, or a ⏮ that briefly flipped the
+  // deck all re-surface a song guests already saw finish — one entry per track, not one
+  // per play/pause. Refresh the existing entry's endedAt instead of stacking a duplicate.
+  const played = s.played || [];
+  const last = played[played.length - 1];
+  if (last && last.title === prev.title && last.artist === prev.artist) {
+    last.endedAt = Date.now();
+    s.played = played;
+    persistSession(s);
+    return;
   }
-  s.played = [...(s.played || []), { title: prev.title, artist: prev.artist, endedAt: Date.now() }].slice(-PLAYED_KEEP);
+  s.played = [...played, { title: prev.title, artist: prev.artist, endedAt: Date.now() }].slice(-PLAYED_KEEP);
   persistSession(s);
+}
+// Fold consecutive repeats of the same track into a single row (keeping the latest endedAt).
+// notePlayed already prevents new duplicates; this also cleans any log persisted before that
+// dedup existed, so guests never see the same song twice in a row even from an older session.
+function collapsePlayed(list) {
+  const out = [];
+  for (const e of list) {
+    const last = out[out.length - 1];
+    if (last && last.title === e.title && last.artist === e.artist) { last.endedAt = e.endedAt; continue; }
+    out.push({ title: e.title, artist: e.artist, endedAt: e.endedAt });
+  }
+  return out;
 }
 // state.json = host player snapshot ⊕ the last 30 requests' statuses (clientId/ip NOT leaked).
 function composeState(s) {
@@ -230,7 +252,7 @@ function composeState(s) {
     v: 1, jukeboxId: s.id, name: s.name, updatedAt: Date.now(), ended: s.ended,
     timeless: !!s.timeless, expiresAt: s.timeless ? null : (s.expiresAt ?? null),
     hear: !!s.hear, nowPlaying: s.nowPlaying || null, upNext: s.upNext || [],
-    played: (s.played || []).slice(-PLAYED_PUBLISH), requests,
+    played: collapsePlayed((s.played || []).slice(-PLAYED_KEEP)).slice(-PLAYED_PUBLISH), requests,
   };
 }
 // Serialize per-jukebox S3 writes on the session's own chain (like rip-server's saveManifest)
