@@ -1035,4 +1035,81 @@ final class WriteBackSourceSyncTests: XCTestCase {
         let mine = addEvent("sng_am2", in: p.id, atMs: now - 3_600_000, origin: "A")
         XCTAssertEqual(s.backfillSourceWriteBacks(from: [mine], days: 2, localInstallId: "A", nowMs: now), 1)
     }
+
+    // MARK: Source-link carry-over (convert playlist→pocket) + re-link recovery
+
+    /// The Levi flow: DUPLICATE an Apple Music list → editable playlist (provenance-stamped) →
+    /// CONVERT that playlist to a pocket. The pocket must KEEP the Apple Music link (it used to be
+    /// dropped, leaving adds unable to reach Apple Music).
+    @MainActor
+    func testConvertDuplicatedPlaylistToPocketCarriesProvenance() async {
+        let (s, _) = await wired()
+        let pl = s.createPlaylist("AM Mix", songIds: ["sng_am1"],
+                                  source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        let p = s.convertToPocket(playlistId: pl.id)!
+        XCTAssertEqual(p.sourcePlaylistId, "ipl_am")
+        XCTAssertEqual(p.sourceName, Config.appleMusicSourceName)
+        XCTAssertEqual(p.sourceSongIds, ["sng_am1"])
+        XCTAssertTrue(p.syncsWithSource)
+    }
+
+    /// A PLAIN (non-duplicated) playlist has no source, so its pocket must NOT gain a phantom link.
+    @MainActor
+    func testConvertPlainPlaylistToPocketHasNoProvenance() async {
+        let (s, _) = await wired()
+        let pl = s.createPlaylist("Mine", songIds: ["sng_am1"])
+        let p = s.convertToPocket(playlistId: pl.id)!
+        XCTAssertFalse(p.hasSource)
+        XCTAssertNil(p.sourcePlaylistId)
+    }
+
+    /// End-to-end for the carry-over: after convert, an add to that pocket writes back.
+    @MainActor
+    func testAddToPocketConvertedFromDuplicatedPlaylistWritesBack() async {
+        let (s, cap) = await wired()
+        let pl = s.createPlaylist("AM Mix", songIds: ["sng_am1"],
+                                  source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        let p = s.convertToPocket(playlistId: pl.id)!
+        s.addSong("sng_am2", to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertEqual(cap.calls.count, 1)
+        XCTAssertEqual(cap.calls.first?.pid, "ipl_am")
+        XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+    }
+
+    /// Re-link an EXISTING unlinked pocket: stamps provenance (snapshot = source membership) and
+    /// PRESERVES the user's own adds — the recovery for a pocket whose link was already lost.
+    @MainActor
+    func testLinkPocketToSourceStampsProvenanceAndPreservesUserAdds() async {
+        let (s, _) = await wired()
+        let p = s.createPocket("Trenches")
+        s.addSong("sng_am2", toPocket: p.id)                    // user add, not in the source
+        XCTAssertTrue(s.linkPocketToSource(p.id, source: amSource("ipl_am", "Trenches", ["sng_am1"])))
+        let after = s.pocket(p.id)!
+        XCTAssertEqual(after.sourcePlaylistId, "ipl_am")
+        XCTAssertEqual(after.sourceName, Config.appleMusicSourceName)
+        XCTAssertEqual(after.sourceSongIds, ["sng_am1"])        // snapshot = source membership
+        XCTAssertTrue(after.songIds.contains("sng_am2"))        // user add survives
+        XCTAssertTrue(after.syncsWithSource)
+    }
+
+    @MainActor
+    func testLinkPocketToSourceMissingPocketIsNoOp() async {
+        let (s, _) = await wired()
+        XCTAssertFalse(s.linkPocketToSource("nope", source: amSource("ipl_am", "X", [])))
+    }
+
+    /// End-to-end recovery: a song added to a pocket BEFORE it was linked (so no write-back fired)
+    /// is pushed once the pocket is linked and the backfill runs over its add history.
+    @MainActor
+    func testLinkedPocketBackfillPushesEarlierAdds() async {
+        let (s, cap) = await wired()
+        let p = s.createPocket("Trenches")
+        s.addSong("sng_am2", to: AddTarget(kind: .pocket, id: p.id))   // unlinked → nothing pushed
+        XCTAssertTrue(cap.calls.isEmpty)
+        let now = 1_000_000_000_000.0
+        let ev = addEvent("sng_am2", in: p.id, atMs: now - 3_600_000)  // its add-history event
+        s.linkPocketToSource(p.id, source: amSource("ipl_am", "Trenches", ["sng_am1"]))
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 1)
+        XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+    }
 }

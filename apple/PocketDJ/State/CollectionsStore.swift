@@ -552,8 +552,23 @@ final class CollectionsStore {
     func convertToPocket(playlistId id: String) -> Pocket? {
         guard let pl = playlist(id) else { return nil }
         let refs = pocketRefs(from: pl.sequences)
-        return makeAndSavePocket(named: pl.name, songIds: refs.songIds, albumIds: refs.albumIds,
-                                 childPocketIds: refs.childPocketIds, noteTexts: refs.noteTexts)
+        let p = makeAndSavePocket(named: pl.name, songIds: refs.songIds, albumIds: refs.albumIds,
+                                  childPocketIds: refs.childPocketIds, noteTexts: refs.noteTexts)
+        // CARRY THE SOURCE LINK (Levi 2026-07-22). A playlist DUPLICATED from a "From your
+        // sources" list carries provenance (`sourcePlaylistId`/`sourceName`/`sourceSongIds`);
+        // converting it to a pocket used to DROP that link, so the classic flow
+        // duplicate → convert → delete-the-playlist left an unlinked pocket whose adds could
+        // never reach Apple Music. A pocket converted from a provenance-stamped playlist now
+        // stays two-way-synced, exactly like one converted straight from the source.
+        if pl.sourcePlaylistId != nil {
+            mutatePocket(p.id) {
+                $0.sourcePlaylistId = pl.sourcePlaylistId
+                $0.sourceName = pl.sourceName
+                $0.sourceSongIds = pl.sourceSongIds
+                $0.sourceSyncEnabled = pl.sourceSyncEnabled
+            }
+        }
+        return pocket(p.id) ?? p
     }
 
     /// Convert a read-only "From your sources" playlist (e.g. an Apple Music user
@@ -573,6 +588,27 @@ final class CollectionsStore {
             $0.sourceSongIds = ids
         }
         return pocket(p.id) ?? p
+    }
+
+    /// Link an EXISTING pocket to a "From your sources" playlist after the fact (Levi 2026-07-22).
+    /// Recovers a pocket that has NO source link — one made by the classic duplicate → convert →
+    /// delete-the-playlist flow before convert carried provenance, or a hand-built pocket the user
+    /// now wants two-way-synced. Snapshots the source's CURRENT membership as the base, so the
+    /// pocket's EXTRA songs (the user's own adds) read as adds — write-back candidates the backfill
+    /// can push, and safe from reconcile removal — never as source removals. No-op (false) if the
+    /// pocket is gone.
+    @discardableResult
+    func linkPocketToSource(_ pocketId: String, source: SourcePlaylist) -> Bool {
+        guard pocket(pocketId) != nil else { return false }
+        var seen = Set<String>(); var ids: [String] = []
+        for sid in source.songIds where seen.insert(sid).inserted { ids.append(sid) }
+        mutatePocket(pocketId) {
+            $0.sourcePlaylistId = source.id
+            $0.sourceName = source.sourceName
+            $0.sourceSongIds = ids
+            $0.sourceSyncEnabled = true
+        }
+        return true
     }
 
     /// Walk a playlist's nodes (recursing into sub-sequences) and collect its DIRECT

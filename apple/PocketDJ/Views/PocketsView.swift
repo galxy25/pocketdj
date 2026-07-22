@@ -28,8 +28,19 @@ struct PocketDetailView: View {
     @State private var nowPlayingPushed = false
     /// Feedback for the manual "Sync from source now" action (nil = no alert showing).
     @State private var syncResult: String?
+    /// "Link to Apple Music playlist…" picker + its confirmation (rescues an unlinked pocket).
+    @State private var showLinkPicker = false
+    @State private var linkResult: String?
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
+
+    /// Apple Music source playlists this unlinked pocket could be linked to (the only sources
+    /// write-back can push to). Name-ordered.
+    private var linkableSources: [SourcePlaylist] {
+        app.indexPlaylists
+            .filter { PlaylistWriteBack.isAppleMusicSource($0.sourceName) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
     private var hasSongs: Bool { !collections.songIds(forPocket: pocketId).isEmpty }
 
     // Split into memberList (the List) + chromeApplied (the toolbar/alert/dialog chain):
@@ -160,7 +171,15 @@ struct PocketDetailView: View {
                         .accessibilityIdentifier("rename-pocket")
                     Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
                         .accessibilityIdentifier("export-pocket")
-                    if pocket?.hasSource == true { sourceSyncMenuItems }
+                    if pocket?.hasSource == true {
+                        sourceSyncMenuItems
+                    } else if !linkableSources.isEmpty {
+                        Divider()
+                        Button { showLinkPicker = true } label: {
+                            Label("Link to Apple Music playlist…", systemImage: "link")
+                        }
+                        .accessibilityIdentifier("pocket-link-source")
+                    }
                     Divider()
                     CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPocket: pocketId) }, noun: "pocket")
                     Divider()
@@ -200,6 +219,17 @@ struct PocketDetailView: View {
         } message: {
             Text(syncResult ?? "")
         }
+        .sheet(isPresented: $showLinkPicker) {
+            LinkSourceSheet(sources: linkableSources, pocketName: pocket?.name ?? "") { sp in
+                showLinkPicker = false
+                collections.linkPocketToSource(pocketId, source: sp)
+                linkResult = "“\(pocket?.name ?? "This pocket")” is now linked to “\(sp.name)”. Songs you add to it will be added to that Apple Music playlist too. To send ones you already added, use Settings ▸ Sync ▸ “Send my adds to Apple Music” (or the ↑ button on History ▸ Collection)."
+            }
+        }
+        .alert("Linked to Apple Music", isPresented: Binding(
+            get: { linkResult != nil }, set: { if !$0 { linkResult = nil } })) {
+            Button("OK") { linkResult = nil }
+        } message: { Text(linkResult ?? "") }
         .alert("Rename pocket", isPresented: $renaming) {
             TextField("Name", text: $nameDraft)
             Button("Save") { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePocket(pocketId, n) } }
@@ -299,6 +329,64 @@ struct PocketDetailView: View {
         if !nowPlayingPushed {
             nowPlayingPushed = true
             path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+        }
+    }
+}
+
+/// Picks the Apple Music source playlist to link an unlinked pocket back to (rescues a pocket
+/// whose link was dropped by duplicate → convert → delete-playlist). Searchable because a real
+/// library can carry a hundred-plus playlists; tapping one links immediately.
+private struct LinkSourceSheet: View {
+    let sources: [SourcePlaylist]
+    let pocketName: String
+    let onPick: (SourcePlaylist) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var filtered: [SourcePlaylist] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        guard !q.isEmpty else { return sources }
+        return sources.filter {
+            $0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(filtered) { sp in
+                Button { onPick(sp) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "music.note.list").foregroundStyle(Theme.accent2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(sp.name).foregroundStyle(Theme.fg)
+                            Text("\(sp.songIds.count) song\(sp.songIds.count == 1 ? "" : "s") · \(sp.sourceName)")
+                                .font(.caption2).foregroundStyle(Theme.fgDim)
+                        }
+                        Spacer()
+                    }
+                }
+                .accessibilityIdentifier("link-source-\(sp.id)")
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden).background(Theme.bg)
+            .searchable(text: $query, prompt: "Search playlists")
+            .navigationTitle("Link to a playlist")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .overlay {
+                if sources.isEmpty {
+                    Text("No Apple Music playlists found. Make sure the Apple Music source is enabled and loaded.")
+                        .font(.callout).foregroundStyle(Theme.fgDim)
+                        .multilineTextAlignment(.center).padding()
+                }
+            }
         }
     }
 }
