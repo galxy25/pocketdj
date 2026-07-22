@@ -8,7 +8,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -196,17 +196,82 @@ test('played history: now-playing transitions accumulate; position ticks do not'
   assert.equal(meta.played.length, 2);
 });
 
-test('played history: a back-to-back replay (hard rewind to the intro) logs the first spin; small nudges do not', async () => {
+test('played history: replaying/rewinding the current track does NOT stack duplicate rows', async () => {
   const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Replay Party' } });
   const h = created.json;
   const post = (np) => req('POST', `/jukebox/${h.jukeboxId}/state`, { hostKey: h.hostKey, body: { nowPlaying: np, upNext: [] } });
-  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 170000 });
-  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 2000 });   // end → intro: a replay
-  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 6000 });   // small forward tick: not
+  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 170000 }); // near the end
+  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 2000 });   // ⏮ back to intro: a restart, not history
+  await post({ title: 'Encore', artist: 'Alpha', lengthMs: 180000, positionMs: 6000 });   // small forward tick
+  await wait(1300);
+  let st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 0, 'a track still playing (even replayed) is not history yet');
+  // Only a move to a DIFFERENT track logs Encore — exactly once, despite the replay.
+  await post({ title: 'Closer', artist: 'Beta', lengthMs: 180000, positionMs: 0 });
+  await wait(1300);
+  st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 1, 'the replayed song is logged once, on the real transition');
+  assert.equal(st.played[0].title, 'Encore');
+});
+
+test('played history: pause/resume (now-playing → null → same track) logs one row per track, not one per play', async () => {
+  const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Pause Party' } });
+  const h = created.json;
+  const post = (np) => req('POST', `/jukebox/${h.jukeboxId}/state`, { hostKey: h.hostKey, body: { nowPlaying: np, upNext: [] } });
+  const bear = { title: 'Bear', artist: '6LACK', lengthMs: 200000, positionMs: 1000 };
+  await post(bear);            // playing
+  await post(null);           // pause clears now-playing → logs Bear (append)
+  await post(bear);           // resume
+  await post(null);           // pause again → same as last logged: fold, don't stack
+  await post(bear);           // resume
+  await post(null);           // pause again → fold
+  await wait(1300);
+  let st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 1, 'four pause/resume cycles on one song = a single history row');
+  assert.equal(st.played[0].title, 'Bear');
+  // A genuinely different track still logs normally after all that pausing.
+  await post({ title: 'Free', artist: '6LACK', lengthMs: 200000, positionMs: 0 });
+  await wait(1300);
+  st = readState(h.jukeboxId);
+  assert.equal(st.played.length, 1, 'Bear is still one row; Free is now playing, not yet history');
+});
+
+test('played history: the SAME song replayed after other tracks gets its own row (non-consecutive is not a dup)', async () => {
+  const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Radio Party' } });
+  const h = created.json;
+  const post = (t, a) => req('POST', `/jukebox/${h.jukeboxId}/state`, { hostKey: h.hostKey, body: { nowPlaying: { title: t, artist: a, lengthMs: 180000, positionMs: 0 }, upNext: [] } });
+  await post('Bear', '6LACK');   // now playing
+  await post('Free', '6LACK');   // → Bear logged
+  await post('Bear', '6LACK');   // → Free logged
+  await post('Pretty', '6LACK'); // → Bear logged again (Free sat between the two Bears)
   await wait(1300);
   const st = readState(h.jukeboxId);
-  assert.equal(st.played.length, 1, 'the first spin should be logged, once');
-  assert.equal(st.played[0].title, 'Encore');
+  assert.deepEqual(st.played.map((x) => x.title), ['Bear', 'Free', 'Bear'], 'only CONSECUTIVE repeats collapse');
+});
+
+test('played history: a legacy log with consecutive duplicates is collapsed in state.json', async () => {
+  const created = await req('POST', '/jukebox', { token: TOKEN, body: { name: 'Legacy Party' } });
+  const h = created.json;
+  // Simulate a session.json written before the dedup shipped: a played log riddled with
+  // consecutive duplicates (what the old rewind heuristic + pause/null posts produced).
+  const file = join(HOME, h.jukeboxId, 'session.json');
+  const meta = JSON.parse(readFileSync(file, 'utf8'));
+  meta.played = [
+    { title: 'Bear', artist: '6LACK', endedAt: 1 }, { title: 'Bear', artist: '6LACK', endedAt: 2 },
+    { title: 'Bear', artist: '6LACK', endedAt: 3 }, { title: 'Bulletproof', artist: 'La Roux', endedAt: 4 },
+    { title: 'Bulletproof', artist: 'La Roux', endedAt: 5 }, { title: 'Quicksand', artist: 'La Roux', endedAt: 6 },
+  ];
+  writeFileSync(file, JSON.stringify(meta));
+  child.kill('SIGKILL');
+  await new Promise((r) => child.on('exit', r));
+  child = spawnServer();
+  await waitHealthy();
+  // A post-restart state POST republishes state.json from the reloaded (still-polluted) log.
+  await req('POST', `/jukebox/${h.jukeboxId}/state`, { hostKey: h.hostKey, body: { nowPlaying: { title: 'Fascination', artist: 'La Roux', positionMs: 0 }, upNext: [] } });
+  await wait(1300);
+  const st = readState(h.jukeboxId);
+  assert.deepEqual(st.played.map((x) => x.title), ['Bear', 'Bulletproof', 'Quicksand'], 'consecutive dups folded for guests');
+  assert.equal(st.played[0].endedAt, 3, 'the folded row keeps the latest endedAt');
 });
 
 test('played history caps: state.json publishes the newest 30, session.json keeps 100', async () => {
