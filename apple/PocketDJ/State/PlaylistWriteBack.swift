@@ -58,6 +58,14 @@ final class PlaylistWriteBack {
         case notApplicable
         /// `maxAttempts` deliveries all threw. Retryable only by explicit user action.
         case failed
+        /// We searched Apple Music and found no confident catalog match for this song, so it
+        /// can never be added to a catalog playlist — a ripped/imported track that simply isn't
+        /// in the Apple Music catalog. TERMINAL and NOT retryable (unlike `.failed`, which is a
+        /// transient network/auth exhaustion): re-searching won't conjure a match. Drives the
+        /// "not backed up" (`xmark.icloud`) badge in linked collections. Distinct from
+        /// `.notApplicable` (the whole PLATFORM can't write) — here the platform can, this one
+        /// SONG can't be resolved.
+        case unresolvable
     }
 
     /// One owed write: "this song belongs in that Apple Music playlist".
@@ -74,6 +82,15 @@ final class PlaylistWriteBack {
         var playlistName: String
         var songId: String
         var appleMusicId: String
+        /// Song IDENTITY, carried so the transport can resolve a catalog id ON-DEVICE when
+        /// `appleMusicId` is empty (our server indexer never matched this "Apple Music (Local)"
+        /// song, but the user's own catalog can). Additive-optional like every field below —
+        /// an older document has no such keys and still decodes. Empty title+artist ⇒ nothing
+        /// to resolve with (enqueue rejects that case up front).
+        var title: String
+        var artist: String
+        var album: String?
+        var durationMs: Int?
         var queuedAtMs: Double
         var attempts: Int
         var lastError: String?
@@ -95,16 +112,21 @@ final class PlaylistWriteBack {
 
         enum CodingKeys: String, CodingKey {
             case id, indexPlaylistId, playlistName, songId, appleMusicId,
+                 title, artist, album, durationMs,
                  queuedAtMs, attempts, lastError, state, nextAttemptAtMs, settledAtMs,
                  musicKitPlaylistId, resolutionNote
         }
 
         init(id: String, indexPlaylistId: String, playlistName: String, songId: String,
-             appleMusicId: String, queuedAtMs: Double, attempts: Int = 0, lastError: String? = nil,
+             appleMusicId: String, title: String = "", artist: String = "",
+             album: String? = nil, durationMs: Int? = nil,
+             queuedAtMs: Double, attempts: Int = 0, lastError: String? = nil,
              state: JobState = .queued, nextAttemptAtMs: Double? = nil, settledAtMs: Double? = nil,
              musicKitPlaylistId: String? = nil, resolutionNote: String? = nil) {
             self.id = id; self.indexPlaylistId = indexPlaylistId; self.playlistName = playlistName
-            self.songId = songId; self.appleMusicId = appleMusicId; self.queuedAtMs = queuedAtMs
+            self.songId = songId; self.appleMusicId = appleMusicId
+            self.title = title; self.artist = artist; self.album = album; self.durationMs = durationMs
+            self.queuedAtMs = queuedAtMs
             self.attempts = attempts; self.lastError = lastError; self.state = state
             self.nextAttemptAtMs = nextAttemptAtMs; self.settledAtMs = settledAtMs
             self.musicKitPlaylistId = musicKitPlaylistId; self.resolutionNote = resolutionNote
@@ -121,6 +143,10 @@ final class PlaylistWriteBack {
             playlistName = (try? c.decode(String.self, forKey: .playlistName)) ?? ""
             songId = (try? c.decode(String.self, forKey: .songId)) ?? ""
             appleMusicId = (try? c.decode(String.self, forKey: .appleMusicId)) ?? ""
+            title = (try? c.decode(String.self, forKey: .title)) ?? ""
+            artist = (try? c.decode(String.self, forKey: .artist)) ?? ""
+            album = try? c.decode(String.self, forKey: .album)
+            durationMs = try? c.decode(Int.self, forKey: .durationMs)
             queuedAtMs = (try? c.decode(Double.self, forKey: .queuedAtMs)) ?? 0
             attempts = (try? c.decode(Int.self, forKey: .attempts)) ?? 0
             lastError = try? c.decode(String.self, forKey: .lastError)
@@ -229,16 +255,37 @@ final class PlaylistWriteBack {
 
     // MARK: - Enqueue
 
-    /// Record an owed write. Returns nil (queues NOTHING) when there is no Apple Music
-    /// identity to write — a vinyl / My Digital / Studio song has no `appleMusicId`, so
-    /// there is no such thing as adding it to an Apple Music playlist; the local duplicate
-    /// add is the whole of the operation. Also nil when an equivalent job is already queued
-    /// or delivered, so a double-tap can't add the song upstream twice.
+    /// Record an owed write. Returns nil (queues NOTHING) when there is no way to write the
+    /// song upstream — NEITHER a catalog `appleMusicId` NOR enough identity (title + artist) to
+    /// resolve one on-device. A vinyl / My Digital / Studio song with no title+artist is purely
+    /// a local add; there is no such thing as adding it to an Apple Music playlist. A song with
+    /// only identity (no `appleMusicId` — our indexer never matched it) IS enqueued: the
+    /// transport resolves the catalog id on-device at delivery (see `resolveCatalogId`), and if
+    /// Apple Music has no confident match the job settles `.unresolvable`. Also nil when an
+    /// equivalent job is already queued or delivered, so a double-tap can't add it twice.
     @discardableResult
     func enqueue(indexPlaylistId: String, playlistName: String,
-                 songId: String, appleMusicId: String?) -> Job? {
+                 songId: String, appleMusicId: String?,
+                 title: String = "", artist: String = "",
+                 album: String? = nil, durationMs: Int? = nil) -> Job? {
         let amId = (appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
-        guard !amId.isEmpty, !playlistName.isEmpty else { return nil }
+        let t = title.trimmingCharacters(in: .whitespaces)
+        let ar = artist.trimmingCharacters(in: .whitespaces)
+        guard !playlistName.isEmpty else { return nil }
+        // Need SOMETHING to write with: a known catalog id, or enough identity to resolve one.
+        guard !amId.isEmpty || (!t.isEmpty && !ar.isEmpty) else { return nil }
+        // A prior TERMINAL `.unresolvable` verdict for this (playlist, song): re-searching the
+        // catalog can't conjure a match, so an identity-only re-enqueue (still no store id) is a
+        // no-op — this is what keeps a repeated "Send my adds" backfill from re-queueing and
+        // re-searching un-matchable songs forever (and the persisted queue from growing unbounded).
+        // BUT if we NOW carry a real catalog id (the nightly crawl resolved it since), supersede:
+        // drop the stale verdict so the song can finally deliver and its "not backed up" badge clears.
+        if let stale = jobs.firstIndex(where: {
+            $0.indexPlaylistId == indexPlaylistId && $0.songId == songId && $0.state == .unresolvable
+        }) {
+            if amId.isEmpty { return nil }
+            jobs.remove(at: stale)
+        }
         guard !jobs.contains(where: {
             $0.indexPlaylistId == indexPlaylistId && $0.songId == songId
                 && ($0.state == .queued || $0.state == .delivered)
@@ -248,12 +295,27 @@ final class PlaylistWriteBack {
         // second song added to a playlist should never pay for the all-playlists fetch again.
         let job = Job(id: "wbj_" + UUID().uuidString, indexPlaylistId: indexPlaylistId,
                       playlistName: playlistName, songId: songId, appleMusicId: amId,
+                      title: t, artist: ar, album: album, durationMs: durationMs,
                       queuedAtMs: Self.nowMs,
                       musicKitPlaylistId: resolvedPlaylistIds[indexPlaylistId])
         jobs.append(job)
         prune()
         save()
         return job
+    }
+
+    /// A song the queue has DETERMINED can't be backed up to Apple Music — searched and found no
+    /// confident catalog match (`.unresolvable`). Keyed by songId (unresolvability is a property
+    /// of the song, not the playlist). Drives the collection row's `xmark.icloud` badge.
+    ///
+    /// SUPERSEDED by a later success: if ANY job for the same song is `.delivered` (it's upstream
+    /// now — e.g. the nightly crawl gave it a store id and it delivered to another linked list) or
+    /// `.queued` (a fresh attempt is in flight), the old verdict no longer holds and the badge
+    /// clears. Without this the badge could linger forever on a song that IS now backed up.
+    func isUnsyncable(_ songId: String) -> Bool {
+        let mine = jobs.filter { $0.songId == songId }
+        guard mine.contains(where: { $0.state == .unresolvable }) else { return false }
+        return !mine.contains { $0.state == .delivered || $0.state == .queued }
     }
 
     // MARK: - Drain
@@ -325,13 +387,48 @@ final class PlaylistWriteBack {
     private func attempt(_ jobId: String, transport: any PlaylistWriteBackTransport) async -> Bool {
         guard let job = jobs.first(where: { $0.id == jobId }) else { return true }
         do {
+            // The catalog id to write: the job's own (indexer-resolved), or — when our indexer
+            // never matched this "Apple Music (Local)" song — one resolved ON-DEVICE from the
+            // carried identity. A THROW here (network/auth) is transient → the generic catch
+            // below backs off and retries. A nil RESULT means Apple Music was searched and has
+            // no confident match: TERMINAL `.unresolvable` (re-searching won't help), NOT a
+            // retryable failure — so it doesn't burn `maxAttempts` or set the drain's lastError.
+            let catalogId: String
+            if !job.appleMusicId.isEmpty {
+                catalogId = job.appleMusicId
+            } else {
+                let identity = WriteBackSong(appleMusicId: "", title: job.title, artist: job.artist,
+                                             album: job.album, durationMs: job.durationMs)
+                if let resolved = try await transport.resolveCatalogId(for: identity), !resolved.isEmpty {
+                    catalogId = resolved
+                    // PERSIST the resolved id — with a durable save() — BEFORE the non-retractable
+                    // `MusicLibrary.add`. If iOS jettisons the process after the add but before the
+                    // delivered-state save (the "ordinary, not exotic" window above), the next
+                    // launch re-attempts with THIS same id; the delivery-time idempotency pre-check
+                    // then sees it already in the playlist and skips — no duplicate. Without this,
+                    // the re-attempt would re-resolve and could land a DIFFERENT-but-valid id,
+                    // adding the song twice. (`WriteBackMatcher` is deterministic, so a re-resolve
+                    // would normally match, but persisting closes the window unconditionally.)
+                    update(jobId) { $0.appleMusicId = resolved }
+                    save()
+                } else {
+                    update(jobId) {
+                        $0.attempts += 1
+                        $0.state = .unresolvable
+                        $0.nextAttemptAtMs = nil
+                        $0.settledAtMs = Self.nowMs
+                        $0.lastError = "This song isn’t on Apple Music, so it can’t be added to the playlist — it stays in your local copy."
+                    }
+                    return true
+                }
+            }
             let target = try await playlistId(for: job, transport: transport)
             do {
-                try await transport.addSong(appleMusicId: job.appleMusicId, toPlaylistId: target)
+                try await transport.addSong(appleMusicId: catalogId, toPlaylistId: target)
             } catch PlaylistWriteBackError.playlistGone {
                 forgetResolution(for: job.indexPlaylistId)
                 let fresh = try await playlistId(for: job, transport: transport, forceResolve: true)
-                try await transport.addSong(appleMusicId: job.appleMusicId, toPlaylistId: fresh)
+                try await transport.addSong(appleMusicId: catalogId, toPlaylistId: fresh)
             }
             update(jobId) {
                 $0.attempts += 1
@@ -442,6 +539,21 @@ final class PlaylistWriteBack {
         save()
     }
 
+    /// Drop still-UNDELIVERED write-backs (`.queued` / `.failed`) for `songIds` owed to
+    /// `indexPlaylistId`. Used when a pocket is RE-LINKED to a different source: a song added while
+    /// the pocket was mis-linked (offline / not-yet-authorized, so the job never drained) must not
+    /// still deliver to the OLD, wrong playlist once connectivity returns. Scoped to the pocket's
+    /// own songs so another collection's legitimate pending write to the same source is untouched.
+    /// `.delivered` jobs are already upstream and irretrievable — left alone.
+    func cancelPending(indexPlaylistId: String, songIds: Set<String>) {
+        let before = jobs.count
+        jobs.removeAll {
+            $0.indexPlaylistId == indexPlaylistId && songIds.contains($0.songId)
+                && ($0.state == .queued || $0.state == .failed)
+        }
+        if jobs.count != before { save() }
+    }
+
     /// Empty the whole outbound queue and delete its backing document — a full wipe.
     ///
     /// DEVICE-LOCAL and irreversible: this log is never cloud-synced (see the type doc), so
@@ -487,7 +599,7 @@ final class PlaylistWriteBack {
     private func prune() {
         guard jobs.count > Self.historyLimit else { return }
         let settled = jobs
-            .filter { $0.state == .delivered || $0.state == .notApplicable }
+            .filter { $0.state == .delivered || $0.state == .notApplicable || $0.state == .unresolvable }
             .sorted { ($0.settledAtMs ?? $0.queuedAtMs) < ($1.settledAtMs ?? $1.queuedAtMs) }
         var drop = Set<String>()
         var overflow = jobs.count - Self.historyLimit
@@ -551,6 +663,121 @@ enum PlaylistWriteBackError: Error, LocalizedError {
 /// The MusicKit seam, mirroring `AppleMusicFavoritesTransport`: the real implementation is
 /// the only thing in the write-back path that touches MusicKit, so every retry rule, state
 /// transition, and persistence behaviour above is unit-testable against a stub.
+/// A song's IDENTITY handed to the transport so it can resolve a catalog id ON-DEVICE when the
+/// indexer never minted one. `appleMusicId` is the known catalog id ("" when unknown — the case
+/// that drives resolution); title/artist are the match keys; album + duration disambiguate.
+struct WriteBackSong: Sendable, Equatable {
+    var appleMusicId: String
+    var title: String
+    var artist: String
+    var album: String?
+    var durationMs: Int?
+}
+
+/// One Apple Music catalog search result, projected free of MusicKit so the matching decision is
+/// pure and unit-testable (the MusicKit transport maps `MusicKit.Song` into this).
+struct WriteBackCatalogCandidate: Sendable, Equatable {
+    var id: String
+    var title: String
+    var artist: String
+    var album: String?
+    var durationSec: Double?
+}
+
+/// The on-device catalog-match DECISION, factored out of the MusicKit transport so its (subtle,
+/// wrong-add-dangerous) rules are testable with no account. CONSERVATIVE on purpose: adding the
+/// WRONG song to the user's real Apple Music playlist is worse than not adding at all, so an
+/// unconfident or ambiguous result returns nil (→ the job settles `.unresolvable`). DETERMINISTIC
+/// on purpose: two independent runs over the same candidates pick the SAME id (stable min-id
+/// tie-break), so a re-resolve after a crash / on a peer device can't diverge into a duplicate add.
+enum WriteBackMatcher {
+    /// Normalize a title/artist/album for matching: fold case + diacritics, then keep only letters
+    /// and digits. `keepVersion: false` ALSO drops any parenthetical/bracketed span ("(feat. …)",
+    /// "[Remastered]", "(Taylor's Version)") — the LOOSE base-title key that survives metadata
+    /// drift. `keepVersion: true` preserves those characters — the STRICT key that tells
+    /// version/part siblings apart so we never substitute one recording for another.
+    static func matchKey(_ s: String, keepVersion: Bool) -> String {
+        var t = s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        if !keepVersion {
+            while let open = t.firstIndex(where: { $0 == "(" || $0 == "[" }) {
+                let close: Character = t[open] == "(" ? ")" : "]"
+                if let end = t[open...].firstIndex(of: close) {
+                    t.removeSubrange(open...end)
+                } else {
+                    t.removeSubrange(open...); break   // unbalanced — drop the tail
+                }
+            }
+        }
+        return String(t.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    /// Best catalog id to write for `song`, or nil when nothing is confident / the top score is
+    /// ambiguous across DISTINCT artists. See the type doc for the two invariants.
+    static func bestMatch(for song: WriteBackSong,
+                          among candidates: [WriteBackCatalogCandidate]) -> String? {
+        let wantBase = matchKey(song.title, keepVersion: false)
+        let wantFull = matchKey(song.title, keepVersion: true)
+        let wantArtist = matchKey(song.artist, keepVersion: true)
+        guard !wantBase.isEmpty, !wantArtist.isEmpty else { return nil }
+        let userHasMarker = wantFull != wantBase   // user's title carries a version/part tag
+
+        struct Scored { let id: String; let artist: String; let score: Int }
+        var scored: [Scored] = []
+        for c in candidates {
+            let cBase = matchKey(c.title, keepVersion: false)
+            guard cBase == wantBase else { continue }
+            let cFull = matchKey(c.title, keepVersion: true)
+            let titleFullMatch = cFull == wantFull
+            // The user asked for a version/part-marked title → only the SAME full-title identity
+            // qualifies; never fall back to the base master (the "(Taylor's Version)" trap).
+            if userHasMarker && !titleFullMatch { continue }
+            // The CANDIDATE carries a marker the user's plain title didn't ask for (a live/remix/
+            // edit variant) → it needs hard proof (duration/album), not just a matching artist.
+            let candidateIsUnwantedVariant = (cFull != cBase) && !userHasMarker
+
+            let cArtist = matchKey(c.artist, keepVersion: true)
+            let artistExact = cArtist == wantArtist
+            guard artistExact || cArtist.contains(wantArtist) || wantArtist.contains(cArtist) else { continue }
+
+            var score = 0
+            var durationCorroborated = false
+            if let want = song.durationMs {
+                if let got = c.durationSec {
+                    let diffSec = abs(got - Double(want) / 1000)
+                    if diffSec <= 4 { score += 3; durationCorroborated = true }
+                    else if diffSec <= 12 { score += 1; durationCorroborated = true }
+                    else { continue }   // >12 s apart — a different recording, reject outright
+                }
+                // else: we know our length but the catalog doesn't expose one — no signal.
+            }
+            let albumMatch: Bool = {
+                guard let al = song.album, !al.isEmpty else { return false }
+                return matchKey(c.album ?? "", keepVersion: false) == matchKey(al, keepVersion: false)
+            }()
+            if albumMatch { score += 2 }
+            if artistExact { score += 2 }
+            if titleFullMatch && userHasMarker { score += 2 }
+
+            // CONFIDENCE FLOOR: a bare title match is never enough to write to the user's REAL
+            // playlist. Require corroboration — and for a candidate that's an UNWANTED variant,
+            // only duration/album count (a matching artist alone can't tell live from studio).
+            let strong = durationCorroborated || albumMatch
+            let corroborated = candidateIsUnwantedVariant
+                ? strong
+                : (artistExact || strong || (titleFullMatch && userHasMarker))
+            guard corroborated else { continue }
+
+            scored.append(Scored(id: c.id, artist: cArtist, score: score))
+        }
+        guard let topScore = scored.map(\.score).max() else { return nil }
+        let top = scored.filter { $0.score == topScore }
+        // Ambiguous across DIFFERENT artists at the top score → refuse to guess.
+        if Set(top.map(\.artist)).count > 1 { return nil }
+        // Deterministic pick among same-artist editions — stable across independent resolutions.
+        return top.map(\.id).min()
+    }
+}
+
 @MainActor
 protocol PlaylistWriteBackTransport: AnyObject {
     /// Can this platform write to library playlists AT ALL? PERMANENT, not a runtime
@@ -572,6 +799,12 @@ protocol PlaylistWriteBackTransport: AnyObject {
     /// Throws `PlaylistWriteBackError.playlistGone` when the id no longer resolves, so the
     /// caller can drop its cached mapping and re-resolve once; throws anything else for retry.
     func addSong(appleMusicId: String, toPlaylistId playlistId: String) async throws
+    /// Resolve a song with NO known catalog id to one ON-DEVICE (our indexer missed it, but the
+    /// user's own Apple Music catalog can match it). Returns the catalog store id on a confident
+    /// match, or nil when Apple Music has none — the queue reads nil as `.unresolvable`. THROWS
+    /// only on a transient failure (network/auth) the queue should retry. Defaulted to nil so a
+    /// stub that only cares about the catalog-id path never has to implement it.
+    func resolveCatalogId(for song: WriteBackSong) async throws -> String?
     /// Set by `resolvePlaylistId` when the answer was a GUESS (duplicate names, no track
     /// overlap to arbitrate). Defaulted so a stub never has to care.
     var lastResolutionNote: String? { get }
@@ -579,6 +812,7 @@ protocol PlaylistWriteBackTransport: AnyObject {
 
 extension PlaylistWriteBackTransport {
     var lastResolutionNote: String? { nil }
+    func resolveCatalogId(for song: WriteBackSong) async throws -> String? { nil }
 }
 
 #if canImport(MusicKit) && !os(macOS) && !targetEnvironment(macCatalyst)
@@ -741,6 +975,27 @@ final class MusicKitPlaylistWriteBackTransport: PlaylistWriteBackTransport {
         }
 
         _ = try await MusicLibrary.shared.add(song, to: playlist)
+    }
+
+    // MARK: Resolve a missing catalog id ON-DEVICE
+
+    /// Our server indexer resolves `appleMusicId` from the public iTunes Search API and misses a
+    /// chunk of "Apple Music (Local)" songs (obscure/underground catalog, metadata drift). But if
+    /// the song is genuinely on Apple Music, the user's OWN catalog search finds it on-device.
+    /// This searches by "title artist" and hands the results to `WriteBackMatcher.bestMatch`, which
+    /// applies the conservative + deterministic match rules (see its doc). No confident match ⇒ nil
+    /// ⇒ the job settles `.unresolvable` (the "not backed up" badge), never a wrong add.
+    func resolveCatalogId(for song: WriteBackSong) async throws -> String? {
+        guard canWrite else { throw PlaylistWriteBackError.notAuthorized }
+        let term = "\(song.title) \(song.artist)".trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return nil }
+        var req = MusicCatalogSearchRequest(term: term, types: [MusicKit.Song.self])
+        req.limit = 25
+        let candidates = try await req.response().songs.map {
+            WriteBackCatalogCandidate(id: $0.id.rawValue, title: $0.title, artist: $0.artistName,
+                                      album: $0.albumTitle, durationSec: $0.duration)
+        }
+        return WriteBackMatcher.bestMatch(for: song, among: candidates)
     }
 }
 #endif

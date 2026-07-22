@@ -37,13 +37,26 @@ final class PlaylistWriteBackTests: XCTestCase {
         var resolutions: [String: String] = [:]
         /// Ids that a write rejects as gone. Cleared entries let the retry succeed.
         var goneIds: Set<String> = []
+        /// song title → on-device-resolved catalog id. A title with no entry resolves to nil,
+        /// which the queue reads as `.unresolvable`. Only consulted for identity-only jobs.
+        var catalogIds: [String: String] = [:]
+        /// When set, `resolveCatalogId` THROWS it (a transient failure the queue should retry),
+        /// distinct from a nil result (terminal `.unresolvable`).
+        var resolveError: Error?
 
         private(set) var resolveCalls: [ResolveCall] = []
         private(set) var writes: [Write] = []
+        private(set) var resolveCatalogCalls: [WriteBackSong] = []
 
         func resolvePlaylistId(name: String, expectedAppleMusicIds: [String]) async throws -> String? {
             resolveCalls.append(ResolveCall(name: name, expected: expectedAppleMusicIds))
             return resolutions[name]
+        }
+
+        func resolveCatalogId(for song: WriteBackSong) async throws -> String? {
+            resolveCatalogCalls.append(song)
+            if let resolveError { throw resolveError }
+            return catalogIds[song.title]
         }
 
         func addSong(appleMusicId: String, toPlaylistId playlistId: String) async throws {
@@ -310,6 +323,131 @@ final class PlaylistWriteBackTests: XCTestCase {
         XCTAssertNil(queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ",
                                    songId: "s1", appleMusicId: "111"))
         XCTAssertEqual(transport.writes.filter { $0.appleMusicId == "111" && $0.playlistId == "p.LIVE-SAP" }.count, 1)
+    }
+
+    // MARK: On-device catalog-id resolution
+
+    /// A song our indexer never matched (no `appleMusicId`) is enqueued with its identity; the
+    /// transport resolves the catalog id ON-DEVICE and the write goes out under the resolved id.
+    func testIdentityOnlyJobResolvesCatalogIdOnDeviceAndDelivers() async {
+        let transport = StubTransport()
+        transport.resolutions["Sap "] = "p.LIVE-SAP"
+        transport.catalogIds["The Magic Clap"] = "1620000000"   // on-device match
+        let (queue, _) = makeQueue(transport)
+
+        XCTAssertNotNil(queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ",
+                                      songId: "sng_clap", appleMusicId: nil,
+                                      title: "The Magic Clap", artist: "The Coup", durationMs: 192773))
+        await queue.run()
+
+        XCTAssertEqual(transport.resolveCatalogCalls.map(\.title), ["The Magic Clap"])
+        XCTAssertEqual(transport.writes.map(\.appleMusicId), ["1620000000"])
+        XCTAssertEqual(transport.writes.map(\.playlistId), ["p.LIVE-SAP"])
+        XCTAssertEqual(queue.jobs.first?.state, .delivered)
+        XCTAssertFalse(queue.isUnsyncable("sng_clap"))
+    }
+
+    /// When Apple Music has no confident match, the job settles TERMINAL `.unresolvable` — no
+    /// write, no retry, and `isUnsyncable` flips true so the collection row can flag it.
+    func testUnresolvedIdentityJobSettlesUnresolvable() async {
+        let transport = StubTransport()
+        transport.resolutions["Sap "] = "p.LIVE-SAP"   // catalogIds is empty → no match
+        let (queue, _) = makeQueue(transport)
+
+        queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ",
+                      songId: "sng_vinyl", appleMusicId: nil,
+                      title: "Obscure B-side", artist: "Nobody", durationMs: 123000)
+        await queue.run()
+
+        XCTAssertTrue(transport.writes.isEmpty)
+        XCTAssertEqual(queue.jobs.first?.state, .unresolvable)
+        XCTAssertEqual(queue.jobs.first?.attempts, 1)
+        XCTAssertTrue(queue.isUnsyncable("sng_vinyl"))
+
+        // Terminal: a second drain neither re-searches nor writes.
+        await queue.run()
+        XCTAssertEqual(transport.resolveCatalogCalls.count, 1)
+        XCTAssertTrue(transport.writes.isEmpty)
+    }
+
+    /// A TRANSIENT resolve failure (network/auth) is NOT terminal — the job stays queued to retry,
+    /// exactly like an add failure. Only a nil RESULT means `.unresolvable`.
+    func testTransientResolveFailureRetriesRatherThanUnresolvable() async throws {
+        struct Boom: Error {}
+        let transport = StubTransport()
+        transport.resolutions["Sap "] = "p.LIVE-SAP"
+        transport.resolveError = Boom()
+        let (queue, url) = makeQueue(transport)
+
+        queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ",
+                      songId: "sng_x", appleMusicId: nil, title: "T", artist: "A")
+        await queue.run()
+
+        XCTAssertEqual(queue.jobs.first?.state, .queued)          // still owed, not terminal
+        XCTAssertFalse(queue.isUnsyncable("sng_x"))
+        XCTAssertTrue(transport.writes.isEmpty)
+
+        // Recovers once the transient condition clears (clear the backoff so it's due again).
+        transport.resolveError = nil
+        transport.catalogIds["T"] = "999"
+        try clearBackoff(queue, at: url)
+        await queue.run()
+        XCTAssertEqual(queue.jobs.first?.state, .delivered)
+        XCTAssertEqual(transport.writes.map(\.appleMusicId), ["999"])
+    }
+
+    /// A song already settled `.unresolvable` is NOT re-enqueued by a repeat identity-only backfill
+    /// (re-searching can't help) — the queue doesn't grow and no wasted search fires.
+    func testUnresolvableBlocksIdentityOnlyReEnqueue() async {
+        let transport = StubTransport()
+        transport.resolutions["Sap "] = "p.LIVE-SAP"   // catalogIds empty → no match
+        let (queue, _) = makeQueue(transport)
+        queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ", songId: "s1",
+                      appleMusicId: nil, title: "T", artist: "A")
+        await queue.run()
+        XCTAssertEqual(queue.jobs.first?.state, .unresolvable)
+
+        XCTAssertNil(queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ", songId: "s1",
+                                   appleMusicId: nil, title: "T", artist: "A"),
+                     "an identity-only re-add of an unresolvable song queues nothing")
+        XCTAssertEqual(queue.jobs.count, 1)
+        XCTAssertEqual(transport.resolveCatalogCalls.count, 1, "and does not re-hit the catalog")
+        XCTAssertTrue(queue.isUnsyncable("s1"))
+    }
+
+    /// Once the catalog crawl DOES give the song a store id, a re-enqueue SUPERSEDES the stale
+    /// unresolvable verdict → it delivers and `isUnsyncable` clears.
+    func testCatalogIdSupersedesUnresolvableAndClearsBadge() async {
+        let transport = StubTransport()
+        transport.resolutions["Sap "] = "p.LIVE-SAP"
+        let (queue, _) = makeQueue(transport)
+        queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ", songId: "s1",
+                      appleMusicId: nil, title: "T", artist: "A")
+        await queue.run()
+        XCTAssertTrue(queue.isUnsyncable("s1"))
+
+        XCTAssertNotNil(queue.enqueue(indexPlaylistId: "pl_1", playlistName: "Sap ", songId: "s1",
+                                      appleMusicId: "111", title: "T", artist: "A"))
+        await queue.run()
+        XCTAssertEqual(transport.writes.map(\.appleMusicId), ["111"])
+        XCTAssertEqual(queue.jobs.filter { $0.state == .unresolvable }.count, 0, "stale verdict dropped")
+        XCTAssertFalse(queue.isUnsyncable("s1"))
+    }
+
+    /// `isUnsyncable` clears once the SAME song delivers via ANOTHER linked playlist, even though the
+    /// first playlist's `.unresolvable` job persists (the badge must not lie across collections).
+    func testIsUnsyncableClearsWhenSongDeliversElsewhere() async {
+        let transport = StubTransport()
+        transport.resolutions["A"] = "p.A"
+        transport.resolutions["B"] = "p.B"
+        let (queue, _) = makeQueue(transport)
+        queue.enqueue(indexPlaylistId: "pl_A", playlistName: "A", songId: "s1",
+                      appleMusicId: nil, title: "T", artist: "Ar")   // unresolvable in A
+        queue.enqueue(indexPlaylistId: "pl_B", playlistName: "B", songId: "s1", appleMusicId: "111") // delivers in B
+        await queue.run()
+        XCTAssertEqual(queue.jobs.first { $0.indexPlaylistId == "pl_A" }?.state, .unresolvable)
+        XCTAssertEqual(queue.jobs.first { $0.indexPlaylistId == "pl_B" }?.state, .delivered)
+        XCTAssertFalse(queue.isUnsyncable("s1"))
     }
 
     // MARK: Terminal failure
@@ -612,3 +750,95 @@ final class PlaylistWriteBackNameMatchingTests: XCTestCase {
 }
 
 #endif
+
+/// The on-device catalog MATCH decision (`WriteBackMatcher`) — pure, so it runs with no account.
+/// These lock the wrong-add safeguards that the adversarial review flagged: never substitute a
+/// version/part sibling or the base master, never accept a substring-artist match without
+/// corroboration, honor the duration guard, refuse ambiguous ties, and resolve deterministically.
+final class WriteBackMatcherTests: XCTestCase {
+    private func song(_ title: String, _ artist: String, album: String? = nil, ms: Int? = nil) -> WriteBackSong {
+        WriteBackSong(appleMusicId: "", title: title, artist: artist, album: album, durationMs: ms)
+    }
+    private func cand(_ id: String, _ title: String, _ artist: String,
+                      album: String? = nil, sec: Double? = nil) -> WriteBackCatalogCandidate {
+        WriteBackCatalogCandidate(id: id, title: title, artist: artist, album: album, durationSec: sec)
+    }
+
+    /// The core good case: exact normalized title + artist resolves even with no duration — this is
+    /// "The Magic Clap" by The Coup, the very song this whole feature exists to push.
+    func testExactTitleAndArtistMatchesWithoutDuration() {
+        XCTAssertEqual(
+            WriteBackMatcher.bestMatch(for: song("The Magic Clap", "The Coup"),
+                                       among: [cand("100", "The Magic Clap", "The Coup")]),
+            "100")
+    }
+
+    /// A version-marked title resolves to the SAME version, never the base master (the
+    /// "Love Story (Taylor's Version)" → 2008 original trap).
+    func testVersionMarkedTitlePicksTheMatchingVersionNotTheBaseMaster() {
+        XCTAssertEqual(
+            WriteBackMatcher.bestMatch(
+                for: song("Love Story (Taylor's Version)", "Taylor Swift", ms: 235000),
+                among: [cand("orig", "Love Story", "Taylor Swift", sec: 235),
+                        cand("tv", "Love Story (Taylor's Version)", "Taylor Swift", sec: 235)]),
+            "tv")
+    }
+
+    /// A plain title must NOT be satisfied by an unwanted live/remix variant when nothing (duration
+    /// or album) corroborates that it's actually the user's recording.
+    func testPlainTitleWontSubstituteAnUnwantedVariantWithoutCorroboration() {
+        XCTAssertNil(
+            WriteBackMatcher.bestMatch(
+                for: song("The Magic Clap", "The Coup", ms: 193000),
+                among: [cand("live", "The Magic Clap (Live)", "The Coup", sec: nil)]))
+    }
+
+    /// A DIFFERENT artist whose name merely contains the user's (Prince → Prince Royce) is rejected
+    /// when there's no duration/album to confirm it — never add the wrong artist's song.
+    func testSubstringArtistWithoutCorroborationIsRejected() {
+        XCTAssertNil(
+            WriteBackMatcher.bestMatch(for: song("Angel", "Prince"),
+                                       among: [cand("royce", "Angel", "Prince Royce")]))
+    }
+
+    /// But genuine "feat."/"&" artist drift IS accepted when the duration confirms the recording.
+    func testSubstringArtistAcceptedWhenDurationCorroborates() {
+        XCTAssertEqual(
+            WriteBackMatcher.bestMatch(for: song("Song", "Jay-Z", ms: 200000),
+                                       among: [cand("x", "Song", "Jay-Z & Kanye West", sec: 201)]),
+            "x")
+    }
+
+    /// A >12 s length gap means a different recording — rejected even with an exact artist.
+    func testDurationGapBeyondToleranceIsRejected() {
+        XCTAssertNil(
+            WriteBackMatcher.bestMatch(for: song("Intro", "Band", ms: 60000),
+                                       among: [cand("x", "Intro", "Band", sec: 200)]))
+    }
+
+    /// A top score tied across DISTINCT artists is ambiguous → refuse to guess (return nil).
+    func testAmbiguousTieAcrossDistinctArtistsRefusesToGuess() {
+        XCTAssertNil(
+            WriteBackMatcher.bestMatch(
+                for: song("Home", "X", ms: 200000),
+                among: [cand("a", "Home", "X Ambassadors", sec: 200),
+                        cand("b", "Home", "X Factor", sec: 200)]))
+    }
+
+    /// Same recording, two editions of the SAME artist → deterministic pick (stable min id),
+    /// regardless of candidate order, so a re-resolve can't diverge into a duplicate add.
+    func testDeterministicStableIdAmongSameArtistEditions() {
+        let cands = [cand("z9", "Track", "Artist", sec: 180),
+                     cand("a1", "Track", "Artist", sec: 180)]
+        let s = song("Track", "Artist", ms: 180000)
+        XCTAssertEqual(WriteBackMatcher.bestMatch(for: s, among: cands), "a1")
+        XCTAssertEqual(WriteBackMatcher.bestMatch(for: s, among: cands.reversed()), "a1")
+    }
+
+    /// Nothing in the catalog → nil (settles `.unresolvable`), and a degenerate empty identity is
+    /// never a match.
+    func testNoCandidatesOrEmptyIdentityYieldsNil() {
+        XCTAssertNil(WriteBackMatcher.bestMatch(for: song("X", "Y"), among: []))
+        XCTAssertNil(WriteBackMatcher.bestMatch(for: song("", ""), among: [cand("1", "", "")]))
+    }
+}

@@ -93,8 +93,19 @@ final class CollectionsStore {
     /// Returns TRUE when a NEW job was queued, FALSE when nothing was (this build can't write,
     /// or an equivalent job is already queued/delivered — the queue dedups on id+song). The
     /// per-add caller ignores it; `backfillSourceWriteBacks` sums it into a "newly queued" count.
+    /// `appleMusicId` may be nil/empty — our indexer missed it — in which case the identity
+    /// (`title`/`artist`/`album`/`durationMs`) lets the transport resolve the catalog id
+    /// on-device at delivery. See `PlaylistWriteBack.enqueue`.
     var enqueueSourceWriteBack: ((_ indexPlaylistId: String, _ playlistName: String,
-                                  _ songId: String, _ appleMusicId: String?) -> Bool)?
+                                  _ songId: String, _ appleMusicId: String?,
+                                  _ title: String, _ artist: String,
+                                  _ album: String?, _ durationMs: Int?) -> Bool)?
+
+    /// Cancel still-undelivered write-backs owed to `indexPlaylistId` for `songIds` (wired to
+    /// `PlaylistWriteBack.cancelPending`). Fired when a pocket is re-linked away from a source, so a
+    /// queued-but-undelivered add can't still land in the OLD, wrong Apple Music playlist. nil in
+    /// tests / where there's no queue.
+    var cancelPendingWriteBacks: ((_ indexPlaylistId: String, _ songIds: Set<String>) -> Void)?
 
     /// STUDIO SEAM (spec §8, wired at app init by the integrator to `StudioStore`):
     /// resolve a studio id (`smp_`/`lp_`/`ptn_`) to its display metadata — title plus
@@ -599,14 +610,23 @@ final class CollectionsStore {
     /// pocket is gone.
     @discardableResult
     func linkPocketToSource(_ pocketId: String, source: SourcePlaylist) -> Bool {
-        guard pocket(pocketId) != nil else { return false }
+        guard let p = pocket(pocketId) else { return false }
+        // RE-LINK away from a different source: cancel any still-undelivered write-backs owed to the
+        // OLD source for this pocket's songs, so a queued-but-offline add can't later land in the
+        // wrong Apple Music playlist. Scoped to this pocket's members (never a blanket wipe).
+        if let old = p.sourcePlaylistId, old != source.id {
+            cancelPendingWriteBacks?(old, Set(p.songIds))
+        }
         var seen = Set<String>(); var ids: [String] = []
         for sid in source.songIds where seen.insert(sid).inserted { ids.append(sid) }
         mutatePocket(pocketId) {
             $0.sourcePlaylistId = source.id
             $0.sourceName = source.sourceName
             $0.sourceSongIds = ids
-            $0.sourceSyncEnabled = true
+            // Do NOT force `sourceSyncEnabled = true`: a first-time link leaves it nil (→ enabled by
+            // default via `syncsWithSource`'s `?? true`), and a RE-LINK preserves an explicit OFF the
+            // user set — write-back doesn't depend on source-sync being on, so re-linking must not
+            // silently re-subscribe the pocket to source-driven removals.
         }
         return true
     }
@@ -963,16 +983,25 @@ final class CollectionsStore {
         guard let enqueue = enqueueSourceWriteBack,
               let plId = sourcePlaylistId,
               PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return false }
-        let amId = (app?.songsById[songId]?.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
-        guard !amId.isEmpty else { return false }
+        // Only CATALOG songs can be written back — a studio performance item isn't in `songsById`,
+        // so this also excludes samples/loops/instrumentals by construction.
+        guard let song = app?.songsById[songId] else { return false }
+        let amId = (song.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
+        let title = song.name.trimmingCharacters(in: .whitespaces)
+        let artist = song.artist.trimmingCharacters(in: .whitespaces)
+        // Need a KNOWN catalog id, or enough identity to resolve one on-device (the case our
+        // indexer missed — e.g. "The Magic Clap" by The Coup, an Apple Music (Local) song with no
+        // `appleMusicId`). With neither, there's nothing to write; the local add is the whole op.
+        guard !amId.isEmpty || (!title.isEmpty && !artist.isEmpty) else { return false }
         guard !(sourceSnapshot ?? []).contains(songId) else { return false }
+        let album = song.albumId.flatMap { app?.albumsById[$0]?.name }
         // The join key is the source playlist id; the NAME is only the first-resolve bootstrap
         // (`PlaylistWriteBack` remembers the MusicKit id thereafter). Prefer the live source
         // playlist's current name (drift-proof), falling back to the collection's own name — its
         // value at convert/duplicate time — when the catalog isn't loaded, because `enqueue`
         // rejects an empty name.
         let name = liveSourcePlaylist(id: plId, sourceName: sourceName)?.name ?? collectionName
-        return enqueue(plId, name, songId, amId)
+        return enqueue(plId, name, songId, amId.isEmpty ? nil : amId, title, artist, album, song.length)
     }
 
     /// The default look-back for the write-back backfill, and the ceiling the UI clamps to.

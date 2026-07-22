@@ -85,6 +85,18 @@ struct SongRowView: View {
 
             if let trailing { trailing }
 
+            // "Not backed up to Apple Music" — this song has no confident catalog match, so a
+            // linked collection can't push it to the real Apple Music playlist (it stays local).
+            // Only ever set in a source-linked collection row (see `CollectionSongRow`).
+            if data.unsyncable {
+                Image(systemName: "xmark.icloud")
+                    .font(.caption)
+                    .foregroundStyle(Theme.fgDim)
+                    .help("Not on Apple Music — stays in your local copy; it won’t be added to the linked playlist.")
+                    .accessibilityLabel("Not backed up to Apple Music")
+                    .accessibilityIdentifier("unsyncable-badge-\(data.songId)")
+            }
+
             // ♥ sits INSIDE the row's own layout (not the `trailing` slot — callers already
             // spend that on setlist source/sequence badges), immediately left of transport.
             FavoriteToggle(songId: data.songId, appleMusicId: data.appleMusicId)
@@ -181,6 +193,10 @@ struct SongRowData {
     /// later outbound push. Nil for vinyl / "My Digital" / Studio songs — they have no Apple
     /// Music identity and stay local-only favorites forever.
     var appleMusicId: String?
+    /// In a source-linked collection, TRUE when the write-back queue has determined this song
+    /// can't be added to the linked Apple Music playlist (no confident catalog match). Drives the
+    /// `xmark.icloud` "not backed up" badge. Always false on non-linked surfaces (Browse, setlists).
+    var unsyncable: Bool = false
 
     /// Project a catalog song. Pass the song's resolved album for art + genre/year.
     /// Year prefers the song's own value, falling back to the album's.
@@ -230,14 +246,22 @@ struct SongRowData {
 /// album from the environment's catalog. Used by the Browser + collection details.
 struct CollectionSongRow: View {
     @Environment(AppModel.self) private var app
+    @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
     let song: IndexSong
     /// Optional trailing accessory shown left of the transport buttons.
     var trailing: AnyView?
+    /// Set by a SOURCE-LINKED collection (a converted pocket / duplicated playlist that syncs to
+    /// Apple Music). When true, the row surfaces the `xmark.icloud` badge for a song the write-back
+    /// queue has flagged `.unresolvable`. Off everywhere else (Browse, unlinked collections).
+    var syncsToSource: Bool = false
 
     private var album: IndexAlbum? { song.albumId.flatMap { app.albumsById[$0] } }
+    private var unsyncable: Bool { syncsToSource && (writeBack?.isUnsyncable(song.id) ?? false) }
 
     var body: some View {
-        SongRowView(data: SongRowData(song: song, album: album), trailing: trailing)
+        var data = SongRowData(song: song, album: album)
+        data.unsyncable = unsyncable
+        return SongRowView(data: data, trailing: trailing)
     }
 }
 

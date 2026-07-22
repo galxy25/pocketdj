@@ -614,12 +614,18 @@ struct PocketDJApp: App {
         // back to the real Apple Music library playlist it came from. Unconditional like the
         // source-row path (append-only + non-destructive), gated only on `canWriteBack`, so
         // macOS / not-yet-authorized just keeps the local add and never queues a dead job.
-        collections.enqueueSourceWriteBack = { [weak playlistWriteBack] indexPlaylistId, playlistName, songId, appleMusicId in
+        collections.enqueueSourceWriteBack = { [weak playlistWriteBack] indexPlaylistId, playlistName, songId, appleMusicId, title, artist, album, durationMs in
             guard let wb = playlistWriteBack, wb.canWriteBack else { return false }
             let job = wb.enqueue(indexPlaylistId: indexPlaylistId, playlistName: playlistName,
-                                 songId: songId, appleMusicId: appleMusicId)
+                                 songId: songId, appleMusicId: appleMusicId,
+                                 title: title, artist: artist, album: album, durationMs: durationMs)
             wb.runSoon()
             return job != nil
+        }
+        // Re-linking a pocket to a different source cancels the OLD source's still-undelivered
+        // write-backs for that pocket's songs (so an offline add can't land in the wrong playlist).
+        collections.cancelPendingWriteBacks = { [weak playlistWriteBack] indexPlaylistId, songIds in
+            playlistWriteBack?.cancelPending(indexPlaylistId: indexPlaylistId, songIds: songIds)
         }
 
         // ── Discover adds: provisional catalog entries (eventual consistency) ──

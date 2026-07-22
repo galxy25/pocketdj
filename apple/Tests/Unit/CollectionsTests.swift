@@ -866,12 +866,16 @@ final class WriteBackSourceSyncTests: XCTestCase {
 
     /// Records every seam call and dedups on (playlistId|songId) like the real queue.
     private final class Capture {
-        var calls: [(pid: String, name: String, sid: String, amid: String?)] = []
+        var calls: [(pid: String, name: String, sid: String, amid: String?,
+                     title: String, artist: String, album: String?, durationMs: Int?)] = []
         private var seen = Set<String>()
-        func enqueue(_ pid: String, _ name: String, _ sid: String, _ amid: String?) -> Bool {
-            calls.append((pid, name, sid, amid))
+        func enqueue(_ pid: String, _ name: String, _ sid: String, _ amid: String?,
+                     _ title: String, _ artist: String, _ album: String?, _ durationMs: Int?) -> Bool {
+            calls.append((pid, name, sid, amid, title, artist, album, durationMs))
             return seen.insert(pid + "|" + sid).inserted
         }
+        var cancelCalls: [(pid: String, songIds: Set<String>)] = []
+        func cancel(_ pid: String, _ songIds: Set<String>) { cancelCalls.append((pid, songIds)) }
     }
 
     /// `CollectionsStore.app` is a WEAK reference, so the test must hold the app strongly for
@@ -889,7 +893,8 @@ final class WriteBackSourceSyncTests: XCTestCase {
             .appendingPathComponent("pdj-wb-\(UUID().uuidString).json"))
         s.app = app
         let cap = Capture()
-        s.enqueueSourceWriteBack = { cap.enqueue($0, $1, $2, $3) }
+        s.enqueueSourceWriteBack = { cap.enqueue($0, $1, $2, $3, $4, $5, $6, $7) }
+        s.cancelPendingWriteBacks = { cap.cancel($0, $1) }
         return (s, cap)
     }
 
@@ -928,11 +933,30 @@ final class WriteBackSourceSyncTests: XCTestCase {
         XCTAssertTrue(cap.calls.isEmpty)
     }
 
+    /// A catalog song our indexer never resolved (`appleMusicId` == nil) is STILL enqueued — with
+    /// its identity — so the transport can resolve the catalog id ON-DEVICE at delivery. This is
+    /// the fix for "The Magic Clap": an Apple Music (Local) song with no store id that IS on Apple
+    /// Music. The seam is handed a nil amid + the song's title/artist/album/duration.
     @MainActor
-    func testAddSongWithoutAppleMusicIdDoesNotWriteBack() async {
+    func testAddSongWithoutAppleMusicIdEnqueuesIdentityForOnDeviceResolution() async {
         let (s, cap) = await wired()
         let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
-        s.addSong("sng_plain", to: AddTarget(kind: .pocket, id: p.id))   // no Apple Music identity
+        s.addSong("sng_plain", to: AddTarget(kind: .pocket, id: p.id))   // no store id, but IS a catalog song
+        XCTAssertEqual(cap.calls.count, 1)
+        XCTAssertEqual(cap.calls.first?.sid, "sng_plain")
+        XCTAssertNil(cap.calls.first?.amid)                 // nothing to pass — resolve on device
+        XCTAssertEqual(cap.calls.first?.title, "Three")     // identity carried for the resolve
+        XCTAssertEqual(cap.calls.first?.artist, "Aria")
+        XCTAssertEqual(cap.calls.first?.durationMs, 200000)
+    }
+
+    /// A STUDIO performance item (not a catalog song — absent from `songsById`) has no upstream and
+    /// is never enqueued, even in a linked pocket.
+    @MainActor
+    func testAddStudioItemToLinkedPocketDoesNotWriteBack() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("smp_notcatalog", to: AddTarget(kind: .pocket, id: p.id))
         XCTAssertTrue(cap.calls.isEmpty)
     }
 
@@ -1111,5 +1135,54 @@ final class WriteBackSourceSyncTests: XCTestCase {
         s.linkPocketToSource(p.id, source: amSource("ipl_am", "Trenches", ["sng_am1"]))
         XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 1)
         XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+    }
+
+    /// Re-link a pocket that ALREADY has a source (the ⋯ ▸ "Re-link to Apple Music playlist…" path):
+    /// repoints to the chosen playlist and RE-SNAPSHOTS its current membership, so a pocket song that
+    /// a wrong/stale snapshot listed as "already upstream" becomes a write-back candidate again.
+    @MainActor
+    func testRelinkAlreadyLinkedPocketRepointsAndResnapshots() async {
+        let (s, cap) = await wired()
+        let p = s.createPocket("Trenches")
+        // Wrongly linked to a list whose snapshot ALREADY lists sng_am2 → its add reads as upstream.
+        s.linkPocketToSource(p.id, source: amSource("ipl_wrong", "Wrong List", ["sng_am1", "sng_am2"]))
+        s.addSong("sng_am2", toPocket: p.id)
+        XCTAssertEqual(s.pocket(p.id)!.sourcePlaylistId, "ipl_wrong")
+        // Re-link to the correct playlist whose CURRENT membership is just sng_am1.
+        XCTAssertTrue(s.linkPocketToSource(p.id, source: amSource("ipl_right", "Trenches", ["sng_am1"])))
+        let after = s.pocket(p.id)!
+        XCTAssertEqual(after.sourcePlaylistId, "ipl_right")      // repointed
+        XCTAssertEqual(after.sourceSongIds, ["sng_am1"])         // re-snapshotted to new membership
+        XCTAssertTrue(after.songIds.contains("sng_am2"))         // user add preserved
+        // The earlier add is now a genuine write-back candidate under the corrected link.
+        let now = 1_000_000_000_000.0
+        let ev = addEvent("sng_am2", in: p.id, atMs: now - 3_600_000)
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 1)
+        XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+    }
+
+    /// Re-linking a pocket to a DIFFERENT source cancels the OLD source's still-undelivered
+    /// write-backs for the pocket's songs, so an add made while it was mis-linked can't land in the
+    /// wrong Apple Music playlist.
+    @MainActor
+    func testRelinkCancelsPendingWriteBacksForOldSource() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_old", "Old", ["sng_am1"]))
+        s.addSong("sng_am2", to: AddTarget(kind: .pocket, id: p.id))
+        s.linkPocketToSource(p.id, source: amSource("ipl_new", "New", ["sng_am1"]))
+        XCTAssertEqual(cap.cancelCalls.count, 1)
+        XCTAssertEqual(cap.cancelCalls.first?.pid, "ipl_old")            // the OLD source
+        XCTAssertTrue(cap.cancelCalls.first?.songIds.contains("sng_am2") ?? false)
+    }
+
+    /// Re-linking must NOT silently re-enable "Sync with source" for a user who turned it off.
+    @MainActor
+    func testRelinkPreservesUserDisabledSync() async {
+        let (s, _) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_old", "Old", ["sng_am1"]))
+        s.setSourceSyncEnabled(false, forPocket: p.id)
+        XCTAssertFalse(s.pocket(p.id)!.syncsWithSource)
+        s.linkPocketToSource(p.id, source: amSource("ipl_new", "New", ["sng_am1"]))
+        XCTAssertFalse(s.pocket(p.id)!.syncsWithSource, "re-link must not flip sync back on")
     }
 }
