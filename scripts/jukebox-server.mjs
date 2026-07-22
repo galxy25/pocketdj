@@ -36,7 +36,15 @@ const CFG = {
   profile: process.env.AWS_PROFILE || 'levi',
   region: process.env.AWS_REGION || 'us-west-2',
   bucket: process.env.JUKEBOX_WEB_BUCKET || 'pocketdj-dev-web-011183829623', // per-env web bucket
-  siteBase: (process.env.JUKEBOX_SITE_BASE || 'https://djictbz9w796r.cloudfront.net').replace(/\/$/, ''), // CloudFront (guest URL + state.json)
+  // Public base for guest URLs + state.json. Default is the dedicated jukebox
+  // distribution (jukebox.pocket-dj.com), whose origin path is /jukebox — so the
+  // public path is /<id>/ while the S3 keys stay jukebox/<id>/... (unchanged below).
+  // Override with a bucket-root CloudFront (e.g. the dev PWA domain) only together
+  // with JUKEBOX_GUEST_PREFIX=jukebox.
+  siteBase: (process.env.JUKEBOX_SITE_BASE || 'https://jukebox.pocket-dj.com').replace(/\/$/, ''),
+  // Path segment between siteBase and <id>/ in the PUBLIC guest URL. Empty for a
+  // distribution whose origin path already points at the jukebox/ subtree.
+  guestPrefix: (process.env.JUKEBOX_GUEST_PREFIX ?? '').replace(/^\/|\/$/g, ''),
   // :8443 — Funnel is per-PORT, and 443 already serves the Tailnet-only rip server;
   // funneling /jukebox on 443 would expose the rip server publicly too. The jukebox
   // gets Funnel's second HTTPS port so the rip server's boundary is untouched.
@@ -51,6 +59,11 @@ const CFG = {
   deleteMs: parseInt(process.env.JUKEBOX_DELETE_MS || String(7 * 24 * 60 * 60 * 1000), 10),
   sweepMs: parseInt(process.env.JUKEBOX_SWEEP_MS || String(10 * 60 * 1000), 10),
 };
+
+// Public guest URL for a session, e.g. https://jukebox.pocket-dj.com/<id>/ .
+// The S3 keys are always jukebox/<id>/… — the distribution's origin path supplies
+// the jukebox/ segment, so guestPrefix is empty for jukebox.pocket-dj.com.
+const guestUrl = (id) => `${CFG.siteBase}${CFG.guestPrefix ? '/' + CFG.guestPrefix : ''}/${id}/`;
 
 // Rate limiting for the public request endpoint. Per CLIENT: a hard ≥minGapMs gap between one
 // guest's requests. Per IP: a SLIDING WINDOW (≤ipWindowMax requests per ipWindowMs), NOT a gap —
@@ -244,7 +257,7 @@ async function createJukebox(body) {
   await s3Put(`jukebox/${s.id}/index.html`, page, 'text/html');
   await publishState(s); // seed state.json so the page has something to poll immediately
   log(`created jukebox ${s.id} "${s.name}"${s.timeless ? ' (timeless)' : ''}`);
-  return { status: 200, json: { jukeboxId: s.id, hostKey: s.hostKey, name: s.name, url: `${CFG.siteBase}/jukebox/${s.id}/`, timeless: !!s.timeless, expiresAt: s.timeless ? null : s.expiresAt } };
+  return { status: 200, json: { jukeboxId: s.id, hostKey: s.hostKey, name: s.name, url: guestUrl(s.id), timeless: !!s.timeless, expiresAt: s.timeless ? null : s.expiresAt } };
 }
 
 // Flip the lifecycle mode on a live session. Turning timeless OFF recomputes expiresAt from
@@ -391,7 +404,7 @@ function renderPage(s) {
     .replace(/__JUKEBOX_ID__/g, esc(s.id))
     .replace(/__JUKEBOX_NAME__/g, esc(s.name))
     .replace(/__API_BASE__/g, esc(CFG.publicBase))
-    .replace(/__STATE_URL__/g, esc(`${CFG.siteBase}/jukebox/${s.id}/state.json`));
+    .replace(/__STATE_URL__/g, esc(`${guestUrl(s.id)}state.json`));
 }
 
 // ---------------- HTTP ----------------
