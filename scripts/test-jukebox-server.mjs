@@ -88,7 +88,9 @@ test('create requires the token when one is configured', async () => {
   assert.match(r.json.jukeboxId, /^[a-z2-7]{8}$/);
   assert.match(r.json.hostKey, /^[a-f0-9]{32}$/);
   assert.equal(r.json.name, 'Garage Party'); // app's JukeboxSessionInfo decoder requires name
-  assert.ok(r.json.url.includes(`/jukebox/${r.json.jukeboxId}/`));
+  // Guest URL ends in /<id>/ ; the /jukebox segment now lives in the CDN origin path
+  // (jukebox.pocket-dj.com) rather than the public URL, so assert the id path only.
+  assert.ok(r.json.url.endsWith(`/${r.json.jukeboxId}/`));
   jb = r.json;
   assert.equal(r.json.timeless, false);
   assert.equal(typeof r.json.expiresAt, 'number'); // non-timeless → 24h expiry
