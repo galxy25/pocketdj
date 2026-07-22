@@ -27,4 +27,7 @@ object PlaybackContract {
 
     /** Marker for the "/hls/" live path (unseekable — disable the scrubber). */
     const val EXTRA_IS_LIVE = "pdj.isLive"
+
+    /** Marker for a 30-second Apple Music preview (badge it; cap the scrubber). */
+    const val EXTRA_IS_PREVIEW = "pdj.isPreview"
 }

@@ -56,8 +56,20 @@ data class AppSettings(
      * no seeding.
      */
     val expandedSourceNames: Set<String> = emptySet(),
+    // Apple Music (specs/applemusic.md §3.3, §10). Each is an independent
+    // additive-optional Preferences key that simply defaults when absent — a
+    // saved doc from a build without them is never wiped.
+    /** Per-user Music-User-Token from the sign-in deep-link; empty ⇒ signed out. */
+    val musicUserToken: String = "",
+    /** Cold-start cache of the app-wide ES256 developer token (empty ⇒ unfetched). */
+    val appleMusicDeveloperToken: String = "",
+    /** Epoch-ms expiry of the cached developer token (0 ⇒ unknown/unfetched). */
+    val appleMusicDeveloperTokenExpiresAt: Long = 0L,
 ) {
     val hasRipServer: Boolean get() = ripServerUrl.isNotBlank()
+
+    /** Signed in to Apple Music (a Music-User-Token is persisted). */
+    val hasAppleMusic: Boolean get() = musicUserToken.isNotBlank()
 
     companion object {
         /** iOS ships exactly one default source: My Vinyl (catalog.md §5). */
@@ -111,6 +123,9 @@ class AppSettingsStore(
         val PLAYLISTS_MODE = stringPreferencesKey("playlistsMode")
         val COLLAPSED_FOLDER_IDS = stringSetPreferencesKey("collapsedFolderIds")
         val EXPANDED_SOURCE_NAMES = stringSetPreferencesKey("expandedSourceNames")
+        val MUSIC_USER_TOKEN = stringPreferencesKey("musicUserToken")
+        val AM_DEV_TOKEN = stringPreferencesKey("appleMusicDeveloperToken")
+        val AM_DEV_TOKEN_EXP = androidx.datastore.preferences.core.longPreferencesKey("appleMusicDeveloperTokenExpiresAt")
     }
 
     /** Live settings; IO errors surface as defaults rather than a crash. */
@@ -133,6 +148,9 @@ class AppSettingsStore(
         playlistsMode = prefs[Keys.PLAYLISTS_MODE] ?: "user",
         collapsedFolderIds = prefs[Keys.COLLAPSED_FOLDER_IDS] ?: emptySet(),
         expandedSourceNames = prefs[Keys.EXPANDED_SOURCE_NAMES] ?: emptySet(),
+        musicUserToken = prefs[Keys.MUSIC_USER_TOKEN] ?: "",
+        appleMusicDeveloperToken = prefs[Keys.AM_DEV_TOKEN] ?: "",
+        appleMusicDeveloperTokenExpiresAt = prefs[Keys.AM_DEV_TOKEN_EXP] ?: 0L,
     )
 
     private fun decodeSources(raw: String?): List<SourceConfig> {
@@ -237,6 +255,28 @@ class AppSettingsStore(
             val current = prefs[Keys.EXPANDED_SOURCE_NAMES] ?: emptySet()
             prefs[Keys.EXPANDED_SOURCE_NAMES] =
                 if (expanded) current + sourceName else current - sourceName
+        }
+    }
+
+    /**
+     * Persist the Music-User-Token from a successful sign-in (specs/applemusic.md
+     * §3.3). Atomic single-key edit; never touches identity or other settings.
+     */
+    suspend fun setMusicUserToken(token: String) {
+        dataStore.edit { it[Keys.MUSIC_USER_TOKEN] = token.trim() }
+    }
+
+    /** Sign out of Apple Music — clears the Music-User-Token only (dev token is
+     *  app-wide, not user-identifying, and is deliberately kept). */
+    suspend fun clearMusicUserToken() {
+        dataStore.edit { it[Keys.MUSIC_USER_TOKEN] = "" }
+    }
+
+    /** Cold-start cache of the app-wide developer token + its epoch-ms expiry. */
+    suspend fun setAppleMusicDeveloperToken(token: String, expiresAt: Long) {
+        dataStore.edit {
+            it[Keys.AM_DEV_TOKEN] = token
+            it[Keys.AM_DEV_TOKEN_EXP] = expiresAt
         }
     }
 

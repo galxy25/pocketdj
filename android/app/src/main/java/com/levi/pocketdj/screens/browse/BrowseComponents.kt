@@ -30,17 +30,28 @@ import com.levi.pocketdj.playback.PlaybackController
 import com.levi.pocketdj.playback.PlayOutcome
 
 /**
- * How honest a ▶ affordance is for a song (specs/playback.md §3): STREAM = a
- * public rip exists; RIP = no rip but a configured server can make one on
- * explicit ▶; NONE = browsable metadata only (never render a play control that
- * can only fail).
+ * How honest a ▶ affordance is for a song (specs/playback.md §3, specs/applemusic.md
+ * §6.0): STREAM = a public rip exists; APPLE_MUSIC = no rip but the song carries an
+ * `appleMusicId`, so it plays through the AM ladder (full-track on a subscribed
+ * arm device, else a 30-second preview); RIP = no rip/AM but a configured server
+ * can make one on explicit ▶; NONE = browsable metadata only (never render a play
+ * control that can only fail).
+ *
+ * Ordering mirrors [PlaybackController.play]: a manifest hit always wins first,
+ * then Apple Music (full-track → preview) sits BEFORE rip-on-demand.
  */
-enum class Playability { STREAM, RIP, NONE }
+enum class Playability { STREAM, APPLE_MUSIC, RIP, NONE }
 
-fun playability(songId: String, manifest: RipsManifest, hasRipServer: Boolean): Playability =
+fun playability(
+    songId: String,
+    manifest: RipsManifest,
+    hasRipServer: Boolean,
+    appleMusicId: String? = null,
+): Playability =
     when {
         PlayResolver.isStudioId(songId) -> Playability.NONE
         manifest.containsKey(songId) -> Playability.STREAM
+        !appleMusicId.isNullOrBlank() -> Playability.APPLE_MUSIC
         hasRipServer -> Playability.RIP
         else -> Playability.NONE
     }

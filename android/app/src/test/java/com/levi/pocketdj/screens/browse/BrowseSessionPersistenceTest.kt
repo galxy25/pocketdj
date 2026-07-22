@@ -66,11 +66,26 @@ class BrowseSessionPersistenceTest {
     @Test
     fun unknownEnumStrings_fallBackToSafeDefaults() {
         // A future/other build wrote kinds/modes this build doesn't understand.
-        val snap = BrowseSnapshot(kind = "artists", layout = "carousel", searchMode = "discover")
+        val snap = BrowseSnapshot(kind = "zzz", layout = "carousel", searchMode = "discover")
         val state = snap.toSessionState()
         assertEquals(BrowseKind.ALBUMS, state.kind)
         assertEquals(AlbumLayout.GRID, state.layout)
         assertEquals(SearchMode.DEVICE, state.searchMode)
+    }
+
+    @Test
+    fun artistsKind_roundTrips() {
+        // Widening the kind value space is additive (specs/artists.md §2.2): the
+        // Artists kind writes "artists" and reads back ARTISTS.
+        val encoded = BrowseSessionState(
+            kind = BrowseKind.ARTISTS,
+            layout = AlbumLayout.GRID,
+            searchMode = SearchMode.DEVICE,
+            filters = BrowseFilters(),
+            sortKeys = emptyList(),
+        ).toSnapshot()
+        assertEquals("artists", encoded.kind)
+        assertEquals(BrowseKind.ARTISTS, encoded.toSessionState().kind)
     }
 
     @Test

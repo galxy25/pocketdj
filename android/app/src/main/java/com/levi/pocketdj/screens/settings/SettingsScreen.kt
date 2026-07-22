@@ -1,6 +1,8 @@
 package com.levi.pocketdj.screens.settings
 
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,7 +64,10 @@ import kotlinx.coroutines.withContext
  * `com.levi.pocketdj.screens.SettingsScreen` import in MainActivity).
  */
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    modifier: Modifier = Modifier,
+    onOpenStorage: () -> Unit = {},
+) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val scope = rememberCoroutineScope()
@@ -92,6 +97,32 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     var testingHealth by remember { mutableStateOf(false) }
     var confirmClearCache by remember { mutableStateOf(false) }
     var confirmClearHistory by remember { mutableStateOf(false) }
+
+    // Apple Music sign-in (specs/applemusic.md §7). The Music-User-Token round-trip
+    // runs through the Apple Music app; we own an ActivityResult launcher HERE (via
+    // `rememberLauncherForActivityResult`, which registers against the host activity)
+    // so no MainActivity wiring is needed. [DEVICE-ONLY]: on the emulator the deep
+    // link can't complete and the result decodes to Cancelled/Failed — never a crash.
+    var signingIn by remember { mutableStateOf(false) }
+    var appleMusicError by remember { mutableStateOf<String?>(null) }
+    val authLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        scope.launch {
+            signingIn = false
+            when (val decoded = graph.musicKitAuth.decodeResult(result.data)) {
+                is com.levi.pocketdj.data.applemusic.MusicKitAuth.AuthResult.Success -> {
+                    appleMusicError = null
+                    // Pre-warm the dev token so the first AM play is instant.
+                    graph.musicKitDevTokenClient.prewarm()
+                }
+                is com.levi.pocketdj.data.applemusic.MusicKitAuth.AuthResult.Cancelled ->
+                    appleMusicError = null
+                is com.levi.pocketdj.data.applemusic.MusicKitAuth.AuthResult.Failed ->
+                    appleMusicError = decoded.message
+            }
+        }
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(
@@ -263,6 +294,103 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
             SectionDivider()
 
+            // ---- Apple Music -------------------------------------------------
+            SectionHeader("Apple Music")
+            when {
+                current == null -> Unit
+                // Signed-in check FIRST: a user who signed in and later blanked
+                // their Import server must still be able to sign out (and not have
+                // a live Music-User-Token stranded behind a disabled button).
+                current.hasAppleMusic -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "Apple Music · Connected",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    graph.musicKitAuth.signOut()
+                                    // Free the native AM engine's resources (§3.3).
+                                    graph.playbackController.releaseAppleMusic()
+                                    appleMusicError = null
+                                }
+                            },
+                        ) {
+                            Text("Sign out")
+                        }
+                    }
+                    SettingsCaption(
+                        "Full-track streaming needs an active Apple Music " +
+                            "subscription and the Apple Music app installed. Where a " +
+                            "track can't stream, a 30-second preview plays instead.",
+                    )
+                }
+                !current.hasRipServer -> {
+                    // Signed OUT with no Import server: the developer token is
+                    // minted BY the rip server (§5), so sign-in is impossible until
+                    // an Import server is configured.
+                    OutlinedButton(onClick = {}, enabled = false) {
+                        Text("Sign in with Apple Music")
+                    }
+                    SettingsCaption(
+                        "Add an Import server first — it mints the Apple Music " +
+                            "developer token.",
+                    )
+                }
+                else -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(
+                            enabled = !signingIn,
+                            onClick = {
+                                scope.launch {
+                                    appleMusicError = null
+                                    signingIn = true
+                                    try {
+                                        // Fetch the dev token + build the intent FIRST
+                                        // so a server/token failure surfaces before
+                                        // Apple Music is ever opened (§7).
+                                        val intent = graph.musicKitAuth.signInIntent()
+                                        authLauncher.launch(intent)
+                                        // signingIn stays true until the result
+                                        // callback fires (RESULT_CANCELED at minimum).
+                                    } catch (error: CancellationException) {
+                                        signingIn = false
+                                        throw error
+                                    } catch (error: Throwable) {
+                                        signingIn = false
+                                        appleMusicError =
+                                            error.message ?: "Apple Music sign-in is unavailable"
+                                    }
+                                }
+                            },
+                        ) {
+                            Text(if (signingIn) "Connecting…" else "Sign in with Apple Music")
+                        }
+                        if (signingIn) {
+                            Spacer(Modifier.width(12.dp))
+                            CircularProgressIndicator(
+                                modifier = Modifier.width(18.dp).height(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    }
+                    SettingsCaption(
+                        "Opens the Apple Music app to connect your account. Full-track " +
+                            "streaming needs an active subscription; without one (or on " +
+                            "an emulator) 30-second previews play instead.",
+                    )
+                    appleMusicError?.let { SettingsCaption(it) }
+                }
+            }
+
+            SectionDivider()
+
             // ---- Jukebox broker ----------------------------------------------
             SectionHeader("Jukebox broker")
             SettingsCaption("The request-line broker Jukebox Hero connects to. Blank = off.")
@@ -309,6 +437,18 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             SettingsCaption(
                 "Removes every recorded play from this device. Settings, sources, " +
                     "and the install identity are kept.",
+            )
+
+            SectionDivider()
+
+            // ---- Storage ------------------------------------------------------
+            SectionHeader("Storage")
+            OutlinedButton(onClick = onOpenStorage) {
+                Text("Manage storage")
+            }
+            SettingsCaption(
+                "See what PocketDJ keeps on this device per category, with sizes, and " +
+                    "clear the re-derivable caches and logs.",
             )
 
             SectionDivider()
