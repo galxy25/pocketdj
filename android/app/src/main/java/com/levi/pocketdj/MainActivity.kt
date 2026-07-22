@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
@@ -183,7 +184,9 @@ fun PocketDjApp() {
                                 }
                             },
                             icon = { Icon(dest.icon, contentDescription = dest.label) },
-                            label = { Text(dest.label) },
+                            // Single line, slightly smaller so the longest labels
+                            // ("Collections", "Producer") never wrap across two lines.
+                            label = { Text(dest.label, maxLines = 1, softWrap = false, fontSize = 10.sp) },
                         )
                     }
                 }

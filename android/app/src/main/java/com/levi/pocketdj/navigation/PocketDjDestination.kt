@@ -22,7 +22,9 @@ enum class PocketDjDestination(
     Browse("browse", "Browse", 1, Icons.Filled.LibraryMusic),
     History("history", "History", 1, Icons.Filled.History),
     Jukebox("jukebox", "Jukebox", 1, Icons.Filled.QrCode2),
-    Playlists("playlists", "Playlists", 2, Icons.AutoMirrored.Filled.QueueMusic),
+    // Tab LABEL is "Collections" (iOS parity); the route/enum id stays "playlists"
+    // so navigation and every internal reference are unaffected.
+    Playlists("playlists", "Collections", 2, Icons.AutoMirrored.Filled.QueueMusic),
     Mix("mix", "Mix", 3, Icons.Filled.Tune),
     Producer("producer", "Producer", 4, Icons.Filled.GraphicEq);
 

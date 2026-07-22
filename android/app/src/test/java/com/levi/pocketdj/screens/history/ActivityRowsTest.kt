@@ -113,6 +113,24 @@ class ActivityRowsTest {
     }
 
     @Test
+    fun rows_query_filtersByResolvedTitleOrCollectionName() {
+        val song = IndexSong(id = "sng_1", artist = "Elton John", name = "Tiny Dancer")
+        val events = listOf(
+            event(id = "e1", itemId = "sng_1", collectionName = "Warmups"),
+            event(id = "e2", itemId = "sng_2", itemTitle = "Rocket Man", collectionName = "Encores"),
+        )
+        val cat = catalog(songs = listOf(song))
+        // Match on the live-resolved item title.
+        assertEquals(listOf("e1"), buildActivityRows(events, cat, "dancer").map { it.eventId })
+        // Match on the collection name.
+        assertEquals(listOf("e2"), buildActivityRows(events, cat, "Encores").map { it.eventId })
+        // Blank query keeps everything (newest first).
+        assertEquals(listOf("e2", "e1"), buildActivityRows(events, cat, "").map { it.eventId })
+        // No match drops all.
+        assertEquals(emptyList<String>(), buildActivityRows(events, cat, "zzz").map { it.eventId })
+    }
+
+    @Test
     fun rows_resolveLiveTitles_andTapOnlyForLiveSongs() {
         val song = IndexSong(id = "sng_1", artist = "Elton John", name = "Tiny Dancer")
         val album = IndexAlbum(id = "alb_1", artist = "Elton John", name = "Madman")
