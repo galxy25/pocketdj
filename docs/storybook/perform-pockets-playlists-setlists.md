@@ -323,7 +323,7 @@ me a real, saved set list I can tweak, rip, and burn."
 
 ## Your playlists on top; folders to organize them
 
-**Yours | Shared tabs.** The Playlists screen splits into two segmented tabs: **Yours** — the
+**Yours | Shared tabs.** The Collections screen (the tab that holds your pockets, playlists, set lists, and folders) splits into two segmented tabs: **Yours** — the
 playlists and pockets you build, plus your folders — and **Shared** — the read-only **"From your
 sources"** playlists. The sets you build are what you reach for, so **Yours** is where you land,
 with **Your playlists** on top; on **Shared**, the source playlists are **grouped by source**
@@ -346,7 +346,7 @@ you left it collapsed** — so a long shelf of sets stays tidy. Folders ride alo
 **import/merge** and the **backup zip**, so the way you've organized your sets travels with them
 to another device.
 
-**Search by name.** At the top of the Playlists screen is a **search bar** (the same one the
+**Search by name.** At the top of the Collections screen is a **search bar** (the same one the
 Browser uses). Type any part of a name and the **active tab** narrows to its matches —
 **playlists and pockets** on Yours, **source playlists** on Shared; the field's prompt says
 which — a case-insensitive substring match. While you're searching the **folders and source

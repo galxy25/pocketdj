@@ -174,7 +174,7 @@ over the burned **vocals stem** (`DemuxStore.analyzeTranscript`, off `@MainActor
 incremental + resumable) when no cloud whisper sidecar exists (the full-mix transcript path
 stays gated behind `DemuxFeatures.lyricsEnabled`); Studio **Samples folders**
 (create/rename/delete + move samples, additive schema, an always-present *Unfiled* section);
-the **Playlists** screen's **Yours / Shared** tabs, per-source collapse-and-remember, and
+the **Collections** screen's **Yours / Shared** tabs, per-source collapse-and-remember, and
 persisted **Recently played / A–Z / Last updated** sort (setlist Play stamps the parent);
 and the Add-to-collection **Recent** quick-add — the top-3 most-recent add targets
 (`CollectionsStore.recentAddTargets`, filtered to targets that still resolve) surfaced above

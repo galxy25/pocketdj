@@ -119,7 +119,7 @@ PocketDJ is built to *perform* a crate, not just browse it:
   per-item notes. Any collection can be **Ripped**, **Burned**, or **Stemified** in
   one action.
 
-The **Playlists screen** splits into **Yours** and **Shared** tabs — your own
+The **Collections screen** splits into **Yours** and **Shared** tabs — your own
 collections versus the ones mirrored from your sources' playlists, where each source
 **group collapses and remembers** its open/closed state. **Sort** either tab by
 **Recently played**, **A–Z**, or **Last updated** (your choice is remembered); playing

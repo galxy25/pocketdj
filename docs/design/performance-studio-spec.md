@@ -30,7 +30,7 @@ The obvious names are all taken. These choices are deliberate; do not "fix" them
 | A type called `Performance` | taken by RealizeEngine.swift:44 | `Studio*` prefix on all new types |
 | 16-step sequence | `sequence` = playlist chapter (PlaylistNode.Kind); `sequencer` = RootView's SetlistPlayer env name | **`StudioPattern`** in code/schema; user-facing label "Sequencer" |
 | Instrument recording | `performance` = reserved PocketKind (AI crate) | **`StudioTake`** |
-| Keyboard shortcut ⌘P | Playlists (RootView:239), Browse play-focused (BrowseView:307) | ⌘P → Performance. Playlists → **⇧⌘P**. Browse play-focused → **⌥⌘P** |
+| Keyboard shortcut ⌘P | Playlists (RootView:239), Browse play-focused (BrowseView:307) | ⌘P → Performance. Browse play-focused → **⌥⌘P**. (The Collections tab — formerly Playlists, ⇧⌘P — has since moved to its own **⌘C**.) |
 
 Sub-tab shortcuts ⌘1–⌘5 are **scoped inside PerformanceView** (BrowseView shadow-button
 pattern, mounted-only) so they never fight Browse's ⌘1/⌘2.
@@ -320,7 +320,7 @@ drift), else `beats × 60000/bpm`. Unit-tested pure functions.
 ## 11. Shell / navigation
 
 - `RootView.Section` + icon (`pianokeys`) + detail case + `Performance-shadow` ⌘P;
-  Playlists-shadow → ⇧⌘P; BrowseView PlayFocused-shadow → ⌥⌘P.
+  Playlists-shadow (the Collections tab) → ⌘C; BrowseView PlayFocused-shadow → ⌥⌘P.
 - PDJ_START_SECTION="Performance" works automatically; new seams: `PDJ_SEED_STUDIO=1` (seeds
   fixture sample/loop/pattern/cue rows + bundled ~1 s audio fixture), StudioFolders.appRootOverride,
   StudioStore.launchURL.
