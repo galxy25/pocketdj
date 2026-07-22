@@ -65,7 +65,7 @@ deliberate edit to this doc.
 | Phase | Scope | Checkpoint |
 |---|---|---|
 | **1** | **Browser** (incl. **Settings**) + **History** + **Jukebox Hero** | Own branch → emulator checkpoint with Levi |
-| **2** | **Playlists** | Own branch → emulator checkpoint with Levi |
+| **2** | **Collections** (Playlists tab) | Own branch → emulator checkpoint with Levi |
 | **3** | **Mix** (DSP-engine decision resolved here) | Own branch → emulator **review milestone** with Levi |
 | **4** | **Producer** | Own branch → emulator **review milestone** with Levi |
 
@@ -119,7 +119,7 @@ app-wide error snackbar), the docked mini-player bar, play-event bus → History
 transient-poll-resilient await (only 10 consecutive failures abort). AM-only
 tracks with no public rip render metadata-only, exactly per the sources reality.
 Offline burns, setlist transport, and stem playback follow with the phases that
-need them (Playlists → Mix → Producer). Android Auto lands after phone playback
+need them (Collections → Mix → Producer). Android Auto lands after phone playback
 is solid, as the CarPlay-parity step.
 
 ### Ch. 6 — Search & Discovery · *Status: Browser + History Built (Phase 1) · online search deferred*

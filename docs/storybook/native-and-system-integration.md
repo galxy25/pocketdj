@@ -210,7 +210,7 @@ setup, live the moment the app installs. Every phrase ends **"…in PocketDJ"**:
   range, **fuzzy** genre matching, and **mood-vector similarity** over each song's sentiment
   keywords — the model curates and orders the best matches, and up to **90 minutes** of songs (the
   minutes are adjustable in Shortcuts) are saved as a new pocket, **asynchronously**: Siri answers
-  right away and the pocket appears in Playlists ▸ Pockets moments later, with your brief kept as
+  right away and the pocket appears in Collections ▸ Pockets moments later, with your brief kept as
   its description.
 
 Beyond voice, the same intents surface everywhere the system composes actions: the **Shortcuts app**

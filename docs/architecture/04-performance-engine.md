@@ -456,7 +456,7 @@ reusable set is a live, editable scratch surface, not a frozen artifact.
 behaviour — `realize()` → a **frozen take** appended to history (§2, §5) — moved to its own
 toolbar button (SF Symbol **`list.bullet.clipboard`**), so both flows coexist: ▶/🔀 for an
 immediate literal play, `list.bullet.clipboard` for rolling a saved, autofilled take. (In
-the Playlists list, **your** editable playlists also now render **above** the read-only
+the Collections list, **your** editable playlists also now render **above** the read-only
 "From your sources" index playlists, organized into the optional collapsible
 folders of [Ch. 3 §3.1](./03-catalog-and-data-model.md#31-the-collectionsdocument-envelope-schema-versioning-and-folders-native).
 A **`.searchable` name filter** (mirroring the Browser) sits atop the list: a non-empty query

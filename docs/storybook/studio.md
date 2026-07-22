@@ -22,8 +22,8 @@
 ## The Producer tab — a studio in your pocket
 
 The native app has a **fifth top-level tab**: **Producer** (the **piano-keys** icon, beside
-Browser · History · Playlists · Mix · Jukebox Hero · Settings), and **⌘P** jumps straight to it. That one physical key has three deliberate homes: **⌘P**
-opens Producer, **⇧⌘P** opens Playlists, and **⌥⌘P** is Browser's play-focused ▶.
+Browser · History · Collections · Mix · Jukebox Hero · Settings), and **⌘P** jumps straight to it. That one physical key now has two deliberate homes: **⌘P**
+opens Producer and **⌥⌘P** is Browser's play-focused ▶ (the Collections tab has since moved to its own **⌘C**).
 
 Inside, a **segmented picker** across the top splits the Studio into **six sub-tabs**, and **⌘1–⌘6**
 step between them (scoped to this tab, so they never fight Browser's own ⌘1/⌘2):
@@ -38,7 +38,7 @@ step between them (scoped to this tab, so they never fight Browser's own ⌘1/�
 
 On a **narrow iPhone in portrait** the six segments show **just their symbols** (six text labels
 won't fit); a **wider** screen shows symbol *and* word. The Studio **remembers the sub-tab** you were
-last on and reopens there, and — the toolbar-overflow lesson from Playlists — its important controls
+last on and reopens there, and — the toolbar-overflow lesson from Collections — its important controls
 stay **in the content**, never buried behind a `•••`.
 
 **User story:** "I hit ⌘P, land on Samples where I left off, and the whole Studio is one number-key
