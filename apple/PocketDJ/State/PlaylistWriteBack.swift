@@ -717,6 +717,22 @@ final class MusicKitPlaylistWriteBackTransport: PlaylistWriteBackTransport {
             throw PlaylistWriteBackError.playlistGone(playlistId)
         }
 
+        // IDEMPOTENT DELIVERY. `MusicLibrary.add` is NOT idempotent — adding a song already in the
+        // playlist appends a SECOND copy the user must remove by hand. The queue's (id,song) dedup
+        // and the collections' source snapshot both guard the enqueue, but neither is watertight
+        // across the whole system: the queue is device-local (a PEER device, or a same-device job
+        // pruned past the 200-cap, has no record of a prior delivery) and the snapshot only advances
+        // on a catalog re-index, lagging delivery. The BACKFILL re-drives adds from the cloud-synced
+        // activity log, so it can present exactly such an already-delivered song. This check closes
+        // that at the mutation point: if the song is already in the real playlist, treat the write
+        // as done. SAFE by construction — catalog ids are unique, so a match is never a false
+        // positive; a miss (best-effort id extraction) merely falls through to the add, i.e. the
+        // pre-existing behaviour. See `catalogIds(of:)`.
+        if let tracks = (try? await playlist.with([.tracks]))?.tracks,
+           tracks.contains(where: { Self.catalogIds(of: $0).contains(appleMusicId) }) {
+            return
+        }
+
         var songReq = MusicCatalogResourceRequest<MusicKit.Song>(matching: \.id,
                                                                  equalTo: MusicItemID(appleMusicId))
         songReq.limit = 1

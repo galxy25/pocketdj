@@ -832,3 +832,207 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(events.first?.collectionName, "Parent")
     }
 }
+
+// MARK: - Two-way source sync (Apple Music write-back on adds to converted/duplicated collections)
+
+/// The PUSH half of converted-collection source sync (Levi 2026-07-22): adding a song to a
+/// pocket converted from — or a playlist duplicated from — an Apple Music source list should
+/// enqueue an upstream write-back to the real Apple Music playlist, plus a time-bounded backfill
+/// that re-drives adds that predate the wiring. Drives the store's `enqueueSourceWriteBack` seam
+/// with a stub that mirrors `PlaylistWriteBack.enqueue`'s dedup (true only the first time a
+/// (playlist, song) pair is queued), so both the per-add path and the backfill count are exercised
+/// with no MusicKit, no account, and no network.
+final class WriteBackSourceSyncTests: XCTestCase {
+
+    /// A catalog where sng_am1/sng_am2 carry Apple Music store ids and sng_plain does not.
+    private static let amJSON = """
+    { "manifest": { "sourceName": "Apple Music (Local)", "counts": { "albums": 1, "songs": 3 } },
+      "albums": [ { "id": "alb_am", "artist": "Aria", "name": "AM", "genre": "Pop", "year": 2020,
+                    "country": "US", "trackList": ["sng_am1","sng_am2","sng_plain"], "fileType": "m4a" } ],
+      "songs": [
+        { "id": "sng_am1", "albumId": "alb_am", "artist": "Aria", "name": "One", "trackNumber": 1,
+          "year": 2020, "length": 180000, "explicit": false, "appleMusicId": "am_111" },
+        { "id": "sng_am2", "albumId": "alb_am", "artist": "Aria", "name": "Two", "trackNumber": 2,
+          "year": 2020, "length": 190000, "explicit": false, "appleMusicId": "am_222" },
+        { "id": "sng_plain", "albumId": "alb_am", "artist": "Aria", "name": "Three", "trackNumber": 3,
+          "year": 2020, "length": 200000, "explicit": false }
+      ] }
+    """
+    private struct AMLoader: CatalogLoading {
+        func loadIndex() async throws -> IndexJSON {
+            try JSONDecoder().decode(IndexJSON.self, from: Data(WriteBackSourceSyncTests.amJSON.utf8))
+        }
+    }
+
+    /// Records every seam call and dedups on (playlistId|songId) like the real queue.
+    private final class Capture {
+        var calls: [(pid: String, name: String, sid: String, amid: String?)] = []
+        private var seen = Set<String>()
+        func enqueue(_ pid: String, _ name: String, _ sid: String, _ amid: String?) -> Bool {
+            calls.append((pid, name, sid, amid))
+            return seen.insert(pid + "|" + sid).inserted
+        }
+    }
+
+    /// `CollectionsStore.app` is a WEAK reference, so the test must hold the app strongly for
+    /// the whole test — otherwise it deallocates the instant `wired()` returns and every
+    /// catalog lookup (the `appleMusicId` resolve) silently sees nil. A per-test property is the
+    /// simplest strong anchor (XCTestCase makes a fresh instance per test method).
+    private var appHold: AppModel?
+
+    @MainActor
+    private func wired() async -> (CollectionsStore, Capture) {
+        let app = AppModel(loader: AMLoader())
+        await app.loadIfNeeded()
+        appHold = app
+        let s = CollectionsStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-wb-\(UUID().uuidString).json"))
+        s.app = app
+        let cap = Capture()
+        s.enqueueSourceWriteBack = { cap.enqueue($0, $1, $2, $3) }
+        return (s, cap)
+    }
+
+    private func amSource(_ id: String, _ name: String, _ songs: [String],
+                          source: String = Config.appleMusicSourceName) -> SourcePlaylist {
+        SourcePlaylist(playlist: IndexPlaylist(id: id, name: name, songIds: songs), sourceName: source)
+    }
+
+    private func addEvent(_ songId: String, in collectionId: String, kind: String = "pocket",
+                          atMs: Double, origin: String? = nil) -> CollectionActivityStore.ActivityEvent {
+        CollectionActivityStore.ActivityEvent(id: UUID(), at: atMs, kind: .add, itemId: songId,
+                                              itemTitle: nil, collectionId: collectionId,
+                                              collectionKind: kind, collectionName: "AM Mix",
+                                              originInstallId: origin)
+    }
+
+    // MARK: Per-add write-back
+
+    @MainActor
+    func testAddNewSongToConvertedPocketWritesBack() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("sng_am2", to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertEqual(cap.calls.count, 1)
+        XCTAssertEqual(cap.calls.first?.pid, "ipl_am")
+        XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+        XCTAssertEqual(cap.calls.first?.amid, "am_222")   // resolved from the catalog, not passed in
+    }
+
+    @MainActor
+    func testAddSongAlreadyInSourceSnapshotDoesNotWriteBack() async {
+        let (s, cap) = await wired()
+        // sng_am1 is the source's own song → already in the snapshot → already upstream.
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("sng_am1", to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    @MainActor
+    func testAddSongWithoutAppleMusicIdDoesNotWriteBack() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("sng_plain", to: AddTarget(kind: .pocket, id: p.id))   // no Apple Music identity
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    @MainActor
+    func testAddToNonAppleMusicSourcePocketDoesNotWriteBack() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_dig", "Dig Mix", ["sng_am1"], source: "My Digital"))
+        s.addSong("sng_am2", to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    @MainActor
+    func testAddToPlainPocketDoesNotWriteBack() async {
+        let (s, cap) = await wired()
+        let p = s.createPocket("Mine")   // no provenance
+        s.addSong("sng_am2", to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    @MainActor
+    func testAddToDuplicatedPlaylistWritesBack() async {
+        let (s, cap) = await wired()
+        let pl = s.createPlaylist("AM Mix", songIds: ["sng_am1"],
+                                  source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("sng_am2", to: AddTarget(kind: .playlist, id: pl.id))
+        XCTAssertEqual(cap.calls.count, 1)
+        XCTAssertEqual(cap.calls.first?.pid, "ipl_am")
+        XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+    }
+
+    // MARK: Backfill
+
+    @MainActor
+    func testBackfillReDrivesRecentAddsAndIsIdempotent() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        // Simulate an add made BEFORE the write-back wiring: the low-level primitive fires no seam.
+        s.addSong("sng_am2", toPocket: p.id)
+        XCTAssertTrue(cap.calls.isEmpty)
+
+        let now = 1_000_000_000_000.0
+        let ev = addEvent("sng_am2", in: p.id, atMs: now - 3_600_000)   // 1h ago (legacy origin = local)
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 1)
+        XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+        // Idempotent: the seam already saw this pair, so a re-run queues nothing new.
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 0)
+    }
+
+    @MainActor
+    func testBackfillIgnoresAddsOutsideTheWindow() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("sng_am2", toPocket: p.id)
+        let now = 1_000_000_000_000.0
+        let old = addEvent("sng_am2", in: p.id, atMs: now - 5 * 86_400_000)   // 5 days ago
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [old], days: 2, localInstallId: "A", nowMs: now), 0)
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    @MainActor
+    func testBackfillSkipsSongRemovedSinceItsAdd() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        // An add event exists, but the song is NOT currently in the pocket (added then removed).
+        let now = 1_000_000_000_000.0
+        let ev = addEvent("sng_am2", in: p.id, atMs: now - 3_600_000)
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 0)
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    @MainActor
+    func testBackfillDaysAreClampedToNinety() async {
+        let (s, _) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("sng_am2", toPocket: p.id)
+        let now = 1_000_000_000_000.0
+        // 80 days ago: outside a 2-day window, but inside the 90-day ceiling an over-large `days`
+        // clamps to.
+        let ev = addEvent("sng_am2", in: p.id, atMs: now - 80 * 86_400_000)
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 0)
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 1000, localInstallId: "A", nowMs: now), 1)
+    }
+
+    /// A PEER device's attributed add must NOT be re-driven here: its write-back already ran (or
+    /// will) on that device, and re-delivering it would duplicate the track in the real Apple Music
+    /// playlist (the write-back queue that dedups is device-local). A legacy event (nil origin) and
+    /// this install's own events are re-driven; another install's are skipped.
+    @MainActor
+    func testBackfillSkipsPeerDeviceAddsButKeepsLocalAndLegacy() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.addSong("sng_am2", toPocket: p.id)      // present locally, not in snapshot
+        s.addSong("sng_plain", toPocket: p.id)    // (no appleMusicId — never eligible anyway)
+        let now = 1_000_000_000_000.0
+        // Same song, added on a PEER install ("B"): must be skipped even though it's a local member.
+        let peer = addEvent("sng_am2", in: p.id, atMs: now - 3_600_000, origin: "B")
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [peer], days: 2, localInstallId: "A", nowMs: now), 0)
+        XCTAssertTrue(cap.calls.isEmpty)
+        // This install's own add ("A") IS re-driven.
+        let mine = addEvent("sng_am2", in: p.id, atMs: now - 3_600_000, origin: "A")
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [mine], days: 2, localInstallId: "A", nowMs: now), 1)
+    }
+}

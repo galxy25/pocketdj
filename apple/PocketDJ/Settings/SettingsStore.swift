@@ -224,6 +224,19 @@ final class SettingsStore {
     /// service still degrades to a no-op without a signed-in iCloud account. The toggle
     /// lives in Settings ▸ Profile.
     var cloudSyncEnabled: Bool
+    /// How many days of collection ADD history the Apple Music write-back BACKFILL re-drives
+    /// (Settings ▸ Sync and History ▸ Collection). Default 2, clamped to 1…90 so a corrupt or
+    /// out-of-range value can never make the backfill scan nothing (or the whole log). The
+    /// didSet ONLY clamps — persistence rides `SyncSettingsView`'s `.onDisappear { persist() }`
+    /// like every other control there; a persisting didSet would re-write the blob during
+    /// `resetEverything`'s reload right after it cleared it. See
+    /// `CollectionsStore.backfillSourceWriteBacks`.
+    var writeBackBackfillDays: Int {
+        didSet {
+            let c = min(max(writeBackBackfillDays, 1), CollectionsStore.writeBackBackfillMaxDays)
+            if c != writeBackBackfillDays { writeBackBackfillDays = c }
+        }
+    }
 
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
@@ -282,6 +295,8 @@ final class SettingsStore {
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
         self.syncConvertedPockets = data.syncConvertedPockets ?? true
         self.cloudSyncEnabled = data.cloudSyncEnabled ?? true
+        self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
+                                             1), CollectionsStore.writeBackBackfillMaxDays)
 
         // UI-test seam: pin the Mix deck layout deterministically, independent of the persisted
         // value, so a test can exercise a specific arrangement (or hold the classic side-by-side
@@ -415,7 +430,8 @@ final class SettingsStore {
             studioClickEnabled: studioClickEnabled,
             studioCountInEnabled: studioCountInEnabled,
             syncConvertedPockets: syncConvertedPockets,
-            cloudSyncEnabled: cloudSyncEnabled)
+            cloudSyncEnabled: cloudSyncEnabled,
+            writeBackBackfillDays: writeBackBackfillDays)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -468,6 +484,8 @@ final class SettingsStore {
         studioCountInEnabled = d.studioCountInEnabled ?? true
         syncConvertedPockets = d.syncConvertedPockets ?? true
         cloudSyncEnabled = d.cloudSyncEnabled ?? true
+        writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
+                                        1), CollectionsStore.writeBackBackfillMaxDays)
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -555,6 +573,9 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced to TRUE at the read sites — iCloud
     /// profile/session sync is on unless turned off in Settings ▸ Profile).
     var cloudSyncEnabled: Bool?
+    /// Optional so older blobs still decode (coalesced + clamped to 1…90 at the read sites,
+    /// default 2 — the Apple Music write-back backfill look-back window).
+    var writeBackBackfillDays: Int?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -596,5 +617,6 @@ struct SettingsData: Codable {
         studioClickEnabled: nil,
         studioCountInEnabled: nil,
         syncConvertedPockets: nil,
-        cloudSyncEnabled: nil)
+        cloudSyncEnabled: nil,
+        writeBackBackfillDays: nil)
 }

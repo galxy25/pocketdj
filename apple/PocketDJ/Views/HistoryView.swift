@@ -19,6 +19,10 @@ struct HistoryView: View {
     @Environment(PlayHistoryStore.self) private var history
     @Environment(CollectionActivityStore.self) private var activity
     @Environment(CollectionsStore.self) private var collections
+    @Environment(SettingsStore.self) private var settings
+    /// Optional like `AddToCollectionView`/`SyncSettingsView`: always injected by the app, but a
+    /// preview/test host that renders History standalone should degrade to "no backfill", not trap.
+    @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
     @Binding var path: NavigationPath
 
     enum HistoryTab: String, CaseIterable {
@@ -43,6 +47,9 @@ struct HistoryView: View {
     @State private var groupBySong = false
     @State private var showFilter = false
     @State private var showSort = false
+    /// Result of a manual write-back backfill (the "send my adds to Apple Music" toolbar action),
+    /// shown in a one-off alert. nil ⇒ no alert.
+    @State private var backfillMessage: String?
     /// On-device incremental rendering budget — History can grow to tens of thousands of
     /// events, so (exactly like the Browser) only a growing PREFIX of the filtered+sorted rows
     /// is handed to ForEach; it grows as the last visible row appears. Paired with the
@@ -102,6 +109,10 @@ struct HistoryView: View {
             .toolbar { toolbar }
             .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
             .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
+            .alert("Apple Music", isPresented: Binding(
+                get: { backfillMessage != nil }, set: { if !$0 { backfillMessage = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(backfillMessage ?? "") }
             .background { shortcuts }
             .onChange(of: browse.query) { browse.persist() }
             .onChange(of: browse.clauses) { browse.persist() }
@@ -417,8 +428,38 @@ struct HistoryView: View {
                           : "line.3.horizontal.decrease.circle")
                 }
                 .accessibilityIdentifier("history-filter")
+            } else if canBackfill {
+                // Collection + Unified show your ADDs — offer to (re)send the recent ones to the
+                // Apple Music playlists they came from, for adds that never made it upstream (added
+                // before write-back shipped, or while offline / signed out). The look-back window
+                // is the one configured in Settings ▸ Sync (default 2 days).
+                Button { runBackfill() } label: { Image(systemName: "arrow.up.circle") }
+                    .accessibilityIdentifier("history-writeback-backfill")
             }
         }
+    }
+
+    /// Only offer the backfill where a write-back can actually land: this device can write to
+    /// Apple Music (iOS/visionOS, not macOS) AND at least one collection came from an Apple Music
+    /// source. Otherwise there is nothing to push and the button would be a dead end.
+    private var canBackfill: Bool {
+        writeBack?.canWriteBack == true && appleMusicLinkedCount > 0
+    }
+    private var appleMusicLinkedCount: Int {
+        collections.pockets.filter { $0.hasSource && PlaylistWriteBack.isAppleMusicSource($0.sourceName ?? "") }.count +
+        collections.playlists.filter { $0.hasSource && PlaylistWriteBack.isAppleMusicSource($0.sourceName ?? "") }.count
+    }
+
+    /// Re-drive the Apple Music write-back for the configured look-back window and report the
+    /// count. Idempotent (the queue dedups) — tapping twice reports nothing new the second time.
+    private func runBackfill() {
+        let days = settings.writeBackBackfillDays
+        let n = collections.backfillSourceWriteBacks(from: activity.events, days: days,
+                                                     localInstallId: activity.installId)
+        let window = "the last \(days) day\(days == 1 ? "" : "s")"
+        backfillMessage = n == 0
+            ? "Everything you added to your Apple Music collections in \(window) is already in Apple Music."
+            : "Sending \(n) song\(n == 1 ? "" : "s") from \(window) to your Apple Music playlists."
     }
 
     /// Hidden shortcut buttons (mirrors BrowseView): ⌥⌘F filter, ⌥⌘S sort within History.

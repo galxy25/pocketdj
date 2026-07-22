@@ -609,6 +609,18 @@ struct PocketDJApp: App {
             return source.songIds.compactMap { app.songsById[$0]?.appleMusicId }
         }
         _playlistWriteBack = State(initialValue: playlistWriteBack)
+        // Two-way source sync (Levi 2026-07-22): a song added to a CONVERTED pocket or a
+        // DUPLICATED playlist — not just via the Add sheet's "From your sources" row — writes
+        // back to the real Apple Music library playlist it came from. Unconditional like the
+        // source-row path (append-only + non-destructive), gated only on `canWriteBack`, so
+        // macOS / not-yet-authorized just keeps the local add and never queues a dead job.
+        collections.enqueueSourceWriteBack = { [weak playlistWriteBack] indexPlaylistId, playlistName, songId, appleMusicId in
+            guard let wb = playlistWriteBack, wb.canWriteBack else { return false }
+            let job = wb.enqueue(indexPlaylistId: indexPlaylistId, playlistName: playlistName,
+                                 songId: songId, appleMusicId: appleMusicId)
+            wb.runSoon()
+            return job != nil
+        }
 
         // ── Discover adds: provisional catalog entries (eventual consistency) ──
         // "＋ Add" makes the song a catalog citizen NOW; the nightly indexer's real

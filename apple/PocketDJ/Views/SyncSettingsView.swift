@@ -13,6 +13,7 @@ struct SyncSettingsView: View {
     @Bindable var settings: SettingsStore
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
+    @Environment(CollectionActivityStore.self) private var activity
     @Environment(MusicSyncClient.self) private var musicSync
     /// Optional on purpose: this panel is reachable from Settings, which is only ever hosted
     /// by the app's own window (where the service IS injected) — but a preview or a future
@@ -24,6 +25,7 @@ struct SyncSettingsView: View {
     @State private var syncing = false
     @State private var syncStatus: SyncStatus?
     @State private var collectionsSyncResult: String?
+    @State private var backfillResult: String?
     /// This install's owner hash, resolved once on appear (CloudKit round-trip, then cached
     /// inside OwnerIdentity). `loadedHash` distinguishes "still asking" from "no answer".
     @State private var ownerHash: String?
@@ -40,10 +42,18 @@ struct SyncSettingsView: View {
         collections.playlists.filter(\.hasSource).count
     }
 
+    /// The subset of linked collections whose source is Apple Music — the only ones the
+    /// write-back backfill can push upstream (vinyl / My Digital have no Apple Music playlist).
+    private var appleMusicLinkedCount: Int {
+        collections.pockets.filter { $0.hasSource && PlaylistWriteBack.isAppleMusicSource($0.sourceName ?? "") }.count +
+        collections.playlists.filter { $0.hasSource && PlaylistWriteBack.isAppleMusicSource($0.sourceName ?? "") }.count
+    }
+
     var body: some View {
         Form {
             appleMusicSection
             collectionsSection
+            backfillSection
             writeBackSection
             favoritesSection
         }
@@ -348,5 +358,60 @@ struct SyncSettingsView: View {
         let changed = collections.syncConvertedCollections(with: app.indexPlaylists)
         collectionsSyncResult = changed == 0 ? "All in sync"
             : "Updated \(changed) item\(changed == 1 ? "" : "s")"
+    }
+
+    // MARK: Catch up Apple Music (write-back backfill)
+
+    /// The PUSH counterpart to `collectionsSection`'s pull. Adding a song to a converted /
+    /// duplicated Apple Music collection now writes it back to the real Apple Music playlist —
+    /// but adds made BEFORE that wiring shipped (or while offline / signed out) never queued.
+    /// This re-drives them from the collection ADD history, bounded to the last N days.
+    ///
+    /// Shown only where a write-back can actually happen (iOS/visionOS with an Apple Music
+    /// source linked); hidden on macOS — `MusicLibrary` writes don't exist there — exactly like
+    /// `writeBackSection`, so the panel never offers an action this device can't perform.
+    @ViewBuilder private var backfillSection: some View {
+        if writeBack?.canWriteBack == true, appleMusicLinkedCount > 0 {
+            Section {
+                Stepper(value: $settings.writeBackBackfillDays,
+                        in: 1...CollectionsStore.writeBackBackfillMaxDays) {
+                    LabeledContent("Look back",
+                                   value: "\(settings.writeBackBackfillDays) day\(settings.writeBackBackfillDays == 1 ? "" : "s")")
+                }
+                .accessibilityIdentifier("writeback-backfill-days")
+                HStack {
+                    Button { runBackfill() } label: {
+                        Label("Send my adds to Apple Music", systemImage: "arrow.up.circle")
+                    }
+                    .accessibilityIdentifier("writeback-backfill-run")
+                    Spacer()
+                    if let msg = backfillResult {
+                        Text(msg).font(.caption).foregroundStyle(Theme.fgDim)
+                            .accessibilityIdentifier("writeback-backfill-result")
+                    }
+                }
+            } header: {
+                Text("Catch up Apple Music")
+            } footer: {
+                Text("""
+                     Songs you add to a pocket or playlist that came from an Apple Music list are \
+                     also added to that Apple Music playlist. This re-sends any adds from the last \
+                     \(settings.writeBackBackfillDays) day\(settings.writeBackBackfillDays == 1 ? "" : "s") \
+                     that never made it — made before this was turned on, or while you were offline \
+                     or signed out. Songs already in Apple Music are skipped. You can look back up \
+                     to \(CollectionsStore.writeBackBackfillMaxDays) days.
+                     """)
+            }
+        }
+    }
+
+    /// Re-drive the write-back for the chosen look-back window. Idempotent — the queue dedups —
+    /// so a repeat tap reports "Nothing new to send" once everything is queued.
+    private func runBackfill() {
+        let n = collections.backfillSourceWriteBacks(from: activity.events,
+                                                     days: settings.writeBackBackfillDays,
+                                                     localInstallId: activity.installId)
+        backfillResult = n == 0 ? "Nothing new to send"
+            : "Sending \(n) song\(n == 1 ? "" : "s") to Apple Music"
     }
 }
