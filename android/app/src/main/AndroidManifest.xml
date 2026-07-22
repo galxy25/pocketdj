@@ -8,6 +8,8 @@
 
     <application
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -32,6 +34,21 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- REQUIRED on Android 12+ or the manifest merge fails (specs/applemusic.md
+             §2): the auth library declares this activity WITH an <intent-filter>
+             but no explicit android:exported, illegal on targetSdk >= 31. This
+             attribute-only override lets the merger keep the library's deep-link
+             filter (musicsdk://com.levi.pocketdj/authenticateresult...) while
+             supplying the missing exported flag. It MUST be exported="true": the
+             filter is BROWSABLE and the Apple Music app (a separate process)
+             redirects the sign-in result into it, which an implicit cross-app
+             intent can only reach on an exported activity (targetSdk 31+). With
+             exported="false" the redirect is dropped and sign-in silently never
+             completes on device. -->
+        <activity
+            android:name="com.apple.android.sdk.authentication.SDKUriHandlerActivity"
+            android:exported="true" />
     </application>
 
 </manifest>

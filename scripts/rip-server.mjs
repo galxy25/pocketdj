@@ -19,7 +19,7 @@
 import http from 'node:http';
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, rmSync, readdirSync, openSync, fstatSync, readSync, closeSync, renameSync, copyFileSync, createWriteStream } from 'node:fs';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, createPrivateKey, sign as cryptoSign } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -64,6 +64,15 @@ const CFG = {
   searchBase: process.env.RIP_SEARCH_BASE || 'https://itunes.apple.com/search',
   // Browse ▸ Discover album-track expansion target (iTunes lookup — env-overridable for tests).
   lookupBase: process.env.RIP_LOOKUP_BASE || 'https://itunes.apple.com/lookup',
+  // ---- Apple Music developer token (GET /musickit-token): the Android MusicKit SDK
+  // needs an ES256 JWT signed by an Apple Music (MusicKit) key. Minted in-process from
+  // the .p8 below (kid=iss defaults are Levi's, VERIFIED 200 against api.music.apple.com).
+  // exp is capped at 6 months by Apple; default 150 d leaves headroom. Never ship the .p8.
+  musicKitKeyPath: (process.env.MUSICKIT_P8
+    || join(homedir(), '.appstoreconnect', 'private_keys', 'AuthKey_9JRN4H68X4.p8')).replace(/^~/, homedir()),
+  musicKitKeyId: process.env.MUSICKIT_KID || '9JRN4H68X4',
+  musicKitTeamId: process.env.MUSICKIT_TEAM || 'EC27UF79GL',
+  musicKitTtlSec: parseInt(process.env.MUSICKIT_TTL_SEC || String(150 * 24 * 3600), 10), // 150 d ≤ 6 mo cap
   profile: process.env.AWS_PROFILE || 'levi',
   region: process.env.AWS_REGION || 'us-west-2',
   bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
@@ -1947,6 +1956,27 @@ const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgri
   // trigger a single song's lyrics tokenlessly); only the batch backfills stay admin.
   '/stemify-collection', '/backfill-stems', '/backfill-analysis', '/backfill-lyrics',
   '/analysis', '/ingest-digital', '/am-sync']);
+// ---- Apple Music developer token (ES256 JWT) minting for GET /musickit-token ----
+// Dependency-free (node:crypto). base64url without padding, JOSE-style.
+function b64url(buf) {
+  return Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+let _mkCache = null; // { token, exp }  in-process, rotates when < 7 days remain
+function mintMusicKitToken() {
+  const now = Math.floor(Date.now() / 1000);
+  // Re-use the cached token until it has < 7 days of life, then rotate.
+  if (_mkCache && _mkCache.exp - now > 7 * 24 * 3600) return _mkCache;
+  const exp = now + CFG.musicKitTtlSec;
+  const header = { alg: 'ES256', kid: CFG.musicKitKeyId, typ: 'JWT' };
+  const payload = { iss: CFG.musicKitTeamId, iat: now, exp };
+  const signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
+  const key = createPrivateKey(readFileSync(CFG.musicKitKeyPath));
+  // ES256 = ECDSA P-256 / SHA-256 with a JOSE raw (r‖s) signature — NOT DER, or Apple 401s.
+  const sig = cryptoSign('sha256', Buffer.from(signingInput), { key, dsaEncoding: 'ieee-p1363' });
+  _mkCache = { token: `${signingInput}.${b64url(sig)}`, exp };
+  return _mkCache;
+}
+
 async function readJson(req, maxBytes = 32 * 1024 * 1024) {
   return new Promise((res) => {
     let b = ''; let over = false;
@@ -1975,6 +2005,20 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (!authed(req)) return send(res, 401, { error: 'unauthorized' });
+
+  // GET /musickit-token — mint (or serve cached) an ES256 Apple Music developer token
+  // for the Android MusicKit SDK. User-tier (same posture as every app feature): tokened
+  // servers require the bearer above; tokenless servers answer. 500 if the .p8 is absent
+  // on this host (set MUSICKIT_P8). See specs/applemusic.md §4.
+  if (path === '/musickit-token' && req.method === 'GET') {
+    try {
+      const { token, exp } = mintMusicKitToken();
+      return send(res, 200, { token, expiresAt: exp * 1000, ttlSec: CFG.musicKitTtlSec });
+    } catch (e) {
+      return send(res, 500, { error: 'musickit key unavailable' });
+    }
+  }
+
   // ADMIN tier — corpus-scale mutation (mass backfills, manifest ingest/analysis) and
   // this machine's library tooling (am-sync). 403 (not 401): the caller IS authenticated,
   // just at the wrong tier.

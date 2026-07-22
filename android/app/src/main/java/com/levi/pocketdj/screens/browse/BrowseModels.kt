@@ -15,8 +15,12 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
-/** The two P1 browse kinds (Artists is an allowed later add, specs/browse.md §11). */
-enum class BrowseKind { ALBUMS, SONGS }
+/**
+ * Browse kinds. Album, Song, Artist — order matches iOS `ShowTab`
+ * (specs/artists.md §2.1). ARTISTS is the additive slice on top of the shipped
+ * P1 Albums/Songs surface.
+ */
+enum class BrowseKind { ALBUMS, SONGS, ARTISTS }
 
 /** Album results render as a grid or a list (specs/browse.md §6.5 toolbar toggle). */
 enum class AlbumLayout { GRID, LIST }

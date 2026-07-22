@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pre-Android-12 (API < 31) Auto Backup rules. Companion to
+  data_extraction_rules.xml: keep the settings DataStore out of the cloud backup
+  because it now persists Apple Music credentials (Music-User-Token + developer
+  token). Absent an <include>, everything else is still backed up.
+-->
+<full-backup-content>
+    <exclude domain="file" path="pocketdj-settings.preferences_pb" />
+    <exclude domain="file" path="pocketdj-settings.preferences_pb.tmp" />
+</full-backup-content>

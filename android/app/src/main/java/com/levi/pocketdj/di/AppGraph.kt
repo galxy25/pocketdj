@@ -7,12 +7,18 @@ import androidx.datastore.preferences.core.emptyPreferences
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.activity.ActivityKind
 import com.levi.pocketdj.data.activity.CollectionActivityStore
+import com.levi.pocketdj.data.applemusic.AppleMusicPreviewResolver
+import com.levi.pocketdj.data.applemusic.MusicKitAuth
+import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.CatalogService
 import com.levi.pocketdj.data.collections.CollectionsStore
+import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
+import com.levi.pocketdj.data.storage.CoilArtworkCache
+import com.levi.pocketdj.data.storage.StorageService
 import com.levi.pocketdj.playback.PlayEventBus
 import com.levi.pocketdj.playback.PlaybackController
 import com.levi.pocketdj.screens.browse.BrowseSession
@@ -83,18 +89,43 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
     )
 
+    /** Shared rip-server config used by both the rip client and the AM dev-token
+     *  client (specs/applemusic.md §5, §8) — the AM token IS minted by the rip
+     *  server the user already configured. */
+    private val ripConfigProvider: suspend () -> RipServerClient.Config = {
+        val current = settings.current()
+        RipServerClient.Config(
+            baseUrl = current.ripServerUrl,
+            token = current.ripToken,
+            installId = settings.ensureInstallId(),
+        )
+    }
+
     val ripServerClient: RipServerClient = RipServerClient(
         http = httpClient,
         json = json,
-        configProvider = {
-            val current = settings.current()
-            RipServerClient.Config(
-                baseUrl = current.ripServerUrl,
-                token = current.ripToken,
-                installId = settings.ensureInstallId(),
-            )
-        },
+        configProvider = ripConfigProvider,
     )
+
+    /** Apple Music developer-token client (fetch + cache from the rip server). */
+    val musicKitDevTokenClient: MusicKitDeveloperTokenClient = MusicKitDeveloperTokenClient(
+        http = httpClient,
+        json = json,
+        configProvider = ripConfigProvider,
+        settings = settings,
+    )
+
+    /** Resolves 30-second AM previews (dev-token API, else tokenless iTunes). */
+    val appleMusicPreviewResolver: AppleMusicPreviewResolver = AppleMusicPreviewResolver(
+        http = httpClient,
+        json = json,
+        developerTokenProvider = { musicKitDevTokenClient.cachedTokenOrNull() },
+    )
+
+    /** Apple Music sign-in wrapper (intent build + result decode + persist). */
+    val musicKitAuth: MusicKitAuth by lazy {
+        MusicKitAuth(appContext, settings, musicKitDevTokenClient)
+    }
 
     val playbackController: PlaybackController = PlaybackController(
         context = appContext,
@@ -103,7 +134,27 @@ class AppGraph private constructor(context: Context) {
         ripServer = ripServerClient,
         settings = settings,
         scope = appScope,
+        devTokenClient = musicKitDevTokenClient,
+        previewResolver = appleMusicPreviewResolver,
     )
+
+    /**
+     * Settings ▸ Storage measurement + clears (specs/storage.md §2). Clears are
+     * wired to the REAL stores/caches and never touch settings/installId. Lazy —
+     * the history/activity stores it clears read their docs from disk.
+     */
+    val storageService: StorageService by lazy {
+        StorageService(
+            catalogCacheDir = File(appContext.filesDir, "catalog-cache"),
+            collectionsFile = File(appContext.filesDir, CollectionsStore.FILE_NAME),
+            playHistoryFile = File(appContext.filesDir, PlayHistoryStore.FILE_NAME),
+            activityFile = File(appContext.filesDir, CollectionActivityStore.FILE_NAME),
+            artwork = CoilArtworkCache(appContext),
+            clearCatalogCache = { catalogService.clearCache() },
+            clearPlayHistory = { PlayHistoryStore.get(appContext).clear() },
+            clearActivity = { collectionActivity.clear() },
+        )
+    }
 
     /** The History seam: collect `playEvents.events` and record each one. */
     val playEvents: PlayEventBus = PlayEventBus

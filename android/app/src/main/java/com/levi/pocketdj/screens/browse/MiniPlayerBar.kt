@@ -84,7 +84,11 @@ fun MiniPlayerBar(
                         )
                         val subtitle = listOfNotNull(
                             np.artist,
-                            if (np.isLive) "LIVE" else null,
+                            when {
+                                np.isLive -> "LIVE"
+                                np.isPreview -> "Preview · 30s"
+                                else -> null
+                            },
                         ).joinToString(" · ")
                         if (subtitle.isNotEmpty()) {
                             Text(

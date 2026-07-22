@@ -15,6 +15,8 @@ import com.google.common.util.concurrent.MoreExecutors
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
+import com.levi.pocketdj.data.applemusic.AppleMusicPreviewResolver
+import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.rips.PlayAction
 import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.data.rips.RipServerClient
@@ -82,6 +84,13 @@ class PlaybackController(
     private val ripServer: RipServerClient,
     private val settings: AppSettingsStore,
     private val scope: CoroutineScope,
+    /**
+     * Apple Music plumbing (specs/applemusic.md §6, §8). Null on builds/tests
+     * without AM wired — the resolver adds the full-track + preview rungs, and
+     * its absence keeps the classic manifest→rip→metadata ladder intact.
+     */
+    devTokenClient: MusicKitDeveloperTokenClient? = null,
+    private val previewResolver: AppleMusicPreviewResolver? = null,
 ) {
     /** One immutable now-playing snapshot; null when nothing is loaded. */
     data class NowPlayingInfo(
@@ -94,8 +103,31 @@ class PlaybackController(
         val durationMs: Long?,
         /** Live HLS (unseekable) — disable the scrubber. */
         val isLive: Boolean,
+        /** 30-second Apple Music preview — badge it, cap the scrubber. */
+        val isPreview: Boolean = false,
         val context: PlayContext,
     )
+
+    /** Which engine owns audio right now (single-owner rule, §6.1). */
+    private enum class ActiveBackend { EXO, APPLE_MUSIC }
+
+    @Volatile
+    private var activeBackend: ActiveBackend = ActiveBackend.EXO
+
+    /**
+     * The full-track AM engine (device-only). Owned here so single-owner
+     * switching is local; its state feeds the SAME [_nowPlaying] flow so the UI
+     * is backend-agnostic (§6.1 rule 2). Null when AM isn't wired.
+     */
+    private val appleMusicBackend: AppleMusicBackend? =
+        devTokenClient?.let { dev ->
+            AppleMusicBackend(
+                context = context,
+                settings = settings,
+                devTokenClient = dev,
+                onNowPlaying = { info -> _nowPlaying.value = info },
+            )
+        }
 
     private val _nowPlaying = MutableStateFlow<NowPlayingInfo?>(null)
     val nowPlaying: StateFlow<NowPlayingInfo?> = _nowPlaying.asStateFlow()
@@ -118,6 +150,14 @@ class PlaybackController(
 
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
+            // Single-owner guard (§6.1): while the Apple Music engine owns audio,
+            // its state feeds _nowPlaying via onNowPlaying. The MediaController is a
+            // separate (cross-process) service, so its stop()/clearMediaItems()/
+            // pause() during an EXO→AM handover arrive as IPC-delayed events that
+            // would otherwise clobber the AM now-playing card with a stale/null
+            // snapshot (snapshot() returns null once the queue is cleared). Ignore
+            // ExoPlayer events entirely unless ExoPlayer is the active backend.
+            if (activeBackend == ActiveBackend.APPLE_MUSIC) return
             if (events.containsAny(
                     Player.EVENT_MEDIA_ITEM_TRANSITION,
                     Player.EVENT_IS_PLAYING_CHANGED,
@@ -156,9 +196,16 @@ class PlaybackController(
         val ripConfigured = settings.current().hasRipServer
 
         return when (val action = PlayResolver.resolve(songId, rips.entry(songId), ripConfigured)) {
-            is PlayAction.MetadataOnly -> PlayOutcome.NotPlayable(action.reason)
+            // AM ladder (specs/applemusic.md §6.0): a manifest hit (Stream) always
+            // wins first; only for a non-manifest song with an appleMusicId do the
+            // AM rungs (full-track → preview) sit BEFORE rip-on-demand / metadata.
+            is PlayAction.MetadataOnly ->
+                tryAppleMusic(songId, song, merged, playContext)
+                    ?: PlayOutcome.NotPlayable(action.reason)
 
-            is PlayAction.RipRequired -> startRipAndPlay(songId, playContext ?: PlayContext.BROWSER)
+            is PlayAction.RipRequired ->
+                tryAppleMusic(songId, song, merged, playContext)
+                    ?: startRipAndPlay(songId, playContext ?: PlayContext.BROWSER)
 
             is PlayAction.Stream -> {
                 val album = song?.albumId?.let { merged.albumsById[it] }
@@ -249,15 +296,49 @@ class PlaybackController(
         startEntryIndex: Int = 0,
     ): QueueOutcome = playQueue(QueuePlan.entriesForSetlist(setlist), playContext, startEntryIndex)
 
-    suspend fun pause() = withController { it.pause() }
-    suspend fun resume() = withController { it.play() }
-    suspend fun next() = withController { it.seekToNextMediaItem() }
-    suspend fun previous() = withController { it.seekToPreviousMediaItem() }
-    suspend fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
+    // Transport routes to whichever engine owns audio (single-owner, §6.1).
+    suspend fun pause() {
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.pause()
+        else withController { it.pause() }
+    }
 
-    suspend fun stop() = withController {
-        it.stop()
-        it.clearMediaItems()
+    suspend fun resume() {
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.resume()
+        else withController { it.play() }
+    }
+
+    suspend fun next() {
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.next()
+        else withController { it.seekToNextMediaItem() }
+    }
+
+    suspend fun previous() {
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.previous()
+        else withController { it.seekToPreviousMediaItem() }
+    }
+
+    suspend fun seekTo(positionMs: Long) {
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.seekTo(positionMs)
+        else withController { it.seekTo(positionMs) }
+    }
+
+    suspend fun stop() {
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            appleMusicBackend?.stop()
+        } else {
+            withController {
+                it.stop()
+                it.clearMediaItems()
+            }
+        }
+    }
+
+    /** Stop the AM engine without touching ExoPlayer — used before an ExoPlayer
+     *  play so the two never sound at once (single-owner switching, §6.1). */
+    private suspend fun stopAppleMusic() {
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            appleMusicBackend?.stop()
+        }
     }
 
     /**
@@ -265,7 +346,12 @@ class PlaybackController(
      * not a hot StateFlow so ~4 Hz position ticks don't recompose the world
      * (specs/playback.md §5.5).
      */
-    suspend fun currentPositionMs(): Long = withController { it.currentPosition }
+    suspend fun currentPositionMs(): Long =
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            appleMusicBackend?.currentPositionMs() ?: 0L
+        } else {
+            withController { it.currentPosition }
+        }
 
     /** Release the controller connection (the service keeps playing). */
     fun release() {
@@ -363,6 +449,80 @@ class PlaybackController(
         return PlayOutcome.Preparing(songId, jobId)
     }
 
+    /**
+     * The Apple Music rungs (specs/applemusic.md §6.0 rungs 2–3). Returns a
+     * [PlayOutcome] when AM handled the song (full-track OR preview), or null so
+     * the caller falls through to rip-on-demand / metadata-only. Fully guarded —
+     * any AM failure returns null, never a crash (the classic ladder still runs).
+     */
+    private suspend fun tryAppleMusic(
+        songId: String,
+        song: IndexSong?,
+        merged: com.levi.pocketdj.data.catalog.MergedCatalog?,
+        playContext: PlayContext?,
+    ): PlayOutcome? {
+        val amId = song?.appleMusicId?.takeIf { it.isNotBlank() } ?: return null
+        val resolver = previewResolver ?: return null
+        val ctx = playContext ?: PlayContext.BROWSER
+        val album = song.albumId?.let { merged?.albumsById?.get(it) }
+
+        // Rung 2: full-track (device-only). Hand audio to the AM engine ONLY once
+        // it CONFIRMS it is actually playing (backend.play awaits a real PLAYING /
+        // error signal, not just the synchronous prepare()). The current ExoPlayer
+        // track is PAUSED — not stopped/cleared — during the attempt, so a
+        // full-track that can't play (region-locked, subscription hiccup, catalog
+        // miss) resumes it instead of leaving silence, and falls through to the
+        // preview rung below. Contrast startRipAndPlay, which likewise never
+        // disrupts current playback until the new source is ready.
+        val backend = appleMusicBackend
+        var pausedExo = false
+        if (backend != null && runCatching { backend.canPlayFullTrack() }.getOrDefault(false)) {
+            // Claim ownership up-front so the ExoPlayer listener's IPC-delayed
+            // pause/stop/clear events can't overwrite the AM now-playing card.
+            val prior = activeBackend
+            activeBackend = ActiveBackend.APPLE_MUSIC
+            if (prior == ActiveBackend.EXO) {
+                pausedExo = true
+                withController { it.pause() }
+            }
+            val started = runCatching {
+                backend.play(amId, songId, song.name, song.artist, song.albumId, ctx)
+            }.getOrDefault(false)
+            if (started) {
+                // AM truly owns audio now → release ExoPlayer for good (guarded
+                // events are ignored because activeBackend == APPLE_MUSIC).
+                withController {
+                    it.stop()
+                    it.clearMediaItems()
+                }
+                return PlayOutcome.Started
+            }
+            // Full-track failed to start → relinquish ownership to whatever owned
+            // audio before, and fall through to the preview rung.
+            activeBackend = prior
+        }
+
+        // Rung 3: 30-second preview via ExoPlayer (emulator-OK).
+        val previewUrl = runCatching { resolver.previewUrl(amId) }.getOrNull()
+        if (previewUrl == null) {
+            // Nothing playable for this song. If we paused a live ExoPlayer track
+            // for a failed full-track attempt, resume it so the attempt never
+            // leaves silence; the caller then returns NotPlayable honestly.
+            if (pausedExo) withController { it.play() }
+            return null
+        }
+        val item = mediaItem(
+            songId = songId,
+            action = PlayAction.Stream(previewUrl),
+            song = song,
+            album = album,
+            playContext = ctx,
+            isPreview = true,
+        )
+        setQueueAndPlay(listOf(item), 0)
+        return PlayOutcome.Started
+    }
+
     private suspend fun playResolvedUrl(songId: String, url: String, playContext: PlayContext) {
         val merged = catalog.state.value.catalog
         val song = merged?.songsById?.get(songId)
@@ -383,6 +543,7 @@ class PlaybackController(
         song: IndexSong?,
         album: IndexAlbum?,
         playContext: PlayContext,
+        isPreview: Boolean = false,
     ): MediaItem {
         val artUri = album?.artCandidates()?.firstOrNull()
         val isLive = action.url.contains("/hls/")
@@ -390,6 +551,7 @@ class PlaybackController(
             PlaybackContract.EXTRA_URL to action.url,
             PlaybackContract.EXTRA_SOURCE to playContext.source,
             PlaybackContract.EXTRA_IS_LIVE to isLive,
+            PlaybackContract.EXTRA_IS_PREVIEW to isPreview,
         ).apply {
             action.clipStartMs?.let { putLong(PlaybackContract.EXTRA_CLIP_START_MS, it) }
             action.clipEndMs?.let { putLong(PlaybackContract.EXTRA_CLIP_END_MS, it) }
@@ -417,11 +579,19 @@ class PlaybackController(
     }
 
     private suspend fun setQueueAndPlay(items: List<MediaItem>, startIndex: Int) {
+        // Single-owner: hand audio to ExoPlayer, stopping the AM engine first.
+        stopAppleMusic()
+        activeBackend = ActiveBackend.EXO
         withController {
             it.setMediaItems(items, startIndex, androidx.media3.common.C.TIME_UNSET)
             it.prepare()
             it.play()
         }
+    }
+
+    /** Release the AM engine's native resources (sign-out / teardown). */
+    fun releaseAppleMusic() {
+        appleMusicBackend?.release()
     }
 
     private fun snapshot(player: Player): NowPlayingInfo? {
@@ -435,6 +605,7 @@ class PlaybackController(
             isPlaying = player.isPlaying,
             durationMs = player.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET },
             isLive = extras?.getBoolean(PlaybackContract.EXTRA_IS_LIVE, false) ?: false,
+            isPreview = extras?.getBoolean(PlaybackContract.EXTRA_IS_PREVIEW, false) ?: false,
             context = PlayContext(
                 source = extras?.getString(PlaybackContract.EXTRA_SOURCE)
                     ?: PlayContext.SOURCE_BROWSER,

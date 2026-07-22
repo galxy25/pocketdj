@@ -41,6 +41,7 @@ import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.navigation.PocketDjDestination
 import com.levi.pocketdj.screens.PlaceholderScreen
 import com.levi.pocketdj.screens.browse.AlbumDetailScreen
+import com.levi.pocketdj.screens.browse.ArtistDetailScreen
 import com.levi.pocketdj.screens.browse.BrowseScreen
 import com.levi.pocketdj.screens.browse.MiniPlayerBar
 import com.levi.pocketdj.screens.browse.SongDetailSheet
@@ -53,6 +54,7 @@ import com.levi.pocketdj.screens.playlists.PocketDetailScreen
 import com.levi.pocketdj.screens.playlists.SetlistDetailScreen
 import com.levi.pocketdj.screens.playlists.SourcePlaylistDetailScreen
 import com.levi.pocketdj.screens.settings.SettingsScreen
+import com.levi.pocketdj.screens.settings.StorageScreen
 import com.levi.pocketdj.ui.theme.PocketDjTheme
 import kotlinx.coroutines.launch
 
@@ -76,13 +78,17 @@ class MainActivity : ComponentActivity() {
 }
 
 const val SETTINGS_ROUTE = "settings"
+const val SETTINGS_STORAGE_ROUTE = "settings/storage"
 const val ALBUM_ROUTE = "album/{albumId}"
+const val ARTIST_ROUTE = "artist/{artistName}"
 const val PLAYLIST_ROUTE = "playlist/{playlistId}"
 const val POCKET_ROUTE = "pocket/{pocketId}"
 const val SETLIST_ROUTE = "setlist/{setlistId}?autoplay={autoplay}"
 const val SOURCE_PLAYLIST_ROUTE = "sourcePlaylist/{playlistId}/{sourceName}"
 
 fun albumRoute(albumId: String): String = "album/${android.net.Uri.encode(albumId)}"
+
+fun artistRoute(name: String): String = "artist/${android.net.Uri.encode(name)}"
 
 fun playlistRoute(playlistId: String): String = "playlist/${android.net.Uri.encode(playlistId)}"
 
@@ -120,7 +126,9 @@ fun PocketDjApp() {
     val onDetail = currentTab == null && currentRoute != null
     val title = when (currentRoute) {
         SETTINGS_ROUTE -> "Settings"
+        SETTINGS_STORAGE_ROUTE -> "Storage"
         ALBUM_ROUTE -> "Album"
+        ARTIST_ROUTE -> backStackEntry?.arguments?.getString("artistName") ?: "Artist"
         PLAYLIST_ROUTE -> "Playlist"
         POCKET_ROUTE -> "Pocket"
         SETLIST_ROUTE ->
@@ -188,7 +196,10 @@ fun PocketDjApp() {
             modifier = Modifier.padding(innerPadding),
         ) {
             composable(PocketDjDestination.Browse.route) {
-                BrowseScreen(onOpenAlbum = { albumId -> navController.navigate(albumRoute(albumId)) })
+                BrowseScreen(
+                    onOpenAlbum = { albumId -> navController.navigate(albumRoute(albumId)) },
+                    onOpenArtist = { name -> navController.navigate(artistRoute(name)) },
+                )
             }
             composable(PocketDjDestination.History.route) {
                 // Row tap → song detail (specs/history.md §6); the sheet's album
@@ -288,8 +299,23 @@ fun PocketDjApp() {
                 val albumId = entry.arguments?.getString("albumId").orEmpty()
                 AlbumDetailScreen(albumId = albumId)
             }
+            composable(
+                route = ARTIST_ROUTE,
+                arguments = listOf(navArgument("artistName") { type = NavType.StringType }),
+            ) { entry ->
+                ArtistDetailScreen(
+                    artistName = entry.arguments?.getString("artistName").orEmpty(),
+                    onOpenAlbum = { albumId -> navController.navigate(albumRoute(albumId)) },
+                    onOpenSetlist = { id, autoplay -> navController.navigate(setlistRoute(id, autoplay)) },
+                )
+            }
             composable(SETTINGS_ROUTE) {
-                SettingsScreen()
+                SettingsScreen(
+                    onOpenStorage = { navController.navigate(SETTINGS_STORAGE_ROUTE) },
+                )
+            }
+            composable(SETTINGS_STORAGE_ROUTE) {
+                StorageScreen()
             }
         }
     }

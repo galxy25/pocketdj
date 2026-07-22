@@ -73,6 +73,17 @@ dependencies {
     // QR generation for Jukebox Hero (jukebox.md §6.1) — pure-Java, offline.
     implementation(libs.zxing.core)
 
+    // Apple Music for Android SDK (specs/applemusic.md §1). Vendored AARs — not
+    // on Maven — wired as file dependencies (settings.gradle.kts sets
+    // FAIL_ON_PROJECT_REPOS, so a module-level flatDir repo is rejected).
+    //   musickitauth  : dev-token → Music-User-Token sign-in (auth activities).
+    //   mediaplayback : full-track DRM controller (arm64/armv7 native .so only).
+    implementation(files("libs/musickitauth-release-1.1.2.aar"))
+    implementation(files("libs/mediaplayback-release-1.1.1.aar"))
+    // The auth activities extend AppCompatActivity — mandatory transitive dep the
+    // AARs assume but don't declare (specs/applemusic.md §1, fact 0.4).
+    implementation(libs.androidx.appcompat)
+
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)

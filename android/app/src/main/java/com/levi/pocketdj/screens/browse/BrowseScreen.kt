@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.browse
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
@@ -61,6 +63,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.artists.Artist
+import com.levi.pocketdj.data.artists.ArtistCatalog
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.di.AppGraph
@@ -78,6 +82,7 @@ private const val PAGE_SIZE = 120
 private data class BrowseResults(
     val albums: List<AlbumRow> = emptyList(),
     val songs: List<SongRow> = emptyList(),
+    val artists: List<Artist> = emptyList(),
     val version: Int = 0,
 )
 
@@ -86,11 +91,15 @@ private data class BrowseResults(
  * Albums grid / Songs list toggle → on-device search → filter sheet
  * (genre/bpm/key/source) → album detail via [onOpenAlbum] → song detail sheet.
  *
- * The integrator wires [onOpenAlbum] to the album-detail destination.
+ * The integrator wires [onOpenAlbum] to the album-detail destination and
+ * [onOpenArtist] to the artist-detail destination (specs/artists.md §7). The
+ * artist callback defaults to a no-op so the composition root can adopt the
+ * Artists kind on its own schedule; wire it to keep the segment tappable.
  */
 @Composable
 fun BrowseScreen(
     onOpenAlbum: (albumId: String) -> Unit,
+    onOpenArtist: (artistName: String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -150,6 +159,7 @@ fun BrowseScreen(
                     onShowFilters = { showFilterSheet = true },
                     onShowSort = { showSortSheet = true },
                     onOpenAlbum = onOpenAlbum,
+                    onOpenArtist = onOpenArtist,
                     onOpenSong = { detailSongId = it },
                     onAddSong = { addItem = AddToItem.Song(it) },
                     onAddAlbum = { addItem = AddToItem.Album(it) },
@@ -223,6 +233,7 @@ private fun BrowseContent(
     onShowFilters: () -> Unit,
     onShowSort: () -> Unit,
     onOpenAlbum: (String) -> Unit,
+    onOpenArtist: (String) -> Unit,
     onOpenSong: (String) -> Unit,
     onAddSong: (String) -> Unit,
     onAddAlbum: (String) -> Unit,
@@ -258,6 +269,13 @@ private fun BrowseContent(
                     songs = BrowseSort.songs(rows.filteredSongs(debouncedQuery, filters), sortKeys),
                     version = ++resultVersion,
                 )
+                // Artists: name-scoped filter over the FULL catalog (filters/sort
+                // are inert on artist rows, specs/artists.md §3.3). Derived +
+                // memoized off-main like the other kinds.
+                BrowseKind.ARTISTS -> BrowseResults(
+                    artists = ArtistCatalog.of(catalog).filtered(debouncedQuery),
+                    version = ++resultVersion,
+                )
             }
         }
     }
@@ -282,7 +300,13 @@ private fun BrowseContent(
                         onClick = { onKind(entry) },
                         shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size),
                     ) {
-                        Text(if (entry == BrowseKind.ALBUMS) "Albums" else "Songs")
+                        Text(
+                            when (entry) {
+                                BrowseKind.ALBUMS -> "Albums"
+                                BrowseKind.SONGS -> "Songs"
+                                BrowseKind.ARTISTS -> "Artists"
+                            },
+                        )
                     }
                 }
             }
@@ -336,7 +360,15 @@ private fun BrowseContent(
             value = query,
             onValueChange = onQuery,
             singleLine = true,
-            placeholder = { Text(if (kind == BrowseKind.ALBUMS) "Search albums" else "Search songs") },
+            placeholder = {
+                Text(
+                    when (kind) {
+                        BrowseKind.ALBUMS -> "Search albums"
+                        BrowseKind.SONGS -> "Search songs"
+                        BrowseKind.ARTISTS -> "Search artists"
+                    },
+                )
+            },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             trailingIcon = {
                 if (query.isNotEmpty()) {
@@ -357,9 +389,18 @@ private fun BrowseContent(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            val count = if (kind == BrowseKind.ALBUMS) results.albums.size else results.songs.size
+            val count = when (kind) {
+                BrowseKind.ALBUMS -> results.albums.size
+                BrowseKind.SONGS -> results.songs.size
+                BrowseKind.ARTISTS -> results.artists.size
+            }
+            val noun = when (kind) {
+                BrowseKind.ALBUMS -> "albums"
+                BrowseKind.SONGS -> "songs"
+                BrowseKind.ARTISTS -> "artists"
+            }
             Text(
-                text = "$count " + if (kind == BrowseKind.ALBUMS) "albums" else "songs",
+                text = "$count $noun",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -455,6 +496,30 @@ private fun BrowseContent(
                             )
                         }
                         if (visible.size < results.songs.size) {
+                            item(key = "pager") {
+                                PagingTrigger(visible.size) { pageCount += 1 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            BrowseKind.ARTISTS -> {
+                val visible = results.artists.take(pageCount * PAGE_SIZE)
+                if (results.artists.isEmpty()) {
+                    EmptyState(emptyMessage)
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        // Keyed by name — unique after case-insensitive grouping
+                        // (specs/artists.md §3.2 / §12 trap 1).
+                        items(visible, key = { it.name }) { artist ->
+                            ArtistListRow(
+                                artist = artist,
+                                catalog = catalog,
+                                onClick = { onOpenArtist(artist.name) },
+                            )
+                        }
+                        if (visible.size < results.artists.size) {
                             item(key = "pager") {
                                 PagingTrigger(visible.size) { pageCount += 1 }
                             }
@@ -593,6 +658,52 @@ private fun AlbumListRow(
 }
 
 /**
+ * Artist row (specs/artists.md §4): representative-album thumbnail + name +
+ * "N albums · M songs" counts + a trailing chevron; whole row taps into the
+ * artist detail. No long-press add (an artist is derived, not a collectable).
+ */
+@Composable
+private fun ArtistListRow(
+    artist: Artist,
+    catalog: MergedCatalog,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        AlbumArt(
+            artist.artworkAlbumId?.let(catalog.albumsById::get),
+            modifier = Modifier.size(46.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                artist.name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            MetaTag(
+                "${plural(artist.albumCount, "album")} · ${plural(artist.songCount, "song")}",
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** iOS pluralization: "1 album" / "2 albums" (specs/artists.md §4). */
+private fun plural(n: Int, noun: String): String = "$n $noun" + if (n == 1) "" else "s"
+
+/**
  * Song row (§3): thumbnail, title (+E), artist · album, BPM, key chip,
  * duration, play affordance. Metadata-only rows are dimmed with no ▶
  * (sources-reality rule).
@@ -614,7 +725,7 @@ fun BrowseSongRow(
     val settings by graph.settings.settings.collectAsState(initial = null)
     val preparingId by graph.playbackController.preparingSongId.collectAsState()
 
-    val playable = playability(row.song.id, manifest, settings?.hasRipServer == true)
+    val playable = playability(row.song.id, manifest, settings?.hasRipServer == true, row.song.appleMusicId)
     val contentAlpha = if (playable == Playability.NONE) 0.45f else 1f
 
     Row(

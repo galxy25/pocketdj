@@ -74,7 +74,7 @@ fun SongDetailSheet(
     val song = catalog?.songsById?.get(songId)
     val album = song?.albumId?.let { catalog.albumsById[it] }
     val source = catalog?.sourceOfSong?.get(songId)
-    val canPlay = playability(songId, manifest, settings?.hasRipServer == true)
+    val canPlay = playability(songId, manifest, settings?.hasRipServer == true, song?.appleMusicId)
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -130,6 +130,7 @@ fun SongDetailSheet(
                         when {
                             preparingId == songId -> "Preparing…"
                             canPlay == Playability.STREAM -> "Play"
+                            canPlay == Playability.APPLE_MUSIC -> "Play (Apple Music)"
                             canPlay == Playability.RIP -> "Rip and play"
                             else -> "Not playable on this device"
                         },

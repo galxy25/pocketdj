@@ -53,8 +53,12 @@ fun BrowseSnapshot.toSessionState(): BrowseSessionState = BrowseSessionState(
     },
 )
 
-private fun parseKind(value: String): BrowseKind =
-    if (value.lowercase() == "songs") BrowseKind.SONGS else BrowseKind.ALBUMS
+private fun parseKind(value: String): BrowseKind = when (value.lowercase()) {
+    "songs" -> BrowseKind.SONGS
+    "artists" -> BrowseKind.ARTISTS
+    // Unknown/older/newer strings stay safe on ALBUMS (iron law, specs/artists.md §2.2).
+    else -> BrowseKind.ALBUMS
+}
 
 private fun parseLayout(value: String): AlbumLayout =
     if (value.lowercase() == "list") AlbumLayout.LIST else AlbumLayout.GRID

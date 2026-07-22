@@ -172,7 +172,7 @@ fun AlbumDetailScreen(
                         AlbumTrackRow(
                             position = index + 1,
                             song = song,
-                            playable = playability(song.id, manifest, hasServer),
+                            playable = playability(song.id, manifest, hasServer, song.appleMusicId),
                             isPreparing = preparingId == song.id,
                             zebra = index % 2 == 1,
                             onClick = { detailSongId = song.id },
