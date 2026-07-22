@@ -135,6 +135,15 @@ final class CollectionsStore {
     func pocket(_ id: String) -> Pocket? { pockets.first { $0.id == id } }
     func playlist(_ id: String) -> Playlist? { playlists.first { $0.id == id } }
     func setlist(_ id: String) -> Setlist? { setlists.first { $0.id == id } }
+    /// User-facing set lists: only those whose parent template (a playlist or pocket) still exists
+    /// ON THIS DEVICE. Excludes ORPHANS — set lists left behind by a parent that was deleted or that
+    /// arrived via sync without its template — and the reserved "Now Playing" set (synthetic parent).
+    /// Non-destructive (the orphan stays on disk, so it reappears if its template syncs back in);
+    /// flat pickers like the Mix Auto-DJ source list read this instead of raw `setlists`.
+    var visibleSetlists: [Setlist] {
+        let templates = Set(playlists.map(\.id)).union(pockets.map(\.id))
+        return setlists.filter { templates.contains($0.playlistId) }
+    }
     /// Setlists for a playlist, most-recent first (a performance history). The reserved
     /// "Now Playing" setlist is never a member (its synthetic parent id is filtered).
     func setlists(forPlaylist id: String) -> [Setlist] {

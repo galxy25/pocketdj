@@ -363,7 +363,7 @@ struct MixView: View {
     }
 
     @ViewBuilder private var autoSourceMenuItems: some View {
-        if collections.pockets.isEmpty && collections.setlists.isEmpty {
+        if collections.pockets.isEmpty && collections.visibleSetlists.isEmpty {
             Text("No pockets or set lists yet")
         }
         if !collections.pockets.isEmpty {
@@ -371,9 +371,9 @@ struct MixView: View {
                 ForEach(collections.pockets) { p in Button(p.name) { autoSource = .pocket(p.id) } }
             }
         }
-        if !collections.setlists.isEmpty {
+        if !collections.visibleSetlists.isEmpty {
             Section("Set lists") {
-                ForEach(collections.setlists) { s in Button(s.name ?? "Set list") { autoSource = .setlist(s.id) } }
+                ForEach(collections.visibleSetlists) { s in Button(s.name ?? "Set list") { autoSource = .setlist(s.id) } }
             }
         }
     }
@@ -720,7 +720,7 @@ private struct DeckView: View {
 
     private var sourceMenu: some View {
         Menu {
-            if collections.pockets.isEmpty && collections.setlists.isEmpty {
+            if collections.pockets.isEmpty && collections.visibleSetlists.isEmpty {
                 Text("No pockets or set lists yet")
             }
             if !collections.pockets.isEmpty {
@@ -730,9 +730,9 @@ private struct DeckView: View {
                     }
                 }
             }
-            if !collections.setlists.isEmpty {
+            if !collections.visibleSetlists.isEmpty {
                 Section("Set lists") {
-                    ForEach(collections.setlists) { s in
+                    ForEach(collections.visibleSetlists) { s in
                         Button(s.name ?? "Set list") { source = .setlist(s.id) }
                     }
                 }
@@ -2059,9 +2059,9 @@ private struct TrackLoaderSheet: View {
                     ForEach(collections.pockets) { p in Button(p.name) { source = .pocket(p.id) } }
                 }
             }
-            if !collections.setlists.isEmpty {
+            if !collections.visibleSetlists.isEmpty {
                 Section("Set lists") {
-                    ForEach(collections.setlists) { s in Button(s.name ?? "Set list") { source = .setlist(s.id) } }
+                    ForEach(collections.visibleSetlists) { s in Button(s.name ?? "Set list") { source = .setlist(s.id) } }
                 }
             }
         } label: {
