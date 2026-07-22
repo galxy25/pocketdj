@@ -39,6 +39,11 @@ export default defineConfig({
         // App shell only. Art + data live in IndexedDB (not precached, not runtime-cached).
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         navigateFallback: '/index.html',
+        // Do NOT hijack server-served HTML subtrees with the SPA app shell. The
+        // Jukebox Hero guest pages live at /jukebox/<id>/ as real static pages in
+        // the same bucket; without this denylist the SW's navigateFallback serves
+        // index.html for them and the PWA routes the guest straight to home.
+        navigateFallbackDenylist: [/^\/jukebox\//],
         cleanupOutdatedCaches: true,
       },
       devOptions: {
