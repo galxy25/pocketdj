@@ -170,16 +170,20 @@ struct BrowseView: View {
                 case .artist: return .artist
                 }
             },
-            set: { tab in
-                switch tab {
-                case .discover:
-                    browse.searchMode = .discover
-                case .album, .song, .artist:
-                    if browse.searchMode == .discover { browse.searchMode = .device }
-                    browse.kind = tab == .album ? .album : (tab == .song ? .song : .artist)
-                }
-                browse.persist()
-            })
+            set: { selectShowTab($0) })
+    }
+
+    /// Switch the Show tab. Discover rides `searchMode`; the three catalog kinds ride `kind` and
+    /// exit Discover. Shared by the segmented picker and the ⌘1–⌘4 shortcuts so both stay in sync.
+    private func selectShowTab(_ tab: ShowTab) {
+        switch tab {
+        case .discover:
+            browse.searchMode = .discover
+        case .album, .song, .artist:
+            if browse.searchMode == .discover { browse.searchMode = .device }
+            browse.kind = tab == .album ? .album : (tab == .song ? .song : .artist)
+        }
+        browse.persist()
     }
 
     /// Kick the debounced Discover search for the current query (tab entry + keystrokes
@@ -465,7 +469,7 @@ struct BrowseView: View {
     }
 
     /// Hidden buttons that bind keyboard commands to the browser actions:
-    /// ⌘1 Albums · ⌘2 Songs · ⌥⌘F Filter · ⌥⌘S Sort · ⌘V grid/list · ⌘L Search.
+    /// ⌘1 Albums · ⌘2 Songs · ⌘3 Artists · ⌘4 Discover · ⌥⌘F Filter · ⌥⌘S Sort · ⌘V grid/list · ⌘L Search.
     /// Handy in normal use, and the reliable way to drive the segmented Picker +
     /// toolbar in macOS XCUITests (where neither is tappable).
     private var kindShortcuts: some View {
@@ -473,9 +477,10 @@ struct BrowseView: View {
         // menus / VoiceOver) while staying distinct from the real controls' labels
         // so they never collide in XCUITest queries.
         Group {
-            Button("Albums-shadow") { browse.kind = .album }.keyboardShortcut("1", modifiers: .command)
-            Button("Songs-shadow") { browse.kind = .song }.keyboardShortcut("2", modifiers: .command)
-            Button("Artists-shadow") { browse.kind = .artist }.keyboardShortcut("3", modifiers: .command)
+            Button("Albums-shadow") { selectShowTab(.album) }.keyboardShortcut("1", modifiers: .command)
+            Button("Songs-shadow") { selectShowTab(.song) }.keyboardShortcut("2", modifiers: .command)
+            Button("Artists-shadow") { selectShowTab(.artist) }.keyboardShortcut("3", modifiers: .command)
+            Button("Discover-shadow") { selectShowTab(.discover) }.keyboardShortcut("4", modifiers: .command)
             Button("Filter-shadow") { showFilter = true }.keyboardShortcut("f", modifiers: [.command, .option])
             Button("Sort-shadow") { showSort = true }.keyboardShortcut("s", modifiers: [.command, .option])
             Button("Layout-shadow") {
