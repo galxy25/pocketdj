@@ -296,20 +296,17 @@ struct RootView: View {
             .accessibilityIdentifier("new-window")
     }
 
-    /// Retro 1977 Apple-logo rainbow, laid LEFT→RIGHT (the logo runs its stripes
-    /// top→bottom) — tints the Producer tab's piano keys (Levi 2026-07-22).
-    static let appleRainbow = LinearGradient(
-        colors: [Color(red: 0.38, green: 0.73, blue: 0.27),   // green
-                 Color(red: 0.99, green: 0.72, blue: 0.15),   // yellow
-                 Color(red: 0.96, green: 0.51, blue: 0.12),   // orange
-                 Color(red: 0.88, green: 0.23, blue: 0.24),   // red
-                 Color(red: 0.59, green: 0.24, blue: 0.59),   // purple
-                 Color(red: 0.00, green: 0.62, blue: 0.86)],  // blue
+    /// Pan-African flag hues (the Ethiopian tricolor that most African flags share),
+    /// laid LEFT→RIGHT — tints the Producer tab's piano keys (Levi 2026-07-22).
+    static let panAfrican = LinearGradient(
+        colors: [Color(red: 0.12, green: 0.71, blue: 0.23),   // green
+                 Color(red: 0.99, green: 0.82, blue: 0.09),   // gold
+                 Color(red: 0.89, green: 0.13, blue: 0.11)],  // red
         startPoint: .leading, endPoint: .trailing)
 
     /// Menu row: most sections use their SF Symbol, but a few wear custom marks — MIX
     /// (Apple Music's AutoMix records, here in platinum + gold), JUKEBOX HERO (the pride
-    /// jukebox), PRODUCER (piano keys under the left→right Apple rainbow), and COLLECTIONS
+    /// jukebox), PRODUCER (piano keys under the left→right Pan-African tricolor), and COLLECTIONS
     /// (a gem diamond). AutoMix + Jukebox aren't public SF Symbols, so both are tiny vectors.
     @ViewBuilder private func rowLabel(_ item: Section) -> some View {
         if item == .mix {
@@ -323,10 +320,10 @@ struct RootView: View {
                     .frame(width: 16, height: 20)
             }
         } else if item == .performance {
-            // Piano keys tinted with the retro Apple rainbow, running LEFT→RIGHT.
+            // Piano keys tinted with the Pan-African flag hues, running LEFT→RIGHT.
             Label { Text(item.title) } icon: {
                 Image(systemName: item.icon)
-                    .foregroundStyle(Self.appleRainbow)
+                    .foregroundStyle(Self.panAfrican)
             }
         } else if item == .playlists {
             // Collections wears a faceted brilliant-cut diamond (custom vector — the flat
