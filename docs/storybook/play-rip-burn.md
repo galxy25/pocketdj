@@ -510,17 +510,19 @@ order, wherever you chose), and **the record itself** opens the current track's 
 **song detail metadata** — closed with a Back button top-left on iPhone, or an
 always-visible **✕** on iPad and Mac (Esc still works for the keyboard-inclined).
 
-And the **Mix tab now wears Apple Music's AutoMix mark** — the two overlapping records
-(one solid, one open) from Apple's own symbol sheet, redrawn to color exactly like the
-neighboring tab icons.
+And the **sidebar wears a set of custom marks** — the **Mix** tab's two overlapping records
+(Apple Music's AutoMix symbol) are now cast in **platinum and gold**, the **Producer** piano
+keys glow with the retro **Apple rainbow** running left→right, **Collections** is a **diamond**,
+and **Browser** is a **magnifying glass**.
 
-**Getting there.** On iOS the app opens on the **home menu** ("PocketDJ" — the ✦ sparkle is
-dropped on **every** platform) unless you'd navigated
-somewhere before — then it **reopens wherever you last left off**. On the Mac it always opens
-on the **Mix** tab, ready to DJ. And where the sparkle would sit, **iPad, Mac and Vision Pro**
-show a **＋ New Window** button — tap it to open a second window (run Producer in one,
-Mix in another); it's the on-screen twin of **⌘N** / File ▸ New Window. iPhone, which can't
-display two windows, hides it.
+**Getting there.** The app now opens on **History** by default on **every** platform — your
+recent plays and collection activity greet you first ("PocketDJ" is the home title; the ✦
+sparkle is dropped everywhere). On **iPhone and iPad**, if you'd navigated somewhere before it
+still **reopens wherever you last left off**; **Mac and Vision Pro** always open on History. On
+iPhone the home **Now Playing** deck (which rides the sidebar) is now one **← back** tap away.
+Where the sparkle would sit, **iPad, Mac and Vision Pro** show a **＋ New Window** button — tap
+it to open a second window (run Producer in one, Mix in another); it's the on-screen twin of
+**⌘N** / File ▸ New Window. iPhone, which can't display two windows, hides it.
 
 **User story:** "I start a pocket from the couch, glance at my phone's home screen and see
 the gold record turning at the track's tempo with what's coming next — I drag tomorrow's

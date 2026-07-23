@@ -1301,10 +1301,13 @@ public SF Symbol exists).
   audio) so UI tests can drive running-state surfaces on the fixture;
   `NowPlayingUITests` + `NowPlayingQueueTests`/`NowPlayingSearchTests` cover the
   panel, the race clamps, and the launch defaults (below).
-- **Launch defaults** (RootView): iOS lands on the home menu unless
-  `settings.lastSection` restores the last-visited section (persisted on every
-  section change; `""` = home; a fresh iPad picks MIX — like the Mac — with the
-  sidebar row selected to match); macOS always lands on Mix. The home title is plain "PocketDJ"
+- **Launch defaults** (RootView): the default landing section is **History** on
+  **every** platform (2026-07-22). macOS/visionOS land on it via the `@State` init
+  (`#if os(macOS) || os(visionOS)` — they carry no resume); iOS/iPad restore
+  `settings.lastSection` (persisted on every section change; `""`/no-match falls
+  through to History) else fall back to History; `PDJ_START_SECTION` (test seam)
+  still wins. On iPhone the sidebar-hosted Now Playing deck is now one back-tap
+  behind the pushed History detail. The home title is plain "PocketDJ"
   on **every** platform (the ✦ sparkle was removed from macOS/visionOS too); its leading
   toolbar slot now holds a **＋ New Window** button (`openWindow(id:"main")`, the on-screen
   twin of ⌘N) gated on `\.supportsMultipleWindows` — shown on iPad/macOS/visionOS, hidden on

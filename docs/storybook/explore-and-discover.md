@@ -179,6 +179,9 @@ audio-segmentation table from [Solar system — audio-tracks popup](#solar-syste
 
 **Affordances**
 - **← Back** — returns to the browser **with your filters/sort preserved**.
+- **The artist name** (in the header) — a **hotlink** to that artist's page (their whole
+  discography); on native it opens the artist in the **Browser**, with the album left
+  underneath so **← Back** returns you here.
 - **◎ Solar** — open this album's solar system ([Solar system view](#solar-system-view-mapid)).
 - **A track row** — open that song's detail card ([Song detail modal](#song-detail-modal)).
 - **✎ Edit album info** — open the album editor ([Edit album modal](#edit-album-modal)).
