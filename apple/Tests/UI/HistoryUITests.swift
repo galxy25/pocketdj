@@ -15,6 +15,21 @@ final class HistoryUITests: XCTestCase {
         return app
     }
 
+    /// Feature (2026-07-22): History is the DEFAULT landing tab on every platform. With a
+    /// freshly-cleared store (PDJ_USE_FIXTURE clears lastSection) and NO PDJ_START_SECTION to
+    /// pin a section, the app must open straight onto History — proving the launch default,
+    /// not a restored/forced section. `history-tab-playback` renders only on the History screen.
+    @MainActor
+    func testHistoryIsDefaultLandingSection() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_SEED_HISTORY"] = "1"
+        // Deliberately NO PDJ_START_SECTION — this is what proves History is the default.
+        app.launch()
+        XCTAssertTrue(app.el("history-tab-playback").waitForExistence(timeout: 20),
+                      "with nothing to restore, the app should land on History by default")
+    }
+
     @MainActor
     func testUnifiedShowsSeededPlays() {
         let app = launch()

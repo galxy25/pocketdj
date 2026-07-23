@@ -58,9 +58,12 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.el("onboarding-continue").isEnabled)
         app.el("onboarding-continue").tap()
 
-        // The gate came down and the real app is up (home menu / sidebar).
-        XCTAssertTrue(app.staticTexts["PocketDJ"].firstMatch.waitForExistence(timeout: 20),
-                      "completing onboarding should land in the app shell")
+        // The gate came down and the real app is up — it lands on the History launch
+        // default, whose Playback/Collection tab chrome renders even with an empty timeline.
+        // (Section-agnostic "PocketDJ" title no longer works: on iPhone the History detail
+        // demotes it from a visible large title to a back-button label.)
+        XCTAssertTrue(app.any("history-tab-playback").waitForExistence(timeout: 20),
+                      "completing onboarding should land in the app shell (History default)")
         XCTAssertFalse(app.any("onboarding-root").exists, "the cover must be gone")
     }
 
@@ -71,7 +74,8 @@ final class OnboardingUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
         app.launch()
-        XCTAssertTrue(app.staticTexts["PocketDJ"].firstMatch.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.any("history-tab-playback").waitForExistence(timeout: 20),
+                      "a fixture run lands straight in the app shell (History default)")
         XCTAssertFalse(app.any("onboarding-root").exists,
                        "PDJ_USE_FIXTURE without PDJ_SHOW_ONBOARDING must skip the flow")
     }

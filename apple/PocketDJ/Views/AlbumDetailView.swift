@@ -95,9 +95,21 @@ struct AlbumDetailView: View {
                 Text(current.name)
                     .font(.title2.bold())
                     .foregroundStyle(Theme.fg)
-                Text(current.artist)
-                    .font(.title3)
-                    .foregroundStyle(Theme.accent)
+                // Artist is a HOTLINK to the artist's page (all their albums). Pushes
+                // straight onto the shared nav stack — deterministic, and it leaves the
+                // album underneath so Back returns here. Both presentations that show this
+                // view register the `Artist` destination: RootView's stack, and the Shazam
+                // result sheet's stack. (SongDetailView must route via IntentRoute instead
+                // because it also appears in sheets that DON'T register `Artist`.)
+                Button {
+                    path.append(Artist(name: current.artist))
+                } label: {
+                    Text(current.artist)
+                        .font(.title3)
+                        .foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("artist-hotlink")
                 HStack(spacing: 8) {
                     if let g = current.genre { Tag(text: g, color: Theme.accent) }
                     if let y = current.year { Tag(text: String(y), color: Theme.accent2) }

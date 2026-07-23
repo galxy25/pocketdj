@@ -20,30 +20,31 @@ final class NowPlayingUITests: XCTestCase {
         app = nil
     }
 
-    /// iOS launches to the HOME menu (no section pre-selected) when nothing is
-    /// persisted — the menu rows show and no Browser content is loaded. iPhone
-    /// only: iPad's split view always shows a detail column beside the sidebar.
-    func testIPhoneLaunchesToHomeMenuByDefault() throws {
+    /// iOS launches to HISTORY by default (Levi 2026-07-22) when nothing is persisted —
+    /// the collapsed iPhone split view pushes the History detail (its Playback/Collection
+    /// tab chrome renders even with an empty timeline), the Browser is not loaded, and no
+    /// music is playing. iPhone only: iPad's split view keeps the sidebar beside the detail.
+    func testIPhoneLaunchesToHistoryByDefault() throws {
         #if os(macOS)
-        throw XCTSkip("iOS launch default — macOS lands on Mix (covered below)")
+        throw XCTSkip("iOS launch default — macOS covered below")
         #else
-        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone-only home screen")
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone-only landing check")
         app.launch()
-        XCTAssertTrue(app.staticTexts["Playlists"].waitForExistence(timeout: 15),
-                      "home menu rows should be the landing screen")
-        XCTAssertTrue(app.staticTexts["Mix"].exists)
+        XCTAssertTrue(app.el("history-tab-playback").waitForExistence(timeout: 15),
+                      "iPhone should land on History by default")
         XCTAssertFalse(app.el("album-alb_1").exists, "Browser must not be pushed by default")
-        // No music playing ⇒ no Now Playing element on home.
+        // No music playing ⇒ no Now Playing element (and on the History detail it would be
+        // behind the sidebar regardless).
         XCTAssertFalse(app.any("now-playing-panel").exists)
         #endif
     }
 
-    /// macOS launches on the Mix tab.
-    func testMacLaunchesToMixByDefault() throws {
+    /// macOS launches on HISTORY by default (Levi 2026-07-22).
+    func testMacLaunchesToHistoryByDefault() throws {
         #if os(macOS)
         app.launch()
-        XCTAssertTrue(app.any("mix-tab").waitForExistence(timeout: 15),
-                      "macOS should land on the Mix tab")
+        XCTAssertTrue(app.any("history-tab-playback").waitForExistence(timeout: 15),
+                      "macOS should land on History by default")
         #else
         throw XCTSkip("macOS-only launch default")
         #endif
@@ -163,9 +164,9 @@ final class NowPlayingUITests: XCTestCase {
         app.launchEnvironment["PDJ_TEST_PROBE"] = "1"
         app.launch()
 
-        // iPad restores with the sidebar visible; iPhone lands on the home menu — the
-        // panel rides under the menu rows in both shapes, no navigation needed.
-        let panel = app.any("now-playing-panel")
+        // iPad/macOS restore with the sidebar (and its deck) visible; on iPhone the History
+        // launch default sits in front of it, so pop back to the home menu to reveal the deck.
+        let panel = app.revealNowPlayingHome()
         XCTAssertTrue(panel.waitForExistence(timeout: 15),
                       "the restored session should bring the Now Playing deck up at launch")
 
@@ -200,7 +201,7 @@ final class NowPlayingUITests: XCTestCase {
         app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
         app.launch()
 
-        let panel = app.any("now-playing-panel")
+        let panel = app.revealNowPlayingHome()
         XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
 
         let toggle = app.el("np-history")
@@ -233,7 +234,7 @@ final class NowPlayingUITests: XCTestCase {
         app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
         app.launch()
 
-        let panel = app.any("now-playing-panel")
+        let panel = app.revealNowPlayingHome()
         XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
 
         let collapse = app.el("np-collapse")
@@ -267,7 +268,7 @@ final class NowPlayingUITests: XCTestCase {
         app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
         app.launch()
 
-        let panel = app.any("now-playing-panel")
+        let panel = app.revealNowPlayingHome()
         XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
 
         // The current track is "Pulse" (sng_2) — its ♥ rides the transport.
@@ -287,7 +288,7 @@ final class NowPlayingUITests: XCTestCase {
         app.terminate()
         app.launchEnvironment["PDJ_KEEP_FIXTURE_FAVORITES"] = "1"
         app.launch()
-        XCTAssertTrue(app.any("now-playing-panel").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.revealNowPlayingHome().waitForExistence(timeout: 15))
         XCTAssertTrue(app.el("favorite-toggle-sng_2").waitForExistence(timeout: 8))
         XCTAssertEqual(app.el("favorite-toggle-sng_2").label, "Unfavorite",
                        "the ♥ was persisted and re-decoded at launch")

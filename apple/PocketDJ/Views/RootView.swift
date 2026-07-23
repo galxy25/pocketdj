@@ -1,7 +1,4 @@
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#endif
 
 /// Adaptive shell: a sidebar split view that collapses to a stack on iPhone and
 /// becomes a true two-column layout on iPad and Mac.
@@ -30,11 +27,12 @@ struct RootView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
-    // Launch default: macOS lands on the MIX tab; iOS lands on the HOME menu (nil —
-    // the collapsed split view rests on the sidebar) unless a previously-persisted
-    // section is restored in `.task` ("open to wherever you last left off").
-    #if os(macOS)
-    @State private var section: Section? = .mix
+    // Launch default: HISTORY on every platform (Levi 2026-07-22). macOS and visionOS land
+    // on it directly (no resume — their `.task` never runs the iOS restore block below);
+    // iOS/iPad restore a previously-persisted section in `.task` ("open to wherever you last
+    // left off") and fall back to History when there's nothing to restore.
+    #if os(macOS) || os(visionOS)
+    @State private var section: Section? = .history
     #else
     @State private var section: Section?
     #endif
@@ -69,7 +67,7 @@ struct RootView: View {
         }
         var icon: String {
             switch self {
-            case .browse:      return "list.bullet"
+            case .browse:      return "magnifyingglass"
             case .history:     return "clock.arrow.circlepath"
             case .playlists:   return "music.note.list"
             case .mix:         return "slider.horizontal.3"
@@ -245,15 +243,17 @@ struct RootView: View {
             } else {
                 #if os(iOS)
                 // Restore the last-visited section ("open to wherever you last left
-                // off"); "" or nothing persisted ⇒ stay on the HOME menu. macOS
-                // deliberately skips this — it always lands on Mix.
+                // off"). macOS/visionOS deliberately skip this — the @State init above
+                // already lands them on History (they carry no resume).
                 if let raw = settings.lastSection, let s = Section(rawValue: raw) {
                     section = s
-                } else if UIDevice.current.userInterfaceIdiom == .pad {
-                    // iPad's split view always shows a detail column — with nothing to
-                    // restore it opens on MIX (like the Mac: the DJ surface), with the
-                    // sidebar row selected to match.
-                    section = .mix
+                } else {
+                    // Nothing valid to restore ⇒ History is the default landing tab on
+                    // every platform (Levi 2026-07-22). iPhone previously rested on the
+                    // HOME menu (nil) and iPad on Mix — both now open straight to History.
+                    // (A last-visited section still wins above; "" — the home menu — has
+                    // no matching Section, so it correctly falls through to this default.)
+                    section = .history
                 }
                 #endif
             }
@@ -296,16 +296,30 @@ struct RootView: View {
             .accessibilityIdentifier("new-window")
     }
 
-    /// Menu row: every section uses its SF Symbol except MIX, which wears Apple
-    /// Music's AutoMix mark (two overlapping records — one solid, one open ring),
-    /// and JUKEBOX HERO, which wears the pride jukebox (colors wander while a
-    /// session is live, breathes while the music is audible — see JukeboxIcon).
-    /// Neither exists as a public SF Symbol, so both are tiny vectors.
+    /// Retro 1977 Apple-logo rainbow, laid LEFT→RIGHT (the logo runs its stripes
+    /// top→bottom) — tints the Producer tab's piano keys (Levi 2026-07-22).
+    static let appleRainbow = LinearGradient(
+        colors: [Color(red: 0.38, green: 0.73, blue: 0.27),   // green
+                 Color(red: 0.99, green: 0.72, blue: 0.15),   // yellow
+                 Color(red: 0.96, green: 0.51, blue: 0.12),   // orange
+                 Color(red: 0.88, green: 0.23, blue: 0.24),   // red
+                 Color(red: 0.59, green: 0.24, blue: 0.59),   // purple
+                 Color(red: 0.00, green: 0.62, blue: 0.86)],  // blue
+        startPoint: .leading, endPoint: .trailing)
+
+    /// Icy gem sheen for the Collections diamond (top-left highlight → deeper blue).
+    static let diamondSheen = LinearGradient(
+        colors: [Color(red: 0.86, green: 0.96, blue: 1.00),
+                 Color(red: 0.44, green: 0.80, blue: 0.98),
+                 Color(red: 0.16, green: 0.55, blue: 0.90)],
+        startPoint: .topLeading, endPoint: .bottomTrailing)
+
+    /// Menu row: most sections use their SF Symbol, but a few wear custom marks — MIX
+    /// (Apple Music's AutoMix records, here in platinum + gold), JUKEBOX HERO (the pride
+    /// jukebox), PRODUCER (piano keys under the left→right Apple rainbow), and COLLECTIONS
+    /// (a gem diamond). AutoMix + Jukebox aren't public SF Symbols, so both are tiny vectors.
     @ViewBuilder private func rowLabel(_ item: Section) -> some View {
         if item == .mix {
-            // No explicit foreground style: the Canvas inherits the Label icon
-            // slot's, so it colors exactly like the sibling SF Symbol icons on
-            // every platform (white here, accent when the platform tints them).
             Label { Text(item.title) } icon: {
                 AutoMixIcon()
                     .frame(width: 25, height: 15)
@@ -314,6 +328,18 @@ struct RootView: View {
             Label { Text(item.rawValue) } icon: {
                 JukeboxIcon(mode: jukeboxIconMode)
                     .frame(width: 16, height: 20)
+            }
+        } else if item == .performance {
+            // Piano keys tinted with the retro Apple rainbow, running LEFT→RIGHT.
+            Label { Text(item.title) } icon: {
+                Image(systemName: item.icon)
+                    .foregroundStyle(Self.appleRainbow)
+            }
+        } else if item == .playlists {
+            // Collections wears a gem diamond with an icy sheen.
+            Label { Text(item.title) } icon: {
+                Image(systemName: "diamond.fill")
+                    .foregroundStyle(Self.diamondSheen)
             }
         } else {
             Label(item.title, systemImage: item.icon)
@@ -485,10 +511,9 @@ struct ComingSoon: View {
 }
 
 /// Apple Music's AUTOMIX glyph, redrawn: two same-size overlapping records — the
-/// left one solid, the right one an open ring sitting ON TOP with a small cut gap
-/// where it crosses the solid disc (matching Apple's mark). Drawn with the current
-/// foreground style, so `.foregroundStyle(.tint)` renders it in the same accent as
-/// the neighboring SF Symbol tab icons.
+/// left one a solid PLATINUM disc, the right one an open GOLD ring sitting ON TOP with a
+/// small cut gap where it crosses the disc (matching Apple's mark). The two precious-metal
+/// discs are fixed vertical gradients (Levi 2026-07-22), not the inherited foreground tint.
 struct AutoMixIcon: View {
     var body: some View {
         Canvas { context, size in
@@ -499,23 +524,33 @@ struct AutoMixIcon: View {
             let leftCenter = CGPoint(x: r, y: r)
             let rightCenter = CGPoint(x: size.width - r, y: r)
 
+            // Brushed platinum (left disc) and warm gold (right ring), lit top→bottom.
+            let platinum = GraphicsContext.Shading.linearGradient(
+                Gradient(colors: [Color(red: 0.95, green: 0.95, blue: 0.97),
+                                  Color(red: 0.60, green: 0.62, blue: 0.66)]),
+                startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height))
+            let gold = GraphicsContext.Shading.linearGradient(
+                Gradient(colors: [Color(red: 1.00, green: 0.87, blue: 0.45),
+                                  Color(red: 0.78, green: 0.55, blue: 0.11)]),
+                startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height))
+
             func circle(_ center: CGPoint, _ radius: CGFloat) -> Path {
                 Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius,
                                        width: radius * 2, height: radius * 2))
             }
 
-            // Solid left record, with the ring's footprint (plus the gap) knocked out.
+            // Solid left record (platinum), with the ring's footprint (plus the gap) knocked out.
             var disc = context
             disc.clip(to: circle(rightCenter, r + gap), options: .inverse)
-            disc.fill(circle(leftCenter, r), with: .style(.foreground))
+            disc.fill(circle(leftCenter, r), with: platinum)
             var punch = context
             punch.clip(to: circle(rightCenter, r - stroke - gap))
-            punch.fill(circle(leftCenter, r), with: .style(.foreground))
+            punch.fill(circle(leftCenter, r), with: platinum)
 
-            // Open right record: a ring (outer circle minus its hole).
+            // Open right record (gold): a ring (outer circle minus its hole).
             var ring = circle(rightCenter, r)
             ring.addPath(circle(rightCenter, r - stroke))
-            context.fill(ring, with: .style(.foreground), style: FillStyle(eoFill: true))
+            context.fill(ring, with: gold, style: FillStyle(eoFill: true))
         }
         .accessibilityHidden(true)   // decorative — the Label's text names the tab
     }

@@ -38,6 +38,9 @@ struct ShazamResultSheet: View {
             .navigationDestination(for: IndexAlbum.self) { AlbumDetailView(album: $0, path: $path) }
             .navigationDestination(for: IndexSong.self) { SongDetailView(song: $0) }
             .navigationDestination(for: AppleMusicAlbumRef.self) { RecognizedAlbumView(album: $0) }
+            // AlbumDetailView's artist hotlink pushes an `Artist`; register its destination
+            // on THIS stack too (navigationDestination doesn't cross the sheet boundary).
+            .navigationDestination(for: Artist.self) { ArtistDetailView(artistName: $0.name, path: $path) }
             // AlbumDetailView's Play/Shuffle push a SetlistLaunch; register the setlist
             // destinations on THIS stack too (navigationDestination doesn't cross the sheet
             // boundary) so playing a deep-linked album from the sheet actually works.
