@@ -1196,6 +1196,15 @@ capture): every `widgetSync publish`, cover write/fetch/defer/failure, widget-pr
 channel`). [`apple/scripts/np-trace.sh`](../../apple/scripts/np-trace.sh) streams the merged
 two-process log — this trace is what pinned the Apple Music adoption desync (Ch. 5 §10).
 
+When a **Settings ▸ Debug** capture is stopped, the frozen `MixDiag` buffer is archived to disk
+by **`DebugSessionStore`**
+([`apple/PocketDJ/State/DebugSessionStore.swift`](../../apple/PocketDJ/State/DebugSessionStore.swift)):
+a metadata index at `Application Support/pocketdj-debug-sessions/index.json` (`sessions[]`, each
+`{id, startedAt, endedAt, lineCount}`) plus one `<id>.txt` per session holding the full text. So
+captures now **survive relaunch and accumulate** — Settings ▸ Debug lists them with per-session
+**Export** / **delete** (swipe or right-click) and a **Delete-all**, rather than the previous
+single in-memory buffer. A UI-test run isolates its own archive via `launchDir()` (PDJ_USE_FIXTURE).
+
 ---
 
 ## 11. Jukebox Hero — the crowd-request line
