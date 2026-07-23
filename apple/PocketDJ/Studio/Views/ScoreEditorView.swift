@@ -46,6 +46,9 @@ struct ScoreEditorView: View {
                                           minMeasures: minBars)
         let pages = ScoreLayout.paginate(score: doc, title: title, instrument: instrument)
         let points = selectionPoints(pages: pages)
+        // The ＋ / − bar controls live in SELECT mode only, so they never sit under a note-placing
+        // tap in Enter or a selection tap in Move/Edit.
+        let lastBar = (editing && mode == .select) ? lastBarOverlay(pages: pages) : nil
         VStack(spacing: 12) {
             if editing { editToolbar() }
             if events.isEmpty {
@@ -55,6 +58,7 @@ struct ScoreEditorView: View {
             ForEach(pages.indices, id: \.self) { i in
                 ScorePageView(page: pages[i], editing: editing,
                               highlights: points.filter { $0.page == i }.map(\.point),
+                              barControls: lastBar?.page == i ? lastBar?.controls : nil,
                               onTap: editing ? { p in handleTap(at: p, pageIndex: i, page: pages[i], pages: pages) } : nil)
                     .aspectRatio(pages[i].size.width / pages[i].size.height, contentMode: .fit)
                     .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
@@ -150,9 +154,8 @@ struct ScoreEditorView: View {
                 Text("Cursor").font(.caption2).foregroundStyle(Theme.fgDim)
                 navBtn("◀", "score-cursor-prev", enabled: true) { moveCursor(-1) }
                 navBtn("▶", "score-cursor-next", enabled: true) { moveCursor(1) }
-                Divider().frame(height: 18)
-                navBtn("＋ Bar", "score-add-bar", enabled: true) { addBar() }
-                navBtn("− Bar", "score-remove-bar", enabled: lastBarEmpty) { removeBar() }
+                Text("Add / remove bars with the ＋ / − on the last bar.")
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
                 Spacer(minLength: 0)
             }
         }
@@ -437,6 +440,25 @@ struct ScoreEditorView: View {
     /// Remove the last bar only when it's EMPTY — never deletes notes.
     private func removeBar() { if lastBarEmpty { minBars = barCount - 1 } }
 
+    /// The ＋ / − bar controls, positioned at the LAST measure's top-right / bottom-right corners
+    /// (page-space) on the page that holds it — drawn on the canvas (ScorePageView) so they sit on
+    /// the last bar itself.
+    private func lastBarOverlay(pages: [ScorePage]) -> (page: Int, controls: ScorePageView.BarControls)? {
+        guard let pageIndex = pages.indices.last,
+              let system = pages[pageIndex].systems.last,
+              let measure = system.measures.last,
+              let minTop = system.strips.map(\.top).min(),
+              let maxTop = system.strips.map(\.top).max() else { return nil }
+        let pad = system.spacing * 3
+        let x = measure.x + measure.width
+        return (pageIndex, ScorePageView.BarControls(
+            topRight: CGPoint(x: x, y: minTop - pad),
+            bottomRight: CGPoint(x: x, y: maxTop + system.spacing * 4 + pad),
+            canRemove: lastBarEmpty,
+            onAdd: { addBar() },
+            onRemove: { removeBar() }))
+    }
+
     private func toggleBar(_ measure: Int) {
         let inBar = events.filter { Int((Double($0.onMs) / step).rounded()) / 16 == measure }
         guard !inBar.isEmpty else { return }
@@ -520,36 +542,70 @@ struct ScoreEditorView: View {
 /// exported PDF. When `editing`, a `SpatialTapGesture` reports the tap in PAGE space and a blue
 /// selection ring is stroked at each `highlights` point (I2 multi-select).
 struct ScorePageView: View {
+    /// The ＋ / − bar controls overlaid at the last bar's corners (page-space points).
+    struct BarControls {
+        var topRight: CGPoint
+        var bottomRight: CGPoint
+        var canRemove: Bool
+        var onAdd: () -> Void
+        var onRemove: () -> Void
+    }
+
     let page: ScorePage
     var editing = false
     /// Page-space centers of the selection rings drawn on THIS page (empty = none).
     var highlights: [CGPoint] = []
+    /// When set (the page holding the last measure, while editing), the ＋ / − bar buttons are
+    /// overlaid at the last bar's top-right / bottom-right corners.
+    var barControls: BarControls?
     /// Tap callback with the point converted to PAGE space (editing only).
     var onTap: ((CGPoint) -> Void)?
 
     var body: some View {
         GeometryReader { geo in
-            Canvas { ctx, size in
-                ctx.withCGContext { cg in
-                    let scale = size.width / page.size.width
-                    cg.saveGState()
-                    cg.scaleBy(x: scale, y: scale)
-                    ScoreRenderer.draw(page, in: cg)
-                    for h in highlights {
-                        cg.setStrokeColor(CGColor(red: 0.43, green: 0.66, blue: 1, alpha: 0.95))
-                        cg.setLineWidth(1.6)
-                        cg.strokeEllipse(in: CGRect(x: h.x - 8, y: h.y - 8, width: 16, height: 16))
+            let scale = max(1, geo.size.width) / page.size.width
+            ZStack(alignment: .topLeading) {
+                Canvas { ctx, size in
+                    ctx.withCGContext { cg in
+                        let s = size.width / page.size.width
+                        cg.saveGState()
+                        cg.scaleBy(x: s, y: s)
+                        ScoreRenderer.draw(page, in: cg)
+                        for h in highlights {
+                            cg.setStrokeColor(CGColor(red: 0.43, green: 0.66, blue: 1, alpha: 0.95))
+                            cg.setLineWidth(1.6)
+                            cg.strokeEllipse(in: CGRect(x: h.x - 8, y: h.y - 8, width: 16, height: 16))
+                        }
+                        cg.restoreGState()
                     }
-                    cg.restoreGState()
+                }
+                .contentShape(Rectangle())
+                // Attached unconditionally; `onTap` is nil unless editing, so it no-ops otherwise. A
+                // tap coexists with the parent ScrollView's drag-to-scroll.
+                .gesture(SpatialTapGesture().onEnded { ev in
+                    onTap?(CGPoint(x: ev.location.x / scale, y: ev.location.y / scale))
+                })
+                if let bc = barControls {
+                    Button { bc.onAdd() } label: {
+                        Image(systemName: "plus.circle.fill").font(.title3)
+                            .symbolRenderingMode(.palette).foregroundStyle(Theme.bg, Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .position(x: bc.topRight.x * scale, y: bc.topRight.y * scale)
+                    .accessibilityIdentifier("score-add-bar")
+                    .accessibilityLabel("Add bar")
+                    Button { bc.onRemove() } label: {
+                        Image(systemName: "minus.circle.fill").font(.title3)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(Theme.bg, bc.canRemove ? Theme.danger : Theme.fgDim)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!bc.canRemove)
+                    .position(x: bc.bottomRight.x * scale, y: bc.bottomRight.y * scale)
+                    .accessibilityIdentifier("score-remove-bar")
+                    .accessibilityLabel("Remove bar")
                 }
             }
-            .contentShape(Rectangle())
-            // Attached unconditionally; `onTap` is nil unless editing, so it no-ops otherwise. A
-            // tap coexists with the parent ScrollView's drag-to-scroll.
-            .gesture(SpatialTapGesture().onEnded { ev in
-                let scale = max(1, geo.size.width) / page.size.width
-                onTap?(CGPoint(x: ev.location.x / scale, y: ev.location.y / scale))
-            })
         }
     }
 }
