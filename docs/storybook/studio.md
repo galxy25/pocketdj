@@ -148,21 +148,34 @@ round and round with no tick — so I know it'll hold a groove under a whole set
 
 ---
 
-## Sequencer — sixteen steps, your samples on the grid
+## Sequencer — your samples on the grid
 
-The **Sequencer** is a **16-step** drum machine. **Add rows** — each row is a **sample or a loop** —
-and **tap the steps** under each to place a hit on that sixteenth of the bar. Set the **pattern BPM**,
-hit **play**, and it cycles the bar; **name and save** patterns, and load them back later.
+The **Sequencer** is a step drum machine — **16 steps** (one bar) by default, and up to **365**.
+**Add rows** — each row is a **sample or a loop** — and **tap the steps** under each to place a hit on
+that sixteenth of the bar. Set the **pattern BPM** and its **Length** (in bars), hit **play**, and it
+cycles the pattern; **name and save** patterns, and load them back later.
 
 It behaves like a real step sequencer. Hits **choke themselves** — retrigger a row and it cuts its
-own ringing tail, the classic mono-voice feel. On a **narrow iPhone** the 16 steps **wrap to two rows
-of 8** with a group separator every four steps so your thumb can find the beat; a **wide** screen
-lays all 16 in a single line. You can **bounce** a pattern to a single audio file whenever you want a
+own ringing tail, the classic mono-voice feel. Each **bar** of steps lays out on its own line — a
+**narrow iPhone** splits each bar into two rows of 8 with a group separator every four steps so your
+thumb can find the beat; a **wide** screen keeps the bar on one line — so a long multi-bar pattern
+stacks its bars vertically. You can **bounce** a pattern to a single audio file whenever you want a
 finished loop of the whole thing (it re-bounces the moment you edit it).
 
 **Preview one row at a time.** Tap a row's **header** (its icon + name) to **solo** just that row —
 it loops on its own at the pattern tempo so you can hear a single sample or loop in isolation while
 you dial in its steps; tap the header again (or the main transport) to stop.
+
+**Set the length.** A **Length** stepper sets how many **bars** the pattern runs — from one bar (16
+steps) up to **365 steps**. Growing keeps every step you've already placed and adds empty bars;
+shrinking drops the tail. A longer pattern is simply a longer loop everywhere it plays — in a
+collection its runtime grows to match.
+
+**Live vs. static edits.** By default, step and tempo edits take effect the **next time you press
+Play** — the running loop keeps playing what you loaded. Flip the **Live edits** toggle and your
+**step** and **loop-mode** changes apply on the **next bar** while it's playing, so you can build a
+groove by ear without stopping and starting. (Tempo, length, and Fit-to-steps spans still apply on
+the next Play.)
 
 Each hit has a **trigger mode**, too. Long-press (or right-click) any lit step for its menu:
 flip it between **one-shot** (play once, the default) and **loop until retriggered**, and give

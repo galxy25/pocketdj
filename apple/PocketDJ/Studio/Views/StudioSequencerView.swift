@@ -215,6 +215,9 @@ private struct SequencerEditor: View {
     @Environment(StudioEngine.self) private var engine
     let patternId: String
     let onBack: () -> Void
+    /// SEQ2: live-vs-static playback (session-wide via @AppStorage, no schema). Shared by key
+    /// with PatternRowCard's flag, which mirrors edits into the running engine.
+    @AppStorage("pdj.sequencerLive") private var sequencerLive = false
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
@@ -244,19 +247,53 @@ private struct SequencerEditor: View {
         engine.isPlayingPattern && engine.loadedPatternId == patternId && engine.soloedRow == nil
     }
 
+    /// SEQ4: pattern length in whole bars (16 steps each), up to maxStepCount (365). Growing pads
+    /// with off steps; shrinking drops the tail. Applies on the next Play (like BPM).
+    private func lengthRow(_ pattern: StudioPattern) -> some View {
+        let bars = max(1, (pattern.stepCount + 15) / 16)
+        return HStack(spacing: 10) {
+            Text("Length").font(.caption.weight(.semibold)).foregroundStyle(Theme.fgDim)
+            Stepper(value: Binding(
+                get: { bars },
+                set: { studio.setPatternStepCount(patternId, count: min($0 * 16, StudioPattern.maxStepCount)) }),
+                    in: 1...23) {
+                Text("\(bars) bar\(bars == 1 ? "" : "s") · \(pattern.stepCount) steps")
+                    .font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
+            }
+            .accessibilityIdentifier("seq-length-stepper")
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// SEQ2: the Live/Static toggle + the mode-appropriate "when do edits apply" note.
+    private var liveModeRow: some View {
+        HStack(spacing: 10) {
+            Toggle(isOn: $sequencerLive) {
+                Label("Live edits",
+                      systemImage: sequencerLive ? "dot.radiowaves.left.and.right" : "pause.circle")
+                    .font(.caption.weight(.semibold))
+            }
+            .toggleStyle(.button)
+            .tint(Theme.accent2)
+            .accessibilityIdentifier("seq-live-toggle")
+            if isPlayingThis {
+                Text(sequencerLive
+                     ? "Live — step & loop edits apply at the next bar (BPM and span edits still on next Play)."
+                     : "Step and BPM edits apply the next time you press Play.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
     var body: some View {
         ScrollView {
             if let pattern = studio.pattern(patternId) {
                 VStack(alignment: .leading, spacing: 14) {
                     headerBar(pattern)
                     bpmRow(pattern)
-                    if isPlayingThis {
-                        // The engine plays its own LOADED copy (deliberate: the doc can mutate
-                        // underneath a running schedule) — so step/BPM edits are not live.
-                        // Row GAIN is the one live tweak (it's a mixer volume, no schedule).
-                        Text("Step and BPM edits apply the next time you press Play.")
-                            .font(.caption).foregroundStyle(Theme.fgDim)
-                    }
+                    lengthRow(pattern)
+                    liveModeRow
                     if !pattern.hasSoundingSteps { emptyNotice }
                     if let notice { noticeLine(notice) }
                     ForEach(pattern.rows.indices, id: \.self) { i in
@@ -692,6 +729,8 @@ private struct SequencerEditor: View {
 private struct PatternRowCard: View {
     @Environment(StudioStore.self) private var studio
     @Environment(StudioEngine.self) private var engine
+    /// SEQ2: when on, step + loop-mode edits mirror into a running pattern (heard next bar).
+    @AppStorage("pdj.sequencerLive") private var sequencerLive = false
     let patternId: String
     let rowIndex: Int
     let row: StudioPatternRow
@@ -834,11 +873,14 @@ private struct PatternRowCard: View {
         // Compact: two lines of 8 (spec §11); regular: one line of 16. Column ids stay 0–15
         // either way so `seq-step-<row>-<col>` is stable across layouts.
         VStack(spacing: 6) {
-            if compact {
-                stepLine(0..<8)
-                stepLine(8..<16)
-            } else {
-                stepLine(0..<StudioPattern.stepCount)
+            // SEQ4: wrap the row's steps into lines of one bar (16), or half-bars (8) on compact
+            // iPhone. A 16-step pattern lays out exactly as before; a long one stacks its bars.
+            let perLine = compact ? 8 : 16
+            let n = row.steps.count
+            let lines = max(1, (n + perLine - 1) / perLine)
+            ForEach(0..<lines, id: \.self) { line in
+                let lo = line * perLine
+                stepLine(lo..<min(lo + perLine, n))
             }
         }
     }
@@ -890,11 +932,11 @@ private struct PatternRowCard: View {
     /// Columns swept by an EARLIER trigger's stretch span (trigger col excluded) — rendered
     /// with a faint fill so the fit's musical footprint reads at a glance.
     private var spanCoverage: [Bool] {
-        var cov = Array(repeating: false, count: StudioPattern.stepCount)
+        var cov = Array(repeating: false, count: row.steps.count)
         for col in row.steps.indices where row.steps[col] {
             let span = row.stepSpans.indices.contains(col) ? row.stepSpans[col] : 0
             guard span > 1 else { continue }
-            for c in (col + 1)..<min(col + span, StudioPattern.stepCount) { cov[c] = true }
+            for c in (col + 1)..<min(col + span, row.steps.count) { cov[c] = true }
         }
         return cov
     }
@@ -906,6 +948,7 @@ private struct PatternRowCard: View {
         let covered = !on && spanCoverage.indices.contains(col) && spanCoverage[col]
         return Button {
             studio.setPatternStep(patternId, row: rowIndex, col: col, on: !on)
+            if sequencerLive, playingThis { engine.updateLiveStep(row: rowIndex, col: col, on: !on) }
         } label: {
             RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
                 // A missing row's on-steps render dimmed: the data is kept (re-adding the target
@@ -950,6 +993,7 @@ private struct PatternRowCard: View {
     @ViewBuilder private func stepModeMenu(_ col: Int, loops: Bool, span: Int) -> some View {
         Button {
             studio.setPatternStepLoop(patternId, row: rowIndex, col: col, loop: !loops)
+            if sequencerLive, playingThis { engine.updateLiveStepLoop(row: rowIndex, col: col, loop: !loops) }
         } label: {
             Label(loops ? "One-shot (play once)" : "Loop until retriggered",
                   systemImage: loops ? "1.circle" : "repeat")

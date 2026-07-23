@@ -88,7 +88,7 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.loop("lp_a")?.frames, 88_200)
         XCTAssertEqual(reloaded.loop("lp_a")?.beats, .four)
         XCTAssertEqual(reloaded.pattern("ptn_a")?.name, "My Pattern")
-        XCTAssertEqual(reloaded.pattern("ptn_a")?.rows.first?.steps.count, StudioPattern.stepCount)
+        XCTAssertEqual(reloaded.pattern("ptn_a")?.rows.first?.steps.count, StudioPattern.defaultStepCount)
         XCTAssertEqual(reloaded.take("tk_a")?.instrument, .harp)
         XCTAssertEqual(reloaded.take("tk_a")?.events.first?.note, 60)
         XCTAssertEqual(reloaded.cue(songId: "sng_1", slot: 0)?.name, "Verse")
@@ -145,7 +145,7 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(s.edit.gainDb, 0)                             // missing edit fields default
         XCTAssertEqual(store.loop("lp_a")?.beats, .four)             // invalid beats → default
         let row = try XCTUnwrap(store.pattern("ptn_a")?.rows.first)
-        XCTAssertEqual(row.steps.count, StudioPattern.stepCount)     // short steps padded to 16
+        XCTAssertEqual(row.steps.count, StudioPattern.defaultStepCount)     // short steps padded to 16
         XCTAssertEqual(Array(row.steps.prefix(2)), [true, true])
         XCTAssertTrue(store.takes.isEmpty)                           // missing arrays → empty
         XCTAssertTrue(store.cues.isEmpty)

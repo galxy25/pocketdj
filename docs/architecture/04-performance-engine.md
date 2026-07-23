@@ -1146,7 +1146,13 @@ and the artifact keeps playing from its own rendered file.
 The core model types are **`StudioSample`** (`source: .track(songId,startMs,endMs) | .mic |
 .take(takeId)`, a non-destructive `edit`, an optional beat `grid`), **`StudioLoop`** (a
 beat-window slice with an **authoritative `frames: Int64`** count — see §8.2),
-**`StudioPattern`** (16-step rows over sample/loop targets, on-demand bounce + `bounceDirty`),
+**`StudioPattern`** (rows of sample/loop targets, on-demand bounce + `bounceDirty`; **length is
+per-pattern** — an additive-optional `stepCount` up to 365 (absent ⇒ 16, NO version bump), every
+row `resized` to it on init/decode so a long pattern never truncates to 16 on load, with
+`StudioEngine` + its step clock carrying a matching `patternStepCount` for the pass-index math and
+highlight wrap — SEQ4; **live edits** mirror step/loop-mode changes into the running pattern via
+`updateLiveStep`/`updateLiveStepLoop`, heard at the next bar, when the session's `pdj.sequencerLive`
+toggle is on — SEQ2),
 **`StudioTake`** (an instrument recording: quantize `bpm` + timestamped `events[]`), and
 **`StudioCue`** (`{songId, slot 0–7, positionMs}`, **max 8 per songId, store-enforced** —
 §8.5). Deleting a sample surfaces a confirmation listing the loops that "keep playing but
