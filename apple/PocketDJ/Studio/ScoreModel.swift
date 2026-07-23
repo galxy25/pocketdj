@@ -221,8 +221,11 @@ enum ScoreQuantizer {
     /// Events with out-of-range MIDI notes are dropped (a corrupt document must not crash the
     /// score); zero/negative-length events still get the minimum 16th (a tap is a note, not
     /// nothing). No events ⇒ an empty-measures document (callers show an empty state).
+    /// `minMeasures` pads the score with trailing EMPTY (rest-filled) bars so the editor can show
+    /// and navigate into bars that have no notes yet (the cursor / add-bar feature). Default 0 =
+    /// content-only, so exports are unaffected.
     nonisolated static func quantize(events: [StudioNoteEvent], bpm: Double,
-                                     instrument: InstrumentKey) -> ScoreDocument {
+                                     instrument: InstrumentKey, minMeasures: Int = 0) -> ScoreDocument {
         let tempo = bpm > 0 ? bpm : 120
         let plan = ClefPlan.plan(for: instrument)
         let step = sixteenthMs(bpm: tempo)
@@ -242,7 +245,7 @@ enum ScoreQuantizer {
             chords[on16] = c
             if let acc = e.accidental { chordSpellings[on16, default: [:]][e.note] = acc }
         }
-        guard !chords.isEmpty else {
+        guard !chords.isEmpty || minMeasures > 0 else {
             return ScoreDocument(measures: [], bpm: tempo, clefPlan: plan)
         }
 
@@ -262,8 +265,9 @@ enum ScoreQuantizer {
             flat.append((onset: on, kind: .notes(chord.notes.sorted()), duration: d))
             cursor = on + d.sixteenths
         }
-        // Trailing rests pad the FINAL measure to a full 16 — partial measures don't exist.
-        let end = ((cursor + 15) / 16) * 16
+        // Trailing rests pad the FINAL measure to a full 16 — partial measures don't exist — and
+        // out to `minMeasures` so requested-but-empty trailing bars render as whole rests.
+        let end = max(((cursor + 15) / 16) * 16, max(0, minMeasures) * 16)
         flat += restItems(from: cursor, to: end)
 
         // Split the flat stream into measures. Every measure 0..<count has items by

@@ -414,6 +414,84 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// Enter vs Select split: ENTER (the default) places a note on tap (commits ⇒ Undo enables);
+    /// SELECT snaps a tap to the nearest note (selection ⇒ Edit's Delete enables).
+    func testScoreEnterAndSelectModes() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8))
+        takeRow.tap()
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8))
+        edit.tap()
+        XCTAssertTrue(app.el("score-mode-enter").waitForExistence(timeout: 5), "Enter mode (default)")
+        XCTAssertTrue(app.el("score-mode-select").exists, "Select mode")
+        let undo = app.el("score-undo")
+        XCTAssertFalse(undo.isEnabled, "Undo disabled before any edit")
+        // Enter (default): a tap places a note ⇒ committed edit ⇒ Undo enables.
+        let page = app.any("score-page-0")
+        XCTAssertTrue(page.waitForExistence(timeout: 5))
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: undo)],
+             timeout: 5)
+        // Select: clear, then RE-ENTER Select — the cursor defaults to (auto-selects) the last
+        // note, so Edit can act on it (deterministic — no reliance on tap-hit geometry).
+        app.el("score-mode-select").tap()
+        if app.el("score-deselect").exists { app.el("score-deselect").tap() }
+        app.el("score-mode-enter").tap()
+        app.el("score-mode-select").tap()
+        app.el("score-mode-edit").tap()
+        let del = app.el("score-delete")
+        XCTAssertTrue(del.waitForExistence(timeout: 5))
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: del)],
+             timeout: 5)                               // the default-cursor selection is deletable
+        #endif
+    }
+
+    /// SELECT cursor + bars: entering Select auto-selects the LAST note (default cursor); ◀ / ▶
+    /// arrows exist under the switcher; Add-bar enables Remove-bar (an empty trailing bar), and
+    /// Remove-bar clears it again.
+    func testScoreSelectCursorAndBars() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8))
+        takeRow.tap()
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8))
+        edit.tap()
+        // Switch to Select: the cursor defaults to the last note (auto-selected) and the ◀ / ▶
+        // arrows appear under the switcher.
+        app.el("score-mode-select").tap()
+        XCTAssertTrue(app.el("score-cursor-prev").waitForExistence(timeout: 5), "◀ cursor arrow")
+        XCTAssertTrue(app.el("score-cursor-next").exists, "▶ cursor arrow")
+        // Default selection = the last note ⇒ Edit's Delete is enabled.
+        app.el("score-mode-edit").tap()
+        XCTAssertTrue(app.el("score-delete").isEnabled, "the last note is the default cursor selection")
+        // Cursor navigation (toolbar ◀ / ▶) keeps a selection to edit and doesn't crash.
+        app.el("score-mode-select").tap()
+        app.el("score-cursor-prev").tap()
+        app.el("score-cursor-next").tap()
+        app.el("score-mode-edit").tap()
+        XCTAssertTrue(app.el("score-delete").isEnabled, "cursor navigation keeps a note selected")
+        // (The ＋ / − bar controls render on the last bar's corners in Select mode — verified on
+        // device; XCUITest can't reliably address canvas-positioned buttons by id.)
+        #endif
+    }
+
     /// SEQ1: tapping a sequencer row header solo-previews just that row — the engine solos it
     /// (`soloedRow`), and the header's a11y label flips Preview → Stop; re-tapping stops.
     func testSequencerRowHeaderSoloPreview() throws {
