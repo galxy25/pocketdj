@@ -1,9 +1,16 @@
 import SwiftUI
 
+/// The three score-editor interaction modes (I2). SELECT picks notes or whole bars; MOVE nudges
+/// or duplicates the selection; EDIT bulk-applies length / accidental / delete to it.
+enum ScoreEditMode: String, CaseIterable { case select, move, edit }
+/// In SELECT mode, a tap picks a single note or every note in the tapped bar.
+enum ScoreSelectGranularity { case note, bar }
+
 /// The reusable editable-score surface (spec §7). Renders an event stream as notation and — when
-/// `editing` — lets you tap the staff to place a note (current length + accidental) or select an
-/// existing one, then re-apply length/accidental or delete. Edits are committed through `onEdit`.
-/// Shared by the saved-take Score screen and the Instruments LIVE staff, so both edit identically.
+/// `editing` — offers three explicit modes (I2): SELECT (tap notes or bars; tap empty staff to
+/// place a note), MOVE (nudge ±semitone / ±step, or Duplicate a bar later), and EDIT (set length /
+/// accidental, or Delete). Every edit commits through `onEdit` and pushes an Undo snapshot. Shared
+/// by the saved-take Score screen and the Instruments LIVE staff, so both edit identically.
 struct ScoreEditorView: View {
     var events: [StudioNoteEvent]
     var bpm: Double
@@ -13,20 +20,26 @@ struct ScoreEditorView: View {
     /// Commit an edited event stream (take → setTakeEvents; live → setLiveEvents).
     var onEdit: ([StudioNoteEvent]) -> Void
 
+    /// The "pen" for newly placed notes (and the last-touched note's values); EDIT chips also set it.
     @State private var editLength: NoteDuration = .quarter
     @State private var editAccidental: Accidental = .natural
-    /// Index into `events` of the selected note; nil = none.
-    @State private var selectedIndex: Int?
-    /// Multi-step Undo (live-commit + undo model). Each committed edit pushes the PRE-edit
-    /// stream here; Undo pops and re-commits it. View-local + session-scoped — cleared when
-    /// editing ends, never persisted (no schema surface). Both hosts get Undo; only the
-    /// saved-take host adds Cancel (the live staff keeps changing as you play).
+    @State private var mode: ScoreEditMode = .select
+    @State private var granularity: ScoreSelectGranularity = .note
+    /// The selection, keyed by VALUE (StudioNoteEvent is Hashable) and resolved to indices each
+    /// render. Value-based on purpose: the live-staff host re-sorts events on commit, so an
+    /// index-based selection would move/edit the WRONG notes afterward. View-local; no schema.
+    @State private var selection: Set<StudioNoteEvent> = []
+    /// Multi-step Undo (live-commit + undo). Each committed edit pushes the PRE-edit stream; Undo
+    /// pops and re-commits it. View-local + session-scoped; both hosts get Undo, only the saved-take
+    /// host adds Cancel.
     @State private var undoStack: [[StudioNoteEvent]] = []
+
+    private var step: Double { ScoreQuantizer.sixteenthMs(bpm: bpm) }
 
     var body: some View {
         let doc = ScoreQuantizer.quantize(events: events, bpm: bpm, instrument: instrument)
         let pages = ScoreLayout.paginate(score: doc, title: title, instrument: instrument)
-        let sel = selectionPoint(pages: pages)
+        let points = selectionPoints(pages: pages)
         VStack(spacing: 12) {
             if editing { editToolbar() }
             if events.isEmpty {
@@ -35,20 +48,84 @@ struct ScoreEditorView: View {
             }
             ForEach(pages.indices, id: \.self) { i in
                 ScorePageView(page: pages[i], editing: editing,
-                              highlight: sel?.page == i ? sel?.point : nil,
+                              highlights: points.filter { $0.page == i }.map(\.point),
                               onTap: editing ? { p in handleTap(at: p, page: pages[i]) } : nil)
                     .aspectRatio(pages[i].size.width / pages[i].size.height, contentMode: .fit)
                     .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
                     .accessibilityIdentifier("score-page-\(i)")
             }
         }
-        .onChange(of: editing) { if !editing { selectedIndex = nil; undoStack.removeAll() } }
+        .onChange(of: editing) {
+            if !editing { selection = []; undoStack.removeAll(); mode = .select }
+        }
     }
 
-    // MARK: Toolbar (length · accidental · delete)
+    // MARK: Toolbar
 
-    private func editToolbar() -> some View {
+    @ViewBuilder private func editToolbar() -> some View {
         VStack(spacing: 8) {
+            modeRow
+            switch mode {
+            case .select: selectRow
+            case .move:   moveRow
+            case .edit:   editRow
+            }
+            Text(hintText).font(.caption2).foregroundStyle(Theme.fgDim)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+    }
+
+    private var modeRow: some View {
+        HStack(spacing: 6) {
+            ForEach(ScoreEditMode.allCases, id: \.self) { m in
+                chip(modeLabel(m), on: mode == m, id: "score-mode-\(m.rawValue)") { mode = m }
+            }
+            Spacer(minLength: 0)
+            Button { undo() } label: {
+                Label("Undo", systemImage: "arrow.uturn.backward").lineLimit(1).fixedSize()
+            }
+            .buttonStyle(.bordered).tint(Theme.accent)
+            .disabled(undoStack.isEmpty)
+            .keyboardShortcut("z", modifiers: .command)
+            .accessibilityIdentifier("score-undo")
+        }
+    }
+
+    private var selectRow: some View {
+        HStack(spacing: 6) {
+            Text("Select").font(.caption2).foregroundStyle(Theme.fgDim)
+            chip("Notes", on: granularity == .note, id: "score-gran-note") { granularity = .note }
+            chip("Bars", on: granularity == .bar, id: "score-gran-bar") { granularity = .bar }
+            Spacer(minLength: 0)
+            if !selection.isEmpty {
+                Button("Deselect") { selection = [] }
+                    .font(.caption).accessibilityIdentifier("score-deselect")
+            }
+        }
+    }
+
+    private var moveRow: some View {
+        HStack(spacing: 6) {
+            stepBtn("♯+", "score-move-up") { moveSemitone(1) }
+            stepBtn("♭−", "score-move-down") { moveSemitone(-1) }
+            Divider().frame(height: 18)
+            stepBtn("◀", "score-move-left") { moveStep(-1) }
+            stepBtn("▶", "score-move-right") { moveStep(1) }
+            Divider().frame(height: 18)
+            Button { duplicateSelection() } label: {
+                Label("Duplicate", systemImage: "plus.square.on.square").lineLimit(1).fixedSize()
+            }
+            .buttonStyle(.bordered).tint(Theme.accent)
+            .disabled(selection.isEmpty)
+            .accessibilityIdentifier("score-duplicate")
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var editRow: some View {
+        VStack(spacing: 6) {
             HStack(spacing: 6) {
                 Text("Length").font(.caption2).foregroundStyle(Theme.fgDim)
                 ForEach([NoteDuration.eighth, .quarter, .half, .whole], id: \.self) { d in
@@ -66,29 +143,36 @@ struct ScoreEditorView: View {
                     }
                 }
                 Spacer(minLength: 0)
-                Button { undo() } label: {
-                    Label("Undo", systemImage: "arrow.uturn.backward").lineLimit(1).fixedSize()
-                }
-                .buttonStyle(.bordered).tint(Theme.accent)
-                .disabled(undoStack.isEmpty)
-                .keyboardShortcut("z", modifiers: .command)
-                .accessibilityIdentifier("score-undo")
                 Button(role: .destructive) { deleteSelected() } label: {
                     Label("Delete", systemImage: "trash").lineLimit(1).fixedSize()
                 }
                 .buttonStyle(.bordered).tint(Theme.danger)
-                .disabled(selectedIndex == nil)
+                .disabled(selection.isEmpty)
                 .accessibilityIdentifier("score-delete")
             }
-            Text(selectedIndex != nil
-                 ? "Editing the selected note — tap the staff to place another."
-                 : "Tap the staff to place a note, or tap a note to select it.")
-                .font(.caption2).foregroundStyle(Theme.fgDim)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(10)
-        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
     }
+
+    private var hintText: String {
+        let n = selection.count
+        let notes = "\(n) note\(n == 1 ? "" : "s")"
+        switch mode {
+        case .select:
+            if granularity == .bar {
+                return n == 0 ? "Tap a bar to select all its notes." : "\(notes) selected."
+            }
+            return n == 0 ? "Tap a note to select it, or tap empty space to place one."
+                          : "\(notes) selected — tap more, or switch to Move / Edit."
+        case .move:
+            return n == 0 ? "Select notes first, then nudge or duplicate them."
+                          : "Nudge the selected \(notes) by a semitone or a step, or duplicate a bar later."
+        case .edit:
+            return n == 0 ? "Select notes first, then set length / accidental or delete."
+                          : "Length, accidental, and delete apply to the selected \(notes)."
+        }
+    }
+
+    // MARK: Chips
 
     private func chip(_ text: String, on: Bool, id: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -104,6 +188,23 @@ struct ScoreEditorView: View {
         .accessibilityIdentifier(id)
     }
 
+    private func stepBtn(_ text: String, _ id: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.callout.weight(.semibold))
+                .frame(minWidth: 34)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Theme.fgDim.opacity(0.12), in: Capsule())
+                .foregroundStyle(Theme.fg)
+        }
+        .buttonStyle(.plain)
+        .disabled(selection.isEmpty)
+        .accessibilityIdentifier(id)
+    }
+
+    private func modeLabel(_ m: ScoreEditMode) -> String {
+        switch m { case .select: return "Select"; case .move: return "Move"; case .edit: return "Edit" }
+    }
     private func lengthLabel(_ d: NoteDuration) -> String {
         switch d { case .eighth: return "1/8"; case .quarter: return "1/4"
         case .half: return "1/2"; case .whole: return "○"; default: return "\(d.sixteenths)" }
@@ -116,11 +217,8 @@ struct ScoreEditorView: View {
         switch a { case .natural: return "♮"; case .sharp: return "♯"; case .flat: return "♭" }
     }
 
-    // MARK: Operations
+    // MARK: Commit / undo
 
-    /// Commit an edit, first snapshotting the pre-edit stream onto the undo stack so Undo can
-    /// walk back through the whole session. Undo itself re-commits via `onEdit` directly (no
-    /// push), so undo is repeatable and never grows the stack.
     private func commit(_ next: [StudioNoteEvent]) {
         undoStack.append(events)
         onEdit(next)
@@ -128,83 +226,140 @@ struct ScoreEditorView: View {
 
     private func undo() {
         guard let prev = undoStack.popLast() else { return }
-        onEdit(prev)           // re-commit the prior snapshot WITHOUT pushing
-        selectedIndex = nil     // indices shift when an add/delete is undone
+        onEdit(prev)         // re-commit the prior snapshot WITHOUT pushing
+        selection = []        // the events changed underneath the value-keyed selection
     }
 
-    /// A tap on a page: select the note at that spot, else place a new one there.
+    /// Mutate every selected event in place → new events + a selection updated to the new VALUES,
+    /// so Move/Edit keep the same notes highlighted (and it survives a host re-sort).
+    private func mutateSelected(_ transform: (StudioNoteEvent) -> StudioNoteEvent) {
+        guard !selection.isEmpty else { return }
+        var newSel = Set<StudioNoteEvent>()
+        let next = events.map { e -> StudioNoteEvent in
+            guard selection.contains(e) else { return e }
+            let m = transform(e); newSel.insert(m); return m
+        }
+        commit(next)
+        selection = newSel
+    }
+
+    // MARK: Tap (SELECT places/selects · MOVE/EDIT adjust the selection)
+
     private func handleTap(at pagePoint: CGPoint, page: ScorePage) {
-        guard let loc = ScoreLayout.locate(point: pagePoint, page: page) else { selectedIndex = nil; return }
-        let plan = ClefPlan.plan(for: instrument)
-        let step = ScoreQuantizer.sixteenthMs(bpm: bpm)
-        if let j = events.firstIndex(where: {
-            let abs16 = Int((Double($0.onMs) / step).rounded())
-            let staff = plan.staff(forNote: $0.note)
-            let pos = ScoreLayout.spelledPosition(midi: $0.note, clef: staff, accidental: $0.accidental).position
-            return abs16 == loc.measureIndex * 16 + loc.onset16ths && staff == loc.staff && pos == loc.position
-        }) {
-            selectedIndex = j
-            let e = events[j]
-            editLength = NoteDuration.snapped(toSixteenths: max(1, Int((Double(e.offMs - e.onMs) / step).rounded())))
-            editAccidental = e.accidental ?? .natural
+        guard let loc = ScoreLayout.locate(point: pagePoint, page: page) else {
+            if mode == .select, granularity == .note { selection = [] }   // tap-away clears
             return
         }
-        let natural = ScoreLayout.naturalMidi(position: loc.position, clef: loc.staff)
-        let (midi, acc): (Int, Accidental?)
-        switch editAccidental {
-        case .natural: (midi, acc) = (natural, nil)
-        case .sharp: (midi, acc) = (natural + 1, .sharp)
-        case .flat: (midi, acc) = (natural - 1, .flat)
+        let plan = ClefPlan.plan(for: instrument)
+        let targetAbs16 = loc.measureIndex * 16 + loc.onset16ths
+        let hit = events.first { e in
+            let abs16 = Int((Double(e.onMs) / step).rounded())
+            let staff = plan.staff(forNote: e.note)
+            let pos = ScoreLayout.spelledPosition(midi: e.note, clef: staff, accidental: e.accidental).position
+            return abs16 == targetAbs16 && staff == loc.staff && pos == loc.position
         }
-        let onMs = Int((Double(loc.measureIndex * 16 + loc.onset16ths) * step).rounded())
-        let offMs = onMs + Int((Double(editLength.sixteenths) * step).rounded())
-        var next = events
-        next.append(StudioNoteEvent(onMs: onMs, offMs: offMs, note: midi, velocity: 96, accidental: acc))
-        commit(next)
-        selectedIndex = next.count - 1
+        if mode == .select, granularity == .bar {
+            toggleBar(loc.measureIndex)
+            return
+        }
+        if let e = hit {
+            toggle(e)
+        } else if mode == .select {
+            // Place a new note at the tapped spot, using the pen, and select just it.
+            let natural = ScoreLayout.naturalMidi(position: loc.position, clef: loc.staff)
+            let (midi, acc): (Int, Accidental?)
+            switch editAccidental {
+            case .natural: (midi, acc) = (natural, nil)
+            case .sharp:   (midi, acc) = (natural + 1, .sharp)
+            case .flat:    (midi, acc) = (natural - 1, .flat)
+            }
+            let onMs = Int((Double(targetAbs16) * step).rounded())
+            let offMs = onMs + Int((Double(editLength.sixteenths) * step).rounded())
+            let newNote = StudioNoteEvent(onMs: onMs, offMs: offMs, note: midi, velocity: 96, accidental: acc)
+            commit(events + [newNote])
+            selection = [newNote]
+        }
     }
+
+    private func toggle(_ e: StudioNoteEvent) {
+        if selection.contains(e) { selection.remove(e) } else { selection.insert(e) }
+        // Sync the pen to the last-touched note so EDIT chips reflect it.
+        editLength = NoteDuration.snapped(toSixteenths: max(1, Int((Double(e.offMs - e.onMs) / step).rounded())))
+        editAccidental = e.accidental ?? .natural
+    }
+
+    private func toggleBar(_ measure: Int) {
+        let inBar = events.filter { Int((Double($0.onMs) / step).rounded()) / 16 == measure }
+        guard !inBar.isEmpty else { return }
+        if inBar.allSatisfy({ selection.contains($0) }) { inBar.forEach { selection.remove($0) } }
+        else { inBar.forEach { selection.insert($0) } }
+    }
+
+    // MARK: Move (steppers) / Duplicate
+
+    private func moveSemitone(_ delta: Int) {
+        mutateSelected { var e = $0; e.note = max(0, min(127, e.note + delta)); e.accidental = nil; return e }
+    }
+
+    private func moveStep(_ delta: Int) {
+        guard !selection.isEmpty else { return }
+        let d = Int((Double(delta) * step).rounded())
+        let minOn = events.filter { selection.contains($0) }.map(\.onMs).min() ?? 0
+        let shift = max(-minOn, d)      // the whole group moves together, never before 0
+        guard shift != 0 else { return }
+        mutateSelected { var e = $0; e.onMs += shift; e.offMs += shift; return e }
+    }
+
+    private func duplicateSelection() {
+        let bar = Int((16.0 * step).rounded())
+        let copies = events.filter { selection.contains($0) }.map { e -> StudioNoteEvent in
+            var c = e; c.onMs += bar; c.offMs += bar; return c
+        }
+        guard !copies.isEmpty else { return }
+        commit(events + copies)
+        selection = Set(copies)         // select the copies so they can be nudged next
+    }
+
+    // MARK: Edit (length / accidental / delete)
 
     private func setLength(_ d: NoteDuration) {
         editLength = d
-        guard let j = selectedIndex, j < events.count else { return }
-        let step = ScoreQuantizer.sixteenthMs(bpm: bpm)
-        var next = events
-        next[j].offMs = next[j].onMs + Int((Double(d.sixteenths) * step).rounded())
-        commit(next)
+        mutateSelected { var e = $0; e.offMs = e.onMs + Int((Double(d.sixteenths) * step).rounded()); return e }
     }
 
     private func setAccidental(_ a: Accidental) {
         editAccidental = a
-        guard let j = selectedIndex, j < events.count else { return }
-        var next = events
-        let e = next[j]
-        let staff = ClefPlan.plan(for: instrument).staff(forNote: e.note)
-        let pos = ScoreLayout.spelledPosition(midi: e.note, clef: staff, accidental: e.accidental).position
-        let natural = ScoreLayout.naturalMidi(position: pos, clef: staff)
-        switch a {
-        case .natural: next[j].note = natural; next[j].accidental = nil
-        case .sharp: next[j].note = natural + 1; next[j].accidental = .sharp
-        case .flat: next[j].note = natural - 1; next[j].accidental = .flat
+        mutateSelected { e in
+            var next = e
+            let staff = ClefPlan.plan(for: instrument).staff(forNote: e.note)
+            let pos = ScoreLayout.spelledPosition(midi: e.note, clef: staff, accidental: e.accidental).position
+            let natural = ScoreLayout.naturalMidi(position: pos, clef: staff)
+            switch a {
+            case .natural: next.note = natural; next.accidental = nil
+            case .sharp:   next.note = natural + 1; next.accidental = .sharp
+            case .flat:    next.note = natural - 1; next.accidental = .flat
+            }
+            return next
         }
-        commit(next)
     }
 
     private func deleteSelected() {
-        guard let j = selectedIndex, j < events.count else { return }
-        var next = events
-        next.remove(at: j)
-        commit(next)
-        selectedIndex = nil
+        guard !selection.isEmpty else { return }
+        commit(events.filter { !selection.contains($0) })
+        selection = []
     }
 
-    /// The selected note's page + page-space point (the selection ring). nil when nothing selected.
-    private func selectionPoint(pages: [ScorePage]) -> (page: Int, point: CGPoint)? {
-        guard let j = selectedIndex, j < events.count else { return nil }
-        let e = events[j]
-        let step = ScoreQuantizer.sixteenthMs(bpm: bpm)
-        let abs16 = Int((Double(e.onMs) / step).rounded())
-        return ScoreLayout.notePoint(midi: e.note, accidental: e.accidental, onset16ths: abs16,
-                                     plan: ClefPlan.plan(for: instrument), pages: pages)
+    // MARK: Selection rings
+
+    /// A page-space ring for every selected note (grouped per page by the caller).
+    private func selectionPoints(pages: [ScorePage]) -> [(page: Int, point: CGPoint)] {
+        guard !selection.isEmpty else { return [] }
+        let plan = ClefPlan.plan(for: instrument)
+        return events.filter { selection.contains($0) }.compactMap { e in
+            let abs16 = Int((Double(e.onMs) / step).rounded())
+            return ScoreLayout.notePoint(midi: e.note, accidental: e.accidental, onset16ths: abs16,
+                                         plan: plan, pages: pages)
+        }
     }
 }
 
@@ -214,12 +369,12 @@ struct ScoreEditorView: View {
 /// TOP-LEFT-origin y-DOWN CGContext — exactly the renderer's contract. The page is laid at A4
 /// metrics and SCALED to the canvas, so the on-screen sheet is proportionally identical to the
 /// exported PDF. When `editing`, a `SpatialTapGesture` reports the tap in PAGE space and a blue
-/// selection ring is stroked at `highlight`.
+/// selection ring is stroked at each `highlights` point (I2 multi-select).
 struct ScorePageView: View {
     let page: ScorePage
     var editing = false
-    /// Page-space center of the selection ring drawn on THIS page (nil = none).
-    var highlight: CGPoint?
+    /// Page-space centers of the selection rings drawn on THIS page (empty = none).
+    var highlights: [CGPoint] = []
     /// Tap callback with the point converted to PAGE space (editing only).
     var onTap: ((CGPoint) -> Void)?
 
@@ -231,7 +386,7 @@ struct ScorePageView: View {
                     cg.saveGState()
                     cg.scaleBy(x: scale, y: scale)
                     ScoreRenderer.draw(page, in: cg)
-                    if let h = highlight {
+                    for h in highlights {
                         cg.setStrokeColor(CGColor(red: 0.43, green: 0.66, blue: 1, alpha: 0.95))
                         cg.setLineWidth(1.6)
                         cg.strokeEllipse(in: CGRect(x: h.x - 8, y: h.y - 8, width: 16, height: 16))
