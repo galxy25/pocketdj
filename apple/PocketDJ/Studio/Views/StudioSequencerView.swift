@@ -241,7 +241,7 @@ private struct SequencerEditor: View {
     @State private var prepGeneration = 0
 
     private var isPlayingThis: Bool {
-        engine.isPlayingPattern && engine.loadedPatternId == patternId
+        engine.isPlayingPattern && engine.loadedPatternId == patternId && engine.soloedRow == nil
     }
 
     var body: some View {
@@ -261,7 +261,8 @@ private struct SequencerEditor: View {
                     if let notice { noticeLine(notice) }
                     ForEach(pattern.rows.indices, id: \.self) { i in
                         PatternRowCard(patternId: patternId, rowIndex: i, row: pattern.rows[i],
-                                       compact: compact, playingThis: isPlayingThis)
+                                       compact: compact, playingThis: isPlayingThis,
+                                       onSolo: { toggleSolo(row: $0) })
                     }
                     addRowControl(pattern)
                     bounceStatus(pattern)
@@ -461,6 +462,49 @@ private struct SequencerEditor: View {
     /// Build every sounding row's buffer, then hand the set to the engine. Missing targets and
     /// unreadable files are SKIPPED (spec §2: never a throw) with an advisory notice; only a
     /// fully-empty result blocks playback.
+    /// Solo-preview ONE row from its header tap (SEQ1): play only that row's steps, looping at
+    /// the pattern BPM. Re-tapping the row that's soloing (or the main transport) stops. Uses the
+    /// same prepare → load → start path as a full play, with just this row's buffer + soloedRow.
+    private func toggleSolo(row i: Int) {
+        // Re-tap the row that's already soloing ⇒ stop.
+        if engine.loadedPatternId == patternId, engine.isPlayingPattern, engine.soloedRow == i {
+            engine.stopPattern()
+            return
+        }
+        guard let pattern = studio.pattern(patternId), pattern.rows.indices.contains(i) else { return }
+        let row = pattern.rows[i]
+        guard !row.isSilent else { notice = "This row has no steps to preview — add a step first."; return }
+        guard studio.targetExists(row.targetId) else { notice = "This row's sample or loop was removed."; return }
+        prepareTask?.cancel()
+        prepGeneration += 1
+        let gen = prepGeneration
+        notice = nil
+        preparing = true
+        prepareTask = Task {
+            defer { if gen == prepGeneration { preparing = false } }
+            guard let natural = await preparedBuffer(for: row.targetId) else {
+                if gen == prepGeneration { notice = "Couldn't prepare audio for \(rowTitle(row.targetId))." }
+                return
+            }
+            // Pre-stretch just this row's span variants (deduped by span).
+            var spanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:]
+            var cache: [Int: AVAudioPCMBuffer] = [:]
+            let stepF = StudioEngine.stepFrames(bpm: pattern.bpm,
+                                                sampleRate: StudioAudio.canonicalSampleRate)
+            for col in row.steps.indices where row.steps[col] && row.stepSpans[col] > 0 {
+                let span = row.stepSpans[col]
+                if cache[span] == nil {
+                    cache[span] = try? await StudioRender.shared.stretchBuffer(natural, toFrames: stepF * Int64(span))
+                }
+                if let b = cache[span] { spanBuffers[i, default: [:]][span] = b }
+                guard gen == prepGeneration, !Task.isCancelled else { return }
+            }
+            guard gen == prepGeneration, !Task.isCancelled else { return }
+            engine.loadPattern(pattern, buffers: [i: natural], spanBuffers: spanBuffers, soloedRow: i)
+            engine.startPattern()
+        }
+    }
+
     private func startPlayback(_ pattern: StudioPattern) {
         prepareTask?.cancel()
         prepGeneration += 1
@@ -655,6 +699,13 @@ private struct PatternRowCard: View {
     /// This pattern is the one the engine is currently playing — gates the step highlight so a
     /// DIFFERENT loaded pattern's clock never lights up this grid.
     let playingThis: Bool
+    /// Tap the row header to solo-preview just this row (SEQ1).
+    var onSolo: (Int) -> Void
+
+    /// The engine is currently soloing THIS row (its header shows a Stop glyph).
+    private var soloingThis: Bool {
+        engine.isPlayingPattern && engine.loadedPatternId == patternId && engine.soloedRow == rowIndex
+    }
 
     /// Grid geometry shared by the toggle layer AND the highlight overlay — identical structure
     /// (groups of 4 + these exact spacings) is what keeps the two layers pixel-aligned.
@@ -683,22 +734,36 @@ private struct PatternRowCard: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: row.targetId.hasPrefix("lp_") ? "repeat" : "waveform")
-                .foregroundStyle(missing ? Theme.fgDim : Theme.accent)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(info?.title.isEmpty == false ? info!.title
-                     : (row.targetId.hasPrefix("lp_") ? "Loop" : "Sample"))
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(missing ? Theme.fgDim : Theme.fg)
-                    .italic(missing)
-                    .lineLimit(1)
-                Text(missing ? "missing — playback and bounce skip this row"
-                             : (info?.kindLabel ?? ""))
-                    .font(.caption2)
-                    .foregroundStyle(missing ? Theme.danger.opacity(0.8) : Theme.fgDim)
+            // Tap the icon+title to SOLO-preview just this row (SEQ1). Kept separate from the
+            // retarget / gain / remove controls so a preview tap can't fire them by accident.
+            Button {
+                onSolo(rowIndex)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: soloingThis ? "stop.circle.fill"
+                          : (row.targetId.hasPrefix("lp_") ? "repeat" : "waveform"))
+                        .foregroundStyle(soloingThis ? Theme.accent2 : (missing ? Theme.fgDim : Theme.accent))
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(info?.title.isEmpty == false ? info!.title
+                             : (row.targetId.hasPrefix("lp_") ? "Loop" : "Sample"))
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(missing ? Theme.fgDim : Theme.fg)
+                            .italic(missing)
+                            .lineLimit(1)
+                        Text(missing ? "missing — playback and bounce skip this row"
+                                     : (info?.kindLabel ?? ""))
+                            .font(.caption2)
+                            .foregroundStyle(missing ? Theme.danger.opacity(0.8) : Theme.fgDim)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
             }
-            Spacer()
+            .buttonStyle(.plain)
+            .disabled(missing)
+            .accessibilityIdentifier("seq-row-solo-\(rowIndex)")
+            .accessibilityLabel(soloingThis ? "Stop preview" : "Preview this row")
             retargetMenu
             RowGainChip(rowIndex: rowIndex, gainDb: row.gainDb) { db in
                 // Persist through the store (marks the bounce dirty, debounced save) AND mirror

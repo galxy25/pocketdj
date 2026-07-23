@@ -169,6 +169,10 @@ final class StudioEngine {
     /// The pattern whose rows/buffers are loaded onto the row players.
     private(set) var loadedPatternId: String?
     private(set) var isPlayingPattern = false
+    /// When set, the loaded pattern is a SINGLE-row SOLO (the row-header preview) rather than a
+    /// full run — so the UI can tell a solo from a normal play and keep the main Play button, the
+    /// "edits apply next Play" banner, and the stop-guards coherent. nil = full play or stopped.
+    private(set) var soloedRow: Int?
 
     /// The sequencer's fast step clock (TimelineView-sampled; see `StudioPatternClock`).
     @ObservationIgnored let patternClock = StudioPatternClock()
@@ -719,7 +723,7 @@ final class StudioEngine {
     /// while stopped (a running pattern is stopped first) — the attach set is fixed, so this
     /// never touches the live graph.
     func loadPattern(_ pattern: StudioPattern, buffers: [Int: AVAudioPCMBuffer],
-                     spanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:]) {
+                     spanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:], soloedRow: Int? = nil) {
         ensureEngine()
         if isPlayingPattern { stopPattern() }
         let rows = Array(pattern.rows.prefix(Self.maxPatternRows))
@@ -757,7 +761,8 @@ final class StudioEngine {
             }
         }
         loadedPatternId = pattern.id
-        dlog("loadPattern \(pattern.id) bpm=\(patternBpm) rows=\(rows.count) sounding=\(patternBuffers.count)")
+        self.soloedRow = soloedRow
+        dlog("loadPattern \(pattern.id) bpm=\(patternBpm) rows=\(rows.count) sounding=\(patternBuffers.count) solo=\(soloedRow.map(String.init) ?? "-")")
     }
 
     /// Any loaded row that would actually sound (has a buffer AND at least one on-step)?
@@ -793,6 +798,7 @@ final class StudioEngine {
         for p in rowPlayers { p.stop() }
         if isPlayingPattern { dlog("ui: stopPattern") }
         isPlayingPattern = false
+        soloedRow = nil
         patternClock.running = false
         clearInterruptionPark()
         maybeResignArbiter()
