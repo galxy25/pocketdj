@@ -35,6 +35,60 @@ final class SettingsUITests: XCTestCase {
         #endif
     }
 
+    /// Attach a proof screenshot to the result bundle.
+    private func snap(_ name: String) {
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    /// Drive a SwiftUI Form Toggle to `on`. A center `.tap()` sometimes lands on the label and
+    /// misses the switch, so if the value doesn't flip, tap the trailing thumb explicitly.
+    private func setToggle(_ toggle: XCUIElement, on: Bool) {
+        let want = on ? "1" : "0"
+        guard (toggle.value as? String) != want else { return }
+        toggle.tap()
+        if (toggle.value as? String) != want {
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        }
+    }
+
+    /// MISC4: capturing a debug session (on → off) archives it to the persisted list, and
+    /// Delete-all clears the archive. Capture always writes START+END lines, so this runs
+    /// headlessly with no audio.
+    func testDebugSessionArchivesAndDeletes() {
+        let app = launch()
+        let debug = app.buttons["settings-debug"]
+        XCTAssertTrue(reveal(app, debug), "the Debug navigation link")
+        debug.tap()
+        let toggle = app.switches["debug-capture-toggle"].firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "the Debug capture toggle")
+        let emptyState = app.staticTexts["debug-no-sessions"]
+        XCTAssertTrue(emptyState.waitForExistence(timeout: 5), "no saved sessions yet")
+        // Turn capture ON and confirm it engaged (the switch value flips to "1").
+        setToggle(toggle, on: true)
+        snap("debug-capturing")
+        XCTAssertEqual(toggle.value as? String, "1", "capture engaged")
+        // Turn capture OFF ⇒ the frozen session is archived (the empty state clears).
+        setToggle(toggle, on: false)
+        snap("debug-after-stop")
+        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: emptyState)],
+             timeout: 5)   // a session was archived and the list refreshed
+        let sessionRow = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'debug-session-'")).firstMatch
+        XCTAssertTrue(sessionRow.waitForExistence(timeout: 5), "the captured session is listed")
+        // Delete all ⇒ the archive clears (empty state returns).
+        let deleteAll = app.buttons["debug-delete-all"]
+        XCTAssertTrue(reveal(app, deleteAll), "the Delete-all control")
+        deleteAll.tap()
+        let confirm = app.buttons["Delete all"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "the delete-all confirmation")
+        confirm.tap()
+        XCTAssertTrue(app.staticTexts["debug-no-sessions"].waitForExistence(timeout: 5),
+                      "the archive is empty after Delete all")
+    }
+
     func testSettingsSectionsPresent() {
         let app = launch()
         XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))

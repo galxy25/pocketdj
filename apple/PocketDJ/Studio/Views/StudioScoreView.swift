@@ -32,6 +32,10 @@ struct StudioScoreView: View {
 
     /// Edit mode (spec §7) — toggled by the action bar, passed to the shared ScoreEditorView.
     @State private var editing = false
+    /// The take's `editedEvents` captured when an edit session BEGINS, so Cancel can restore it.
+    /// nil = the take was deriving-from-raw at session start (Cancel must revert to nil, not pin
+    /// a snapshot — see the Cancel button).
+    @State private var preEditEdited: [StudioNoteEvent]?
 
     private var take: StudioTake? { studio.take(takeId) }
 
@@ -93,6 +97,36 @@ struct StudioScoreView: View {
 
     /// Replay + exports, IN CONTENT (iPhone-portrait toolbar-overflow lesson — an export
     /// hidden behind "•••" is an export nobody finds).
+    /// Edit / Done toggle + (while editing) Cancel. Extracted so `actionBar`'s HStack stays
+    /// simple enough for SwiftUI's ViewBuilder type-checker.
+    @ViewBuilder private func editButtons(_ take: StudioTake) -> some View {
+        Button {
+            if !editing { preEditEdited = take.editedEvents }   // snapshot for Cancel
+            editing.toggle()
+        } label: {
+            Label(editing ? "Done" : "Edit", systemImage: editing ? "checkmark" : "pencil")
+        }
+        .buttonStyle(.bordered)
+        .tint(editing ? Theme.accent2 : Theme.accent)
+        .accessibilityIdentifier("score-edit")
+        if editing {
+            Button(role: .cancel) {
+                // Discard this edit session: restore the pre-edit stream. A take that was
+                // deriving-from-raw (editedEvents == nil) must go back to nil via
+                // revertTakeEdits, NOT be pinned to a snapshot — otherwise its quantization
+                // freezes forever (the editedEvents==nil derive-from-raw contract).
+                if let snap = preEditEdited { studio.setTakeEvents(takeId, events: snap) }
+                else { studio.revertTakeEdits(takeId) }
+                editing = false
+            } label: {
+                Label("Cancel", systemImage: "xmark")
+            }
+            .buttonStyle(.bordered)
+            .tint(Theme.fgDim)
+            .accessibilityIdentifier("score-cancel")
+        }
+    }
+
     private func actionBar(_ take: StudioTake) -> some View {
         HStack(spacing: 10) {
             Button {
@@ -107,14 +141,7 @@ struct StudioScoreView: View {
             .tint(instruments.isReplaying ? Theme.danger : Theme.accent)
             .disabled(take.scoreEvents.isEmpty)
             .accessibilityIdentifier("score-replay")
-            Button {
-                editing.toggle()
-            } label: {
-                Label(editing ? "Done" : "Edit", systemImage: editing ? "checkmark" : "pencil")
-            }
-            .buttonStyle(.bordered)
-            .tint(editing ? Theme.accent2 : Theme.accent)
-            .accessibilityIdentifier("score-edit")
+            editButtons(take)
             Spacer(minLength: 0)
             Button { exportAudio(take) } label: {
                 if exportingAudio {

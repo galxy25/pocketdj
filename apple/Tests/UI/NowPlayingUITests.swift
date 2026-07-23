@@ -227,6 +227,48 @@ final class NowPlayingUITests: XCTestCase {
     /// bottom strip (title + ⏮ ⏯ ⏭ + chevron-up), the menu list takes the freed height,
     /// and chevron-up brings the full deck back. State persists via @AppStorage, so the
     /// test restores the expanded default at the end.
+    /// MISC2: "Song details" is available from the Up-next AND Previously-played context menus
+    /// (long-press / right-click), opening the same song-detail sheet the record long-press uses.
+    func testSongDetailsFromQueueContextMenus() throws {
+        #if os(macOS)
+        throw XCTSkip("context-menu long-press exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launch()
+        let panel = app.revealNowPlayingHome()
+        XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
+
+        // Up next → long-press → Song details → the detail sheet opens.
+        let upNext = app.any("np-queue-0")
+        XCTAssertTrue(upNext.waitForExistence(timeout: 8), "an up-next row")
+        upNext.press(forDuration: 0.9)
+        let songDetails = app.buttons["Song details"].firstMatch
+        XCTAssertTrue(songDetails.waitForExistence(timeout: 5), "Up-next menu offers Song details")
+        songDetails.tap()
+        dismissSongDetail()
+
+        // Previously played → reveal → long-press → Song details.
+        let history = app.el("np-history")
+        XCTAssertTrue(history.waitForExistence(timeout: 8))
+        if !app.any("np-played-0").exists { history.tap() }
+        let played = app.any("np-played-0")
+        XCTAssertTrue(played.waitForExistence(timeout: 8), "a previously-played row")
+        played.press(forDuration: 0.9)
+        let songDetails2 = app.buttons["Song details"].firstMatch
+        XCTAssertTrue(songDetails2.waitForExistence(timeout: 5), "Played menu offers Song details")
+        songDetails2.tap()
+        dismissSongDetail()
+        #endif
+    }
+
+    /// Close the song-detail sheet (iPhone Back / iPad+macOS ✕ overlay — the panel's per-platform close).
+    private func dismissSongDetail() {
+        let back = app.el("np-detail-back")
+        let closer = back.waitForExistence(timeout: 3) ? back : app.el("np-detail-close")
+        XCTAssertTrue(closer.waitForExistence(timeout: 3), "the song-detail sheet is open")
+        closer.tap()
+    }
+
     func testCollapseToMiniBarAndExpandBack() throws {
         #if os(macOS)
         throw XCTSkip("the mini-bar is iOS-only")

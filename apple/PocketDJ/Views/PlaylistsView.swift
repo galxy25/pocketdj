@@ -307,15 +307,27 @@ struct PlaylistsView: View {
     /// from pockets and from the read-only "From your sources" section. Rendered first.
     @ViewBuilder private var yourPlaylistsSection: some View {
         let top = collections.playlists(inFolder: nil, sortedBy: settings.collectionSort)
-        Section("Your playlists") {
-            if collections.playlists.isEmpty {
-                Text("No playlists yet — tap + to create one.")
-                    .font(.caption).foregroundStyle(Theme.fgDim)
-            } else if top.isEmpty {
-                Text("All your playlists are in folders below.")
-                    .font(.caption).foregroundStyle(Theme.fgDim)
+        Section {
+            // Collapsible like folders / shared sources. A reserved sentinel key (double-
+            // underscore, un-collidable with folder UUIDs) reuses the folder collapse store,
+            // so the state persists across launches. Default EXPANDED (missing ⇒ expanded).
+            DisclosureGroup(isExpanded: folderExpansion("__your_playlists__")) {
+                if collections.playlists.isEmpty {
+                    Text("No playlists yet — tap + to create one.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                } else if top.isEmpty {
+                    Text("All your playlists are in folders below.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                ForEach(top) { pl in playlistRow(pl) }
+            } label: {
+                HStack {
+                    Text("Your playlists")
+                    Spacer()
+                    Text("\(top.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                .accessibilityIdentifier("your-playlists-header")
             }
-            ForEach(top) { pl in playlistRow(pl) }
         }
     }
 
@@ -324,12 +336,21 @@ struct PlaylistsView: View {
     @ViewBuilder private var yourPocketsSection: some View {
         if !collections.pockets.isEmpty {
             let top = collections.pockets(inFolder: nil, sortedBy: settings.collectionSort)
-            Section("Pockets") {
-                if top.isEmpty {
-                    Text("All your pockets are in folders below.")
-                        .font(.caption).foregroundStyle(Theme.fgDim)
+            Section {
+                DisclosureGroup(isExpanded: folderExpansion("__your_pockets__")) {
+                    if top.isEmpty {
+                        Text("All your pockets are in folders below.")
+                            .font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                    ForEach(top) { pk in pocketRow(pk) }
+                } label: {
+                    HStack {
+                        Text("Pockets")
+                        Spacer()
+                        Text("\(top.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                    .accessibilityIdentifier("your-pockets-header")
                 }
-                ForEach(top) { pk in pocketRow(pk) }
             }
         }
     }

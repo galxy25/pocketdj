@@ -304,6 +304,78 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// I1: multi-step Undo. Starts disabled, enables after an edit, and walks the whole
+    /// session back to disabled. (Undo lives on the shared ScoreEditorView, so this also
+    /// covers the live staff.)
+    func testScoreUndoWalksEditsBack() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)                                   // Instruments
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8))
+        takeRow.tap()
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8))
+        edit.tap()
+        let undo = app.el("score-undo")
+        XCTAssertTrue(undo.waitForExistence(timeout: 5), "Undo control is present in the edit toolbar")
+        XCTAssertFalse(undo.isEnabled, "Undo is disabled before any edit")
+        // Make at least one edit: tap the staff (selects or places a note) then set a length,
+        // which commits deterministically whichever happened.
+        let page = app.any("score-page-0")
+        XCTAssertTrue(page.waitForExistence(timeout: 5))
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        app.el("score-length-1").tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: undo)],
+             timeout: 5)                               // an edit was committed ⇒ Undo enables
+        snap("score-undo-enabled")
+        // Undo the whole session ⇒ the stack empties and Undo disables again.
+        var taps = 0
+        while undo.isEnabled && taps < 10 { undo.tap(); taps += 1 }
+        XCTAssertGreaterThan(taps, 0)
+        XCTAssertFalse(undo.isEnabled, "Undo walks the session back, then disables")
+        #endif
+    }
+
+    /// I1: Cancel discards the edit session and exits edit mode (the toolbar + Cancel vanish).
+    /// The restore-to-pre-edit correctness is covered at the store level (StudioStoreTests).
+    func testScoreCancelExitsEditMode() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8))
+        takeRow.tap()
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8))
+        edit.tap()
+        let toolbar = app.el("score-length-4")
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 5), "the edit toolbar")
+        let cancel = app.el("score-cancel")
+        XCTAssertTrue(cancel.exists, "Cancel appears while editing")
+        // Make an edit, then Cancel → editing ends (toolbar + Cancel disappear).
+        let page = app.any("score-page-0")
+        XCTAssertTrue(page.waitForExistence(timeout: 5))
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        app.el("score-length-1").tap()
+        cancel.tap()
+        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: toolbar)],
+             timeout: 5)
+        XCTAssertFalse(cancel.exists, "Cancel is hidden once editing ends")
+        XCTAssertTrue(app.el("score-edit").exists, "back to the Edit affordance")
+        #endif
+    }
+
     func testLiveStaffSectionPresent() throws {
         #if os(macOS)
         throw XCTSkip("macOS: Instruments live-staff exercised on iOS")
