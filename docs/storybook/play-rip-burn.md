@@ -512,7 +512,8 @@ always-visible **✕** on iPad and Mac (Esc still works for the keyboard-incline
 
 And the **sidebar wears a set of custom marks** — the **Mix** tab's two overlapping records
 (Apple Music's AutoMix symbol) are now cast in **platinum and gold**, the **Producer** piano
-keys glow with the retro **Apple rainbow** running left→right, **Collections** is a **diamond**,
+keys glow with the retro **Apple rainbow** running left→right, **Collections** is a faceted,
+shiny **diamond** gem (like the 💎 emoji),
 and **Browser** is a **magnifying glass**.
 
 **Getting there.** The app now opens on **History** by default on **every** platform — your
