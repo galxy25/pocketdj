@@ -441,15 +441,60 @@ final class PerformanceUITests: XCTestCase {
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
         wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: undo)],
              timeout: 5)
-        // Select: clear the placed note's selection, then a tap snaps to the nearest note.
+        // Select: clear, then RE-ENTER Select — the cursor defaults to (auto-selects) the last
+        // note, so Edit can act on it (deterministic — no reliance on tap-hit geometry).
         app.el("score-mode-select").tap()
         if app.el("score-deselect").exists { app.el("score-deselect").tap() }
-        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        app.el("score-mode-enter").tap()
+        app.el("score-mode-select").tap()
         app.el("score-mode-edit").tap()
         let del = app.el("score-delete")
         XCTAssertTrue(del.waitForExistence(timeout: 5))
         wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: del)],
-             timeout: 5)                               // the snap selected a note
+             timeout: 5)                               // the default-cursor selection is deletable
+        #endif
+    }
+
+    /// SELECT cursor + bars: entering Select auto-selects the LAST note (default cursor); ◀ / ▶
+    /// arrows exist under the switcher; Add-bar enables Remove-bar (an empty trailing bar), and
+    /// Remove-bar clears it again.
+    func testScoreSelectCursorAndBars() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8))
+        takeRow.tap()
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8))
+        edit.tap()
+        // Switch to Select: the cursor defaults to the last note (auto-selected) and the ◀ / ▶
+        // arrows appear under the switcher.
+        app.el("score-mode-select").tap()
+        XCTAssertTrue(app.el("score-cursor-prev").waitForExistence(timeout: 5), "◀ cursor arrow")
+        XCTAssertTrue(app.el("score-cursor-next").exists, "▶ cursor arrow")
+        // Default selection = the last note ⇒ Edit's Delete is enabled.
+        app.el("score-mode-edit").tap()
+        XCTAssertTrue(app.el("score-delete").isEnabled, "the last note is the default cursor selection")
+        // Back to Select: Add-bar enables Remove-bar; Remove-bar clears the empty trailing bar.
+        app.el("score-mode-select").tap()
+        let removeBar = app.el("score-remove-bar")
+        XCTAssertTrue(removeBar.waitForExistence(timeout: 5))
+        XCTAssertFalse(removeBar.isEnabled, "no empty trailing bar yet")
+        app.el("score-add-bar").tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: removeBar)],
+             timeout: 5)
+        app.el("score-remove-bar").tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == false"), evaluatedWith: removeBar)],
+             timeout: 5)
+        // Navigating the cursor doesn't crash.
+        app.el("score-cursor-prev").tap()
+        app.el("score-cursor-next").tap()
         #endif
     }
 

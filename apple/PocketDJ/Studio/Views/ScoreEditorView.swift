@@ -34,11 +34,16 @@ struct ScoreEditorView: View {
     /// pops and re-commits it. View-local + session-scoped; both hosts get Undo, only the saved-take
     /// host adds Cancel.
     @State private var undoStack: [[StudioNoteEvent]] = []
+    /// SELECT-mode cursor (absolute 16th index), navigated by ◀ / ▶; and the minimum bar count so
+    /// the editor can show + navigate into empty trailing bars. Both view-local, no schema.
+    @State private var cursor = 0
+    @State private var minBars = 0
 
     private var step: Double { ScoreQuantizer.sixteenthMs(bpm: bpm) }
 
     var body: some View {
-        let doc = ScoreQuantizer.quantize(events: events, bpm: bpm, instrument: instrument)
+        let doc = ScoreQuantizer.quantize(events: events, bpm: bpm, instrument: instrument,
+                                          minMeasures: minBars)
         let pages = ScoreLayout.paginate(score: doc, title: title, instrument: instrument)
         let points = selectionPoints(pages: pages)
         VStack(spacing: 12) {
@@ -57,7 +62,14 @@ struct ScoreEditorView: View {
             }
         }
         .onChange(of: editing) {
-            if !editing { selection = []; undoStack.removeAll(); mode = .enter }
+            if !editing { selection = []; undoStack.removeAll(); mode = .enter; minBars = 0 }
+        }
+        .onChange(of: mode) {
+            // Entering SELECT with nothing selected: default the cursor to the LAST note and
+            // select it (the "last played / edited note" starting point).
+            if mode == .select, selection.isEmpty, let last = lastNote {
+                cursor = onset(last); selectAtOnset(cursor)
+            }
         }
     }
 
@@ -121,16 +133,42 @@ struct ScoreEditorView: View {
     }
 
     private var selectRow: some View {
-        HStack(spacing: 6) {
-            Text("Select").font(.caption2).foregroundStyle(Theme.fgDim)
-            chip("Notes", on: granularity == .note, id: "score-gran-note") { granularity = .note }
-            chip("Bars", on: granularity == .bar, id: "score-gran-bar") { granularity = .bar }
-            Spacer(minLength: 0)
-            if !selection.isEmpty {
-                Button("Deselect") { selection = [] }
-                    .font(.caption).accessibilityIdentifier("score-deselect")
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Select").font(.caption2).foregroundStyle(Theme.fgDim)
+                chip("Notes", on: granularity == .note, id: "score-gran-note") { granularity = .note }
+                chip("Bars", on: granularity == .bar, id: "score-gran-bar") { granularity = .bar }
+                Spacer(minLength: 0)
+                if !selection.isEmpty {
+                    Button("Deselect") { selection = [] }
+                        .font(.caption).accessibilityIdentifier("score-deselect")
+                }
+            }
+            // The CURSOR row (under the switcher): ◀ / ▶ move the cursor one note (Note mode) or one
+            // bar (Bar mode) and select it — distinct from Move's steppers, which move the notes.
+            HStack(spacing: 6) {
+                Text("Cursor").font(.caption2).foregroundStyle(Theme.fgDim)
+                navBtn("◀", "score-cursor-prev", enabled: true) { moveCursor(-1) }
+                navBtn("▶", "score-cursor-next", enabled: true) { moveCursor(1) }
+                Divider().frame(height: 18)
+                navBtn("＋ Bar", "score-add-bar", enabled: true) { addBar() }
+                navBtn("− Bar", "score-remove-bar", enabled: lastBarEmpty) { removeBar() }
+                Spacer(minLength: 0)
             }
         }
+    }
+
+    private func navBtn(_ text: String, _ id: String, enabled: Bool,
+                        _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text).font(.callout.weight(.semibold)).frame(minWidth: 30)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Theme.fgDim.opacity(0.12), in: Capsule())
+                .foregroundStyle(Theme.fg)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityIdentifier(id)
     }
 
     private var moveRow: some View {
@@ -290,6 +328,12 @@ struct ScoreEditorView: View {
             case .flat:    (midi, acc) = (natural - 1, .flat)
             }
             let onMs = Int((Double(loc.measureIndex * 16 + loc.onset16ths) * step).rounded())
+            // A note already lives at this time + pitch: SELECT it rather than stack an INVISIBLE
+            // duplicate (the quantizer merges same-onset heads into one, but the persisted stream
+            // would play + MIDI/audio-export doubled).
+            if let existing = events.first(where: { $0.onMs == onMs && $0.note == midi }) {
+                selection = [existing]; syncPen(to: existing); return
+            }
             let offMs = onMs + Int((Double(editLength.sixteenths) * step).rounded())
             let newNote = StudioNoteEvent(onMs: onMs, offMs: offMs, note: midi, velocity: 96, accidental: acc)
             commit(events + [newNote])
@@ -300,6 +344,8 @@ struct ScoreEditorView: View {
                 toggleBar(loc.measureIndex)
             } else if let e = nearestNote(to: pagePoint, pageIndex: pageIndex, pages: pages) {
                 toggle(e)                                 // snap to the closest note
+            } else {
+                selection = []                            // tapped empty space → clear the selection
             }
         case .move, .edit:
             // A tap adjusts what you're operating on: snap to the closest note and toggle it.
@@ -310,6 +356,7 @@ struct ScoreEditorView: View {
     /// The note whose rendered position is closest to `pagePoint` on page `pageIndex`, or nil if
     /// none lands on that page. Powers SELECT's snap-to-closest and MOVE/EDIT's tap-to-adjust.
     private func nearestNote(to pagePoint: CGPoint, pageIndex: Int, pages: [ScorePage]) -> StudioNoteEvent? {
+        guard pages.indices.contains(pageIndex) else { return nil }
         let plan = ClefPlan.plan(for: instrument)
         var best: (e: StudioNoteEvent, d: CGFloat)?
         for e in events {
@@ -321,15 +368,74 @@ struct ScoreEditorView: View {
             let d = dx * dx + dy * dy
             if best == nil || d < best!.d { best = (e, d) }
         }
-        return best?.e
+        // Only snap when the tap is reasonably NEAR a note (≈8% of page height) — a tap in empty
+        // space selects nothing, so a stray/mis-aimed tap in Move/Edit can't toggle a distant note.
+        guard let best else { return nil }
+        let reach = pages[pageIndex].size.height * 0.08
+        return best.d <= reach * reach ? best.e : nil
     }
 
     private func toggle(_ e: StudioNoteEvent) {
         if selection.contains(e) { selection.remove(e) } else { selection.insert(e) }
-        // Sync the pen to the last-touched note so EDIT chips reflect it.
+        syncPen(to: e)
+    }
+
+    /// Sync the length/accidental pen to a note (so the EDIT/ENTER chips reflect the last-touched one).
+    private func syncPen(to e: StudioNoteEvent) {
         editLength = NoteDuration.snapped(toSixteenths: max(1, Int((Double(e.offMs - e.onMs) / step).rounded())))
         editAccidental = e.accidental ?? .natural
     }
+
+    // MARK: Cursor + bars (SELECT navigation)
+
+    private func onset(_ e: StudioNoteEvent) -> Int { Int((Double(e.onMs) / step).rounded()) }
+    private var lastNote: StudioNoteEvent? { events.max { $0.onMs < $1.onMs } }
+    private var noteOnsets: [Int] { Array(Set(events.map(onset))).sorted() }
+    /// Bars occupied by content (rounded up from the last note's end).
+    private var contentBars: Int {
+        guard let end = events.map({ Int((Double($0.offMs) / step).rounded()) }).max() else { return 0 }
+        return (end + 15) / 16
+    }
+    /// Total bars shown = content, floored at the requested minimum (empty trailing bars).
+    private var barCount: Int { max(contentBars, minBars) }
+    /// The last bar is EMPTY (a trailing added bar) → removable without deleting notes.
+    private var lastBarEmpty: Bool { barCount > contentBars }
+
+    private func selectAtOnset(_ on: Int) {
+        let here = events.filter { onset($0) == on }
+        selection = Set(here)
+        if let e = here.first { syncPen(to: e) }
+    }
+    private func selectBar(_ bar: Int) {
+        selection = Set(events.filter { onset($0) / 16 == bar })
+        if let e = selection.first { syncPen(to: e) }
+    }
+
+    /// ◀ / ▶ in SELECT: move the cursor one note (Note mode) or one bar (Bar mode) and select the
+    /// note(s) there. Moving forward past the end grows the score by an empty bar.
+    private func moveCursor(_ delta: Int) {
+        if granularity == .bar {
+            let target = cursor / 16 + delta
+            guard target >= 0 else { return }
+            if target >= barCount { minBars = target + 1 }      // grow to include the target bar
+            cursor = target * 16
+            selectBar(target)
+        } else if delta > 0 {
+            if let nxt = noteOnsets.first(where: { $0 > cursor }) {
+                cursor = nxt; selectAtOnset(cursor)
+            } else {
+                minBars = barCount + 1                          // past the last note → new empty bar
+                cursor = barCount * 16
+                selection = []
+            }
+        } else if let prv = noteOnsets.last(where: { $0 < cursor }) {
+            cursor = prv; selectAtOnset(cursor)
+        }
+    }
+
+    private func addBar() { minBars = barCount + 1 }
+    /// Remove the last bar only when it's EMPTY — never deletes notes.
+    private func removeBar() { if lastBarEmpty { minBars = barCount - 1 } }
 
     private func toggleBar(_ measure: Int) {
         let inBar = events.filter { Int((Double($0.onMs) / step).rounded()) / 16 == measure }

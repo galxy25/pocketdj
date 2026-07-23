@@ -235,7 +235,10 @@ explicit modes:
 - **Enter** — every tap **places a new note** at that spot; pick its **length** (𝅘𝅥𝅮 · 𝅘𝅥 · 𝅗𝅥 · 𝅝) and
   **accidental** (♮ · ♯ · ♭) first as the "pen."
 - **Select** — every tap **snaps to the closest note** and rings it (tap more to build a
-  multi-selection), or flip to **Bars** to grab a whole bar's notes in one tap.
+  multi-selection), or flip to **Bars** to grab a whole bar's notes in one tap. Under the switcher,
+  **◀ / ▶** move a **cursor** one note (or one bar) at a time and select it — entering Select drops
+  the cursor on the **last note** — and **＋ Bar / − Bar** grow or trim empty trailing bars (moving
+  the cursor ▶ past the end adds one automatically).
 - **Move** — nudge the whole selection **±a semitone** or **±a step** in time, or **Duplicate** it a
   bar later — all with buttons, so there's no fiddly dragging fighting the scroll.
 - **Edit** — set the **length** and **accidental** (a flat draws as a real flat, not a sharp) of

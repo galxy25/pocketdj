@@ -166,4 +166,37 @@ final class ScoreQuantizerTests: XCTestCase {
         XCTAssertEqual(doc.bpm, 120)
         XCTAssertEqual(doc.measures[0].items.first?.duration, .quarter)  // 500 ms @120 = quarter
     }
+
+    // MARK: minMeasures — empty trailing bars (cursor / add-bar)
+
+    private func isRest(_ i: ScoreItem) -> Bool { if case .rest = i.kind { return true }; return false }
+
+    func testMinMeasuresPadsEmptyTrailingBars() {
+        let doc = ScoreQuantizer.quantize(events: [ev(0, 250, 60)], bpm: 120, instrument: .piano,
+                                          minMeasures: 3)
+        XCTAssertEqual(doc.measures.count, 3, "padded out to the requested minimum")
+        XCTAssertTrue(doc.measures[0].items.contains { if case .notes = $0.kind { return true }; return false })
+        for b in 1..<3 {
+            XCTAssertTrue(doc.measures[b].items.allSatisfy(isRest), "bar \(b) is an empty (rest-only) bar")
+        }
+    }
+
+    func testMinMeasuresBelowContentIsNoOp() {
+        // Content already spans 2 bars (a note in bar 1); minMeasures 1 never shrinks it.
+        let doc = ScoreQuantizer.quantize(events: [ev(0, 250, 60), ev(2000, 2250, 62)], bpm: 120,
+                                          instrument: .piano, minMeasures: 1)
+        XCTAssertEqual(doc.measures.count, 2)
+    }
+
+    func testMinMeasuresOnEmptyScore() {
+        let doc = ScoreQuantizer.quantize(events: [], bpm: 120, instrument: .piano, minMeasures: 2)
+        XCTAssertEqual(doc.measures.count, 2, "no notes but 2 empty bars requested")
+        XCTAssertTrue(doc.measures.allSatisfy { $0.items.allSatisfy(isRest) })
+    }
+
+    func testDefaultMinMeasuresUnaffectsExports() {
+        // No minMeasures (the export path) → content-only.
+        let doc = ScoreQuantizer.quantize(events: [ev(0, 250, 60)], bpm: 120, instrument: .piano)
+        XCTAssertEqual(doc.measures.count, 1)
+    }
 }
