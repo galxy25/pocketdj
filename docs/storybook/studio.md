@@ -229,13 +229,19 @@ And a take doesn't have to stay a take:
 
 ### Write on the staff — live and recorded
 
-The **Score** screen is editable, not just read-only notation. Its **Edit** button lets you
-**tap the staff to place a note**, tap a note to select it (it gets a ring), then set its
-**length** (𝅘𝅥𝅮 · 𝅘𝅥 · 𝅗𝅥 · 𝅝), toggle its **accidental** (♮ · ♯ · ♭ — a flat draws as a real
-flat, not a sharp), or **delete** it. An **Undo** button steps back through your edits one at a
-time (⌘Z on a Mac / iPad keyboard), and a **Cancel** button throws the whole edit session away
-and restores the take exactly as it was before you tapped Edit — and Replay and the PDF/MIDI
-export follow whatever you keep.
+The **Score** screen is editable, not just read-only notation. Its **Edit** button opens three
+explicit modes:
+
+- **Select** — tap notes to ring them (as many as you like), or flip to **Bars** to grab a whole
+  bar's worth in one tap; tapping empty staff **places** a new note.
+- **Move** — nudge the whole selection **±a semitone** or **±a step** in time, or **Duplicate** it a
+  bar later — all with buttons, so there's no fiddly dragging fighting the scroll.
+- **Edit** — set the **length** (𝅘𝅥𝅮 · 𝅘𝅥 · 𝅗𝅥 · 𝅝) and **accidental** (♮ · ♯ · ♭ — a flat draws as a
+  real flat, not a sharp) of everything selected, or **delete** it.
+
+An **Undo** button steps back through your edits one at a time (⌘Z on a Mac / iPad keyboard), and a
+**Cancel** button throws the whole edit session away and restores the take exactly as it was before
+you tapped Edit — and Replay and the PDF/MIDI export follow whatever you keep.
 On **Instruments**, a **Live score** fills in *as you play* the keys (or a connected MIDI
 keyboard) — the same staff, the same editing — and **Save** files it as a take. Play a
 phrase, fix the one note you fluffed by tapping it on the staff, and keep it.

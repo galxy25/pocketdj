@@ -285,22 +285,21 @@ final class PerformanceUITests: XCTestCase {
         let edit = app.el("score-edit")
         XCTAssertTrue(edit.waitForExistence(timeout: 8), "score screen with an Edit control")
         edit.tap()
-        XCTAssertTrue(app.el("score-length-4").waitForExistence(timeout: 5), "the edit toolbar")
-        let del = app.el("score-delete")
-        XCTAssertFalse(del.isEnabled, "Delete is disabled until a note is selected")
-        // Pick flat + a half note, then tap the staff to place a note (selects it ⇒ Delete enables).
-        app.el("score-acc-flat").tap()
-        app.el("score-length-2").tap()
+        XCTAssertTrue(app.el("score-mode-select").waitForExistence(timeout: 5), "the mode toolbar")
+        // Select mode: tap the staff to place/select a note (selection becomes non-empty).
         let page = app.any("score-page-0")
         XCTAssertTrue(page.waitForExistence(timeout: 5), "the first score page")
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
-        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: del)],
-             timeout: 5)                               // placing selected the new note
         snap("score-editor")
-        // Delete removes it → Delete disabled again.
+        // Edit mode: Delete acts on the selection.
+        app.el("score-mode-edit").tap()
+        let del = app.el("score-delete")
+        XCTAssertTrue(del.waitForExistence(timeout: 5))
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: del)],
+             timeout: 5)                               // the placed/selected note is deletable
         del.tap()
         wait(for: [expectation(for: NSPredicate(format: "isEnabled == false"), evaluatedWith: del)],
-             timeout: 5)
+             timeout: 5)                               // nothing selected ⇒ Delete disabled
         #endif
     }
 
@@ -323,13 +322,14 @@ final class PerformanceUITests: XCTestCase {
         XCTAssertTrue(edit.waitForExistence(timeout: 8))
         edit.tap()
         let undo = app.el("score-undo")
-        XCTAssertTrue(undo.waitForExistence(timeout: 5), "Undo control is present in the edit toolbar")
+        XCTAssertTrue(undo.waitForExistence(timeout: 5), "Undo is in the mode toolbar")
         XCTAssertFalse(undo.isEnabled, "Undo is disabled before any edit")
-        // Make at least one edit: tap the staff (selects or places a note) then set a length,
-        // which commits deterministically whichever happened.
+        // Select a spot (places or selects a note), then in Edit mode set a length — a guaranteed
+        // commit whichever the tap did.
         let page = app.any("score-page-0")
         XCTAssertTrue(page.waitForExistence(timeout: 5))
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        app.el("score-mode-edit").tap()
         app.el("score-length-1").tap()
         wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: undo)],
              timeout: 5)                               // an edit was committed ⇒ Undo enables
@@ -359,20 +359,58 @@ final class PerformanceUITests: XCTestCase {
         let edit = app.el("score-edit")
         XCTAssertTrue(edit.waitForExistence(timeout: 8))
         edit.tap()
-        let toolbar = app.el("score-length-4")
-        XCTAssertTrue(toolbar.waitForExistence(timeout: 5), "the edit toolbar")
+        let toolbar = app.el("score-mode-select")
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 5), "the mode toolbar")
         let cancel = app.el("score-cancel")
         XCTAssertTrue(cancel.exists, "Cancel appears while editing")
         // Make an edit, then Cancel → editing ends (toolbar + Cancel disappear).
         let page = app.any("score-page-0")
         XCTAssertTrue(page.waitForExistence(timeout: 5))
         page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
-        app.el("score-length-1").tap()
         cancel.tap()
         wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: toolbar)],
              timeout: 5)
         XCTAssertFalse(cancel.exists, "Cancel is hidden once editing ends")
         XCTAssertTrue(app.el("score-edit").exists, "back to the Edit affordance")
+        #endif
+    }
+
+    /// I2: the three score-editor modes expose their tools — Select places/selects, Move shows
+    /// enabled ±steppers + Duplicate over a selection (and a nudge commits), Edit shows
+    /// length/accidental + Delete.
+    func testScoreEditorModesExposeTools() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score edit flow exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(3)
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8))
+        takeRow.tap()
+        let edit = app.el("score-edit")
+        XCTAssertTrue(edit.waitForExistence(timeout: 8))
+        edit.tap()
+        // Select mode: place/select a note so there's a selection to move.
+        XCTAssertTrue(app.el("score-mode-select").waitForExistence(timeout: 5))
+        let page = app.any("score-page-0")
+        XCTAssertTrue(page.waitForExistence(timeout: 5))
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        // Move mode: steppers + Duplicate are enabled with a selection; a nudge commits.
+        app.el("score-mode-move").tap()
+        let up = app.el("score-move-up")
+        XCTAssertTrue(up.waitForExistence(timeout: 5), "the Move ♯ stepper")
+        XCTAssertTrue(up.isEnabled, "Move enabled with a selection")
+        XCTAssertTrue(app.el("score-duplicate").isEnabled, "Duplicate enabled with a selection")
+        up.tap()
+        wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"),
+                               evaluatedWith: app.el("score-undo"))], timeout: 5)   // the nudge committed
+        // Edit mode: length + delete are present.
+        app.el("score-mode-edit").tap()
+        XCTAssertTrue(app.el("score-length-4").waitForExistence(timeout: 5), "Edit shows length chips")
+        XCTAssertTrue(app.el("score-delete").isEnabled, "Delete enabled with a selection")
         #endif
     }
 
