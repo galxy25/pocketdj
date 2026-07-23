@@ -344,3 +344,39 @@ final class IndexPlaylistsUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["From your sources"].exists)
     }
 }
+
+// MARK: - MISC3: collapsible "Your playlists" / "Your Pockets"
+
+/// The two "Your …" sections gained folder-style expand/collapse (persisted via the same
+/// UserDefaults store). Seeds a top-level playlist ("Seeded Set") and verifies the header
+/// collapses it out of the tree and expands it back.
+final class PlaylistsCollapseUITests: XCTestCase {
+    override func setUp() { continueAfterFailure = false }
+
+    private func launch() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_SEED_COLLECTIONS"] = "1"   // one top-level playlist "Seeded Set"
+        app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
+        app.launch()
+        return app
+    }
+
+    #if !os(macOS)
+    func testYourPlaylistsCollapsesAndExpands() {
+        let app = launch()
+        let header = app.descendants(matching: .any)
+            .matching(identifier: "your-playlists-header").firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 15), "the collapsible Your-playlists header")
+        let seeded = app.staticTexts["Seeded Set"]
+        XCTAssertTrue(seeded.waitForExistence(timeout: 5), "the seeded playlist shows while expanded")
+        // Collapse ⇒ the row leaves the tree.
+        header.tap()
+        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: seeded)],
+             timeout: 5)
+        // Expand ⇒ it returns.
+        header.tap()
+        XCTAssertTrue(seeded.waitForExistence(timeout: 5), "expanding shows the playlist again")
+    }
+    #endif
+}

@@ -520,9 +520,11 @@ is to paste it into a bug report, and long-pressing to select inside a settings 
 is a fight.
 
 **Capture debug log** is the loop itself. Turn it on, **reproduce whatever's misbehaving**,
-turn it off — and the frozen session appears right there with an **Export** button. Save the text
-file straight into **iCloud Drive** (or AirDrop it) and it's off the device and in front of whoever's
-debugging, no cables, no Terminal, no Xcode.
+turn it off — and the frozen session is **saved to a list** right below. Captures now **persist
+across relaunches and accumulate**, so you can grab several before you sit down to send them: each
+saved session shows its capture time and line count, and you can **Export** any one (the text file
+straight into **iCloud Drive**, or AirDrop it), **delete** one (swipe or right-click), or **Delete
+all** at once — no cables, no Terminal, no Xcode.
 
 What's in a session: the mix engine's once-a-second **liveness heartbeat** — is the engine running,
 are render callbacks actually firing, is there **actual signal** or silence, what each deck *thinks*

@@ -399,10 +399,15 @@ struct NowPlayingPanel: View {
 
     private func openCurrentSongDetail() {
         guard let item = currentItem else { return }
-        // Catalog songs open their full metadata; anything else — a Discover amrec_
-        // rip, a jukebox Apple Music insert, a studio row — still opens, synthesized
-        // from the queue row, so the long-press always answers (and the detail's
-        // Apple Music library section can offer ＋ Add for AM-backed tracks).
+        openSongDetail(for: item)
+    }
+
+    /// Open the full Song Detail sheet for ANY queue row (current, up-next, or previously
+    /// played). Catalog songs open their full metadata; anything else — a Discover amrec_
+    /// rip, a jukebox Apple Music insert, a studio row — still opens, synthesized from the
+    /// queue row, so the menu item always answers (and the detail's Apple Music library
+    /// section can offer ＋ Add for AM-backed tracks).
+    private func openSongDetail(for item: SetlistPlayer.Item) {
         detailSong = app.songsById[item.id]
             ?? IndexSong.minimal(id: item.id, name: item.title, artist: item.artist)
     }
@@ -454,6 +459,10 @@ struct NowPlayingPanel: View {
                     Button { sequencer.appendToQueue([replay(item)]) } label: {
                         Label("Play again last", systemImage: "arrow.down.to.line")
                     }
+                    Divider()
+                    Button { openSongDetail(for: item) } label: {
+                        Label("Song details", systemImage: "info.circle")
+                    }
                 }
                 .listRowBackground(Theme.bg)
                 .accessibilityElement(children: .contain)
@@ -503,6 +512,10 @@ struct NowPlayingPanel: View {
                     }
                     Button { sequencer.moveUpcomingToEnd(uid: item.uid) } label: {
                         Label("Move to bottom", systemImage: "arrow.down.to.line")
+                    }
+                    Divider()
+                    Button { openSongDetail(for: item) } label: {
+                        Label("Song details", systemImage: "info.circle")
                     }
                     Divider()
                     Button(role: .destructive) {

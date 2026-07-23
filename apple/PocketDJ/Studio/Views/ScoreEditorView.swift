@@ -17,6 +17,11 @@ struct ScoreEditorView: View {
     @State private var editAccidental: Accidental = .natural
     /// Index into `events` of the selected note; nil = none.
     @State private var selectedIndex: Int?
+    /// Multi-step Undo (live-commit + undo model). Each committed edit pushes the PRE-edit
+    /// stream here; Undo pops and re-commits it. View-local + session-scoped — cleared when
+    /// editing ends, never persisted (no schema surface). Both hosts get Undo; only the
+    /// saved-take host adds Cancel (the live staff keeps changing as you play).
+    @State private var undoStack: [[StudioNoteEvent]] = []
 
     var body: some View {
         let doc = ScoreQuantizer.quantize(events: events, bpm: bpm, instrument: instrument)
@@ -37,7 +42,7 @@ struct ScoreEditorView: View {
                     .accessibilityIdentifier("score-page-\(i)")
             }
         }
-        .onChange(of: editing) { if !editing { selectedIndex = nil } }
+        .onChange(of: editing) { if !editing { selectedIndex = nil; undoStack.removeAll() } }
     }
 
     // MARK: Toolbar (length · accidental · delete)
@@ -61,6 +66,13 @@ struct ScoreEditorView: View {
                     }
                 }
                 Spacer(minLength: 0)
+                Button { undo() } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward").lineLimit(1).fixedSize()
+                }
+                .buttonStyle(.bordered).tint(Theme.accent)
+                .disabled(undoStack.isEmpty)
+                .keyboardShortcut("z", modifiers: .command)
+                .accessibilityIdentifier("score-undo")
                 Button(role: .destructive) { deleteSelected() } label: {
                     Label("Delete", systemImage: "trash").lineLimit(1).fixedSize()
                 }
@@ -106,6 +118,20 @@ struct ScoreEditorView: View {
 
     // MARK: Operations
 
+    /// Commit an edit, first snapshotting the pre-edit stream onto the undo stack so Undo can
+    /// walk back through the whole session. Undo itself re-commits via `onEdit` directly (no
+    /// push), so undo is repeatable and never grows the stack.
+    private func commit(_ next: [StudioNoteEvent]) {
+        undoStack.append(events)
+        onEdit(next)
+    }
+
+    private func undo() {
+        guard let prev = undoStack.popLast() else { return }
+        onEdit(prev)           // re-commit the prior snapshot WITHOUT pushing
+        selectedIndex = nil     // indices shift when an add/delete is undone
+    }
+
     /// A tap on a page: select the note at that spot, else place a new one there.
     private func handleTap(at pagePoint: CGPoint, page: ScorePage) {
         guard let loc = ScoreLayout.locate(point: pagePoint, page: page) else { selectedIndex = nil; return }
@@ -134,7 +160,7 @@ struct ScoreEditorView: View {
         let offMs = onMs + Int((Double(editLength.sixteenths) * step).rounded())
         var next = events
         next.append(StudioNoteEvent(onMs: onMs, offMs: offMs, note: midi, velocity: 96, accidental: acc))
-        onEdit(next)
+        commit(next)
         selectedIndex = next.count - 1
     }
 
@@ -144,7 +170,7 @@ struct ScoreEditorView: View {
         let step = ScoreQuantizer.sixteenthMs(bpm: bpm)
         var next = events
         next[j].offMs = next[j].onMs + Int((Double(d.sixteenths) * step).rounded())
-        onEdit(next)
+        commit(next)
     }
 
     private func setAccidental(_ a: Accidental) {
@@ -160,14 +186,14 @@ struct ScoreEditorView: View {
         case .sharp: next[j].note = natural + 1; next[j].accidental = .sharp
         case .flat: next[j].note = natural - 1; next[j].accidental = .flat
         }
-        onEdit(next)
+        commit(next)
     }
 
     private func deleteSelected() {
         guard let j = selectedIndex, j < events.count else { return }
         var next = events
         next.remove(at: j)
-        onEdit(next)
+        commit(next)
         selectedIndex = nil
     }
 

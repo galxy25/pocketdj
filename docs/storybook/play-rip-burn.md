@@ -474,10 +474,10 @@ Top to bottom:
   a vinyl / My Digital / Studio track still hearts, local-only, exactly like its Browse
   row. A small **⟲ history button** rides the row's left edge: tap it and a **Previously
   played** section unfolds between the deck and Up next — every track this run has
-  already spun, newest first. Long-press a played row to **Play now** (jump straight
-  back onto it — a whole ⏮-walk in one tap; everything between returns to Up next) or
-  **Play again next / last** (queue a fresh copy without touching the needle). Tap ⟲
-  again to fold it away; the choice sticks across launches.
+  already spun, newest first. Long-press (or right-click) a played row to **Play now** (jump straight
+  back onto it — a whole ⏮-walk in one tap; everything between returns to Up next),
+  **Play again next / last** (queue a fresh copy without touching the needle), or **Song details**
+  (its full metadata sheet). Tap ⟲ again to fold it away; the choice sticks across launches.
 - **A collapsible Mix mini-panel** directly below the transport — tempo, pitch, gain,
   effects and per-stem faders for the *currently-playing* track, without leaving the
   deck for the Mix tab. It appears only when the track is a local, mixable file and no
@@ -486,7 +486,8 @@ Top to bottom:
   position, and the tweaks reset when the track changes ([Mix & Stems](mix-and-stems.md)).
 - **Up next** — the not-yet-played queue of the playing collection. **Drag to reorder**
   (Reorder button on iPhone) or **✕ / swipe to remove**; edits touch only what hasn't
-  played yet, so the current track never skips or restarts.
+  played yet, so the current track never skips or restarts. Long-press (or right-click) a
+  row for **Move to top / bottom**, **Song details**, or **Remove**.
 - **Add-search — the same native search control as the Browser tab** (user-tested: a
   bottom text field hid under the keyboard). On iPhone the field rides the bar at the
   top; on **iPad and Mac it sits on the LEFT, at the top of the sidebar** (this also

@@ -328,7 +328,10 @@ playlists and pockets you build, plus your folders — and **Shared** — the re
 sources"** playlists. The sets you build are what you reach for, so **Yours** is where you land,
 with **Your playlists** on top; on **Shared**, the source playlists are **grouped by source**
 (Apple Music (Local), vinyl, imports…) into **collapsed-by-default** groups that **remember which
-ones you expanded**, so a giant source library stays one tidy row until you open it.
+ones you expanded**, so a giant source library stays one tidy row until you open it. **Your
+playlists** and **Your Pockets** now fold the same way — each is a header with a member count and a
+disclosure triangle, **expanded by default** (your own sets are what you land on) and remembered
+across launches — so a long crate of your own collections tucks away as neatly as a source group.
 
 **Sort them your way.** A toolbar **sort menu** orders the collection lists by **Recently
 played**, **A–Z**, or **Last updated** — the choice **persists** and applies to your playlists,
