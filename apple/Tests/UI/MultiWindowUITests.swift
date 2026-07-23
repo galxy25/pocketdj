@@ -21,9 +21,14 @@ final class MultiWindowUITests: XCTestCase {
         #if os(macOS)
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        // Pin the first window to Mix so this test stays focused on PER-WINDOW section
+        // independence, not on the launch default (now History — see HistoryUITests
+        // .testHistoryIsDefaultLandingSection). PDJ_START_SECTION applies to every window's
+        // RootView, so the ⌘N window also opens on Mix before ⌘P steers it to Performance.
+        app.launchEnvironment["PDJ_START_SECTION"] = "Mix"
         app.launch()
         XCTAssertTrue(app.any("mix-tab").waitForExistence(timeout: 20),
-                      "macOS should land on the Mix tab in the first window")
+                      "the first window should be on the (pinned) Mix tab")
         let before = app.windows.count
 
         app.activate()

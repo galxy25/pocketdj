@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(UIKit)
+import UIKit
+#endif
 
 extension XCUIApplication {
     /// Look up an interactive control by accessibility identifier or label.
@@ -12,6 +15,31 @@ extension XCUIApplication {
     /// song row (which is a plain view + `.onTapGesture`, not a Button).
     func any(_ key: String) -> XCUIElement {
         descendants(matching: .any).matching(identifier: key).firstMatch
+    }
+
+    /// Bring the home Now Playing deck into view. The deck lives on the sidebar / home
+    /// menu; since the launch default became History (2026-07-22), the COMPACT iPhone layout
+    /// pushes the History detail IN FRONT of the sidebar, so pop the detail stack back until
+    /// the panel shows. Restricted to iPhone on purpose: iPad/macOS use a two-column split
+    /// where the sidebar (and its deck) stays visible beside the detail — there is NO back
+    /// button, so a blind `navigationBars.buttons.element(boundBy:0)` would resolve to the
+    /// sidebar's "+" New Window / a History toolbar button and tap it spuriously (opening a
+    /// stray window) while the async session restore is still painting the panel. On those
+    /// layouts this is a no-op; the caller's `waitForExistence` rides out the restore.
+    /// Returns the panel element so callers can `waitForExistence` on it.
+    @discardableResult
+    func revealNowPlayingHome() -> XCUIElement {
+        let panel = any("now-playing-panel")
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            for _ in 0..<6 where !panel.exists {
+                let back = navigationBars.buttons.element(boundBy: 0)
+                guard back.waitForExistence(timeout: 3) else { break }  // popped to the sidebar
+                back.tap()
+            }
+        }
+        #endif
+        return panel
     }
 
     // Browser actions. On macOS the segmented Picker + window-toolbar buttons

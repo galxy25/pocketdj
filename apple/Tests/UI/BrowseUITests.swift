@@ -53,6 +53,25 @@ final class BrowseUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["3 tracks"].waitForExistence(timeout: 5))
     }
 
+    /// Bug fix (2026-07-22): the album-detail header artist is a HOTLINK that opens the
+    /// artist's page (it was previously inert accent-colored text — clicking it did nothing).
+    /// Pushes the Artist straight onto the shared nav stack (deterministic — no route-timing
+    /// race). alb_1 = "Night Drive" by "Aria".
+    func testAlbumDetailArtistHotlinkOpensArtist() {
+        let app = launch()
+        let card = app.el("album-alb_1")
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        card.tap()
+        let hotlink = app.el("artist-hotlink")
+        XCTAssertTrue(hotlink.waitForExistence(timeout: 10),
+                      "album detail should expose a tappable artist hotlink")
+        hotlink.tap()
+        // Landed on the artist page (ArtistDetailView) in Browse — its Play-all button is
+        // unique to that screen, so its presence proves we navigated to the artist.
+        XCTAssertTrue(app.el("artist-play-all").waitForExistence(timeout: 8),
+                      "tapping the album's artist should open the artist detail in Browse")
+    }
+
     #if !os(macOS)
     /// Album detail has Play + Shuffle (like a playlist); ▶ pushes the reusable Now
     /// Playing setlist so the album's tracks start in order.
