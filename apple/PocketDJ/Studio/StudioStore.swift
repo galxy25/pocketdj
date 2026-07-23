@@ -357,7 +357,7 @@ final class StudioStore {
     }
 
     func setPatternStep(_ id: String, row: Int, col: Int, on: Bool) {
-        guard (0..<StudioPattern.stepCount).contains(col) else { return }
+        guard let sc = pattern(id)?.stepCount, (0..<sc).contains(col) else { return }
         mutatePattern(id) { p in
             guard p.rows.indices.contains(row) else { return }
             p.rows[row].steps[col] = on
@@ -373,7 +373,7 @@ final class StudioStore {
     /// Per-step trigger mode: loop (retrigger-cut) vs one-shot. Only meaningful on an on-step —
     /// the setter doesn't enforce that (the UI only offers it there); `setPatternStep(off)` clears it.
     func setPatternStepLoop(_ id: String, row: Int, col: Int, loop: Bool) {
-        guard (0..<StudioPattern.stepCount).contains(col) else { return }
+        guard let sc = pattern(id)?.stepCount, (0..<sc).contains(col) else { return }
         mutatePattern(id) { p in
             guard p.rows.indices.contains(row) else { return }
             p.rows[row].loopSteps[col] = loop
@@ -382,10 +382,10 @@ final class StudioStore {
 
     /// Per-step stretch span: 0 = natural, n ≥ 1 = tempo-fit the sample to exactly n steps.
     func setPatternStepSpan(_ id: String, row: Int, col: Int, span: Int) {
-        guard (0..<StudioPattern.stepCount).contains(col) else { return }
+        guard let sc = pattern(id)?.stepCount, (0..<sc).contains(col) else { return }
         mutatePattern(id) { p in
             guard p.rows.indices.contains(row) else { return }
-            p.rows[row].stepSpans[col] = min(max(span, 0), StudioPattern.stepCount)
+            p.rows[row].stepSpans[col] = min(max(span, 0), p.stepCount)
         }
     }
 
@@ -405,13 +405,26 @@ final class StudioStore {
     }
 
     func addPatternRow(_ id: String, targetId: String) {
-        mutatePattern(id) { $0.rows.append(StudioPatternRow(targetId: targetId)) }
+        // Size the new row to the pattern's length (SEQ4 — a long pattern's rows aren't 16 steps).
+        mutatePattern(id) { $0.rows.append(StudioPatternRow(targetId: targetId).resized(to: $0.stepCount)) }
     }
 
     func removePatternRow(_ id: String, row: Int) {
         mutatePattern(id) { p in
             guard p.rows.indices.contains(row) else { return }
             p.rows.remove(at: row)
+        }
+    }
+
+    /// Change a pattern's length (SEQ4). Clamps to 1…maxStepCount and resizes every row —
+    /// growing pads with off/one-shot/natural steps, shrinking drops the tail. `mutatePattern`
+    /// re-marks bounceDirty + saves.
+    func setPatternStepCount(_ id: String, count: Int) {
+        mutatePattern(id) { p in
+            let n = StudioPattern.clampStepCount(count)
+            guard n != p.stepCount else { return }
+            p.stepCount = n
+            p.rows = p.rows.map { $0.resized(to: n) }
         }
     }
 
@@ -749,7 +762,7 @@ final class StudioStore {
                                                   wasUserFolder: p.wasUserFolder,
                                                   bookmark: bookmark(for: .sequences))
             else { return nil }
-            return (got.url, got.release, p.name, StudioPattern.barMs(bpm: p.bpm))
+            return (got.url, got.release, p.name, p.lengthMs)
         }
         if id.hasPrefix("tk_") {
             guard let t = take(id) else { return nil }
@@ -818,7 +831,7 @@ final class StudioStore {
             return (l.name, l.lengthMs, l.bpm, "Loop")
         }
         if id.hasPrefix("ptn_"), let p = pattern(id) {
-            return (p.name, StudioPattern.barMs(bpm: p.bpm), p.bpm, "Sequence")
+            return (p.name, p.lengthMs, p.bpm, "Sequence")
         }
         if id.hasPrefix("tk_"), let t = take(id) {
             return (t.name, t.durationMs, t.bpm, "Instrumental")
@@ -1017,7 +1030,7 @@ final class StudioStore {
         addLoop(StudioLoop(id: loopId, name: "Seeded Loop", sampleId: sampleId, anchorMs: 0,
                            beats: .one, bpm: 120, lengthMs: 500, frames: loopFrames,
                            fileName: loopFile, wasUserFolder: false, createdAt: now))
-        var steps = Array(repeating: false, count: StudioPattern.stepCount)
+        var steps = Array(repeating: false, count: StudioPattern.defaultStepCount)
         steps[0] = true; steps[4] = true; steps[8] = true; steps[12] = true
         addPattern(StudioPattern(id: patternId, name: "Seeded Pattern", bpm: 120,
                                  rows: [StudioPatternRow(targetId: sampleId, steps: steps)],

@@ -103,6 +103,8 @@ final class StudioPatternClock {
     var startedAtHost: Double = 0
     /// The tempo the running pattern was started at (step duration = 60/bpm/4 s).
     var bpm: Double = 120
+    /// The running pattern's length in steps (SEQ4) — the highlight wraps modulo this.
+    var stepCount: Int = StudioPattern.defaultStepCount
     /// True only while the pattern is actually rendering (set by the engine on start/stop and
     /// cleared across stalls, so a frozen highlight never keeps marching during silence).
     var running = false
@@ -114,7 +116,7 @@ final class StudioPatternClock {
         let elapsed = CACurrentMediaTime() - startedAtHost
         guard elapsed >= 0 else { return nil }             // start latency window — nothing sounds yet
         let stepDur = 60.0 / bpm / 4.0
-        return Int(elapsed / stepDur) % StudioPattern.stepCount
+        return Int(elapsed / stepDur) % max(1, stepCount)
     }
 }
 
@@ -252,6 +254,9 @@ final class StudioEngine {
     /// to EXACTLY span×step frames at the loaded bpm. Validated like `patternBuffers`.
     @ObservationIgnored private var patternSpanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:]
     @ObservationIgnored private var patternBpm: Double = 120
+    /// The running pattern's step count (SEQ4) — armPass's per-pass index math and the horizon
+    /// bar length use it instead of the fixed default.
+    @ObservationIgnored private var patternStepCount = StudioPattern.defaultStepCount
     /// Number of 1-bar passes whose steps are already scheduled. The tick keeps this one pass
     /// ahead of the audible pass (the spec's 1-bar scheduling horizon).
     @ObservationIgnored private var armedThroughPass = 0
@@ -734,6 +739,7 @@ final class StudioEngine {
         patternLoopSteps = rows.map(\.loopSteps)
         patternStepSpans = rows.map(\.stepSpans)
         patternBpm = pattern.bpm > 0 ? pattern.bpm : 120
+        patternStepCount = max(1, pattern.stepCount)
         patternBuffers = [:]
         patternSpanBuffers = [:]
         for (i, row) in rows.enumerated() {
@@ -810,6 +816,30 @@ final class StudioEngine {
         rowGains[row].outputVolume = StudioAudio.gainMultiplier(db: gainDb)
     }
 
+    /// SEQ2 live edit: mirror a step on/off into the RUNNING pattern's arrays. `armPass` reads
+    /// `patternSteps`, so the change is heard at the NEXT bar — no re-anchor, no buffer work (the
+    /// natural buffer for the row is already loaded). Off also clears the step's live loop/span
+    /// mirror, matching `StudioStore.setPatternStep`. Bounds-guarded; a no-op if the row/col isn't
+    /// loaded (e.g. during a single-row solo).
+    func updateLiveStep(row: Int, col: Int, on: Bool) {
+        guard patternSteps.indices.contains(row), patternSteps[row].indices.contains(col) else { return }
+        patternSteps[row][col] = on
+        if !on {
+            if patternLoopSteps.indices.contains(row), patternLoopSteps[row].indices.contains(col) {
+                patternLoopSteps[row][col] = false
+            }
+            if patternStepSpans.indices.contains(row), patternStepSpans[row].indices.contains(col) {
+                patternStepSpans[row][col] = 0
+            }
+        }
+    }
+
+    /// SEQ2 live edit: mirror a step's loop-mode into the running pattern (heard next bar).
+    func updateLiveStepLoop(row: Int, col: Int, loop: Bool) {
+        guard patternLoopSteps.indices.contains(row), patternLoopSteps[row].indices.contains(col) else { return }
+        patternLoopSteps[row][col] = loop
+    }
+
     /// (Re)anchor and start the pattern: schedule passes 0+1, start every used row player at one
     /// shared host time, and re-base the UI step clock. Also the RECOVERY restart — after an
     /// engine outage the host clock has drifted from the frozen player timelines, so unlike the
@@ -827,6 +857,7 @@ final class StudioEngine {
         for (row, _) in patternBuffers { rowPlayers[row].play(at: when) }
         patternClock.startedAtHost = CACurrentMediaTime() + Self.patternStartLatency
         patternClock.bpm = patternBpm
+        patternClock.stepCount = patternStepCount
         patternClock.running = true
         dlog("pattern (re)start bpm=\(patternBpm) rows=\(patternBuffers.count)")
     }
@@ -848,7 +879,7 @@ final class StudioEngine {
             let player = rowPlayers[row]
             for col in steps.indices where steps[col] {
                 let at = Self.stepTime(anchor: AVAudioTime(sampleTime: 0, atRate: sr),
-                                       index: pass * StudioPattern.stepCount + col,
+                                       index: pass * patternStepCount + col,
                                        bpm: patternBpm, sampleRate: sr)
                 let span = patternStepSpans.indices.contains(row)
                     && patternStepSpans[row].indices.contains(col) ? patternStepSpans[row][col] : 0
@@ -867,7 +898,7 @@ final class StudioEngine {
     private func armPatternPassesIfNeeded() {
         guard isPlayingPattern, patternClock.running else { return }
         let stepF = Self.stepFrames(bpm: patternBpm, sampleRate: StudioAudio.canonicalSampleRate)
-        let barSec = Double(stepF) * Double(StudioPattern.stepCount) / StudioAudio.canonicalSampleRate
+        let barSec = Double(stepF) * Double(patternStepCount) / StudioAudio.canonicalSampleRate
         guard barSec > 0 else { return }
         let elapsed = CACurrentMediaTime() - patternClock.startedAtHost
         guard elapsed >= 0 else { return }

@@ -402,6 +402,48 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// SEQ2: the Live-edits toggle is present on an opened pattern and flips.
+    func testSequencerLiveToggleFlips() throws {
+        #if os(macOS)
+        throw XCTSkip("sequencer live toggle exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(2)
+        let pattern = app.el("seq-pattern-ptn_fixture")
+        XCTAssertTrue(pattern.waitForExistence(timeout: 15))
+        pattern.tap()
+        let toggle = app.any("seq-live-toggle")      // button-style Toggle: reported as a Switch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "the Live-edits toggle")
+        // @AppStorage persists across sim runs, so assert a FLIP from the current value, not a
+        // fixed target (the NowPlayingUITests np-history doctrine).
+        let before = (toggle.value as? String) ?? "0"
+        toggle.tap()
+        let want = before == "1" ? "0" : "1"
+        wait(for: [expectation(for: NSPredicate(format: "value == %@", want),
+                               evaluatedWith: toggle)], timeout: 3)   // flips Live ⇄ Static
+        #endif
+    }
+
+    /// SEQ4: growing a pattern's length adds a second bar of steps (16 → 32).
+    func testSequencerLengthGrowsAddsSteps() throws {
+        #if os(macOS)
+        throw XCTSkip("sequencer length exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(2)
+        let pattern = app.el("seq-pattern-ptn_fixture")
+        XCTAssertTrue(pattern.waitForExistence(timeout: 15))
+        pattern.tap()
+        XCTAssertTrue(app.el("seq-step-0-15").waitForExistence(timeout: 10), "a 16-step row")
+        XCTAssertFalse(app.el("seq-step-0-16").exists, "no 17th step yet")
+        let stepper = app.steppers["seq-length-stepper"]
+        XCTAssertTrue(stepper.waitForExistence(timeout: 5), "the length stepper")
+        stepper.buttons.element(boundBy: 1).tap()    // [0]=decrement, [1]=increment
+        XCTAssertTrue(app.el("seq-step-0-16").waitForExistence(timeout: 5),
+                      "growing by a bar added steps 16+")
+        #endif
+    }
+
     func testLiveStaffSectionPresent() throws {
         #if os(macOS)
         throw XCTSkip("macOS: Instruments live-staff exercised on iOS")

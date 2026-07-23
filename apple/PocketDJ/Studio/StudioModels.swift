@@ -384,8 +384,8 @@ struct StudioLoop: Codable, Identifiable, Hashable, Sendable {
 /// revive it (spec §2).
 struct StudioPatternRow: Codable, Hashable, Sendable {
     var targetId: String
-    /// Exactly `StudioPattern.stepCount` toggles; lenient decode pads/truncates so a document
-    /// edited elsewhere can never desync the grid UI's fixed 16 columns.
+    /// One toggle per step; the owning pattern's `stepCount` sets the length (SEQ4). Lenient
+    /// decode preserves the full array, and `StudioPattern` resizes every row to its stepCount.
     var steps: [Bool]
     var gainDb: Double = 0
     /// Per-step trigger mode: `true` = LOOP (the hit keeps re-looping until the sequencer next
@@ -403,42 +403,58 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
     var isSilent: Bool { !steps.contains(true) }
 
     enum CodingKeys: String, CodingKey { case targetId, steps, gainDb, loopSteps, stepSpans }
-    init(targetId: String, steps: [Bool] = Array(repeating: false, count: StudioPattern.stepCount),
+    init(targetId: String, steps: [Bool] = Array(repeating: false, count: StudioPattern.defaultStepCount),
          gainDb: Double = 0,
-         loopSteps: [Bool] = Array(repeating: false, count: StudioPattern.stepCount),
-         stepSpans: [Int] = Array(repeating: 0, count: StudioPattern.stepCount)) {
+         loopSteps: [Bool] = Array(repeating: false, count: StudioPattern.defaultStepCount),
+         stepSpans: [Int] = Array(repeating: 0, count: StudioPattern.defaultStepCount)) {
+        // Length-preserving: a row built with a long `steps` keeps it; a default row is 16.
+        // StudioPattern.resized re-sizes it to the owning pattern's stepCount when it differs (SEQ4).
+        let n = max(steps.count, StudioPattern.defaultStepCount)
         self.targetId = targetId
-        self.steps = StudioPatternRow.normalized(steps)
+        self.steps = StudioPatternRow.normalized(steps, to: n)
         self.gainDb = gainDb
-        self.loopSteps = StudioPatternRow.normalized(loopSteps)
-        self.stepSpans = StudioPatternRow.normalizedSpans(stepSpans)
+        self.loopSteps = StudioPatternRow.normalized(loopSteps, to: n)
+        self.stepSpans = StudioPatternRow.normalizedSpans(stepSpans, to: n)
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         targetId = (try? c.decode(String.self, forKey: .targetId)) ?? ""
-        steps = StudioPatternRow.normalized((try? c.decode([Bool].self, forKey: .steps)) ?? [])
+        // Preserve the FULL decoded step array (up to maxStepCount) — do NOT truncate to the
+        // default here, or a long SEQ4 pattern's rows would silently lose steps 16+ on load.
+        // StudioPattern.init(from:) resizes every row to the pattern's own stepCount afterward.
+        let rawSteps = (try? c.decode([Bool].self, forKey: .steps)) ?? []
+        // Pad short/legacy arrays up to the default (16) but PRESERVE longer ones (up to 365) —
+        // StudioPattern.init(from:) then resizes every row to the pattern's authoritative stepCount.
+        let n = max(rawSteps.count, StudioPattern.defaultStepCount)
+        steps = StudioPatternRow.normalized(rawSteps, to: n)
         gainDb = (try? c.decode(Double.self, forKey: .gainDb)) ?? 0
-        loopSteps = StudioPatternRow.normalized((try? c.decode([Bool].self, forKey: .loopSteps)) ?? [])
-        stepSpans = StudioPatternRow.normalizedSpans((try? c.decode([Int].self, forKey: .stepSpans)) ?? [])
+        loopSteps = StudioPatternRow.normalized((try? c.decode([Bool].self, forKey: .loopSteps)) ?? [], to: n)
+        stepSpans = StudioPatternRow.normalizedSpans((try? c.decode([Int].self, forKey: .stepSpans)) ?? [], to: n)
     }
 
-    /// Pad/truncate to exactly the fixed step count (pure, testable).
-    static func normalized(_ steps: [Bool]) -> [Bool] {
-        var s = Array(steps.prefix(StudioPattern.stepCount))
-        if s.count < StudioPattern.stepCount {
-            s += Array(repeating: false, count: StudioPattern.stepCount - s.count)
-        }
+    /// Pad/truncate a bool array to exactly `count` (pure, testable).
+    static func normalized(_ steps: [Bool], to count: Int = StudioPattern.defaultStepCount) -> [Bool] {
+        var s = Array(steps.prefix(count))
+        if s.count < count { s += Array(repeating: false, count: count - s.count) }
         return s
     }
 
-    /// `normalized` for the span array: pad/truncate to the step count AND clamp each span to
-    /// 0…stepCount (a hand-edited document can't demand a 400-step stretch).
-    static func normalizedSpans(_ spans: [Int]) -> [Int] {
-        var s = Array(spans.prefix(StudioPattern.stepCount)).map { min(max($0, 0), StudioPattern.stepCount) }
-        if s.count < StudioPattern.stepCount {
-            s += Array(repeating: 0, count: StudioPattern.stepCount - s.count)
-        }
+    /// `normalized` for the span array: pad/truncate to `count` AND clamp each span to 0…count
+    /// (a hand-edited document can't demand a stretch longer than the pattern).
+    static func normalizedSpans(_ spans: [Int], to count: Int = StudioPattern.defaultStepCount) -> [Int] {
+        var s = Array(spans.prefix(count)).map { min(max($0, 0), count) }
+        if s.count < count { s += Array(repeating: 0, count: count - s.count) }
         return s
+    }
+
+    /// Re-size all three step arrays to exactly `count` (SEQ4 — sizing a row to its pattern's
+    /// stepCount). Direct mutation bypasses the init's default normalization.
+    func resized(to count: Int) -> StudioPatternRow {
+        var r = self
+        r.steps = StudioPatternRow.normalized(steps, to: count)
+        r.loopSteps = StudioPatternRow.normalized(loopSteps, to: count)
+        r.stepSpans = StudioPatternRow.normalizedSpans(stepSpans, to: count)
+        return r
     }
 }
 
@@ -446,12 +462,18 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
 /// `pattern-<id>.m4a` on demand; ANY edit re-marks `bounceDirty` so a stale bounce is never
 /// played/exported as the pattern (spec §2).
 struct StudioPattern: Codable, Identifiable, Hashable, Sendable {
-    /// 16 steps per row — one bar of 16th notes in 4/4 (step duration = 60/bpm/4 s).
-    static let stepCount = 16
+    /// The default pattern length — one bar of 16th notes in 4/4 (step duration = 60/bpm/4 s).
+    static let defaultStepCount = 16
+    /// The longest supported pattern (SEQ4): ~23 bars of 16ths.
+    static let maxStepCount = 365
 
     var id: String                    // "ptn_…"
     var name: String
     var bpm: Double = 120
+    /// Steps per row (SEQ4). Additive-optional: docs without it decode to 16, and an older build
+    /// that re-saves drops it (accepted schema doctrine) — NEVER bump a version for this. Rows are
+    /// always sized to this via `StudioPatternRow.resized` on init/decode.
+    var stepCount: Int = defaultStepCount
     var rows: [StudioPatternRow] = []
     /// The rendered bounce (`pattern-<id>.m4a`), nil until first bounced. Kept on disk when
     /// dirty (cheap; rebounce overwrites) — `bounceDirty` is what gates playback/export.
@@ -474,13 +496,23 @@ struct StudioPattern: Codable, Identifiable, Hashable, Sendable {
         return Int((240_000.0 / b).rounded())
     }
 
+    /// This pattern's full loop length in ms — `stepCount` sixteenths at `bpm` (one bar when
+    /// stepCount is 16, proportionally longer for a multi-bar SEQ4 pattern). Its length wherever
+    /// it appears in a collection.
+    var lengthMs: Int { StudioPattern.barMs(bpm: bpm) * stepCount / StudioPattern.defaultStepCount }
+
+    /// Clamp a step count to the supported 1…max range.
+    static func clampStepCount(_ n: Int) -> Int { min(max(n, 1), maxStepCount) }
+
     enum CodingKeys: String, CodingKey {
-        case id, name, bpm, rows, fileName, bounceDirty, wasUserFolder, createdAt
+        case id, name, bpm, stepCount, rows, fileName, bounceDirty, wasUserFolder, createdAt
     }
-    init(id: String, name: String, bpm: Double = 120, rows: [StudioPatternRow] = [],
-         fileName: String? = nil, bounceDirty: Bool = true, wasUserFolder: Bool = false,
-         createdAt: Double = 0) {
-        self.id = id; self.name = name; self.bpm = bpm; self.rows = rows
+    init(id: String, name: String, bpm: Double = 120, stepCount: Int = defaultStepCount,
+         rows: [StudioPatternRow] = [], fileName: String? = nil, bounceDirty: Bool = true,
+         wasUserFolder: Bool = false, createdAt: Double = 0) {
+        self.id = id; self.name = name; self.bpm = bpm
+        self.stepCount = StudioPattern.clampStepCount(stepCount)
+        self.rows = rows.map { $0.resized(to: self.stepCount) }
         self.fileName = fileName; self.bounceDirty = bounceDirty
         self.wasUserFolder = wasUserFolder; self.createdAt = createdAt
     }
@@ -489,8 +521,10 @@ struct StudioPattern: Codable, Identifiable, Hashable, Sendable {
         id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newPatternId()
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         bpm = (try? c.decode(Double.self, forKey: .bpm)) ?? 120
+        stepCount = StudioPattern.clampStepCount((try? c.decode(Int.self, forKey: .stepCount))
+                                                 ?? StudioPattern.defaultStepCount)
         rows = ((try? c.decode([StudioLossyBox<StudioPatternRow>].self, forKey: .rows)) ?? [])
-            .compactMap(\.value)
+            .compactMap(\.value).map { $0.resized(to: stepCount) }
         fileName = try? c.decode(String.self, forKey: .fileName)
         bounceDirty = (try? c.decode(Bool.self, forKey: .bounceDirty)) ?? true
         wasUserFolder = (try? c.decode(Bool.self, forKey: .wasUserFolder)) ?? false

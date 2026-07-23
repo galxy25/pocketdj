@@ -229,7 +229,7 @@ actor StudioRender {
         do { try engine.start() } catch { throw StudioRenderError.engineStart(error) }
 
         let stepF = StudioEngine.stepFrames(bpm: bpm, sampleRate: Self.canonicalSampleRate)
-        let barFrames = stepF * Int64(StudioPattern.stepCount)   // one bar of 16ths in 4/4
+        let barFrames = stepF * Int64(pattern.stepCount)   // the full pattern loop (SEQ4: may be many bars)
         for v in voices {
             let onCols = v.row.steps.indices.filter { v.row.steps[$0] }
             let stepBuf: (Int) -> AVAudioPCMBuffer = { col in

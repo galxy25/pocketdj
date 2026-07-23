@@ -42,23 +42,72 @@ final class StudioStepModeTests: XCTestCase {
         // A pre-step-modes document row (no loopSteps/stepSpans keys, short steps array).
         let legacy = #"{"targetId":"smp_a","steps":[true,false,true],"gainDb":-3}"#
         let row = try JSONDecoder().decode(StudioPatternRow.self, from: Data(legacy.utf8))
-        XCTAssertEqual(row.steps.count, StudioPattern.stepCount, "steps pad to the fixed 16")
-        XCTAssertEqual(row.loopSteps, Array(repeating: false, count: StudioPattern.stepCount),
+        XCTAssertEqual(row.steps.count, StudioPattern.defaultStepCount, "steps pad to the fixed 16")
+        XCTAssertEqual(row.loopSteps, Array(repeating: false, count: StudioPattern.defaultStepCount),
                        "absent loopSteps ⇒ all one-shot")
-        XCTAssertEqual(row.stepSpans, Array(repeating: 0, count: StudioPattern.stepCount),
+        XCTAssertEqual(row.stepSpans, Array(repeating: 0, count: StudioPattern.defaultStepCount),
                        "absent stepSpans ⇒ all natural length")
         XCTAssertEqual(row.gainDb, -3)
     }
 
     func testNormalizedSpansClampsAndPads() {
         let n = StudioPatternRow.normalizedSpans([99, -3, 2])
-        XCTAssertEqual(n.count, StudioPattern.stepCount)
-        XCTAssertEqual(n[0], StudioPattern.stepCount, "over-range spans clamp to the step count")
+        XCTAssertEqual(n.count, StudioPattern.defaultStepCount)
+        XCTAssertEqual(n[0], StudioPattern.defaultStepCount, "over-range spans clamp to the step count")
         XCTAssertEqual(n[1], 0, "negative spans clamp to 0")
         XCTAssertEqual(n[2], 2)
-        XCTAssertEqual(Array(n[3...]), Array(repeating: 0, count: StudioPattern.stepCount - 3))
+        XCTAssertEqual(Array(n[3...]), Array(repeating: 0, count: StudioPattern.defaultStepCount - 3))
         XCTAssertEqual(StudioPatternRow.normalizedSpans(Array(repeating: 1, count: 40)).count,
-                       StudioPattern.stepCount, "over-long arrays truncate")
+                       StudioPattern.defaultStepCount, "over-long arrays truncate")
+    }
+
+    // MARK: - SEQ4 per-pattern step count (up to 365)
+
+    func testPattern365RoundTripsWithoutTruncation() throws {
+        var row = StudioPatternRow(targetId: "smp_a").resized(to: 365)
+        row.steps[300] = true; row.loopSteps[300] = true; row.stepSpans[300] = 4
+        let pattern = StudioPattern(id: "ptn_a", name: "Long", bpm: 120, stepCount: 365, rows: [row])
+        XCTAssertEqual(pattern.stepCount, 365)
+        XCTAssertEqual(pattern.rows[0].steps.count, 365)
+        let back = try JSONDecoder().decode(StudioPattern.self, from: JSONEncoder().encode(pattern))
+        XCTAssertEqual(back.stepCount, 365, "stepCount round-trips")
+        XCTAssertEqual(back.rows[0].steps.count, 365, "the row keeps all 365 steps (no truncation to 16)")
+        XCTAssertTrue(back.rows[0].steps[300], "step 300 survives")
+        XCTAssertTrue(back.rows[0].loopSteps[300])
+        XCTAssertEqual(back.rows[0].stepSpans[300], 4)
+    }
+
+    func testLegacyPatternDecodesTo16Steps() throws {
+        // A pre-SEQ4 document: no stepCount key, a row with a 16-length steps array.
+        let steps = (0..<16).map { $0 == 4 ? "true" : "false" }.joined(separator: ",")
+        let json = #"{"id":"ptn_a","name":"Old","bpm":120,"rows":[{"targetId":"smp_a","steps":[\#(steps)]}]}"#
+        let p = try JSONDecoder().decode(StudioPattern.self, from: Data(json.utf8))
+        XCTAssertEqual(p.stepCount, StudioPattern.defaultStepCount, "absent stepCount ⇒ 16")
+        XCTAssertEqual(p.rows[0].steps.count, 16)
+        XCTAssertTrue(p.rows[0].steps[4])
+    }
+
+    func testStepCountClampAndLengthMs() {
+        XCTAssertEqual(StudioPattern.clampStepCount(999), StudioPattern.maxStepCount)
+        XCTAssertEqual(StudioPattern.clampStepCount(0), 1)
+        // 32 steps at 120 BPM = 2 bars.
+        let p = StudioPattern(id: "p", name: "n", bpm: 120, stepCount: 32)
+        XCTAssertEqual(p.lengthMs, StudioPattern.barMs(bpm: 120) * 2)
+    }
+
+    /// Resizing a pattern DOWN then back UP preserves within-range steps and zero-fills the gap.
+    func testResizePreservesInRangeStepsAndPadsGrowth() {
+        var row = StudioPatternRow(targetId: "smp_a").resized(to: 32)
+        row.steps[5] = true; row.steps[20] = true
+        let grown = row.resized(to: 48)
+        XCTAssertEqual(grown.steps.count, 48)
+        XCTAssertTrue(grown.steps[5]); XCTAssertTrue(grown.steps[20])
+        XCTAssertFalse(grown.steps[40], "grown tail is off")
+        let shrunk = row.resized(to: 16)
+        XCTAssertEqual(shrunk.steps.count, 16)
+        XCTAssertTrue(shrunk.steps[5])
+        // step 20 is beyond 16 ⇒ dropped
+        XCTAssertEqual(shrunk.steps.filter { $0 }.count, 1)
     }
 
     // MARK: - Store setters (mutatePattern discipline)
@@ -86,7 +135,7 @@ final class StudioStepModeTests: XCTestCase {
         XCTAssertTrue(store.pattern(id)!.bounceDirty, "a span edit re-dirties the bounce")
 
         store.setPatternStepSpan(id, row: 0, col: 3, span: 99)
-        XCTAssertEqual(store.pattern(id)!.rows[0].stepSpans[3], StudioPattern.stepCount,
+        XCTAssertEqual(store.pattern(id)!.rows[0].stepSpans[3], StudioPattern.defaultStepCount,
                        "spans clamp at the setter too")
     }
 
