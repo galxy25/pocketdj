@@ -747,6 +747,83 @@ final class BurnStore {
         }
     }
 
+    // MARK: Stem usage + cleanup (Settings ▸ Storage — MISC1)
+
+    /// A `stem-<id>-<part>.mp3` name (part ∈ stemNames). Stricter than the caller checking
+    /// `auxFileSongId != nil` alone would be — it must NEVER match a beat-grid
+    /// `analysis-<id>.json`, so "remove stems" can't wipe beat grids.
+    private static func isStemFile(_ name: String) -> Bool {
+        name.hasPrefix("stem-") && name.hasSuffix(".mp3") && auxFileSongId(name) != nil
+    }
+
+    /// On-disk bytes of just the owned STEM files across both roots — broken out of
+    /// `burnedUsageBytes()` so Storage shows stems as a separate, independently-clearable line.
+    func stemUsageBytes() -> Int { stemBytesMatching { _ in true } }
+
+    /// Owned stem bytes for a specific set of songIds (both roots).
+    private func stemBytes(forSongs ids: [String]) -> Int {
+        let want = Set(ids)
+        return stemBytesMatching { want.contains($0) }
+    }
+
+    /// Sum owned stem-file bytes whose parsed songId passes `include`, in every reachable root.
+    private func stemBytesMatching(_ include: (String) -> Bool) -> Int {
+        var total = 0
+        forEachBurnRoot { dir, isUserFolder in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            for n in names where Self.isStemFile(n) && ownsAuxFile(n, inUserFolder: isUserFolder) {
+                guard let id = Self.auxFileSongId(n), include(id) else { continue }
+                let path = dir.appendingPathComponent(n).path
+                if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int {
+                    total += size
+                }
+            }
+        }
+        return total
+    }
+
+    /// Stem bytes attributed to each artist whose songs are burned + ready (grouped like
+    /// `usageByArtist`). Only ledgered songs carry an artist; orphan (auditioned-only) stems
+    /// have none — those are reachable solely via `removeAllStems`. Artists with no stems on
+    /// disk are omitted.
+    func stemUsageByArtist() -> [ArtistUsage] {
+        let ready = items.values.filter { $0.state == .ready }
+        let groups = Dictionary(grouping: ready) { $0.artist.isEmpty ? "Unknown artist" : $0.artist }
+        return groups.compactMap { artist, group in
+            let ids = group.map(\.songId)
+            let bytes = stemBytes(forSongs: ids)
+            guard bytes > 0 else { return nil }
+            return ArtistUsage(artist: artist, songIds: ids.sorted(), bytes: bytes)
+        }
+        .sorted { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
+    }
+
+    /// Delete EVERY owned stem file (both roots), leaving beat grids and burned audio intact.
+    /// Gated on the stem name shape (never `analysis-*.json`). `protecting` skips songIds whose
+    /// stems are loaded in a live player.
+    func removeAllStems(protecting: Set<String> = []) {
+        forEachBurnRoot { dir, isUserFolder in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            for n in names where Self.isStemFile(n) && ownsAuxFile(n, inUserFolder: isUserFolder) {
+                if let id = Self.auxFileSongId(n), protecting.contains(id) { continue }
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(n))
+            }
+        }
+    }
+
+    /// Delete just the stem files (the 4 parts) for the given songs, both roots — beat grids
+    /// stay. Deterministic names only, so this is safe in a user-picked folder.
+    func removeStems(forSongs ids: [String], protecting: Set<String> = []) {
+        forEachBurnRoot { dir, _ in
+            for songId in ids where !protecting.contains(songId) {
+                for part in Self.stemNames {
+                    try? FileManager.default.removeItem(
+                        at: dir.appendingPathComponent(Self.stemFileName(songId, part)))
+                }
+            }
+        }
+    }
+
     /// Visit each possible burn root once — the app-managed `burns/` dir, then the
     /// user-picked folder (when its bookmark resolves) with `isUserFolder: true`. Holds
     /// the security scope around the visit.

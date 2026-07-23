@@ -462,8 +462,10 @@ single **Storage** row that opens the **storage manager** (with a back button to
 gathering everything about on-device space in one place.
 
 **What's on it.** At the top, **On this device** shows what your library actually costs:
-**Burnt music** (songs + total size — audio, per-song cuts, stems, beat grids, and sidecars,
-across the app's storage *and* your chosen folder) and **Session recordings** (takes + size).
+**Burnt music** (songs + size — audio, per-song cuts, beat grids, and sidecars), a separate
+**Stems** line (the separated vocals / drums / bass / other tracks, broken out so you can clear
+just them — it shows only when you have some), and **Session recordings** (takes + size) — all
+across the app's storage *and* your chosen folder.
 Below that live the two **folder pickers** — the burnt-music folder and the mix-sessions
 folder — for saving burns and recordings somewhere you can browse yourself.
 
@@ -477,6 +479,15 @@ any pocket, playlist, or set list.** Anything you delete can simply be burned ag
   each with a burned-song count and size; tap one to clear those songs' downloads (the
   collection itself is untouched).
 - **Delete all burnt music** — the sweep: audio, cuts, stems, beat grids, sidecars, gone.
+
+And two **stems-only** cleanups, for when the separated tracks are what's eating space but you
+want to keep the burned audio itself:
+
+- **Delete stems by artist…** — every artist whose burned songs have stems, with the stem size;
+  tap one to clear just their stems (the burned audio and beat grids stay; stems re-separate on
+  demand).
+- **Delete all stems** — removes every separated-stem file at once, leaving the burned audio and
+  beat grids intact.
 
 A matching **Delete session recordings** clears every captured take's audio while keeping
 each session's played-tracks log and timeline (a recording in progress is never touched) —

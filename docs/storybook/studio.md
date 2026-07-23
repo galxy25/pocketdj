@@ -160,6 +160,10 @@ of 8** with a group separator every four steps so your thumb can find the beat; 
 lays all 16 in a single line. You can **bounce** a pattern to a single audio file whenever you want a
 finished loop of the whole thing (it re-bounces the moment you edit it).
 
+**Preview one row at a time.** Tap a row's **header** (its icon + name) to **solo** just that row —
+it loops on its own at the pattern tempo so you can hear a single sample or loop in isolation while
+you dial in its steps; tap the header again (or the main transport) to stop.
+
 Each hit has a **trigger mode**, too. Long-press (or right-click) any lit step for its menu:
 flip it between **one-shot** (play once, the default) and **loop until retriggered**, and give
 it a **Fit-to-steps** span — stretch the sample to last exactly **1 / 2 / 3 / 4 / 6 / 8 / 12 /

@@ -112,6 +112,51 @@ final class BurnStoreStorageTests: XCTestCase {
         XCTAssertTrue(store.items.isEmpty)
     }
 
+    // MARK: Stem usage + cleanup (MISC1)
+
+    func testStemUsageAndPerSongRemovalLeavesBeatGridsAndAudio() throws {
+        let store = try makeStore([
+            item("s1", artist: "Alpha", audio: "a-s1.mp3", bytes: 10),
+            item("s2", artist: "Beta",  audio: "a-s2.mp3", bytes: 20),
+        ])
+        // s1 gets 4 stems (5 bytes each) + a beat grid; s2 has none.
+        for part in ["vocals", "drums", "bass", "other"] { try write("stem-s1-\(part).mp3", bytes: 5) }
+        try write("analysis-s1.json", bytes: 7)   // beat grid — must NOT count as a stem, must survive
+
+        XCTAssertEqual(store.stemUsageBytes(), 20, "4 stems × 5 bytes; beat grid + audio excluded")
+        let byArtist = store.stemUsageByArtist()
+        XCTAssertEqual(byArtist.map(\.artist), ["Alpha"], "only the artist with stems is listed")
+        XCTAssertEqual(byArtist.first?.bytes, 20)
+        XCTAssertEqual(byArtist.first?.songIds, ["s1"])
+
+        // Per-song stem removal: the 4 stems go; the beat grid and burned audio stay.
+        store.removeStems(forSongs: ["s1"])
+        XCTAssertFalse(exists("stem-s1-vocals.mp3"))
+        XCTAssertFalse(exists("stem-s1-other.mp3"))
+        XCTAssertTrue(exists("analysis-s1.json"), "beat grid must survive stem removal")
+        XCTAssertTrue(exists("a-s1.mp3"), "burned audio must survive stem removal")
+        XCTAssertEqual(store.stemUsageBytes(), 0)
+    }
+
+    func testRemoveAllStemsLeavesBeatGridsAndAudio() throws {
+        let store = try makeStore([ item("s1", audio: "a-s1.mp3", bytes: 10) ])
+        for part in ["vocals", "drums", "bass", "other"] { try write("stem-s1-\(part).mp3", bytes: 3) }
+        try write("analysis-s1.json", bytes: 7)
+        XCTAssertEqual(store.stemUsageBytes(), 12)
+        store.removeAllStems()
+        XCTAssertEqual(store.stemUsageBytes(), 0)
+        XCTAssertTrue(exists("analysis-s1.json"), "removeAllStems must NOT touch beat grids")
+        XCTAssertTrue(exists("a-s1.mp3"), "removeAllStems must NOT touch burned audio")
+    }
+
+    func testRemoveAllStemsRespectsProtecting() throws {
+        let store = try makeStore([ item("s1", audio: "a-s1.mp3", bytes: 10) ])
+        for part in ["vocals", "drums"] { try write("stem-s1-\(part).mp3", bytes: 3) }
+        store.removeAllStems(protecting: ["s1"])
+        XCTAssertTrue(exists("stem-s1-vocals.mp3"), "a protected (in-use) song's stems are kept")
+        XCTAssertEqual(store.stemUsageBytes(), 6)
+    }
+
     func testRemoveBurnsDeletesCutStemsAndBeatgrid() throws {
         let store = try makeStore([
             item("s1", audio: "album-alb1.mp3", bytes: 50, source: "analog", cut: "cut-s1.mp3"),

@@ -33,6 +33,8 @@ struct StorageView: View {
     @State private var studioPickerFamily: StudioFamily = .samples
     /// Measured on appear + after every delete/prune (nil = not measured yet).
     @State private var burnedBytes: Int?
+    @State private var stemBytes: Int?
+    @State private var confirmingDeleteAllStems = false
     @State private var recordingBytes: Int?
     /// Per-family studio bytes (samples/loops/sequences/takes via StudioStore's strict-shape
     /// scan; instruments via InstrumentPackStore). Missing key = not measured yet.
@@ -139,9 +141,18 @@ struct StorageView: View {
             HStack {
                 Label("Burnt music", systemImage: "opticaldisc")
                 Spacer()
-                Text("\(readyBurnCount) song\(readyBurnCount == 1 ? "" : "s") · \(formatBytes(burnedBytes))")
+                Text("\(readyBurnCount) song\(readyBurnCount == 1 ? "" : "s") · \(formatBytes(musicBytesExStems))")
                     .foregroundStyle(.secondary).font(.callout.monospacedDigit())
                     .accessibilityIdentifier("storage-usage-burns")
+            }
+            if (stemBytes ?? 0) > 0 {
+                HStack {
+                    Label("Stems", systemImage: "square.stack.3d.up")
+                    Spacer()
+                    Text(formatBytes(stemBytes))
+                        .foregroundStyle(.secondary).font(.callout.monospacedDigit())
+                        .accessibilityIdentifier("storage-usage-stems")
+                }
             }
             HStack {
                 Label("Session recordings", systemImage: "waveform")
@@ -153,12 +164,20 @@ struct StorageView: View {
         } header: {
             Text("On this device")
         } footer: {
-            Text("Burnt music counts everything a burn downloads: audio, per-song cuts, stems, beat grids, and metadata sidecars — across the app's storage and your chosen folder.")
+            Text("Burnt music is audio, per-song cuts, beat grids, and metadata sidecars. Stems — the separated vocals / drums / bass / other tracks — are broken out so you can clear just them; both span the app's storage and your chosen folder.")
         }
+    }
+
+    /// Burnt-music bytes with stems broken out, so the "Burnt music" and "Stems" rows sum to
+    /// the true footprint (no double-count — `burnedUsageBytes` still includes stems).
+    private var musicBytesExStems: Int? {
+        guard let b = burnedBytes else { return nil }
+        return max(0, b - (stemBytes ?? 0))
     }
 
     private func refreshUsage() {
         burnedBytes = burns.burnedUsageBytes()
+        stemBytes = burns.stemUsageBytes()
         recordingBytes = SessionFolders.recordingsUsageBytes(bookmark: settings.sessionFolderBookmark)
         // Performance studio families — strict-shape scans across both roots (a user's own
         // co-located files never count). Instrument banks are owned by the pack store.
@@ -370,6 +389,29 @@ struct StorageView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Removes every downloaded file — audio, cuts, stems, beat grids, sidecars — from this device. Your library and collections are untouched; burn anything again anytime.")
+            }
+            NavigationLink {
+                StorageStemsByArtistView(onChanged: refreshUsage)
+            } label: {
+                Label("Delete stems by artist…", systemImage: "square.stack.3d.up")
+            }
+            .accessibilityIdentifier("storage-delete-stems-by-artist")
+            .disabled((stemBytes ?? 0) == 0)
+            Button(role: .destructive) { confirmingDeleteAllStems = true } label: {
+                Label("Delete all stems", systemImage: "trash")
+            }
+            .accessibilityIdentifier("storage-delete-all-stems")
+            .disabled((stemBytes ?? 0) == 0)
+            .confirmationDialog("Delete all stems?",
+                                isPresented: $confirmingDeleteAllStems, titleVisibility: .visible) {
+                Button("Delete stems", role: .destructive) {
+                    burns.removeAllStems()
+                    refreshUsage()
+                }
+                .accessibilityIdentifier("storage-delete-all-stems-confirm")
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes every separated-stem file (vocals / drums / bass / other) from this device. Burnt audio and beat grids stay; stems re-separate on demand.")
             }
         } header: {
             Text("Downloaded music")
@@ -666,6 +708,64 @@ struct StorageArtistsView: View {
             Button("Cancel", role: .cancel) {}
         } message: { row in
             Text("Removes \(row.artist)'s downloaded files from this device. The songs stay in your library and can be burned again.")
+        }
+    }
+}
+
+// MARK: - Delete stems by artist (MISC1)
+
+/// Delete just the STEMS for a chosen artist's burned songs — the separated vocals / drums /
+/// bass / other tracks — leaving the burned audio and beat grids intact. Mirrors the
+/// delete-by-artist screen; only artists with stems on disk are listed.
+struct StorageStemsByArtistView: View {
+    @Environment(BurnStore.self) private var burns
+    var onChanged: () -> Void = {}
+
+    @State private var pending: BurnStore.ArtistUsage?
+
+    var body: some View {
+        Group {
+            let rows = burns.stemUsageByArtist()
+            if rows.isEmpty {
+                ContentUnavailableView {
+                    Label("No stems", systemImage: "square.stack.3d.up")
+                } description: {
+                    Text("Separate a burned song into stems (Studio ▸ Stemify, or a Mix stem deck) and they'll show up here by artist.")
+                }
+            } else {
+                List(rows) { row in
+                    Button { pending = row } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.artist).foregroundStyle(Theme.fg)
+                                Text("\(row.songIds.count) song\(row.songIds.count == 1 ? "" : "s") with stems")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(row.bytes), countStyle: .file))
+                                .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                            Image(systemName: "trash").foregroundStyle(Theme.danger).font(.caption)
+                        }
+                    }
+                    .accessibilityIdentifier("storage-stem-artist-row")
+                }
+                .scrollContentBackground(.hidden).background(Theme.bg)
+            }
+        }
+        .navigationTitle("Delete stems by artist")
+        .confirmationDialog(pending.map { "Delete \($0.artist)'s stems?" } ?? "",
+                            isPresented: Binding(get: { pending != nil },
+                                                 set: { if !$0 { pending = nil } }),
+                            titleVisibility: .visible, presenting: pending) { row in
+            Button("Delete stems for \(row.songIds.count) song\(row.songIds.count == 1 ? "" : "s")",
+                   role: .destructive) {
+                burns.removeStems(forSongs: row.songIds)
+                onChanged()
+            }
+            .accessibilityIdentifier("storage-stem-artist-delete-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: { row in
+            Text("Removes \(row.artist)'s separated-stem files. The burned audio and beat grids stay; stems re-separate on demand.")
         }
     }
 }

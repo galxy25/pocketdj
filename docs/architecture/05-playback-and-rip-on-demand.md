@@ -901,6 +901,15 @@ live usage (burned bytes via `BurnStore.burnedUsageBytes()`, recordings via
 `BurnStore.usageByArtist()`; by **collection** — `CollectionsStore.songIds(for…)` ∩
 `readyBurnedIds`; **all burnt music**; **session recordings**), and the **soft cap**.
 
+**Stems broken out (MISC1).** Stems are a separate usage line, not folded into "Burnt music":
+the screen shows `BurnStore.stemUsageBytes()` on its own row, and "Burnt music" displays the
+total *minus* it so the two rows sum to the real footprint (no double-count). Two stems-only
+cleanups sit beside the burnt-music tools — per-artist (`stemUsageByArtist()` →
+`removeStems(forSongs:)`, screen `StorageStemsByArtistView`) and **all stems**
+(`removeAllStems()`). Both gate on the exact `stem-<id>-<part>.mp3` shape (`isStemFile`, NOT the
+looser `auxFileSongId` which also matches beat-grid `analysis-*.json`), so clearing stems never
+wipes a beat grid; a `protecting` set skips songs whose stems are loaded in a live player.
+
 **Bulk delete (`BurnStore.removeBurns/removeAllBurns`).** Batch removal is
 shared-analog-aware (the whole-album mp3 survives while any *surviving* item references
 it) and removes each song's sidecar, per-song cut, stems, and beat-grid sidecar, saving

@@ -376,6 +376,32 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// SEQ1: tapping a sequencer row header solo-previews just that row — the engine solos it
+    /// (`soloedRow`), and the header's a11y label flips Preview → Stop; re-tapping stops.
+    func testSequencerRowHeaderSoloPreview() throws {
+        #if os(macOS)
+        throw XCTSkip("sequencer audio solo exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(2)                                   // Sequencer
+        let pattern = app.el("seq-pattern-ptn_fixture")
+        XCTAssertTrue(pattern.waitForExistence(timeout: 15), "the seeded pattern")
+        pattern.tap()
+        let solo = app.el("seq-row-solo-0")
+        XCTAssertTrue(solo.waitForExistence(timeout: 10), "the row header (solo affordance)")
+        XCTAssertFalse((solo.label).contains("Stop"), "starts in the Preview state")
+        // Solo-preview → engine.soloedRow == 0, header flips to Stop.
+        solo.tap()
+        wait(for: [expectation(for: NSPredicate(format: "label CONTAINS 'Stop'"), evaluatedWith: solo)],
+             timeout: 10)
+        snap("seq-row-solo")
+        // Re-tap the soloing row ⇒ stop (back to Preview).
+        solo.tap()
+        wait(for: [expectation(for: NSPredicate(format: "NOT (label CONTAINS 'Stop')"), evaluatedWith: solo)],
+             timeout: 10)
+        #endif
+    }
+
     func testLiveStaffSectionPresent() throws {
         #if os(macOS)
         throw XCTSkip("macOS: Instruments live-staff exercised on iOS")
