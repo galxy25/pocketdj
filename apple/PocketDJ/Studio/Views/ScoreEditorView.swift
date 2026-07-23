@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The three score-editor interaction modes (I2). SELECT picks notes or whole bars; MOVE nudges
-/// or duplicates the selection; EDIT bulk-applies length / accidental / delete to it.
-enum ScoreEditMode: String, CaseIterable { case select, move, edit }
+/// The four score-editor interaction modes. ENTER places a new note on every tap (the pen sets
+/// length / accidental); SELECT snaps each tap to the CLOSEST note (or a whole bar) to build a
+/// selection; MOVE nudges or duplicates it; EDIT bulk-applies length / accidental / delete.
+enum ScoreEditMode: String, CaseIterable { case enter, select, move, edit }
 /// In SELECT mode, a tap picks a single note or every note in the tapped bar.
 enum ScoreSelectGranularity { case note, bar }
 
@@ -23,7 +24,7 @@ struct ScoreEditorView: View {
     /// The "pen" for newly placed notes (and the last-touched note's values); EDIT chips also set it.
     @State private var editLength: NoteDuration = .quarter
     @State private var editAccidental: Accidental = .natural
-    @State private var mode: ScoreEditMode = .select
+    @State private var mode: ScoreEditMode = .enter
     @State private var granularity: ScoreSelectGranularity = .note
     /// The selection, keyed by VALUE (StudioNoteEvent is Hashable) and resolved to indices each
     /// render. Value-based on purpose: the live-staff host re-sorts events on commit, so an
@@ -49,14 +50,14 @@ struct ScoreEditorView: View {
             ForEach(pages.indices, id: \.self) { i in
                 ScorePageView(page: pages[i], editing: editing,
                               highlights: points.filter { $0.page == i }.map(\.point),
-                              onTap: editing ? { p in handleTap(at: p, page: pages[i]) } : nil)
+                              onTap: editing ? { p in handleTap(at: p, pageIndex: i, page: pages[i], pages: pages) } : nil)
                     .aspectRatio(pages[i].size.width / pages[i].size.height, contentMode: .fit)
                     .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
                     .accessibilityIdentifier("score-page-\(i)")
             }
         }
         .onChange(of: editing) {
-            if !editing { selection = []; undoStack.removeAll(); mode = .select }
+            if !editing { selection = []; undoStack.removeAll(); mode = .enter }
         }
     }
 
@@ -66,6 +67,7 @@ struct ScoreEditorView: View {
         VStack(spacing: 8) {
             modeRow
             switch mode {
+            case .enter:  enterRow
             case .select: selectRow
             case .move:   moveRow
             case .edit:   editRow
@@ -90,6 +92,31 @@ struct ScoreEditorView: View {
             .disabled(undoStack.isEmpty)
             .keyboardShortcut("z", modifiers: .command)
             .accessibilityIdentifier("score-undo")
+        }
+    }
+
+    /// ENTER mode: the note "pen" — length + accidental for notes you place. Sets the pen only
+    /// (unlike EDIT's identical chips, which apply to the selection).
+    private var enterRow: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Length").font(.caption2).foregroundStyle(Theme.fgDim)
+                ForEach([NoteDuration.eighth, .quarter, .half, .whole], id: \.self) { d in
+                    chip(lengthLabel(d), on: editLength == d, id: "score-pen-length-\(lengthTag(d))") {
+                        editLength = d
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 6) {
+                Text("Accidental").font(.caption2).foregroundStyle(Theme.fgDim)
+                ForEach([Accidental.natural, .sharp, .flat], id: \.self) { a in
+                    chip(accidentalLabel(a), on: editAccidental == a, id: "score-pen-acc-\(a.rawValue)") {
+                        editAccidental = a
+                    }
+                }
+                Spacer(minLength: 0)
+            }
         }
     }
 
@@ -157,11 +184,13 @@ struct ScoreEditorView: View {
         let n = selection.count
         let notes = "\(n) note\(n == 1 ? "" : "s")"
         switch mode {
+        case .enter:
+            return "Tap the staff to place a note (length / accidental above)."
         case .select:
             if granularity == .bar {
                 return n == 0 ? "Tap a bar to select all its notes." : "\(notes) selected."
             }
-            return n == 0 ? "Tap a note to select it, or tap empty space to place one."
+            return n == 0 ? "Tap near a note to select it — it snaps to the closest."
                           : "\(notes) selected — tap more, or switch to Move / Edit."
         case .move:
             return n == 0 ? "Select notes first, then nudge or duplicate them."
@@ -203,7 +232,10 @@ struct ScoreEditorView: View {
     }
 
     private func modeLabel(_ m: ScoreEditMode) -> String {
-        switch m { case .select: return "Select"; case .move: return "Move"; case .edit: return "Edit" }
+        switch m {
+        case .enter: return "Enter"; case .select: return "Select"
+        case .move: return "Move"; case .edit: return "Edit"
+        }
     }
     private func lengthLabel(_ d: NoteDuration) -> String {
         switch d { case .eighth: return "1/8"; case .quarter: return "1/4"
@@ -245,27 +277,11 @@ struct ScoreEditorView: View {
 
     // MARK: Tap (SELECT places/selects · MOVE/EDIT adjust the selection)
 
-    private func handleTap(at pagePoint: CGPoint, page: ScorePage) {
-        guard let loc = ScoreLayout.locate(point: pagePoint, page: page) else {
-            if mode == .select, granularity == .note { selection = [] }   // tap-away clears
-            return
-        }
-        let plan = ClefPlan.plan(for: instrument)
-        let targetAbs16 = loc.measureIndex * 16 + loc.onset16ths
-        let hit = events.first { e in
-            let abs16 = Int((Double(e.onMs) / step).rounded())
-            let staff = plan.staff(forNote: e.note)
-            let pos = ScoreLayout.spelledPosition(midi: e.note, clef: staff, accidental: e.accidental).position
-            return abs16 == targetAbs16 && staff == loc.staff && pos == loc.position
-        }
-        if mode == .select, granularity == .bar {
-            toggleBar(loc.measureIndex)
-            return
-        }
-        if let e = hit {
-            toggle(e)
-        } else if mode == .select {
-            // Place a new note at the tapped spot, using the pen, and select just it.
+    private func handleTap(at pagePoint: CGPoint, pageIndex: Int, page: ScorePage, pages: [ScorePage]) {
+        switch mode {
+        case .enter:
+            // Every tap places a new note at the tapped staff position, using the pen.
+            guard let loc = ScoreLayout.locate(point: pagePoint, page: page) else { return }
             let natural = ScoreLayout.naturalMidi(position: loc.position, clef: loc.staff)
             let (midi, acc): (Int, Accidental?)
             switch editAccidental {
@@ -273,12 +289,39 @@ struct ScoreEditorView: View {
             case .sharp:   (midi, acc) = (natural + 1, .sharp)
             case .flat:    (midi, acc) = (natural - 1, .flat)
             }
-            let onMs = Int((Double(targetAbs16) * step).rounded())
+            let onMs = Int((Double(loc.measureIndex * 16 + loc.onset16ths) * step).rounded())
             let offMs = onMs + Int((Double(editLength.sixteenths) * step).rounded())
             let newNote = StudioNoteEvent(onMs: onMs, offMs: offMs, note: midi, velocity: 96, accidental: acc)
             commit(events + [newNote])
             selection = [newNote]
+        case .select:
+            if granularity == .bar {
+                guard let loc = ScoreLayout.locate(point: pagePoint, page: page) else { return }
+                toggleBar(loc.measureIndex)
+            } else if let e = nearestNote(to: pagePoint, pageIndex: pageIndex, pages: pages) {
+                toggle(e)                                 // snap to the closest note
+            }
+        case .move, .edit:
+            // A tap adjusts what you're operating on: snap to the closest note and toggle it.
+            if let e = nearestNote(to: pagePoint, pageIndex: pageIndex, pages: pages) { toggle(e) }
         }
+    }
+
+    /// The note whose rendered position is closest to `pagePoint` on page `pageIndex`, or nil if
+    /// none lands on that page. Powers SELECT's snap-to-closest and MOVE/EDIT's tap-to-adjust.
+    private func nearestNote(to pagePoint: CGPoint, pageIndex: Int, pages: [ScorePage]) -> StudioNoteEvent? {
+        let plan = ClefPlan.plan(for: instrument)
+        var best: (e: StudioNoteEvent, d: CGFloat)?
+        for e in events {
+            let abs16 = Int((Double(e.onMs) / step).rounded())
+            guard let np = ScoreLayout.notePoint(midi: e.note, accidental: e.accidental,
+                                                 onset16ths: abs16, plan: plan, pages: pages),
+                  np.page == pageIndex else { continue }
+            let dx = np.point.x - pagePoint.x, dy = np.point.y - pagePoint.y
+            let d = dx * dx + dy * dy
+            if best == nil || d < best!.d { best = (e, d) }
+        }
+        return best?.e
     }
 
     private func toggle(_ e: StudioNoteEvent) {

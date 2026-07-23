@@ -229,15 +229,17 @@ And a take doesn't have to stay a take:
 
 ### Write on the staff — live and recorded
 
-The **Score** screen is editable, not just read-only notation. Its **Edit** button opens three
+The **Score** screen is editable, not just read-only notation. Its **Edit** button opens four
 explicit modes:
 
-- **Select** — tap notes to ring them (as many as you like), or flip to **Bars** to grab a whole
-  bar's worth in one tap; tapping empty staff **places** a new note.
+- **Enter** — every tap **places a new note** at that spot; pick its **length** (𝅘𝅥𝅮 · 𝅘𝅥 · 𝅗𝅥 · 𝅝) and
+  **accidental** (♮ · ♯ · ♭) first as the "pen."
+- **Select** — every tap **snaps to the closest note** and rings it (tap more to build a
+  multi-selection), or flip to **Bars** to grab a whole bar's notes in one tap.
 - **Move** — nudge the whole selection **±a semitone** or **±a step** in time, or **Duplicate** it a
   bar later — all with buttons, so there's no fiddly dragging fighting the scroll.
-- **Edit** — set the **length** (𝅘𝅥𝅮 · 𝅘𝅥 · 𝅗𝅥 · 𝅝) and **accidental** (♮ · ♯ · ♭ — a flat draws as a
-  real flat, not a sharp) of everything selected, or **delete** it.
+- **Edit** — set the **length** and **accidental** (a flat draws as a real flat, not a sharp) of
+  everything selected, or **delete** it.
 
 An **Undo** button steps back through your edits one at a time (⌘Z on a Mac / iPad keyboard), and a
 **Cancel** button throws the whole edit session away and restores the take exactly as it was before
