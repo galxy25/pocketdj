@@ -307,13 +307,6 @@ struct RootView: View {
                  Color(red: 0.00, green: 0.62, blue: 0.86)],  // blue
         startPoint: .leading, endPoint: .trailing)
 
-    /// Icy gem sheen for the Collections diamond (top-left highlight → deeper blue).
-    static let diamondSheen = LinearGradient(
-        colors: [Color(red: 0.86, green: 0.96, blue: 1.00),
-                 Color(red: 0.44, green: 0.80, blue: 0.98),
-                 Color(red: 0.16, green: 0.55, blue: 0.90)],
-        startPoint: .topLeading, endPoint: .bottomTrailing)
-
     /// Menu row: most sections use their SF Symbol, but a few wear custom marks — MIX
     /// (Apple Music's AutoMix records, here in platinum + gold), JUKEBOX HERO (the pride
     /// jukebox), PRODUCER (piano keys under the left→right Apple rainbow), and COLLECTIONS
@@ -336,10 +329,11 @@ struct RootView: View {
                     .foregroundStyle(Self.appleRainbow)
             }
         } else if item == .playlists {
-            // Collections wears a gem diamond with an icy sheen.
+            // Collections wears a faceted brilliant-cut diamond (custom vector — the flat
+            // SF Symbol read as a card suit; this one is a shiny 3-D gem like the 💎 emoji).
             Label { Text(item.title) } icon: {
-                Image(systemName: "diamond.fill")
-                    .foregroundStyle(Self.diamondSheen)
+                DiamondIcon()
+                    .frame(width: 20, height: 18)
             }
         } else {
             Label(item.title, systemImage: item.icon)
@@ -507,6 +501,67 @@ struct ComingSoon: View {
         .navigationTitle(title)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
+    }
+}
+
+/// A faceted **brilliant-cut diamond** — the Collections mark. Six flat facets shaded
+/// light-from-top-left (bright near-white table → deep-blue pavilion point), crisp light
+/// facet seams, and a white sparkle: a shiny 3-D gem in the spirit of the 💎 emoji (the flat
+/// `diamond.fill` SF Symbol read as a playing-card suit, not a jewel).
+struct DiamondIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width, h = size.height
+            func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * w, y: y * h) }
+
+            // Vertices: a flat table on top, widest at the girdle (~⅓ down), a point at the bottom.
+            let tL = pt(0.30, 0.04), tR = pt(0.70, 0.04)      // table corners
+            let gL = pt(0.03, 0.37), gR = pt(0.97, 0.37)      // girdle (widest) corners
+            let gML = pt(0.33, 0.37), gMR = pt(0.67, 0.37)    // girdle points under the table corners
+            let tip = pt(0.50, 0.98)                           // culet (bottom point)
+
+            func facet(_ pts: [CGPoint], _ color: Color) {
+                var path = Path()
+                path.move(to: pts[0])
+                for p in pts.dropFirst() { path.addLine(to: p) }
+                path.closeSubpath()
+                context.fill(path, with: .color(color))
+            }
+
+            // Crown — the bright table plus two slanted side facets.
+            facet([tL, tR, gMR, gML], Color(red: 0.83, green: 0.97, blue: 1.00))   // table (brightest)
+            facet([tL, gML, gL],      Color(red: 0.55, green: 0.87, blue: 0.99))   // left crown
+            facet([tR, gR, gMR],      Color(red: 0.36, green: 0.75, blue: 0.96))   // right crown
+            // Pavilion — three triangles converging to the point, deepening toward it.
+            facet([gL, gML, tip],  Color(red: 0.24, green: 0.62, blue: 0.92))      // left pavilion
+            facet([gML, gMR, tip], Color(red: 0.13, green: 0.48, blue: 0.85))      // center pavilion
+            facet([gMR, gR, tip],  Color(red: 0.07, green: 0.36, blue: 0.73))      // right pavilion
+
+            // Crisp light facet seams (outline + girdle + the crown/pavilion edges).
+            var edges = Path()
+            edges.addLines([tL, tR, gR, tip, gL]); edges.closeSubpath()   // silhouette
+            edges.move(to: gL);  edges.addLine(to: gR)                     // girdle
+            edges.move(to: tL);  edges.addLine(to: gML); edges.addLine(to: tip)
+            edges.move(to: tR);  edges.addLine(to: gMR); edges.addLine(to: tip)
+            context.stroke(edges, with: .color(Color(red: 0.93, green: 0.99, blue: 1.0).opacity(0.75)),
+                           lineWidth: max(0.6, w * 0.035))
+
+            // A white 4-point sparkle on the table for the "shine."
+            let s = w * 0.11
+            let c = pt(0.43, 0.19)
+            var star = Path()
+            star.move(to:    CGPoint(x: c.x,             y: c.y - s))
+            star.addLine(to: CGPoint(x: c.x + s * 0.3,   y: c.y - s * 0.3))
+            star.addLine(to: CGPoint(x: c.x + s,         y: c.y))
+            star.addLine(to: CGPoint(x: c.x + s * 0.3,   y: c.y + s * 0.3))
+            star.addLine(to: CGPoint(x: c.x,             y: c.y + s))
+            star.addLine(to: CGPoint(x: c.x - s * 0.3,   y: c.y + s * 0.3))
+            star.addLine(to: CGPoint(x: c.x - s,         y: c.y))
+            star.addLine(to: CGPoint(x: c.x - s * 0.3,   y: c.y - s * 0.3))
+            star.closeSubpath()
+            context.fill(star, with: .color(.white))
+        }
+        .accessibilityHidden(true)   // decorative — the Label's text names the tab
     }
 }
 
