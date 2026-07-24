@@ -124,7 +124,7 @@ final class PerformanceUITests: XCTestCase {
         // Distinctive seeded/leaf element per sub-tab (index = declaration order in StudioSubTab).
         // Samples (0)
         switchTab(0)
-        XCTAssertTrue(app.el("sample-new-from-track").waitForExistence(timeout: 10),
+        XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 10),
                       "Samples sub-tab should show the creation bar")
         // Loops (1)
         switchTab(1)
@@ -153,7 +153,7 @@ final class PerformanceUITests: XCTestCase {
                       "Demuxer source picker should offer the Import entry point")
         // Back to Samples — the picker round-trips.
         switchTab(0)
-        XCTAssertTrue(app.el("sample-new-from-track").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 10))
         snap("sub-tab-switching")
         #endif
     }
@@ -166,9 +166,10 @@ final class PerformanceUITests: XCTestCase {
         #else
         launchPerformance()
         switchTab(0)
-        // Creation entry points (in-content, never toolbar-only).
-        XCTAssertTrue(app.el("sample-new-from-track").waitForExistence(timeout: 15))
-        XCTAssertTrue(app.el("sample-record-mic").exists)
+        // Creation entry points (in-content, never toolbar-only). "From track" now lives inside
+        // the import (⤓) menu rather than as a standalone button.
+        XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.any("sample-add-menu").exists, "the import menu (now holds From track)")
         // The seeded sample row + its name.
         XCTAssertTrue(app.any("sample-row-smp_fixture").waitForExistence(timeout: 10),
                       "the seeded sample row must be visible")

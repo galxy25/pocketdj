@@ -141,8 +141,8 @@ struct StudioSampleEdit: Codable, Hashable, Sendable {
     var trimStartMs: Int = 0
     var trimEndMs: Int = 0
     var gainDb: Double = 0
-    /// Playback rate 0.5–2.0 (1 = neutral). Clamped by `clamped()`, mirrored by the engine's
-    /// timePitch limits.
+    /// Playback rate 0.5–10× (1 = neutral). Clamped by `clamped()`; well within the engine's
+    /// timePitch legal range (1/32…32), so a 10× stab renders and auditions cleanly.
     var rate: Double = 1
     /// Pitch shift in semitones, ±12.
     var pitchSemitones: Double = 0
@@ -169,7 +169,7 @@ struct StudioSampleEdit: Codable, Hashable, Sendable {
         e.trimEndMs = max(0, trimEndMs)
         if e.trimEndMs > 0, e.trimEndMs < e.trimStartMs { e.trimEndMs = e.trimStartMs }
         e.gainDb = min(12, max(-60, gainDb))
-        e.rate = min(2.0, max(0.5, rate))
+        e.rate = min(10.0, max(0.5, rate))
         e.pitchSemitones = min(12, max(-12, pitchSemitones))
         e.reverbWet = min(1, max(0, reverbWet))
         e.delayWet = min(1, max(0, delayWet))

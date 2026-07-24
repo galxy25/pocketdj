@@ -97,7 +97,7 @@ works offline) and reads its BPM, so loops and slices snap to the groove without
 counting it out.
 
 **Editing is non-destructive — a built-in mixer deck.** Open a sample and you get a **mixer deck**:
-**Tempo** (½–2×), **Pitch** (±12 semitones), **Gain**, and a four-effect **FX rack** — **Compressor**,
+**Tempo** (½–10×), **Pitch** (±12 semitones), **Gain**, and a four-effect **FX rack** — **Compressor**,
 **Reverb**, **Delay**, and a resonant **Filter** sweep — plus **trim** and **rename**. Everything is
 auditioned live through the Studio's chain and **none of it is written into the file** until something
 that needs a finished file asks for one (a loop, a sequenced hit, or playing the sample inside a
@@ -318,11 +318,14 @@ the flag for the drop — and it's there, whether that track's burned on my phon
 ## Demuxer — take a record apart
 
 The **sixth sub-tab** points the Studio the other way: instead of building something new, the
-**Demuxer** takes existing audio **apart**. Pick a source — a **catalog track** (burned ones
-listed first, with the same **burn-on-demand** ladder the sampler uses; a track with no
-prepared audio is honestly "nothing to demux", never a silent fetch), a piece of **Performance
-media** (a sample, loop or take), or an **imported audio file** — and it resolves to a local
-file whose 0:00 is the *song's* 0:00 (an analog album side is carved to just this song, once).
+**Demuxer** takes existing audio **apart**. Pick a source from the picker's three groups —
+**Imported audio** (your imported files), **Performance media** (a sample, loop or take), or
+**Tracks** (a catalog track; burned ones listed first, with the same **burn-on-demand** ladder the
+sampler uses; a track with no prepared audio is honestly "nothing to demux", never a silent fetch).
+Each group is **collapsed by default** — the same tidy, remember-what-you-opened behavior as the
+collection's playlists and pockets — and a **search** auto-expands them so nothing hides behind a
+closed group. The chosen source resolves to a local file whose 0:00 is the *song's* 0:00 (an analog
+album side is carved to just this song, once).
 
 **The timeline.** A scrubbable **waveform** with the **chord timeline** laid over it as colored
 blocks — the dominant chords, heard **on the device** (a chromagram detector, no server). **Tap

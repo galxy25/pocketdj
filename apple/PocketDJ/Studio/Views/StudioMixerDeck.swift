@@ -45,7 +45,7 @@ struct StudioMixerDeck: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Transport-shaping trio.
-            StudioEditSlider(title: "Tempo", systemImage: "hare", range: 0.5...2.0, step: 0.05,
+            StudioEditSlider(title: "Tempo", systemImage: "hare", range: 0.5...10.0, step: 0.05,
                              value: edit.rate, format: { String(format: "×%.2f", $0) },
                              a11y: "\(idPrefix)-tempo") { v in mut { $0.rate = v } }
             StudioEditSlider(title: "Pitch", systemImage: "tuningfork", range: -12...12, step: 1,

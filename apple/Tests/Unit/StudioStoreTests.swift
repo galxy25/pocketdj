@@ -479,10 +479,10 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(store.sample("smp_a")?.renderRevision, 1)
         store.updateSampleEdit("smp_a", edit)                 // identical → no bump
         XCTAssertEqual(store.sample("smp_a")?.renderRevision, 1)
-        edit.rate = 5.0                                        // clamped to 2.0 — a real change
+        edit.rate = 12.0                                       // clamped to 10.0 — a real change
         store.updateSampleEdit("smp_a", edit)
         XCTAssertEqual(store.sample("smp_a")?.renderRevision, 2)
-        XCTAssertEqual(store.sample("smp_a")?.edit.rate, 2.0)
+        XCTAssertEqual(store.sample("smp_a")?.edit.rate, 10.0)
     }
 
     // MARK: B6 mixer-deck FX (compWet / filterAmt) — additive-optional, clamped, revision-tracked
