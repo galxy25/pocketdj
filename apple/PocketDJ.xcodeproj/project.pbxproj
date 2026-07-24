@@ -303,6 +303,7 @@
 		DAB75E026C40AC67286EB2CB /* DemuxLyricGenerationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 029E55BE504590AF50C79152 /* DemuxLyricGenerationTests.swift */; };
 		DCA26E59196FA608F846B04A /* EditSongView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB73F62005924C8274EE434 /* EditSongView.swift */; };
 		DCFB5FC480A6E8D0C9154DAF /* CollectionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6B0D327765BAA9E778489FD /* CollectionsUITests.swift */; };
+		DD4E812A3F482F54426D3153 /* ArrangerClipBaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9403B2C77513010DF9BC3C3A /* ArrangerClipBaker.swift */; };
 		DEC807B4D22B0DF18ABF7BBC /* SMFWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D96AAD5B322D1E24EB05B1 /* SMFWriterTests.swift */; };
 		DEECBF5760955082D60F9BCF /* AppleMusicInlinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19A543B9F396712167603010 /* AppleMusicInlinePanel.swift */; };
 		DF415E65978064B8F159F264 /* InstrumentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91949EF48C5464CC0C7376A5 /* InstrumentEngine.swift */; };
@@ -607,6 +608,7 @@
 		908C309108D71A8E1FDC9DBD /* IntentServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentServices.swift; sourceTree = "<group>"; };
 		91949EF48C5464CC0C7376A5 /* InstrumentEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstrumentEngine.swift; sourceTree = "<group>"; };
 		9196723C9E4ADE86ECB6058D /* SongRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongRecognizer.swift; sourceTree = "<group>"; };
+		9403B2C77513010DF9BC3C3A /* ArrangerClipBaker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrangerClipBaker.swift; sourceTree = "<group>"; };
 		9503F8E2F5DB4368AC78BEBD /* TracksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TracksView.swift; sourceTree = "<group>"; };
 		9611B748BDF1959742BAE025 /* FavoritesSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesSyncService.swift; sourceTree = "<group>"; };
 		965C2BB9FBBCAB3DF71E888F /* DemuxCloudLyricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxCloudLyricsTests.swift; sourceTree = "<group>"; };
@@ -1032,6 +1034,7 @@
 			children = (
 				C0BF9868DC6221D995A0E787 /* Demux */,
 				3747B1C832CC148F672337C1 /* Views */,
+				9403B2C77513010DF9BC3C3A /* ArrangerClipBaker.swift */,
 				3B8561B212B449EEAD6D13FB /* AudioSessionPolicy.swift */,
 				0BB5B0196F280FE8A6B7E30B /* BLEMIDI.swift */,
 				91949EF48C5464CC0C7376A5 /* InstrumentEngine.swift */,
@@ -1734,6 +1737,7 @@
 				6D58E7015E985FAB2090BEB9 /* AppleMusicProvider.swift in Sources */,
 				1EEB6AAE3DFE4725CBA443EC /* AppleMusicRecognition.swift in Sources */,
 				63F9F587C52F7386447269B8 /* AppleMusicRecognitionSection.swift in Sources */,
+				DD4E812A3F482F54426D3153 /* ArrangerClipBaker.swift in Sources */,
 				22F36716176B56DE7CF54DA6 /* ArtistDetailView.swift in Sources */,
 				264392EAA39197B78A4C5FEB /* AudioSchema27.swift in Sources */,
 				988FE22DEC8BC69F0A6A40F5 /* AudioSessionPolicy.swift in Sources */,

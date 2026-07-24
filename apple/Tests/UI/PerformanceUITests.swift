@@ -204,6 +204,32 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// Stage B: add a clip from a studio source. Open a track's add-clip picker, expand the Samples
+    /// group (collapsed by default), pick the seeded sample → it bakes an immutable snapshot and a
+    /// clip block appears on the lane.
+    func testTracksAddClipFromSource() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        // Add a track, then open its add-clip picker.
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15))
+        emptyAdd.tap()
+        XCTAssertTrue(app.any("tracks-add-clip-0").waitForExistence(timeout: 10))
+        app.any("tracks-add-clip-0").tap()
+        // Picker lists sources directly; pick the seeded sample.
+        let item = app.any("clip-picker-item-smp_fixture")
+        XCTAssertTrue(item.waitForExistence(timeout: 10), "picker should list the seeded sample")
+        item.tap()
+        // The bake completes and a clip block lands on the lane.
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20),
+                      "the baked clip block should appear on the lane")
+        snap("tracks-clip-added")
+        #endif
+    }
+
     // MARK: - (3) Samples
 
     func testSamplesSeededRowAndCreationControls() throws {
