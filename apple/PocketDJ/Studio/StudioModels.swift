@@ -776,7 +776,7 @@ struct StudioSlice: Codable, Identifiable, Hashable, Sendable {
 /// immutable snapshot file, so a clip never depends on its source still existing. An unknown/future
 /// kind decodes to `.recording` (generic "audio").
 enum StudioClipSource: String, Codable, Sendable {
-    case sample, loop, pattern, take, recording, master
+    case sample, loop, pattern, take, recording, master, stem
 }
 
 /// One clip on a track: a baked audio snapshot placed at `startMs` on the arrangement timeline.
@@ -821,6 +821,7 @@ struct StudioTrack: Codable, Identifiable, Hashable, Sendable {
     var name: String
     var clips: [StudioClip] = []
     var gainDb: Double = 0            // per-track volume trim; 0 = unity
+    var pan: Double = 0              // stereo position, -1 (hard L) … +1 (hard R); 0 = center
     var muted: Bool = false
     var soloed: Bool = false
     var colorIndex: Int = 0           // index into the stem/track palette (wraps)
@@ -829,10 +830,10 @@ struct StudioTrack: Codable, Identifiable, Hashable, Sendable {
     /// The track's played length (ms) = the end of its last clip.
     var lengthMs: Int { clips.map(\.endMs).max() ?? 0 }
 
-    enum CodingKeys: String, CodingKey { case id, name, clips, gainDb, muted, soloed, colorIndex, createdAt }
-    init(id: String, name: String, clips: [StudioClip] = [], gainDb: Double = 0,
+    enum CodingKeys: String, CodingKey { case id, name, clips, gainDb, pan, muted, soloed, colorIndex, createdAt }
+    init(id: String, name: String, clips: [StudioClip] = [], gainDb: Double = 0, pan: Double = 0,
          muted: Bool = false, soloed: Bool = false, colorIndex: Int = 0, createdAt: Double = 0) {
-        self.id = id; self.name = name; self.clips = clips; self.gainDb = gainDb
+        self.id = id; self.name = name; self.clips = clips; self.gainDb = gainDb; self.pan = pan
         self.muted = muted; self.soloed = soloed; self.colorIndex = colorIndex; self.createdAt = createdAt
     }
     init(from decoder: Decoder) throws {
@@ -841,10 +842,53 @@ struct StudioTrack: Codable, Identifiable, Hashable, Sendable {
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         clips = ((try? c.decode([StudioLossyBox<StudioClip>].self, forKey: .clips)) ?? []).compactMap(\.value)
         gainDb = (try? c.decode(Double.self, forKey: .gainDb)) ?? 0
+        pan = (try? c.decode(Double.self, forKey: .pan)) ?? 0
         muted = (try? c.decode(Bool.self, forKey: .muted)) ?? false
         soloed = (try? c.decode(Bool.self, forKey: .soloed)) ?? false
         colorIndex = (try? c.decode(Int.self, forKey: .colorIndex)) ?? 0
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+    }
+}
+
+/// Master-bus FX for one arrangement — a live performance layer over the summed mix, plus the
+/// overall master gain. Four effects the Mix tab doesn't have (phaser / ring-modulator / freezer /
+/// Brazilian bass lift), each a toggle + its musical params. The deterministic three (phaser /
+/// ring-mod / Brazilian bass) render identically live and into a bounce (WYSIWYG); freeze is a
+/// live-only capture-and-hold and is bypassed when baking. Lenient/all-optional decode: a partial
+/// or legacy blob degrades field-by-field rather than dropping the whole struct.
+struct StudioMasterFX: Codable, Hashable, Sendable {
+    var phaserEnabled: Bool = false
+    var phaserRate: Double = 0.5          // LFO sweep, Hz (0.05…8)
+    var phaserDepth: Double = 0.6         // 0…1 wet/notch depth
+    var ringModEnabled: Bool = false
+    var ringModFreqHz: Double = 200       // carrier frequency, Hz (20…2000)
+    var ringModMix: Double = 0.5          // 0…1 dry↔wet
+    var freezeEnabled: Bool = false       // live-only spectral/buffer hold
+    var brazilianBassEnabled: Bool = false
+    var brazilianBassAmount: Double = 0.6 // 0…1 sub-bass lift + per-beat pump depth
+    var masterGainDb: Double = 0          // overall mix trim (−24…+12 dB)
+
+    /// True when any effect is on — lets playback skip building the master DSP node entirely when
+    /// the chain is dry (only master gain, applied on the trailing mixer regardless).
+    var anyEffectEnabled: Bool { phaserEnabled || ringModEnabled || freezeEnabled || brazilianBassEnabled }
+
+    enum CodingKeys: String, CodingKey {
+        case phaserEnabled, phaserRate, phaserDepth, ringModEnabled, ringModFreqHz, ringModMix,
+             freezeEnabled, brazilianBassEnabled, brazilianBassAmount, masterGainDb
+    }
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        phaserEnabled = (try? c.decode(Bool.self, forKey: .phaserEnabled)) ?? false
+        phaserRate = (try? c.decode(Double.self, forKey: .phaserRate)) ?? 0.5
+        phaserDepth = (try? c.decode(Double.self, forKey: .phaserDepth)) ?? 0.6
+        ringModEnabled = (try? c.decode(Bool.self, forKey: .ringModEnabled)) ?? false
+        ringModFreqHz = (try? c.decode(Double.self, forKey: .ringModFreqHz)) ?? 200
+        ringModMix = (try? c.decode(Double.self, forKey: .ringModMix)) ?? 0.5
+        freezeEnabled = (try? c.decode(Bool.self, forKey: .freezeEnabled)) ?? false
+        brazilianBassEnabled = (try? c.decode(Bool.self, forKey: .brazilianBassEnabled)) ?? false
+        brazilianBassAmount = (try? c.decode(Double.self, forKey: .brazilianBassAmount)) ?? 0.6
+        masterGainDb = (try? c.decode(Double.self, forKey: .masterGainDb)) ?? 0
     }
 }
 
@@ -854,21 +898,67 @@ struct StudioArrangement: Codable, Identifiable, Hashable, Sendable {
     var id: String                    // "arr_…" — arranger-internal, NON-collection-riding
     var name: String
     var tracks: [StudioTrack] = []
+    /// Organizational folder membership (nil = loose/unfiled). A dangling id (folder deleted)
+    /// reads as loose so the arrangement never vanishes. Metadata only — mirrors StudioSample.folderId.
+    var folderId: String?
+    /// Synthesized constant-tempo grid for the ruler/beat-markers/looper. Default 120; derived from
+    /// the first clip's source-item bpm at create/first-add time. 4/4 assumed (firstDownbeat = 0:00).
+    var bpm: Double = 120
+    var loopEnabled: Bool = false     // loop the [loopStartMs, loopEndMs) region on playback
+    var loopStartMs: Int = 0
+    var loopEndMs: Int = 0
+    var masterFX: StudioMasterFX = StudioMasterFX()
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
     /// The arrangement timeline end (ms) = the longest track — what the ruler/transport spans.
     var lengthMs: Int { tracks.map(\.lengthMs).max() ?? 0 }
 
-    enum CodingKeys: String, CodingKey { case id, name, tracks, createdAt, updatedAt }
-    init(id: String, name: String, tracks: [StudioTrack] = [], createdAt: Double = 0, updatedAt: Double = 0) {
-        self.id = id; self.name = name; self.tracks = tracks; self.createdAt = createdAt; self.updatedAt = updatedAt
+    enum CodingKeys: String, CodingKey {
+        case id, name, tracks, folderId, bpm, loopEnabled, loopStartMs, loopEndMs, masterFX, createdAt, updatedAt
+    }
+    init(id: String, name: String, tracks: [StudioTrack] = [], folderId: String? = nil,
+         bpm: Double = 120, loopEnabled: Bool = false, loopStartMs: Int = 0, loopEndMs: Int = 0,
+         masterFX: StudioMasterFX = StudioMasterFX(), createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.tracks = tracks; self.folderId = folderId
+        self.bpm = bpm; self.loopEnabled = loopEnabled; self.loopStartMs = loopStartMs
+        self.loopEndMs = loopEndMs; self.masterFX = masterFX
+        self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newArrangementId()
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         tracks = ((try? c.decode([StudioLossyBox<StudioTrack>].self, forKey: .tracks)) ?? []).compactMap(\.value)
+        folderId = try? c.decode(String.self, forKey: .folderId)
+        bpm = (try? c.decode(Double.self, forKey: .bpm)) ?? 120
+        loopEnabled = (try? c.decode(Bool.self, forKey: .loopEnabled)) ?? false
+        loopStartMs = (try? c.decode(Int.self, forKey: .loopStartMs)) ?? 0
+        loopEndMs = (try? c.decode(Int.self, forKey: .loopEndMs)) ?? 0
+        masterFX = (try? c.decode(StudioMasterFX.self, forKey: .masterFX)) ?? StudioMasterFX()
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
+}
+
+/// A flat, named folder for organizing ARRANGEMENTS in the Tracks tab. Mirrors `StudioSampleFolder`:
+/// membership is by `StudioArrangement.folderId` (one folder per arrangement; nil = loose), so a
+/// folder is just an id + name + timestamps. DEVICE-LOCAL, in-content only (never surfaced in the
+/// macOS menu bar). Lenient/all-optional decode per the studio doctrine.
+struct StudioArrangementFolder: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "arrfld_…" — NON-collection-riding (like sfld_/cue_/slc_)
+    var name: String
+    var createdAt: Double = 0
+    var updatedAt: Double = 0
+
+    enum CodingKeys: String, CodingKey { case id, name, createdAt, updatedAt }
+    init(id: String, name: String, createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newArrangementFolderId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -893,6 +983,9 @@ struct StudioDocument: Codable, Sendable {
     /// Multitrack arrangements (the "Tracks" sub-tab, device-local). Same additive-optional shape:
     /// a legacy document with no `arrangements` key decodes to `[]`, per-element lossy.
     var arrangements: [StudioArrangement] = []
+    /// Flat folders that organize arrangements (device-local, in-content only). Additive-optional
+    /// like `folders`: a legacy document with no `arrangementFolders` key decodes to `[]`.
+    var arrangementFolders: [StudioArrangementFolder] = []
     /// On-device DETECTED musical key (Camelot code) per performance item, keyed by studio id
     /// (`smp_`/`lp_`/`ptn_`/`tk_`). Populated by `StudioAnalyzer` when an item is added to a
     /// collection; consumed for harmonic mix-glide. A parallel map (not a per-model field) so it
@@ -900,16 +993,18 @@ struct StudioDocument: Codable, Sendable {
     var keys: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, samples, loops, patterns, takes, cues, slices, folders, keys, arrangements
+        case schemaVersion, samples, loops, patterns, takes, cues, slices, folders, keys,
+             arrangements, arrangementFolders
     }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
          cues: [StudioCue] = [], slices: [StudioSlice] = [],
          folders: [StudioSampleFolder] = [], keys: [String: String] = [:],
-         arrangements: [StudioArrangement] = []) {
+         arrangements: [StudioArrangement] = [], arrangementFolders: [StudioArrangementFolder] = []) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
         self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
         self.folders = folders; self.keys = keys; self.arrangements = arrangements
+        self.arrangementFolders = arrangementFolders
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -930,6 +1025,8 @@ struct StudioDocument: Codable, Sendable {
             .compactMap(\.value)
         keys = (try? c.decode([String: String].self, forKey: .keys)) ?? [:]
         arrangements = ((try? c.decode([StudioLossyBox<StudioArrangement>].self, forKey: .arrangements)) ?? [])
+            .compactMap(\.value)
+        arrangementFolders = ((try? c.decode([StudioLossyBox<StudioArrangementFolder>].self, forKey: .arrangementFolders)) ?? [])
             .compactMap(\.value)
     }
 }
@@ -959,6 +1056,9 @@ enum StudioFactory {
     static func newArrangementId() -> String { "arr_" + uid() }
     static func newTrackId() -> String { "trk_" + uid() }
     static func newClipId() -> String { "clip_" + uid() }
+    /// Arrangement folders (Tracks organizer). Like `sfld_`/`cue_`/`slc_`, an `arrfld_` id NEVER
+    /// rides a collection's string array, so it is deliberately NOT in `studioPrefixes`.
+    static func newArrangementFolderId() -> String { "arrfld_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore

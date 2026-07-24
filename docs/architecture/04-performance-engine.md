@@ -1846,12 +1846,22 @@ composes the four studio families into a timeline. It is deliberately **additive
 **Data model** (`StudioModels.swift`). Three new value types ride the studio document
 (`StudioDocument.arrangements`, per-element-lossy like every other list):
 
-- **`StudioArrangement`** (`arr_…`) — a named workspace: `tracks: [StudioTrack]`, timestamps.
-- **`StudioTrack`** (`trk_…`) — one lane: `clips: [StudioClip]`, a mix strip (`gainDb` / `muted` /
-  `soloed`), and a palette `colorIndex`.
+- **`StudioArrangement`** (`arr_…`) — a named workspace: `tracks: [StudioTrack]`, timestamps, plus
+  the round-2 additive fields: `folderId` (organizer membership), `bpm` (beat grid, seeded from the
+  first clip's source item), `loopEnabled`/`loopStartMs`/`loopEndMs` (the looper region), and
+  `masterFX: StudioMasterFX`.
+- **`StudioTrack`** (`trk_…`) — one lane: `clips: [StudioClip]`, a mix strip (`gainDb` / `pan` /
+  `muted` / `soloed`), and a user-settable palette `colorIndex`.
 - **`StudioClip`** (`clip_…`) — a positioned, **immutable baked snapshot**: `fileName`
   (`clip-<id>.m4a`), `startMs`, `durationMs`, a `StudioClipSource` provenance tag (sample / loop /
-  pattern / take / recording / master), and the `sourceId` it was baked from (label only).
+  pattern / take / recording / master / **stem**), and the `sourceId` it was baked from (label only).
+- **`StudioArrangementFolder`** (`arrfld_…`) — a flat organizer for arrangements (id + name +
+  timestamps; membership via `StudioArrangement.folderId`), riding `StudioDocument.arrangementFolders`.
+  Like `sfld_`/`cue_`/`slc_`, `arrfld_` is **excluded from `studioPrefixes`**. Delete re-homes members
+  to loose — it never deletes an arrangement.
+- **`StudioMasterFX`** — the master-bus settings (per-effect enables + params for phaser / ring-mod /
+  freezer / Brazilian-bass, plus `masterGainDb`); lenient nested decode so a partial blob degrades
+  field-by-field.
 
 The `arr_/trk_/clip_` prefixes are minted by `StudioFactory` and, like `cue_/slc_/sfld_`, are
 **deliberately excluded from `studioPrefixes`** — an arranger id never rides a collection's string
@@ -1870,28 +1880,66 @@ arrangements dir. A live mic recording takes the same import path from the recor
 (`bakeFromFile`), after which the orphan library file is deleted.
 
 **Synced playback** (`MultitrackPlayer`, `@MainActor @Observable`, view-scoped). Play rebuilds a fresh
-`AVAudioEngine` graph — one `AVAudioPlayerNode → gain(mixer) → mainMixer` per track — decodes each
-clip to a canonical buffer, schedules it at its ms→frame offset on the node's timeline
-(`scheduleBuffer(at: AVAudioTime(sampleTime:atRate:))`), then starts **every** node at one shared
+`AVAudioEngine` graph — one `AVAudioPlayerNode → gain(mixer)` per track, all feeding a shared
+**`masterSum`** mixer, then a master chain **`masterSum → [MasterFX] → PeakLimiter → mainMixer`**. Each
+clip decodes to a canonical buffer, scheduled at its ms→frame offset on the node's timeline
+(`scheduleBuffer(at: AVAudioTime(sampleTime:atRate:))`); then **every** node starts at one shared
 `AVAudioTime` (now + a 0.12 s pre-roll) so the sample timelines coincide — the same one-host-time sync
-`StudioEngine.restartPatternFromTop` and the MixEngine stem decks use. Per-track mute / solo / gain map
-to each track's mixer `outputVolume` and update **live** mid-play (solo wins); a non-Observable
-`MultitrackClock` (sampled by a `TimelineView`) drives the playhead without re-running the view; an
-auto-stop task ends playback a tail past the last clip.
+`StudioEngine.restartPatternFromTop` and the MixEngine stem decks use. Per-track mute / solo / gain /
+**pan** map to each track mixer's `outputVolume`/`pan` and update **live** mid-play (solo wins,
+`applyMix`); `applyMasterFX` pushes the master params live. A non-Observable `MultitrackClock` (sampled
+by a `TimelineView`) drives the playhead without re-running the view; an auto-stop task ends playback a
+tail past the last clip.
 
-**Bounce** (`ArrangerBouncer`). Because clips are already-baked snapshots with **no per-clip DSP**, a
-mixdown is a straight **sample-sum** (the `carveStemMix`/`addBuffer` approach, not an offline engine):
-allocate a canonical accumulator sized to the longest track, add each clip (decoded via the
-nonisolated `StudioRender.decodeFileSync`) at its start frame scaled by its track gain, **peak-limit**
-to avoid summing overflow, write AAC — all off the main actor (only `Sendable` `(gain, startFrame,
-url)` tuples cross the boundary, never a buffer). Per-track **gain applies; mute/solo do not** (an
-explicit bounce mixes exactly the tracks you chose). Individual (one track), selected (a toggle
-sheet), or all → each appends a new **`Master`** track holding the mixdown.
+**Looper.** When `loopEnabled` and the region is non-empty, play sums each track's in-region clips into
+**one region-length buffer** and schedules it with `.loops` (node time 0), so the span repeats
+seamlessly; the auto-stop is skipped (a loop runs until `stop()`), and the view wraps the unbounded
+clock into the loop span for the cursor. The region's two handles are **beat-snapped** to `bpm`.
 
-**Verify status.** Model round-trip + CRUD + the offline-mix path are unit- and UI-tested on iOS
-(`StudioStoreTests`, `PerformanceUITests` — add/delete/duplicate tracks, add-clip-from-source,
-playback start/stop, bounce-all). **Live mic capture and true audio sync/quality are device-only**
-(permission-gated, no real sim audio); the sim tests verify the Record entry point is wired.
+**Master FX** (`MasterFX.swift`). The four effects the Mix tab lacks — **phaser** (all-pass cascade +
+LFO), **ring-modulator** (internal carrier multiply), **freezer** (a 0.25 s buffer hold/loop), and a
+**Brazilian bass lift** (sub low-pass + a sample-accurate per-beat gain pump from `bpm`) — plus the
+master gain, live in **one `MasterFXKernel`**, the project's *first custom render-block DSP* (every Mix
+effect is an Apple built-in AU). The kernel is shared by two callers so live and bounce can't drift:
+**`MasterFXAudioUnit`** — a v3 `AUAudioUnit` registered once and inserted live in the graph (with a
+graceful fallback chain if instantiation ever fails) — and the offline bounce. Freeze is a live
+capture-and-hold, so it's **bypassed when baking**; the other three + master gain bake WYSIWYG.
+
+**Bounce** (`ArrangerBouncer`). Clips are already-baked snapshots with **no per-clip DSP**, so a
+mixdown is a straight **sample-sum**: allocate a canonical accumulator sized to the longest track, add
+each clip (decoded via the nonisolated `StudioRender.decodeFileSync`) at its start frame scaled by its
+track gain and **panned** per-channel (center-unity balance, matching the live `pan`), then run the
+**same `MasterFXKernel`** over the summed master (freeze bypassed, master gain applied), **peak-limit**,
+write AAC — all off the main actor (only `Sendable` value tuples + a `MasterFXParams` cross the
+boundary, never a buffer). Per-track **gain/pan + Master FX apply; mute/solo do not**. Individual,
+selected, or all → each appends a new **`Master`** track holding the mixdown.
+
+**Home browser + folders** (`StudioArrangementFolder`, in-content only — no macOS `CommandMenu`). The
+tab lands on an **arrangements home** (a `List` browser), not straight into an arrangement — navigation
+is `openArrangementId: String?` (nil ⇒ home). Home shows a **No folder** section + one collapsible
+`DisclosureGroup` per folder (collapse persisted under `pdj.arrangementFolders.collapsed`); a row's
+context menu opens / renames / **moves to folder** (one-shot **New folder…**) / deletes it; the bar's
+**New folder** creates one. A dangling `folderId` reads as loose so an arrangement never vanishes.
+Creating opens the arranger; **‹ Arrangements** (`arrangerHeader`) returns home.
+
+**Zoom + follow** (the `DemuxTimelineView` pattern). `pxPerSec` is `@State` (a zoom ladder, default
+48) driving every ms→px mapping; the horizontal `ScrollView` is wrapped in a `ScrollViewReader` with
+invisible **per-second LAYOUT anchors** (`tracks-sec-<k>`, a real HStack flow — `.offset` anchors would
+all resolve to x=0). A polling `.task` re-centers the cursor's second while following + playing; **⌖**
+toggles follow (off ⇒ free manual scroll) and re-centers; zoom re-centers on the playhead.
+
+**Stems in / out.** A song's four on-device stems reach the arranger two ways, both via
+`ArrangerClipBaker.bakeFromFile` (each stem baked to its own colour-matched lane at 0:00, tracks added
+in drums/bass/other/vocals order for the palette match, the `BurnStore` security scope held across all
+four bakes): the **Demuxer**'s *Send stems to a new arrangement* action, and the source picker's
+**Stems** section (enumerated by `BurnStore.localStemSongIds()`).
+
+**Verify status.** Model round-trip + CRUD (incl. pan/colour/tempo/loop/master-FX/folders), the
+offline-mix path, and the **master-FX DSP kernel** (deterministic) are unit-tested (`StudioStoreTests`,
+`MasterFXTests`); the arranger UI + round-2 surfaces (pan/colour, tempo/looper, Master FX panel,
+folders) are UI-tested on iOS (`PerformanceUITests`). **Live mic capture and true audio sync/quality
+— including live master-FX rendering — are device-only** (permission-gated, no real sim audio); the sim
+tests verify the state machines + offline mix.
 
 ---
 

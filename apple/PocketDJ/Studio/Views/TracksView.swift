@@ -13,12 +13,25 @@ struct TracksView: View {
     @Environment(InstrumentPackStore.self) private var packs
     @Environment(StudioMicRecorder.self) private var mic
     @Environment(SettingsStore.self) private var settings
+    @Environment(BurnStore.self) private var burns
+    @Environment(AppModel.self) private var app
 
-    @State private var selectedId = ""
+    /// The open arrangement (nil ⇒ the HOME browser of arrangements + folders — the tab lands here).
+    @State private var openArrangementId: String?
+
+    // Home browser: folder collapse (persisted) + a per-row move-to-folder target.
+    @State private var collapsed: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: "pdj.arrangementFolders.collapsed") ?? [])
+    @State private var pendingDeleteArrangementId: String?
+
+    // Timeline zoom + playhead-follow (the Demux timeline pattern).
+    @State private var pxPerSec: CGFloat = 48
+    @State private var followPlayhead = true
+    @State private var centerNonce = 0
 
     // Rename affordances (cross-platform alert + TextField).
     @State private var pendingRenameTrack: String?
-    @State private var pendingRenameArrangement = false
+    @State private var pendingRenameArrangementId: String?
     @State private var nameText = ""
 
     // Add-clip source picker (which track it targets) + a busy spinner.
@@ -29,6 +42,19 @@ struct TracksView: View {
     // Bounce-selected sheet.
     @State private var bounceSelecting = false
     @State private var bounceSelection: Set<String> = []
+
+    // Tempo entry (drives the beat grid + looper snap).
+    @State private var pendingBpm = false
+    @State private var bpmText = ""
+
+    // Arrangement-folder organizer (in-content only; never the macOS menu bar).
+    @State private var pendingNewFolder = false
+    @State private var folderNameText = ""
+    /// When set at new-folder time, the created folder immediately adopts this arrangement (the
+    /// one-shot "New folder…" from the Move submenu). nil ⇒ just create an empty folder.
+    @State private var newFolderMoveArrangementId: String?
+    @State private var pendingRenameFolderId: String?
+    @State private var pendingDeleteFolderId: String?
 
     // Per-clip waveform peaks (immutable clips → compute once, cache).
     @State private var clipPeaks: [String: [Float]] = [:]
@@ -43,72 +69,101 @@ struct TracksView: View {
     // Live recording target (the track a take is being captured into).
     @State private var recordingTrackId: String?
 
-    // Layout grid.
-    private let laneHeight: CGFloat = 58
+    // Master-FX panel expansion (persisted).
+    @AppStorage("pdj.tracks.showMasterFX") private var showMasterFX = false
+
+    // Layout grid (pxPerSec is @State above — zoomable).
+    private let laneHeight: CGFloat = 66
     private let headerWidth: CGFloat = 172
-    private let pxPerSec: CGFloat = 48
     private let laneGap: CGFloat = 8
+
+    /// Named coordinate space for the scrolling timeline — loop-handle drags read the finger's
+    /// position in it (from 0:00), independent of a handle's moved local origin.
+    private static let timelineSpace = "tracksTimeline"
+    /// Horizontal zoom stops (px per second); default 48.
+    private static let zoomLadder: [CGFloat] = [16, 24, 36, 48, 72, 108, 160, 240]
+    private func stepZoom(_ dir: Int) {
+        if dir < 0 { pxPerSec = Self.zoomLadder.last(where: { $0 < pxPerSec }) ?? Self.zoomLadder.first! }
+        else { pxPerSec = Self.zoomLadder.first(where: { $0 > pxPerSec }) ?? Self.zoomLadder.last! }
+    }
 
     /// Track lane colours — the stem palette first (drums·yellow, bass·red, other·green,
     /// vocals·purple) then cue-extra hues, cycling at `StudioStore.trackPaletteSize` (= 8).
     static let trackColors: [Color] = [.yellow, .red, .green, .purple, .cyan, .orange, .pink, .mint]
+    static let trackColorNames = ["Yellow", "Red", "Green", "Purple", "Cyan", "Orange", "Pink", "Mint"]
     static func color(_ index: Int) -> Color {
         trackColors[((index % trackColors.count) + trackColors.count) % trackColors.count]
     }
+    static func colorName(_ index: Int) -> String {
+        trackColorNames[((index % trackColorNames.count) + trackColorNames.count) % trackColorNames.count]
+    }
 
-    private var current: StudioArrangement? { studio.arrangement(selectedId) }
+    private var current: StudioArrangement? { openArrangementId.flatMap { studio.arrangement($0) } }
 
     /// Signature of every clip id on screen — drives the peak-loading task when a clip is added.
     private var clipSignature: String {
         (current?.tracks.flatMap { $0.clips.map(\.id) } ?? []).joined(separator: ",")
     }
 
-    /// Signature of the mix strip (mute/solo/gain) — pushes live changes to the player mid-play.
+    /// Signature of the mix strip (mute/solo/gain/pan) — pushes live changes to the player mid-play.
     private var mixSignature: String {
-        // 0.1 dB resolution so a sub-dB live gain drag still fires applyMix (whole-dB rounding made
-        // continuous slider moves audibly stepped mid-play).
-        (current?.tracks.map { "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int(($0.gainDb * 10).rounded()))" } ?? [])
-            .joined(separator: ",")
+        // 0.1 dB / 0.02 pan resolution so a sub-step live drag still fires applyMix (whole-unit
+        // rounding made continuous slider moves audibly stepped mid-play).
+        (current?.tracks.map {
+            "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int(($0.gainDb * 10).rounded()))p\(Int(($0.pan * 50).rounded()))"
+        } ?? []).joined(separator: ",")
     }
 
     private func isPlayingThis(_ arr: StudioArrangement) -> Bool {
         player.isPlaying && player.playingArrangementId == arr.id
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Theme.border)
+    private var baseContent: some View {
+        Group {
             if let arr = current {
-                if arr.tracks.isEmpty {
-                    emptyTracks(arr)
-                } else {
-                    transportBar(arr)
-                    Divider().overlay(Theme.border)
-                    arranger(arr)
-                }
+                arrangerScreen(arr)
             } else {
-                Spacer()
+                arrangementsHome
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
         .overlay { if baking { bakingOverlay } }
         .overlay { if recordingTrackId != nil { recordingOverlay } }
-        .task { bootstrap(); mic.settings = settings; mic.store = studio }
+        .task { mic.settings = settings; mic.store = studio }
         .task(id: clipSignature) { await loadPeaks() }
+        .onChange(of: current?.id) {
+            // The open arrangement vanished (e.g. deleted from another window on the shared store) or
+            // changed — stop a now-orphaned player so a looping mix can't play on with no transport.
+            if player.isPlaying, player.playingArrangementId != current?.id { player.stop() }
+        }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
+        }
+        .onChange(of: current?.masterFX) {
+            if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
+        }
+        .onChange(of: current?.bpm) {
+            if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
         }
         .onDisappear {
             player.stop()
             if recordingTrackId != nil { _ = mic.stop(); recordingTrackId = nil }
         }
+    }
+
+    var body: some View {
+        baseContent
         .sheet(item: pickerTrackBinding) { box in
-            ClipSourcePicker(studio: studio) { sourceId, kind in
-                addClip(sourceId: sourceId, kind: kind, to: box.id)
-                pickerTrackId = nil
-            }
+            ClipSourcePicker(studio: studio, burns: burns, app: app,
+                onPick: { sourceId, kind in
+                    addClip(sourceId: sourceId, kind: kind, to: box.id)
+                    pickerTrackId = nil
+                },
+                onPickStems: { songId in
+                    importStems(songId: songId)
+                    pickerTrackId = nil
+                })
         }
         .sheet(isPresented: $bounceSelecting) { bounceSheet }
         .alert("Rename track", isPresented: renameTrackShown) {
@@ -116,44 +171,261 @@ struct TracksView: View {
             Button("Cancel", role: .cancel) { pendingRenameTrack = nil }
             Button("Rename") { commitTrackRename() }
         }
-        .alert("Rename arrangement", isPresented: $pendingRenameArrangement) {
+        .alert("Rename arrangement", isPresented: renameArrangementShown) {
             TextField("Name", text: $nameText)
+            Button("Cancel", role: .cancel) { pendingRenameArrangementId = nil }
+            Button("Rename") {
+                if let id = pendingRenameArrangementId { studio.renameArrangement(id, to: nameText) }
+                pendingRenameArrangementId = nil
+            }
+        }
+        .confirmationDialog("Delete this arrangement? Its tracks and clips are removed.",
+                            isPresented: deleteArrangementShown, titleVisibility: .visible) {
+            Button("Delete arrangement", role: .destructive) {
+                if let id = pendingDeleteArrangementId { deleteArrangement(id) }
+                pendingDeleteArrangementId = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteArrangementId = nil }
+        }
+        .alert("Tempo (BPM)", isPresented: $pendingBpm) {
+            TextField("BPM", text: $bpmText)
+                #if !os(macOS)
+                .keyboardType(.numberPad)
+                #endif
             Button("Cancel", role: .cancel) {}
-            Button("Rename") { if let a = current { studio.renameArrangement(a.id, to: nameText) } }
+            Button("Set") { if let a = current, let v = Double(bpmText) { studio.setArrangementBpm(a.id, bpm: v) } }
+        } message: {
+            Text("Sets the beat grid and looper snap. 20–300.")
+        }
+        .alert("New folder", isPresented: $pendingNewFolder) {
+            TextField("Folder name", text: $folderNameText)
+            Button("Cancel", role: .cancel) { newFolderMoveArrangementId = nil }
+            Button("Create") { commitNewFolder() }
+        }
+        .alert("Rename folder", isPresented: renameFolderShown) {
+            TextField("Folder name", text: $folderNameText)
+            Button("Cancel", role: .cancel) { pendingRenameFolderId = nil }
+            Button("Rename") {
+                if let fid = pendingRenameFolderId { studio.renameArrangementFolder(fid, to: folderNameText) }
+                pendingRenameFolderId = nil
+            }
+        }
+        .confirmationDialog("Delete this folder? Its arrangements move to “No folder” (nothing is deleted).",
+                            isPresented: deleteFolderShown, titleVisibility: .visible) {
+            Button("Delete folder", role: .destructive) {
+                if let fid = pendingDeleteFolderId { studio.deleteArrangementFolder(fid) }
+                pendingDeleteFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteFolderId = nil }
         }
     }
 
-    // MARK: Header (arrangement picker + add track)
+    private func commitNewFolder() {
+        let f = studio.createArrangementFolder(folderNameText)
+        if let aid = newFolderMoveArrangementId { studio.moveArrangementToFolder(aid, folderId: f.id) }
+        newFolderMoveArrangementId = nil
+    }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            TracksIcon().frame(width: 30, height: 22)
+    private var renameArrangementShown: Binding<Bool> {
+        Binding(get: { pendingRenameArrangementId != nil }, set: { if !$0 { pendingRenameArrangementId = nil } })
+    }
+    private var deleteArrangementShown: Binding<Bool> {
+        Binding(get: { pendingDeleteArrangementId != nil }, set: { if !$0 { pendingDeleteArrangementId = nil } })
+    }
+    private var renameFolderShown: Binding<Bool> {
+        Binding(get: { pendingRenameFolderId != nil }, set: { if !$0 { pendingRenameFolderId = nil } })
+    }
+    private var deleteFolderShown: Binding<Bool> {
+        Binding(get: { pendingDeleteFolderId != nil }, set: { if !$0 { pendingDeleteFolderId = nil } })
+    }
 
-            Menu {
-                ForEach(studio.arrangementsOrdered()) { a in
-                    Button { selectedId = a.id } label: {
-                        Label(a.name.isEmpty ? "Untitled" : a.name,
-                              systemImage: a.id == selectedId ? "checkmark" : "")
-                    }
+    // MARK: Arrangements home (the tab's landing page — a browser of arrangements + folders)
+
+    private var arrangementsHome: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                TracksIcon().frame(width: 30, height: 22)
+                Text("Multitrack").font(.headline).foregroundStyle(Theme.fg)
+                Spacer()
+                Button { newFolderMoveArrangementId = nil; folderNameText = ""; pendingNewFolder = true } label: {
+                    Image(systemName: "folder.badge.plus").font(.title3)
                 }
-                Divider()
-                Button { newArrangement() } label: { Label("New arrangement", systemImage: "plus") }
-                Button { nameText = current?.name ?? ""; pendingRenameArrangement = true } label: {
-                    Label("Rename…", systemImage: "pencil")
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .accessibilityIdentifier("tracks-new-folder")
+                Button { newArrangement() } label: { Label("New", systemImage: "plus") }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("tracks-new-arrangement")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            Divider().overlay(Theme.border)
+
+            if studio.arrangements.isEmpty && studio.arrangementFolders.isEmpty {
+                homeEmptyState
+            } else {
+                List {
+                    looseSection
+                    ForEach(studio.arrangementFoldersOrdered()) { folder in folderSection(folder) }
                 }
-                Button(role: .destructive) { deleteCurrentArrangement() } label: {
-                    Label("Delete arrangement", systemImage: "trash")
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    private var homeEmptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            TracksIcon().frame(width: 120, height: 84).opacity(0.9)
+            Text("Make a multitrack").font(.title3.weight(.semibold)).foregroundStyle(Theme.fg)
+            Text("Arrange samples, sequences, loops, instrumentals — or a song's stems — into layered tracks. Create one to begin; group them into folders as your set grows.")
+                .font(.callout).foregroundStyle(Theme.fgDim)
+                .multilineTextAlignment(.center).frame(maxWidth: 440)
+            Button { newArrangement() } label: { Label("New arrangement", systemImage: "plus") }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("tracks-empty-new-arrangement")
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
+    }
+
+    /// Loose (unfiled) arrangements — always present so a loose arrangement is always reachable.
+    @ViewBuilder private var looseSection: some View {
+        let loose = studio.arrangements(inFolder: nil)
+        Section {
+            if loose.isEmpty {
+                Text("No loose arrangements.").font(.caption).foregroundStyle(Theme.fgDim)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(loose) { a in arrangementBrowserRow(a) }
+            }
+        } header: {
+            Text(studio.arrangementFolders.isEmpty ? "Arrangements" : "No folder").foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    /// One collapsible folder of arrangements (collapse persists). The id rides the LABEL leaf, never
+    /// the Section/DisclosureGroup container (the container-id-swallow lesson).
+    @ViewBuilder private func folderSection(_ folder: StudioArrangementFolder) -> some View {
+        let members = studio.arrangements(inFolder: folder.id)
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if members.isEmpty {
+                    Text("Empty folder — move an arrangement in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim).listRowBackground(Color.clear)
                 }
+                ForEach(members) { a in arrangementBrowserRow(a) }
             } label: {
-                HStack(spacing: 6) {
-                    Text(current?.name.isEmpty == false ? current!.name : "Arrangement")
-                        .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(Theme.fgDim)
+                HStack {
+                    Label(folder.name.isEmpty ? "Folder" : folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
+                    Spacer()
+                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
                 }
+                .accessibilityIdentifier("tracks-folder-\(folder.id)")
+                .contextMenu {
+                    Button { pendingRenameFolderId = folder.id; folderNameText = folder.name } label: { Label("Rename folder", systemImage: "pencil") }
+                    Button(role: .destructive) { pendingDeleteFolderId = folder.id } label: { Label("Delete folder", systemImage: "trash") }
+                }
+            }
+        }
+    }
+
+    /// An arrangement row — tap opens it into the arranger; the context menu opens / renames / moves /
+    /// deletes it (rename & delete target the row's id, no need to open first).
+    private func arrangementBrowserRow(_ a: StudioArrangement) -> some View {
+        Button { openArrangementId = a.id } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up.fill").foregroundStyle(Self.color(0)).font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(a.name.isEmpty ? "Untitled" : a.name).font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
+                    Text("\(a.tracks.count) track\(a.tracks.count == 1 ? "" : "s") · \(mmss(Double(a.lengthMs) / 1000))")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .accessibilityIdentifier("tracks-arr-row-\(a.id)")
+        .contextMenu {
+            Button { openArrangementId = a.id } label: { Label("Open", systemImage: "arrow.up.forward.square") }
+            Button { pendingRenameArrangementId = a.id; nameText = a.name } label: { Label("Rename…", systemImage: "pencil") }
+            moveToFolderSubmenu(for: a)
+            Button(role: .destructive) { pendingDeleteArrangementId = a.id } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    /// "Move to folder" submenu for a specific arrangement: None + folders + a one-shot "New folder…"
+    /// (creates the folder AND files this arrangement into it, so a UI test never predicts the id).
+    @ViewBuilder private func moveToFolderSubmenu(for a: StudioArrangement) -> some View {
+        Menu {
+            Button { studio.moveArrangementToFolder(a.id, folderId: nil) } label: {
+                Label("No folder", systemImage: a.folderId == nil ? "checkmark" : "")
+            }
+            ForEach(studio.arrangementFoldersOrdered()) { f in
+                Button { studio.moveArrangementToFolder(a.id, folderId: f.id) } label: {
+                    Label(f.name.isEmpty ? "Folder" : f.name, systemImage: a.folderId == f.id ? "checkmark" : "")
+                }
+            }
+            Divider()
+            Button { newFolderMoveArrangementId = a.id; folderNameText = ""; pendingNewFolder = true } label: {
+                Label("New folder…", systemImage: "folder.badge.plus")
+            }
+            .accessibilityIdentifier("tracks-move-new-folder")
+        } label: { Label("Move to folder", systemImage: "folder") }
+    }
+
+    private func folderExpansion(_ id: String) -> Binding<Bool> {
+        Binding(get: { !collapsed.contains(id) },
+                set: { expanded in
+                    if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                    UserDefaults.standard.set(Array(collapsed), forKey: "pdj.arrangementFolders.collapsed")
+                })
+    }
+
+    // MARK: Arranger screen (an open arrangement)
+
+    private func arrangerScreen(_ arr: StudioArrangement) -> some View {
+        VStack(spacing: 0) {
+            arrangerHeader(arr)
+            Divider().overlay(Theme.border)
+            if arr.tracks.isEmpty {
+                emptyTracks(arr)
+            } else {
+                transportBar(arr)
+                Divider().overlay(Theme.border)
+                arranger(arr)
+                masterFXPanel(arr)
+            }
+        }
+    }
+
+    /// Arranger header: back to the home browser + the arrangement name (tap to rename) + a ⋯ menu
+    /// (rename / delete) + ＋ Track. No folder items here — folders live on the home page.
+    private func arrangerHeader(_ arr: StudioArrangement) -> some View {
+        HStack(spacing: 10) {
+            Button { player.stop(); openArrangementId = nil } label: {
+                Label("Arrangements", systemImage: "chevron.backward").font(.callout.weight(.semibold))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("tracks-home-back")
+
+            Spacer(minLength: 8)
+
+            Button { pendingRenameArrangementId = arr.id; nameText = arr.name } label: {
+                Text(arr.name.isEmpty ? "Untitled" : arr.name).font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            Menu {
+                Button { pendingRenameArrangementId = arr.id; nameText = arr.name } label: { Label("Rename…", systemImage: "pencil") }
+                Button(role: .destructive) { pendingDeleteArrangementId = arr.id } label: { Label("Delete arrangement", systemImage: "trash") }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(Theme.fgDim)
             }
             .accessibilityIdentifier("tracks-arrangement-menu")
 
-            Spacer()
+            Spacer(minLength: 8)
 
             Button { addTrack() } label: { Label("Track", systemImage: "plus") }
                 .buttonStyle(.borderedProminent)
@@ -198,7 +470,51 @@ struct TracksView: View {
             TimelineView(.periodic(from: .now, by: 0.1)) { _ in
                 Text(timeLabel(arr)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
+
+            // Tempo — seeds the beat grid + looper snap. Tap to type a new BPM.
+            Button { bpmText = String(Int(arr.bpm.rounded())); pendingBpm = true } label: {
+                Text("♩ \(Int(arr.bpm.rounded()))")
+                    .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(Theme.fg)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Theme.bgOverlay, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-bpm")
+
+            // Looper — repeat the shaded region between the two handles.
+            Button { toggleLoop(arr) } label: {
+                Image(systemName: "repeat")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(arr.loopEnabled ? Theme.accent : Theme.fgDim)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(arr.loopEnabled ? Theme.accent.opacity(0.16) : Theme.bgOverlay, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(arr.lengthMs == 0)
+            .accessibilityIdentifier("tracks-loop-toggle")
+            .accessibilityValue(arr.loopEnabled ? "on" : "off")
+
             Spacer()
+
+            // Zoom the timeline scale, and ⌖ = jump to + follow the playhead.
+            Button { stepZoom(-1) } label: { Image(systemName: "minus.magnifyingglass").font(.callout) }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .disabled(pxPerSec <= Self.zoomLadder.first!)
+                .accessibilityIdentifier("tracks-zoom-out")
+            Button { stepZoom(+1) } label: { Image(systemName: "plus.magnifyingglass").font(.callout) }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .disabled(pxPerSec >= Self.zoomLadder.last!)
+                .accessibilityIdentifier("tracks-zoom-in")
+            Button { followPlayhead.toggle(); if followPlayhead { centerNonce &+= 1 } } label: {
+                Image(systemName: "scope").font(.callout)
+                    .foregroundStyle(followPlayhead ? Theme.bg : Theme.fgDim)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(followPlayhead ? Theme.accent : Theme.bgOverlay, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-follow")
+            .accessibilityValue(followPlayhead ? "on" : "off")
+
             Menu {
                 Button { bounce(tracks: arr.tracks, label: "Master") } label: {
                     Label("Bounce all tracks", systemImage: "square.stack.3d.down.forward")
@@ -243,26 +559,98 @@ struct TracksView: View {
                     }
                 }
                 // Right: horizontally-scrolling clip lanes on the shared grid, with the playhead.
-                ScrollView(.horizontal, showsIndicators: true) {
-                    VStack(spacing: laneGap) {
-                        ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
-                            laneStrip(arr: arr, track: track, index: idx)
-                                .frame(width: timelineWidth(arr), height: laneHeight)
+                // Wrapped in a ScrollViewReader so playback can auto-follow the cursor (⌖) and zoom
+                // re-centers on it — the Demux timeline pattern.
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        VStack(spacing: laneGap) {
+                            ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
+                                laneStrip(arr: arr, track: track, index: idx)
+                                    .frame(width: timelineWidth(arr), height: laneHeight)
+                            }
+                        }
+                        .overlay(alignment: .topLeading) { beatMarkers(arr) }
+                        .overlay(alignment: .topLeading) { loopOverlay(arr) }
+                        .overlay(alignment: .topLeading) { playhead(arr) }
+                        // Invisible per-second LAYOUT anchors the follow/zoom scroll targets by id
+                        // (must be a real HStack flow, NOT .offset views — scrollTo resolves layout
+                        // frames, so offset anchors all sit at x=0; the Demux lesson).
+                        .overlay(alignment: .topLeading) { followAnchors(arr) }
+                        // Stable coordinate space for loop-handle drags — measured from the
+                        // timeline's 0:00, NOT the moved handle's local space.
+                        .coordinateSpace(name: Self.timelineSpace)
+                        .padding(.trailing, 24)
+                    }
+                    .onChange(of: pxPerSec) {
+                        // Re-center the cursor ONLY while following — with ⌖ off, a zoom must leave
+                        // the user's manual scroll where it is (not yank it to the stopped-clock 0:00).
+                        guard followPlayhead else { return }
+                        let sec = cursorAnchorSec(arr)
+                        DispatchQueue.main.async { proxy.scrollTo("tracks-sec-\(sec)", anchor: .center) }
+                    }
+                    .onChange(of: centerNonce) {
+                        // ⌖ pressed → always jump to the cursor (its explicit purpose).
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            proxy.scrollTo("tracks-sec-\(cursorAnchorSec(arr))", anchor: .center)
                         }
                     }
-                    .overlay(alignment: .topLeading) { playhead(arr) }
-                    .padding(.trailing, 24)
+                    .task(id: followTaskKey(arr)) {
+                        // Poll the non-Observable clock; while following + playing, keep the cursor's
+                        // second centered. Re-scroll only when the second changes.
+                        var lastSec = -1
+                        while !Task.isCancelled {
+                            if followPlayhead, isPlayingThis(arr) {
+                                let sec = cursorAnchorSec(arr)
+                                if sec != lastSec {
+                                    lastSec = sec
+                                    withAnimation(.linear(duration: 0.3)) {
+                                        proxy.scrollTo("tracks-sec-\(sec)", anchor: .center)
+                                    }
+                                }
+                            }
+                            try? await Task.sleep(nanoseconds: 400_000_000)
+                        }
+                    }
                 }
             }
             .padding(12)
         }
     }
 
+    /// Number of per-second anchors on the timeline (bounded so a runaway length can't spawn unbounded
+    /// views). BOTH the anchors and every scrollTo target derive from this, so a target is never past
+    /// the last anchor (which would make scrollTo a silent no-op — follow would die past the cap).
+    private func anchorSecondsCount(_ arr: StudioArrangement) -> Int {
+        min(3600, max(1, Int(ceil(Double(arr.lengthMs) / 1000)) + 2))
+    }
+    /// The cursor's anchor second, clamped into the anchor range.
+    private func cursorAnchorSec(_ arr: StudioArrangement) -> Int {
+        max(0, min(anchorSecondsCount(arr), Int(playheadSeconds(arr))))
+    }
+
+    /// Restart the follow task when zoom / follow / play / LOOP state changes (anchor spacing, gating,
+    /// or the wrap bounds `playheadSeconds` uses all moved). Loop fields are included so dragging a
+    /// loop handle mid-play re-arms the task with the fresh region.
+    private func followTaskKey(_ arr: StudioArrangement) -> String {
+        "\(pxPerSec)-\(followPlayhead)-\(isPlayingThis(arr))-\(arr.id)-\(arr.loopEnabled)-\(arr.loopStartMs)-\(arr.loopEndMs)"
+    }
+
+    /// One 1-second-wide LAYOUT cell per second (real HStack flow) so `scrollTo("tracks-sec-k")`
+    /// lands at the right x.
+    private func followAnchors(_ arr: StudioArrangement) -> some View {
+        HStack(spacing: 0) {
+            ForEach(0...anchorSecondsCount(arr), id: \.self) { sec in
+                Color.clear.frame(width: pxPerSec, height: 1).id("tracks-sec-\(sec)")
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
     private func trackHeader(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
         let color = Self.color(track.colorIndex)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 5, height: 20)
+                colorMenu(arr: arr, track: track, index: index, color: color)
                 Button {
                     nameText = track.name; pendingRenameTrack = track.id
                 } label: {
@@ -309,11 +697,57 @@ struct TracksView: View {
                 ), in: -24...6)
                 .controlSize(.mini)
                 .accessibilityIdentifier("tracks-track-gain-\(index)")
+                // Pan is hidden behind a right-click / long-press on the header (below) — a small
+                // L/R dot shows the current position without cluttering the strip.
+                if abs(track.pan) > 0.02 {
+                    Text(track.pan < 0 ? "L" : "R").font(.system(size: 8, weight: .heavy))
+                        .foregroundStyle(Theme.accent2)
+                }
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .frame(maxHeight: .infinity)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contextMenu { panMenuItems(arr: arr, track: track, index: index) }
+    }
+
+    /// Pan lives behind the header's right-click / long-press (`.contextMenu`) so the strip stays
+    /// uncluttered. Presets + ±10 % nudges give quick and fine placement without an inline slider.
+    @ViewBuilder private func panMenuItems(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
+        let set: (Double) -> Void = { v in studio.setTrackPan(arrangement: arr.id, track: track.id, pan: v) }
+        Section("Pan · \(panLabel(track.pan))") {
+            Button { set(-1) } label: { Label("Hard left", systemImage: "chevron.left.2") }
+            Button { set(-0.5) } label: { Label("Left", systemImage: "chevron.left") }
+            Button { set(0) } label: { Label("Center", systemImage: "circle") }
+                .accessibilityIdentifier("tracks-track-pan-center-\(index)")
+            Button { set(0.5) } label: { Label("Right", systemImage: "chevron.right") }
+            Button { set(1) } label: { Label("Hard right", systemImage: "chevron.right.2") }
+        }
+        Divider()
+        Button { set(track.pan - 0.1) } label: { Label("Nudge left", systemImage: "arrow.left") }
+        Button { set(track.pan + 0.1) } label: { Label("Nudge right", systemImage: "arrow.right") }
+    }
+
+    /// Tappable colour chip → a swatch menu (choose the lane's palette colour). The chip is the
+    /// track's identity everywhere (header + lane + clips), so recolouring is a one-tap affordance.
+    private func colorMenu(arr: StudioArrangement, track: StudioTrack, index: Int, color: Color) -> some View {
+        Menu {
+            ForEach(Array(Self.trackColors.indices), id: \.self) { ci in
+                Button { studio.setTrackColor(arrangement: arr.id, track: track.id, colorIndex: ci) } label: {
+                    Label(Self.colorName(ci), systemImage: ci == track.colorIndex ? "checkmark" : "circle.fill")
+                }
+            }
+        } label: {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 5, height: 20)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .frame(width: 9)
+        .accessibilityIdentifier("tracks-track-color-\(index)")
+    }
+
+    private func panLabel(_ p: Double) -> String {
+        if abs(p) < 0.02 { return "center" }
+        return p < 0 ? "left \(Int(abs(p) * 100))%" : "right \(Int(p * 100))%"
     }
 
     private func laneStrip(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
@@ -332,18 +766,150 @@ struct TracksView: View {
         }
     }
 
-    /// The moving playhead — a full-height line at `currentSeconds × pxPerSec`. Driven by a
-    /// TimelineView sampling the non-Observable clock (never re-runs the arranger body), and it
-    /// never intercepts clip taps/drags. Hidden when this arrangement isn't playing.
-    @ViewBuilder private func playhead(_ arr: StudioArrangement) -> some View {
-        if isPlayingThis(arr) {
-            TimelineView(.periodic(from: .now, by: 0.03)) { _ in
-                Rectangle().fill(Theme.accent2)
-                    .frame(width: 2).frame(maxHeight: .infinity)
-                    .offset(x: CGFloat(player.clock.currentSeconds) * pxPerSec)
+    /// Pixels per beat on the shared grid (0 when tempo is unusable).
+    private func beatPx(_ arr: StudioArrangement) -> CGFloat {
+        arr.bpm > 0 ? pxPerSec * 60 / CGFloat(arr.bpm) : 0
+    }
+
+    /// The beat/bar grid — thin vertical ticks every beat, bolder every 4 (a 4/4 bar line) with a
+    /// tiny bar number at the top edge. A Canvas (cheap for many lines) sized to the lane VStack, so
+    /// it shares the exact scroll offset the clips use. Drawn as a subtle overlay so it reads over
+    /// any lane background; never intercepts taps.
+    @ViewBuilder private func beatMarkers(_ arr: StudioArrangement) -> some View {
+        let bp = beatPx(arr)
+        if bp >= 4 {
+            Canvas { ctx, size in
+                let barPx = bp * 4
+                let showNumbers = barPx >= 26
+                var k = 0
+                var x: CGFloat = 0
+                while x <= size.width {
+                    let isBar = k % 4 == 0
+                    var path = Path()
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: size.height))
+                    ctx.stroke(path, with: .color(Theme.fg.opacity(isBar ? 0.20 : 0.08)),
+                               lineWidth: isBar ? 1 : 0.5)
+                    if isBar && showNumbers && x <= size.width - 8 {
+                        let bar = k / 4 + 1
+                        ctx.draw(Text("\(bar)").font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(Theme.fgDim.opacity(0.7)),
+                                 at: CGPoint(x: x + 6, y: 6), anchor: .leading)
+                    }
+                    k += 1
+                    x = CGFloat(k) * bp
+                }
             }
             .allowsHitTesting(false)
         }
+    }
+
+    /// The moving playhead — a full-height line at `currentSeconds × pxPerSec` with a small cap and a
+    /// live time bubble at the top. Driven by a TimelineView sampling the non-Observable clock (never
+    /// re-runs the arranger body); never intercepts clip taps/drags. Hidden when this arrangement
+    /// isn't playing. While looping, the line wraps within the loop span.
+    @ViewBuilder private func playhead(_ arr: StudioArrangement) -> some View {
+        if isPlayingThis(arr) {
+            TimelineView(.periodic(from: .now, by: 0.03)) { _ in
+                let sec = playheadSeconds(arr)
+                ZStack(alignment: .top) {
+                    Rectangle().fill(Theme.accent2)
+                        .frame(width: 2).frame(maxHeight: .infinity)
+                    Text(mmss(sec)).font(.system(size: 8, weight: .bold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3).padding(.vertical, 1)
+                        .background(Theme.accent2, in: RoundedRectangle(cornerRadius: 3))
+                        .fixedSize()
+                        .offset(y: -1)
+                }
+                .frame(width: 40)
+                .offset(x: CGFloat(sec) * pxPerSec - 20)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// The loop region — a shaded band with two draggable, beat-snapped handles. Only the handles
+    /// intercept touches (the band itself doesn't, so it never eats clip drags). Shown only when the
+    /// looper is on. Shares the clip scroll grid so it lines up with clips and beat markers.
+    @ViewBuilder private func loopOverlay(_ arr: StudioArrangement) -> some View {
+        if arr.loopEnabled {
+            let sPx = CGFloat(arr.loopStartMs) / 1000 * pxPerSec
+            let ePx = CGFloat(arr.loopEndMs) / 1000 * pxPerSec
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(Theme.accent.opacity(0.10))
+                    .frame(width: max(2, ePx - sPx)).frame(maxHeight: .infinity)
+                    .offset(x: sPx)
+                    .allowsHitTesting(false)
+                loopHandle(arr: arr, isStart: true, xPx: sPx)
+                loopHandle(arr: arr, isStart: false, xPx: ePx)
+            }
+        }
+    }
+
+    private func loopHandle(arr: StudioArrangement, isStart: Bool, xPx: CGFloat) -> some View {
+        Rectangle().fill(Theme.accent)
+            .frame(width: 3).frame(maxHeight: .infinity)
+            .overlay(alignment: isStart ? .topLeading : .topTrailing) {
+                Image(systemName: isStart ? "arrowtriangle.right.fill" : "arrowtriangle.left.fill")
+                    .font(.system(size: 9)).foregroundStyle(Theme.accent).offset(y: 2)
+            }
+            .contentShape(Rectangle().inset(by: -9))   // easy grab target without a wide visual
+            .offset(x: xPx - 1.5)
+            .accessibilityIdentifier(isStart ? "tracks-loop-start" : "tracks-loop-end")
+            .gesture(
+                // Read the drag in the TIMELINE coordinate space (from 0:00), so the value tracks
+                // the finger regardless of the handle's own moved local origin.
+                DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.timelineSpace))
+                    .onChanged { v in
+                        let ms = snapMs(Int(v.location.x / pxPerSec * 1000), bpm: arr.bpm)
+                        if isStart {
+                            studio.setArrangementLoop(arr.id, startMs: min(ms, arr.loopEndMs - 1))
+                        } else {
+                            studio.setArrangementLoop(arr.id, endMs: max(ms, arr.loopStartMs + 1))
+                        }
+                    }
+            )
+    }
+
+    /// Snap a timeline position (ms) to the nearest beat on the arrangement grid.
+    private func snapMs(_ ms: Int, bpm: Double) -> Int {
+        guard bpm > 0 else { return max(0, ms) }
+        let beatMs = 60_000.0 / bpm
+        return max(0, Int((Double(ms) / beatMs).rounded() * beatMs))
+    }
+
+    /// Toggle the looper. Enabling with no region set seeds a sensible default (4 bars from 0:00,
+    /// capped to the timeline). If this arrangement is currently playing, playback restarts so the
+    /// loop takes effect immediately.
+    private func toggleLoop(_ arr: StudioArrangement) {
+        if arr.loopEnabled {
+            studio.setArrangementLoop(arr.id, enabled: false)
+        } else {
+            var start = arr.loopStartMs, end = arr.loopEndMs
+            if end <= start {
+                let bar4 = arr.bpm > 0 ? Int((60_000.0 / arr.bpm) * 4) : 2_000
+                start = 0
+                end = arr.lengthMs > 0 ? min(bar4, arr.lengthMs) : bar4
+                if end <= start { end = start + bar4 }
+            }
+            studio.setArrangementLoop(arr.id, enabled: true, startMs: start, endMs: end)
+        }
+        if isPlayingThis(arr), let fresh = studio.arrangement(arr.id) {
+            Task { await player.play(arrangement: fresh, store: studio) }
+        }
+    }
+
+    /// The playhead's timeline position in seconds — wraps into the loop span while looping so the
+    /// cursor visually repeats the region (the audio node loops; the clock grows unbounded).
+    private func playheadSeconds(_ arr: StudioArrangement) -> Double {
+        let raw = player.clock.currentSeconds
+        guard arr.loopEnabled, arr.loopEndMs > arr.loopStartMs else { return raw }
+        let startS = Double(arr.loopStartMs) / 1000
+        let span = Double(arr.loopEndMs - arr.loopStartMs) / 1000
+        guard span > 0 else { return raw }
+        // The region loops from node time 0, so the cursor sits at loopStart and sweeps the region.
+        return startS + raw.truncatingRemainder(dividingBy: span)
     }
 
     private func clipX(_ clip: StudioClip) -> CGFloat {
@@ -385,6 +951,105 @@ struct TracksView: View {
         )
     }
 
+    // MARK: Master FX panel (bottom mix section)
+
+    /// The master mix panel: four effects the Mix tab doesn't have (phaser / ring-mod / freezer /
+    /// Brazilian bass) + an overall master gain, applied live to the summed mix and baked WYSIWYG
+    /// into a bounce (freeze excepted — a live-only hold). Collapsible so it doesn't crowd the lanes.
+    @ViewBuilder private func masterFXPanel(_ arr: StudioArrangement) -> some View {
+        VStack(spacing: 0) {
+            Divider().overlay(Theme.border)
+            Button { withAnimation(.easeInOut(duration: 0.15)) { showMasterFX.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "dial.medium.fill").font(.caption).foregroundStyle(Theme.accent)
+                    Text("Master FX").font(.caption.weight(.semibold)).foregroundStyle(Theme.fg)
+                    if arr.masterFX.anyEffectEnabled {
+                        Text("on").font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Theme.accent.opacity(0.18), in: Capsule()).foregroundStyle(Theme.accent)
+                    }
+                    Spacer()
+                    Text(gainLabel(arr.masterFX.masterGainDb)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    Image(systemName: showMasterFX ? "chevron.down" : "chevron.up").font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-master-fx-toggle")
+
+            if showMasterFX {
+                VStack(spacing: 8) {
+                    fxGainRow(arr)
+                    fxEffectRow(arr, name: "Phaser", id: "phaser", enabled: arr.masterFX.phaserEnabled,
+                                toggle: { on in setFX(arr) { $0.phaserEnabled = on } },
+                                sliderLabel: "Rate", value: arr.masterFX.phaserRate, range: 0.05...8,
+                                onSlide: { v in setFX(arr) { $0.phaserRate = v } })
+                    fxEffectRow(arr, name: "Ring Mod", id: "ringmod", enabled: arr.masterFX.ringModEnabled,
+                                toggle: { on in setFX(arr) { $0.ringModEnabled = on } },
+                                sliderLabel: "Freq", value: arr.masterFX.ringModFreqHz, range: 40...1200,
+                                onSlide: { v in setFX(arr) { $0.ringModFreqHz = v } })
+                    fxEffectRow(arr, name: "Freezer", id: "freeze", enabled: arr.masterFX.freezeEnabled,
+                                toggle: { on in setFX(arr) { $0.freezeEnabled = on } },
+                                sliderLabel: nil, value: 0, range: 0...1, onSlide: { _ in })
+                    fxEffectRow(arr, name: "Bass Lift", id: "bass", enabled: arr.masterFX.brazilianBassEnabled,
+                                toggle: { on in setFX(arr) { $0.brazilianBassEnabled = on } },
+                                sliderLabel: "Amt", value: arr.masterFX.brazilianBassAmount, range: 0...1,
+                                onSlide: { v in setFX(arr) { $0.brazilianBassAmount = v } })
+                }
+                .padding(.horizontal, 16).padding(.bottom, 10)
+            }
+        }
+        .background(Theme.bgRaised)
+    }
+
+    private func fxGainRow(_ arr: StudioArrangement) -> some View {
+        HStack(spacing: 8) {
+            Text("Gain").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fg).frame(width: 58, alignment: .leading)
+            Slider(value: Binding(get: { arr.masterFX.masterGainDb },
+                                  set: { v in setFX(arr) { $0.masterGainDb = v } }), in: -24...12)
+                .controlSize(.small)
+                .accessibilityIdentifier("tracks-master-gain")
+            Text(gainLabel(arr.masterFX.masterGainDb)).font(.caption2.monospacedDigit())
+                .foregroundStyle(Theme.fgDim).frame(width: 46, alignment: .trailing)
+        }
+    }
+
+    private func fxEffectRow(_ arr: StudioArrangement, name: String, id: String, enabled: Bool,
+                             toggle: @escaping (Bool) -> Void, sliderLabel: String?, value: Double,
+                             range: ClosedRange<Double>, onSlide: @escaping (Double) -> Void) -> some View {
+        HStack(spacing: 8) {
+            Button { toggle(!enabled) } label: {
+                Text(name).font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .frame(width: 76)
+                    .background(enabled ? Theme.accent.opacity(0.85) : Theme.bgOverlay, in: Capsule())
+                    .foregroundStyle(enabled ? .white : Theme.fgDim)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-fx-\(id)")
+            .accessibilityValue(enabled ? "on" : "off")
+            if let sliderLabel {
+                Text(sliderLabel).font(.system(size: 9)).foregroundStyle(Theme.fgDim).frame(width: 30, alignment: .leading)
+                Slider(value: Binding(get: { value }, set: onSlide), in: range)
+                    .controlSize(.mini).disabled(!enabled).opacity(enabled ? 1 : 0.4)
+            } else {
+                Text("hold / release").font(.system(size: 9)).foregroundStyle(Theme.fgDim)
+                Spacer()
+            }
+        }
+    }
+
+    private func setFX(_ arr: StudioArrangement, _ mutate: (inout StudioMasterFX) -> Void) {
+        var fx = arr.masterFX
+        mutate(&fx)
+        studio.setArrangementMasterFX(arr.id, fx)
+    }
+
+    private func gainLabel(_ db: Double) -> String {
+        let v = Int(db.rounded())
+        return v > 0 ? "+\(v) dB" : "\(v) dB"
+    }
+
     private var bakingOverlay: some View {
         ZStack {
             Color.black.opacity(0.25).ignoresSafeArea()
@@ -424,26 +1089,15 @@ struct TracksView: View {
 
     // MARK: Actions
 
-    private func bootstrap() {
-        if studio.arrangements.isEmpty {
-            selectedId = studio.createArrangement(name: "Arrangement 1").id
-        } else if studio.arrangement(selectedId) == nil {
-            selectedId = studio.arrangementsOrdered().first!.id
-        }
-    }
-
+    /// Create a new arrangement AND open it into the arranger (from the home page).
     private func newArrangement() {
-        selectedId = studio.createArrangement(name: "Arrangement \(studio.arrangements.count + 1)").id
+        openArrangementId = studio.createArrangement(name: "Arrangement \(studio.arrangements.count + 1)").id
     }
 
-    private func deleteCurrentArrangement() {
-        guard let a = current else { return }
-        studio.deleteArrangement(a.id)
-        if studio.arrangements.isEmpty {
-            selectedId = studio.createArrangement(name: "Arrangement 1").id
-        } else {
-            selectedId = studio.arrangementsOrdered().first!.id
-        }
+    /// Delete an arrangement (from home or the open arranger). If it was open, drop back to home.
+    private func deleteArrangement(_ id: String) {
+        if openArrangementId == id { player.stop(); openArrangementId = nil }
+        studio.deleteArrangement(id)
     }
 
     private func addTrack() {
@@ -506,7 +1160,8 @@ struct TracksView: View {
         busyMessage = "Bouncing…"; baking = true
         Task {
             defer { baking = false }
-            guard let clip = await ArrangerBouncer.bounce(tracks: selected, store: studio, name: label),
+            guard let clip = await ArrangerBouncer.bounce(tracks: selected, store: studio, name: label,
+                                                          masterFX: a.masterFX, bpm: a.bpm),
                   let master = studio.addTrack(arrangement: a.id, name: masterName(a)) else { return }
             studio.addClip(arrangement: a.id, track: master.id, clip)
         }
@@ -576,6 +1231,29 @@ struct TracksView: View {
         }
     }
 
+    /// Import a song's 4 on-device stems as four new colour-matched tracks on the CURRENT
+    /// arrangement (all aligned at 0:00) — the source-picker counterpart to the Demuxer export.
+    /// Adds tracks in drums/bass/other/vocals order so the palette maps yellow/red/green/purple, and
+    /// holds the BurnStore security scope across all four bakes, releasing once at the end.
+    private func importStems(songId: String) {
+        guard let a = current else { return }
+        let name = app.songsById[songId].map { "\($0.artist) — \($0.name)" } ?? "Stems"
+        busyMessage = "Importing stems…"; baking = true
+        Task {
+            defer { baking = false }
+            guard let got = burns.localStemURLs(forSong: songId) else { return }
+            for stem in ["drums", "bass", "other", "vocals"] {
+                guard let url = got.urls[stem],
+                      let track = studio.addTrack(arrangement: a.id, name: stem.capitalized) else { continue }
+                if let clip = await ArrangerClipBaker.bakeFromFile(
+                    sourceURL: url, name: "\(name) — \(stem)", startMs: 0) {
+                    studio.addClip(arrangement: a.id, track: track.id, clip)
+                }
+            }
+            got.release?()
+        }
+    }
+
     private func loadPeaks() async {
         guard let arr = current else { return }
         for track in arr.tracks {
@@ -613,9 +1291,17 @@ struct IdBox: Identifiable { let id: String }
 // only the leaf item rows carry a11y ids.
 private struct ClipSourcePicker: View {
     let studio: StudioStore
+    let burns: BurnStore
+    let app: AppModel
     let onPick: (_ sourceId: String, _ kind: StudioClipSource) -> Void
+    /// Import ALL 4 of a song's on-device stems as four new tracks (fans out — the one target track
+    /// the picker was opened on is ignored). Distinct from onPick because stems aren't studio ids.
+    let onPickStems: (_ songId: String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    /// On-device stem songs (id + display name), loaded once — the availability check scans the
+    /// burn folder, so it's kept off the per-keystroke render path.
+    @State private var stemSongs: [(id: String, name: String)] = []
 
     var body: some View {
         NavigationStack {
@@ -628,7 +1314,8 @@ private struct ClipSourcePicker: View {
                         items: studio.patterns.map { ($0.id, $0.name) })
                 section("Instrumentals", key: "takes", kind: .take,
                         items: studio.takes.map { ($0.id, $0.name) })
-                if allEmpty {
+                stemsSection
+                if allEmpty && stemSongs.isEmpty {
                     ContentUnavailableView("No sources yet",
                                            systemImage: "waveform",
                                            description: Text("Make a sample, loop, sequence, or instrumental first, then add it to a track."))
@@ -636,6 +1323,7 @@ private struct ClipSourcePicker: View {
             }
             .searchable(text: $query, placement: .automatic, prompt: "Search sources")
             .navigationTitle("Add clip")
+            .task { loadStemSongs() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }.accessibilityIdentifier("clip-picker-cancel")
@@ -646,6 +1334,37 @@ private struct ClipSourcePicker: View {
 
     private var allEmpty: Bool {
         studio.samples.isEmpty && studio.loops.isEmpty && studio.patterns.isEmpty && studio.takes.isEmpty
+    }
+
+    private func loadStemSongs() {
+        stemSongs = burns.localStemSongIds()
+            .map { id in (id, app.songsById[id].map { "\($0.artist) — \($0.name)" } ?? "Stems") }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Songs with all 4 stems on device — picking one imports drums/bass/other/vocals as four new
+    /// tracks (a whole-song stem split, not a single clip). Leaf-only a11y, like the other sections.
+    @ViewBuilder private var stemsSection: some View {
+        let filtered = query.isEmpty ? stemSongs
+            : stemSongs.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        if !filtered.isEmpty {
+            Section("Stems (\(filtered.count))") {
+                ForEach(filtered, id: \.id) { item in
+                    Button {
+                        onPickStems(item.id)
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "square.stack.3d.up").foregroundStyle(Theme.accent)
+                            Text(item.name).foregroundStyle(Theme.fg)
+                            Spacer()
+                            Text("4 stems").font(.caption2).foregroundStyle(Theme.fgDim)
+                        }
+                    }
+                    .accessibilityIdentifier("clip-picker-stem-\(item.id)")
+                }
+            }
+        }
     }
 
     @ViewBuilder

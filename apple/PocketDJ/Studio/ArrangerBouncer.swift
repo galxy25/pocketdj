@@ -14,18 +14,26 @@ enum ArrangerBouncer {
 
     /// Returns a ready-to-file master `StudioClip` (audio already written), positioned at `startMs`,
     /// or nil when the tracks hold no resolvable clips. The caller files it onto a new master track.
-    static func bounce(tracks: [StudioTrack], store: StudioStore, name: String, startMs: Int = 0) async -> StudioClip? {
+    static func bounce(tracks: [StudioTrack], store: StudioStore, name: String, startMs: Int = 0,
+                       masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120) async -> StudioClip? {
         let sr = StudioAudio.canonicalSampleRate
-        var jobs: [(gain: Float, startFrame: Int64, url: URL)] = []
+        // Bake master FX WYSIWYG (freeze is a live-only hold → bypassed offline).
+        let fxParams = MasterFXParams(masterFX, bpm: bpm, allowFreeze: false)
+        var jobs: [(gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)] = []
         var totalFrames: Int64 = 0
         for track in tracks {
             let db = min(6.0, max(-24.0, track.gainDb))
             let gain = Float(pow(10.0, db / 20.0))
+            // Center-unity balance: pan 0 leaves both channels at full; a hard pan silences the
+            // opposite channel. Same direction the live AVAudioMixerNode.pan moves the sound.
+            let p = min(1.0, max(-1.0, track.pan))
+            let panL = Float(p <= 0 ? 1.0 : 1.0 - p)
+            let panR = Float(p >= 0 ? 1.0 : 1.0 + p)
             for clip in track.clips {
                 guard let url = store.clipFileURL(clip.fileName) else { continue }
                 let startFrame = Int64((Double(clip.startMs) / 1000 * sr).rounded())
                 let endFrame = startFrame + Int64((Double(clip.durationMs) / 1000 * sr).rounded())
-                jobs.append((gain, startFrame, url))
+                jobs.append((gain, panL, panR, startFrame, url))
                 totalFrames = max(totalFrames, endFrame)
             }
         }
@@ -37,7 +45,7 @@ enum ArrangerBouncer {
         let dest = dir.appendingPathComponent(fileName)
         let frames = totalFrames
         let durationMs: Int? = await Task.detached(priority: .userInitiated) {
-            mixAndWrite(jobs: jobs, totalFrames: frames, to: dest)
+            mixAndWrite(jobs: jobs, totalFrames: frames, to: dest, fx: fxParams)
         }.value
         guard let durationMs, durationMs > 0 else { return nil }
         return StudioClip(id: clipId, name: name, fileName: fileName, startMs: max(0, startMs),
@@ -47,8 +55,8 @@ enum ArrangerBouncer {
 
     /// Off-main: allocate a canonical accumulator, add each clip (decoded canonical) at its start
     /// frame scaled by its track gain, peak-limit, write AAC. Returns the master length in ms.
-    nonisolated private static func mixAndWrite(jobs: [(gain: Float, startFrame: Int64, url: URL)],
-                                                totalFrames: Int64, to dest: URL) -> Int? {
+    nonisolated private static func mixAndWrite(jobs: [(gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)],
+                                                totalFrames: Int64, to dest: URL, fx: MasterFXParams) -> Int? {
         let fmt = StudioAudio.canonicalFormat
         let total = Int(totalFrames)
         guard total > 0, let acc = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(total)),
@@ -68,11 +76,21 @@ enum ArrangerBouncer {
             for ch in 0..<channels {
                 let s = src[min(ch, srcCh - 1)]
                 let d = accData[ch]
-                for i in 0..<count { d[start + i] += s[i] * job.gain }
+                let g = job.gain * (ch == 0 ? job.panL : job.panR)   // channel 0 = L, 1 = R
+                for i in 0..<count { d[start + i] += s[i] * g }
             }
         }
 
-        // Peak-limit so summed overlaps never clip.
+        // Master FX (WYSIWYG with live): run the SAME kernel over the summed master. Freeze is
+        // already bypassed in `fx`; master gain is applied inside the kernel.
+        if fx.active {
+            let kernel = MasterFXKernel()
+            kernel.configure(sampleRate: fmt.sampleRate, channelCount: channels)
+            kernel.update(fx)
+            kernel.processFloatChannels(accData, channelCount: channels, frames: total, framePos: 0)
+        }
+
+        // Peak-limit so summed overlaps / master gain never clip.
         var peak: Float = 0
         for ch in 0..<channels {
             let d = accData[ch]

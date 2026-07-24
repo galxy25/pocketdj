@@ -411,6 +411,21 @@ final class BurnStore {
         return true
     }
 
+    /// Every song id whose 4 stems are on disk in the ACTIVE burn folder — powers the Tracks
+    /// stem-import picker. Scans every reachable burn root for `stem-<id>-<part>.mp3` names to
+    /// gather candidates, then keeps only those with all four parts present in the active folder
+    /// (the folder the import will read from). Read-only; scope opened/released per check.
+    func localStemSongIds() -> [String] {
+        var candidates = Set<String>()
+        forEachBurnRoot { dir, _ in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            for n in names where n.hasPrefix("stem-") && n.hasSuffix(".mp3") {
+                if let id = Self.auxFileSongId(n) { candidates.insert(id) }
+            }
+        }
+        return candidates.filter { stemsBurned(forSong: $0) }
+    }
+
     /// BURN the 4 stems into the active burn folder (download once → persists). Idempotent: returns
     /// the existing local files (scope held) without re-downloading. Returns the local urls + a
     /// scope-release closure (nil for app storage), or nil if the song isn't stemmed in the manifest
