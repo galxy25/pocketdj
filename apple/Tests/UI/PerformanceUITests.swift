@@ -195,8 +195,10 @@ final class PerformanceUITests: XCTestCase {
         // Mute toggles live.
         app.any("tracks-track-mute-0").tap()
         snap("tracks-arranger")
-        // Delete the second track via its row menu.
+        // Delete the second track via its row menu (which also offers Record — the live-capture
+        // entry point; actual capture is device-only, permission-gated).
         app.any("tracks-track-menu-1").tap()
+        XCTAssertTrue(app.buttons["Record…"].waitForExistence(timeout: 5), "row menu should offer Record")
         let del = app.buttons["Delete"]
         if del.waitForExistence(timeout: 5) { del.tap() }
         XCTAssertFalse(app.any("tracks-track-name-1").waitForExistence(timeout: 3),

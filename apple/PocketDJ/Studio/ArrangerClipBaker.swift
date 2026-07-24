@@ -33,4 +33,20 @@ enum ArrangerClipBaker {
                           durationMs: baked.durationMs, source: kind, sourceId: sourceId,
                           createdAt: Date().timeIntervalSince1970 * 1000)
     }
+
+    /// Bake a clip from an ARBITRARY audio file (a live mic recording) — same import→canonical-AAC
+    /// path, but the source is a file URL, not a studio id (the recording's own file is used once
+    /// and then deleted by the caller; the clip owns an independent snapshot). `.recording` kind,
+    /// no `sourceId`.
+    static func bakeFromFile(sourceURL: URL, name: String, startMs: Int) async -> StudioClip? {
+        let clipId = StudioFactory.newClipId()
+        let fileName = StudioStore.clipFileName(clipId)
+        guard let dir = try? StudioStore.arrangementsDir() else { return nil }
+        let baked = try? await StudioRender.shared.importAudioFile(
+            sourceURL: sourceURL, to: dir.appendingPathComponent(fileName))
+        guard let baked, baked.durationMs > 0 else { return nil }
+        return StudioClip(id: clipId, name: name, fileName: fileName, startMs: max(0, startMs),
+                          durationMs: baked.durationMs, source: .recording, sourceId: nil,
+                          createdAt: Date().timeIntervalSince1970 * 1000)
+    }
 }

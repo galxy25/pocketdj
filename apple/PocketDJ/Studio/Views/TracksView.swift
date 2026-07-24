@@ -11,6 +11,8 @@ import SwiftUI
 struct TracksView: View {
     @Environment(StudioStore.self) private var studio
     @Environment(InstrumentPackStore.self) private var packs
+    @Environment(StudioMicRecorder.self) private var mic
+    @Environment(SettingsStore.self) private var settings
 
     @State private var selectedId = ""
 
@@ -32,6 +34,9 @@ struct TracksView: View {
 
     // Synced playback (view-scoped: stops on tab exit).
     @State private var player = MultitrackPlayer()
+
+    // Live recording target (the track a take is being captured into).
+    @State private var recordingTrackId: String?
 
     // Layout grid.
     private let laneHeight: CGFloat = 58
@@ -82,12 +87,16 @@ struct TracksView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
         .overlay { if baking { bakingOverlay } }
-        .task { bootstrap() }
+        .overlay { if recordingTrackId != nil { recordingOverlay } }
+        .task { bootstrap(); mic.settings = settings; mic.store = studio }
         .task(id: clipSignature) { await loadPeaks() }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
         }
-        .onDisappear { player.stop() }
+        .onDisappear {
+            player.stop()
+            if recordingTrackId != nil { _ = mic.stop(); recordingTrackId = nil }
+        }
         .sheet(item: pickerTrackBinding) { box in
             ClipSourcePicker(studio: studio) { sourceId, kind in
                 addClip(sourceId: sourceId, kind: kind, to: box.id)
@@ -252,6 +261,7 @@ struct TracksView: View {
                 Menu {
                     Button { nameText = track.name; pendingRenameTrack = track.id } label: { Label("Rename…", systemImage: "pencil") }
                     Button { pickerTrackId = track.id } label: { Label("Add clip…", systemImage: "waveform.badge.plus") }
+                    Button { startRecord(arr: arr, track: track) } label: { Label("Record…", systemImage: "mic") }
                     Button { studio.duplicateTrack(arrangement: arr.id, track: track.id) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
                     Button(role: .destructive) { deleteTrack(arr: arr, track: track) } label: { Label("Delete", systemImage: "trash") }
                 } label: {
@@ -367,6 +377,30 @@ struct TracksView: View {
         .accessibilityIdentifier("tracks-baking")
     }
 
+    private var recordingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea()
+            VStack(spacing: 14) {
+                // A pulsing record dot (TimelineView so it animates without invalidating state).
+                TimelineView(.periodic(from: .now, by: 0.6)) { ctx in
+                    Circle().fill(Theme.danger)
+                        .frame(width: 22, height: 22)
+                        .opacity(Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0 ? 1 : 0.35)
+                }
+                Text("Recording…").font(.headline).foregroundStyle(.white)
+                Text("Captured audio lands as a clip on this track.")
+                    .font(.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                Button { stopRecord() } label: {
+                    Label("Stop", systemImage: "stop.fill").padding(.horizontal, 8)
+                }
+                .buttonStyle(.borderedProminent).tint(Theme.danger)
+                .accessibilityIdentifier("tracks-record-stop")
+            }
+            .padding(28)
+            .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+
     // MARK: Actions
 
     private func bootstrap() {
@@ -399,6 +433,40 @@ struct TracksView: View {
     private func togglePlay(_ arr: StudioArrangement) {
         if isPlayingThis(arr) { player.stop(); return }
         Task { await player.play(arrangement: arr, store: studio) }
+    }
+
+    /// Start capturing the mic into `track`. Playback is stopped first (record is a distinct mode —
+    /// this sidesteps the mic-capture ↔ playback session-coexistence path for v1; overdub monitoring
+    /// is a later enhancement). The recorder requests permission on first use (device-only).
+    private func startRecord(arr: StudioArrangement, track: StudioTrack) {
+        player.stop()
+        mic.settings = settings; mic.store = studio
+        Task {
+            if await mic.start() { recordingTrackId = track.id }
+        }
+    }
+
+    /// Stop the take and land it as a clip at the end of the target track — resolve the recorder's
+    /// samples file, bake an independent snapshot into the arrangements dir, then DELETE the orphan
+    /// samples file (the arranger recording isn't a library sample). nil take = nothing captured.
+    private func stopRecord() {
+        guard let take = mic.stop(), let tid = recordingTrackId, let a = current else {
+            recordingTrackId = nil; return
+        }
+        recordingTrackId = nil
+        baking = true
+        Task {
+            defer { baking = false }
+            let startMs = a.tracks.first { $0.id == tid }?.lengthMs ?? 0
+            guard let got = StudioFolders.fileURL(family: .samples, fileName: take.fileName,
+                                                  wasUserFolder: take.wasUserFolder,
+                                                  bookmark: studio.bookmark(for: .samples)) else { return }
+            let clip = await ArrangerClipBaker.bakeFromFile(sourceURL: got.url,
+                                                            name: mic.defaultRecordingName, startMs: startMs)
+            try? FileManager.default.removeItem(at: got.url)   // drop the orphan library file
+            got.release?()
+            if let clip { studio.addClip(arrangement: a.id, track: tid, clip) }
+        }
     }
 
     private func deleteTrack(arr: StudioArrangement, track: StudioTrack) {
