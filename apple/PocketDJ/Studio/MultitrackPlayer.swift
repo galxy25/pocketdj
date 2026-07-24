@@ -6,7 +6,7 @@ import Observation
 /// Non-Observable playhead clock (the fast-clock-must-not-invalidate-SwiftUI doctrine —
 /// `DemuxTimelineView`/`StudioMicLevels`). A `TimelineView(.periodic)` samples `currentSeconds`
 /// each frame; because it is NOT an @Observable property, sampling it never re-runs the arranger's
-/// body. Reads the shared start host-time set at `play(at:)`.
+/// body. Reads the shared start host-time set when the engine starts.
 final class MultitrackClock: @unchecked Sendable {
     private var startHost: UInt64 = 0
     private var running = false
@@ -24,12 +24,129 @@ final class MultitrackClock: @unchecked Sendable {
     }
 }
 
-/// Plays a `StudioArrangement`'s tracks in sync: one `AVAudioPlayerNode → gain(mixer) → mainMixer`
-/// per track, each clip scheduled at its ms→frame offset on the node's own timeline, then EVERY
-/// node started at ONE shared `AVAudioTime` (now + a short pre-roll) so their sample timelines
-/// coincide — the sequencer's `restartPatternFromTop` / MixEngine stem-sync pattern. The graph is
-/// rebuilt fresh on each Play (built while stopped, never a live attach). Mute / solo / per-track
-/// gain map to each track's mixer volume and update live. View-scoped: `stop()` on tab exit.
+/// The audio-thread render state for the arranger: the decoded clips (immutable after Play), the
+/// LIVE per-track mix scalars + master-FX kernel (updated from the main thread; value-type reads on
+/// the audio thread are benign under torn reads), a loop region, and a frame cursor. `render` mixes
+/// every clip that overlaps the current window with its track's gain/pan, then runs the master-FX
+/// kernel over the summed output — so live mix moves AND live master-FX knobs affect the audio
+/// immediately, exactly like riding faders on a mixer. Pure buffer math, no allocation in the loop.
+final class MultitrackRenderContext: @unchecked Sendable {
+    struct Clip { let trackIndex: Int; let startFrame: Int; let frameLength: Int
+                  let data: [UnsafeMutablePointer<Float>]; let srcChannels: Int }
+
+    private let channels: Int
+    private var clips: [Clip] = []
+    private var retained: [AVAudioPCMBuffer] = []   // keep the decoded buffers (clip.data) alive
+    private var trackCount = 0
+
+    // Live per-track scalars (index = track index). Written from main, read on the audio thread.
+    private var gain: [Float] = []      // linear, 0 when inaudible (mute / not-soloed)
+    private var panL: [Float] = []
+    private var panR: [Float] = []
+
+    // Loop + cursor (cursor lives on the audio thread only).
+    private var looping = false
+    private var loopStart = 0
+    private var loopEnd = 0
+    private var cursor = 0
+    private var renderedTotal = 0       // monotonic, drives the kernel's beat/LFO phase base
+
+    // Master FX.
+    let kernel = MasterFXKernel()
+    private var fxActive = false
+
+    private var outPtrs: [UnsafeMutablePointer<Float>?]   // reused per callback (no alloc)
+
+    init(channels: Int) {
+        self.channels = max(1, channels)
+        outPtrs = Array(repeating: nil, count: self.channels)
+    }
+
+    /// Build the immutable clip set + initial cursor/loop from the decoded buffers (called on main
+    /// before the engine starts).
+    func load(clips: [Clip], retain: [AVAudioPCMBuffer], trackCount: Int,
+              cursor: Int, looping: Bool, loopStart: Int, loopEnd: Int, sampleRate: Double) {
+        self.clips = clips
+        self.retained = retain
+        self.trackCount = max(trackCount, 0)
+        gain = Array(repeating: 0, count: self.trackCount)
+        panL = Array(repeating: 1, count: self.trackCount)
+        panR = Array(repeating: 1, count: self.trackCount)
+        self.cursor = cursor
+        self.renderedTotal = 0
+        self.looping = looping
+        self.loopStart = loopStart
+        self.loopEnd = loopEnd
+        kernel.configure(sampleRate: sampleRate, channelCount: channels)
+    }
+
+    /// Live per-track mix (called from `applyMix`). Center-unity balance for pan.
+    func setTrackMix(index: Int, gainLinear: Float, pan: Float) {
+        guard index >= 0, index < trackCount else { return }
+        gain[index] = gainLinear
+        let p = min(1, max(-1, pan))
+        panL[index] = p <= 0 ? 1 : 1 - p
+        panR[index] = p >= 0 ? 1 : 1 + p
+    }
+
+    /// Live master FX (called from `applyMasterFX`).
+    func setMasterFX(_ params: MasterFXParams) {
+        kernel.update(params)
+        fxActive = params.active
+    }
+
+    /// The audio-thread render: mix overlapping clips (loop-aware) then apply master FX in place.
+    func render(_ abl: UnsafeMutablePointer<AudioBufferList>, frames: Int) {
+        let bufs = UnsafeMutableAudioBufferListPointer(abl)
+        let nCh = min(bufs.count, channels)
+        guard nCh > 0, frames > 0 else { return }
+        for c in 0..<nCh {
+            let p = bufs[c].mData?.assumingMemoryBound(to: Float.self)
+            outPtrs[c] = p
+            if let p { memset(p, 0, frames * MemoryLayout<Float>.size) }
+        }
+
+        var written = 0
+        var pos = cursor
+        let hasLoop = looping && loopEnd > loopStart
+        while written < frames {
+            let chunk = hasLoop ? min(frames - written, max(1, loopEnd - pos)) : frames - written
+            for clip in clips {
+                let ti = clip.trackIndex
+                guard ti < gain.count else { continue }
+                let g = gain[ti]
+                if g == 0 { continue }
+                let cs = clip.startFrame, ce = cs + clip.frameLength
+                let os = max(cs, pos), oe = min(ce, pos + chunk)
+                if oe <= os { continue }
+                let dstOff = written + (os - pos)
+                let srcOff = os - cs
+                let cnt = oe - os
+                let gl = panL[ti] * g, gr = panR[ti] * g
+                for c in 0..<nCh {
+                    guard let dst = outPtrs[c] else { continue }
+                    let src = clip.data[min(c, clip.srcChannels - 1)]
+                    let cg = c == 0 ? gl : gr
+                    for i in 0..<cnt { dst[dstOff + i] += src[srcOff + i] * cg }
+                }
+            }
+            written += chunk
+            pos += chunk
+            if hasLoop && pos >= loopEnd { pos = loopStart }
+        }
+        cursor = pos
+
+        if fxActive { kernel.processABL(abl, frames: frames, framePos: Double(renderedTotal)) }
+        renderedTotal += frames
+    }
+}
+
+/// Plays a `StudioArrangement`'s tracks in sync through ONE `AVAudioSourceNode` whose render block
+/// mixes every clip (per-track gain/pan, loop- and seek-aware) and runs the shared `MasterFXKernel`
+/// over the summed master — so per-track mix moves AND master-FX knobs affect the audio LIVE, and the
+/// exact same kernel bakes a bounce (no reliance on a custom AudioUnit, which failed to instantiate
+/// on device — the "only gain worked" bug). A fresh engine per Play; a non-Observable `MultitrackClock`
+/// drives the playhead. View-scoped: `stop()` on tab exit.
 @MainActor
 @Observable
 final class MultitrackPlayer {
@@ -42,17 +159,11 @@ final class MultitrackPlayer {
     @ObservationIgnored let clock = MultitrackClock()
 
     @ObservationIgnored private var engine = AVAudioEngine()
-    @ObservationIgnored private var trackNodes: [(player: AVAudioPlayerNode, gain: AVAudioMixerNode)] = []
+    @ObservationIgnored private var source: AVAudioSourceNode?
+    @ObservationIgnored private var context: MultitrackRenderContext?
     @ObservationIgnored private var trackIds: [String] = []
-    /// The summing bus every track feeds; the master-FX node + limiter sit between it and the main
-    /// mixer. Rebuilt per Play with the rest of the graph.
-    @ObservationIgnored private var masterSum = AVAudioMixerNode()
-    /// The live master-FX AU (nil if instantiation failed → effects don't apply live but the chain
-    /// still plays, and a bounce still bakes them). Params pushed via `applyMasterFX`.
-    @ObservationIgnored private var masterFXAU: MasterFXAudioUnit?
 
-    /// Apple's PeakLimiter — the master safety net so a boosted / effect-laden master can't hard-clip
-    /// (mirrors MixEngine.limiterDesc).
+    /// Apple's PeakLimiter — the master safety net so a boosted / effect-laden master can't hard-clip.
     private static let limiterDesc = AudioComponentDescription(
         componentType: kAudioUnitType_Effect,
         componentSubType: kAudioUnitSubType_PeakLimiter,
@@ -60,71 +171,70 @@ final class MultitrackPlayer {
         componentFlags: 0, componentFlagsMask: 0)
     @ObservationIgnored private var autoStopTask: Task<Void, Never>?
     /// Bumped by every `stop()`; `play()` snapshots it after its own stop() and, after the async
-    /// clip-decode gap, bails if it changed — so a stop() (tab exit / record / bounce) or a second
-    /// concurrent play() during decode invalidates the in-flight load and at most one engine runs.
+    /// clip-decode gap, bails if it changed — so a stop() or a second concurrent play() during decode
+    /// invalidates the in-flight load and at most one engine runs.
     @ObservationIgnored private var playGeneration = 0
 
     private var sampleRate: Double { StudioAudio.canonicalSampleRate }
 
-    /// A decoded clip tagged with its track index + timeline start frame (node time 0 = shared start).
-    private struct Scheduled { let trackIndex: Int; let startFrame: AVAudioFramePosition; let buffer: AVAudioPCMBuffer }
-
-    /// Build the graph, decode + schedule every clip, and start all track nodes at one host time.
-    /// `fromMs` starts playback at a timeline offset (a ruler seek) — clips are windowed to that point
-    /// (ignored while looping, which always starts the region). Returns false when nothing plays.
+    /// Decode + build the render context, wire `source → limiter → mainMixer`, and start. `fromMs`
+    /// starts playback at a timeline offset (a ruler seek); ignored while looping (which starts the
+    /// region). Returns false when there's nothing to play.
     @discardableResult
     func play(arrangement: StudioArrangement, store: StudioStore, fromMs: Int = 0) async -> Bool {
         stop()
-        let gen = playGeneration     // snapshot AFTER our own stop(); guarded across the decode gap
-        // 1. Decode every clip to a canonical buffer (off-main via the render actor), tagged with
-        //    its track index + start frame. A clip whose file can't resolve/decode is skipped.
-        var scheduled: [Scheduled] = []
+        let gen = playGeneration
+        // 1. Decode every clip to a canonical buffer off the main actor, tagged with its track index.
+        let fmt = StudioAudio.canonicalFormat
+        let channels = Int(fmt.channelCount)
+        var clips: [MultitrackRenderContext.Clip] = []
+        var retained: [AVAudioPCMBuffer] = []
         for (ti, track) in arrangement.tracks.enumerated() {
             for clip in track.clips {
                 guard let url = store.clipFileURL(clip.fileName),
                       let buf = try? await StudioRender.shared.decodeBuffer(url: url),
-                      buf.frameLength > 0 else { continue }
-                let startFrame = AVAudioFramePosition((Double(clip.startMs) / 1000 * sampleRate).rounded())
-                scheduled.append(Scheduled(trackIndex: ti, startFrame: startFrame, buffer: buf))
+                      buf.frameLength > 0, let ch = buf.floatChannelData else { continue }
+                let srcCh = Int(buf.format.channelCount)
+                let data = (0..<srcCh).map { ch[$0] }
+                let startFrame = Int((Double(clip.startMs) / 1000 * sampleRate).rounded())
+                clips.append(.init(trackIndex: ti, startFrame: startFrame, frameLength: Int(buf.frameLength),
+                                   data: data, srcChannels: srcCh))
+                retained.append(buf)
             }
         }
-        guard !scheduled.isEmpty else { return false }
-        // A stop() (tab exit / record / bounce) or a newer play() intervened during the decode above
-        // → bail before building an engine, so stop-during-load wins and only one engine ever runs.
-        guard gen == playGeneration else { return false }
+        guard !clips.isEmpty else { return false }
+        guard gen == playGeneration else { return false }   // stop-during-decode wins
 
-        // 2. Fresh graph: one player → gain(mixer) → masterSum per track, then the master chain
-        //    masterSum → [MasterFX] → PeakLimiter → mainMixer (canonical throughout).
+        // 2. Loop / seek geometry.
+        let looping = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
+        let seekMs = max(0, min(fromMs, arrangement.lengthMs))
+        let seekFrame = Int((Double(seekMs) / 1000 * sampleRate).rounded())
+        let loopStart = Int((Double(arrangement.loopStartMs) / 1000 * sampleRate).rounded())
+        let loopEnd = Int((Double(arrangement.loopEndMs) / 1000 * sampleRate).rounded())
+
+        // 3. Build the render context + a single source node.
+        let ctx = MultitrackRenderContext(channels: channels)
+        ctx.load(clips: clips, retain: retained, trackCount: arrangement.tracks.count,
+                 cursor: looping ? loopStart : seekFrame,
+                 looping: looping, loopStart: loopStart, loopEnd: loopEnd, sampleRate: sampleRate)
+        context = ctx
+        trackIds = arrangement.tracks.map(\.id)
+        startOffsetMs = looping ? 0 : seekMs
+
         engine = AVAudioEngine()
-        trackNodes = []; trackIds = []; masterFXAU = nil
-        let fmt = StudioAudio.canonicalFormat
-        masterSum = AVAudioMixerNode()
-        engine.attach(masterSum)
-        for track in arrangement.tracks {
-            let p = AVAudioPlayerNode(); let g = AVAudioMixerNode()
-            engine.attach(p); engine.attach(g)
-            engine.connect(p, to: g, format: fmt)
-            engine.connect(g, to: masterSum, format: fmt)
-            trackNodes.append((p, g)); trackIds.append(track.id)
+        let src = AVAudioSourceNode(format: fmt) { _, _, frameCount, abl in
+            ctx.render(abl, frames: Int(frameCount))
+            return noErr
         }
-        // Master chain. The custom FX node is created async (Apple's AVAudioUnit contract); if the
-        // load fails, route straight to the limiter so playback never depends on it.
+        source = src
         let limiter = AVAudioUnitEffect(audioComponentDescription: Self.limiterDesc)
-        engine.attach(limiter)
-        if let (fxNode, fxAU) = await MasterFXAudioUnit.make() {
-            guard gen == playGeneration else { return false }   // stop() during the async instantiate
-            engine.attach(fxNode)
-            masterFXAU = fxAU
-            engine.connect(masterSum, to: fxNode, format: fmt)
-            engine.connect(fxNode, to: limiter, format: fmt)
-        } else {
-            engine.connect(masterSum, to: limiter, format: fmt)
-        }
+        engine.attach(src); engine.attach(limiter)
+        engine.connect(src, to: limiter, format: fmt)
         engine.connect(limiter, to: engine.mainMixerNode, format: fmt)
+
         applyMix(arrangement.tracks)
         applyMasterFX(arrangement.masterFX, bpm: arrangement.bpm)
 
-        // 3. Session (iOS/visionOS) + start the engine.
         #if !os(macOS)
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default)
@@ -132,147 +242,48 @@ final class MultitrackPlayer {
         #endif
         do { try engine.start() } catch { stop(); return false }
 
-        // 4. Schedule playback. Normal: each clip on its track's node at its frame offset. Looping:
-        //    one per-track REGION buffer (that track's clips summed within [loopStart, loopEnd)),
-        //    scheduled with `.loops` so the region repeats seamlessly forever. Node time 0 = the
-        //    shared start either way, so the timelines coincide when all nodes start together.
-        let looping = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
-        // Clamp the seek into [0, length] so a stale cursor past a since-trimmed timeline can't
-        // schedule nothing and silently "play".
-        let seekMs = max(0, min(fromMs, arrangement.lengthMs))
-        let seekFrame = AVAudioFramePosition((Double(seekMs) / 1000 * sampleRate).rounded())
-        if looping {
-            let startFrame = AVAudioFramePosition((Double(arrangement.loopStartMs) / 1000 * sampleRate).rounded())
-            let endFrame = AVAudioFramePosition((Double(arrangement.loopEndMs) / 1000 * sampleRate).rounded())
-            for (ti, buf) in Self.regionBuffers(scheduled: scheduled, trackCount: trackNodes.count,
-                                                startFrame: startFrame, endFrame: endFrame, format: fmt) {
-                trackNodes[ti].player.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
-            }
-            startOffsetMs = 0                       // the loop wraps into its region; no linear offset
-        } else {
-            for s in scheduled where s.trackIndex < trackNodes.count {
-                // Skip clips entirely before the seek; window a straddling clip so it starts mid-buffer.
-                let clipLen = AVAudioFramePosition(s.buffer.frameLength)
-                guard s.startFrame + clipLen > seekFrame else { continue }
-                let skip = Int(max(0, seekFrame - s.startFrame))
-                let nodeStart = max(0, s.startFrame - seekFrame)
-                let buf = skip > 0 ? Self.windowedBuffer(s.buffer, skipFrames: skip) : s.buffer
-                guard let buf else { continue }
-                trackNodes[s.trackIndex].player.scheduleBuffer(
-                    buf, at: AVAudioTime(sampleTime: nodeStart, atRate: sampleRate),
-                    options: [], completionHandler: nil)
-            }
-            startOffsetMs = seekMs
-        }
-        let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.12))
-        for (p, _) in trackNodes { p.play(at: when) }
-        clock.start(atHostTime: when.hostTime)
+        clock.start(atHostTime: mach_absolute_time())
         isPlaying = true
         playingArrangementId = arrangement.id
-        // a loop runs until stop(); a linear play stops a tail past the LAST clip, from the seek point.
         if !looping { scheduleAutoStop(lengthMs: max(0, arrangement.lengthMs - seekMs)) }
         return true
     }
 
-    /// Copy a buffer's frames `[skipFrames, frameLength)` into a fresh buffer (drop the head) — used
-    /// to start a clip mid-way when playback seeks into it. nil if nothing remains.
-    private static func windowedBuffer(_ src: AVAudioPCMBuffer, skipFrames: Int) -> AVAudioPCMBuffer? {
-        let total = Int(src.frameLength) - skipFrames
-        guard total > 0, skipFrames >= 0,
-              let out = AVAudioPCMBuffer(pcmFormat: src.format, frameCapacity: AVAudioFrameCount(total)),
-              let sd = src.floatChannelData, let od = out.floatChannelData else { return nil }
-        out.frameLength = AVAudioFrameCount(total)
-        for ch in 0..<Int(src.format.channelCount) {
-            memcpy(od[ch], sd[ch] + skipFrames, total * MemoryLayout<Float>.size)
-        }
-        return out
-    }
-
-    /// Sum each track's clips that intersect `[startFrame, endFrame)` into one region-length buffer
-    /// per track (windowed to the region), for `.loops` scheduling. Returns only tracks that have
-    /// audio in the region. Pure buffer math — cheap for the short spans a loop region covers.
-    private static func regionBuffers(scheduled: [Scheduled], trackCount: Int,
-                                      startFrame: AVAudioFramePosition, endFrame: AVAudioFramePosition,
-                                      format: AVAudioFormat) -> [(Int, AVAudioPCMBuffer)] {
-        let regionFrames = Int(endFrame - startFrame)
-        guard regionFrames > 0 else { return [] }
-        let channels = Int(format.channelCount)
-        var result: [(Int, AVAudioPCMBuffer)] = []
-        for ti in 0..<trackCount {
-            let clips = scheduled.filter { $0.trackIndex == ti }
-            guard !clips.isEmpty,
-                  let rb = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(regionFrames)),
-                  let rd = rb.floatChannelData else { continue }
-            rb.frameLength = AVAudioFrameCount(regionFrames)
-            for ch in 0..<channels { memset(rd[ch], 0, regionFrames * MemoryLayout<Float>.size) }
-            var contributed = false
-            for s in clips {
-                guard let sd = s.buffer.floatChannelData else { continue }
-                let srcCh = Int(s.buffer.format.channelCount)
-                let clipEnd = s.startFrame + AVAudioFramePosition(s.buffer.frameLength)
-                let overlapStart = max(s.startFrame, startFrame)
-                let overlapEnd = min(clipEnd, endFrame)
-                guard overlapEnd > overlapStart else { continue }
-                let dstOff = Int(overlapStart - startFrame)
-                let srcOff = Int(overlapStart - s.startFrame)
-                let count = Int(overlapEnd - overlapStart)
-                for ch in 0..<channels {
-                    let src = sd[min(ch, srcCh - 1)]; let dst = rd[ch]
-                    for i in 0..<count { dst[dstOff + i] += src[srcOff + i] }
-                }
-                contributed = true
-            }
-            if contributed { result.append((ti, rb)) }
-        }
-        return result
-    }
-
     func stop() {
-        playGeneration &+= 1     // invalidate any in-flight play() still in its decode gap
+        playGeneration &+= 1
         autoStopTask?.cancel(); autoStopTask = nil
-        for (p, _) in trackNodes { p.stop() }
         if engine.isRunning { engine.stop() }
-        trackNodes = []; trackIds = []
+        source = nil
+        context = nil
+        trackIds = []
         clock.stop()
         isPlaying = false
         playingArrangementId = nil
     }
 
-    /// Recompute each track's mixer volume from its mute / solo / gain — solo wins (only soloed
-    /// tracks audible when any is soloed). Safe to call live during playback.
+    /// Recompute each track's audible gain + pan from mute / solo / gain (solo wins) and push to the
+    /// render context — takes effect on the next render callback. Safe to call live during playback.
     func applyMix(_ tracks: [StudioTrack]) {
+        guard let ctx = context else { return }
         let anySolo = tracks.contains { $0.soloed }
         for track in tracks {
-            // Match by track ID, not array position — a delete/duplicate mid-play shifts indices, so
-            // index-zipping would apply one track's mix to another's still-playing node.
+            // Match by track ID, not array position — a delete/duplicate mid-play shifts indices.
             guard let i = trackIds.firstIndex(of: track.id) else { continue }
             let audible = anySolo ? track.soloed : !track.muted
             let db = min(6.0, max(-24.0, track.gainDb))
-            trackNodes[i].gain.outputVolume = audible ? Float(pow(10.0, db / 20.0)) : 0
-            // Stereo placement — AVAudioMixerNode has a native pan (-1…+1); updates live.
-            trackNodes[i].gain.pan = Float(min(1, max(-1, track.pan)))
+            ctx.setTrackMix(index: i, gainLinear: audible ? Float(pow(10.0, db / 20.0)) : 0, pan: Float(track.pan))
         }
     }
 
-    /// Push master-FX + master-gain to the live chain (safe to call mid-play — the panel's knobs).
-    /// With the FX node present, everything (incl. gain) runs in its kernel; without it (load
-    /// failed) master gain falls back to the summing bus (attenuation reliable).
+    /// Push master-FX + master-gain to the render context — live. `allowFreeze:false` on the Tracks
+    /// path (the grid has no Freezer; a persisted `freezeEnabled` must never silence the mix).
     func applyMasterFX(_ fx: StudioMasterFX, bpm: Double) {
-        // allowFreeze:false — the Tracks grid has no Freezer control (Drive took its place); the
-        // freeze DSP stays in the kernel for future Mix-deck reuse, but must never apply here (a
-        // persisted freezeEnabled=true from an older build would otherwise play the mix silent).
-        let params = MasterFXParams(fx, bpm: bpm, allowFreeze: false)
-        if let au = masterFXAU {
-            au.kernel.update(params)
-            masterSum.outputVolume = 1
-        } else {
-            masterSum.outputVolume = Float(max(0, min(1, params.masterGain)))
-        }
+        context?.setMasterFX(MasterFXParams(fx, bpm: bpm, allowFreeze: false))
     }
 
     private func scheduleAutoStop(lengthMs: Int) {
         autoStopTask?.cancel()
-        let seconds = Double(max(0, lengthMs)) / 1000 + 0.35   // + a small tail past the last clip
+        let seconds = Double(max(0, lengthMs)) / 1000 + 0.35
         autoStopTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000) + 120_000_000)
             guard !Task.isCancelled else { return }

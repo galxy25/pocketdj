@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import PocketDJ
 
 /// StudioStore — the Studio document (samples/loops/patterns/takes/cues): CRUD + persistence
@@ -313,6 +314,59 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertNotNil(reloaded.arrangement(a1.id))
         XCTAssertNil(reloaded.arrangement(a1.id)?.folderId)
         XCTAssertEqual(Set(reloaded.arrangements(inFolder: nil).map(\.id)), [a1.id, a2.id])
+    }
+
+    /// A bounce BAKES the master FX into the written audio (Levi: "add tests that bouncing includes
+    /// the master fx affect on the bounced audio"). Bounce a 440 Hz sine dry vs with Drive and require
+    /// the driven bounce's peak to be soft-clipped well below the dry one.
+    func testBounceBakesMasterFXIntoAudio() async throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "FX")
+        let t = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        let clipId = "clip_sine"
+        let fileName = StudioStore.clipFileName(clipId)
+        let dir = try StudioStore.arrangementsDir()
+        try writeSineClip(to: dir.appendingPathComponent(fileName), seconds: 1.0, freq: 440, amp: 0.8)
+        store.addClip(arrangement: arr.id, track: t.id,
+                      StudioClip(id: clipId, name: "S", fileName: fileName, durationMs: 1000,
+                                 source: .sample, sourceId: "smp_x"))
+        let tracks = try XCTUnwrap(store.arrangement(arr.id)?.tracks)
+
+        var driven = StudioMasterFX(); driven.driveEnabled = true; driven.driveAmount = 1.0
+        let dryBounce = await ArrangerBouncer.bounce(tracks: tracks, store: store, name: "dry")
+        let wetBounce = await ArrangerBouncer.bounce(tracks: tracks, store: store, name: "wet",
+                                                     masterFX: driven, bpm: 120)
+        let dry = try XCTUnwrap(dryBounce)
+        let wet = try XCTUnwrap(wetBounce)
+        let dryPeak = try peakOfClip(store, dry.fileName)
+        let wetPeak = try peakOfClip(store, wet.fileName)
+        XCTAssertGreaterThan(dryPeak, 0.3, "the sine should survive a dry bounce")
+        XCTAssertLessThan(wetPeak, dryPeak * 0.85, "Drive must be baked into the bounce (peak soft-clipped)")
+    }
+
+    private func writeSineClip(to url: URL, seconds: Double, freq: Double, amp: Float) throws {
+        let fmt = StudioAudio.canonicalFormat
+        let frames = Int(seconds * fmt.sampleRate)
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+        buf.frameLength = AVAudioFrameCount(frames)
+        for c in 0..<Int(fmt.channelCount) {
+            for i in 0..<frames {
+                buf.floatChannelData![c][i] = amp * sinf(2 * .pi * Float(freq) * Float(i) / Float(fmt.sampleRate))
+            }
+        }
+        let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                                        AVSampleRateKey: fmt.sampleRate, AVNumberOfChannelsKey: 2]
+        try AVAudioFile(forWriting: url, settings: settings).write(from: buf)
+    }
+    private func peakOfClip(_ store: StudioStore, _ fileName: String) throws -> Float {
+        let url = try XCTUnwrap(store.clipFileURL(fileName))
+        let f = try AVAudioFile(forReading: url)
+        let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length))!
+        try f.read(into: buf)
+        var p: Float = 0
+        let ch = buf.floatChannelData!
+        for c in 0..<Int(buf.format.channelCount) { for i in 0..<Int(buf.frameLength) { p = max(p, abs(ch[c][i])) } }
+        return p
     }
 
     // MARK: Lenient decode
