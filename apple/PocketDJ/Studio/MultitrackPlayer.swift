@@ -73,7 +73,9 @@ final class MultitrackRenderContext: @unchecked Sendable {
         panL = Array(repeating: 1, count: self.trackCount)
         panR = Array(repeating: 1, count: self.trackCount)
         self.cursor = cursor
-        self.renderedTotal = 0
+        // Anchor the FX phase base to the START frame (seek / loopStart) so the beat-synced Brazilian
+        // bass pump lands on the arrangement's real beats after a seek, not offset from playback start.
+        self.renderedTotal = cursor
         self.looping = looping
         self.loopStart = loopStart
         self.loopEnd = loopEnd
