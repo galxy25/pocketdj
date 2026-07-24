@@ -772,6 +772,11 @@ private struct PatternRowCard: View {
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .strokeBorder(Theme.border, lineWidth: 1))
+        // The row cards are keyed by INDEX, so a delete/reorder/retarget reuses this view instance
+        // with a different underlying row. Collapse the deck whenever THIS slot's target changes so
+        // an expanded deck can never be misattributed to the wrong row. (Step edits keep the same
+        // targetId, so toggling steps never collapses it.)
+        .onChange(of: row.targetId) { deckExpanded = false }
     }
 
     // MARK: Per-track mixer deck (SEQ3)
@@ -808,7 +813,11 @@ private struct PatternRowCard: View {
                         // Persist to the sample (bumps renderRevision → the row re-bakes next Play)
                         // and mark THIS pattern's bounce stale so its collection playback re-bounces.
                         studio.updateSampleEdit(s.id, clamped)
-                        studio.mutatePattern(patternId) { _ in }
+                        // Mark the bounce dirty ONCE — not on every slider tick (mutatePattern does a
+                        // synchronous saveNow; bounceDirty is idempotent, so re-marking is pure jank).
+                        if studio.pattern(patternId)?.bounceDirty == false {
+                            studio.mutatePattern(patternId) { _ in }
+                        }
                         // If that sample is loaded in the audition chain (open in the editor), keep
                         // the live voicing in sync too.
                         if engine.loadedSampleId == s.id { engine.applyEdit(clamped) }
