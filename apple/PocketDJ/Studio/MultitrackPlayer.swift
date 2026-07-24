@@ -164,6 +164,11 @@ final class MultitrackPlayer {
     @ObservationIgnored private var source: AVAudioSourceNode?
     @ObservationIgnored private var context: MultitrackRenderContext?
     @ObservationIgnored private var trackIds: [String] = []
+    /// Master-output recorder (record-to-master live): a tap on the main mixer writes to this CAF; the
+    /// URL is handed to the caller (`consumeRecording`) to bake into a Master clip.
+    @ObservationIgnored private var recordFile: AVAudioFile?
+    @ObservationIgnored private var recordingURL: URL?
+    @ObservationIgnored private var recordTapped = false
 
     /// Apple's PeakLimiter — the master safety net so a boosted / effect-laden master can't hard-clip.
     private static let limiterDesc = AudioComponentDescription(
@@ -183,7 +188,7 @@ final class MultitrackPlayer {
     /// starts playback at a timeline offset (a ruler seek); ignored while looping (which starts the
     /// region). Returns false when there's nothing to play.
     @discardableResult
-    func play(arrangement: StudioArrangement, store: StudioStore, fromMs: Int = 0) async -> Bool {
+    func play(arrangement: StudioArrangement, store: StudioStore, fromMs: Int = 0, record: Bool = false) async -> Bool {
         stop()
         let gen = playGeneration
         // 1. Decode every clip to a canonical buffer off the main actor, tagged with its track index.
@@ -242,6 +247,21 @@ final class MultitrackPlayer {
         try? session.setCategory(.playback, mode: .default)
         try? session.setActive(true)
         #endif
+        // Record-to-master: tap the main mixer (post-limiter master = what you hear, incl. live FX)
+        // and write to a CAF. The file is captured by value so the tap never touches @MainActor state.
+        if record {
+            let mixer = engine.mainMixerNode
+            let tapFmt = mixer.outputFormat(forBus: 0)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tracks-master-\(UUID().uuidString).caf")
+            if tapFmt.sampleRate > 0, let file = try? AVAudioFile(forWriting: url, settings: tapFmt.settings) {
+                recordFile = file; recordingURL = url; recordTapped = true
+                mixer.installTap(onBus: 0, bufferSize: 4096, format: tapFmt) { buf, _ in
+                    try? file.write(from: buf)
+                }
+            }
+        }
+
         do { try engine.start() } catch { stop(); return false }
 
         clock.start(atHostTime: mach_absolute_time())
@@ -254,6 +274,8 @@ final class MultitrackPlayer {
     func stop() {
         playGeneration &+= 1
         autoStopTask?.cancel(); autoStopTask = nil
+        if recordTapped { engine.mainMixerNode.removeTap(onBus: 0); recordTapped = false }
+        recordFile = nil            // release → the CAF finalizes; recordingURL kept for the caller
         if engine.isRunning { engine.stop() }
         source = nil
         context = nil
@@ -261,6 +283,17 @@ final class MultitrackPlayer {
         clock.stop()
         isPlaying = false
         playingArrangementId = nil
+    }
+
+    /// True while a master recording tap is active.
+    var isRecording: Bool { recordTapped }
+
+    /// Hand the finished master recording's file URL to the caller (to bake into a Master clip) and
+    /// clear it. Call after `stop()`.
+    func consumeRecording() -> URL? {
+        let url = recordingURL
+        recordingURL = nil
+        return url
     }
 
     /// Recompute each track's audible gain + pan from mute / solo / gain (solo wins) and push to the

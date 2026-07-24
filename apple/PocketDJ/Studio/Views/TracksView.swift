@@ -15,6 +15,7 @@ struct TracksView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(BurnStore.self) private var burns
     @Environment(AppModel.self) private var app
+    @Environment(StudioNavState.self) private var nav
 
     /// The open arrangement (nil ⇒ the HOME browser of arrangements + folders — the tab lands here).
     @State private var openArrangementId: String?
@@ -35,9 +36,10 @@ struct TracksView: View {
     @State private var cursorMs = 0
 
     // Rename affordances (cross-platform alert + TextField).
-    @State private var pendingRenameTrack: String?
     @State private var pendingRenameArrangementId: String?
     @State private var nameText = ""
+    /// The track being edited in the dual name/colour/pan sheet (tap the name OR the colour chip).
+    @State private var editTrackId: String?
 
     // Add-clip source picker (which track it targets) + a busy spinner.
     @State private var pickerTrackId: String?
@@ -73,9 +75,24 @@ struct TracksView: View {
 
     // Live recording target (the track a take is being captured into).
     @State private var recordingTrackId: String?
+    /// Master live-record: playback runs while the master output (with live FX) is captured, then
+    /// baked into a Master track (#5).
+    @State private var recordingMaster = false
 
     // Master-FX panel expansion (persisted).
     @AppStorage("pdj.tracks.showMasterFX") private var showMasterFX = false
+    /// iPhone transport collapse — stacked controls fold away to maximize track space (persisted).
+    @AppStorage("pdj.tracks.transportCollapsed") private var transportCollapsed = false
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSize
+    #endif
+    private var isCompact: Bool {
+        #if os(iOS)
+        return hSize == .compact
+        #else
+        return false
+        #endif
+    }
 
     // Layout grid (pxPerSec is @State above — zoomable).
     private let laneHeight: CGFloat = 66
@@ -150,6 +167,10 @@ struct TracksView: View {
         .overlay { if recordingTrackId != nil { recordingOverlay } }
         .task { mic.settings = settings; mic.store = studio }
         .task(id: clipSignature) { await loadPeaks() }
+        .onChange(of: openArrangementId, initial: true) {
+            // Ask PerformanceView to hide its sub-tab picker while an arrangement is open (#1).
+            nav.arrangerFullscreen = openArrangementId != nil
+        }
         .onChange(of: current?.id) {
             // The open arrangement vanished (e.g. deleted from another window on the shared store) or
             // changed — stop a now-orphaned player so a looping mix can't play on with no transport,
@@ -166,9 +187,14 @@ struct TracksView: View {
         .onChange(of: current?.bpm) {
             if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
         }
+        .onChange(of: player.isPlaying) {
+            // Playback stopped while master-recording (Stop / auto-stop) → bake the captured master.
+            if !player.isPlaying, recordingMaster { bakeMasterRecording() }
+        }
         .onDisappear {
             player.stop()
             if recordingTrackId != nil { _ = mic.stop(); recordingTrackId = nil }
+            nav.arrangerFullscreen = false   // restore the picker when leaving the tab
         }
     }
 
@@ -186,10 +212,10 @@ struct TracksView: View {
                 })
         }
         .sheet(isPresented: $bounceSelecting) { bounceSheet }
-        .alert("Rename track", isPresented: renameTrackShown) {
-            TextField("Name", text: $nameText)
-            Button("Cancel", role: .cancel) { pendingRenameTrack = nil }
-            Button("Rename") { commitTrackRename() }
+        .sheet(item: editTrackBinding) { box in
+            if let a = current {
+                TrackEditSheet(studio: studio, arrangementId: a.id, trackId: box.id)
+            }
         }
         .alert("Rename arrangement", isPresented: renameArrangementShown) {
             TextField("Name", text: $nameText)
@@ -474,82 +500,111 @@ struct TracksView: View {
     }
 
     // MARK: Transport
+    //
+    // Regular width (iPad/Mac): one horizontal row. Compact (iPhone): the primary row (play + time)
+    // stays put with a collapse chevron; the rest (tempo/loop/bounce + zoom/follow) STACK below and
+    // fold away when collapsed, to maximize track space (Levi).
 
     private func transportBar(_ arr: StudioArrangement) -> some View {
-        HStack(spacing: 14) {
-            Button { togglePlay(arr) } label: {
-                Image(systemName: isPlayingThis(arr) ? "stop.fill" : "play.fill")
-                    .font(.title3)
-                    .foregroundStyle(arr.lengthMs == 0 ? Theme.fgDim : (isPlayingThis(arr) ? Theme.danger : Theme.accent))
-            }
-            .buttonStyle(.plain)
-            .disabled(arr.lengthMs == 0)
-            .accessibilityIdentifier("tracks-play")
-            .accessibilityValue(isPlayingThis(arr) ? "playing" : "stopped")
-
-            TimelineView(.periodic(from: .now, by: 0.1)) { _ in
-                Text(timeLabel(arr)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
-            }
-
-            // Tempo — seeds the beat grid + looper snap. Tap to type a new BPM.
-            Button { bpmText = String(Int(arr.bpm.rounded())); pendingBpm = true } label: {
-                Text("♩ \(Int(arr.bpm.rounded()))")
-                    .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(Theme.fg)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Theme.bgOverlay, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("tracks-bpm")
-
-            // Looper — repeat the shaded region between the two handles.
-            Button { toggleLoop(arr) } label: {
-                Image(systemName: "repeat")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(arr.loopEnabled ? Theme.accent : Theme.fgDim)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(arr.loopEnabled ? Theme.accent.opacity(0.16) : Theme.bgOverlay, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(arr.lengthMs == 0)
-            .accessibilityIdentifier("tracks-loop-toggle")
-            .accessibilityValue(arr.loopEnabled ? "on" : "off")
-
-            Spacer()
-
-            // Zoom the timeline scale (out reaches fit-to-width), and ⌖ = jump to + follow the playhead.
-            Button { stepZoom(-1, arr: arr) } label: { Image(systemName: "minus.magnifyingglass").font(.callout) }
-                .buttonStyle(.plain).foregroundStyle(Theme.accent)
-                .disabled(pxPerSec <= fitPx(arr) + 0.01)
-                .accessibilityIdentifier("tracks-zoom-out")
-            Button { stepZoom(+1, arr: arr) } label: { Image(systemName: "plus.magnifyingglass").font(.callout) }
-                .buttonStyle(.plain).foregroundStyle(Theme.accent)
-                .disabled(pxPerSec >= Self.zoomLadder.last!)
-                .accessibilityIdentifier("tracks-zoom-in")
-            Button { followPlayhead.toggle(); if followPlayhead { centerNonce &+= 1 } } label: {
-                Image(systemName: "scope").font(.callout)
-                    .foregroundStyle(followPlayhead ? Theme.bg : Theme.fgDim)
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(followPlayhead ? Theme.accent : Theme.bgOverlay, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("tracks-follow")
-            .accessibilityValue(followPlayhead ? "on" : "off")
-
-            Menu {
-                Button { bounce(tracks: arr.tracks, label: "Master") } label: {
-                    Label("Bounce all tracks", systemImage: "square.stack.3d.down.forward")
+        VStack(spacing: 6) {
+            HStack(spacing: 14) {
+                playControl(arr)
+                recordControl(arr)
+                timeControl(arr)
+                if isCompact {
+                    Spacer()
+                    Button { withAnimation(.easeInOut(duration: 0.15)) { transportCollapsed.toggle() } } label: {
+                        Image(systemName: transportCollapsed ? "slider.horizontal.3" : "chevron.up")
+                            .font(.callout).foregroundStyle(Theme.fgDim).padding(6).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("tracks-transport-collapse")
+                    .accessibilityValue(transportCollapsed ? "collapsed" : "expanded")
+                } else {
+                    bpmControl(arr); loopControl(arr)
+                    Spacer()
+                    zoomControls(arr); bounceControl(arr)
                 }
-                Button { bounceSelection = []; bounceSelecting = true } label: {
-                    Label("Bounce selected…", systemImage: "checklist")
-                }
-            } label: {
-                Label("Bounce", systemImage: "square.and.arrow.down.on.square")
-                    .font(.caption).foregroundStyle(arr.lengthMs == 0 ? Theme.fgDim : Theme.fg)
             }
-            .disabled(arr.lengthMs == 0)
-            .accessibilityIdentifier("tracks-bounce-menu")
+            if isCompact && !transportCollapsed {
+                HStack(spacing: 12) { bpmControl(arr); loopControl(arr); Spacer(); bounceControl(arr) }
+                HStack(spacing: 12) { Spacer(); zoomControls(arr) }
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 6)
+    }
+
+    private func playControl(_ arr: StudioArrangement) -> some View {
+        Button { togglePlay(arr) } label: {
+            Image(systemName: isPlayingThis(arr) ? "stop.fill" : "play.fill").font(.title3)
+                .foregroundStyle(arr.lengthMs == 0 ? Theme.fgDim : (isPlayingThis(arr) ? Theme.danger : Theme.accent))
+        }
+        .buttonStyle(.plain).disabled(arr.lengthMs == 0)
+        .accessibilityIdentifier("tracks-play")
+        .accessibilityValue(isPlayingThis(arr) ? "playing" : "stopped")
+    }
+    /// Record-to-master: play with the live master (incl. FX moves) captured, then baked to a Master
+    /// track on stop — so you can "master live". Red while recording.
+    private func recordControl(_ arr: StudioArrangement) -> some View {
+        Button { toggleRecordMaster(arr) } label: {
+            Image(systemName: recordingMaster ? "stop.circle.fill" : "record.circle")
+                .font(.title3).foregroundStyle(arr.lengthMs == 0 ? Theme.fgDim : Theme.danger)
+        }
+        .buttonStyle(.plain).disabled(arr.lengthMs == 0)
+        .accessibilityIdentifier("tracks-record-master")
+        .accessibilityValue(recordingMaster ? "recording" : "idle")
+    }
+    private func timeControl(_ arr: StudioArrangement) -> some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            Text(timeLabel(arr)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+        }
+    }
+    private func bpmControl(_ arr: StudioArrangement) -> some View {
+        Button { bpmText = String(Int(arr.bpm.rounded())); pendingBpm = true } label: {
+            Text("♩ \(Int(arr.bpm.rounded()))")
+                .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(Theme.fg)
+                .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.bgOverlay, in: Capsule())
+        }
+        .buttonStyle(.plain).accessibilityIdentifier("tracks-bpm")
+    }
+    private func loopControl(_ arr: StudioArrangement) -> some View {
+        Button { toggleLoop(arr) } label: {
+            Image(systemName: "repeat").font(.callout.weight(.semibold))
+                .foregroundStyle(arr.loopEnabled ? Theme.accent : Theme.fgDim)
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(arr.loopEnabled ? Theme.accent.opacity(0.16) : Theme.bgOverlay, in: Capsule())
+        }
+        .buttonStyle(.plain).disabled(arr.lengthMs == 0)
+        .accessibilityIdentifier("tracks-loop-toggle").accessibilityValue(arr.loopEnabled ? "on" : "off")
+    }
+    @ViewBuilder private func zoomControls(_ arr: StudioArrangement) -> some View {
+        Button { stepZoom(-1, arr: arr) } label: { Image(systemName: "minus.magnifyingglass").font(.callout) }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .disabled(pxPerSec <= fitPx(arr) + 0.01).accessibilityIdentifier("tracks-zoom-out")
+        Button { stepZoom(+1, arr: arr) } label: { Image(systemName: "plus.magnifyingglass").font(.callout) }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .disabled(pxPerSec >= Self.zoomLadder.last!).accessibilityIdentifier("tracks-zoom-in")
+        Button { followPlayhead.toggle(); if followPlayhead { centerNonce &+= 1 } } label: {
+            Image(systemName: "scope").font(.callout)
+                .foregroundStyle(followPlayhead ? Theme.bg : Theme.fgDim)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(followPlayhead ? Theme.accent : Theme.bgOverlay, in: Capsule())
+        }
+        .buttonStyle(.plain).accessibilityIdentifier("tracks-follow").accessibilityValue(followPlayhead ? "on" : "off")
+    }
+    private func bounceControl(_ arr: StudioArrangement) -> some View {
+        Menu {
+            Button { bounce(tracks: arr.tracks, label: "Master") } label: {
+                Label("Bounce all tracks", systemImage: "square.stack.3d.down.forward")
+            }
+            Button { bounceSelection = []; bounceSelecting = true } label: {
+                Label("Bounce selected…", systemImage: "checklist")
+            }
+        } label: {
+            Label("Bounce", systemImage: "square.and.arrow.down.on.square")
+                .font(.caption).foregroundStyle(arr.lengthMs == 0 ? Theme.fgDim : Theme.fg)
+        }
+        .disabled(arr.lengthMs == 0).accessibilityIdentifier("tracks-bounce-menu")
     }
 
     private func timeLabel(_ arr: StudioArrangement) -> String {
@@ -682,10 +737,14 @@ struct TracksView: View {
         let color = Self.color(track.colorIndex)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                colorMenu(arr: arr, track: track, index: index, color: color)
-                Button {
-                    nameText = track.name; pendingRenameTrack = track.id
-                } label: {
+                // Big, easy-to-hit colour chip → the track edit sheet (name / colour / pan). The old
+                // 5-pt chip was a near-impossible mobile target — tapping it hit the name editor 9/10.
+                Button { editTrackId = track.id } label: {
+                    RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 16, height: 20)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("tracks-track-color-\(index)")
+                Button { editTrackId = track.id } label: {
                     Text(track.name.isEmpty ? "Track" : track.name)
                         .font(.caption.weight(.semibold)).foregroundStyle(Theme.fg).lineLimit(1)
                 }
@@ -698,7 +757,7 @@ struct TracksView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("tracks-add-clip-\(index)")
                 Menu {
-                    Button { nameText = track.name; pendingRenameTrack = track.id } label: { Label("Rename…", systemImage: "pencil") }
+                    Button { editTrackId = track.id } label: { Label("Edit track…", systemImage: "pencil") }
                     Button { pickerTrackId = track.id } label: { Label("Add clip…", systemImage: "waveform.badge.plus") }
                     Button { startRecord(arr: arr, track: track) } label: { Label("Record…", systemImage: "mic") }
                     Button { bounce(tracks: [track], label: "\(track.name) (bounce)") } label: { Label("Bounce this track", systemImage: "square.and.arrow.down") }
@@ -729,8 +788,8 @@ struct TracksView: View {
                 ), in: -24...6)
                 .controlSize(.mini)
                 .accessibilityIdentifier("tracks-track-gain-\(index)")
-                // Pan is hidden behind a right-click / long-press on the header (below) — a small
-                // L/R dot shows the current position without cluttering the strip.
+                // A small L/R mark shows the current pan without cluttering the strip; edit it in the
+                // track sheet (tap the name / colour chip).
                 if abs(track.pan) > 0.02 {
                     Text(track.pan < 0 ? "L" : "R").font(.system(size: 8, weight: .heavy))
                         .foregroundStyle(Theme.accent2)
@@ -740,41 +799,6 @@ struct TracksView: View {
         .padding(.horizontal, 8).padding(.vertical, 6)
         .frame(maxHeight: .infinity)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .contextMenu { panMenuItems(arr: arr, track: track, index: index) }
-    }
-
-    /// Pan lives behind the header's right-click / long-press (`.contextMenu`) so the strip stays
-    /// uncluttered. Presets + ±10 % nudges give quick and fine placement without an inline slider.
-    @ViewBuilder private func panMenuItems(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
-        let set: (Double) -> Void = { v in studio.setTrackPan(arrangement: arr.id, track: track.id, pan: v) }
-        Section("Pan · \(panLabel(track.pan))") {
-            Button { set(-1) } label: { Label("Hard left", systemImage: "chevron.left.2") }
-            Button { set(-0.5) } label: { Label("Left", systemImage: "chevron.left") }
-            Button { set(0) } label: { Label("Center", systemImage: "circle") }
-                .accessibilityIdentifier("tracks-track-pan-center-\(index)")
-            Button { set(0.5) } label: { Label("Right", systemImage: "chevron.right") }
-            Button { set(1) } label: { Label("Hard right", systemImage: "chevron.right.2") }
-        }
-        Divider()
-        Button { set(track.pan - 0.1) } label: { Label("Nudge left", systemImage: "arrow.left") }
-        Button { set(track.pan + 0.1) } label: { Label("Nudge right", systemImage: "arrow.right") }
-    }
-
-    /// Tappable colour chip → a swatch menu (choose the lane's palette colour). The chip is the
-    /// track's identity everywhere (header + lane + clips), so recolouring is a one-tap affordance.
-    private func colorMenu(arr: StudioArrangement, track: StudioTrack, index: Int, color: Color) -> some View {
-        Menu {
-            ForEach(Array(Self.trackColors.indices), id: \.self) { ci in
-                Button { studio.setTrackColor(arrangement: arr.id, track: track.id, colorIndex: ci) } label: {
-                    Label(Self.colorName(ci), systemImage: ci == track.colorIndex ? "checkmark" : "circle.fill")
-                }
-            }
-        } label: {
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 5, height: 20)
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-        .frame(width: 9)
-        .accessibilityIdentifier("tracks-track-color-\(index)")
     }
 
     private func panLabel(_ p: Double) -> String {
@@ -1201,6 +1225,35 @@ struct TracksView: View {
         Task { await player.play(arrangement: arr, store: studio, fromMs: effectiveCursorMs(arr)) }
     }
 
+    /// Start playback WITH master recording (from the cursor); or, if already recording, stop + bake.
+    /// Any stop while recording (auto-stop / Play button) also bakes — see `onChange(player.isPlaying)`.
+    private func toggleRecordMaster(_ arr: StudioArrangement) {
+        if recordingMaster {
+            player.stop()               // onChange(isPlaying → false) bakes
+            return
+        }
+        recordingMaster = true
+        Task {
+            let ok = await player.play(arrangement: arr, store: studio, fromMs: effectiveCursorMs(arr), record: true)
+            if !ok { recordingMaster = false }
+        }
+    }
+
+    /// Bake the captured master recording into a new Master track.
+    private func bakeMasterRecording() {
+        guard let a = current, let url = player.consumeRecording() else { recordingMaster = false; return }
+        recordingMaster = false
+        busyMessage = "Saving master…"; baking = true
+        Task {
+            defer { baking = false }
+            if let clip = await ArrangerClipBaker.bakeFromFile(sourceURL: url, name: masterName(a), startMs: 0),
+               let master = studio.addTrack(arrangement: a.id, name: masterName(a)) {
+                studio.addClip(arrangement: a.id, track: master.id, clip)
+            }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     /// Start capturing the mic into `track`. Playback is stopped first (record is a distinct mode —
     /// this sidesteps the mic-capture ↔ playback session-coexistence path for v1; overdub monitoring
     /// is a later enhancement). The recorder requests permission on first use (device-only).
@@ -1355,19 +1408,135 @@ struct TracksView: View {
         }
     }
 
-    private func commitTrackRename() {
-        guard let a = current, let tid = pendingRenameTrack else { return }
-        studio.renameTrack(arrangement: a.id, track: tid, to: nameText)
-        pendingRenameTrack = nil
-    }
-
-    private var renameTrackShown: Binding<Bool> {
-        Binding(get: { pendingRenameTrack != nil }, set: { if !$0 { pendingRenameTrack = nil } })
-    }
-
     /// `.sheet(item:)` needs an Identifiable — box the target track id.
     private var pickerTrackBinding: Binding<IdBox?> {
         Binding(get: { pickerTrackId.map(IdBox.init) }, set: { pickerTrackId = $0?.id })
+    }
+    private var editTrackBinding: Binding<IdBox?> {
+        Binding(get: { editTrackId.map(IdBox.init) }, set: { editTrackId = $0?.id })
+    }
+}
+
+// MARK: - Track edit sheet (name / colour / pan) + pan dial
+
+/// One sheet to edit a lane's NAME, COLOUR (big swatches — the header chip's tap target was too
+/// small on mobile) and PAN (a rotary dial). Opened by tapping the name or the colour chip. Colour +
+/// pan write live; the name commits on Done.
+private struct TrackEditSheet: View {
+    let studio: StudioStore
+    let arrangementId: String
+    let trackId: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var loaded = false
+
+    private var track: StudioTrack? {
+        studio.arrangement(arrangementId)?.tracks.first { $0.id == trackId }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("Track name", text: $name)
+                        .accessibilityIdentifier("track-edit-name")
+                }
+                Section("Colour") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                        ForEach(Array(TracksView.trackColors.indices), id: \.self) { ci in
+                            let selected = track?.colorIndex == ci
+                            Button { studio.setTrackColor(arrangement: arrangementId, track: trackId, colorIndex: ci) } label: {
+                                RoundedRectangle(cornerRadius: 8).fill(TracksView.color(ci))
+                                    .frame(height: 40)
+                                    .overlay { if selected { Image(systemName: "checkmark").font(.headline).foregroundStyle(.white) } }
+                                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(Theme.fg.opacity(selected ? 0.9 : 0), lineWidth: 2) }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("track-edit-color-\(ci)")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                Section("Pan") {
+                    HStack {
+                        Text("L").font(.caption.weight(.bold)).foregroundStyle(Theme.fgDim)
+                        PanDial(value: track?.pan ?? 0) { v in
+                            studio.setTrackPan(arrangement: arrangementId, track: trackId, pan: v)
+                        }
+                        .frame(width: 96, height: 96).frame(maxWidth: .infinity)
+                        Text("R").font(.caption.weight(.bold)).foregroundStyle(Theme.fgDim)
+                    }
+                    HStack {
+                        Text(panText(track?.pan ?? 0)).font(.callout.monospacedDigit()).foregroundStyle(Theme.fg)
+                        Spacer()
+                        Button("Center") { studio.setTrackPan(arrangement: arrangementId, track: trackId, pan: 0) }
+                            .accessibilityIdentifier("track-edit-pan-center")
+                    }
+                }
+            }
+            .navigationTitle("Edit track")
+            #if !os(macOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { commitName(); dismiss() }.accessibilityIdentifier("track-edit-done")
+                }
+            }
+            .task {
+                if !loaded { name = track?.name ?? ""; loaded = true }
+            }
+        }
+    }
+
+    private func commitName() {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        if !n.isEmpty { studio.renameTrack(arrangement: arrangementId, track: trackId, to: n) }
+    }
+    private func panText(_ p: Double) -> String {
+        if abs(p) < 0.02 { return "Center" }
+        return p < 0 ? "Left \(Int(abs(p) * 100))%" : "Right \(Int(p * 100))%"
+    }
+}
+
+/// A rotary pan dial: the indicator sweeps ±135° over pan −1…+1. Drag anywhere on it to set the angle;
+/// snaps to dead-center near 0.
+private struct PanDial: View {
+    let value: Double
+    let onChange: (Double) -> Void
+    private let maxAngle = 135.0 * .pi / 180
+
+    var body: some View {
+        GeometryReader { g in
+            let d = min(g.size.width, g.size.height)
+            let c = CGPoint(x: g.size.width / 2, y: g.size.height / 2)
+            let a = value * maxAngle
+            ZStack {
+                Circle().stroke(Theme.fgDim.opacity(0.4), lineWidth: 3).frame(width: d, height: d)
+                Circle().fill(Theme.bgRaised).frame(width: d * 0.82, height: d * 0.82)
+                // Center detent tick (top) + indicator.
+                Rectangle().fill(Theme.fgDim.opacity(0.5)).frame(width: 2, height: d * 0.12)
+                    .offset(y: -d * 0.44)
+                Capsule().fill(Theme.accent2).frame(width: 4, height: d * 0.34)
+                    .offset(y: -d * 0.24)
+                    .rotationEffect(.radians(a), anchor: .center)
+                Circle().fill(Theme.accent2).frame(width: d * 0.16, height: d * 0.16)
+            }
+            .frame(width: g.size.width, height: g.size.height)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        let dx = v.location.x - c.x, dy = v.location.y - c.y
+                        guard abs(dx) + abs(dy) > 1 else { return }
+                        var ang = atan2(Double(dx), Double(-dy))       // 0 at top, + clockwise
+                        ang = max(-maxAngle, min(maxAngle, ang))
+                        let p = ang / maxAngle
+                        onChange(abs(p) < 0.06 ? 0 : p)
+                    }
+            )
+            .accessibilityIdentifier("track-edit-pan-dial")
+        }
     }
 }
 
