@@ -169,6 +169,10 @@ final class MultitrackPlayer {
     @ObservationIgnored private var recordFile: AVAudioFile?
     @ObservationIgnored private var recordingURL: URL?
     @ObservationIgnored private var recordTapped = false
+    /// Bumped ONLY when a recording ends because playback reached its NATURAL end (auto-stop) — the
+    /// view observes this to bake the take. A manual stop / a restart (seek, loop, re-record) does NOT
+    /// bump it, so a transient stop() during a play() restart can't trigger a truncated bake.
+    private(set) var recordingFinishedNonce = 0
 
     /// Apple's PeakLimiter — the master safety net so a boosted / effect-laden master can't hard-clip.
     private static let limiterDesc = AudioComponentDescription(
@@ -250,6 +254,8 @@ final class MultitrackPlayer {
         // Record-to-master: tap the main mixer (post-limiter master = what you hear, incl. live FX)
         // and write to a CAF. The file is captured by value so the tap never touches @MainActor state.
         if record {
+            // Discard any leftover unbaked partial from a previous restart (avoid a tmp CAF leak).
+            if let old = recordingURL { try? FileManager.default.removeItem(at: old); recordingURL = nil }
             let mixer = engine.mainMixerNode
             let tapFmt = mixer.outputFormat(forBus: 0)
             let url = FileManager.default.temporaryDirectory
@@ -321,8 +327,10 @@ final class MultitrackPlayer {
         let seconds = Double(max(0, lengthMs)) / 1000 + 0.35
         autoStopTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000) + 120_000_000)
-            guard !Task.isCancelled else { return }
-            self?.stop()
+            guard !Task.isCancelled, let self else { return }
+            let wasRecording = self.recordTapped   // playback reached its natural end
+            self.stop()
+            if wasRecording { self.recordingFinishedNonce &+= 1 }   // → the view bakes the take
         }
     }
 }

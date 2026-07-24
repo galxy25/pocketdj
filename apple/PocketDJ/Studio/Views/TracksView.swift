@@ -187,9 +187,11 @@ struct TracksView: View {
         .onChange(of: current?.bpm) {
             if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
         }
-        .onChange(of: player.isPlaying) {
-            // Playback stopped while master-recording (Stop / auto-stop) → bake the captured master.
-            if !player.isPlaying, recordingMaster { bakeMasterRecording() }
+        .onChange(of: player.recordingFinishedNonce) {
+            // Playback reached its NATURAL end while master-recording → bake the take. (A manual stop
+            // bakes explicitly in toggleRecordMaster; a restart/seek doesn't bump the nonce, so no
+            // truncated bake.)
+            if recordingMaster { bakeMasterRecording() }
         }
         .onDisappear {
             player.stop()
@@ -926,7 +928,8 @@ struct TracksView: View {
         cursorMs = max(0, min(ms, max(0, arr.lengthMs)))
         centerNonce &+= 1
         if isPlayingThis(arr) {
-            Task { await player.play(arrangement: arr, store: studio, fromMs: cursorMs) }
+            // Preserve record mode across the restart (a seek re-starts the take from the new point).
+            Task { await player.play(arrangement: arr, store: studio, fromMs: cursorMs, record: recordingMaster) }
         }
     }
 
@@ -1009,7 +1012,7 @@ struct TracksView: View {
             studio.setArrangementLoop(arr.id, enabled: true, startMs: start, endMs: end)
         }
         if isPlayingThis(arr), let fresh = studio.arrangement(arr.id) {
-            Task { await player.play(arrangement: fresh, store: studio, fromMs: effectiveCursorMs(fresh)) }
+            Task { await player.play(arrangement: fresh, store: studio, fromMs: effectiveCursorMs(fresh), record: recordingMaster) }
         }
     }
 
@@ -1221,7 +1224,11 @@ struct TracksView: View {
     }
 
     private func togglePlay(_ arr: StudioArrangement) {
-        if isPlayingThis(arr) { player.stop(); return }
+        if isPlayingThis(arr) {
+            player.stop()
+            if recordingMaster { bakeMasterRecording() }   // stopping via Play also bakes a take
+            return
+        }
         Task { await player.play(arrangement: arr, store: studio, fromMs: effectiveCursorMs(arr)) }
     }
 
@@ -1229,7 +1236,8 @@ struct TracksView: View {
     /// Any stop while recording (auto-stop / Play button) also bakes — see `onChange(player.isPlaying)`.
     private func toggleRecordMaster(_ arr: StudioArrangement) {
         if recordingMaster {
-            player.stop()               // onChange(isPlaying → false) bakes
+            player.stop()               // explicit stop → bake now
+            bakeMasterRecording()
             return
         }
         recordingMaster = true
