@@ -760,6 +760,120 @@ struct StudioSlice: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+// MARK: - Arrangement (multitrack — the "Tracks" sub-tab)
+//
+// A lightweight multitrack arranger. `StudioArrangement` holds ordered `StudioTrack` lanes; each
+// lane holds `StudioClip`s positioned on a shared ms timeline. A clip's audio is an IMMUTABLE baked
+// snapshot (`clip-<id>.m4a` in the app-managed `studio/arrangements/` dir) written ONCE when a
+// studio source or a live recording is placed — later edits to the source never mutate a placed
+// clip (DAW semantics; re-add to pick up edits). Playback sums the tracks live (one player node per
+// track, all started at one shared AVAudioTime — the sequencer/StemPlayer sync pattern); "bounce"
+// mixes selected tracks offline into a new master track. Arranger ids (`arr_`/`trk_`/`clip_`) are
+// container-internal — deliberately NOT in `studioPrefixes` (they never ride a collection array).
+// Lenient/all-optional decode + per-element lossy lists per the studio doctrine.
+
+/// Provenance of a clip's baked audio — for the label/icon ONLY. The audio is always the clip's own
+/// immutable snapshot file, so a clip never depends on its source still existing. An unknown/future
+/// kind decodes to `.recording` (generic "audio").
+enum StudioClipSource: String, Codable, Sendable {
+    case sample, loop, pattern, take, recording, master
+}
+
+/// One clip on a track: a baked audio snapshot placed at `startMs` on the arrangement timeline.
+struct StudioClip: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "clip_…" — arranger-internal, NON-collection-riding
+    var name: String                  // display label (the source's name at add time)
+    var fileName: String              // "clip-<id>.m4a" inside studio/arrangements/ (app-managed)
+    var startMs: Int = 0              // position on the arrangement timeline (ms from 0:00)
+    var durationMs: Int = 0           // baked audio length
+    var source: StudioClipSource = .recording
+    /// The `smp_`/`lp_`/`ptn_`/`tk_` id this was baked from (nil for a mic recording / a master
+    /// bounce) — provenance only, kept for the "from <source>" label; playback reads `fileName`.
+    var sourceId: String?
+    var createdAt: Double = 0
+
+    /// Timeline end (ms) — where the clip stops sounding.
+    var endMs: Int { startMs + durationMs }
+
+    enum CodingKeys: String, CodingKey { case id, name, fileName, startMs, durationMs, source, sourceId, createdAt }
+    init(id: String, name: String, fileName: String, startMs: Int = 0, durationMs: Int = 0,
+         source: StudioClipSource = .recording, sourceId: String? = nil, createdAt: Double = 0) {
+        self.id = id; self.name = name; self.fileName = fileName; self.startMs = startMs
+        self.durationMs = durationMs; self.source = source; self.sourceId = sourceId; self.createdAt = createdAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newClipId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        fileName = (try? c.decode(String.self, forKey: .fileName)) ?? ""
+        startMs = (try? c.decode(Int.self, forKey: .startMs)) ?? 0
+        durationMs = (try? c.decode(Int.self, forKey: .durationMs)) ?? 0
+        source = (try? c.decode(StudioClipSource.self, forKey: .source)) ?? .recording
+        sourceId = try? c.decode(String.self, forKey: .sourceId)
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+    }
+}
+
+/// One track (lane): an ordered set of clips + a live mix strip (gain / mute / solo) + a palette
+/// colour. Playback sums all non-muted tracks (or only soloed tracks when any track is soloed).
+struct StudioTrack: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "trk_…" — arranger-internal, NON-collection-riding
+    var name: String
+    var clips: [StudioClip] = []
+    var gainDb: Double = 0            // per-track volume trim; 0 = unity
+    var muted: Bool = false
+    var soloed: Bool = false
+    var colorIndex: Int = 0           // index into the stem/track palette (wraps)
+    var createdAt: Double = 0
+
+    /// The track's played length (ms) = the end of its last clip.
+    var lengthMs: Int { clips.map(\.endMs).max() ?? 0 }
+
+    enum CodingKeys: String, CodingKey { case id, name, clips, gainDb, muted, soloed, colorIndex, createdAt }
+    init(id: String, name: String, clips: [StudioClip] = [], gainDb: Double = 0,
+         muted: Bool = false, soloed: Bool = false, colorIndex: Int = 0, createdAt: Double = 0) {
+        self.id = id; self.name = name; self.clips = clips; self.gainDb = gainDb
+        self.muted = muted; self.soloed = soloed; self.colorIndex = colorIndex; self.createdAt = createdAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newTrackId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        clips = ((try? c.decode([StudioLossyBox<StudioClip>].self, forKey: .clips)) ?? []).compactMap(\.value)
+        gainDb = (try? c.decode(Double.self, forKey: .gainDb)) ?? 0
+        muted = (try? c.decode(Bool.self, forKey: .muted)) ?? false
+        soloed = (try? c.decode(Bool.self, forKey: .soloed)) ?? false
+        colorIndex = (try? c.decode(Int.self, forKey: .colorIndex)) ?? 0
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+    }
+}
+
+/// A multitrack arrangement (one "Tracks" workspace). Multiple coexist, switched via the picker at
+/// the top of the tab. DEVICE-LOCAL like all Studio audio.
+struct StudioArrangement: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "arr_…" — arranger-internal, NON-collection-riding
+    var name: String
+    var tracks: [StudioTrack] = []
+    var createdAt: Double = 0
+    var updatedAt: Double = 0
+
+    /// The arrangement timeline end (ms) = the longest track — what the ruler/transport spans.
+    var lengthMs: Int { tracks.map(\.lengthMs).max() ?? 0 }
+
+    enum CodingKeys: String, CodingKey { case id, name, tracks, createdAt, updatedAt }
+    init(id: String, name: String, tracks: [StudioTrack] = [], createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.tracks = tracks; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newArrangementId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        tracks = ((try? c.decode([StudioLossyBox<StudioTrack>].self, forKey: .tracks)) ?? []).compactMap(\.value)
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
+}
+
 // MARK: - Document (persistence envelope)
 
 /// The versioned studio document (`pocketdj-studio.json`). Every list decodes per-element
@@ -776,6 +890,9 @@ struct StudioDocument: Codable, Sendable {
     /// F9: flat sample folders (device-local). New OPTIONAL collection: a legacy document with no
     /// `folders` key decodes to `[]`, and the list decodes per-element lossily like every other.
     var folders: [StudioSampleFolder] = []
+    /// Multitrack arrangements (the "Tracks" sub-tab, device-local). Same additive-optional shape:
+    /// a legacy document with no `arrangements` key decodes to `[]`, per-element lossy.
+    var arrangements: [StudioArrangement] = []
     /// On-device DETECTED musical key (Camelot code) per performance item, keyed by studio id
     /// (`smp_`/`lp_`/`ptn_`/`tk_`). Populated by `StudioAnalyzer` when an item is added to a
     /// collection; consumed for harmonic mix-glide. A parallel map (not a per-model field) so it
@@ -783,15 +900,16 @@ struct StudioDocument: Codable, Sendable {
     var keys: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, samples, loops, patterns, takes, cues, slices, folders, keys
+        case schemaVersion, samples, loops, patterns, takes, cues, slices, folders, keys, arrangements
     }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
          cues: [StudioCue] = [], slices: [StudioSlice] = [],
-         folders: [StudioSampleFolder] = [], keys: [String: String] = [:]) {
+         folders: [StudioSampleFolder] = [], keys: [String: String] = [:],
+         arrangements: [StudioArrangement] = []) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
         self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
-        self.folders = folders; self.keys = keys
+        self.folders = folders; self.keys = keys; self.arrangements = arrangements
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -811,6 +929,8 @@ struct StudioDocument: Codable, Sendable {
         folders = ((try? c.decode([StudioLossyBox<StudioSampleFolder>].self, forKey: .folders)) ?? [])
             .compactMap(\.value)
         keys = (try? c.decode([String: String].self, forKey: .keys)) ?? [:]
+        arrangements = ((try? c.decode([StudioLossyBox<StudioArrangement>].self, forKey: .arrangements)) ?? [])
+            .compactMap(\.value)
     }
 }
 
@@ -832,6 +952,13 @@ enum StudioFactory {
     /// a collection's string array, so `sfld_` is deliberately NOT in `studioPrefixes` — adding it
     /// there would leak folder ids into the rip/realize guards.
     static func newSampleFolderId() -> String { "sfld_" + uid() }
+    /// Arranger container ids (the "Tracks" sub-tab). Like `cue_`/`slc_`/`sfld_`, an arrangement /
+    /// track / clip id NEVER rides a collection's string array — arranger-internal only — so these
+    /// are deliberately NOT in `studioPrefixes` (adding them would leak arranger ids into the
+    /// rip/realize guards). Clip audio lives in the app-managed `studio/arrangements/` dir.
+    static func newArrangementId() -> String { "arr_" + uid() }
+    static func newTrackId() -> String { "trk_" + uid() }
+    static func newClipId() -> String { "clip_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore
