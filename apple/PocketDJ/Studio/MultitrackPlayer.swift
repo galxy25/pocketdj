@@ -164,11 +164,15 @@ final class MultitrackPlayer {
     @ObservationIgnored private var source: AVAudioSourceNode?
     @ObservationIgnored private var context: MultitrackRenderContext?
     @ObservationIgnored private var trackIds: [String] = []
-    /// Master-output recorder (record-to-master live): a tap on the main mixer writes to this CAF; the
-    /// URL is handed to the caller (`consumeRecording`) to bake into a Master clip.
+    /// Master-output recorder (record-to-master live): a tap on the LIMITER (the canonical-rate master
+    /// bus — see `play`) writes to this CAF; the URL is handed to the caller (`consumeRecording`) to
+    /// bake into a Master clip.
     @ObservationIgnored private var recordFile: AVAudioFile?
     @ObservationIgnored private var recordingURL: URL?
     @ObservationIgnored private var recordTapped = false
+    /// The node the record tap is installed on (the limiter) — held so `stop()` removes it from the
+    /// SAME node it was added to (removing from the wrong node silently leaves the tap live).
+    @ObservationIgnored private var recordTapNode: AVAudioNode?
     /// Bumped ONLY when a recording ends because playback reached its NATURAL end (auto-stop) — the
     /// view observes this to bake the take. A manual stop / a restart (seek, loop, re-record) does NOT
     /// bump it, so a transient stop() during a play() restart can't trigger a truncated bake.
@@ -251,18 +255,24 @@ final class MultitrackPlayer {
         try? session.setCategory(.playback, mode: .default)
         try? session.setActive(true)
         #endif
-        // Record-to-master: tap the main mixer (post-limiter master = what you hear, incl. live FX)
-        // and write to a CAF. The file is captured by value so the tap never touches @MainActor state.
+        // Record-to-master: tap the LIMITER, not the main mixer. `src → limiter → mainMixer` are all
+        // connected at `fmt` (canonical 44.1 kHz), so the limiter's output bus runs at exactly the
+        // arrangement's rate — and its signal already carries every master FX + master gain (both
+        // kernel-applied, upstream of the limiter) AND the limiter itself, i.e. exactly what you hear.
+        // The main mixer's OUTPUT instead adopts the device HARDWARE rate (48 kHz on iPhone); worse,
+        // `outputFormat(forBus:)` read here — before `engine.start()` — reports the stale 44.1 kHz
+        // default, so a mixer tap wrote a 44.1-labelled CAF fed 48 kHz frames → the baked take played
+        // 8.8 % slow, ~1.5 semitones flat, "crunchy" on device (rates coincide in the Sim, so it slipped
+        // tests). Tapping the limiter is device-rate-independent and needs no resample on bake.
+        // The file is captured by value so the tap never touches @MainActor state.
         if record {
             // Discard any leftover unbaked partial from a previous restart (avoid a tmp CAF leak).
             if let old = recordingURL { try? FileManager.default.removeItem(at: old); recordingURL = nil }
-            let mixer = engine.mainMixerNode
-            let tapFmt = mixer.outputFormat(forBus: 0)
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("tracks-master-\(UUID().uuidString).caf")
-            if tapFmt.sampleRate > 0, let file = try? AVAudioFile(forWriting: url, settings: tapFmt.settings) {
-                recordFile = file; recordingURL = url; recordTapped = true
-                mixer.installTap(onBus: 0, bufferSize: 4096, format: tapFmt) { buf, _ in
+            if let file = try? AVAudioFile(forWriting: url, settings: fmt.settings) {
+                recordFile = file; recordingURL = url; recordTapped = true; recordTapNode = limiter
+                limiter.installTap(onBus: 0, bufferSize: 4096, format: fmt) { buf, _ in
                     try? file.write(from: buf)
                 }
             }
@@ -280,7 +290,7 @@ final class MultitrackPlayer {
     func stop() {
         playGeneration &+= 1
         autoStopTask?.cancel(); autoStopTask = nil
-        if recordTapped { engine.mainMixerNode.removeTap(onBus: 0); recordTapped = false }
+        if recordTapped { recordTapNode?.removeTap(onBus: 0); recordTapNode = nil; recordTapped = false }
         recordFile = nil            // release → the CAF finalizes; recordingURL kept for the caller
         if engine.isRunning { engine.stop() }
         source = nil
