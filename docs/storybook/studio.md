@@ -437,8 +437,14 @@ the cursor and have the timeline **follow** it as it plays (tap **⌖** again to
 On **iPhone** the transport controls **stack** and **fold away** with a tap, so the lanes get the room.
 
 **Master it live.** Hit the red **●** to play *and record the master* — ride the Master-FX knobs, mute
-and pan lanes while it runs, and on stop the captured performance (**exactly what you heard**) lands as
-a new **Master** track. It's mixing to a master take in real time.
+and pan lanes while it runs, and on stop the captured performance (**exactly what you heard**) is saved
+as a dated **live-recording** under the arrangement (see *Bounces & recordings* below). It's mixing to a
+master take in real time — at the **correct pitch and speed**, captured from the canonical-rate master
+bus so the take matches the live mix and the bounce on every device.
+
+**Two record modes.** **Long-press** (or right-click) the red **●** to choose **Clean** (the default —
+true to what you hear) or **Quantized (lo-fi)** — a deliberately down-pitched, crunchy, retro-synth
+character (the hardware-rate capture reinterpreted at 44.1 kHz). Same take, two flavours.
 
 **Loop a section.** The **loop** button turns on a shaded region with two **beat-snapped handles** —
 drag them to pick the start and end — and playback **repeats** that span seamlessly so you can dial a
@@ -450,14 +456,20 @@ Lift** (fat sub on every beat) — each a toggle plus its own dial, over an over
 shapes the **whole mix live** as it plays, and a **bounce bakes exactly what you hear** (the freeze, being a
 live hold, sits out a bounce).
 
-**Bounce it down.** When the arrangement sounds right, **Bounce** mixes it to a single **master track**:
-one lane's **Bounce this track**, the transport's **Bounce ▸ all tracks**, or **Bounce ▸ selected…**
-(tick the lanes you want) — each drops a new **Master** lane holding the mixdown (pan and Master FX
-baked in), ready to play, bounce again, or build on.
+**Bounce it down.** When the arrangement sounds right, **Bounce** mixes it down: one lane's **Bounce
+this track**, the transport's **Bounce ▸ all tracks**, or **Bounce ▸ selected…** (tick the lanes you
+want). Each writes a **dated bounce** (pan and Master FX baked in) — no clutter added to your lanes.
+
+**Bounces & recordings.** Every bounce and live recording is a **dated file** — `bounce-2026-07-24
+15-30-12`, `live-recording-…` — grouped in a **Bounces** or **Recordings** folder that **nests under its
+arrangement** in the Tracks home browser. **Tap a row to hear it** (tap again to stop). **Long-press** a
+row for **Convert to sample** (drops an independent sample into your Samples library — the artifact and
+the sample are separate copies), **Add as track** (place it back on a lane), **Share**, or **Delete**.
 
 **User story:** "I send a song's stems to a fresh arrangement, pan the drums a touch left, colour the
 vocal lane purple, set a 4-bar loop over the chorus, ride the Brazilian bass on every beat, then bounce
-the whole thing — fat sub and all — to a Master I can keep."
+the whole thing — fat sub and all. It lands as a dated bounce under the arrangement; I tap to check it,
+then convert it to a sample to chop up later."
 
 ---
 

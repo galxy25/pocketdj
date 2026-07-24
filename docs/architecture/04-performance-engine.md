@@ -1924,8 +1924,11 @@ each clip (decoded via the nonisolated `StudioRender.decodeFileSync`) at its sta
 track gain and **panned** per-channel (center-unity balance, matching the live `pan`), then run the
 **same `MasterFXKernel`** over the summed master (freeze bypassed, master gain applied), **peak-limit**,
 write AAC — all off the main actor (only `Sendable` value tuples + a `MasterFXParams` cross the
-boundary, never a buffer). Per-track **gain/pan + Master FX apply; mute/solo do not**. Individual,
-selected, or all → each appends a new **`Master`** track holding the mixdown.
+boundary, never a buffer). Per-track **gain/pan + Master FX apply; mute/solo do not**. The mixdown plan
+(gain/pan jobs + total length) is factored into `plan()`, shared by `bounce()` (→ a `StudioClip`, kept
+for "Add as track") and **`bounceToFile()`** — the artifact path, which writes straight to a caller dest
+and returns the length, **adding no track**. Individual, selected, or all → each drops a **dated bounce
+artifact** (below).
 
 **Home browser + folders** (`StudioArrangementFolder`, in-content only — no macOS `CommandMenu`). The
 tab lands on an **arrangements home** (a `List` browser), not straight into an arrangement — navigation
@@ -1948,9 +1951,32 @@ by a `GeometryReader`), so it always reaches "the whole track on screen".
 menu + pan context menu. A shared `@Observable StudioNavState.arrangerFullscreen` (set by `TracksView`,
 read by `PerformanceView`) **hides the sub-tab picker** while an arrangement is open (only the back
 button shows). On iPhone the transport controls **stack + collapse** (`transportCollapsed`
-`@AppStorage`). **Record-to-master** (`play(record:)`) installs a tap on the engine's main mixer (post-
-limiter master, incl. live FX) writing a CAF; on stop the file bakes into a new **Master** track
-(`ArrangerClipBaker.bakeFromFile`) — a live master take.
+`@AppStorage`).
+
+**Record-to-master** (`play(record:quantized:)` → `setupRecordTap`). The tap is installed **after
+`engine.start()`** (reading a node's `outputFormat` before start returns the stale 44.1 kHz default).
+**Clean** mode (default) taps the **`PeakLimiter`** — `src → limiter → mainMixer` are wired at the
+canonical 44.1 kHz, so the limiter output already carries every Master FX + master gain (both
+kernel-applied, upstream) **and** the limiter itself ("exactly what you hear") at the arrangement's rate,
+device-independent and needing no resample on bake. (This fixed the pitch bug: the old tap read
+`mainMixerNode.outputFormat` before start and wrote a 44.1-labelled CAF fed the device **hardware** 48 kHz
+frames → the take played ~8.8 % slow / ~1.5 semitones flat, "crunchy" — rates coincide in the Simulator,
+so it slipped tests.) **Quantized (lo-fi)** mode (record-button long-press) deliberately taps the
+**hardware-rate main mixer**; the bake **relabels** those frames to 44.1 without resampling
+(`StudioRender.importAudioFileRelabeled`) for the retro downpitch — faithfully the pre-fix behavior, now
+opt-in. On stop the capture bakes into a **dated recording artifact** (below), not a track.
+
+**Bounce & recording artifacts** (`StudioArrangementArtifact`, `art_` — like `arr_`/`clip_`, NOT in
+`studioPrefixes`). A `.bounce` or `.recording` is an **arrangement-scoped, dated file**
+(`bounce-<yyyy-MM-dd HH-mm-ss>` / `live-recording-…`) in the app-managed `studio/arrangements/` dir; the
+record rides the additive `StudioDocument.arrangementArtifacts` (lenient decode, **no schema bump**). The
+home browser nests **Bounces / Recordings** `DisclosureGroup`s under each arrangement row; a row **taps to
+audition** (`ArtifactAuditionPlayer`, a lightweight `AVAudioPlayer` — separate from the arranger engine, so
+the two never fight the output) and its menu offers **Convert to sample** (`createSampleFromArtifact` bakes
+an **independent** `smp_` copy — deleting the artifact never touches it), **Add as track**
+(`ArrangerClipBaker.bakeFromFile`), **Share**, **Delete** (removes record + file). Unit-tested by
+`testArrangementArtifactCRUDAndRoundTrip` / `testCreateSampleFromArtifactIsIndependent` /
+`testBounceToFileWritesAudio` / `testRelabelIsLongerThanCleanImport`.
 
 **Stems in / out.** A song's four on-device stems reach the arranger two ways, both via
 `ArrangerClipBaker.bakeFromFile` (each stem baked to its own colour-matched lane at 0:00, tracks added
