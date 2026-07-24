@@ -137,7 +137,10 @@ final class MultitrackPlayer {
         //    scheduled with `.loops` so the region repeats seamlessly forever. Node time 0 = the
         //    shared start either way, so the timelines coincide when all nodes start together.
         let looping = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
-        let seekFrame = AVAudioFramePosition((Double(max(0, fromMs)) / 1000 * sampleRate).rounded())
+        // Clamp the seek into [0, length] so a stale cursor past a since-trimmed timeline can't
+        // schedule nothing and silently "play".
+        let seekMs = max(0, min(fromMs, arrangement.lengthMs))
+        let seekFrame = AVAudioFramePosition((Double(seekMs) / 1000 * sampleRate).rounded())
         if looping {
             let startFrame = AVAudioFramePosition((Double(arrangement.loopStartMs) / 1000 * sampleRate).rounded())
             let endFrame = AVAudioFramePosition((Double(arrangement.loopEndMs) / 1000 * sampleRate).rounded())
@@ -159,7 +162,7 @@ final class MultitrackPlayer {
                     buf, at: AVAudioTime(sampleTime: nodeStart, atRate: sampleRate),
                     options: [], completionHandler: nil)
             }
-            startOffsetMs = max(0, fromMs)
+            startOffsetMs = seekMs
         }
         let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.12))
         for (p, _) in trackNodes { p.play(at: when) }
@@ -167,7 +170,7 @@ final class MultitrackPlayer {
         isPlaying = true
         playingArrangementId = arrangement.id
         // a loop runs until stop(); a linear play stops a tail past the LAST clip, from the seek point.
-        if !looping { scheduleAutoStop(lengthMs: max(0, arrangement.lengthMs - max(0, fromMs))) }
+        if !looping { scheduleAutoStop(lengthMs: max(0, arrangement.lengthMs - seekMs)) }
         return true
     }
 
@@ -255,7 +258,10 @@ final class MultitrackPlayer {
     /// With the FX node present, everything (incl. gain) runs in its kernel; without it (load
     /// failed) master gain falls back to the summing bus (attenuation reliable).
     func applyMasterFX(_ fx: StudioMasterFX, bpm: Double) {
-        let params = MasterFXParams(fx, bpm: bpm)
+        // allowFreeze:false — the Tracks grid has no Freezer control (Drive took its place); the
+        // freeze DSP stays in the kernel for future Mix-deck reuse, but must never apply here (a
+        // persisted freezeEnabled=true from an older build would otherwise play the mix silent).
+        let params = MasterFXParams(fx, bpm: bpm, allowFreeze: false)
         if let au = masterFXAU {
             au.kernel.update(params)
             masterSum.outputVolume = 1

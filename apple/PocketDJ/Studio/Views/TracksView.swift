@@ -857,7 +857,7 @@ struct TracksView: View {
             }
             .allowsHitTesting(false)
         } else {
-            cursorLine(Double(cursorMs) / 1000).allowsHitTesting(false)
+            cursorLine(Double(effectiveCursorMs(arr)) / 1000).allowsHitTesting(false)
         }
     }
 
@@ -890,7 +890,13 @@ struct TracksView: View {
     /// The cursor's timeline position in seconds — the live clock (+ seek offset, loop-wrapped) while
     /// playing, else the static seek position.
     private func cursorSeconds(_ arr: StudioArrangement) -> Double {
-        isPlayingThis(arr) ? playheadSeconds(arr) : Double(cursorMs) / 1000
+        isPlayingThis(arr) ? playheadSeconds(arr) : Double(effectiveCursorMs(arr)) / 1000
+    }
+
+    /// `cursorMs` clamped into the CURRENT timeline — it's only clamped at seek time, so trimming the
+    /// tail after a seek could otherwise strand it past the end (a silent Play from nowhere).
+    private func effectiveCursorMs(_ arr: StudioArrangement) -> Int {
+        max(0, min(cursorMs, max(0, arr.lengthMs)))
     }
 
     /// The loop region — a shaded band with two draggable, beat-snapped handles. Only the handles
@@ -960,7 +966,7 @@ struct TracksView: View {
             studio.setArrangementLoop(arr.id, enabled: true, startMs: start, endMs: end)
         }
         if isPlayingThis(arr), let fresh = studio.arrangement(arr.id) {
-            Task { await player.play(arrangement: fresh, store: studio, fromMs: cursorMs) }
+            Task { await player.play(arrangement: fresh, store: studio, fromMs: effectiveCursorMs(fresh)) }
         }
     }
 
@@ -1173,7 +1179,7 @@ struct TracksView: View {
 
     private func togglePlay(_ arr: StudioArrangement) {
         if isPlayingThis(arr) { player.stop(); return }
-        Task { await player.play(arrangement: arr, store: studio, fromMs: cursorMs) }
+        Task { await player.play(arrangement: arr, store: studio, fromMs: effectiveCursorMs(arr)) }
     }
 
     /// Start capturing the mic into `track`. Playback is stopped first (record is a distinct mode —
