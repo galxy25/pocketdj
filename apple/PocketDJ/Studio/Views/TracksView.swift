@@ -67,6 +67,10 @@ struct TracksView: View {
     private let pxPerSec: CGFloat = 48
     private let laneGap: CGFloat = 8
 
+    /// Named coordinate space for the scrolling timeline — loop-handle drags read the finger's
+    /// position in it (from 0:00), independent of a handle's moved local origin.
+    private static let timelineSpace = "tracksTimeline"
+
     /// Track lane colours — the stem palette first (drums·yellow, bass·red, other·green,
     /// vocals·purple) then cue-extra hues, cycling at `StudioStore.trackPaletteSize` (= 8).
     static let trackColors: [Color] = [.yellow, .red, .green, .purple, .cyan, .orange, .pink, .mint]
@@ -424,6 +428,9 @@ struct TracksView: View {
                     .overlay(alignment: .topLeading) { beatMarkers(arr) }
                     .overlay(alignment: .topLeading) { loopOverlay(arr) }
                     .overlay(alignment: .topLeading) { playhead(arr) }
+                    // Stable coordinate space for loop-handle drags — measured from the timeline's
+                    // 0:00, NOT the moved handle's local space (which would collapse the region).
+                    .coordinateSpace(name: Self.timelineSpace)
                     .padding(.trailing, 24)
                 }
             }
@@ -636,7 +643,9 @@ struct TracksView: View {
             .offset(x: xPx - 1.5)
             .accessibilityIdentifier(isStart ? "tracks-loop-start" : "tracks-loop-end")
             .gesture(
-                DragGesture(minimumDistance: 2)
+                // Read the drag in the TIMELINE coordinate space (from 0:00), so the value tracks
+                // the finger regardless of the handle's own moved local origin.
+                DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.timelineSpace))
                     .onChanged { v in
                         let ms = snapMs(Int(v.location.x / pxPerSec * 1000), bpm: arr.bpm)
                         if isStart {

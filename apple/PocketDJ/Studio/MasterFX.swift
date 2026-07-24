@@ -100,8 +100,22 @@ final class MasterFXKernel: @unchecked Sendable {
     }
 
     private func process(frames: Int, framePos: Double, activeChannels n: Int) {
-        guard p.active, n > 0 else { return }   // neutral ⇒ passthrough
+        guard n > 0 else { return }
         let params = p                          // one read; stable for this block
+        guard params.active else {
+            // Neutral ⇒ passthrough, BUT keep the freeze capture ring warm so enabling ONLY the
+            // Freezer (the master otherwise dry) holds the last 0.25 s of REAL audio, not the stale
+            // zero-filled ring. Cheap: one copy per sample, output untouched.
+            for i in 0..<frames {
+                for c in 0..<n {
+                    guard let d = chanPtrs[c] else { continue }
+                    freezeBuf[c][freezeWrite[c]] = d[i]
+                    freezeWrite[c] = (freezeWrite[c] + 1) % freezeLen
+                }
+            }
+            wasFrozen = false
+            return
+        }
         let lfoInc = 2 * .pi * max(0.02, min(8, params.phaserRate)) / sr
         let ringInc = 2 * .pi * max(20, min(4_000, params.ringFreq)) / sr
         let beatFrames = 60.0 / max(20, min(300, params.bpm)) * sr
