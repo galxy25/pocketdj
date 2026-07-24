@@ -224,6 +224,7 @@
 		97AA9807DA89998D23B41C7D /* MelodyTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83B4211AD0DCFC4A2D6D893F /* MelodyTracker.swift */; };
 		97C2966BC8AAD0CBA67A0FD8 /* SongRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9196723C9E4ADE86ECB6058D /* SongRecognizer.swift */; };
 		988FE22DEC8BC69F0A6A40F5 /* AudioSessionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B8561B212B449EEAD6D13FB /* AudioSessionPolicy.swift */; };
+		98B8DA8C6187DC2D66E80009 /* MultitrackPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21B364FC3816A5B0C10876C7 /* MultitrackPlayer.swift */; };
 		98C12E7375A718C77625C1C5 /* StorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF498FF002A9ECB696ABB804 /* StorageManager.swift */; };
 		99FBB8168E7DAC61664A3320 /* AppleMusicCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A481831CB941A46AA464A00D /* AppleMusicCatalogTests.swift */; };
 		9A027912BB55B0E4E24857FF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FA29E203999316BAEC9F0CF /* AppDelegate.swift */; };
@@ -451,6 +452,7 @@
 		20A6DD0F82FC04FD7C861D3C /* BeatMath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatMath.swift; sourceTree = "<group>"; };
 		2100545B470C52A2DC5DCA2F /* AlbumDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumDetailView.swift; sourceTree = "<group>"; };
 		2188F4AB4249E3486A6C5AC3 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		21B364FC3816A5B0C10876C7 /* MultitrackPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultitrackPlayer.swift; sourceTree = "<group>"; };
 		22C3C362B77FD21D87261938 /* PlaybackModeToggle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackModeToggle.swift; sourceTree = "<group>"; };
 		247D8BE584DBA6EE7009B4FD /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		2481DFB7CA65986DA54909CD /* StreamingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingProvider.swift; sourceTree = "<group>"; };
@@ -1040,6 +1042,7 @@
 				91949EF48C5464CC0C7376A5 /* InstrumentEngine.swift */,
 				ADDA17469563856CBBA220F1 /* InstrumentPacks.swift */,
 				F104D95B8B6C986BE8416087 /* KeyDetector.swift */,
+				21B364FC3816A5B0C10876C7 /* MultitrackPlayer.swift */,
 				D45F7B87012D1D02032004AD /* ScoreModel.swift */,
 				CEF53EF0477384A360C4222E /* ScorePDF.swift */,
 				ADC99437AEB5BB2133D5D0EA /* SMFWriter.swift */,
@@ -1824,6 +1827,7 @@
 				072DF60027DB8A2415DCA943 /* MixSessionsView.swift in Sources */,
 				3BE492D24FA01032F072EFEE /* MixView.swift in Sources */,
 				F2576B00562AD3267F9326DC /* MixWaveform.swift in Sources */,
+				98B8DA8C6187DC2D66E80009 /* MultitrackPlayer.swift in Sources */,
 				932BFB3E2F789C39750B8052 /* MushroomCloud.swift in Sources */,
 				8C8C7189D46D9E5852920B66 /* MusicLibraryContributor.swift in Sources */,
 				3CD4922BC584DAF75D116864 /* MusicSyncClient.swift in Sources */,

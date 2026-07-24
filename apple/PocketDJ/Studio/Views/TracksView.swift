@@ -30,6 +30,9 @@ struct TracksView: View {
     @State private var dragClipId: String?
     @State private var dragDX: CGFloat = 0
 
+    // Synced playback (view-scoped: stops on tab exit).
+    @State private var player = MultitrackPlayer()
+
     // Layout grid.
     private let laneHeight: CGFloat = 58
     private let headerWidth: CGFloat = 172
@@ -50,6 +53,16 @@ struct TracksView: View {
         (current?.tracks.flatMap { $0.clips.map(\.id) } ?? []).joined(separator: ",")
     }
 
+    /// Signature of the mix strip (mute/solo/gain) — pushes live changes to the player mid-play.
+    private var mixSignature: String {
+        (current?.tracks.map { "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int($0.gainDb.rounded()))" } ?? [])
+            .joined(separator: ",")
+    }
+
+    private func isPlayingThis(_ arr: StudioArrangement) -> Bool {
+        player.isPlaying && player.playingArrangementId == arr.id
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -58,6 +71,8 @@ struct TracksView: View {
                 if arr.tracks.isEmpty {
                     emptyTracks(arr)
                 } else {
+                    transportBar(arr)
+                    Divider().overlay(Theme.border)
                     arranger(arr)
                 }
             } else {
@@ -69,6 +84,10 @@ struct TracksView: View {
         .overlay { if baking { bakingOverlay } }
         .task { bootstrap() }
         .task(id: clipSignature) { await loadPeaks() }
+        .onChange(of: mixSignature) {
+            if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
+        }
+        .onDisappear { player.stop() }
         .sheet(item: pickerTrackBinding) { box in
             ClipSourcePicker(studio: studio) { sourceId, kind in
                 addClip(sourceId: sourceId, kind: kind, to: box.id)
@@ -145,6 +164,40 @@ struct TracksView: View {
         .padding(24)
     }
 
+    // MARK: Transport
+
+    private func transportBar(_ arr: StudioArrangement) -> some View {
+        HStack(spacing: 14) {
+            Button { togglePlay(arr) } label: {
+                Image(systemName: isPlayingThis(arr) ? "stop.fill" : "play.fill")
+                    .font(.title3)
+                    .foregroundStyle(arr.lengthMs == 0 ? Theme.fgDim : (isPlayingThis(arr) ? Theme.danger : Theme.accent))
+            }
+            .buttonStyle(.plain)
+            .disabled(arr.lengthMs == 0)
+            .accessibilityIdentifier("tracks-play")
+            .accessibilityValue(isPlayingThis(arr) ? "playing" : "stopped")
+
+            TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                Text(timeLabel(arr)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            }
+            Spacer()
+            Text("\(arr.tracks.count) track\(arr.tracks.count == 1 ? "" : "s")")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 6)
+    }
+
+    private func timeLabel(_ arr: StudioArrangement) -> String {
+        let cur = isPlayingThis(arr) ? player.clock.currentSeconds : 0
+        return "\(mmss(cur)) / \(mmss(Double(arr.lengthMs) / 1000))"
+    }
+
+    private func mmss(_ s: Double) -> String {
+        let t = max(0, Int(s.rounded()))
+        return String(format: "%d:%02d", t / 60, t % 60)
+    }
+
     // MARK: Arranger (headers + timeline)
 
     private func timelineWidth(_ arr: StudioArrangement) -> CGFloat {
@@ -161,7 +214,7 @@ struct TracksView: View {
                             .frame(width: headerWidth, height: laneHeight)
                     }
                 }
-                // Right: horizontally-scrolling clip lanes on the shared grid.
+                // Right: horizontally-scrolling clip lanes on the shared grid, with the playhead.
                 ScrollView(.horizontal, showsIndicators: true) {
                     VStack(spacing: laneGap) {
                         ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
@@ -169,6 +222,7 @@ struct TracksView: View {
                                 .frame(width: timelineWidth(arr), height: laneHeight)
                         }
                     }
+                    .overlay(alignment: .topLeading) { playhead(arr) }
                     .padding(.trailing, 24)
                 }
             }
@@ -244,6 +298,20 @@ struct TracksView: View {
                 clipBlock(arr: arr, track: track, trackIndex: index, clip: clip, clipIndex: ci, color: color)
                     .offset(x: clipX(clip), y: 4)
             }
+        }
+    }
+
+    /// The moving playhead — a full-height line at `currentSeconds × pxPerSec`. Driven by a
+    /// TimelineView sampling the non-Observable clock (never re-runs the arranger body), and it
+    /// never intercepts clip taps/drags. Hidden when this arrangement isn't playing.
+    @ViewBuilder private func playhead(_ arr: StudioArrangement) -> some View {
+        if isPlayingThis(arr) {
+            TimelineView(.periodic(from: .now, by: 0.03)) { _ in
+                Rectangle().fill(Theme.accent2)
+                    .frame(width: 2).frame(maxHeight: .infinity)
+                    .offset(x: CGFloat(player.clock.currentSeconds) * pxPerSec)
+            }
+            .allowsHitTesting(false)
         }
     }
 
@@ -326,6 +394,11 @@ struct TracksView: View {
     private func addTrack() {
         guard let a = current else { return }
         studio.addTrack(arrangement: a.id)
+    }
+
+    private func togglePlay(_ arr: StudioArrangement) {
+        if isPlayingThis(arr) { player.stop(); return }
+        Task { await player.play(arrangement: arr, store: studio) }
     }
 
     private func deleteTrack(arr: StudioArrangement, track: StudioTrack) {

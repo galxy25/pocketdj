@@ -230,6 +230,33 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// Stage C: synced playback. After baking a clip, Play starts the multitrack engine (the play
+    /// button's a11y value flips to "playing" — which only happens when `play()` decoded a clip and
+    /// started the graph), and Stop returns it to "stopped".
+    func testTracksPlaybackStartsAndStops() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        app.any("tracks-add-clip-0").tap()
+        let item = app.any("clip-picker-item-smp_fixture")
+        XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
+        // Play → the engine starts (value flips to "playing" only when a clip decoded + started).
+        let play = app.any("tracks-play")
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        play.tap()
+        wait(for: [expectation(for: NSPredicate(format: "value == 'playing'"), evaluatedWith: play)], timeout: 10)
+        snap("tracks-playing")
+        // Stop (my tap or the auto-stop at the clip's end) returns it to "stopped".
+        play.tap()
+        wait(for: [expectation(for: NSPredicate(format: "value == 'stopped'"), evaluatedWith: play)], timeout: 10)
+        #endif
+    }
+
     // MARK: - (3) Samples
 
     func testSamplesSeededRowAndCreationControls() throws {
