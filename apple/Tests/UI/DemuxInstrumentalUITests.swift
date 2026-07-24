@@ -24,6 +24,12 @@ final class DemuxInstrumentalUITests: XCTestCase {
         let seg = app.segmentedControls.firstMatch
         XCTAssertTrue(seg.waitForExistence(timeout: 10), "studio sub-tab picker up")
         seg.coordinate(withNormalizedOffset: CGVector(dx: 5.5 / 6.0, dy: 0.5)).tap()   // Demuxer
+        // Source groups are collapsed by default — expand "Imported audio" if the fixture isn't
+        // already visible (its expansion persists across runs, so tolerate either state).
+        if !app.any("demux-file-row-dmx_fixture").waitForExistence(timeout: 3) {
+            let group = app.any("demux-group-imported")
+            if group.waitForExistence(timeout: 5) { group.tap() }
+        }
         let row = app.any("demux-file-row-dmx_fixture")
         XCTAssertTrue(row.waitForExistence(timeout: 10), "seeded 'Demux Proof' source listed")
         row.tap()

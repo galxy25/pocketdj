@@ -96,11 +96,15 @@ tempo: an **Auto-detect tempo** button listens to the sample **on the phone** (n
 works offline) and reads its BPM, so loops and slices snap to the groove without you
 counting it out.
 
-**Editing is non-destructive.** Open a sample and you can **rename**, **trim**, and dial **gain**,
-**playback rate** (½–2×), **pitch** (±12 semitones), and **reverb** and **delay** — all auditioned
-live through the Studio's chain, and **none of it written into the file** until something that needs a
-finished file asks for one (a loop, a sequenced hit, or playing the sample inside a collection).
-Change an edit and the render just refreshes.
+**Editing is non-destructive — a built-in mixer deck.** Open a sample and you get a **mixer deck**:
+**Tempo** (½–10×), **Pitch** (±12 semitones), **Gain**, and a four-effect **FX rack** — **Compressor**,
+**Reverb**, **Delay**, and a resonant **Filter** sweep — plus **trim** and **rename**. Everything is
+auditioned live through the Studio's chain and **none of it is written into the file** until something
+that needs a finished file asks for one (a loop, a sequenced hit, or playing the sample inside a
+collection). Change an edit and the render just refreshes. There's also a **Loop** button that
+seamlessly loops the trimmed region while you audition — a live performance tool that resets when you
+close the editor (it doesn't bake into the file). It's the **same deck** the sequencer gives each of
+its sample rows, so a sound you shape here sounds identical everywhere it plays.
 
 ### Folders — file your crate of samples
 
@@ -162,6 +166,12 @@ thumb can find the beat; a **wide** screen keeps the bar on one line — so a lo
 stacks its bars vertically. You can **bounce** a pattern to a single audio file whenever you want a
 finished loop of the whole thing (it re-bounces the moment you edit it).
 
+**A mixer deck on every sample row.** Each row that plays a **sample** has a collapsible **Mixer
+deck** — the same deck the sampler editor uses, minus the gain slider and looper. Dial its **Tempo**,
+**Pitch**, and **FX** (compressor · reverb · delay · filter) and they **bake into that row on the next
+Play**. The row's own **live gain chip** stays in the header for instant loudness balancing while the
+pattern runs, so you shape the *sound* in the deck and ride the *level* in the header.
+
 **Preview one row at a time.** Tap a row's **header** (its icon + name) to **solo** just that row —
 it loops on its own at the pattern tempo so you can hear a single sample or loop in isolation while
 you dial in its steps; tap the header again (or the main transport) to stop.
@@ -201,9 +211,14 @@ beat still plays."
 
 The **Instruments** sub-tab turns the app into a small **MIDI instrument**. Seven voices —
 **piano, violin, bass guitar, acoustic guitar, trumpet, clarinet, harp** — play from a **wired / USB
-MIDI keyboard** or the **on-screen keys**. (Network and Bluetooth MIDI aren't in this version.) The
+MIDI keyboard**, a **Bluetooth MIDI keyboard**, or the **on-screen keys**. The
 on-screen keyboard spans **six octaves** and opens on **C3**; it **scrolls**, and the **‹ ›** buttons
 on either side jump a whole octave at a time (on a Mac, the **left / right arrow keys** do the same).
+
+**Connect a Bluetooth keyboard.** Tap **Connect Bluetooth MIDI…** to open a live scan list, put your
+keyboard in pairing mode, and tap it to connect — its keys then play the current instrument and record
+into a take exactly like the on-screen keys. This works the same on **iPhone, iPad, Mac, and Vision Pro**.
+(Network MIDI still isn't in this version.)
 
 **The sounds are one download.** All seven voices live in a single **~32 MB General MIDI sound bank**
 (**GeneralUser GS** — its license asks for credit, so the packs screen shows the attribution), so the
@@ -303,11 +318,14 @@ the flag for the drop — and it's there, whether that track's burned on my phon
 ## Demuxer — take a record apart
 
 The **sixth sub-tab** points the Studio the other way: instead of building something new, the
-**Demuxer** takes existing audio **apart**. Pick a source — a **catalog track** (burned ones
-listed first, with the same **burn-on-demand** ladder the sampler uses; a track with no
-prepared audio is honestly "nothing to demux", never a silent fetch), a piece of **Performance
-media** (a sample, loop or take), or an **imported audio file** — and it resolves to a local
-file whose 0:00 is the *song's* 0:00 (an analog album side is carved to just this song, once).
+**Demuxer** takes existing audio **apart**. Pick a source from the picker's three groups —
+**Imported audio** (your imported files), **Performance media** (a sample, loop or take), or
+**Tracks** (a catalog track; burned ones listed first, with the same **burn-on-demand** ladder the
+sampler uses; a track with no prepared audio is honestly "nothing to demux", never a silent fetch).
+Each group is **collapsed by default** — the same tidy, remember-what-you-opened behavior as the
+collection's playlists and pockets — and a **search** auto-expands them so nothing hides behind a
+closed group. The chosen source resolves to a local file whose 0:00 is the *song's* 0:00 (an analog
+album side is carved to just this song, once).
 
 **The timeline.** A scrubbable **waveform** with the **chord timeline** laid over it as colored
 blocks — the dominant chords, heard **on the device** (a chromagram detector, no server). **Tap

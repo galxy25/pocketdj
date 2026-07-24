@@ -479,10 +479,49 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(store.sample("smp_a")?.renderRevision, 1)
         store.updateSampleEdit("smp_a", edit)                 // identical → no bump
         XCTAssertEqual(store.sample("smp_a")?.renderRevision, 1)
-        edit.rate = 5.0                                        // clamped to 2.0 — a real change
+        edit.rate = 12.0                                       // clamped to 10.0 — a real change
         store.updateSampleEdit("smp_a", edit)
         XCTAssertEqual(store.sample("smp_a")?.renderRevision, 2)
-        XCTAssertEqual(store.sample("smp_a")?.edit.rate, 2.0)
+        XCTAssertEqual(store.sample("smp_a")?.edit.rate, 10.0)
+    }
+
+    // MARK: B6 mixer-deck FX (compWet / filterAmt) — additive-optional, clamped, revision-tracked
+
+    func testSampleEditMixerDeckFXClampAndRoundTrip() throws {
+        // Clamp: comp/filter clamp into 0…1 like the other wets.
+        let clamped = StudioSampleEdit(compWet: 2.0, filterAmt: -0.5).clamped()
+        XCTAssertEqual(clamped.compWet, 1.0)
+        XCTAssertEqual(clamped.filterAmt, 0.0)
+
+        // Round-trip: the new FX survive encode/decode alongside the existing fields.
+        let e = StudioSampleEdit(rate: 1.25, compWet: 0.6, filterAmt: 0.4)
+        let back = try JSONDecoder().decode(StudioSampleEdit.self, from: JSONEncoder().encode(e))
+        XCTAssertEqual(back.compWet, 0.6, accuracy: 1e-9)
+        XCTAssertEqual(back.filterAmt, 0.4, accuracy: 1e-9)
+        XCTAssertEqual(back.rate, 1.25, accuracy: 1e-9)
+    }
+
+    /// A legacy edit JSON with NO comp/filter keys decodes to 0 (off) — the additive-optional
+    /// wipe-safety contract: absent ⇒ default, never a decode failure, never dropping present fields.
+    func testSampleEditLegacyDecodeDefaultsFXOff() throws {
+        let legacy = #"{ "gainDb": 3, "rate": 1, "reverbWet": 0.5 }"#
+        let old = try JSONDecoder().decode(StudioSampleEdit.self, from: Data(legacy.utf8))
+        XCTAssertEqual(old.compWet, 0)
+        XCTAssertEqual(old.filterAmt, 0)
+        XCTAssertEqual(old.reverbWet, 0.5, accuracy: 1e-9)   // present field preserved
+        XCTAssertEqual(old.gainDb, 3, accuracy: 1e-9)
+    }
+
+    func testUpdateSampleEditBumpsRevisionOnFXChange() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addSample(makeSample("smp_fx"))
+        store.updateSampleEdit("smp_fx", StudioSampleEdit(compWet: 0.5))
+        XCTAssertEqual(store.sample("smp_fx")?.renderRevision, 1)
+        XCTAssertEqual(store.sample("smp_fx")?.edit.compWet, 0.5)
+        store.updateSampleEdit("smp_fx", StudioSampleEdit(compWet: 0.5))         // identical → no bump
+        XCTAssertEqual(store.sample("smp_fx")?.renderRevision, 1)
+        store.updateSampleEdit("smp_fx", StudioSampleEdit(compWet: 0.5, filterAmt: 0.3))  // real change
+        XCTAssertEqual(store.sample("smp_fx")?.renderRevision, 2)
     }
 
     func testLocalURLForPlaybackPrefersFreshRenderElseRaw() throws {

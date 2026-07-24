@@ -46,6 +46,8 @@ struct StudioDemuxView: View {
     }
 
     @State private var source: DemuxSource?
+    /// Comma-joined set of EXPANDED source-group keys in the picker (absent ⇒ collapsed = default).
+    @AppStorage("pdj.demuxExpandedGroups") private var expandedGroupsRaw = ""
     @State private var phase: Phase = .idle
     @State private var stemState: StemState = .none
     /// The resolved single-mix local audio (the timeline/analysis source).
@@ -143,22 +145,28 @@ struct StudioDemuxView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
+                    // Each source group is COLLAPSED by default (like the collection's playlists /
+                    // pockets) and remembers whether you opened it; a search auto-expands them all
+                    // so matches are never hidden behind a closed group.
                     // Imported audio stays reachable (previously an import vanished from
                     // the picker once deselected — the only way back was re-importing).
                     let files = fileMatches()
                     if !files.isEmpty {
-                        sectionHeader("Imported audio")
-                        ForEach(files, id: \.id) { fileRow($0) }
+                        demuxGroup("Imported audio", "imported", count: files.count) {
+                            ForEach(files, id: \.id) { fileRow($0) }
+                        }
                     }
                     let studioItems = studioMatches()
                     if !studioItems.isEmpty {
-                        sectionHeader("Performance media")
-                        ForEach(studioItems, id: \.id) { item in studioRow(item) }
+                        demuxGroup("Performance media", "studio", count: studioItems.count) {
+                            ForEach(studioItems, id: \.id) { item in studioRow(item) }
+                        }
                     }
                     let tracks = trackMatches()
                     if !tracks.isEmpty {
-                        sectionHeader("Tracks")
-                        ForEach(tracks) { trackRow($0) }
+                        demuxGroup("Tracks", "tracks", count: tracks.count) {
+                            ForEach(tracks) { trackRow($0) }
+                        }
                     }
                     if files.isEmpty && studioItems.isEmpty && tracks.isEmpty {
                         Text(query.isEmpty
@@ -212,9 +220,41 @@ struct StudioDemuxView: View {
         return all.filter { $0.name.lowercased().contains(query) }
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title).font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+    /// A collapsible source group — collapsed by default, remembering the user's expansions (the
+    /// collection playlists/pockets pattern). Uses a plain expander Button rather than a
+    /// `DisclosureGroup` so the header is a reliable XCUITest tap target. While a search is active
+    /// every group is force-expanded so matches are never hidden.
+    @ViewBuilder private func demuxGroup(_ title: String, _ key: String, count: Int,
+                                         @ViewBuilder _ content: () -> some View) -> some View {
+        let expanded = !query.isEmpty || expandedGroupKeys.contains(key)
+        Button {
+            toggleGroup(key)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                    .frame(width: 10)
+                Text(title).font(.caption2.weight(.semibold))
+                Spacer()
+                Text("\(count)").font(.caption2.monospacedDigit())
+            }
+            .foregroundStyle(Theme.fgDim)
             .padding(.top, 8).padding(.horizontal, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("demux-group-\(key)")
+        if expanded { content() }
+    }
+
+    /// The set of expanded group keys, persisted across launches. Absent ⇒ collapsed (the default).
+    private var expandedGroupKeys: Set<String> {
+        Set(expandedGroupsRaw.split(separator: ",").map(String.init))
+    }
+    private func toggleGroup(_ key: String) {
+        var s = expandedGroupKeys
+        if s.contains(key) { s.remove(key) } else { s.insert(key) }
+        expandedGroupsRaw = s.sorted().joined(separator: ",")
     }
 
     private func fileMatches() -> [(id: String, name: String)] {

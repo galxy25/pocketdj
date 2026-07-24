@@ -695,18 +695,20 @@ actor StudioRender {
         let player = AVAudioPlayerNode()
         let inputMixer = AVAudioMixerNode()
         let tp = AVAudioUnitTimePitch()
+        let cp = AVAudioUnitEffect(audioComponentDescription: StudioAudio.dynamicsDesc)   // B6 compressor
         let eq = AVAudioUnitEQ(numberOfBands: 1)
         let rv = AVAudioUnitReverb()
         let dl = AVAudioUnitDelay()
         rv.loadFactoryPreset(.mediumHall)   // the same Studio reverb voicing as the live chain
-        for n in [player, inputMixer, tp, eq, rv, dl] as [AVAudioNode] { engine.attach(n) }
+        for n in [player, inputMixer, tp, cp, eq, rv, dl] as [AVAudioNode] { engine.attach(n) }
         engine.connect(player, to: inputMixer, format: fileFormat)
         engine.connect(inputMixer, to: tp, format: canonicalFormat)
-        engine.connect(tp, to: eq, format: canonicalFormat)
+        engine.connect(tp, to: cp, format: canonicalFormat)
+        engine.connect(cp, to: eq, format: canonicalFormat)
         engine.connect(eq, to: rv, format: canonicalFormat)
         engine.connect(rv, to: dl, format: canonicalFormat)
         engine.connect(dl, to: engine.mainMixerNode, format: canonicalFormat)
-        StudioAudio.applyEditToChain(edit, timePitch: tp, eq: eq, reverb: rv, delay: dl)
+        StudioAudio.applyEditToChain(edit, timePitch: tp, eq: eq, reverb: rv, delay: dl, comp: cp)
         do { try engine.start() } catch { throw StudioRenderError.engineStart(error) }
         return OfflineChain(engine: engine, player: player, timePitch: tp)
     }

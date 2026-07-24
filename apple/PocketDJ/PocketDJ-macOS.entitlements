@@ -30,6 +30,10 @@
   <true/>
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- Bluetooth (I3) — the app is a CoreBluetooth central: it scans for and connects BLE MIDI
+       keyboards itself (BLEMIDIManager), so the sandbox needs the Bluetooth device entitlement. -->
+  <key>com.apple.security.device.bluetooth</key>
+  <true/>
   <!-- App Group shared with the Now Playing widget extension (PocketDJWidgets). Under the
        macOS App Sandbox an app group grants access to the shared container the widget reads. -->
   <key>com.apple.security.application-groups</key>

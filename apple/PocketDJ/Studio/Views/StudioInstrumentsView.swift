@@ -32,6 +32,10 @@ struct StudioInstrumentsView: View {
     @State private var notice: String?
     /// The live staff is in edit mode (tap-to-place/select on the free-play score).
     @State private var liveEditing = false
+    /// Cross-platform Bluetooth-MIDI (I3): the scanner sheet + its CoreBluetooth manager (works on
+    /// iPhone, iPad, Mac, and Vision Pro — CoreBluetooth is universal).
+    @State private var showBTMIDIPicker = false
+    @State private var bleMIDI = BLEMIDIManager()
 
     var body: some View {
         ScrollView {
@@ -513,9 +517,19 @@ struct StudioInstrumentsView: View {
                         .font(.subheadline).foregroundStyle(Theme.fg)
                 }
             }
-            // The v1 scope, stated honestly (spec §12): no network/BLE MIDI.
-            Text("Wired USB MIDI keyboards and the on-screen keys are supported in v1 — network and Bluetooth MIDI aren't available yet.")
+            // Bluetooth MIDI (I3) — a CoreBluetooth scanner that works on every platform (the
+            // paired keyboard's notes feed InstrumentEngine directly, same as the on-screen keys).
+            Button { showBTMIDIPicker = true } label: {
+                Label("Connect Bluetooth MIDI…", systemImage: "wave.3.right")
+                    .font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.bordered).tint(Theme.accent)
+            .accessibilityIdentifier("midi-connect-bluetooth")
+            Text("Wired USB MIDI, the on-screen keys, and Bluetooth MIDI keyboards (Connect above) all work on every device. Network MIDI isn't supported yet.")
                 .font(.caption2).foregroundStyle(Theme.fgDim)
+        }
+        .sheet(isPresented: $showBTMIDIPicker) {
+            BluetoothMIDIView(manager: bleMIDI, instruments: instruments)
         }
     }
 

@@ -1209,9 +1209,13 @@ observers, the tick watchdog + zombie-node `pause()+play()` re-prime, and
 
 ```
  StudioEngine — ONE graph, three audition duties (canonical 44.1k/2ch pinned downstream):
-   SAMPLE   player → inputMixer(normalizer) → timePitch → EQ(globalGain) → reverb → delay → mainMixer
+   SAMPLE   player → inputMixer(normalizer) → timePitch → comp(dynamics) → EQ(globalGain+filter) → reverb → delay → mainMixer
             only player→inputMixer is reconnected per load at the file's processingFormat (player STOPPED)
             — studio files are heterogeneous (mic captures are hw-format, ~48 kHz mono) — MixEngine loadFile contract
+            B6 MIXER DECK: StudioSampleEdit adds compWet (dynamics) + filterAmt (EQ band = resonant LPF) to gain/rate/pitch/wets
+            — StudioAudio.applyEditToChain(...,comp:) is the ONE voicing both audition + StudioRender.makeOfflineChain apply
+            LOOPER (ephemeral, SAMP-only): sampleLoopAudition → scheduleSampleWindow reads the trim window → scheduleBuffer(.loops);
+              samplePlayheadSeconds wraps, checkSampleEndBoundary never stops; reset in unloadSample — never persisted, never baked
    LOOP     decode loop-<id>.caf fully → trim/pad decoded buffer to the AUTHORITATIVE `frames` → scheduleBuffer(.loops)
    PATTERN  each row's buffer is PRE-RENDERED with edits baked (StudioRender) → rowPlayer → rowGain → mainMixer
             scheduleBuffer(at:options:.interrupts)  = mono-choke step sequencer (a retrigger cuts the ringing hit)
@@ -1242,6 +1246,22 @@ scheduled sample-accurately against a pattern-start `AVAudioTime` anchor, one ba
 (never a throw); a pattern with zero sounding steps **refuses** to play/bounce with an inline
 notice, because a zero-frame schedule crashes `AVAudioPlayerNode`. (`StudioEngineMathTests`
 cover the step-time math, the choke policy, and the missing-target skip.)
+
+**The B6 mixer deck** (`StudioMixerDeck.swift`) is a reusable, engine-agnostic control surface over a
+`StudioSampleEdit`, shared by the sampler editor (SAMP) and each sequencer **sample row** (SEQ3). It
+forks the F4 `NowPlayingDSP` control model — same effect voicings — but drives the sampler's own
+non-destructive edit + `StudioEngine` chain, never `MixEngine`, so it can't collide with a live
+Mix-tab session. Two fields are added to `StudioSampleEdit` **additive-optionally** (absent ⇒ 0 ⇒ off,
+no `studioSchemaVersion` bump): **`compWet`** drives a new `comp` dynamics node inserted at
+`timePitch → comp → EQ`, and **`filterAmt`** repurposes the EQ's single band as a resonant low-pass
+sweep (the gain carrier `globalGain` is untouched — F4's filter trick). Because both audition and the
+offline bake route through the **one** `StudioAudio.applyEditToChain(…, comp:)`, they can't drift, and
+because the sequencer already re-renders a row whose target sample's `renderRevision` moved, the SEQ3
+per-row deck bakes into the row buffer **on the next Play for free** — the row's *live* loudness stays
+the header's `RowGainChip`, so the per-row deck hides gain. The **looper** is the deliberate exception:
+it's live-audition-only (SAMP), `scheduleBuffer(.loops)` over the trim window, and resets in
+`unloadSample` — it never persists or bakes. (`StudioStoreTests` cover the additive decode, the clamp,
+and the `renderRevision` bump on an FX change.)
 
 **`StudioRender`** is greenfield: an `AVAudioEngine.enableManualRenderingMode(.offline)` graph
 whose output is written with **`AVAudioFile(forWriting:settings:)`** — blocking writes with no
@@ -1360,7 +1380,13 @@ SMF), [`apple/PocketDJ/Studio/ScorePDF.swift`](../../apple/PocketDJ/Studio/Score
    calls sampler.startNote/stopNote DIRECTLY on that thread (a nonisolated Sendable ref; the AU enqueues safely)
    + appends packet-timestamped events into an NSLock-protected buffer, gated on a PRE-LATCHED atomic "recording" flag
    @MainActor state (key highlights) updates via COALESCED hops — NEVER Task{ @MainActor } per note (jitter + reordering corrupts the log)
-   v1 scope: WIRED/USB MIDI + on-screen keys.  Network MIDI + BLE MIDI = OUT (new entitlements) — documented
+   MIDI scope: WIRED/USB MIDI + on-screen keys + BLE MIDI (BLEMIDIManager, below).  Network MIDI = OUT (Bonjour) — documented
+
+ BLE MIDI (I3, cross-platform): BLEMIDIManager = a CoreBluetooth CENTRAL (not CoreMIDI) → universal (iPhone/iPad/Mac/Vision)
+   scans service 03B80E5A-… → subscribes char 7772E5DB-… → parses BLE-MIDI packets (header+timestamp+status, running-status)
+   → feeds engine.noteOn/noteOff — the SAME play+record path as the on-screen keys, so NO CoreMIDI source ⇒ NO double-trigger
+   delegate callbacks on CBCentralManager(queue:.main) = MainActor executor → nonisolated methods MainActor.assumeIsolated back on
+   perms: NSBluetoothAlwaysUsageDescription (all) + com.apple.security.device.bluetooth (macOS sandbox); lazy central = prompt on picker-open
 
  TAKE = click + 1-bar COUNT-IN (both default on):  event onMs measured from beat 1 = END of count-in (= ScoreQuantizer's anchor)
  SCORE:  ScoreQuantizer (anchor beat 1; onsets → 16ths @ take.bpm; durations snapped; chords/rests/measures) — PURE, tested
@@ -1384,9 +1410,23 @@ The **MIDI threading is the load-bearing part**: CoreMIDI receive blocks fire on
 safely) and appends packet-timestamped events into an **`NSLock`-protected buffer** gated on a
 **pre-latched atomic "recording" flag**. `@MainActor` state (key highlights, UI) updates only
 via **coalesced hops** — *never* a `Task { @MainActor }` per note, whose jitter and reordering
-would corrupt the very event log the score is quantized from. v1 MIDI scope is **wired/USB
-devices + the on-screen keys**; network MIDI (needs `NSLocalNetworkUsageDescription` +
-`NSBonjourServices`) and BLE MIDI (new entitlements) are **out of scope**, documented as such.
+would corrupt the very event log the score is quantized from. MIDI scope is **wired/USB
+devices + the on-screen keys + Bluetooth-LE keyboards**; only **network MIDI** (needs
+`NSLocalNetworkUsageDescription` + `NSBonjourServices`) remains out of scope.
+
+**Bluetooth MIDI (I3) is a CoreBluetooth central, not a CoreMIDI source** — deliberately, so it
+works **identically on iPhone, iPad, Mac, and Vision Pro** (the alternative,
+`CABTMIDICentralViewController`, is iOS-only). [`BLEMIDI.swift`](../../apple/PocketDJ/Studio/BLEMIDI.swift)'s
+`BLEMIDIManager` scans the standard BLE-MIDI GATT service (`03B80E5A-…`), subscribes to its data
+characteristic (`7772E5DB-…`), and parses the BLE-MIDI packet stream (header + running-status MIDI)
+into `engine.noteOn`/`noteOff` — the **same play-and-record entry points the on-screen keys use**, so
+a paired keyboard sounds the current instrument and records into a take exactly like the keys. Because
+we own the BLE connection rather than registering a CoreMIDI source, there is **no double-triggering**
+with the wired path. It's an `@Observable @MainActor` class whose `nonisolated` CoreBluetooth delegate
+methods `MainActor.assumeIsolated` back onto the main actor — safe because `CBCentralManager(queue: .main)`
+delivers callbacks on the main queue, the main actor's executor. Permissions: `NSBluetoothAlwaysUsageDescription`
+(all platforms) plus the `com.apple.security.device.bluetooth` entitlement (macOS sandbox); the central is
+created lazily when the user opens the picker, so the Bluetooth prompt only fires on demand.
 
 A **take** records with a **click + 1-bar count-in** (both default-on, toggleable); each
 event's `onMs` is measured from **beat 1 = the end of the count-in**, which is also

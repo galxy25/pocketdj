@@ -45,6 +45,9 @@ struct StudioSampleEditorView: View {
     @State private var detectFailed = false
     /// The sample being sliced (boxed for `sheet(item:)`).
     @State private var slicing: StudioSampleRef?
+    /// B6 looper mirror — the deck's toggle. Ephemeral (fresh false per editor open); the engine's
+    /// own flag is reset in `unloadSample` on close, so it never persists or bakes.
+    @State private var deckLoop = false
 
     /// Always read the LIVE store row — edits stream through the store, and rename/delete can
     /// happen underneath (deleted ⇒ the "gone" state below).
@@ -286,47 +289,34 @@ struct StudioSampleEditorView: View {
     // MARK: Sonic edits (live-applied; baked only by the implicit render)
 
     private func editSection(_ s: StudioSample) -> some View {
-        section("EDIT") {
-            StudioEditSlider(title: "Gain", systemImage: "speaker.wave.2",
-                             range: -60...12, step: 1,
-                             value: s.edit.gainDb,
-                             format: { String(format: "%+.0f dB", $0) },
-                             a11y: "sample-edit-gain") { v in
-                apply { $0.gainDb = v }
-            }
-            StudioEditSlider(title: "Rate", systemImage: "hare",
-                             range: 0.5...2.0, step: 0.05,
-                             value: s.edit.rate,
-                             format: { String(format: "×%.2f", $0) },
-                             a11y: "sample-edit-rate") { v in
-                apply { $0.rate = v }
-            }
-            StudioEditSlider(title: "Pitch", systemImage: "tuningfork",
-                             range: -12...12, step: 1,
-                             value: s.edit.pitchSemitones,
-                             format: { String(format: "%+.0f st", $0) },
-                             a11y: "sample-edit-pitch") { v in
-                apply { $0.pitchSemitones = v }
-            }
-            StudioEditSlider(title: "Reverb", systemImage: "water.waves",
-                             range: 0...1, step: 0.05,
-                             value: s.edit.reverbWet,
-                             format: { "\(Int(($0 * 100).rounded()))%" },
-                             a11y: "sample-edit-reverb") { v in
-                apply { $0.reverbWet = v }
-            }
-            StudioEditSlider(title: "Delay", systemImage: "wave.3.right",
-                             range: 0...1, step: 0.05,
-                             value: s.edit.delayWet,
-                             format: { "\(Int(($0 * 100).rounded()))%" },
-                             a11y: "sample-edit-delay") { v in
-                apply { $0.delayWet = v }
-            }
+        // B6: the built-in MIXER DECK — the deck-styled tempo/pitch/gain + compressor·reverb·delay·
+        // filter FX rack + a live looper, all driving this sample's non-destructive edit. The same
+        // `StudioMixerDeck` the sequencer attaches per row (SEQ3), so audition and bake never drift.
+        section("MIXER DECK") {
+            StudioMixerDeck(edit: s.edit,
+                            showLooper: true,
+                            loopOn: deckLoop,
+                            idPrefix: "sample-deck",
+                            onEdit: { applyDeckEdit($0) },
+                            onLoop: { on in
+                                deckLoop = on
+                                engine.setSampleLoopAudition(on)
+                            })
         }
     }
 
+    /// The deck's both-ways write: clamp, push live to the audition chain, and persist to the store
+    /// (which bumps `renderRevision` iff the value changed, invalidating any stale render/bounce).
+    private func applyDeckEdit(_ e: StudioSampleEdit) {
+        guard let s = sample else { return }
+        let clamped = e.clamped()
+        engine.applyEdit(clamped)
+        studio.updateSampleEdit(s.id, clamped)
+    }
+
     /// One edit mutation, applied BOTH ways in one gesture: live to the audition chain and to
-    /// the store (which clamps, persists debounced, and bumps `renderRevision` iff changed).
+    /// the store (which clamps, persists debounced, and bumps `renderRevision` iff changed). Used
+    /// by the trim/region controls (the deck goes through `applyDeckEdit`).
     private func apply(_ mutate: (inout StudioSampleEdit) -> Void) {
         guard let s = sample else { return }
         var e = s.edit

@@ -124,7 +124,7 @@ final class PerformanceUITests: XCTestCase {
         // Distinctive seeded/leaf element per sub-tab (index = declaration order in StudioSubTab).
         // Samples (0)
         switchTab(0)
-        XCTAssertTrue(app.el("sample-new-from-track").waitForExistence(timeout: 10),
+        XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 10),
                       "Samples sub-tab should show the creation bar")
         // Loops (1)
         switchTab(1)
@@ -153,7 +153,7 @@ final class PerformanceUITests: XCTestCase {
                       "Demuxer source picker should offer the Import entry point")
         // Back to Samples — the picker round-trips.
         switchTab(0)
-        XCTAssertTrue(app.el("sample-new-from-track").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 10))
         snap("sub-tab-switching")
         #endif
     }
@@ -166,9 +166,10 @@ final class PerformanceUITests: XCTestCase {
         #else
         launchPerformance()
         switchTab(0)
-        // Creation entry points (in-content, never toolbar-only).
-        XCTAssertTrue(app.el("sample-new-from-track").waitForExistence(timeout: 15))
-        XCTAssertTrue(app.el("sample-record-mic").exists)
+        // Creation entry points (in-content, never toolbar-only). "From track" now lives inside
+        // the import (⤓) menu rather than as a standalone button.
+        XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.any("sample-add-menu").exists, "the import menu (now holds From track)")
         // The seeded sample row + its name.
         XCTAssertTrue(app.any("sample-row-smp_fixture").waitForExistence(timeout: 10),
                       "the seeded sample row must be visible")
@@ -489,6 +490,66 @@ final class PerformanceUITests: XCTestCase {
         XCTAssertTrue(app.el("score-delete").isEnabled, "cursor navigation keeps a note selected")
         // (The ＋ / − bar controls render on the last bar's corners in Select mode — verified on
         // device; XCUITest can't reliably address canvas-positioned buttons by id.)
+        #endif
+    }
+
+    /// I3: the Instruments MIDI section shows a Connect-Bluetooth-MIDI button (iOS/iPadOS). The
+    /// pairing sheet itself needs a real Bluetooth radio, so this only asserts the affordance.
+    func testInstrumentsBluetoothMIDIButton() throws {
+        #if os(macOS)
+        throw XCTSkip("Bluetooth MIDI picker is iOS-only (macOS pairs in Audio MIDI Setup)")
+        #else
+        launchPerformance()
+        switchTab(3)                                   // Instruments
+        XCTAssertTrue(reveal(app.el("midi-connect-bluetooth")),
+                      "the Connect Bluetooth MIDI button (scroll to the MIDI section)")
+        // Deliberately not tapped — pairing needs a physical Bluetooth radio (device-only).
+        #endif
+    }
+
+    // MARK: - (B6) Built-in mixer deck — SAMP + SEQ3
+
+    /// SAMP: opening a sample's editor shows the built-in MIXER DECK — the deck-styled tempo/pitch/
+    /// gain, the compressor·reverb·delay·filter FX rack, and the live Loop capsule. No audio/DSP is
+    /// exercised (device-only); this proves the surface renders and every control is addressable.
+    func testSampleMixerDeckRenders() throws {
+        #if os(macOS)
+        throw XCTSkip("sample editor sheet exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(0)                                   // Samples
+        let row = app.any("sample-row-smp_fixture")
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "the seeded sample row")
+        row.tap()                                      // a short tap opens the editor sheet
+        XCTAssertTrue(reveal(app.any("sample-deck-tempo")), "deck tempo control")
+        XCTAssertTrue(app.any("sample-deck-comp").exists, "deck compressor (new FX)")
+        XCTAssertTrue(app.any("sample-deck-filter").exists, "deck filter (new FX)")
+        XCTAssertTrue(app.any("sample-deck-gain").exists, "deck gain (SAMP shows gain)")
+        XCTAssertTrue(app.el("sample-deck-loop").exists, "the live Loop capsule")
+        snap("sample-mixer-deck")
+        #endif
+    }
+
+    /// SEQ3: a sequencer SAMPLE row carries a collapsible per-track mixer deck. Expanding it reveals
+    /// the same StudioMixerDeck (tempo/pitch/FX that BAKE on the next Play) — but WITHOUT gain or the
+    /// looper (the row's live gain is the header chip; looping is the pattern's job).
+    func testSequencerRowMixerDeck() throws {
+        #if os(macOS)
+        throw XCTSkip("sequencer row deck exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(2)                                   // Sequencer
+        let pattern = app.el("seq-pattern-ptn_fixture")
+        XCTAssertTrue(pattern.waitForExistence(timeout: 15), "the seeded pattern")
+        pattern.tap()
+        let disclosure = app.any("seq-row-deck-0")
+        XCTAssertTrue(reveal(disclosure), "the row's Mixer-deck disclosure")
+        disclosure.tap()                               // expand
+        XCTAssertTrue(reveal(app.any("seq-deck-0-tempo")), "per-row deck tempo appears when expanded")
+        XCTAssertTrue(app.any("seq-deck-0-comp").exists, "per-row deck compressor")
+        XCTAssertFalse(app.any("seq-deck-0-gain").exists, "per-row deck hides gain (row has a live gain chip)")
+        XCTAssertFalse(app.el("seq-deck-0-loop").exists, "per-row deck hides the looper")
+        snap("seq-row-mixer-deck")
         #endif
     }
 

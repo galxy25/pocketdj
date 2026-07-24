@@ -141,14 +141,20 @@ struct StudioSampleEdit: Codable, Hashable, Sendable {
     var trimStartMs: Int = 0
     var trimEndMs: Int = 0
     var gainDb: Double = 0
-    /// Playback rate 0.5–2.0 (1 = neutral). Clamped by `clamped()`, mirrored by the engine's
-    /// timePitch limits.
+    /// Playback rate 0.5–10× (1 = neutral). Clamped by `clamped()`; well within the engine's
+    /// timePitch legal range (1/32…32), so a 10× stab renders and auditions cleanly.
     var rate: Double = 1
     /// Pitch shift in semitones, ±12.
     var pitchSemitones: Double = 0
     /// Effect sends, 0…1 (0 = dry).
     var reverbWet: Double = 0
     var delayWet: Double = 0
+    /// B6 mixer-deck FX (ADDITIVE + OPTIONAL — absent ⇒ 0 ⇒ off, no schema bump). Both bake into
+    /// the render exactly like the reverb/delay wets, so a sequencer row inherits them for free.
+    /// `compWet` = compressor amount 0…1 (dynamics glue). `filterAmt` = resonant low-pass sweep
+    /// 0…1 (0 = open/off → ~250 Hz), reusing the EQ band so the gain carrier is untouched.
+    var compWet: Double = 0
+    var filterAmt: Double = 0
 
     /// The do-nothing edit (a fresh sample; also what "reset edits" restores).
     static let neutral = StudioSampleEdit()
@@ -163,21 +169,26 @@ struct StudioSampleEdit: Codable, Hashable, Sendable {
         e.trimEndMs = max(0, trimEndMs)
         if e.trimEndMs > 0, e.trimEndMs < e.trimStartMs { e.trimEndMs = e.trimStartMs }
         e.gainDb = min(12, max(-60, gainDb))
-        e.rate = min(2.0, max(0.5, rate))
+        e.rate = min(10.0, max(0.5, rate))
         e.pitchSemitones = min(12, max(-12, pitchSemitones))
         e.reverbWet = min(1, max(0, reverbWet))
         e.delayWet = min(1, max(0, delayWet))
+        e.compWet = min(1, max(0, compWet))
+        e.filterAmt = min(1, max(0, filterAmt))
         return e
     }
 
     enum CodingKeys: String, CodingKey {
         case trimStartMs, trimEndMs, gainDb, rate, pitchSemitones, reverbWet, delayWet
+        case compWet, filterAmt
     }
     init(trimStartMs: Int = 0, trimEndMs: Int = 0, gainDb: Double = 0, rate: Double = 1,
-         pitchSemitones: Double = 0, reverbWet: Double = 0, delayWet: Double = 0) {
+         pitchSemitones: Double = 0, reverbWet: Double = 0, delayWet: Double = 0,
+         compWet: Double = 0, filterAmt: Double = 0) {
         self.trimStartMs = trimStartMs; self.trimEndMs = trimEndMs; self.gainDb = gainDb
         self.rate = rate; self.pitchSemitones = pitchSemitones
         self.reverbWet = reverbWet; self.delayWet = delayWet
+        self.compWet = compWet; self.filterAmt = filterAmt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -188,6 +199,9 @@ struct StudioSampleEdit: Codable, Hashable, Sendable {
         pitchSemitones = (try? c.decode(Double.self, forKey: .pitchSemitones)) ?? 0
         reverbWet = (try? c.decode(Double.self, forKey: .reverbWet)) ?? 0
         delayWet = (try? c.decode(Double.self, forKey: .delayWet)) ?? 0
+        // Additive/optional: a legacy edit with no comp/filter keys decodes to 0 (off).
+        compWet = (try? c.decode(Double.self, forKey: .compWet)) ?? 0
+        filterAmt = (try? c.decode(Double.self, forKey: .filterAmt)) ?? 0
     }
 }
 

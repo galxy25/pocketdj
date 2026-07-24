@@ -239,17 +239,6 @@ struct StudioSamplesView: View {
 
     private var creationBar: some View {
         HStack(spacing: 10) {
-            Button { showNewFromTrack = true } label: {
-                Label("From track", systemImage: "plus")
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 14).padding(.vertical, 7)
-                    .background(Theme.accent.opacity(0.18), in: Capsule())
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(Theme.accent)
-            .accessibilityIdentifier("sample-new-from-track")
-
             Button { showMicRecord = true } label: {
                 Label("Record", systemImage: "mic.fill")
                     .font(.callout.weight(.semibold))
@@ -261,9 +250,14 @@ struct StudioSamplesView: View {
             .foregroundStyle(Theme.accent2)
             .accessibilityIdentifier("sample-record-mic")
 
-            // Other in-catalog / file sources live behind a compact menu so the two primary
-            // buttons (and their UI-test ids) stay put and the iPhone-portrait bar isn't crowded.
+            // All the in-catalog / file sources live behind the one compact import menu (Record is
+            // the sole primary button). "From track" used to be a standalone button, but it belongs
+            // here alongside the other track/file sources rather than crowding the bar.
             Menu {
+                Button { showNewFromTrack = true } label: {
+                    Label("From track", systemImage: "waveform")
+                }
+                .accessibilityIdentifier("sample-new-from-track")
                 Button { showFileImporter = true } label: {
                     Label("Import audio file…", systemImage: "folder")
                 }
