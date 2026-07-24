@@ -54,6 +54,10 @@ final class StudioStore {
     /// Flat folders organizing arrangements (device-local, in-content only). Membership is by
     /// `StudioArrangement.folderId`; the Tracks picker groups off these.
     private(set) var arrangementFolders: [StudioArrangementFolder] = []
+    /// Bounces + live recordings rendered from arrangements (device-local, arrangement-scoped).
+    /// Audio lives beside clips in `studio/arrangements/` under a dated `bounce-…`/`live-recording-…`
+    /// name; CRUD is the same-file extension below.
+    private(set) var arrangementArtifacts: [StudioArrangementArtifact] = []
 
     /// Source of the per-family folder bookmarks. Pushed in from the view layer / app (like
     /// `MixRecorder.settings`) so this never has to be wired at app-init time. Weak ⇒ no retain
@@ -86,6 +90,7 @@ final class StudioStore {
             keys = doc.keys
             arrangements = doc.arrangements
             arrangementFolders = doc.arrangementFolders
+            arrangementArtifacts = doc.arrangementArtifacts
         }
     }
 
@@ -1097,7 +1102,8 @@ final class StudioStore {
         StudioDocument(schemaVersion: studioSchemaVersion, samples: samples, loops: loops,
                        patterns: patterns, takes: takes, cues: cues, slices: slices,
                        folders: folders, keys: keys, arrangements: arrangements,
-                       arrangementFolders: arrangementFolders)
+                       arrangementFolders: arrangementFolders,
+                       arrangementArtifacts: arrangementArtifacts)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.
@@ -1176,6 +1182,63 @@ extension StudioStore {
               let dir = try? Self.arrangementsDir() else { return nil }
         let url = dir.appendingPathComponent(fileName)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    // MARK: Arrangement artifacts (bounces + live recordings)
+
+    /// Resolve an artifact's audio file (shares the arrangements dir with clips). Bare name only —
+    /// a path separator means a corrupt/hostile document, never a file this app wrote.
+    func artifactFileURL(_ fileName: String) -> URL? {
+        guard !fileName.isEmpty, !fileName.contains("/"),
+              let dir = try? Self.arrangementsDir() else { return nil }
+        let url = dir.appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// This arrangement's artifacts of a kind, newest first.
+    func arrangementArtifacts(forArrangement id: String,
+                              kind: StudioArrangementArtifact.Kind) -> [StudioArrangementArtifact] {
+        arrangementArtifacts.filter { $0.arrangementId == id && $0.kind == kind }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// File an artifact record (the audio file already exists on disk — the bounce/recording writes
+    /// it first). Upserts by id (crash-retry can't duplicate). Append-only in spirit: never advances
+    /// any snapshot, so a stray add is harmless.
+    @discardableResult
+    func addArrangementArtifact(_ a: StudioArrangementArtifact) -> StudioArrangementArtifact {
+        if let i = arrangementArtifacts.firstIndex(where: { $0.id == a.id }) {
+            arrangementArtifacts[i] = a
+        } else {
+            arrangementArtifacts.append(a)
+        }
+        saveNow()
+        return a
+    }
+
+    /// Remove an artifact record AND its audio file. A convert-to-sample snapshot is independent, so
+    /// deleting the artifact never touches a sample made from it.
+    func deleteArrangementArtifact(_ id: String) {
+        guard let i = arrangementArtifacts.firstIndex(where: { $0.id == id }) else { return }
+        let art = arrangementArtifacts.remove(at: i)
+        if let url = artifactFileURL(art.fileName) { try? FileManager.default.removeItem(at: url) }
+        saveNow()
+    }
+
+    /// Convert an artifact into an independent `smp_` sample: transcode its audio into the samples
+    /// family (app-managed root) and file a `StudioSample`. The sample owns its own copy, so later
+    /// deleting the artifact never affects it. Returns the new sample, or nil if the audio is gone.
+    func createSampleFromArtifact(_ a: StudioArrangementArtifact) async -> StudioSample? {
+        guard let src = artifactFileURL(a.fileName) else { return nil }
+        let id = StudioFactory.newSampleId()
+        let fileName = StudioFolders.fileName(.samples, id: id)
+        guard let root = try? StudioFolders.appRoot(.samples) else { return nil }
+        let dest = root.appendingPathComponent(fileName)
+        guard let baked = try? await StudioRender.shared.importAudioFile(sourceURL: src, to: dest),
+              baked.durationMs > 0 else { return nil }
+        return addSample(StudioSample(id: id, name: a.name, fileName: fileName, wasUserFolder: false,
+                                      createdAt: nowMs, durationMs: baked.durationMs,
+                                      source: .file(originalName: a.name)))
     }
 
     // MARK: Arrangements

@@ -344,6 +344,111 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertLessThan(wetPeak, dryPeak * 0.85, "Drive must be baked into the bounce (peak soft-clipped)")
     }
 
+    // MARK: Arrangement artifacts (bounces + recordings)
+
+    /// Add → list-by-kind → persist round-trip → delete (record + file). The artifact rides the
+    /// additive `arrangementArtifacts` array (no schema bump).
+    func testArrangementArtifactCRUDAndRoundTrip() async throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "A")
+        let dir = try StudioStore.arrangementsDir()
+        let fileName = "bounce-2026-01-01 00-00-00.m4a"
+        try writeSineClip(to: dir.appendingPathComponent(fileName), seconds: 0.3, freq: 440, amp: 0.5)
+        let art = StudioArrangementArtifact(id: StudioFactory.newArtifactId(), arrangementId: arr.id,
+                                            kind: .bounce, name: "bounce-x", fileName: fileName,
+                                            durationMs: 300, createdAt: 1)
+        store.addArrangementArtifact(art)
+        XCTAssertEqual(store.arrangementArtifacts(forArrangement: arr.id, kind: .bounce).count, 1)
+        XCTAssertTrue(store.arrangementArtifacts(forArrangement: arr.id, kind: .recording).isEmpty)
+
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.arrangementArtifacts(forArrangement: arr.id, kind: .bounce).count, 1)
+
+        let url = try XCTUnwrap(reloaded.artifactFileURL(fileName))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        reloaded.deleteArrangementArtifact(art.id)
+        XCTAssertTrue(reloaded.arrangementArtifacts(forArrangement: arr.id, kind: .bounce).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "delete removes the audio file")
+    }
+
+    /// Convert-to-sample bakes an INDEPENDENT `smp_` copy: deleting the artifact afterwards leaves
+    /// the sample + its audio intact.
+    func testCreateSampleFromArtifactIsIndependent() async throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "A")
+        let dir = try StudioStore.arrangementsDir()
+        let fileName = "bounce-y.m4a"
+        try writeSineClip(to: dir.appendingPathComponent(fileName), seconds: 0.4, freq: 440, amp: 0.6)
+        let art = StudioArrangementArtifact(id: StudioFactory.newArtifactId(), arrangementId: arr.id,
+                                            kind: .bounce, name: "bounce-y", fileName: fileName,
+                                            durationMs: 400, createdAt: 1)
+        store.addArrangementArtifact(art)
+
+        let made = await store.createSampleFromArtifact(art)
+        let sample = try XCTUnwrap(made)
+        XCTAssertTrue(sample.id.hasPrefix("smp_"))
+        XCTAssertGreaterThan(sample.durationMs, 0)
+        XCTAssertNotNil(store.sample(sample.id))
+
+        store.deleteArrangementArtifact(art.id)
+        XCTAssertNotNil(store.sample(sample.id), "the sample is a copy — deleting the artifact keeps it")
+        let sURL = try XCTUnwrap(StudioFolders.fileURL(family: .samples, fileName: sample.fileName,
+                                                       wasUserFolder: false, bookmark: nil)?.url)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sURL.path))
+    }
+
+    /// `bounceToFile` writes real audio to the caller's dest and returns a positive length (the
+    /// artifact-only Bounce path — no clip/track created).
+    func testBounceToFileWritesAudio() async throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "A")
+        let t = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        let clipId = "clip_bt"
+        let cn = StudioStore.clipFileName(clipId)
+        let dir = try StudioStore.arrangementsDir()
+        try writeSineClip(to: dir.appendingPathComponent(cn), seconds: 0.5, freq: 440, amp: 0.7)
+        store.addClip(arrangement: arr.id, track: t.id,
+                      StudioClip(id: clipId, name: "S", fileName: cn, durationMs: 500,
+                                 source: .sample, sourceId: "smp_z"))
+        let tracks = try XCTUnwrap(store.arrangement(arr.id)?.tracks)
+        let dest = dir.appendingPathComponent("bounce-bt.m4a")
+        let bounced = await ArrangerBouncer.bounceToFile(tracks: tracks, store: store, to: dest)
+        let ms = try XCTUnwrap(bounced)
+        XCTAssertGreaterThan(ms, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertNil(store.arrangement(arr.id)?.tracks.first { $0.name.hasPrefix("Master") },
+                     "bounce-to-file must NOT add a Master track")
+    }
+
+    /// Quantized (lo-fi) bake = relabel-without-resample: a 48 kHz capture keeps its frame count at
+    /// 44.1 kHz → audibly LONGER (the retro downpitch) than a clean resampling import.
+    func testRelabelIsLongerThanCleanImport() async throws {
+        let src = root.appendingPathComponent("src48k.caf")
+        try writeSine(to: src, seconds: 0.5, freq: 440, amp: 0.5, sampleRate: 48_000)
+        let clean = try await StudioRender.shared.importAudioFile(
+            sourceURL: src, to: root.appendingPathComponent("clean.m4a"))
+        let lofi = try await StudioRender.shared.importAudioFileRelabeled(
+            sourceURL: src, to: root.appendingPathComponent("lofi.m4a"))
+        XCTAssertGreaterThan(clean.durationMs, 400)
+        XCTAssertGreaterThan(lofi.durationMs, Int(Double(clean.durationMs) * 1.05),
+                             "48 kHz frames relabelled to 44.1 play ~1.088× longer / downpitched")
+    }
+
+    /// Write a stereo sine at an ARBITRARY rate (CAF/LPCM) — for the relabel test's 48 kHz source.
+    private func writeSine(to url: URL, seconds: Double, freq: Double, amp: Float, sampleRate: Double) throws {
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
+        let frames = Int(seconds * sampleRate)
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+        buf.frameLength = AVAudioFrameCount(frames)
+        for c in 0..<Int(fmt.channelCount) {
+            for i in 0..<frames {
+                buf.floatChannelData![c][i] = amp * sinf(2 * .pi * Float(freq) * Float(i) / Float(sampleRate))
+            }
+        }
+        try AVAudioFile(forWriting: url, settings: fmt.settings).write(from: buf)
+    }
+
     private func writeSineClip(to url: URL, seconds: Double, freq: Double, amp: Float) throws {
         let fmt = StudioAudio.canonicalFormat
         let frames = Int(seconds * fmt.sampleRate)

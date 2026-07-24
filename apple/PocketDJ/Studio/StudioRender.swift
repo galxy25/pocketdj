@@ -451,6 +451,23 @@ actor StudioRender {
         return (frames, ms)
     }
 
+    /// Like `importAudioFile`, but RE-INTERPRETS the source frames at the canonical rate WITHOUT
+    /// resampling — a deliberate varispeed "lo-fi" transform. A record-to-master capture taken at the
+    /// device HARDWARE rate (48 kHz) relabelled as 44.1 plays ~8.8% slower / ~1.5 semitones flatter,
+    /// with the raw (un-filtered) 'crunchy' character: the Quantized recording mode. This is faithfully
+    /// the pre-fix bug, now opt-in and deterministic per capture rate (a 44.1 capture is a no-op).
+    func importAudioFileRelabeled(sourceURL: URL, to destURL: URL) async throws -> (frames: Int64, durationMs: Int) {
+        let reinterpreted = try Self.decodeFileRelabeled(url: sourceURL)
+        guard reinterpreted.frameLength > 0 else { throw StudioRenderError.emptyWindow }
+        let frames = try Self.writeAtomically(to: destURL, settings: Self.aacSettings) { out in
+            try out.write(from: reinterpreted)
+            return Int64(reinterpreted.frameLength)
+        }
+        let ms = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
+        Self.rlog("import-relabel \(sourceURL.lastPathComponent) → \(frames)f/\(ms)ms")
+        return (frames, ms)
+    }
+
     // MARK: - Instrumental render (sampler note events → audio)
 
     /// Synthesize an instrument take's note events into a REAL AAC `.m4a` at `destURL` by playing
@@ -583,6 +600,32 @@ actor StudioRender {
         }
         let raw = try readFrames(file, count: AVAudioFrameCount(file.length), from: url)
         return try convertToCanonical(raw)
+    }
+
+    /// Read the whole file at its OWN rate, then copy the samples verbatim into a canonical-format
+    /// (44.1 kHz) buffer of the SAME frame count — NO sample-rate conversion (the varispeed relabel
+    /// behind `importAudioFileRelabeled`). A 48 kHz capture becomes a 44.1 kHz buffer holding the same
+    /// samples ⇒ ~1.088× longer, pitched down by 44100/48000, un-filtered ('crunchy').
+    nonisolated static func decodeFileRelabeled(url: URL) throws -> AVAudioPCMBuffer {
+        guard let file = try? AVAudioFile(forReading: url) else {
+            throw StudioRenderError.unreadableSource(url)
+        }
+        guard file.length > 0, file.length <= Int64(UInt32.max) else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        let raw = try readFrames(file, count: AVAudioFrameCount(file.length), from: url)
+        guard raw.frameLength > 0, let srcData = raw.floatChannelData,
+              let out = AVAudioPCMBuffer(pcmFormat: canonicalFormat, frameCapacity: raw.frameLength),
+              let dstData = out.floatChannelData else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        out.frameLength = raw.frameLength
+        let srcCh = Int(raw.format.channelCount)
+        let n = Int(raw.frameLength)
+        for c in 0..<Int(canonicalFormat.channelCount) {
+            memcpy(dstData[c], srcData[min(c, srcCh - 1)], n * MemoryLayout<Float>.size)
+        }
+        return out
     }
 
     /// Read up to `count` frames from `file`'s CURRENT position, looping over SHORT READS:

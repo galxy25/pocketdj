@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // MARK: - Tracks (multitrack arranger) sub-tab
 //
@@ -83,6 +84,17 @@ struct TracksView: View {
     @AppStorage("pdj.tracks.showMasterFX") private var showMasterFX = false
     /// iPhone transport collapse — stacked controls fold away to maximize track space (persisted).
     @AppStorage("pdj.tracks.transportCollapsed") private var transportCollapsed = false
+    /// Record mode: false = clean (canonical-rate limiter capture), true = Quantized (lo-fi) — the
+    /// hardware-rate capture relabelled to 44.1 for a retro downpitch. Chosen via the record button's
+    /// long-press / right-click menu (persisted).
+    @AppStorage("pdj.tracks.quantizedRecording") private var quantizedRecording = false
+    /// Snapshot of the record mode at record START — so a restart (seek/loop) keeps the same mode and
+    /// the bake picks the right transform even if the toggle changes mid-take.
+    @State private var recordingWasQuantized = false
+    /// Row-audition player for bounce/recording artifacts (tap a row to hear it).
+    @State private var auditionPlayer = ArtifactAuditionPlayer()
+    /// Which arrangement→kind artifact disclosure groups are expanded in the home browser.
+    @State private var expandedArtifactGroups: Set<String> = []
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
     #endif
@@ -379,7 +391,15 @@ struct TracksView: View {
 
     /// An arrangement row — tap opens it into the arranger; the context menu opens / renames / moves /
     /// deletes it (rename & delete target the row's id, no need to open first).
-    private func arrangementBrowserRow(_ a: StudioArrangement) -> some View {
+    @ViewBuilder private func arrangementBrowserRow(_ a: StudioArrangement) -> some View {
+        arrangementMainRow(a)
+        let bounces = studio.arrangementArtifacts(forArrangement: a.id, kind: .bounce)
+        let recs = studio.arrangementArtifacts(forArrangement: a.id, kind: .recording)
+        if !bounces.isEmpty { artifactGroup(a, kind: .bounce, artifacts: bounces) }
+        if !recs.isEmpty { artifactGroup(a, kind: .recording, artifacts: recs) }
+    }
+
+    private func arrangementMainRow(_ a: StudioArrangement) -> some View {
         Button { openArrangementId = a.id } label: {
             HStack(spacing: 10) {
                 Image(systemName: "square.stack.3d.up.fill").foregroundStyle(Self.color(0)).font(.title3)
@@ -402,6 +422,92 @@ struct TracksView: View {
             moveToFolderSubmenu(for: a)
             Button(role: .destructive) { pendingDeleteArrangementId = a.id } label: { Label("Delete", systemImage: "trash") }
         }
+    }
+
+    /// A collapsible group of an arrangement's artifacts (Bounces / Recordings), nested under its row.
+    @ViewBuilder private func artifactGroup(_ a: StudioArrangement, kind: StudioArrangementArtifact.Kind,
+                                            artifacts: [StudioArrangementArtifact]) -> some View {
+        let key = "\(a.id)-\(kind.rawValue)"
+        let title = kind == .bounce ? "Bounces" : "Recordings"
+        let icon = kind == .bounce ? "square.stack.3d.down.forward" : "waveform.badge.mic"
+        DisclosureGroup(isExpanded: artifactExpansion(key)) {
+            ForEach(artifacts) { art in artifactRow(a, art) }
+        } label: {
+            Label("\(title) (\(artifacts.count))", systemImage: icon)
+                .font(.caption).foregroundStyle(Theme.fgDim)
+                .accessibilityIdentifier("tracks-artifacts-\(key)")
+        }
+        .padding(.leading, 22)
+        .listRowBackground(Color.clear)
+    }
+
+    /// One artifact row: tap to audition (play/pause); the menu converts to a sample, adds it as a
+    /// track, shares, or deletes it. Dated name (`bounce-…` / `live-recording-…`) + length.
+    private func artifactRow(_ a: StudioArrangement, _ art: StudioArrangementArtifact) -> some View {
+        Button {
+            player.stop()   // audition and the arranger engine don't share the output
+            auditionPlayer.toggle(url: studio.artifactFileURL(art.fileName), id: art.id)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: auditionPlayer.playingId == art.id ? "pause.circle.fill" : "play.circle")
+                    .foregroundStyle(auditionPlayer.playingId == art.id ? Theme.accent : Theme.fgDim)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(art.name).font(.caption2).foregroundStyle(Theme.fg).lineLimit(1)
+                    Text(mmss(Double(art.durationMs) / 1000)).font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 38)
+        .listRowBackground(Color.clear)
+        .accessibilityIdentifier("tracks-artifact-row-\(art.id)")
+        .contextMenu {
+            Button { convertArtifactToSample(art) } label: { Label("Convert to sample", systemImage: "square.and.arrow.down.on.square") }
+            Button { addArtifactAsTrack(a, art) } label: { Label("Add as track", systemImage: "plus.rectangle.on.rectangle") }
+            if let url = studio.artifactFileURL(art.fileName) {
+                ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
+            }
+            Button(role: .destructive) { deleteArtifact(art) } label: { Label("Delete", systemImage: "trash") }
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { deleteArtifact(art) } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    private func artifactExpansion(_ key: String) -> Binding<Bool> {
+        Binding(get: { expandedArtifactGroups.contains(key) },
+                set: { on in if on { expandedArtifactGroups.insert(key) } else { expandedArtifactGroups.remove(key) } })
+    }
+
+    private func deleteArtifact(_ art: StudioArrangementArtifact) {
+        if auditionPlayer.playingId == art.id { auditionPlayer.stop() }
+        studio.deleteArrangementArtifact(art.id)
+    }
+
+    private func convertArtifactToSample(_ art: StudioArrangementArtifact) {
+        busyMessage = "Making sample…"; baking = true
+        Task { defer { baking = false }; _ = await studio.createSampleFromArtifact(art) }
+    }
+
+    private func addArtifactAsTrack(_ a: StudioArrangement, _ art: StudioArrangementArtifact) {
+        guard let url = studio.artifactFileURL(art.fileName) else { return }
+        busyMessage = "Adding track…"; baking = true
+        Task {
+            defer { baking = false }
+            if let clip = await ArrangerClipBaker.bakeFromFile(sourceURL: url, name: art.name, startMs: 0),
+               let track = studio.addTrack(arrangement: a.id, name: art.name) {
+                studio.addClip(arrangement: a.id, track: track.id, clip)
+            }
+        }
+    }
+
+    /// Dated stamp for artifact file names / display: `yyyy-MM-dd HH-mm-ss` (no colons — filesystem-safe).
+    private static func artifactStamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH-mm-ss"
+        return f.string(from: Date())
     }
 
     /// "Move to folder" submenu for a specific arrangement: None + folders + a one-shot "New folder…"
@@ -555,6 +661,20 @@ struct TracksView: View {
         .buttonStyle(.plain).disabled(arr.lengthMs == 0)
         .accessibilityIdentifier("tracks-record-master")
         .accessibilityValue(recordingMaster ? "recording" : "idle")
+        // Long-press (iOS) / right-click (macOS) → pick the record mode. Disabled mid-take so the mode
+        // can't change under an in-flight capture.
+        .contextMenu {
+            Section("Recording mode") {
+                Button { quantizedRecording = false } label: {
+                    Label("Clean", systemImage: quantizedRecording ? "" : "checkmark")
+                }
+                .accessibilityIdentifier("tracks-record-mode-clean")
+                Button { quantizedRecording = true } label: {
+                    Label("Quantized (lo-fi)", systemImage: quantizedRecording ? "checkmark" : "")
+                }
+                .accessibilityIdentifier("tracks-record-mode-quantized")
+            }
+        }
     }
     private func timeControl(_ arr: StudioArrangement) -> some View {
         TimelineView(.periodic(from: .now, by: 0.1)) { _ in
@@ -929,7 +1049,8 @@ struct TracksView: View {
         centerNonce &+= 1
         if isPlayingThis(arr) {
             // Preserve record mode across the restart (a seek re-starts the take from the new point).
-            Task { await player.play(arrangement: arr, store: studio, fromMs: cursorMs, record: recordingMaster) }
+            Task { await player.play(arrangement: arr, store: studio, fromMs: cursorMs,
+                                     record: recordingMaster, quantized: recordingWasQuantized) }
         }
     }
 
@@ -1012,7 +1133,8 @@ struct TracksView: View {
             studio.setArrangementLoop(arr.id, enabled: true, startMs: start, endMs: end)
         }
         if isPlayingThis(arr), let fresh = studio.arrangement(arr.id) {
-            Task { await player.play(arrangement: fresh, store: studio, fromMs: effectiveCursorMs(fresh), record: recordingMaster) }
+            Task { await player.play(arrangement: fresh, store: studio, fromMs: effectiveCursorMs(fresh),
+                                     record: recordingMaster, quantized: recordingWasQuantized) }
         }
     }
 
@@ -1241,22 +1363,42 @@ struct TracksView: View {
             return
         }
         recordingMaster = true
+        recordingWasQuantized = quantizedRecording
         Task {
-            let ok = await player.play(arrangement: arr, store: studio, fromMs: effectiveCursorMs(arr), record: true)
+            let ok = await player.play(arrangement: arr, store: studio, fromMs: effectiveCursorMs(arr),
+                                       record: true, quantized: quantizedRecording)
             if !ok { recordingMaster = false }
         }
     }
 
-    /// Bake the captured master recording into a new Master track.
+    /// Bake the captured master recording into a dated Recording artifact under the arrangement.
     private func bakeMasterRecording() {
         guard let a = current, let url = player.consumeRecording() else { recordingMaster = false; return }
         recordingMaster = false
-        busyMessage = "Saving master…"; baking = true
+        let quantized = recordingWasQuantized
+        busyMessage = "Saving recording…"; baking = true
         Task {
             defer { baking = false }
-            if let clip = await ArrangerClipBaker.bakeFromFile(sourceURL: url, name: masterName(a), startMs: 0),
-               let master = studio.addTrack(arrangement: a.id, name: masterName(a)) {
-                studio.addClip(arrangement: a.id, track: master.id, clip)
+            let stamp = Self.artifactStamp()
+            let fileName = "live-recording-\(stamp).m4a"
+            guard let dir = try? StudioStore.arrangementsDir() else {
+                try? FileManager.default.removeItem(at: url); return
+            }
+            let dest = dir.appendingPathComponent(fileName)
+            // Quantized mode relabels the hardware-rate capture as 44.1 (lo-fi downpitch); clean mode
+            // transcodes/resamples faithfully to canonical.
+            let baked: (frames: Int64, durationMs: Int)?
+            if quantized {
+                baked = try? await StudioRender.shared.importAudioFileRelabeled(sourceURL: url, to: dest)
+            } else {
+                baked = try? await StudioRender.shared.importAudioFile(sourceURL: url, to: dest)
+            }
+            if let baked, baked.durationMs > 0 {
+                studio.addArrangementArtifact(StudioArrangementArtifact(
+                    id: StudioFactory.newArtifactId(), arrangementId: a.id, kind: .recording,
+                    name: "live-recording-\(stamp)", fileName: fileName, durationMs: baked.durationMs,
+                    createdAt: Date().timeIntervalSince1970 * 1000))
+                expandedArtifactGroups.insert("\(a.id)-recording")   // reveal the new take
             }
             try? FileManager.default.removeItem(at: url)
         }
@@ -1312,16 +1454,18 @@ struct TracksView: View {
         busyMessage = "Bouncing…"; baking = true
         Task {
             defer { baking = false }
-            guard let clip = await ArrangerBouncer.bounce(tracks: selected, store: studio, name: label,
-                                                          masterFX: a.masterFX, bpm: a.bpm),
-                  let master = studio.addTrack(arrangement: a.id, name: masterName(a)) else { return }
-            studio.addClip(arrangement: a.id, track: master.id, clip)
+            let stamp = Self.artifactStamp()
+            let fileName = "bounce-\(stamp).m4a"
+            guard let dir = try? StudioStore.arrangementsDir() else { return }
+            let dest = dir.appendingPathComponent(fileName)
+            guard let ms = await ArrangerBouncer.bounceToFile(tracks: selected, store: studio, to: dest,
+                                                              masterFX: a.masterFX, bpm: a.bpm), ms > 0 else { return }
+            studio.addArrangementArtifact(StudioArrangementArtifact(
+                id: StudioFactory.newArtifactId(), arrangementId: a.id, kind: .bounce,
+                name: "bounce-\(stamp)", fileName: fileName, durationMs: ms,
+                createdAt: Date().timeIntervalSince1970 * 1000))
+            expandedArtifactGroups.insert("\(a.id)-bounce")   // reveal the new bounce
         }
-    }
-
-    private func masterName(_ arr: StudioArrangement) -> String {
-        let n = arr.tracks.filter { $0.name.hasPrefix("Master") }.count
-        return n == 0 ? "Master" : "Master \(n + 1)"
     }
 
     private var bounceSheet: some View {
@@ -1653,5 +1797,43 @@ private struct ClipSourcePicker: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Artifact audition (tap-a-row playback)
+
+/// A tiny AVAudioPlayer wrapper so tapping a bounce/recording row plays it (tap again to stop). One
+/// artifact at a time; `playingId` drives the row's play/pause glyph. A reset task clears the glyph
+/// when playback finishes on its own. Deliberately separate from the arranger engine — the caller
+/// stops arranger playback first, so the two never fight over the output.
+@MainActor @Observable final class ArtifactAuditionPlayer {
+    @ObservationIgnored private var player: AVAudioPlayer?
+    @ObservationIgnored private var resetTask: Task<Void, Never>?
+    private(set) var playingId: String?
+
+    func toggle(url: URL?, id: String) {
+        if playingId == id { stop(); return }   // tapping the playing row stops it
+        stop()
+        guard let url else { return }
+        #if !os(macOS)
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+        guard let p = try? AVAudioPlayer(contentsOf: url) else { return }
+        player = p
+        p.play()
+        playingId = id
+        let secs = p.duration
+        resetTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.1, secs + 0.2) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if self?.playingId == id { self?.stop() }
+        }
+    }
+
+    func stop() {
+        resetTask?.cancel(); resetTask = nil
+        player?.stop(); player = nil
+        playingId = nil
     }
 }
