@@ -185,6 +185,133 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertTrue(ld.arrangements.isEmpty)
     }
 
+    // MARK: Multitrack arranger — round 2 (pan / color / tempo / loop / master-FX / folders)
+
+    /// Per-track pan + user-set colour round-trip; pan clamps to [-1,1]; colour wraps into the palette.
+    func testTrackPanColorRoundTripAndClamp() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "Mix")
+        let t0 = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        store.setTrackPan(arrangement: arr.id, track: t0.id, pan: -0.7)
+        store.setTrackColor(arrangement: arr.id, track: t0.id, colorIndex: 11)   // wraps mod 8 → 3
+        store.setTrackPan(arrangement: arr.id, track: t0.id, pan: 5)             // clamps to +1
+        store.flush()
+
+        let rt = try XCTUnwrap(StudioStore(fileURL: storeURL).arrangement(arr.id)?.tracks.first)
+        XCTAssertEqual(rt.pan, 1, accuracy: 0.0001)
+        XCTAssertEqual(rt.colorIndex, 3)
+    }
+
+    /// Arrangement tempo + loop region + master-FX round-trip; loop end clamps ≥ start; bpm garbage
+    /// falls back to 120 and clamps to a musical range.
+    func testArrangementTempoLoopMasterFXRoundTrip() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "Set")
+        XCTAssertEqual(store.arrangement(arr.id)?.bpm, 120)               // default
+
+        store.setArrangementBpm(arr.id, bpm: 0)                          // garbage ⇒ 120
+        XCTAssertEqual(store.arrangement(arr.id)?.bpm, 120)
+        store.setArrangementBpm(arr.id, bpm: 90)
+        store.setArrangementLoop(arr.id, enabled: true, startMs: 2_000, endMs: 500) // end clamps up
+        var fx = StudioMasterFX()
+        fx.phaserEnabled = true; fx.phaserRate = 1.5
+        fx.brazilianBassEnabled = true; fx.brazilianBassAmount = 0.8
+        fx.masterGainDb = 3
+        store.setArrangementMasterFX(arr.id, fx)
+        store.flush()
+
+        let ra = try XCTUnwrap(StudioStore(fileURL: storeURL).arrangement(arr.id))
+        XCTAssertEqual(ra.bpm, 90)
+        XCTAssertTrue(ra.loopEnabled)
+        XCTAssertEqual(ra.loopStartMs, 2_000)
+        XCTAssertEqual(ra.loopEndMs, 2_000)                              // clamped up to start
+        XCTAssertTrue(ra.masterFX.phaserEnabled)
+        XCTAssertEqual(ra.masterFX.phaserRate, 1.5, accuracy: 0.0001)
+        XCTAssertTrue(ra.masterFX.brazilianBassEnabled)
+        XCTAssertEqual(ra.masterFX.masterGainDb, 3, accuracy: 0.0001)
+    }
+
+    /// Legacy arrangements (no bpm/loop/pan/masterFX keys) default cleanly; a partial masterFX blob
+    /// degrades field-by-field (present field decoded, absent fields default).
+    func testArrangementRound2LegacyDecode() throws {
+        let json = """
+        { "schemaVersion": 1, "arrangements": [
+            { "id": "arr_x", "name": "Legacy",
+              "tracks": [ { "id": "trk_a", "name": "T", "clips": [] } ],
+              "masterFX": { "ringModEnabled": true } }
+        ] }
+        """
+        let doc = try JSONDecoder().decode(StudioDocument.self, from: Data(json.utf8))
+        let a = try XCTUnwrap(doc.arrangements.first)
+        XCTAssertEqual(a.bpm, 120)                     // absent ⇒ default
+        XCTAssertFalse(a.loopEnabled)
+        XCTAssertEqual(a.tracks.first?.pan, 0)         // absent ⇒ center
+        XCTAssertTrue(a.masterFX.ringModEnabled)       // present field decoded
+        XCTAssertFalse(a.masterFX.phaserEnabled)       // absent field ⇒ default
+        XCTAssertEqual(a.masterFX.ringModFreqHz, 200)  // absent ⇒ default
+    }
+
+    /// Tempo seeds from the FIRST clip's source item; a later clip from a different-bpm source does
+    /// NOT override the seeded tempo.
+    func testArrangementBpmSeedsFromFirstClip() throws {
+        let store = StudioStore(fileURL: storeURL)
+        _ = store.addLoop(StudioLoop(id: "lp_a", name: "Groove", sampleId: "smp_a",
+                                     bpm: 128, fileName: StudioFolders.fileName(.loops, id: "lp_a")))
+        _ = store.addLoop(StudioLoop(id: "lp_b", name: "Other", sampleId: "smp_b",
+                                     bpm: 90, fileName: StudioFolders.fileName(.loops, id: "lp_b")))
+        let arr = store.createArrangement(name: "Set")
+        let t0 = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        let dir = try StudioStore.arrangementsDir()
+        let f1 = StudioStore.clipFileName("clip_1")
+        try Data(repeating: 1, count: 8).write(to: dir.appendingPathComponent(f1))
+        store.addClip(arrangement: arr.id, track: t0.id,
+                      StudioClip(id: "clip_1", name: "L", fileName: f1, durationMs: 500,
+                                 source: .loop, sourceId: "lp_a"))
+        XCTAssertEqual(store.arrangement(arr.id)?.bpm, 128)              // seeded from first clip
+
+        let f2 = StudioStore.clipFileName("clip_2")
+        try Data(repeating: 2, count: 8).write(to: dir.appendingPathComponent(f2))
+        store.addClip(arrangement: arr.id, track: t0.id,
+                      StudioClip(id: "clip_2", name: "L2", fileName: f2, startMs: 600, durationMs: 500,
+                                 source: .loop, sourceId: "lp_b"))
+        XCTAssertEqual(store.arrangement(arr.id)?.bpm, 128)             // NOT overridden by later clip
+    }
+
+    /// Arrangement-folder CRUD: mints an `arrfld_` id (NOT collection-riding), partitions
+    /// arrangements(inFolder:), delete re-homes members (deletes NO arrangement), dangling ⇒ loose,
+    /// and the whole thing round-trips.
+    func testArrangementFolderCrudRehomeDanglingRoundTrip() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let a1 = store.createArrangement(name: "Set A")
+        let a2 = store.createArrangement(name: "Set B")
+        let f = store.createArrangementFolder("Live")
+        XCTAssertTrue(f.id.hasPrefix("arrfld_"))
+        XCTAssertFalse(StudioFactory.isStudioId(f.id), "arrfld_ must NOT ride collections")
+
+        store.moveArrangementToFolder(a1.id, folderId: f.id)
+        XCTAssertEqual(store.arrangements(inFolder: f.id).map(\.id), [a1.id])
+        XCTAssertEqual(store.arrangements(inFolder: nil).map(\.id), [a2.id])
+
+        store.renameArrangementFolder(f.id, to: "  On Stage ")
+        XCTAssertEqual(store.arrangementFolder(f.id)?.name, "On Stage")
+
+        // Dangling membership (folder id not in the document) reads as loose.
+        store.moveArrangementToFolder(a2.id, folderId: "arrfld_ghost")
+        XCTAssertEqual(Set(store.arrangements(inFolder: nil).map(\.id)), [a2.id])
+
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.arrangementFoldersOrdered().map(\.name), ["On Stage"])
+        XCTAssertEqual(reloaded.arrangement(a1.id)?.folderId, f.id)
+
+        // Delete the folder → members re-home to loose; NO arrangement deleted.
+        reloaded.deleteArrangementFolder(f.id)
+        XCTAssertNil(reloaded.arrangementFolder(f.id))
+        XCTAssertNotNil(reloaded.arrangement(a1.id))
+        XCTAssertNil(reloaded.arrangement(a1.id)?.folderId)
+        XCTAssertEqual(Set(reloaded.arrangements(inFolder: nil).map(\.id)), [a1.id, a2.id])
+    }
+
     // MARK: Lenient decode
 
     /// Unknown top-level fields, unknown per-record fields, an unknown source kind, an invalid
@@ -817,6 +944,7 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertTrue(StudioFactory.newTakeId().hasPrefix("tk_"))
         XCTAssertTrue(StudioFactory.newCueId().hasPrefix("cue_"))
         XCTAssertTrue(StudioFactory.newSampleFolderId().hasPrefix("sfld_"))
+        XCTAssertTrue(StudioFactory.newArrangementFolderId().hasPrefix("arrfld_"))
         // Minted uuids are lowercase (CollectionsFactory convention).
         let minted = StudioFactory.uid()
         XCTAssertEqual(minted, minted.lowercased())
@@ -830,5 +958,6 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertFalse(StudioFactory.isStudioId("cue_abc"))
         XCTAssertFalse(StudioFactory.isStudioId("pkt_abc"))
         XCTAssertFalse(StudioFactory.isStudioId("sfld_abc"))
+        XCTAssertFalse(StudioFactory.isStudioId("arrfld_abc"))
     }
 }

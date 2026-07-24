@@ -49,8 +49,11 @@ final class StudioStore {
     /// On-device detected key (Camelot) per performance item — see `StudioDocument.keys`.
     private(set) var keys: [String: String] = [:]
     /// Multitrack arrangements (the "Tracks" sub-tab). Clip audio lives app-managed in
-    /// `studio/arrangements/`; CRUD is in StudioStore+Arrangements.swift.
+    /// `studio/arrangements/`; CRUD is the same-file `extension StudioStore` below.
     private(set) var arrangements: [StudioArrangement] = []
+    /// Flat folders organizing arrangements (device-local, in-content only). Membership is by
+    /// `StudioArrangement.folderId`; the Tracks picker groups off these.
+    private(set) var arrangementFolders: [StudioArrangementFolder] = []
 
     /// Source of the per-family folder bookmarks. Pushed in from the view layer / app (like
     /// `MixRecorder.settings`) so this never has to be wired at app-init time. Weak ⇒ no retain
@@ -82,6 +85,7 @@ final class StudioStore {
             folders = doc.folders
             keys = doc.keys
             arrangements = doc.arrangements
+            arrangementFolders = doc.arrangementFolders
         }
     }
 
@@ -1092,7 +1096,8 @@ final class StudioStore {
     private func snapshotDocument() -> StudioDocument {
         StudioDocument(schemaVersion: studioSchemaVersion, samples: samples, loops: loops,
                        patterns: patterns, takes: takes, cues: cues, slices: slices,
-                       folders: folders, keys: keys, arrangements: arrangements)
+                       folders: folders, keys: keys, arrangements: arrangements,
+                       arrangementFolders: arrangementFolders)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.
@@ -1221,6 +1226,108 @@ extension StudioStore {
         if stream { scheduleSave() } else { saveNow() }
     }
 
+    /// The arrangement's timeline tempo (beat markers + looper snap). Discrete entry ⇒ saves now.
+    /// Clamped to a musical range; 0/garbage falls back to 120.
+    func setArrangementBpm(_ id: String, bpm: Double) {
+        mutateArrangement(id) { arr in
+            arr.bpm = bpm.isFinite && bpm > 0 ? max(20, min(300, bpm)) : 120
+        }
+    }
+
+    /// Update the loop region and/or its enabled flag (any non-nil param applies). Streamed — the
+    /// start/end handles are dragged. `endMs` is clamped ≥ `startMs`.
+    func setArrangementLoop(_ id: String, enabled: Bool? = nil, startMs: Int? = nil, endMs: Int? = nil) {
+        mutateArrangement(id, stream: true) { arr in
+            if let e = enabled { arr.loopEnabled = e }
+            if let s = startMs { arr.loopStartMs = max(0, s) }
+            if let e = endMs { arr.loopEndMs = e }
+            arr.loopEndMs = max(arr.loopStartMs, arr.loopEndMs)
+        }
+    }
+
+    /// Replace the whole master-FX settings block. Streamed — the panel's knobs are dragged.
+    func setArrangementMasterFX(_ id: String, _ fx: StudioMasterFX) {
+        mutateArrangement(id, stream: true) { $0.masterFX = fx }
+    }
+
+    // MARK: Arrangement folders (flat, device-local; membership via StudioArrangement.folderId)
+    //
+    // Mirrors the sample-folder CRUD above: pure in-document metadata, delete re-homes members
+    // (NEVER deletes an arrangement or its clip audio — contrast deleteArrangement), each op saves
+    // now. In-content only — no macOS CommandMenu. `arrfld_` ids are NON-collection-riding.
+
+    func arrangementFolder(_ id: String) -> StudioArrangementFolder? { arrangementFolders.first { $0.id == id } }
+
+    /// Folders, name-ordered (case-insensitive) for stable display.
+    func arrangementFoldersOrdered() -> [StudioArrangementFolder] {
+        arrangementFolders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Arrangements in a folder (nil ⇒ loose/unfiled), newest-first. A `folderId` pointing at a
+    /// folder no longer in the document (dangling) reads as loose so the arrangement never vanishes.
+    func arrangements(inFolder id: String?) -> [StudioArrangement] {
+        let known = Set(arrangementFolders.map(\.id))
+        return arrangements.filter { a in
+            if let fid = a.folderId, known.contains(fid) { return fid == id }
+            return id == nil
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    @discardableResult
+    func createArrangementFolder(_ name: String) -> StudioArrangementFolder {
+        let f = StudioArrangementFolder(id: StudioFactory.newArrangementFolderId(),
+                                        name: name.trimmingCharacters(in: .whitespaces),
+                                        createdAt: nowMs, updatedAt: nowMs)
+        arrangementFolders.append(f)
+        saveNow()
+        return f
+    }
+
+    func renameArrangementFolder(_ id: String, to name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, let i = arrangementFolders.firstIndex(where: { $0.id == id }) else { return }
+        arrangementFolders[i].name = n
+        arrangementFolders[i].updatedAt = nowMs
+        saveNow()
+    }
+
+    /// Delete a folder; its member arrangements fall back to loose (folderId ⇒ nil). NO arrangement
+    /// or clip audio is deleted — a folder is pure organizational metadata.
+    func deleteArrangementFolder(_ id: String) {
+        arrangementFolders.removeAll { $0.id == id }
+        for i in arrangements.indices where arrangements[i].folderId == id {
+            arrangements[i].folderId = nil
+        }
+        saveNow()
+    }
+
+    /// Move an arrangement into a folder (nil ⇒ loose). In-memory metadata only.
+    func moveArrangementToFolder(_ aid: String, folderId: String?) {
+        guard let i = arrangements.firstIndex(where: { $0.id == aid }) else { return }
+        arrangements[i].folderId = folderId
+        arrangements[i].updatedAt = nowMs
+        saveNow()
+    }
+
+    /// Seed an arrangement's tempo from its first musical clip's source item (loop/take/pattern/
+    /// sample-grid), when the arrangement is still at the untouched 120 default and has no clips yet.
+    /// Called from `addClip`/stem-import so the beat grid lines up with the first thing you drop in.
+    /// A .recording / .master / .stem clip carries no bpm, so it leaves the default in place.
+    private func seedArrangementBpmIfUntouched(_ aid: String, from clip: StudioClip) {
+        guard let i = arrangements.firstIndex(where: { $0.id == aid }) else { return }
+        let existingClips = arrangements[i].tracks.reduce(0) { $0 + $1.clips.count }
+        guard existingClips == 0, arrangements[i].bpm == 120 else { return }
+        let derived: Double?
+        switch clip.source {
+        case .loop:    derived = clip.sourceId.flatMap { loop($0)?.bpm }
+        case .take:    derived = clip.sourceId.flatMap { take($0)?.bpm }
+        case .pattern: derived = clip.sourceId.flatMap { pattern($0)?.bpm }
+        case .sample:  derived = clip.sourceId.flatMap { sample($0)?.grid?.bpm }
+        case .recording, .master, .stem: derived = nil
+        }
+        if let b = derived, b.isFinite, b > 0 { arrangements[i].bpm = max(20, min(300, b)) }
+    }
+
     // MARK: Tracks
 
     /// Palette size the view cycles track colours through (stem 4 + cue extras). The view owns the
@@ -1309,11 +1416,29 @@ extension StudioStore {
         }
     }
 
+    /// Stereo pan (-1 … +1). Streamed — it's a slider drag, like gain.
+    func setTrackPan(arrangement aid: String, track tid: String, pan: Double) {
+        mutateArrangement(aid, stream: true) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            arr.tracks[j].pan = max(-1, min(1, pan))
+        }
+    }
+
+    /// Set the track's palette colour index (discrete pick; wraps into the palette).
+    func setTrackColor(arrangement aid: String, track tid: String, colorIndex: Int) {
+        let n = Self.trackPaletteSize
+        mutateArrangement(aid) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            arr.tracks[j].colorIndex = ((colorIndex % n) + n) % n
+        }
+    }
+
     // MARK: Clips
 
     /// Append/replace a clip on a track (upsert-by-id). The audio file must already be written into
     /// `studio/arrangements/` by the bake/record path (Stage B/D); `startMs` positions it.
     func addClip(arrangement aid: String, track tid: String, _ clip: StudioClip) {
+        seedArrangementBpmIfUntouched(aid, from: clip)
         mutateArrangement(aid) { arr in
             guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
             if let k = arr.tracks[j].clips.firstIndex(where: { $0.id == clip.id }) {
