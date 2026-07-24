@@ -21,9 +21,14 @@ struct TracksView: View {
     @State private var pendingRenameArrangement = false
     @State private var nameText = ""
 
-    // Add-clip source picker (which track it targets) + a baking spinner.
+    // Add-clip source picker (which track it targets) + a busy spinner.
     @State private var pickerTrackId: String?
     @State private var baking = false
+    @State private var busyMessage = "Working…"
+
+    // Bounce-selected sheet.
+    @State private var bounceSelecting = false
+    @State private var bounceSelection: Set<String> = []
 
     // Per-clip waveform peaks (immutable clips → compute once, cache).
     @State private var clipPeaks: [String: [Float]] = [:]
@@ -103,6 +108,7 @@ struct TracksView: View {
                 pickerTrackId = nil
             }
         }
+        .sheet(isPresented: $bounceSelecting) { bounceSheet }
         .alert("Rename track", isPresented: renameTrackShown) {
             TextField("Name", text: $nameText)
             Button("Cancel", role: .cancel) { pendingRenameTrack = nil }
@@ -191,8 +197,19 @@ struct TracksView: View {
                 Text(timeLabel(arr)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
             Spacer()
-            Text("\(arr.tracks.count) track\(arr.tracks.count == 1 ? "" : "s")")
-                .font(.caption2).foregroundStyle(Theme.fgDim)
+            Menu {
+                Button { bounce(tracks: arr.tracks, label: "Master") } label: {
+                    Label("Bounce all tracks", systemImage: "square.stack.3d.down.forward")
+                }
+                Button { bounceSelection = []; bounceSelecting = true } label: {
+                    Label("Bounce selected…", systemImage: "checklist")
+                }
+            } label: {
+                Label("Bounce", systemImage: "square.and.arrow.down.on.square")
+                    .font(.caption).foregroundStyle(arr.lengthMs == 0 ? Theme.fgDim : Theme.fg)
+            }
+            .disabled(arr.lengthMs == 0)
+            .accessibilityIdentifier("tracks-bounce-menu")
         }
         .padding(.horizontal, 16).padding(.vertical, 6)
     }
@@ -262,6 +279,8 @@ struct TracksView: View {
                     Button { nameText = track.name; pendingRenameTrack = track.id } label: { Label("Rename…", systemImage: "pencil") }
                     Button { pickerTrackId = track.id } label: { Label("Add clip…", systemImage: "waveform.badge.plus") }
                     Button { startRecord(arr: arr, track: track) } label: { Label("Record…", systemImage: "mic") }
+                    Button { bounce(tracks: [track], label: "\(track.name) (bounce)") } label: { Label("Bounce this track", systemImage: "square.and.arrow.down") }
+                        .disabled(track.clips.isEmpty)
                     Button { studio.duplicateTrack(arrangement: arr.id, track: track.id) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
                     Button(role: .destructive) { deleteTrack(arr: arr, track: track) } label: { Label("Delete", systemImage: "trash") }
                 } label: {
@@ -369,7 +388,7 @@ struct TracksView: View {
             Color.black.opacity(0.25).ignoresSafeArea()
             VStack(spacing: 10) {
                 ProgressView()
-                Text("Adding clip…").font(.caption).foregroundStyle(.white)
+                Text(busyMessage).font(.caption).foregroundStyle(.white)
             }
             .padding(20)
             .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 12))
@@ -454,7 +473,7 @@ struct TracksView: View {
             recordingTrackId = nil; return
         }
         recordingTrackId = nil
-        baking = true
+        busyMessage = "Saving recording…"; baking = true
         Task {
             defer { baking = false }
             let startMs = a.tracks.first { $0.id == tid }?.lengthMs ?? 0
@@ -469,6 +488,69 @@ struct TracksView: View {
         }
     }
 
+    /// Mix the given tracks (their gains applied; mute/solo don't affect a bounce) into one master
+    /// clip and append it on a NEW master track. Individual = [track]; all = arr.tracks; selected =
+    /// the sheet's chosen subset.
+    private func bounce(tracks: [StudioTrack], label: String) {
+        guard let a = current else { return }
+        let selected = tracks.filter { !$0.clips.isEmpty }
+        guard !selected.isEmpty else { return }
+        player.stop()
+        busyMessage = "Bouncing…"; baking = true
+        Task {
+            defer { baking = false }
+            guard let clip = await ArrangerBouncer.bounce(tracks: selected, store: studio, name: label),
+                  let master = studio.addTrack(arrangement: a.id, name: masterName(a)) else { return }
+            studio.addClip(arrangement: a.id, track: master.id, clip)
+        }
+    }
+
+    private func masterName(_ arr: StudioArrangement) -> String {
+        let n = arr.tracks.filter { $0.name.hasPrefix("Master") }.count
+        return n == 0 ? "Master" : "Master \(n + 1)"
+    }
+
+    private var bounceSheet: some View {
+        NavigationStack {
+            List {
+                Section("Choose tracks to mix into one master") {
+                    ForEach(Array((current?.tracks ?? []).enumerated()), id: \.element.id) { idx, track in
+                        Button {
+                            if bounceSelection.contains(track.id) { bounceSelection.remove(track.id) }
+                            else { bounceSelection.insert(track.id) }
+                        } label: {
+                            HStack {
+                                Image(systemName: bounceSelection.contains(track.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(bounceSelection.contains(track.id) ? Theme.accent : Theme.fgDim)
+                                Text(track.name.isEmpty ? "Track" : track.name).foregroundStyle(Theme.fg)
+                                Spacer()
+                                Text("\(track.clips.count) clip\(track.clips.count == 1 ? "" : "s")")
+                                    .font(.caption).foregroundStyle(Theme.fgDim)
+                            }
+                        }
+                        .disabled(track.clips.isEmpty)
+                        .accessibilityIdentifier("bounce-select-\(idx)")
+                    }
+                }
+            }
+            .navigationTitle("Bounce selected")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { bounceSelecting = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Bounce (\(bounceSelection.count))") {
+                        let sel = (current?.tracks ?? []).filter { bounceSelection.contains($0.id) }
+                        bounceSelecting = false
+                        bounce(tracks: sel, label: "Master")
+                    }
+                    .disabled(bounceSelection.isEmpty)
+                    .accessibilityIdentifier("bounce-confirm")
+                }
+            }
+        }
+    }
+
     private func deleteTrack(arr: StudioArrangement, track: StudioTrack) {
         for clip in track.clips { clipPeaks[clip.id] = nil }
         studio.deleteTrack(arrangement: arr.id, track: track.id)
@@ -477,7 +559,7 @@ struct TracksView: View {
     private func addClip(sourceId: String, kind: StudioClipSource, to trackId: String) {
         guard let a = current else { return }
         let startMs = a.tracks.first { $0.id == trackId }?.lengthMs ?? 0   // append after the last clip
-        baking = true
+        busyMessage = "Adding clip…"; baking = true
         Task {
             if let clip = await ArrangerClipBaker.bake(sourceId: sourceId, kind: kind,
                                                        startMs: startMs, studio: studio, packs: packs) {

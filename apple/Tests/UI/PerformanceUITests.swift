@@ -259,6 +259,30 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// Stage E: bounce all tracks into one master track. After a clip is on a lane, "Bounce all
+    /// tracks" mixes it offline and appends a new "Master" track holding the mixdown.
+    func testTracksBounceAllToMaster() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        app.any("tracks-add-clip-0").tap()
+        let item = app.any("clip-picker-item-smp_fixture")
+        XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
+        // Bounce all → a new Master track with the mixdown.
+        app.any("tracks-bounce-menu").tap()
+        let all = app.buttons["Bounce all tracks"]
+        XCTAssertTrue(all.waitForExistence(timeout: 5)); all.tap()
+        XCTAssertTrue(app.staticTexts["Master"].waitForExistence(timeout: 25),
+                      "a Master track should appear holding the bounce")
+        snap("tracks-bounced")
+        #endif
+    }
+
     // MARK: - (3) Samples
 
     func testSamplesSeededRowAndCreationControls() throws {
