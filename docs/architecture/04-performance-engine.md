@@ -1879,22 +1879,24 @@ pattern / renders an un-rendered take — a no-op for samples & loops), resolves
 arrangements dir. A live mic recording takes the same import path from the recorder's samples file
 (`bakeFromFile`), after which the orphan library file is deleted.
 
-**Synced playback** (`MultitrackPlayer`, `@MainActor @Observable`, view-scoped). Play rebuilds a fresh
-`AVAudioEngine` graph — one `AVAudioPlayerNode → gain(mixer)` per track, all feeding a shared
-**`masterSum`** mixer, then a master chain **`masterSum → [MasterFX] → PeakLimiter → mainMixer`**. Each
-clip decodes to a canonical buffer, scheduled at its ms→frame offset on the node's timeline
-(`scheduleBuffer(at: AVAudioTime(sampleTime:atRate:))`); then **every** node starts at one shared
-`AVAudioTime` (now + a 0.12 s pre-roll) so the sample timelines coincide — the same one-host-time sync
-`StudioEngine.restartPatternFromTop` and the MixEngine stem decks use. Per-track mute / solo / gain /
-**pan** map to each track mixer's `outputVolume`/`pan` and update **live** mid-play (solo wins,
-`applyMix`); `applyMasterFX` pushes the master params live. A non-Observable `MultitrackClock` (sampled
-by a `TimelineView`) drives the playhead without re-running the view; an auto-stop task ends playback a
-tail past the last clip.
+**Synced playback** (`MultitrackPlayer`, `@MainActor @Observable`, view-scoped). Play decodes every
+clip to a canonical buffer off the main actor, then builds a `MultitrackRenderContext` and ONE
+`AVAudioSourceNode → PeakLimiter → mainMixer`. The source node's render block (audio thread) mixes
+every clip overlapping the current window with its track's live gain/pan (loop- and seek-aware via a
+frame cursor), then runs the shared **`MasterFXKernel`** over the summed master **in the same pass** —
+so per-track mix moves AND master-FX knobs affect the audio **live**, and the exact same kernel bakes a
+bounce. This replaced the earlier `AVAudioPlayerNode`-per-track + custom-`AUAudioUnit` chain, whose AU
+**instantiated in the simulator but returned nil on device** (the "only master gain worked" bug —
+`.loadInProcess` is macOS-only, so not a fix); the source node is reliable on every platform and the
+render is deterministically unit-tested. Per-track scalars + master-FX params are written from main
+(`applyMix`/`applyMasterFX`) and read on the audio thread (arrays sized once in `load()`, only elements
+mutated — benign torn reads, no realloc). A non-Observable `MultitrackClock` drives the playhead;
+`startOffsetMs` + a ruler seek shift it; an auto-stop task ends a linear play a tail past the last clip.
 
-**Looper.** When `loopEnabled` and the region is non-empty, play sums each track's in-region clips into
-**one region-length buffer** and schedules it with `.loops` (node time 0), so the span repeats
-seamlessly; the auto-stop is skipped (a loop runs until `stop()`), and the view wraps the unbounded
-clock into the loop span for the cursor. The region's two handles are **beat-snapped** to `bpm`.
+**Looper.** When `loopEnabled` and the region is non-empty, the render cursor wraps `[loopStart,
+loopEnd)` (the window is chunked at the loop boundary), so the span repeats seamlessly; auto-stop is
+skipped (a loop runs until `stop()`) and the view wraps the clock into the loop span for the cursor.
+The region's two handles are **beat-snapped** to `bpm`.
 
 **Master FX** (`MasterFX.swift`). The Tracks master grid shows four effects the Mix tab lacks —
 **phaser** (all-pass cascade + LFO), **ring-modulator** (internal carrier multiply), **drive**
@@ -1902,10 +1904,11 @@ clock into the loop span for the cursor. The region's two handles are **beat-sna
 gain pump from `bpm`) — plus the master gain, live in **one `MasterFXKernel`**, the project's *first
 custom render-block DSP* (every Mix effect is an Apple built-in AU). The **freezer** (0.25 s buffer
 hold) also lives in the kernel but is not shown in the Tracks grid — it's kept for reuse on the Mix
-decks (the paged deck-FX are separate follow-up). The kernel is shared by two callers so live and
-bounce can't drift: **`MasterFXAudioUnit`** — a v3 `AUAudioUnit` registered once and inserted live in
-the graph (with a graceful fallback chain if instantiation ever fails) — and the offline bounce. Freeze
-is a live capture-and-hold, **bypassed when baking**; the others + master gain bake WYSIWYG.
+decks (the paged deck-FX + scratch are a separate follow-up). The kernel is shared by two callers so
+live and bounce can't drift: the **`MultitrackRenderContext`** source-node render (live) and the offline
+bounce (`ArrangerBouncer`, which runs the same kernel over the summed master — unit-tested by
+`testBounceBakesMasterFXIntoAudio`). Freeze is a live capture-and-hold, **bypassed when baking** (and
+never applied on the Tracks path at all: `allowFreeze:false`); the others + master gain bake WYSIWYG.
 
 **Ruler + seek.** A **beat-number ruler** row (`ruler(_:)`, `tracks-ruler`) sits above the lanes inside
 the SAME horizontal `ScrollView` (a `headerWidth`-wide spacer aligns the left header column), so it
@@ -1936,7 +1939,9 @@ Creating opens the arranger; **‹ Arrangements** (`arrangerHeader`) returns hom
 48) driving every ms→px mapping; the horizontal `ScrollView` is wrapped in a `ScrollViewReader` with
 invisible **per-second LAYOUT anchors** (`tracks-sec-<k>`, a real HStack flow — `.offset` anchors would
 all resolve to x=0). A polling `.task` re-centers the cursor's second while following + playing; **⌖**
-toggles follow (off ⇒ free manual scroll) and re-centers; zoom re-centers on the playhead.
+toggles follow (off ⇒ free manual scroll) and re-centers; zoom re-centers on the playhead. **Zoom-out**
+walks below the ladder floor to a **fit-to-width** `pxPerSec` (`fitPx`, from the viewport width captured
+by a `GeometryReader`), so it always reaches "the whole track on screen".
 
 **Stems in / out.** A song's four on-device stems reach the arranger two ways, both via
 `ArrangerClipBaker.bakeFromFile` (each stem baked to its own colour-matched lane at 0:00, tracks added
