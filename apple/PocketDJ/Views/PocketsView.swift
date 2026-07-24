@@ -94,6 +94,7 @@ struct PocketDetailView: View {
                             // 1:1 element↔row mapping `onMove` relies on is preserved.
                             VStack(spacing: 0) {
                                 NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: pocket.syncsWithSource) }
+                                    .forceSyncContextMenu(song: song, kind: .pocket, collectionId: pocketId)
                                 InlinePlayerSlot(songId: song.id)
                             }
                             .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }

@@ -214,13 +214,11 @@ struct AddToCollectionView: View {
     /// actually be in, and the footer names whichever one applies to THIS song.
     private var sourceSectionFooter: String {
         let base = "These lists are read-only, so PocketDJ keeps an editable copy on this device and adds the song there."
-        let hasAppleMusicId = !(songId.flatMap { app.songsById[$0]?.appleMusicId } ?? "").isEmpty
-        if !hasAppleMusicId {
-            // Vinyl / My Digital / Studio: no Apple Music identity to write back.
-            return base + " This song isn’t from Apple Music, so the add stays on this device."
-        }
         if writeBack?.canWriteBack == true {
-            return base + " For Apple Music lists it’s also added to the real playlist in your Apple Music library."
+            // Whether or not the indexer resolved a store id, an Apple Music list add tries to reach
+            // the real playlist — resolving the song on-device when it's on Apple Music, and staying
+            // local when it isn't (so no promise is made that an off-catalog track will sync).
+            return base + " For Apple Music lists, if the song is on Apple Music it’s also added to the real playlist in your Apple Music library."
         }
         return base + " Apple Music playlists can’t be edited from this device, so the add stays on this device."
     }
@@ -255,8 +253,12 @@ struct AddToCollectionView: View {
             if source.songIds.contains(sid) {
                 lines.append("Your Apple Music library playlist already has it.")
             } else if let writeBack, writeBack.canWriteBack {
+                // Pass the carried identity so the queue can resolve a store id ON-DEVICE when the
+                // indexer never minted one (`result.appleMusicId == nil`) — the "Running It Up" case.
                 if writeBack.enqueue(indexPlaylistId: source.id, playlistName: source.name,
-                                     songId: sid, appleMusicId: result.appleMusicId) != nil {
+                                     songId: sid, appleMusicId: result.appleMusicId,
+                                     title: result.title, artist: result.artist,
+                                     album: result.album, durationMs: result.durationMs) != nil {
                     lines.append("It’s also being added to “\(source.name)” in your Apple Music library.")
                 } else {
                     lines.append("It’s already on its way to “\(source.name)” in your Apple Music library.")
@@ -266,8 +268,9 @@ struct AddToCollectionView: View {
                 lines.append("Apple Music playlists can’t be edited from this device, so this add stays on this device.")
             }
         } else if PlaylistWriteBack.isAppleMusicSource(source.sourceName) {
-            // Apple Music list, but a vinyl / My Digital / Studio song — no store id exists.
-            lines.append("“\(songTitle)” isn’t an Apple Music track, so it stays in your copy only.")
+            // Apple Music list, but the song has no Apple Music identity at all (no store id and no
+            // title+artist) — nothing to resolve, so it stays in the local copy only.
+            lines.append("“\(songTitle)” can’t be matched to Apple Music, so it stays in your copy only.")
         }
 
         sourceResult = SourceAddResult(title: result.alreadyPresent ? "Already there" : "Added",

@@ -1124,6 +1124,7 @@ struct PlaylistDetailView: View {
                 // 1:1 element↔row mapping `onMove`/`onDelete` rely on is preserved.
                 VStack(spacing: 0) {
                     NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false) }
+                        .forceSyncContextMenu(song: song, kind: .playlist, collectionId: playlistId)
                     InlinePlayerSlot(songId: song.id)
                 }
             } else if let id = node.songId, StudioFactory.isStudioId(id) {

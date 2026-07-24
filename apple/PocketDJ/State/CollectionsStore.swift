@@ -484,12 +484,21 @@ final class CollectionsStore {
         let createdDuplicate: Bool
         /// The song was already a member — nothing was appended locally.
         let alreadyPresent: Bool
-        /// This source has a real Apple Music upstream AND the song has a store id, so a
-        /// write-back job is worth queueing. False ⇒ the add is local-only by nature
-        /// (vinyl / My Digital / Studio song, or a non-Apple-Music source playlist).
+        /// This source is a real Apple Music playlist AND the song can be written back — it has a
+        /// store id OR enough identity (title+artist) to resolve one on-device at delivery. False ⇒
+        /// the add is local-only by nature (a non-Apple-Music source playlist, or a song with no
+        /// Apple Music identity at all).
         let writeBackEligible: Bool
-        /// The store id the write-back would use (nil when not eligible).
+        /// The store id the write-back would use — nil when the indexer never resolved one (the
+        /// write-back then resolves it on-device from `title`/`artist`) or when not eligible.
         let appleMusicId: String?
+        /// Song identity carried so the write-back can resolve a store id ON-DEVICE when
+        /// `appleMusicId` is nil — the indexer-missed Apple Music song (the "Running It Up" case).
+        /// Empty when not eligible / not a catalog song.
+        let title: String
+        let artist: String
+        let album: String?
+        let durationMs: Int?
     }
 
     /// Add a song to a read-only SOURCE ("From your sources") playlist — the two-way path.
@@ -519,13 +528,24 @@ final class CollectionsStore {
             addSong(songId, toPlaylist: pl.id, sequenceId: pl.sequences.first?.nodeId)
         }
 
-        let amId = (appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
-        let eligible = !amId.isEmpty && PlaylistWriteBack.isAppleMusicSource(source.sourceName)
+        let song = app?.songsById[songId]
+        let amId = (appleMusicId ?? song?.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
+        let title = (song?.name ?? "").trimmingCharacters(in: .whitespaces)
+        let artist = (song?.artist ?? "").trimmingCharacters(in: .whitespaces)
+        // Eligible when the target is a real Apple Music playlist AND we have SOMETHING to write
+        // with — a known store id OR enough identity to resolve one on-device. The old gate was
+        // `!amId.isEmpty`, which wrongly dropped Apple Music songs our indexer never resolved a
+        // store id for (they read as "not an Apple Music track" and never synced); this matches the
+        // converted-pocket path (`writeBackAddedSong`), which already enqueues identity-only songs.
+        let eligible = PlaylistWriteBack.isAppleMusicSource(source.sourceName)
+            && (!amId.isEmpty || (!title.isEmpty && !artist.isEmpty))
+        let album = song?.albumId.flatMap { app?.albumsById[$0]?.name }
         return IndexPlaylistAdd(playlist: playlist(pl.id) ?? pl,
                                 createdDuplicate: created,
                                 alreadyPresent: present,
                                 writeBackEligible: eligible,
-                                appleMusicId: eligible ? amId : nil)
+                                appleMusicId: amId.isEmpty ? nil : amId,
+                                title: title, artist: artist, album: album, durationMs: song?.length)
     }
 
     /// DIRECT membership test: does this playlist carry a `.song` node for `songId`?
@@ -943,24 +963,62 @@ final class CollectionsStore {
         _ = writeBackSong(songId, forTargetKind: target.kind, collectionId: target.id)
     }
 
+    /// The outcome of a single write-back decision — rich enough to drive the force-sync UI's
+    /// "queued / already-queued / why-not" feedback. The per-add path + backfill only ever care
+    /// about `.queued` (a NEW job was enqueued); the force-sync action (`forceWriteBackSong`)
+    /// reports the rest to the user so a skip is never silent again.
+    enum WriteBackAttempt: Equatable {
+        /// The queue accepted a NEW upstream job.
+        case queued
+        /// The seam took nothing — an equivalent job is already queued/delivered, the song settled
+        /// `.unresolvable`, OR this platform/build can't write back (macOS / not-yet-authorized).
+        /// The force-sync UI disambiguates these against `PlaylistWriteBack.canWriteBack` / `isUnsyncable`.
+        case deduped
+        /// This collection has no Apple Music source playlist to write to (a plain pocket, or a
+        /// vinyl / My Digital / Imported source).
+        case notLinked
+        /// A Studio/performance item (sample/loop/sequence/instrumental) — not an Apple Music
+        /// catalog song, so there's nothing to add to a catalog playlist.
+        case notCatalogSong
+        /// A catalog song with NEITHER a store id NOR a title+artist to resolve one on-device.
+        case noIdentity
+        /// The song is already in the source SNAPSHOT (already upstream). Only returned on the
+        /// non-force path; `forceWriteBackSong` deliberately overrides this guard.
+        case alreadyUpstream
+    }
+
     /// Resolve a collection's Apple Music provenance from its id + kind, then decide whether to
-    /// write `songId` back. Shared by the per-add path and the backfill. Returns TRUE only when a
-    /// NEW upstream job was queued.
+    /// write `songId` back. Shared by the per-add path, the backfill, and the force-sync action.
+    /// `force` bypasses the "already in the source snapshot" guard (see `writeBackAddedSong`).
     @discardableResult
     private func writeBackSong(_ songId: String, forTargetKind kind: AddTarget.Kind,
-                              collectionId: String) -> Bool {
+                              collectionId: String, force: Bool = false) -> WriteBackAttempt {
         switch kind {
         case .pocket:
-            guard let p = pocket(collectionId) else { return false }
+            guard let p = pocket(collectionId) else { return .notLinked }
             return writeBackAddedSong(songId, sourcePlaylistId: p.sourcePlaylistId,
                                       sourceName: p.sourceName, sourceSnapshot: p.sourceSongIds,
-                                      collectionName: p.name)
+                                      collectionName: p.name, force: force)
         case .playlist:
-            guard let pl = playlist(collectionId) else { return false }
+            guard let pl = playlist(collectionId) else { return .notLinked }
             return writeBackAddedSong(songId, sourcePlaylistId: pl.sourcePlaylistId,
                                       sourceName: pl.sourceName, sourceSnapshot: pl.sourceSongIds,
-                                      collectionName: pl.name)
+                                      collectionName: pl.name, force: force)
         }
+    }
+
+    /// FORCE a write-back attempt for one song in a collection, bypassing the "already in the
+    /// source snapshot" guard — the manual escape hatch behind the collection row's context-menu
+    /// "Force Apple Music sync" (Levi 2026-07-24). Used when a song the user KNOWS isn't in the
+    /// real Apple Music playlist reads as "already upstream" because the pocket's snapshot is stale
+    /// or over-broad (the very failure mode the re-link flow also targets). Same append-only safety
+    /// as every other write-back path: it only ever ENQUEUES, never removes, so a wrong force is
+    /// harmless (the local membership already stands). Returns the outcome for user feedback; the
+    /// wired seam still applies the final `canWriteBack` gate and its own queued/delivered dedup.
+    @discardableResult
+    func forceWriteBackSong(_ songId: String, forTargetKind kind: AddTarget.Kind,
+                            collectionId: String) -> WriteBackAttempt {
+        writeBackSong(songId, forTargetKind: kind, collectionId: collectionId, force: true)
     }
 
     /// The write-back decision, factored out so pocket and playlist share it verbatim. Fires
@@ -975,25 +1033,30 @@ final class CollectionsStore {
     ///     the locally-stored snapshot so it holds offline too.
     /// The seam itself (wired in the app) applies the final `canWriteBack` gate and dedups
     /// queued/delivered jobs, so this stays purely about "is an upstream write owed at all".
-    /// Returns TRUE only when the seam actually queued a NEW job.
+    /// Returns the `WriteBackAttempt` outcome; `force` overrides the snapshot guard (see below).
     @discardableResult
     private func writeBackAddedSong(_ songId: String, sourcePlaylistId: String?,
                                     sourceName: String?, sourceSnapshot: [String]?,
-                                    collectionName: String) -> Bool {
+                                    collectionName: String, force: Bool = false) -> WriteBackAttempt {
         guard let enqueue = enqueueSourceWriteBack,
               let plId = sourcePlaylistId,
-              PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return false }
+              PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return .notLinked }
         // Only CATALOG songs can be written back — a studio performance item isn't in `songsById`,
         // so this also excludes samples/loops/instrumentals by construction.
-        guard let song = app?.songsById[songId] else { return false }
+        guard let song = app?.songsById[songId] else { return .notCatalogSong }
         let amId = (song.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
         let title = song.name.trimmingCharacters(in: .whitespaces)
         let artist = song.artist.trimmingCharacters(in: .whitespaces)
         // Need a KNOWN catalog id, or enough identity to resolve one on-device (the case our
         // indexer missed — e.g. "The Magic Clap" by The Coup, an Apple Music (Local) song with no
         // `appleMusicId`). With neither, there's nothing to write; the local add is the whole op.
-        guard !amId.isEmpty || (!title.isEmpty && !artist.isEmpty) else { return false }
-        guard !(sourceSnapshot ?? []).contains(songId) else { return false }
+        guard !amId.isEmpty || (!title.isEmpty && !artist.isEmpty) else { return .noIdentity }
+        // The snapshot IS Apple Music's membership as of the last catalog refresh, so a song already
+        // in it is already upstream and re-adding would DUPLICATE the track. A FORCE sync overrides
+        // this: the user is explicitly telling us the song is NOT actually in the real playlist
+        // (a stale / over-broad snapshot — the same failure the re-link flow rescues), and the
+        // transport's own "already in the playlist?" pre-check is the backstop against a true dup.
+        if !force, (sourceSnapshot ?? []).contains(songId) { return .alreadyUpstream }
         let album = song.albumId.flatMap { app?.albumsById[$0]?.name }
         // The join key is the source playlist id; the NAME is only the first-resolve bootstrap
         // (`PlaylistWriteBack` remembers the MusicKit id thereafter). Prefer the live source
@@ -1002,6 +1065,7 @@ final class CollectionsStore {
         // rejects an empty name.
         let name = liveSourcePlaylist(id: plId, sourceName: sourceName)?.name ?? collectionName
         return enqueue(plId, name, songId, amId.isEmpty ? nil : amId, title, artist, album, song.length)
+            ? .queued : .deduped
     }
 
     /// The default look-back for the write-back backfill, and the ceiling the UI clamps to.
@@ -1054,7 +1118,7 @@ final class CollectionsStore {
                 }
             }()
             guard stillMember else { continue }
-            if writeBackSong(e.itemId, forTargetKind: kind, collectionId: cid) { queued += 1 }
+            if case .queued = writeBackSong(e.itemId, forTargetKind: kind, collectionId: cid) { queued += 1 }
         }
         return queued
     }
