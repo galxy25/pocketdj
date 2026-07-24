@@ -346,6 +346,19 @@ struct TracksView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("tracks-bpm")
 
+            // Looper — repeat the shaded region between the two handles.
+            Button { toggleLoop(arr) } label: {
+                Image(systemName: "repeat")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(arr.loopEnabled ? Theme.accent : Theme.fgDim)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(arr.loopEnabled ? Theme.accent.opacity(0.16) : Theme.bgOverlay, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(arr.lengthMs == 0)
+            .accessibilityIdentifier("tracks-loop-toggle")
+            .accessibilityValue(arr.loopEnabled ? "on" : "off")
+
             Spacer()
             Menu {
                 Button { bounce(tracks: arr.tracks, label: "Master") } label: {
@@ -399,6 +412,7 @@ struct TracksView: View {
                         }
                     }
                     .overlay(alignment: .topLeading) { beatMarkers(arr) }
+                    .overlay(alignment: .topLeading) { loopOverlay(arr) }
                     .overlay(alignment: .topLeading) { playhead(arr) }
                     .padding(.trailing, 24)
                 }
@@ -583,16 +597,85 @@ struct TracksView: View {
         }
     }
 
+    /// The loop region — a shaded band with two draggable, beat-snapped handles. Only the handles
+    /// intercept touches (the band itself doesn't, so it never eats clip drags). Shown only when the
+    /// looper is on. Shares the clip scroll grid so it lines up with clips and beat markers.
+    @ViewBuilder private func loopOverlay(_ arr: StudioArrangement) -> some View {
+        if arr.loopEnabled {
+            let sPx = CGFloat(arr.loopStartMs) / 1000 * pxPerSec
+            let ePx = CGFloat(arr.loopEndMs) / 1000 * pxPerSec
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(Theme.accent.opacity(0.10))
+                    .frame(width: max(2, ePx - sPx)).frame(maxHeight: .infinity)
+                    .offset(x: sPx)
+                    .allowsHitTesting(false)
+                loopHandle(arr: arr, isStart: true, xPx: sPx)
+                loopHandle(arr: arr, isStart: false, xPx: ePx)
+            }
+        }
+    }
+
+    private func loopHandle(arr: StudioArrangement, isStart: Bool, xPx: CGFloat) -> some View {
+        Rectangle().fill(Theme.accent)
+            .frame(width: 3).frame(maxHeight: .infinity)
+            .overlay(alignment: isStart ? .topLeading : .topTrailing) {
+                Image(systemName: isStart ? "arrowtriangle.right.fill" : "arrowtriangle.left.fill")
+                    .font(.system(size: 9)).foregroundStyle(Theme.accent).offset(y: 2)
+            }
+            .contentShape(Rectangle().inset(by: -9))   // easy grab target without a wide visual
+            .offset(x: xPx - 1.5)
+            .accessibilityIdentifier(isStart ? "tracks-loop-start" : "tracks-loop-end")
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { v in
+                        let ms = snapMs(Int(v.location.x / pxPerSec * 1000), bpm: arr.bpm)
+                        if isStart {
+                            studio.setArrangementLoop(arr.id, startMs: min(ms, arr.loopEndMs - 1))
+                        } else {
+                            studio.setArrangementLoop(arr.id, endMs: max(ms, arr.loopStartMs + 1))
+                        }
+                    }
+            )
+    }
+
+    /// Snap a timeline position (ms) to the nearest beat on the arrangement grid.
+    private func snapMs(_ ms: Int, bpm: Double) -> Int {
+        guard bpm > 0 else { return max(0, ms) }
+        let beatMs = 60_000.0 / bpm
+        return max(0, Int((Double(ms) / beatMs).rounded() * beatMs))
+    }
+
+    /// Toggle the looper. Enabling with no region set seeds a sensible default (4 bars from 0:00,
+    /// capped to the timeline). If this arrangement is currently playing, playback restarts so the
+    /// loop takes effect immediately.
+    private func toggleLoop(_ arr: StudioArrangement) {
+        if arr.loopEnabled {
+            studio.setArrangementLoop(arr.id, enabled: false)
+        } else {
+            var start = arr.loopStartMs, end = arr.loopEndMs
+            if end <= start {
+                let bar4 = arr.bpm > 0 ? Int((60_000.0 / arr.bpm) * 4) : 2_000
+                start = 0
+                end = arr.lengthMs > 0 ? min(bar4, arr.lengthMs) : bar4
+                if end <= start { end = start + bar4 }
+            }
+            studio.setArrangementLoop(arr.id, enabled: true, startMs: start, endMs: end)
+        }
+        if isPlayingThis(arr), let fresh = studio.arrangement(arr.id) {
+            Task { await player.play(arrangement: fresh, store: studio) }
+        }
+    }
+
     /// The playhead's timeline position in seconds — wraps into the loop span while looping so the
     /// cursor visually repeats the region (the audio node loops; the clock grows unbounded).
     private func playheadSeconds(_ arr: StudioArrangement) -> Double {
         let raw = player.clock.currentSeconds
         guard arr.loopEnabled, arr.loopEndMs > arr.loopStartMs else { return raw }
         let startS = Double(arr.loopStartMs) / 1000
-        let endS = Double(arr.loopEndMs) / 1000
-        guard raw > startS else { return raw }
-        let span = endS - startS
-        return startS + (raw - startS).truncatingRemainder(dividingBy: span)
+        let span = Double(arr.loopEndMs - arr.loopStartMs) / 1000
+        guard span > 0 else { return raw }
+        // The region loops from node time 0, so the cursor sits at loopStart and sweeps the region.
+        return startS + raw.truncatingRemainder(dividingBy: span)
     }
 
     private func clipX(_ clip: StudioClip) -> CGFloat {
