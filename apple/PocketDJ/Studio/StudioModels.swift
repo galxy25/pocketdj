@@ -980,6 +980,40 @@ struct StudioArrangementFolder: Codable, Identifiable, Hashable, Sendable {
 /// The versioned studio document (`pocketdj-studio.json`). Every list decodes per-element
 /// lossily and every element decodes leniently — a future build's fields/kinds degrade to
 /// defaults or drop the single element, never the document (the schema doctrine above).
+/// A rendered ARTIFACT produced from an arrangement — a bounce (offline mixdown) or a live
+/// recording (record-to-master capture). Device-local, arrangement-scoped: it rides no collection
+/// array, so `art_` is deliberately NOT in `studioPrefixes` (like `arr_`/`clip_`). The audio lives
+/// app-managed in `studio/arrangements/<fileName>` under a dated `bounce-…` / `live-recording-…`
+/// name. Additive/lenient decode like every studio model; convert-to-sample bakes an independent
+/// `smp_` snapshot so deleting the artifact never touches the sample (and vice-versa).
+struct StudioArrangementArtifact: Codable, Identifiable, Hashable, Sendable {
+    enum Kind: String, Codable, Sendable { case bounce, recording }
+    var id: String                 // "art_…"
+    var arrangementId: String      // the owning arrangement's arr_ id
+    var kind: Kind = .bounce
+    var name: String               // display + file stem, e.g. "bounce-2026-07-24 15-30-12"
+    var fileName: String           // "<name>.m4a" inside studio/arrangements/
+    var durationMs: Int = 0
+    var createdAt: Double = 0      // epoch ms
+
+    enum CodingKeys: String, CodingKey { case id, arrangementId, kind, name, fileName, durationMs, createdAt }
+    init(id: String, arrangementId: String, kind: Kind, name: String, fileName: String,
+         durationMs: Int = 0, createdAt: Double = 0) {
+        self.id = id; self.arrangementId = arrangementId; self.kind = kind; self.name = name
+        self.fileName = fileName; self.durationMs = durationMs; self.createdAt = createdAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newArtifactId()
+        arrangementId = (try? c.decode(String.self, forKey: .arrangementId)) ?? ""
+        kind = (try? c.decode(Kind.self, forKey: .kind)) ?? .bounce
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        fileName = (try? c.decode(String.self, forKey: .fileName)) ?? ""
+        durationMs = (try? c.decode(Int.self, forKey: .durationMs)) ?? 0
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+    }
+}
+
 struct StudioDocument: Codable, Sendable {
     var schemaVersion: Int = studioSchemaVersion
     var samples: [StudioSample] = []
@@ -997,6 +1031,10 @@ struct StudioDocument: Codable, Sendable {
     /// Flat folders that organize arrangements (device-local, in-content only). Additive-optional
     /// like `folders`: a legacy document with no `arrangementFolders` key decodes to `[]`.
     var arrangementFolders: [StudioArrangementFolder] = []
+    /// Bounces + live recordings rendered from arrangements (device-local, arrangement-scoped).
+    /// Additive-optional like `arrangements`: a legacy document with no `arrangementArtifacts` key
+    /// decodes to `[]`, per-element lossy.
+    var arrangementArtifacts: [StudioArrangementArtifact] = []
     /// On-device DETECTED musical key (Camelot code) per performance item, keyed by studio id
     /// (`smp_`/`lp_`/`ptn_`/`tk_`). Populated by `StudioAnalyzer` when an item is added to a
     /// collection; consumed for harmonic mix-glide. A parallel map (not a per-model field) so it
@@ -1005,17 +1043,18 @@ struct StudioDocument: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, samples, loops, patterns, takes, cues, slices, folders, keys,
-             arrangements, arrangementFolders
+             arrangements, arrangementFolders, arrangementArtifacts
     }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
          cues: [StudioCue] = [], slices: [StudioSlice] = [],
          folders: [StudioSampleFolder] = [], keys: [String: String] = [:],
-         arrangements: [StudioArrangement] = [], arrangementFolders: [StudioArrangementFolder] = []) {
+         arrangements: [StudioArrangement] = [], arrangementFolders: [StudioArrangementFolder] = [],
+         arrangementArtifacts: [StudioArrangementArtifact] = []) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
         self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
         self.folders = folders; self.keys = keys; self.arrangements = arrangements
-        self.arrangementFolders = arrangementFolders
+        self.arrangementFolders = arrangementFolders; self.arrangementArtifacts = arrangementArtifacts
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1038,6 +1077,8 @@ struct StudioDocument: Codable, Sendable {
         arrangements = ((try? c.decode([StudioLossyBox<StudioArrangement>].self, forKey: .arrangements)) ?? [])
             .compactMap(\.value)
         arrangementFolders = ((try? c.decode([StudioLossyBox<StudioArrangementFolder>].self, forKey: .arrangementFolders)) ?? [])
+            .compactMap(\.value)
+        arrangementArtifacts = ((try? c.decode([StudioLossyBox<StudioArrangementArtifact>].self, forKey: .arrangementArtifacts)) ?? [])
             .compactMap(\.value)
     }
 }
@@ -1070,6 +1111,9 @@ enum StudioFactory {
     /// Arrangement folders (Tracks organizer). Like `sfld_`/`cue_`/`slc_`, an `arrfld_` id NEVER
     /// rides a collection's string array, so it is deliberately NOT in `studioPrefixes`.
     static func newArrangementFolderId() -> String { "arrfld_" + uid() }
+    /// Arrangement artifacts (bounces / live recordings). Like `arr_`/`clip_`/`arrfld_`, an `art_`
+    /// id NEVER rides a collection's string array, so it is deliberately NOT in `studioPrefixes`.
+    static func newArtifactId() -> String { "art_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore

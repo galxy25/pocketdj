@@ -196,7 +196,8 @@ final class MultitrackPlayer {
     /// starts playback at a timeline offset (a ruler seek); ignored while looping (which starts the
     /// region). Returns false when there's nothing to play.
     @discardableResult
-    func play(arrangement: StudioArrangement, store: StudioStore, fromMs: Int = 0, record: Bool = false) async -> Bool {
+    func play(arrangement: StudioArrangement, store: StudioStore, fromMs: Int = 0,
+              record: Bool = false, quantized: Bool = false) async -> Bool {
         stop()
         let gen = playGeneration
         // 1. Decode every clip to a canonical buffer off the main actor, tagged with its track index.
@@ -255,36 +256,41 @@ final class MultitrackPlayer {
         try? session.setCategory(.playback, mode: .default)
         try? session.setActive(true)
         #endif
-        // Record-to-master: tap the LIMITER, not the main mixer. `src → limiter → mainMixer` are all
-        // connected at `fmt` (canonical 44.1 kHz), so the limiter's output bus runs at exactly the
-        // arrangement's rate — and its signal already carries every master FX + master gain (both
-        // kernel-applied, upstream of the limiter) AND the limiter itself, i.e. exactly what you hear.
-        // The main mixer's OUTPUT instead adopts the device HARDWARE rate (48 kHz on iPhone); worse,
-        // `outputFormat(forBus:)` read here — before `engine.start()` — reports the stale 44.1 kHz
-        // default, so a mixer tap wrote a 44.1-labelled CAF fed 48 kHz frames → the baked take played
-        // 8.8 % slow, ~1.5 semitones flat, "crunchy" on device (rates coincide in the Sim, so it slipped
-        // tests). Tapping the limiter is device-rate-independent and needs no resample on bake.
-        // The file is captured by value so the tap never touches @MainActor state.
-        if record {
-            // Discard any leftover unbaked partial from a previous restart (avoid a tmp CAF leak).
-            if let old = recordingURL { try? FileManager.default.removeItem(at: old); recordingURL = nil }
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("tracks-master-\(UUID().uuidString).caf")
-            if let file = try? AVAudioFile(forWriting: url, settings: fmt.settings) {
-                recordFile = file; recordingURL = url; recordTapped = true; recordTapNode = limiter
-                limiter.installTap(onBus: 0, bufferSize: 4096, format: fmt) { buf, _ in
-                    try? file.write(from: buf)
-                }
-            }
-        }
-
         do { try engine.start() } catch { stop(); return false }
+
+        // Record-to-master: install the tap AFTER the engine is running so the mixer reports its true
+        // format (reading it before start yields the stale 44.1 kHz default — the original pitch bug).
+        // Clean mode taps the canonical-rate limiter; Quantized (lo-fi) taps the hardware-rate mixer.
+        if record { setupRecordTap(limiter: limiter, canonical: fmt, quantized: quantized) }
 
         clock.start(atHostTime: mach_absolute_time())
         isPlaying = true
         playingArrangementId = arrangement.id
         if !looping { scheduleAutoStop(lengthMs: max(0, arrangement.lengthMs - seekMs)) }
         return true
+    }
+
+    /// Install the record-to-master tap on the running engine. CLEAN mode taps the LIMITER at the
+    /// canonical rate (`fmt`) — `src → limiter → mainMixer` are wired at 44.1 kHz, so the limiter's
+    /// output already carries every master FX + master gain (kernel-applied, upstream) AND the limiter
+    /// itself ("exactly what you hear") at a device-rate-independent rate that needs no resample on
+    /// bake. QUANTIZED (lo-fi) mode taps the MAIN MIXER at its true post-start HARDWARE format (48 kHz
+    /// on iPhone); the bake relabels those frames as 44.1 without resampling for the retro downpitch —
+    /// faithfully the pre-fix behavior, now opt-in. The file is captured by value so the tap never
+    /// touches @MainActor state.
+    private func setupRecordTap(limiter: AVAudioNode, canonical fmt: AVAudioFormat, quantized: Bool) {
+        // Discard any leftover unbaked partial from a previous restart (avoid a tmp CAF leak).
+        if let old = recordingURL { try? FileManager.default.removeItem(at: old); recordingURL = nil }
+        let node: AVAudioNode = quantized ? engine.mainMixerNode : limiter
+        let tapFmt = quantized ? engine.mainMixerNode.outputFormat(forBus: 0) : fmt
+        guard tapFmt.sampleRate > 0 else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tracks-master-\(UUID().uuidString).caf")
+        guard let file = try? AVAudioFile(forWriting: url, settings: tapFmt.settings) else { return }
+        recordFile = file; recordingURL = url; recordTapped = true; recordTapNode = node
+        node.installTap(onBus: 0, bufferSize: 4096, format: tapFmt) { buf, _ in
+            try? file.write(from: buf)
+        }
     }
 
     func stop() {

@@ -12,14 +12,14 @@ enum ArrangerBouncer {
     /// Cap the master length so a runaway timeline can't allocate an unbounded accumulator.
     private static let maxSeconds = 30 * 60
 
-    /// Returns a ready-to-file master `StudioClip` (audio already written), positioned at `startMs`,
-    /// or nil when the tracks hold no resolvable clips. The caller files it onto a new master track.
-    static func bounce(tracks: [StudioTrack], store: StudioStore, name: String, startMs: Int = 0,
-                       masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120) async -> StudioClip? {
+    private typealias MixJob = (gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)
+
+    /// Resolve the tracks into per-clip mix jobs + the master length, or nil when nothing resolves /
+    /// the timeline is absurdly long. Shared by both bounce entry points so gain/pan handling can't
+    /// drift between "bounce to a clip" and "bounce to an artifact file".
+    private static func plan(tracks: [StudioTrack], store: StudioStore) -> (jobs: [MixJob], totalFrames: Int64)? {
         let sr = StudioAudio.canonicalSampleRate
-        // Bake master FX WYSIWYG (freeze is a live-only hold → bypassed offline).
-        let fxParams = MasterFXParams(masterFX, bpm: bpm, allowFreeze: false)
-        var jobs: [(gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)] = []
+        var jobs: [MixJob] = []
         var totalFrames: Int64 = 0
         for track in tracks {
             let db = min(6.0, max(-24.0, track.gainDb))
@@ -38,19 +38,45 @@ enum ArrangerBouncer {
             }
         }
         guard !jobs.isEmpty, totalFrames > 0, totalFrames < Int64(maxSeconds) * Int64(sr) else { return nil }
+        return (jobs, totalFrames)
+    }
 
+    /// Returns a ready-to-file master `StudioClip` (audio already written), positioned at `startMs`,
+    /// or nil when the tracks hold no resolvable clips. The caller files it onto a new master track.
+    /// (Retained for "Add as track"-style flows; the Bounce button writes an artifact via `bounceToFile`.)
+    static func bounce(tracks: [StudioTrack], store: StudioStore, name: String, startMs: Int = 0,
+                       masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120) async -> StudioClip? {
+        guard let p = plan(tracks: tracks, store: store) else { return nil }
         let clipId = StudioFactory.newClipId()
         let fileName = StudioStore.clipFileName(clipId)
         guard let dir = try? StudioStore.arrangementsDir() else { return nil }
         let dest = dir.appendingPathComponent(fileName)
-        let frames = totalFrames
-        let durationMs: Int? = await Task.detached(priority: .userInitiated) {
-            mixAndWrite(jobs: jobs, totalFrames: frames, to: dest, fx: fxParams)
-        }.value
-        guard let durationMs, durationMs > 0 else { return nil }
+        guard let durationMs = await render(plan: p, masterFX: masterFX, bpm: bpm, to: dest),
+              durationMs > 0 else { return nil }
         return StudioClip(id: clipId, name: name, fileName: fileName, startMs: max(0, startMs),
                           durationMs: durationMs, source: .master, sourceId: nil,
                           createdAt: Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// Bounce straight to a caller-provided file URL (a dated artifact in the arrangements dir),
+    /// returning the master length in ms — the artifact-only Bounce path. No clip/track is created.
+    static func bounceToFile(tracks: [StudioTrack], store: StudioStore, to dest: URL,
+                             masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120) async -> Int? {
+        guard let p = plan(tracks: tracks, store: store) else { return nil }
+        guard let durationMs = await render(plan: p, masterFX: masterFX, bpm: bpm, to: dest),
+              durationMs > 0 else { return nil }
+        return durationMs
+    }
+
+    /// Off-main mix + master-FX + write for a resolved plan. Freeze is a live-only hold → bypassed.
+    private static func render(plan: (jobs: [MixJob], totalFrames: Int64),
+                               masterFX: StudioMasterFX, bpm: Double, to dest: URL) async -> Int? {
+        let fxParams = MasterFXParams(masterFX, bpm: bpm, allowFreeze: false)
+        let jobs = plan.jobs
+        let frames = plan.totalFrames
+        return await Task.detached(priority: .userInitiated) {
+            mixAndWrite(jobs: jobs, totalFrames: frames, to: dest, fx: fxParams)
+        }.value
     }
 
     /// Off-main: allocate a canonical accumulator, add each clip (decoded canonical) at its start
