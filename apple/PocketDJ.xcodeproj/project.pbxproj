@@ -175,6 +175,7 @@
 		740A91784FC16249388983AE /* BackupZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A963FCF5CBA64C18F7B02061 /* BackupZip.swift */; };
 		740C0D0570C4757D57C11815 /* AlbumArtworkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E57D669298B63F0D5DC1DC7 /* AlbumArtworkStore.swift */; };
 		75ECC2F2074E85FAD530E261 /* MixRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E16A1B5B945843E398FD9AE /* MixRecorder.swift */; };
+		77FF94EDA7EFA78A4F8E5C19 /* TracksGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583031210C6CC89D16565023 /* TracksGlyph.swift */; };
 		785A2283E86AF6FBB36C7E97 /* NowPlayingSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E68B627E11B43B6DA0FFC32 /* NowPlayingSnapshot.swift */; };
 		78EF1A8ECCC69029C9189883 /* PocketDJUTType.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */; };
 		795FD609679C7C11A4F7F170 /* StudioStepModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C408F5E0FE5F2891C7B35D7 /* StudioStepModeTests.swift */; };
@@ -531,6 +532,7 @@
 		5692AC73924837704706634C /* SettingsView+Streaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SettingsView+Streaming.swift"; sourceTree = "<group>"; };
 		5699B98E5ECF46FBDDFB34C0 /* CollectionRipBurnControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionRipBurnControllerTests.swift; sourceTree = "<group>"; };
 		5829CE48FC56E6FC8C7180E0 /* BrowseDiscover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseDiscover.swift; sourceTree = "<group>"; };
+		583031210C6CC89D16565023 /* TracksGlyph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TracksGlyph.swift; sourceTree = "<group>"; };
 		5960B1BEBB6DBDAB4E21461C /* MixSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixSession.swift; sourceTree = "<group>"; };
 		599B63FFD551DD0F51FBF4D4 /* PocketDJUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PocketDJUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5B734C4E507E391171211F1C /* StudioScoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioScoreView.swift; sourceTree = "<group>"; };
@@ -987,6 +989,7 @@
 				9D812B60979AF17F5B33E66B /* StudioSequencerView.swift */,
 				12B8946BC54B554F1789BD45 /* StudioSliceEditorView.swift */,
 				81DF4546D9E17579C770AC17 /* StudioTakesView.swift */,
+				583031210C6CC89D16565023 /* TracksGlyph.swift */,
 				7312A04C461CAEE52F8280DA /* TracksIcon.swift */,
 				9503F8E2F5DB4368AC78BEBD /* TracksView.swift */,
 			);
@@ -1923,6 +1926,7 @@
 				167CA1A9D7FC945EBC0F90F1 /* Theme.swift in Sources */,
 				266297FB3BFA553880CF2A94 /* TrackPlaybackProvider.swift in Sources */,
 				29BB8D9C94C0D6531FBD237F /* TracklistCSV.swift in Sources */,
+				77FF94EDA7EFA78A4F8E5C19 /* TracksGlyph.swift in Sources */,
 				FC5D735E2FD2A1BBB46D1131 /* TracksIcon.swift in Sources */,
 				0DE9F1A723C7143F0C22E92D /* TracksView.swift in Sources */,
 				E03D08E277CFBDABBB24EC25 /* TransferCoordinator.swift in Sources */,

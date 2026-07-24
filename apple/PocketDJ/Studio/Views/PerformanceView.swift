@@ -82,17 +82,31 @@ struct PerformanceView: View {
         #endif
     }
 
+    /// Per-segment icon. Tracks uses a monochrome raster of the 4-bar gapped glyph (`TracksGlyph`) —
+    /// a `.segmented` Picker template-tints its images, so this silhouette reads as multitrack lanes
+    /// and never collides with the `rectangle.stack` Pockets glyph; every other tab is its SF Symbol.
+    @ViewBuilder private func segmentIcon(_ t: StudioSubTab) -> some View {
+        if t == .tracks {
+            TracksGlyph.templateImage()
+        } else {
+            Image(systemName: t.icon)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // The sub-tab switcher lives IN CONTENT, not the toolbar (the iPhone-portrait
             // overflow lesson: critical controls must never collapse into a nested "•••").
             Picker("Studio", selection: $tab) {
                 ForEach(StudioSubTab.allCases) { t in
-                    if isCompact {
-                        Image(systemName: t.icon).tag(t)
-                    } else {
-                        Label(t.label, systemImage: t.icon).tag(t)
+                    Group {
+                        if isCompact {
+                            segmentIcon(t)
+                        } else {
+                            Label { Text(t.label) } icon: { segmentIcon(t) }
+                        }
                     }
+                    .tag(t)
                 }
             }
             .pickerStyle(.segmented)
