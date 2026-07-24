@@ -283,6 +283,103 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    // MARK: - (2c) Tracks round 2 — pan/colour, tempo/looper, master FX, folders
+
+    /// Round 2: a track lane exposes a stereo PAN slider and a COLOUR menu (recolour the lane).
+    func testTracksPanAndColourControls() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        XCTAssertTrue(app.any("tracks-track-name-0").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.any("tracks-track-pan-0").exists, "lane should expose a pan slider")
+        let colour = app.any("tracks-track-color-0")
+        XCTAssertTrue(colour.waitForExistence(timeout: 5), "lane should expose a colour menu")
+        colour.tap()
+        let red = app.buttons["Red"]
+        if red.waitForExistence(timeout: 5) { red.tap() }
+        snap("tracks-pan-colour")
+        #endif
+    }
+
+    /// Round 2: the transport tempo pill opens a BPM entry, and the looper toggle turns on a
+    /// beat-snapped region (its start handle appears).
+    func testTracksTempoAndLooper() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        app.any("tracks-add-clip-0").tap()
+        let item = app.any("clip-picker-item-smp_fixture")
+        XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
+        // Tempo pill → BPM entry alert.
+        let bpm = app.any("tracks-bpm")
+        XCTAssertTrue(bpm.waitForExistence(timeout: 5)); bpm.tap()
+        XCTAssertTrue(app.buttons["Set"].waitForExistence(timeout: 5), "tempo pill opens a BPM entry")
+        app.buttons["Cancel"].firstMatch.tap()
+        // Looper on → region + start handle.
+        let loop = app.any("tracks-loop-toggle")
+        XCTAssertTrue(loop.waitForExistence(timeout: 5)); loop.tap()
+        wait(for: [expectation(for: NSPredicate(format: "value == 'on'"), evaluatedWith: loop)], timeout: 5)
+        XCTAssertTrue(app.any("tracks-loop-start").waitForExistence(timeout: 5),
+                      "the looper should show a start handle")
+        snap("tracks-looper")
+        #endif
+    }
+
+    /// Round 2: the Master FX panel expands and its effect toggles + master gain are present/live.
+    func testTracksMasterFXPanel() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        let toggle = app.any("tracks-master-fx-toggle")
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "the Master FX panel header should exist")
+        toggle.tap()
+        XCTAssertTrue(app.any("tracks-master-gain").waitForExistence(timeout: 5), "master gain slider appears")
+        let phaser = app.any("tracks-fx-phaser")
+        XCTAssertTrue(phaser.waitForExistence(timeout: 5)); phaser.tap()
+        wait(for: [expectation(for: NSPredicate(format: "value == 'on'"), evaluatedWith: phaser)], timeout: 5)
+        snap("tracks-master-fx")
+        #endif
+    }
+
+    /// Round 2: the arrangement menu organizes into folders — the one-shot "New folder…" in the Move
+    /// submenu creates a folder AND files the current arrangement into it (so it becomes a move target).
+    func testTracksArrangementFolderCreate() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        let menu = app.any("tracks-arrangement-menu")
+        XCTAssertTrue(menu.waitForExistence(timeout: 15)); menu.tap()
+        let move = app.buttons["Move to folder"]
+        XCTAssertTrue(move.waitForExistence(timeout: 5), "menu should offer Move to folder"); move.tap()
+        let newFolder = app.any("tracks-move-new-folder")
+        XCTAssertTrue(newFolder.waitForExistence(timeout: 5), "Move submenu should offer New folder…"); newFolder.tap()
+        let field = app.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText("Live Set")
+        app.buttons["Create"].tap()
+        // Reopen → the new folder is now a move target.
+        menu.tap()
+        app.buttons["Move to folder"].tap()
+        XCTAssertTrue(app.buttons["Live Set"].waitForExistence(timeout: 5),
+                      "the created folder should appear as a move target")
+        snap("tracks-folder")
+        #endif
+    }
+
     // MARK: - (3) Samples
 
     func testSamplesSeededRowAndCreationControls() throws {

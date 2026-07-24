@@ -340,7 +340,9 @@ other**) become live **mute/solo rows**. Stems degrade gracefully: already **bur
 now; **stemmed server-side** → one-tap download; **not stemmed yet** → create them on the
 import server (custom audio uploads your local file for separation). There is **no on-device
 separation** — Demucs runs on the server — so with no server configured the panel says so
-plainly.
+plainly. Once the four are on the device, **Send stems to a new arrangement** drops them straight
+into **Tracks** — drums, bass, other and vocals on four colour-matched lanes, aligned at 0:00 —
+ready to arrange, loop, and mix.
 
 **Lyrics.** A catalog song with a **cloud lyrics sidecar** (whisper, transcribed from its
 vocals stem by the offload workers) fetches it automatically — timed **karaoke words** you can
@@ -397,34 +399,54 @@ vocals), each **broken into discontinuous segments**, because a track is silence
 are where the singer isn't singing, where the piano rests. (The tab's segment shows a **monochrome**
 version of the same four gapped bars — evocative of lanes, distinct from every other tab.)
 
-**Arrangements.** You work inside a named **arrangement** (it starts you on "Arrangement 1"); the menu
-at the top switches, creates, renames, and deletes them, so a whole song idea — verse take, drum
-loop, bass sequence — lives as one arrangement you can come back to.
+**Arrangements — and folders.** You work inside a named **arrangement** (it starts you on
+"Arrangement 1"); the menu at the top switches, creates, renames, and deletes them. As the ideas pile
+up, group them into **folders** — the menu's **Move to folder** submenu files the current arrangement
+(pick a folder, **No folder**, or **New folder…** to make one in the same tap), and a **Folders**
+submenu renames or deletes folders. Deleting a folder just un-files its arrangements — it never
+deletes one. The picker then reads as tidy sections: your folders first, a **No folder** section for
+loose ones. (It's all in-app — nothing clutters the Mac menu bar.)
 
-**Tracks.** **＋ Track** adds a lane. Each lane carries a **mix strip** — **M**ute, **S**olo, and a
-**gain** slider — plus a row menu to **rename**, **duplicate** (a real copy — its clips get their own
-audio, so editing one never touches the other), or **delete** it.
+**Tracks.** **＋ Track** adds a lane. Each lane carries a **mix strip** — **M**ute, **S**olo, a
+**gain** slider, and a **pan** slider (L…R, snapping to dead-center) — plus a **colour chip** you tap
+to recolour the lane, and a row menu to **rename**, **duplicate** (a real copy — its clips get their
+own audio, so editing one never touches the other), or **delete** it.
 
 **Clips — from anything you've made.** Tap **＋** on a lane and pick from a source list: any **sample,
-loop, sequence, or instrumental** you've built. The Studio **bakes it into the lane** as a clip — an
-**immutable snapshot**, so later tweaks to the original never disturb what you placed (re-add it to
-pick up an edit). Each clip shows its **waveform** in the track's colour; **drag** it along the
-timeline to slide it earlier or later — the empty space you open up *is* the gap.
+loop, sequence, or instrumental** you've built — or, under **Stems**, any song whose four stems are on
+your device (picking one drops **drums, bass, other, vocals** onto four new colour-matched lanes at
+once). The Studio **bakes it into the lane** as a clip — an **immutable snapshot**, so later tweaks to
+the original never disturb what you placed (re-add it to pick up an edit). Each clip shows its
+**waveform** in the track's colour; **drag** it along the timeline to slide it earlier or later — the
+empty space you open up *is* the gap.
 
 **Record straight into a lane.** A lane's menu ▸ **Record** captures the **mic** right onto that track;
 stop, and the take lands as a clip at the end of the lane.
 
-**Play it.** **▶** starts every lane together, sample-locked, with a **playhead** sweeping the
-timeline and a running **m:ss**. **Mute**, **solo**, and **gain** move the mix **live** while it plays.
+**Play it — on a beat grid.** **▶** starts every lane together, sample-locked, with a **playhead**
+sweeping the timeline (a little **time bubble** riding its tip) and a running **m:ss**. A **beat grid**
+rules the timeline — thin ticks per beat, bolder bar lines every four, numbered — set by the
+**♩ tempo** pill (which seeds itself from the first clip's source tempo). **Mute**, **solo**, **gain**,
+and **pan** move the mix **live** while it plays.
+
+**Loop a section.** The **loop** button turns on a shaded region with two **beat-snapped handles** —
+drag them to pick the start and end — and playback **repeats** that span seamlessly so you can dial a
+groove or overdub against it.
+
+**Master FX.** A **Master FX** panel folds out along the bottom with four effects the Mix tab doesn't
+have — a **Phaser**, a **Ring Modulator**, a **Freezer** (grab-and-hold), and a **Brazilian Bass Lift**
+(fat sub on every beat) — each a toggle plus its own dial, over an overall **master gain**. It shapes
+the **whole mix live** as it plays, and a **bounce bakes exactly what you hear** (the freeze, being a
+live hold, sits out a bounce).
 
 **Bounce it down.** When the arrangement sounds right, **Bounce** mixes it to a single **master track**:
 one lane's **Bounce this track**, the transport's **Bounce ▸ all tracks**, or **Bounce ▸ selected…**
-(tick the lanes you want) — each drops a new **Master** lane holding the mixdown, ready to play, bounce
-again, or build on.
+(tick the lanes you want) — each drops a new **Master** lane holding the mixdown (pan and Master FX
+baked in), ready to play, bounce again, or build on.
 
-**User story:** "I drop a drum sequence on lane 1, a bass loop on lane 2, sing a hook onto lane 3, nudge
-the hook a bar late so it lands on the drop, solo-check each part, then bounce the whole thing to a
-Master I can keep."
+**User story:** "I send a song's stems to a fresh arrangement, pan the drums a touch left, colour the
+vocal lane purple, set a 4-bar loop over the chorus, ride the Brazilian bass on every beat, then bounce
+the whole thing — fat sub and all — to a Master I can keep."
 
 ---
 
