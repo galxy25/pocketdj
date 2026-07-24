@@ -2,11 +2,12 @@ import SwiftUI
 
 // MARK: - Sub-tabs (spec §1)
 
-/// The six Studio sub-tabs. `rawValue` is the persistence token in `SettingsStore.studioTab`
+/// The seven Studio sub-tabs. `rawValue` is the persistence token in `SettingsStore.studioTab`
 /// AND the shadow-button name fragment (`studio-tab-<rawValue>-shadow`) — it is stable forever,
-/// never rename a case (the RootView.Section rawValue doctrine, one level down).
+/// never rename a case (the RootView.Section rawValue doctrine, one level down). `tracks` is
+/// appended LAST so the existing segment indices (0…5) never shift (the XCUITest switchTab math).
 enum StudioSubTab: String, CaseIterable, Identifiable {
-    case samples, loops, sequencer, instruments, cues, demuxer
+    case samples, loops, sequencer, instruments, cues, demuxer, tracks
 
     var id: String { rawValue }
 
@@ -20,11 +21,15 @@ enum StudioSubTab: String, CaseIterable, Identifiable {
         case .instruments: return "Instruments"
         case .cues:        return "Cues"
         case .demuxer:     return "Demuxer"
+        case .tracks:      return "Tracks"
         }
     }
 
     /// SF Symbols per spec §1: waveform / repeat / square.grid.4x3.fill / pianokeys / flag,
-    /// + the Demuxer's inspect-the-waveform glass.
+    /// + the Demuxer's inspect-the-waveform glass, + the arranger's stacked lanes. (The multitrack
+    /// tab's real identity is the custom 4-bar gapped `TracksIcon` shown in its header/empty state —
+    /// a `.segmented` Picker template-tints its images, so a multicolour Canvas glyph can't live in
+    /// the segment; the SF symbol stands in there.)
     var icon: String {
         switch self {
         case .samples:     return "waveform"
@@ -33,6 +38,7 @@ enum StudioSubTab: String, CaseIterable, Identifiable {
         case .instruments: return "pianokeys"
         case .cues:        return "flag"
         case .demuxer:     return "waveform.badge.magnifyingglass"
+        case .tracks:      return "rectangle.stack"
         }
     }
 
@@ -47,6 +53,7 @@ enum StudioSubTab: String, CaseIterable, Identifiable {
         case .instruments: return "4"
         case .cues:        return "5"
         case .demuxer:     return "6"
+        case .tracks:      return "7"
         }
     }
 }
@@ -120,10 +127,11 @@ struct PerformanceView: View {
         case .instruments: StudioInstrumentsView()
         case .cues:        StudioCuesView()
         case .demuxer:     StudioDemuxView()
+        case .tracks:      TracksView()
         }
     }
 
-    /// ⌘1…⌘5 sub-tab shortcuts as hidden shadow buttons (the BrowseView.kindShortcuts
+    /// ⌘1…⌘7 sub-tab shortcuts as hidden shadow buttons (the BrowseView.kindShortcuts
     /// pattern): mounted ONLY while this view is — so Browse's own ⌘1/⌘2 never see a second
     /// live registration — and the reliable way to drive the segmented picker in macOS
     /// XCUITests (where segments aren't tappable; XCUIHelpers drives via typeKey).

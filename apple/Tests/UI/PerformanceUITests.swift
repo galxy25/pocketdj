@@ -58,11 +58,11 @@ final class PerformanceUITests: XCTestCase {
         return app.any("studio-tab-picker")
     }
 
-    /// Switch to sub-tab `index` (0 Samples … 4 Cues, 5 Demuxer) by a COORDINATE tap on the
-    /// segment's horizontal centre. On iPhone-portrait (compact) the segments are symbol-only and
-    /// carry no individual a11y id/label to address, so a positional tap is the robust
+    /// Switch to sub-tab `index` (0 Samples … 4 Cues, 5 Demuxer, 6 Tracks) by a COORDINATE tap on
+    /// the segment's horizontal centre. On iPhone-portrait (compact) the segments are symbol-only
+    /// and carry no individual a11y id/label to address, so a positional tap is the robust
     /// cross-width driver. `count` MUST track `StudioSubTab.allCases.count`.
-    private func switchTab(_ index: Int, count: Int = 6) {
+    private func switchTab(_ index: Int, count: Int = 7) {
         let picker = studioPicker()
         XCTAssertTrue(picker.waitForExistence(timeout: 8), "the studio sub-tab picker must exist")
         let dx = (Double(index) + 0.5) / Double(count)
@@ -151,10 +151,56 @@ final class PerformanceUITests: XCTestCase {
                       "Demuxer sub-tab should show the source picker's search field")
         XCTAssertTrue(app.any("demux-import").waitForExistence(timeout: 4),
                       "Demuxer source picker should offer the Import entry point")
+        // Tracks (6) — the multitrack arranger. Its header arrangement menu is always present.
+        switchTab(6)
+        XCTAssertTrue(app.any("tracks-arrangement-menu").waitForExistence(timeout: 10),
+                      "Tracks sub-tab should show the arrangement menu")
         // Back to Samples — the picker round-trips.
         switchTab(0)
         XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 10))
         snap("sub-tab-switching")
+        #endif
+    }
+
+    // MARK: - (2b) Tracks (multitrack arranger — Stage A)
+
+    /// The arranger bootstraps an empty "Arrangement 1", so the empty state offers "Add a track";
+    /// adding one reveals a track lane with its mix strip (mute/solo/gain) + row menu, and the
+    /// header "＋ Track" adds more.
+    func testTracksArrangerAddDeleteTracks() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(6)
+        // Arranger identity: the arrangement menu is always present.
+        XCTAssertTrue(app.any("tracks-arrangement-menu").waitForExistence(timeout: 15),
+                      "the arranger should show its arrangement menu")
+        // Empty state → add the first track. (The empty-state container must NOT carry its own
+        // accessibilityIdentifier — a container id promotes the VStack to a single element and
+        // swallows this button's id; the XCUITest DisclosureGroup/container-id lesson, again.)
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 10), "empty arrangement offers Add a track")
+        emptyAdd.tap()
+        // A lane appears with its mix strip (addressed via leaf ids — the lane card carries no
+        // container id, see the view comment).
+        XCTAssertTrue(app.any("tracks-track-name-0").waitForExistence(timeout: 10),
+                      "adding a track should reveal its lane")
+        XCTAssertTrue(app.any("tracks-track-mute-0").exists, "lane should have a mute button")
+        XCTAssertTrue(app.any("tracks-track-solo-0").exists, "lane should have a solo button")
+        // Header "＋ Track" adds a second lane.
+        app.any("tracks-add-track").tap()
+        XCTAssertTrue(app.any("tracks-track-name-1").waitForExistence(timeout: 10),
+                      "the header add-track should append a second lane")
+        // Mute toggles live.
+        app.any("tracks-track-mute-0").tap()
+        snap("tracks-arranger")
+        // Delete the second track via its row menu.
+        app.any("tracks-track-menu-1").tap()
+        let del = app.buttons["Delete"]
+        if del.waitForExistence(timeout: 5) { del.tap() }
+        XCTAssertFalse(app.any("tracks-track-name-1").waitForExistence(timeout: 3),
+                       "deleting a lane should remove it")
         #endif
     }
 

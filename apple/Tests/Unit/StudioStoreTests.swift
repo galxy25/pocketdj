@@ -106,6 +106,85 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(store.sample("smp_a")?.name, "Replaced")
     }
 
+    // MARK: Multitrack arranger (Tracks sub-tab)
+
+    /// Arrangement / track / clip CRUD: create, add tracks, place a clip (with a real clip file),
+    /// set mix-strip state + rename, then RELOAD and verify it all persisted. Duplicate copies the
+    /// clip audio to a fresh file (two records never share one file); delete removes the files.
+    func testArrangementTrackClipCrudRoundTripAndFiles() throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "Set A")
+        let t0 = try XCTUnwrap(store.addTrack(arrangement: arr.id, name: "Vocals"))
+        let t1 = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        XCTAssertEqual(t1.name, "Track 2")                 // auto-named by position
+        XCTAssertEqual(t1.colorIndex, 1)                   // palette cycles by index
+
+        // Place a clip on track 0 (its audio file must exist on disk).
+        let clipName = StudioStore.clipFileName("clip_x")
+        let dir = try StudioStore.arrangementsDir()
+        try Data(repeating: 7, count: 16).write(to: dir.appendingPathComponent(clipName))
+        store.addClip(arrangement: arr.id, track: t0.id,
+                      StudioClip(id: "clip_x", name: "Hook", fileName: clipName,
+                                 startMs: 500, durationMs: 1_500, source: .sample, sourceId: "smp_a"))
+
+        // Mix strip + rename.
+        store.setTrackGain(arrangement: arr.id, track: t0.id, gainDb: -6)
+        store.setTrackMuted(arrangement: arr.id, track: t1.id, true)
+        store.setTrackSoloed(arrangement: arr.id, track: t0.id, true)
+        store.renameTrack(arrangement: arr.id, track: t1.id, to: "Drums")
+        store.flush()
+
+        let reloaded = StudioStore(fileURL: storeURL)
+        let ra = try XCTUnwrap(reloaded.arrangement(arr.id))
+        XCTAssertEqual(ra.name, "Set A")
+        XCTAssertEqual(ra.tracks.count, 2)
+        XCTAssertEqual(ra.tracks[0].clips.first?.id, "clip_x")
+        XCTAssertEqual(ra.tracks[0].clips.first?.startMs, 500)
+        XCTAssertEqual(ra.tracks[0].clips.first?.endMs, 2_000)
+        XCTAssertEqual(ra.tracks[0].gainDb, -6)
+        XCTAssertTrue(ra.tracks[0].soloed)
+        XCTAssertTrue(ra.tracks[1].muted)
+        XCTAssertEqual(ra.tracks[1].name, "Drums")
+        XCTAssertEqual(ra.lengthMs, 2_000)                 // timeline end = longest track
+
+        // Duplicate track 0: fresh ids, clip audio COPIED to its own file (both exist, distinct).
+        let dup = try XCTUnwrap(reloaded.duplicateTrack(arrangement: arr.id, track: t0.id))
+        XCTAssertEqual(dup.name, "Vocals copy")
+        XCTAssertFalse(dup.soloed)                          // solo dropped on duplicate
+        let dupClip = try XCTUnwrap(dup.clips.first)
+        XCTAssertNotEqual(dupClip.id, "clip_x")
+        XCTAssertNotNil(reloaded.clipFileURL(dupClip.fileName), "duplicated clip audio must exist")
+        XCTAssertNotNil(reloaded.clipFileURL(clipName), "original clip audio must survive")
+
+        // Delete the duplicate track → its (copied) clip file is removed; the original stays.
+        XCTAssertTrue(reloaded.deleteTrack(arrangement: arr.id, track: dup.id))
+        XCTAssertNil(reloaded.clipFileURL(dupClip.fileName), "deleted track's clip file must be gone")
+        XCTAssertNotNil(reloaded.clipFileURL(clipName), "original clip audio must survive the delete")
+
+        // Delete the arrangement → gone, its clip files swept.
+        XCTAssertTrue(reloaded.deleteArrangement(arr.id))
+        XCTAssertNil(reloaded.arrangement(arr.id))
+        XCTAssertNil(reloaded.clipFileURL(clipName))
+    }
+
+    /// Additive-optional: a legacy document with NO `arrangements` key decodes to `[]` (never a
+    /// decode failure), and a garbage arrangement element drops only itself (per-element lossy).
+    func testArrangementLegacyDecodeAndLossyElement() throws {
+        let json = """
+        { "schemaVersion": 1, "samples": [], "loops": [], "patterns": [], "takes": [],
+          "cues": [], "slices": [], "folders": [],
+          "arrangements": [ { "id": "arr_ok", "name": "Keep", "tracks": [] }, 42 ] }
+        """
+        let doc = try JSONDecoder().decode(StudioDocument.self, from: Data(json.utf8))
+        XCTAssertEqual(doc.arrangements.count, 1)          // the "42" garbage element dropped
+        XCTAssertEqual(doc.arrangements.first?.id, "arr_ok")
+
+        // A document missing the key entirely → empty list (no brick).
+        let legacy = "{ \"schemaVersion\": 1, \"samples\": [] }"
+        let ld = try JSONDecoder().decode(StudioDocument.self, from: Data(legacy.utf8))
+        XCTAssertTrue(ld.arrangements.isEmpty)
+    }
+
     // MARK: Lenient decode
 
     /// Unknown top-level fields, unknown per-record fields, an unknown source kind, an invalid

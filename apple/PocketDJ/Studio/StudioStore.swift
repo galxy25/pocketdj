@@ -48,6 +48,9 @@ final class StudioStore {
     private(set) var folders: [StudioSampleFolder] = []
     /// On-device detected key (Camelot) per performance item — see `StudioDocument.keys`.
     private(set) var keys: [String: String] = [:]
+    /// Multitrack arrangements (the "Tracks" sub-tab). Clip audio lives app-managed in
+    /// `studio/arrangements/`; CRUD is in StudioStore+Arrangements.swift.
+    private(set) var arrangements: [StudioArrangement] = []
 
     /// Source of the per-family folder bookmarks. Pushed in from the view layer / app (like
     /// `MixRecorder.settings`) so this never has to be wired at app-init time. Weak ⇒ no retain
@@ -78,6 +81,7 @@ final class StudioStore {
             slices = doc.slices
             folders = doc.folders
             keys = doc.keys
+            arrangements = doc.arrangements
         }
     }
 
@@ -1088,7 +1092,7 @@ final class StudioStore {
     private func snapshotDocument() -> StudioDocument {
         StudioDocument(schemaVersion: studioSchemaVersion, samples: samples, loops: loops,
                        patterns: patterns, takes: takes, cues: cues, slices: slices,
-                       folders: folders, keys: keys)
+                       folders: folders, keys: keys, arrangements: arrangements)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.
@@ -1125,5 +1129,235 @@ final class StudioStore {
         }
         let w = writer
         Task { await w.markWritten(v) }
+    }
+}
+
+// MARK: - Multitrack arranger CRUD (the "Tracks" sub-tab)
+//
+// Arrangement / track / clip CRUD, mirroring the sample/pattern conventions (upsert-by-id add,
+// view-side duplicate, one mutation door that saves). Clip AUDIO lives app-managed in
+// `studio/arrangements/clip-<id>.m4a` — a dedicated dir, NOT a StudioFamily (arranger clips are
+// derived snapshots, never user-relocatable, so they skip the bookmark/knownIds/reconcile
+// machinery). Delete/duplicate touch the files; pure-data edits route through `mutateArrangement`.
+// Same-file extension so the `private(set) arrangements` setter + `saveNow`/`scheduleSave`/`nowMs`
+// stay file-private (Swift `private` includes same-file extensions).
+extension StudioStore {
+
+    // MARK: Clip-audio directory (app-managed)
+
+    /// The dir holding arranger clip audio. Honors `StudioFolders.appRootOverride` (the same test
+    /// seam the family roots use) so arranger tests never touch this machine's real studio content.
+    static func arrangementsDir() throws -> URL {
+        let base: URL
+        if let dir = StudioFolders.appRootOverride {
+            base = dir
+        } else {
+            let sup = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                  appropriateFor: nil, create: true)
+            base = sup.appendingPathComponent("studio", isDirectory: true)
+        }
+        let dir = base.appendingPathComponent("arrangements", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// The deterministic clip file name (`clip-<clip_id>.m4a`).
+    static func clipFileName(_ id: String) -> String { "clip-\(id).m4a" }
+
+    /// Resolve a clip's audio file for reading/playback (nil when gone). A bare name only — a path
+    /// separator means a corrupt/hostile document, never a file this app wrote.
+    func clipFileURL(_ fileName: String) -> URL? {
+        guard !fileName.isEmpty, !fileName.contains("/"),
+              let dir = try? Self.arrangementsDir() else { return nil }
+        let url = dir.appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    // MARK: Arrangements
+
+    func arrangement(_ id: String) -> StudioArrangement? { arrangements.first { $0.id == id } }
+
+    /// Newest-first — the Tracks tab is a creation surface, so a new arrangement sorts to the top.
+    func arrangementsOrdered() -> [StudioArrangement] {
+        arrangements.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    @discardableResult
+    func createArrangement(name: String) -> StudioArrangement {
+        let a = StudioArrangement(id: StudioFactory.newArrangementId(),
+                                  name: name.trimmingCharacters(in: .whitespaces),
+                                  createdAt: nowMs, updatedAt: nowMs)
+        arrangements.append(a)
+        saveNow()
+        return a
+    }
+
+    func renameArrangement(_ id: String, to name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, let i = arrangements.firstIndex(where: { $0.id == id }) else { return }
+        arrangements[i].name = n
+        arrangements[i].updatedAt = nowMs
+        saveNow()
+    }
+
+    /// Delete an arrangement AND every clip audio file it owns. Arranger clips are derived — once
+    /// the record is gone the files are pure garbage, so there is no orphan/keep-the-record concern.
+    @discardableResult
+    func deleteArrangement(_ id: String) -> Bool {
+        guard let i = arrangements.firstIndex(where: { $0.id == id }) else { return false }
+        for track in arrangements[i].tracks { for clip in track.clips { deleteClipFile(clip.fileName) } }
+        arrangements.remove(at: i)
+        saveNow()
+        return true
+    }
+
+    /// The SINGLE data-mutation door for an arrangement's tracks/clips (rename / gain / mute / solo
+    /// / clip-move / reorder) — stamps `updatedAt`, saves. File-touching ops (delete / duplicate /
+    /// bake) have their own methods. `stream: true` debounces (slider ticks); default saves now.
+    func mutateArrangement(_ id: String, stream: Bool = false, _ mutate: (inout StudioArrangement) -> Void) {
+        guard let i = arrangements.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&arrangements[i])
+        arrangements[i].updatedAt = nowMs
+        if stream { scheduleSave() } else { saveNow() }
+    }
+
+    // MARK: Tracks
+
+    /// Palette size the view cycles track colours through (stem 4 + cue extras). The view owns the
+    /// actual Colors; the store only assigns/advances the index.
+    static let trackPaletteSize = 8
+
+    @discardableResult
+    func addTrack(arrangement id: String, name: String? = nil) -> StudioTrack? {
+        guard let i = arrangements.firstIndex(where: { $0.id == id }) else { return nil }
+        let n = arrangements[i].tracks.count
+        let trimmed = name?.trimmingCharacters(in: .whitespaces)
+        let track = StudioTrack(id: StudioFactory.newTrackId(),
+                                name: (trimmed?.isEmpty == false ? trimmed! : "Track \(n + 1)"),
+                                colorIndex: n % Self.trackPaletteSize, createdAt: nowMs)
+        arrangements[i].tracks.append(track)
+        arrangements[i].updatedAt = nowMs
+        saveNow()
+        return track
+    }
+
+    @discardableResult
+    func deleteTrack(arrangement aid: String, track tid: String) -> Bool {
+        guard let i = arrangements.firstIndex(where: { $0.id == aid }),
+              let j = arrangements[i].tracks.firstIndex(where: { $0.id == tid }) else { return false }
+        for clip in arrangements[i].tracks[j].clips { deleteClipFile(clip.fileName) }
+        arrangements[i].tracks.remove(at: j)
+        arrangements[i].updatedAt = nowMs
+        saveNow()
+        return true
+    }
+
+    /// Duplicate a track: fresh track + clip ids, each clip's audio COPIED to its own new file so
+    /// two records never share one clip file (the sequencer-duplicate discipline). Inserted right
+    /// after the source; name gets " copy"; solo is dropped (only one thing should key solo).
+    @discardableResult
+    func duplicateTrack(arrangement aid: String, track tid: String) -> StudioTrack? {
+        guard let i = arrangements.firstIndex(where: { $0.id == aid }),
+              let j = arrangements[i].tracks.firstIndex(where: { $0.id == tid }) else { return nil }
+        let src = arrangements[i].tracks[j]
+        var copy = src
+        copy.id = StudioFactory.newTrackId()
+        copy.name = src.name + " copy"
+        copy.createdAt = nowMs
+        copy.soloed = false
+        copy.clips = src.clips.map { clip in
+            var c = clip
+            c.id = StudioFactory.newClipId()
+            c.fileName = Self.clipFileName(c.id)
+            c.createdAt = nowMs
+            copyClipFile(from: clip.fileName, to: c.fileName)
+            return c
+        }
+        arrangements[i].tracks.insert(copy, at: j + 1)
+        arrangements[i].updatedAt = nowMs
+        saveNow()
+        return copy
+    }
+
+    func renameTrack(arrangement aid: String, track tid: String, to name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty else { return }
+        mutateArrangement(aid) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            arr.tracks[j].name = n
+        }
+    }
+
+    func setTrackGain(arrangement aid: String, track tid: String, gainDb: Double) {
+        mutateArrangement(aid, stream: true) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            arr.tracks[j].gainDb = gainDb
+        }
+    }
+
+    func setTrackMuted(arrangement aid: String, track tid: String, _ muted: Bool) {
+        mutateArrangement(aid) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            arr.tracks[j].muted = muted
+        }
+    }
+
+    func setTrackSoloed(arrangement aid: String, track tid: String, _ soloed: Bool) {
+        mutateArrangement(aid) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            arr.tracks[j].soloed = soloed
+        }
+    }
+
+    // MARK: Clips
+
+    /// Append/replace a clip on a track (upsert-by-id). The audio file must already be written into
+    /// `studio/arrangements/` by the bake/record path (Stage B/D); `startMs` positions it.
+    func addClip(arrangement aid: String, track tid: String, _ clip: StudioClip) {
+        mutateArrangement(aid) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            if let k = arr.tracks[j].clips.firstIndex(where: { $0.id == clip.id }) {
+                arr.tracks[j].clips[k] = clip
+            } else {
+                arr.tracks[j].clips.append(clip)
+            }
+        }
+    }
+
+    @discardableResult
+    func removeClip(arrangement aid: String, track tid: String, clip cid: String) -> Bool {
+        guard let i = arrangements.firstIndex(where: { $0.id == aid }),
+              let j = arrangements[i].tracks.firstIndex(where: { $0.id == tid }),
+              let k = arrangements[i].tracks[j].clips.firstIndex(where: { $0.id == cid }) else { return false }
+        deleteClipFile(arrangements[i].tracks[j].clips[k].fileName)
+        arrangements[i].tracks[j].clips.remove(at: k)
+        arrangements[i].updatedAt = nowMs
+        saveNow()
+        return true
+    }
+
+    func moveClip(arrangement aid: String, track tid: String, clip cid: String, toStartMs startMs: Int) {
+        mutateArrangement(aid, stream: true) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }),
+                  let k = arr.tracks[j].clips.firstIndex(where: { $0.id == cid }) else { return }
+            arr.tracks[j].clips[k].startMs = max(0, startMs)
+        }
+    }
+
+    // MARK: Clip-file helpers (app-managed dir)
+
+    private func deleteClipFile(_ fileName: String) {
+        guard !fileName.isEmpty, !fileName.contains("/"),
+              let dir = try? Self.arrangementsDir() else { return }
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(fileName))
+    }
+
+    private func copyClipFile(from: String, to: String) {
+        guard !from.isEmpty, !to.isEmpty, !from.contains("/"), !to.contains("/"),
+              let dir = try? Self.arrangementsDir() else { return }
+        let src = dir.appendingPathComponent(from)
+        let dst = dir.appendingPathComponent(to)
+        try? FileManager.default.removeItem(at: dst)
+        try? FileManager.default.copyItem(at: src, to: dst)
     }
 }
