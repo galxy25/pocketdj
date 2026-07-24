@@ -987,6 +987,81 @@ final class WriteBackSourceSyncTests: XCTestCase {
         XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
     }
 
+    // MARK: Force sync (the collection-row "Force Apple Music sync" action)
+
+    /// The whole point of the force path: a song already in the source SNAPSHOT reads as "already
+    /// upstream" and the auto path (correctly) skips it — but the user who KNOWS it isn't actually
+    /// in the real playlist (a stale snapshot) can force it. Force BYPASSES the snapshot guard and
+    /// enqueues, where the ordinary add returns nothing.
+    @MainActor
+    func testForceSyncBypassesSnapshotGuard() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        // Auto path: sng_am1 is in the snapshot ⇒ nothing queued.
+        s.addSong("sng_am1", to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertTrue(cap.calls.isEmpty)
+        // Force path: overrides the snapshot ⇒ a job is queued.
+        XCTAssertEqual(s.forceWriteBackSong("sng_am1", forTargetKind: .pocket, collectionId: p.id), .queued)
+        XCTAssertEqual(cap.calls.map(\.sid), ["sng_am1"])
+        XCTAssertEqual(cap.calls.first?.amid, "am_111")
+    }
+
+    /// A second force of the same (collection, song) dedups against the queue (the seam returns
+    /// false the second time), so the UI can say "already on its way" instead of double-adding.
+    @MainActor
+    func testForceSyncDedupsOnSecondAttempt() async {
+        let (s, _) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        XCTAssertEqual(s.forceWriteBackSong("sng_am2", forTargetKind: .pocket, collectionId: p.id), .queued)
+        XCTAssertEqual(s.forceWriteBackSong("sng_am2", forTargetKind: .pocket, collectionId: p.id), .deduped)
+    }
+
+    /// A plain pocket (no Apple Music provenance) has no playlist to write to → `.notLinked`,
+    /// nothing queued. The UI turns this into "link it first" guidance.
+    @MainActor
+    func testForceSyncPlainPocketIsNotLinked() async {
+        let (s, cap) = await wired()
+        let p = s.createPocket("Mine")
+        XCTAssertEqual(s.forceWriteBackSong("sng_am2", forTargetKind: .pocket, collectionId: p.id), .notLinked)
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    /// A Studio performance item isn't a catalog song → `.notCatalogSong`, even in a linked pocket.
+    @MainActor
+    func testForceSyncStudioItemIsNotCatalogSong() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        XCTAssertEqual(s.forceWriteBackSong("smp_x", forTargetKind: .pocket, collectionId: p.id), .notCatalogSong)
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    // MARK: "From your sources" add — identity-only Apple Music songs are write-back-eligible
+
+    /// The root-cause fix: an Apple Music (Local) song our indexer never resolved a store id for
+    /// (`appleMusicId == nil`) must STILL be write-back-eligible when added to an Apple Music source
+    /// playlist — carrying its identity so the queue resolves the store id on-device. The old gate
+    /// (`!amId.isEmpty`) reported it as "not an Apple Music track" and never synced it.
+    @MainActor
+    func testAddToIndexPlaylistIdentityOnlyIsWriteBackEligible() async {
+        let (s, _) = await wired()
+        let src = amSource("ipl_am", "AM Mix", ["sng_am1"])
+        let result = s.addSong("sng_plain", toIndexPlaylist: src, appleMusicId: nil)   // no store id
+        XCTAssertTrue(result.writeBackEligible)
+        XCTAssertNil(result.appleMusicId)          // nothing to pass — resolved on device
+        XCTAssertEqual(result.title, "Three")      // identity carried for the resolve
+        XCTAssertEqual(result.artist, "Aria")
+        XCTAssertEqual(result.durationMs, 200000)
+    }
+
+    /// The same identity-only song added to a NON-Apple-Music source stays local — not eligible.
+    @MainActor
+    func testAddToNonAppleMusicIndexPlaylistIsNotEligible() async {
+        let (s, _) = await wired()
+        let src = amSource("ipl_dig", "Dig Mix", ["sng_am1"], source: "My Digital")
+        let result = s.addSong("sng_plain", toIndexPlaylist: src, appleMusicId: nil)
+        XCTAssertFalse(result.writeBackEligible)
+    }
+
     // MARK: Backfill
 
     @MainActor
