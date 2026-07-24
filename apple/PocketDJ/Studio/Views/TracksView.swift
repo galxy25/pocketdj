@@ -16,11 +16,22 @@ struct TracksView: View {
     @Environment(BurnStore.self) private var burns
     @Environment(AppModel.self) private var app
 
-    @State private var selectedId = ""
+    /// The open arrangement (nil ⇒ the HOME browser of arrangements + folders — the tab lands here).
+    @State private var openArrangementId: String?
+
+    // Home browser: folder collapse (persisted) + a per-row move-to-folder target.
+    @State private var collapsed: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: "pdj.arrangementFolders.collapsed") ?? [])
+    @State private var pendingDeleteArrangementId: String?
+
+    // Timeline zoom + playhead-follow (the Demux timeline pattern).
+    @State private var pxPerSec: CGFloat = 48
+    @State private var followPlayhead = true
+    @State private var centerNonce = 0
 
     // Rename affordances (cross-platform alert + TextField).
     @State private var pendingRenameTrack: String?
-    @State private var pendingRenameArrangement = false
+    @State private var pendingRenameArrangementId: String?
     @State private var nameText = ""
 
     // Add-clip source picker (which track it targets) + a busy spinner.
@@ -61,15 +72,20 @@ struct TracksView: View {
     // Master-FX panel expansion (persisted).
     @AppStorage("pdj.tracks.showMasterFX") private var showMasterFX = false
 
-    // Layout grid.
-    private let laneHeight: CGFloat = 82
+    // Layout grid (pxPerSec is @State above — zoomable).
+    private let laneHeight: CGFloat = 66
     private let headerWidth: CGFloat = 172
-    private let pxPerSec: CGFloat = 48
     private let laneGap: CGFloat = 8
 
     /// Named coordinate space for the scrolling timeline — loop-handle drags read the finger's
     /// position in it (from 0:00), independent of a handle's moved local origin.
     private static let timelineSpace = "tracksTimeline"
+    /// Horizontal zoom stops (px per second); default 48.
+    private static let zoomLadder: [CGFloat] = [16, 24, 36, 48, 72, 108, 160, 240]
+    private func stepZoom(_ dir: Int) {
+        if dir < 0 { pxPerSec = Self.zoomLadder.last(where: { $0 < pxPerSec }) ?? Self.zoomLadder.first! }
+        else { pxPerSec = Self.zoomLadder.first(where: { $0 > pxPerSec }) ?? Self.zoomLadder.last! }
+    }
 
     /// Track lane colours — the stem palette first (drums·yellow, bass·red, other·green,
     /// vocals·purple) then cue-extra hues, cycling at `StudioStore.trackPaletteSize` (= 8).
@@ -82,7 +98,7 @@ struct TracksView: View {
         trackColorNames[((index % trackColorNames.count) + trackColorNames.count) % trackColorNames.count]
     }
 
-    private var current: StudioArrangement? { studio.arrangement(selectedId) }
+    private var current: StudioArrangement? { openArrangementId.flatMap { studio.arrangement($0) } }
 
     /// Signature of every clip id on screen — drives the peak-loading task when a clip is added.
     private var clipSignature: String {
@@ -102,28 +118,19 @@ struct TracksView: View {
         player.isPlaying && player.playingArrangementId == arr.id
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Theme.border)
+    private var baseContent: some View {
+        Group {
             if let arr = current {
-                if arr.tracks.isEmpty {
-                    emptyTracks(arr)
-                } else {
-                    transportBar(arr)
-                    Divider().overlay(Theme.border)
-                    arranger(arr)
-                    masterFXPanel(arr)
-                }
+                arrangerScreen(arr)
             } else {
-                Spacer()
+                arrangementsHome
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
         .overlay { if baking { bakingOverlay } }
         .overlay { if recordingTrackId != nil { recordingOverlay } }
-        .task { bootstrap(); mic.settings = settings; mic.store = studio }
+        .task { mic.settings = settings; mic.store = studio }
         .task(id: clipSignature) { await loadPeaks() }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
@@ -138,6 +145,10 @@ struct TracksView: View {
             player.stop()
             if recordingTrackId != nil { _ = mic.stop(); recordingTrackId = nil }
         }
+    }
+
+    var body: some View {
+        baseContent
         .sheet(item: pickerTrackBinding) { box in
             ClipSourcePicker(studio: studio, burns: burns, app: app,
                 onPick: { sourceId, kind in
@@ -155,10 +166,21 @@ struct TracksView: View {
             Button("Cancel", role: .cancel) { pendingRenameTrack = nil }
             Button("Rename") { commitTrackRename() }
         }
-        .alert("Rename arrangement", isPresented: $pendingRenameArrangement) {
+        .alert("Rename arrangement", isPresented: renameArrangementShown) {
             TextField("Name", text: $nameText)
-            Button("Cancel", role: .cancel) {}
-            Button("Rename") { if let a = current { studio.renameArrangement(a.id, to: nameText) } }
+            Button("Cancel", role: .cancel) { pendingRenameArrangementId = nil }
+            Button("Rename") {
+                if let id = pendingRenameArrangementId { studio.renameArrangement(id, to: nameText) }
+                pendingRenameArrangementId = nil
+            }
+        }
+        .confirmationDialog("Delete this arrangement? Its tracks and clips are removed.",
+                            isPresented: deleteArrangementShown, titleVisibility: .visible) {
+            Button("Delete arrangement", role: .destructive) {
+                if let id = pendingDeleteArrangementId { deleteArrangement(id) }
+                pendingDeleteArrangementId = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteArrangementId = nil }
         }
         .alert("Tempo (BPM)", isPresented: $pendingBpm) {
             TextField("BPM", text: $bpmText)
@@ -199,6 +221,12 @@ struct TracksView: View {
         newFolderMoveArrangementId = nil
     }
 
+    private var renameArrangementShown: Binding<Bool> {
+        Binding(get: { pendingRenameArrangementId != nil }, set: { if !$0 { pendingRenameArrangementId = nil } })
+    }
+    private var deleteArrangementShown: Binding<Bool> {
+        Binding(get: { pendingDeleteArrangementId != nil }, set: { if !$0 { pendingDeleteArrangementId = nil } })
+    }
     private var renameFolderShown: Binding<Bool> {
         Binding(get: { pendingRenameFolderId != nil }, set: { if !$0 { pendingRenameFolderId = nil } })
     }
@@ -206,111 +234,199 @@ struct TracksView: View {
         Binding(get: { pendingDeleteFolderId != nil }, set: { if !$0 { pendingDeleteFolderId = nil } })
     }
 
-    // MARK: Header (arrangement picker + add track)
+    // MARK: Arrangements home (the tab's landing page — a browser of arrangements + folders)
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            TracksIcon().frame(width: 30, height: 22)
+    private var arrangementsHome: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                TracksIcon().frame(width: 30, height: 22)
+                Text("Multitrack").font(.headline).foregroundStyle(Theme.fg)
+                Spacer()
+                Button { newFolderMoveArrangementId = nil; folderNameText = ""; pendingNewFolder = true } label: {
+                    Image(systemName: "folder.badge.plus").font(.title3)
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .accessibilityIdentifier("tracks-new-folder")
+                Button { newArrangement() } label: { Label("New", systemImage: "plus") }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("tracks-new-arrangement")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            Divider().overlay(Theme.border)
 
-            Menu {
-                arrangementPickerItems
-                Divider()
-                Button { newArrangement() } label: { Label("New arrangement", systemImage: "plus") }
-                Button { nameText = current?.name ?? ""; pendingRenameArrangement = true } label: {
-                    Label("Rename…", systemImage: "pencil")
+            if studio.arrangements.isEmpty && studio.arrangementFolders.isEmpty {
+                homeEmptyState
+            } else {
+                List {
+                    looseSection
+                    ForEach(studio.arrangementFoldersOrdered()) { folder in folderSection(folder) }
                 }
-                if current != nil { moveToFolderMenu }
-                manageFoldersMenu
-                Divider()
-                Button(role: .destructive) { deleteCurrentArrangement() } label: {
-                    Label("Delete arrangement", systemImage: "trash")
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    private var homeEmptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            TracksIcon().frame(width: 120, height: 84).opacity(0.9)
+            Text("Make a multitrack").font(.title3.weight(.semibold)).foregroundStyle(Theme.fg)
+            Text("Arrange samples, sequences, loops, instrumentals — or a song's stems — into layered tracks. Create one to begin; group them into folders as your set grows.")
+                .font(.callout).foregroundStyle(Theme.fgDim)
+                .multilineTextAlignment(.center).frame(maxWidth: 440)
+            Button { newArrangement() } label: { Label("New arrangement", systemImage: "plus") }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("tracks-empty-new-arrangement")
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
+    }
+
+    /// Loose (unfiled) arrangements — always present so a loose arrangement is always reachable.
+    @ViewBuilder private var looseSection: some View {
+        let loose = studio.arrangements(inFolder: nil)
+        Section {
+            if loose.isEmpty {
+                Text("No loose arrangements.").font(.caption).foregroundStyle(Theme.fgDim)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(loose) { a in arrangementBrowserRow(a) }
+            }
+        } header: {
+            Text(studio.arrangementFolders.isEmpty ? "Arrangements" : "No folder").foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    /// One collapsible folder of arrangements (collapse persists). The id rides the LABEL leaf, never
+    /// the Section/DisclosureGroup container (the container-id-swallow lesson).
+    @ViewBuilder private func folderSection(_ folder: StudioArrangementFolder) -> some View {
+        let members = studio.arrangements(inFolder: folder.id)
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if members.isEmpty {
+                    Text("Empty folder — move an arrangement in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim).listRowBackground(Color.clear)
                 }
+                ForEach(members) { a in arrangementBrowserRow(a) }
             } label: {
-                HStack(spacing: 6) {
-                    Text(current?.name.isEmpty == false ? current!.name : "Arrangement")
-                        .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(Theme.fgDim)
+                HStack {
+                    Label(folder.name.isEmpty ? "Folder" : folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
+                    Spacer()
+                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
                 }
+                .accessibilityIdentifier("tracks-folder-\(folder.id)")
+                .contextMenu {
+                    Button { pendingRenameFolderId = folder.id; folderNameText = folder.name } label: { Label("Rename folder", systemImage: "pencil") }
+                    Button(role: .destructive) { pendingDeleteFolderId = folder.id } label: { Label("Delete folder", systemImage: "trash") }
+                }
+            }
+        }
+    }
+
+    /// An arrangement row — tap opens it into the arranger; the context menu opens / renames / moves /
+    /// deletes it (rename & delete target the row's id, no need to open first).
+    private func arrangementBrowserRow(_ a: StudioArrangement) -> some View {
+        Button { openArrangementId = a.id } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up.fill").foregroundStyle(Self.color(0)).font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(a.name.isEmpty ? "Untitled" : a.name).font(.callout.weight(.semibold)).foregroundStyle(Theme.fg)
+                    Text("\(a.tracks.count) track\(a.tracks.count == 1 ? "" : "s") · \(mmss(Double(a.lengthMs) / 1000))")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .accessibilityIdentifier("tracks-arr-row-\(a.id)")
+        .contextMenu {
+            Button { openArrangementId = a.id } label: { Label("Open", systemImage: "arrow.up.forward.square") }
+            Button { pendingRenameArrangementId = a.id; nameText = a.name } label: { Label("Rename…", systemImage: "pencil") }
+            moveToFolderSubmenu(for: a)
+            Button(role: .destructive) { pendingDeleteArrangementId = a.id } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    /// "Move to folder" submenu for a specific arrangement: None + folders + a one-shot "New folder…"
+    /// (creates the folder AND files this arrangement into it, so a UI test never predicts the id).
+    @ViewBuilder private func moveToFolderSubmenu(for a: StudioArrangement) -> some View {
+        Menu {
+            Button { studio.moveArrangementToFolder(a.id, folderId: nil) } label: {
+                Label("No folder", systemImage: a.folderId == nil ? "checkmark" : "")
+            }
+            ForEach(studio.arrangementFoldersOrdered()) { f in
+                Button { studio.moveArrangementToFolder(a.id, folderId: f.id) } label: {
+                    Label(f.name.isEmpty ? "Folder" : f.name, systemImage: a.folderId == f.id ? "checkmark" : "")
+                }
+            }
+            Divider()
+            Button { newFolderMoveArrangementId = a.id; folderNameText = ""; pendingNewFolder = true } label: {
+                Label("New folder…", systemImage: "folder.badge.plus")
+            }
+            .accessibilityIdentifier("tracks-move-new-folder")
+        } label: { Label("Move to folder", systemImage: "folder") }
+    }
+
+    private func folderExpansion(_ id: String) -> Binding<Bool> {
+        Binding(get: { !collapsed.contains(id) },
+                set: { expanded in
+                    if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                    UserDefaults.standard.set(Array(collapsed), forKey: "pdj.arrangementFolders.collapsed")
+                })
+    }
+
+    // MARK: Arranger screen (an open arrangement)
+
+    private func arrangerScreen(_ arr: StudioArrangement) -> some View {
+        VStack(spacing: 0) {
+            arrangerHeader(arr)
+            Divider().overlay(Theme.border)
+            if arr.tracks.isEmpty {
+                emptyTracks(arr)
+            } else {
+                transportBar(arr)
+                Divider().overlay(Theme.border)
+                arranger(arr)
+                masterFXPanel(arr)
+            }
+        }
+    }
+
+    /// Arranger header: back to the home browser + the arrangement name (tap to rename) + a ⋯ menu
+    /// (rename / delete) + ＋ Track. No folder items here — folders live on the home page.
+    private func arrangerHeader(_ arr: StudioArrangement) -> some View {
+        HStack(spacing: 10) {
+            Button { player.stop(); openArrangementId = nil } label: {
+                Label("Arrangements", systemImage: "chevron.backward").font(.callout.weight(.semibold))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("tracks-home-back")
+
+            Spacer(minLength: 8)
+
+            Button { pendingRenameArrangementId = arr.id; nameText = arr.name } label: {
+                Text(arr.name.isEmpty ? "Untitled" : arr.name).font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            Menu {
+                Button { pendingRenameArrangementId = arr.id; nameText = arr.name } label: { Label("Rename…", systemImage: "pencil") }
+                Button(role: .destructive) { pendingDeleteArrangementId = arr.id } label: { Label("Delete arrangement", systemImage: "trash") }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(Theme.fgDim)
             }
             .accessibilityIdentifier("tracks-arrangement-menu")
 
-            Spacer()
+            Spacer(minLength: 8)
 
             Button { addTrack() } label: { Label("Track", systemImage: "plus") }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("tracks-add-track")
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
-    }
-
-    /// The arrangement list, grouped into folder sections + a loose ("No folder") section. A folder
-    /// with no arrangements is omitted; the loose section is always present so an unfiled arrangement
-    /// is always reachable.
-    @ViewBuilder private var arrangementPickerItems: some View {
-        ForEach(studio.arrangementFoldersOrdered()) { f in
-            let items = studio.arrangements(inFolder: f.id)
-            if !items.isEmpty {
-                Section(f.name.isEmpty ? "Folder" : f.name) {
-                    ForEach(items) { a in arrangementRow(a) }
-                }
-            }
-        }
-        let loose = studio.arrangements(inFolder: nil)
-        Section(studio.arrangementFolders.isEmpty ? "Arrangements" : "No folder") {
-            ForEach(loose) { a in arrangementRow(a) }
-        }
-    }
-
-    private func arrangementRow(_ a: StudioArrangement) -> some View {
-        Button { selectedId = a.id } label: {
-            Label(a.name.isEmpty ? "Untitled" : a.name,
-                  systemImage: a.id == selectedId ? "checkmark" : "")
-        }
-    }
-
-    /// "Move to folder" submenu for the CURRENT arrangement: None + existing folders + a one-shot
-    /// "New folder…" (creates the folder AND files this arrangement into it — so a UI test never has
-    /// to predict the minted `arrfld_` id).
-    @ViewBuilder private var moveToFolderMenu: some View {
-        Menu {
-            if let a = current {
-                Button { studio.moveArrangementToFolder(a.id, folderId: nil) } label: {
-                    Label("No folder", systemImage: a.folderId == nil ? "checkmark" : "")
-                }
-                ForEach(studio.arrangementFoldersOrdered()) { f in
-                    Button { studio.moveArrangementToFolder(a.id, folderId: f.id) } label: {
-                        Label(f.name.isEmpty ? "Folder" : f.name,
-                              systemImage: a.folderId == f.id ? "checkmark" : "")
-                    }
-                }
-                Divider()
-                Button {
-                    newFolderMoveArrangementId = a.id; folderNameText = ""; pendingNewFolder = true
-                } label: { Label("New folder…", systemImage: "folder.badge.plus") }
-                    .accessibilityIdentifier("tracks-move-new-folder")
-            }
-        } label: { Label("Move to folder", systemImage: "folder") }
-    }
-
-    /// Folder management: create an empty folder, and per-folder rename / delete (delete re-homes its
-    /// arrangements to loose — it never deletes an arrangement).
-    @ViewBuilder private var manageFoldersMenu: some View {
-        Menu {
-            Button {
-                newFolderMoveArrangementId = nil; folderNameText = ""; pendingNewFolder = true
-            } label: { Label("New folder", systemImage: "folder.badge.plus") }
-                .accessibilityIdentifier("tracks-new-folder")
-            ForEach(studio.arrangementFoldersOrdered()) { f in
-                Menu(f.name.isEmpty ? "Folder" : f.name) {
-                    Button {
-                        pendingRenameFolderId = f.id; folderNameText = f.name
-                    } label: { Label("Rename…", systemImage: "pencil") }
-                    Button(role: .destructive) { pendingDeleteFolderId = f.id } label: {
-                        Label("Delete folder", systemImage: "trash")
-                    }
-                }
-            }
-        } label: { Label("Folders", systemImage: "folder.badge.gearshape") }
     }
 
     // MARK: Empty state
@@ -374,6 +490,26 @@ struct TracksView: View {
             .accessibilityValue(arr.loopEnabled ? "on" : "off")
 
             Spacer()
+
+            // Zoom the timeline scale, and ⌖ = jump to + follow the playhead.
+            Button { stepZoom(-1) } label: { Image(systemName: "minus.magnifyingglass").font(.callout) }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .disabled(pxPerSec <= Self.zoomLadder.first!)
+                .accessibilityIdentifier("tracks-zoom-out")
+            Button { stepZoom(+1) } label: { Image(systemName: "plus.magnifyingglass").font(.callout) }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .disabled(pxPerSec >= Self.zoomLadder.last!)
+                .accessibilityIdentifier("tracks-zoom-in")
+            Button { followPlayhead.toggle(); if followPlayhead { centerNonce &+= 1 } } label: {
+                Image(systemName: "scope").font(.callout)
+                    .foregroundStyle(followPlayhead ? Theme.bg : Theme.fgDim)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(followPlayhead ? Theme.accent : Theme.bgOverlay, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-follow")
+            .accessibilityValue(followPlayhead ? "on" : "off")
+
             Menu {
                 Button { bounce(tracks: arr.tracks, label: "Master") } label: {
                     Label("Bounce all tracks", systemImage: "square.stack.3d.down.forward")
@@ -418,24 +554,76 @@ struct TracksView: View {
                     }
                 }
                 // Right: horizontally-scrolling clip lanes on the shared grid, with the playhead.
-                ScrollView(.horizontal, showsIndicators: true) {
-                    VStack(spacing: laneGap) {
-                        ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
-                            laneStrip(arr: arr, track: track, index: idx)
-                                .frame(width: timelineWidth(arr), height: laneHeight)
+                // Wrapped in a ScrollViewReader so playback can auto-follow the cursor (⌖) and zoom
+                // re-centers on it — the Demux timeline pattern.
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        VStack(spacing: laneGap) {
+                            ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
+                                laneStrip(arr: arr, track: track, index: idx)
+                                    .frame(width: timelineWidth(arr), height: laneHeight)
+                            }
+                        }
+                        .overlay(alignment: .topLeading) { beatMarkers(arr) }
+                        .overlay(alignment: .topLeading) { loopOverlay(arr) }
+                        .overlay(alignment: .topLeading) { playhead(arr) }
+                        // Invisible per-second LAYOUT anchors the follow/zoom scroll targets by id
+                        // (must be a real HStack flow, NOT .offset views — scrollTo resolves layout
+                        // frames, so offset anchors all sit at x=0; the Demux lesson).
+                        .overlay(alignment: .topLeading) { followAnchors(arr) }
+                        // Stable coordinate space for loop-handle drags — measured from the
+                        // timeline's 0:00, NOT the moved handle's local space.
+                        .coordinateSpace(name: Self.timelineSpace)
+                        .padding(.trailing, 24)
+                    }
+                    .onChange(of: pxPerSec) {
+                        // Re-center the current second after the strip re-lays-out at the new scale.
+                        let sec = Int(playheadSeconds(arr))
+                        DispatchQueue.main.async { proxy.scrollTo("tracks-sec-\(sec)", anchor: .center) }
+                    }
+                    .onChange(of: centerNonce) {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            proxy.scrollTo("tracks-sec-\(Int(playheadSeconds(arr)))", anchor: .center)
                         }
                     }
-                    .overlay(alignment: .topLeading) { beatMarkers(arr) }
-                    .overlay(alignment: .topLeading) { loopOverlay(arr) }
-                    .overlay(alignment: .topLeading) { playhead(arr) }
-                    // Stable coordinate space for loop-handle drags — measured from the timeline's
-                    // 0:00, NOT the moved handle's local space (which would collapse the region).
-                    .coordinateSpace(name: Self.timelineSpace)
-                    .padding(.trailing, 24)
+                    .task(id: followTaskKey(arr)) {
+                        // Poll the non-Observable clock; while following + playing, keep the cursor's
+                        // second centered. Re-scroll only when the second changes.
+                        var lastSec = -1
+                        while !Task.isCancelled {
+                            if followPlayhead, isPlayingThis(arr) {
+                                let sec = Int(playheadSeconds(arr))
+                                if sec != lastSec {
+                                    lastSec = sec
+                                    withAnimation(.linear(duration: 0.3)) {
+                                        proxy.scrollTo("tracks-sec-\(sec)", anchor: .center)
+                                    }
+                                }
+                            }
+                            try? await Task.sleep(nanoseconds: 400_000_000)
+                        }
+                    }
                 }
             }
             .padding(12)
         }
+    }
+
+    /// Restart the follow task when zoom / follow / play state changes (anchor spacing or gating moved).
+    private func followTaskKey(_ arr: StudioArrangement) -> String {
+        "\(pxPerSec)-\(followPlayhead)-\(isPlayingThis(arr))-\(arr.id)"
+    }
+
+    /// One 1-second-wide LAYOUT cell per second (real HStack flow) so `scrollTo("tracks-sec-k")`
+    /// lands at the right x. Bounded so a runaway timeline can't spawn unbounded views.
+    private func followAnchors(_ arr: StudioArrangement) -> some View {
+        let secs = min(3600, max(1, Int(ceil(Double(arr.lengthMs) / 1000)) + 2))
+        return HStack(spacing: 0) {
+            ForEach(0...secs, id: \.self) { sec in
+                Color.clear.frame(width: pxPerSec, height: 1).id("tracks-sec-\(sec)")
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     private func trackHeader(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
@@ -489,12 +677,35 @@ struct TracksView: View {
                 ), in: -24...6)
                 .controlSize(.mini)
                 .accessibilityIdentifier("tracks-track-gain-\(index)")
+                // Pan is hidden behind a right-click / long-press on the header (below) — a small
+                // L/R dot shows the current position without cluttering the strip.
+                if abs(track.pan) > 0.02 {
+                    Text(track.pan < 0 ? "L" : "R").font(.system(size: 8, weight: .heavy))
+                        .foregroundStyle(Theme.accent2)
+                }
             }
-            panRow(arr: arr, track: track, index: index)
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .frame(maxHeight: .infinity)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contextMenu { panMenuItems(arr: arr, track: track, index: index) }
+    }
+
+    /// Pan lives behind the header's right-click / long-press (`.contextMenu`) so the strip stays
+    /// uncluttered. Presets + ±10 % nudges give quick and fine placement without an inline slider.
+    @ViewBuilder private func panMenuItems(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
+        let set: (Double) -> Void = { v in studio.setTrackPan(arrangement: arr.id, track: track.id, pan: v) }
+        Section("Pan · \(panLabel(track.pan))") {
+            Button { set(-1) } label: { Label("Hard left", systemImage: "chevron.left.2") }
+            Button { set(-0.5) } label: { Label("Left", systemImage: "chevron.left") }
+            Button { set(0) } label: { Label("Center", systemImage: "circle") }
+                .accessibilityIdentifier("tracks-track-pan-center-\(index)")
+            Button { set(0.5) } label: { Label("Right", systemImage: "chevron.right") }
+            Button { set(1) } label: { Label("Hard right", systemImage: "chevron.right.2") }
+        }
+        Divider()
+        Button { set(track.pan - 0.1) } label: { Label("Nudge left", systemImage: "arrow.left") }
+        Button { set(track.pan + 0.1) } label: { Label("Nudge right", systemImage: "arrow.right") }
     }
 
     /// Tappable colour chip → a swatch menu (choose the lane's palette colour). The chip is the
@@ -512,22 +723,6 @@ struct TracksView: View {
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .frame(width: 9)
         .accessibilityIdentifier("tracks-track-color-\(index)")
-    }
-
-    /// Compact stereo-pan row: L …slider… R, center = 0. Snaps to dead-center near 0 so a track is
-    /// easy to re-center. Streams to the store (and live to the player) like gain.
-    private func panRow(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
-        HStack(spacing: 5) {
-            Text("L").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.fgDim)
-            Slider(value: Binding(
-                get: { track.pan },
-                set: { studio.setTrackPan(arrangement: arr.id, track: track.id, pan: abs($0) < 0.06 ? 0 : $0) }
-            ), in: -1...1)
-            .controlSize(.mini)
-            .accessibilityIdentifier("tracks-track-pan-\(index)")
-            .accessibilityValue(panLabel(track.pan))
-            Text("R").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.fgDim)
-        }
     }
 
     private func panLabel(_ p: Double) -> String {
@@ -874,26 +1069,15 @@ struct TracksView: View {
 
     // MARK: Actions
 
-    private func bootstrap() {
-        if studio.arrangements.isEmpty {
-            selectedId = studio.createArrangement(name: "Arrangement 1").id
-        } else if studio.arrangement(selectedId) == nil {
-            selectedId = studio.arrangementsOrdered().first!.id
-        }
-    }
-
+    /// Create a new arrangement AND open it into the arranger (from the home page).
     private func newArrangement() {
-        selectedId = studio.createArrangement(name: "Arrangement \(studio.arrangements.count + 1)").id
+        openArrangementId = studio.createArrangement(name: "Arrangement \(studio.arrangements.count + 1)").id
     }
 
-    private func deleteCurrentArrangement() {
-        guard let a = current else { return }
-        studio.deleteArrangement(a.id)
-        if studio.arrangements.isEmpty {
-            selectedId = studio.createArrangement(name: "Arrangement 1").id
-        } else {
-            selectedId = studio.arrangementsOrdered().first!.id
-        }
+    /// Delete an arrangement (from home or the open arranger). If it was open, drop back to home.
+    private func deleteArrangement(_ id: String) {
+        if openArrangementId == id { player.stop(); openArrangementId = nil }
+        studio.deleteArrangement(id)
     }
 
     private func addTrack() {

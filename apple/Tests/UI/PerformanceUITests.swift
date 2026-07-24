@@ -97,6 +97,17 @@ final class PerformanceUITests: XCTestCase {
         add(shot)
     }
 
+    /// Round-2 navigation: the Tracks tab lands on the arrangements HOME browser — create + open a
+    /// fresh arrangement so the arranger flows (add track / clip / play / bounce) have a surface.
+    private func openArranger() {
+        switchTab(6)
+        let new = app.any("tracks-new-arrangement")
+        XCTAssertTrue(new.waitForExistence(timeout: 15), "Tracks home should offer New arrangement")
+        new.tap()
+        XCTAssertTrue(app.any("tracks-add-track").waitForExistence(timeout: 10),
+                      "creating an arrangement should open the arranger")
+    }
+
     // MARK: - (1) Tab + picker exist (ALL platforms — the macOS smoke)
 
     func testPerformanceTabAndPickerExist() {
@@ -151,10 +162,10 @@ final class PerformanceUITests: XCTestCase {
                       "Demuxer sub-tab should show the source picker's search field")
         XCTAssertTrue(app.any("demux-import").waitForExistence(timeout: 4),
                       "Demuxer source picker should offer the Import entry point")
-        // Tracks (6) — the multitrack arranger. Its header arrangement menu is always present.
+        // Tracks (6) — the multitrack arranger lands on its home browser (New arrangement button).
         switchTab(6)
-        XCTAssertTrue(app.any("tracks-arrangement-menu").waitForExistence(timeout: 10),
-                      "Tracks sub-tab should show the arrangement menu")
+        XCTAssertTrue(app.any("tracks-new-arrangement").waitForExistence(timeout: 10),
+                      "Tracks sub-tab should show the arrangements home")
         // Back to Samples — the picker round-trips.
         switchTab(0)
         XCTAssertTrue(app.el("sample-record-mic").waitForExistence(timeout: 10))
@@ -164,17 +175,17 @@ final class PerformanceUITests: XCTestCase {
 
     // MARK: - (2b) Tracks (multitrack arranger — Stage A)
 
-    /// The arranger bootstraps an empty "Arrangement 1", so the empty state offers "Add a track";
-    /// adding one reveals a track lane with its mix strip (mute/solo/gain) + row menu, and the
-    /// header "＋ Track" adds more.
+    /// From the HOME browser, creating an arrangement opens the arranger; its empty state offers
+    /// "Add a track"; adding one reveals a lane with its mix strip (mute/solo/gain) + row menu, and
+    /// the header "＋ Track" adds more.
     func testTracksArrangerAddDeleteTracks() throws {
         #if os(macOS)
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
-        switchTab(6)
-        // Arranger identity: the arrangement menu is always present.
-        XCTAssertTrue(app.any("tracks-arrangement-menu").waitForExistence(timeout: 15),
+        openArranger()
+        // Arranger identity: the ⋯ arrangement menu is present.
+        XCTAssertTrue(app.any("tracks-arrangement-menu").waitForExistence(timeout: 10),
                       "the arranger should show its arrangement menu")
         // Empty state → add the first track. (The empty-state container must NOT carry its own
         // accessibilityIdentifier — a container id promotes the VStack to a single element and
@@ -214,7 +225,7 @@ final class PerformanceUITests: XCTestCase {
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
-        switchTab(6)
+        openArranger()
         // Add a track, then open its add-clip picker.
         let emptyAdd = app.any("tracks-empty-add-track")
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15))
@@ -240,7 +251,7 @@ final class PerformanceUITests: XCTestCase {
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
-        switchTab(6)
+        openArranger()
         let emptyAdd = app.any("tracks-empty-add-track")
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
         app.any("tracks-add-clip-0").tap()
@@ -266,7 +277,7 @@ final class PerformanceUITests: XCTestCase {
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
-        switchTab(6)
+        openArranger()
         let emptyAdd = app.any("tracks-empty-add-track")
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
         app.any("tracks-add-clip-0").tap()
@@ -285,22 +296,29 @@ final class PerformanceUITests: XCTestCase {
 
     // MARK: - (2c) Tracks round 2 — pan/colour, tempo/looper, master FX, folders
 
-    /// Round 2: a track lane exposes a stereo PAN slider and a COLOUR menu (recolour the lane).
+    /// Round 2: a lane's COLOUR menu recolours it, and PAN lives behind a right-click / long-press on
+    /// the track header (a context menu with presets), not an inline slider.
     func testTracksPanAndColourControls() throws {
         #if os(macOS)
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
-        switchTab(6)
+        openArranger()
         let emptyAdd = app.any("tracks-empty-add-track")
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
-        XCTAssertTrue(app.any("tracks-track-name-0").waitForExistence(timeout: 10))
-        XCTAssertTrue(app.any("tracks-track-pan-0").exists, "lane should expose a pan slider")
+        let name = app.any("tracks-track-name-0")
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        // Colour menu.
         let colour = app.any("tracks-track-color-0")
         XCTAssertTrue(colour.waitForExistence(timeout: 5), "lane should expose a colour menu")
         colour.tap()
         let red = app.buttons["Red"]
         if red.waitForExistence(timeout: 5) { red.tap() }
+        // Pan is behind a long-press on the header → a context menu with a Center preset.
+        name.press(forDuration: 1.3)
+        let center = app.any("tracks-track-pan-center-0")
+        XCTAssertTrue(center.waitForExistence(timeout: 5), "long-press should reveal the pan context menu")
+        center.tap()
         snap("tracks-pan-colour")
         #endif
     }
@@ -312,7 +330,7 @@ final class PerformanceUITests: XCTestCase {
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
-        switchTab(6)
+        openArranger()
         let emptyAdd = app.any("tracks-empty-add-track")
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
         app.any("tracks-add-clip-0").tap()
@@ -340,7 +358,7 @@ final class PerformanceUITests: XCTestCase {
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
-        switchTab(6)
+        openArranger()
         let emptyAdd = app.any("tracks-empty-add-track")
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
         let toggle = app.any("tracks-master-fx-toggle")
@@ -357,28 +375,43 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
-    /// Round 2: the arrangement menu organizes into folders — the one-shot "New folder…" in the Move
-    /// submenu creates a folder AND files the current arrangement into it (so it becomes a move target).
-    func testTracksArrangementFolderCreate() throws {
+    /// Round 2: the Tracks HOME browser — create an arrangement (opens the arranger), go back, and it
+    /// appears as a row you can reopen.
+    func testTracksHomeBrowserCreateOpenBack() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        openArranger()      // creates + opens a fresh arrangement
+        // Back → the home browser lists the arrangement as a row.
+        app.any("tracks-home-back").tap()
+        XCTAssertTrue(app.any("tracks-new-arrangement").waitForExistence(timeout: 10),
+                      "back should return to the arrangements home")
+        let row = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "tracks-arr-row-")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "home should list the created arrangement")
+        row.tap()
+        XCTAssertTrue(app.any("tracks-add-track").waitForExistence(timeout: 10),
+                      "tapping a row reopens it into the arranger")
+        snap("tracks-home")
+        #endif
+    }
+
+    /// Round 2: folders live on the home page — the New-folder button creates one that shows as a
+    /// section.
+    func testTracksHomeFolderCreate() throws {
         #if os(macOS)
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
         launchPerformance()
         switchTab(6)
-        let menu = app.any("tracks-arrangement-menu")
-        XCTAssertTrue(menu.waitForExistence(timeout: 15)); menu.tap()
-        let move = app.buttons["Move to folder"]
-        XCTAssertTrue(move.waitForExistence(timeout: 5), "menu should offer Move to folder"); move.tap()
-        let newFolder = app.any("tracks-move-new-folder")
-        XCTAssertTrue(newFolder.waitForExistence(timeout: 5), "Move submenu should offer New folder…"); newFolder.tap()
+        let newFolder = app.any("tracks-new-folder")
+        XCTAssertTrue(newFolder.waitForExistence(timeout: 15), "home should offer New folder"); newFolder.tap()
         let field = app.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText("Live Set")
         app.buttons["Create"].tap()
-        // Reopen → the new folder is now a move target.
-        menu.tap()
-        app.buttons["Move to folder"].tap()
-        XCTAssertTrue(app.buttons["Live Set"].waitForExistence(timeout: 5),
-                      "the created folder should appear as a move target")
+        XCTAssertTrue(app.staticTexts["Live Set"].waitForExistence(timeout: 5),
+                      "the created folder should appear as a section on the home page")
         snap("tracks-folder")
         #endif
     }

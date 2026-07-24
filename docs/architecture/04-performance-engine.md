@@ -1914,10 +1914,19 @@ write AAC — all off the main actor (only `Sendable` value tuples + a `MasterFX
 boundary, never a buffer). Per-track **gain/pan + Master FX apply; mute/solo do not**. Individual,
 selected, or all → each appends a new **`Master`** track holding the mixdown.
 
-**Folders** (`StudioArrangementFolder`, in-content only — no macOS `CommandMenu`). The header
-arrangement menu groups arrangements into folder sections + a **No folder** section; a **Move to
-folder** submenu (with a one-shot **New folder…**) and a **Folders** submenu (create / rename / delete)
-manage them. A dangling `folderId` reads as loose so an arrangement never vanishes.
+**Home browser + folders** (`StudioArrangementFolder`, in-content only — no macOS `CommandMenu`). The
+tab lands on an **arrangements home** (a `List` browser), not straight into an arrangement — navigation
+is `openArrangementId: String?` (nil ⇒ home). Home shows a **No folder** section + one collapsible
+`DisclosureGroup` per folder (collapse persisted under `pdj.arrangementFolders.collapsed`); a row's
+context menu opens / renames / **moves to folder** (one-shot **New folder…**) / deletes it; the bar's
+**New folder** creates one. A dangling `folderId` reads as loose so an arrangement never vanishes.
+Creating opens the arranger; **‹ Arrangements** (`arrangerHeader`) returns home.
+
+**Zoom + follow** (the `DemuxTimelineView` pattern). `pxPerSec` is `@State` (a zoom ladder, default
+48) driving every ms→px mapping; the horizontal `ScrollView` is wrapped in a `ScrollViewReader` with
+invisible **per-second LAYOUT anchors** (`tracks-sec-<k>`, a real HStack flow — `.offset` anchors would
+all resolve to x=0). A polling `.task` re-centers the cursor's second while following + playing; **⌖**
+toggles follow (off ⇒ free manual scroll) and re-centers; zoom re-centers on the playhead.
 
 **Stems in / out.** A song's four on-device stems reach the arranger two ways, both via
 `ArrangerClipBaker.bakeFromFile` (each stem baked to its own colour-matched lane at 0:00, tracks added

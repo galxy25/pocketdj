@@ -399,18 +399,20 @@ vocals), each **broken into discontinuous segments**, because a track is silence
 are where the singer isn't singing, where the piano rests. (The tab's segment shows a **monochrome**
 version of the same four gapped bars — evocative of lanes, distinct from every other tab.)
 
-**Arrangements — and folders.** You work inside a named **arrangement** (it starts you on
-"Arrangement 1"); the menu at the top switches, creates, renames, and deletes them. As the ideas pile
-up, group them into **folders** — the menu's **Move to folder** submenu files the current arrangement
-(pick a folder, **No folder**, or **New folder…** to make one in the same tap), and a **Folders**
-submenu renames or deletes folders. Deleting a folder just un-files its arrangements — it never
-deletes one. The picker then reads as tidy sections: your folders first, a **No folder** section for
-loose ones. (It's all in-app — nothing clutters the Mac menu bar.)
+**A home for your arrangements.** The tab opens on a **library**, not a canvas — a browser of your
+**arrangements and folders** (the "filesystem"). Tap **New** to start one (it opens right into the
+arranger); tap any row to reopen it. Group them into **folders** — **New folder** on the bar makes one,
+and an arrangement's context menu (long-press / right-click) has **Move to folder** (pick a folder,
+**No folder**, or **New folder…** in the same tap). Folders **collapse** (remembered across launches);
+deleting one just un-files its arrangements, never deletes them. Inside the arranger, **‹ Arrangements**
+takes you back home. (It's all in-app — nothing touches the Mac menu bar.)
 
-**Tracks.** **＋ Track** adds a lane. Each lane carries a **mix strip** — **M**ute, **S**olo, a
-**gain** slider, and a **pan** slider (L…R, snapping to dead-center) — plus a **colour chip** you tap
-to recolour the lane, and a row menu to **rename**, **duplicate** (a real copy — its clips get their
-own audio, so editing one never touches the other), or **delete** it.
+**Tracks.** **＋ Track** adds a lane. Each lane carries a **mix strip** — **M**ute, **S**olo, and a
+**gain** slider — plus a **colour chip** you tap to recolour the lane, and a row menu to **rename**,
+**duplicate** (a real copy — its clips get their own audio, so editing one never touches the other), or
+**delete** it. **Pan** is tucked behind a **long-press / right-click** on the track header (presets
+Hard-Left…Center…Hard-Right plus ±10 % nudges), so the strip stays clean; a small **L/R** mark shows
+when a lane is panned.
 
 **Clips — from anything you've made.** Tap **＋** on a lane and pick from a source list: any **sample,
 loop, sequence, or instrumental** you've built — or, under **Stems**, any song whose four stems are on
@@ -427,7 +429,9 @@ stop, and the take lands as a clip at the end of the lane.
 sweeping the timeline (a little **time bubble** riding its tip) and a running **m:ss**. A **beat grid**
 rules the timeline — thin ticks per beat, bolder bar lines every four, numbered — set by the
 **♩ tempo** pill (which seeds itself from the first clip's source tempo). **Mute**, **solo**, **gain**,
-and **pan** move the mix **live** while it plays.
+and **pan** move the mix **live** while it plays. **Scroll** the timeline by hand, **zoom** it in and
+out with **＋/−**, and hit **⌖** to jump to the cursor and have the timeline **follow** it as it plays
+(tap **⌖** again to let go and scroll freely).
 
 **Loop a section.** The **loop** button turns on a shaded region with two **beat-snapped handles** —
 drag them to pick the start and end — and playback **repeats** that span seamlessly so you can dial a
