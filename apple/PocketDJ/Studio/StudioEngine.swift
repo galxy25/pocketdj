@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AVFoundation        // AVAudioEngine + nodes (iOS · iPad · Mac); AVAudioSession is iOS-only (guarded)
+import AudioToolbox        // AudioUnitSetParameter + kDynamicsProcessorParam_* (the B6 compressor)
 import QuartzCore          // CACurrentMediaTime — the pattern clock's host timebase
 import os                  // studiodiag Logger — device-switch/recovery diagnostics
 
@@ -18,6 +19,15 @@ enum StudioAudio {
     /// live AU's channel count / sample rate (which AVAudioEngine asserts-and-crashes on).
     static let canonicalFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
     static let canonicalSampleRate = 44_100.0
+
+    /// The B6 mixer-deck compressor node's component (Apple's dynamics processor) — a local copy of
+    /// `MixEngine`/`NowPlayingDSP`'s desc so the audition graph and the offline bake build the SAME
+    /// node and their `compWet` voicing can't drift.
+    static let dynamicsDesc = AudioComponentDescription(
+        componentType: kAudioUnitType_Effect,
+        componentSubType: kAudioUnitSubType_DynamicsProcessor,
+        componentManufacturer: kAudioUnitManufacturer_Apple,
+        componentFlags: 0, componentFlagsMask: 0)
 
     /// Is `format` the canonical processing shape a pattern-row player accepts?
     /// (`scheduleBuffer` with a buffer whose format differs from the player's connection format
@@ -64,21 +74,43 @@ enum StudioAudio {
     /// file always agree. Trim is deliberately NOT here: it is a schedule-window decision
     /// (`scheduleSegment`), not an AU parameter.
     ///   • rate/pitch → timePitch (MixEngine's ranges, mirrored by `StudioSampleEdit.clamped`);
-    ///   • gainDb → the EQ's `globalGain` (the MixEngine boost trick: the single band stays
-    ///     bypassed, the NODE stays active, so the gain applies with zero coloration);
+    ///   • gainDb → the EQ's `globalGain` (the MixEngine boost trick: the NODE stays active so the
+    ///     gain applies with zero coloration);
+    ///   • filterAmt → the EQ's single band as a resonant low-pass sweep (F4's filter trick — the
+    ///     band is bypassed at 0, so the EQ is a pure gain carrier unless the filter is engaged);
+    ///   • compWet → the dynamics-processor `comp` node (threshold/overall-gain), bypassed at 0;
     ///   • wets → reverb/delay `wetDryMix`, with the whole AU BYPASSED at 0 so a dry sample
     ///     renders bit-clean (and the offline tail-drain isn't chasing an idle reverb's floor).
     /// Delay voicing is a fixed musical slap (0.3 s, 30 % feedback) — the edit exposes only a
     /// wet amount, so the character must be constant or saved renders would drift between builds.
     static func applyEditToChain(_ edit: StudioSampleEdit,
                                  timePitch: AVAudioUnitTimePitch, eq: AVAudioUnitEQ,
-                                 reverb: AVAudioUnitReverb, delay: AVAudioUnitDelay) {
+                                 reverb: AVAudioUnitReverb, delay: AVAudioUnitDelay,
+                                 comp: AVAudioUnitEffect) {
         let e = edit.clamped()
         timePitch.rate = Float(e.rate)
         timePitch.pitch = Float(e.pitchSemitones * 100)   // semitones → cents
         eq.globalGain = Float(e.gainDb)
-        eq.bands.first?.bypass = true                     // gain carrier only — never a filter
+        // Filter reuses the single EQ band: a resonant low-pass sweep when filterAmt>0, else the
+        // band is bypassed so the node is a pure gain carrier (globalGain still applies either way).
+        if let band = eq.bands.first {
+            if e.filterAmt > 0 {
+                band.filterType = .resonantLowPass
+                band.frequency = Float(18_000 * pow(250.0 / 18_000.0, e.filterAmt))   // ~18 kHz → ~250 Hz
+                band.bandwidth = 0.5
+                band.bypass = false
+            } else {
+                band.bypass = true
+            }
+        }
         eq.bypass = false                                 // node active so globalGain applies
+        // Compressor (dynamics glue) — same voicing as the F4/Mix deck; clean-bypassed at 0.
+        let cs = AudioUnitParameterValue(e.compWet)
+        AudioUnitSetParameter(comp.audioUnit, kDynamicsProcessorParam_Threshold,
+                              kAudioUnitScope_Global, 0, -30 * cs, 0)
+        AudioUnitSetParameter(comp.audioUnit, kDynamicsProcessorParam_OverallGain,
+                              kAudioUnitScope_Global, 0, 15 * cs, 0)
+        comp.bypass = e.compWet <= 0
         reverb.wetDryMix = Float(e.reverbWet * 100)
         reverb.bypass = e.reverbWet <= 0
         delay.delayTime = 0.3
@@ -194,9 +226,14 @@ final class StudioEngine {
     @ObservationIgnored private var samplePlayer: AVAudioPlayerNode?
     @ObservationIgnored private var sampleInputMixer: AVAudioMixerNode?
     @ObservationIgnored private var sampleTimePitch: AVAudioUnitTimePitch?
+    @ObservationIgnored private var sampleComp: AVAudioUnitEffect?   // B6 mixer-deck compressor
     @ObservationIgnored private var sampleEQ: AVAudioUnitEQ?
     @ObservationIgnored private var sampleReverb: AVAudioUnitReverb?
     @ObservationIgnored private var sampleDelay: AVAudioUnitDelay?
+    /// B6 looper: when on, `scheduleSampleWindow` seamlessly loops the trim window (`.loops`) and
+    /// the end-boundary check never stops. EPHEMERAL — reset on `unloadSample` (editor closed), so
+    /// it never persists or bakes (the deck's tempo/pitch/gain/FX do; the looper is live-only).
+    @ObservationIgnored private var sampleLoopAudition = false
     @ObservationIgnored private var loopPlayer: AVAudioPlayerNode?
     @ObservationIgnored private var loopGain: AVAudioMixerNode?
     @ObservationIgnored private var rowPlayers: [AVAudioPlayerNode] = []
@@ -349,19 +386,21 @@ final class StudioEngine {
         let player = AVAudioPlayerNode()
         let inputMixer = AVAudioMixerNode()
         let tp = AVAudioUnitTimePitch()
+        let cp = AVAudioUnitEffect(audioComponentDescription: StudioAudio.dynamicsDesc)   // B6 compressor
         let eq = AVAudioUnitEQ(numberOfBands: 1)
         let rv = AVAudioUnitReverb()
         let dl = AVAudioUnitDelay()
         rv.loadFactoryPreset(.mediumHall)   // the Studio reverb voicing (matches StudioRender's bake)
-        for n in [player, inputMixer, tp, eq, rv, dl] as [AVAudioNode] { engine.attach(n) }
+        for n in [player, inputMixer, tp, cp, eq, rv, dl] as [AVAudioNode] { engine.attach(n) }
         engine.connect(player, to: inputMixer, format: canonical)
         engine.connect(inputMixer, to: tp, format: canonical)
-        engine.connect(tp, to: eq, format: canonical)
+        engine.connect(tp, to: cp, format: canonical)
+        engine.connect(cp, to: eq, format: canonical)
         engine.connect(eq, to: rv, format: canonical)
         engine.connect(rv, to: dl, format: canonical)
         engine.connect(dl, to: engine.mainMixerNode, format: canonical)
         samplePlayer = player; sampleInputMixer = inputMixer; sampleTimePitch = tp
-        sampleEQ = eq; sampleReverb = rv; sampleDelay = dl
+        sampleComp = cp; sampleEQ = eq; sampleReverb = rv; sampleDelay = dl
 
         // Loop-audition voice: baked CAFs are already canonical — no normalizer, no FX (their
         // edits are in the file); a dedicated gain keeps the loop's bus independent.
@@ -392,7 +431,7 @@ final class StudioEngine {
         built = true
         registerConfigChangeHandling()   // per-instance: system stops the engine on a route-format change
         // Re-push whatever the UI already set before the graph existed.
-        StudioAudio.applyEditToChain(sampleEdit, timePitch: tp, eq: eq, reverb: rv, delay: dl)
+        StudioAudio.applyEditToChain(sampleEdit, timePitch: tp, eq: eq, reverb: rv, delay: dl, comp: cp)
         dlog("ensureEngine: graph built, out=\(Int(engine.outputNode.outputFormat(forBus: 0).sampleRate))Hz")
     }
 
@@ -464,8 +503,9 @@ final class StudioEngine {
         sampleScheduled = false
         loadedSampleId = sample.id
         sampleEdit = sample.edit.clamped()
-        if let tp = sampleTimePitch, let eq = sampleEQ, let rv = sampleReverb, let dl = sampleDelay {
-            StudioAudio.applyEditToChain(sampleEdit, timePitch: tp, eq: eq, reverb: rv, delay: dl)
+        if let tp = sampleTimePitch, let eq = sampleEQ, let rv = sampleReverb, let dl = sampleDelay,
+           let cp = sampleComp {
+            StudioAudio.applyEditToChain(sampleEdit, timePitch: tp, eq: eq, reverb: rv, delay: dl, comp: cp)
         }
         samplePausedAt = sampleWindowSeconds()?.start ?? 0
         maybeResignArbiter()
@@ -478,6 +518,7 @@ final class StudioEngine {
         isPlayingSample = false
         sampleScheduled = false
         sliceEndSec = nil
+        sampleLoopAudition = false          // B6 looper is ephemeral — resets when the editor closes
         sampleFile = nil
         samplePath = nil
         loadedSampleId = nil
@@ -582,10 +623,29 @@ final class StudioEngine {
         let e = edit.clamped()
         let trimChanged = e.trimStartMs != sampleEdit.trimStartMs || e.trimEndMs != sampleEdit.trimEndMs
         sampleEdit = e
-        if built, let tp = sampleTimePitch, let eq = sampleEQ, let rv = sampleReverb, let dl = sampleDelay {
-            StudioAudio.applyEditToChain(e, timePitch: tp, eq: eq, reverb: rv, delay: dl)
+        if built, let tp = sampleTimePitch, let eq = sampleEQ, let rv = sampleReverb, let dl = sampleDelay,
+           let cp = sampleComp {
+            StudioAudio.applyEditToChain(e, timePitch: tp, eq: eq, reverb: rv, delay: dl, comp: cp)
         }
         if trimChanged, !isPlayingSample { sampleScheduled = false }   // next play uses the new window
+    }
+
+    /// The mixer-deck looper's current state (the deck's toggle reflects this).
+    var sampleLooping: Bool { sampleLoopAudition }
+
+    /// Toggle the mixer-deck looper (B6). When ON, sample audition seamlessly loops the trim
+    /// window; when OFF, it plays the window once and stops at the out-point. Re-schedules
+    /// immediately if we're already auditioning so the mode flips without a stop/play round-trip.
+    func setSampleLoopAudition(_ on: Bool) {
+        guard sampleLoopAudition != on else { return }
+        sampleLoopAudition = on
+        guard isPlayingSample, sliceEndSec == nil else { sampleScheduled = false; return }
+        // Loop restarts at the window head (its seam is the window's own edges); un-looping keeps
+        // playing from the current spot.
+        let from = on ? (sampleWindowSeconds()?.start ?? 0) : samplePlayheadSeconds()
+        samplePlayer?.stop()
+        sampleScheduled = false
+        if scheduleSampleWindow(from: from), startEngineIfNeeded() { samplePlayer?.play() }
     }
 
     /// The TRUE audition playhead in the sample's SOURCE seconds — the region editor's in/out
@@ -598,7 +658,14 @@ final class StudioEngine {
            let nodeTime = player.lastRenderTime,
            let pt = player.playerTime(forNodeTime: nodeTime),
            let sr = sampleFile?.processingFormat.sampleRate, sr > 0 {
-            return sampleSegmentStartSeconds + Double(pt.sampleTime) / sr
+            let elapsed = Double(pt.sampleTime) / sr
+            // Looping: sampleTime advances monotonically across iterations — wrap it back into the
+            // window so the region editor's playhead cycles instead of running off the end.
+            if sampleLoopAudition, let w = sampleWindowSeconds() {
+                let len = w.end - w.start
+                if len > 0 { return w.start + elapsed.truncatingRemainder(dividingBy: len) }
+            }
+            return sampleSegmentStartSeconds + elapsed
         }
         return samplePausedAt
     }
@@ -631,6 +698,26 @@ final class StudioEngine {
             return false
         }
         player.stop()
+        // B6 looper: seamlessly loop the WHOLE window (`.loops`) — read it into a buffer and
+        // schedule from the window head (the seam is the window's own edges). The playhead wraps
+        // in `samplePlayheadSeconds` and the end-boundary check never stops while looping. Falls
+        // back to the one-shot segment if the window can't be read into a buffer.
+        if sampleLoopAudition {
+            let loopStartFrame = min(AVAudioFramePosition((w.start * sr).rounded()), f.length)
+            let loopCount = endFrame - loopStartFrame
+            if loopCount > 0,
+               let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat,
+                                          frameCapacity: AVAudioFrameCount(loopCount)) {
+                f.framePosition = loopStartFrame
+                if (try? f.read(into: buf, frameCount: AVAudioFrameCount(loopCount))) != nil {
+                    player.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+                    sampleSegmentStartSeconds = w.start
+                    samplePausedAt = w.start
+                    sampleScheduled = true
+                    return true
+                }
+            }
+        }
         player.scheduleSegment(f, startingFrame: startFrame, frameCount: AVAudioFrameCount(count),
                                at: nil, completionHandler: nil)
         sampleSegmentStartSeconds = from
@@ -662,6 +749,7 @@ final class StudioEngine {
         }
         guard let w = sampleWindowSeconds() else { return }
         samplePausedAt = min(max(ph, w.start), w.end)
+        if sampleLoopAudition { return }                 // looping — never ends at the out-point
         guard ph >= w.end - 0.01 else { return }
         dlog("sample audition ended at \(String(format: "%.2f", ph))")
         samplePlayer?.stop()

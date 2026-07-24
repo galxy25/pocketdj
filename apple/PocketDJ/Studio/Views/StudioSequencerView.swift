@@ -741,6 +741,10 @@ private struct PatternRowCard: View {
     /// Tap the row header to solo-preview just this row (SEQ1).
     var onSolo: (Int) -> Void
 
+    /// SEQ3: reveal this row's per-track mixer deck (collapsed by default so a long pattern's
+    /// rows stay compact).
+    @State private var deckExpanded = false
+
     /// The engine is currently soloing THIS row (its header shows a Stop glyph).
     private var soloingThis: Bool {
         engine.isPlayingPattern && engine.loadedPatternId == patternId && engine.soloedRow == rowIndex
@@ -762,11 +766,58 @@ private struct PatternRowCard: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             stepGrid
+            rowDeck
         }
         .padding(10)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .strokeBorder(Theme.border, lineWidth: 1))
+    }
+
+    // MARK: Per-track mixer deck (SEQ3)
+
+    /// A collapsed-by-default `StudioMixerDeck` for a SAMPLE row — tempo / pitch / compressor ·
+    /// reverb · delay · filter that BAKE into the row's buffer on the next Play (the sequencer
+    /// re-renders a row whose target sample edit changed). Gain and the looper are hidden: the
+    /// row's LIVE loudness is the header's `RowGainChip`, and looping is the pattern's job. Loops
+    /// (`lp_`) carry their edits baked into the CAF, so they have no editable deck.
+    @ViewBuilder private var rowDeck: some View {
+        if let s = studio.sample(row.targetId) {
+            VStack(alignment: .leading, spacing: 8) {
+                // A plain expander button (not a DisclosureGroup — its container tap doesn't toggle
+                // reliably under XCUITest) so the reveal is directly addressable + drivable.
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { deckExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "slider.horizontal.3")
+                        Text("Mixer deck")
+                        Spacer(minLength: 0)
+                        Image(systemName: deckExpanded ? "chevron.up" : "chevron.down")
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.fgDim)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("seq-row-deck-\(rowIndex)")
+                if deckExpanded {
+                    StudioMixerDeck(edit: s.edit, showGain: false, showLooper: false,
+                                    idPrefix: "seq-deck-\(rowIndex)") { e in
+                        let clamped = e.clamped()
+                        // Persist to the sample (bumps renderRevision → the row re-bakes next Play)
+                        // and mark THIS pattern's bounce stale so its collection playback re-bounces.
+                        studio.updateSampleEdit(s.id, clamped)
+                        studio.mutatePattern(patternId) { _ in }
+                        // If that sample is loaded in the audition chain (open in the editor), keep
+                        // the live voicing in sync too.
+                        if engine.loadedSampleId == s.id { engine.applyEdit(clamped) }
+                    }
+                    Text("Shapes this sample — heard on the next Play.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+        }
     }
 
     // MARK: Header (label · gain · remove)

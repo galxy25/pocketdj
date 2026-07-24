@@ -96,11 +96,15 @@ tempo: an **Auto-detect tempo** button listens to the sample **on the phone** (n
 works offline) and reads its BPM, so loops and slices snap to the groove without you
 counting it out.
 
-**Editing is non-destructive.** Open a sample and you can **rename**, **trim**, and dial **gain**,
-**playback rate** (½–2×), **pitch** (±12 semitones), and **reverb** and **delay** — all auditioned
-live through the Studio's chain, and **none of it written into the file** until something that needs a
-finished file asks for one (a loop, a sequenced hit, or playing the sample inside a collection).
-Change an edit and the render just refreshes.
+**Editing is non-destructive — a built-in mixer deck.** Open a sample and you get a **mixer deck**:
+**Tempo** (½–2×), **Pitch** (±12 semitones), **Gain**, and a four-effect **FX rack** — **Compressor**,
+**Reverb**, **Delay**, and a resonant **Filter** sweep — plus **trim** and **rename**. Everything is
+auditioned live through the Studio's chain and **none of it is written into the file** until something
+that needs a finished file asks for one (a loop, a sequenced hit, or playing the sample inside a
+collection). Change an edit and the render just refreshes. There's also a **Loop** button that
+seamlessly loops the trimmed region while you audition — a live performance tool that resets when you
+close the editor (it doesn't bake into the file). It's the **same deck** the sequencer gives each of
+its sample rows, so a sound you shape here sounds identical everywhere it plays.
 
 ### Folders — file your crate of samples
 
@@ -161,6 +165,12 @@ own ringing tail, the classic mono-voice feel. Each **bar** of steps lays out on
 thumb can find the beat; a **wide** screen keeps the bar on one line — so a long multi-bar pattern
 stacks its bars vertically. You can **bounce** a pattern to a single audio file whenever you want a
 finished loop of the whole thing (it re-bounces the moment you edit it).
+
+**A mixer deck on every sample row.** Each row that plays a **sample** has a collapsible **Mixer
+deck** — the same deck the sampler editor uses, minus the gain slider and looper. Dial its **Tempo**,
+**Pitch**, and **FX** (compressor · reverb · delay · filter) and they **bake into that row on the next
+Play**. The row's own **live gain chip** stays in the header for instant loudness balancing while the
+pattern runs, so you shape the *sound* in the deck and ride the *level* in the header.
 
 **Preview one row at a time.** Tap a row's **header** (its icon + name) to **solo** just that row —
 it loops on its own at the pattern tempo so you can hear a single sample or loop in isolation while

@@ -1209,9 +1209,13 @@ observers, the tick watchdog + zombie-node `pause()+play()` re-prime, and
 
 ```
  StudioEngine — ONE graph, three audition duties (canonical 44.1k/2ch pinned downstream):
-   SAMPLE   player → inputMixer(normalizer) → timePitch → EQ(globalGain) → reverb → delay → mainMixer
+   SAMPLE   player → inputMixer(normalizer) → timePitch → comp(dynamics) → EQ(globalGain+filter) → reverb → delay → mainMixer
             only player→inputMixer is reconnected per load at the file's processingFormat (player STOPPED)
             — studio files are heterogeneous (mic captures are hw-format, ~48 kHz mono) — MixEngine loadFile contract
+            B6 MIXER DECK: StudioSampleEdit adds compWet (dynamics) + filterAmt (EQ band = resonant LPF) to gain/rate/pitch/wets
+            — StudioAudio.applyEditToChain(...,comp:) is the ONE voicing both audition + StudioRender.makeOfflineChain apply
+            LOOPER (ephemeral, SAMP-only): sampleLoopAudition → scheduleSampleWindow reads the trim window → scheduleBuffer(.loops);
+              samplePlayheadSeconds wraps, checkSampleEndBoundary never stops; reset in unloadSample — never persisted, never baked
    LOOP     decode loop-<id>.caf fully → trim/pad decoded buffer to the AUTHORITATIVE `frames` → scheduleBuffer(.loops)
    PATTERN  each row's buffer is PRE-RENDERED with edits baked (StudioRender) → rowPlayer → rowGain → mainMixer
             scheduleBuffer(at:options:.interrupts)  = mono-choke step sequencer (a retrigger cuts the ringing hit)
@@ -1242,6 +1246,22 @@ scheduled sample-accurately against a pattern-start `AVAudioTime` anchor, one ba
 (never a throw); a pattern with zero sounding steps **refuses** to play/bounce with an inline
 notice, because a zero-frame schedule crashes `AVAudioPlayerNode`. (`StudioEngineMathTests`
 cover the step-time math, the choke policy, and the missing-target skip.)
+
+**The B6 mixer deck** (`StudioMixerDeck.swift`) is a reusable, engine-agnostic control surface over a
+`StudioSampleEdit`, shared by the sampler editor (SAMP) and each sequencer **sample row** (SEQ3). It
+forks the F4 `NowPlayingDSP` control model — same effect voicings — but drives the sampler's own
+non-destructive edit + `StudioEngine` chain, never `MixEngine`, so it can't collide with a live
+Mix-tab session. Two fields are added to `StudioSampleEdit` **additive-optionally** (absent ⇒ 0 ⇒ off,
+no `studioSchemaVersion` bump): **`compWet`** drives a new `comp` dynamics node inserted at
+`timePitch → comp → EQ`, and **`filterAmt`** repurposes the EQ's single band as a resonant low-pass
+sweep (the gain carrier `globalGain` is untouched — F4's filter trick). Because both audition and the
+offline bake route through the **one** `StudioAudio.applyEditToChain(…, comp:)`, they can't drift, and
+because the sequencer already re-renders a row whose target sample's `renderRevision` moved, the SEQ3
+per-row deck bakes into the row buffer **on the next Play for free** — the row's *live* loudness stays
+the header's `RowGainChip`, so the per-row deck hides gain. The **looper** is the deliberate exception:
+it's live-audition-only (SAMP), `scheduleBuffer(.loops)` over the trim window, and resets in
+`unloadSample` — it never persists or bakes. (`StudioStoreTests` cover the additive decode, the clamp,
+and the `renderRevision` bump on an FX change.)
 
 **`StudioRender`** is greenfield: an `AVAudioEngine.enableManualRenderingMode(.offline)` graph
 whose output is written with **`AVAudioFile(forWriting:settings:)`** — blocking writes with no
