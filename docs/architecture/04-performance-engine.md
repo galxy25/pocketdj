@@ -1837,6 +1837,64 @@ song.
 
 ---
 
+### 8.9 Multitrack arranger — the `Tracks` sub-tab
+
+The seventh Studio sub-tab (`StudioSubTab.tracks`, ⌘7) is a lightweight **multitrack arranger** that
+composes the four studio families into a timeline. It is deliberately **additive** — no
+`studioSchemaVersion` bump — and self-contained.
+
+**Data model** (`StudioModels.swift`). Three new value types ride the studio document
+(`StudioDocument.arrangements`, per-element-lossy like every other list):
+
+- **`StudioArrangement`** (`arr_…`) — a named workspace: `tracks: [StudioTrack]`, timestamps.
+- **`StudioTrack`** (`trk_…`) — one lane: `clips: [StudioClip]`, a mix strip (`gainDb` / `muted` /
+  `soloed`), and a palette `colorIndex`.
+- **`StudioClip`** (`clip_…`) — a positioned, **immutable baked snapshot**: `fileName`
+  (`clip-<id>.m4a`), `startMs`, `durationMs`, a `StudioClipSource` provenance tag (sample / loop /
+  pattern / take / recording / master), and the `sourceId` it was baked from (label only).
+
+The `arr_/trk_/clip_` prefixes are minted by `StudioFactory` and, like `cue_/slc_/sfld_`, are
+**deliberately excluded from `studioPrefixes`** — an arranger id never rides a collection's string
+array, so the rip/realize/burn fences must not treat it as a routable studio item. Clip audio lives
+in an **app-managed `Application Support/studio/arrangements/`** dir (not a `StudioFamily`: arranger
+clips are derived snapshots, never user-relocatable, so they skip the bookmark / knownIds / reconcile
+machinery). CRUD is a **same-file `StudioStore` extension** (so the `private(set) arrangements` setter
+stays file-private); `mutateArrangement` is the single data-mutation door (stamps `updatedAt`, saves),
+while file-touching ops (delete / duplicate / bake) manage `clip-<id>.m4a` directly — duplicate
+**copies** each clip's audio to a fresh file so two records never share one.
+
+**Bake a clip** (`ArrangerClipBaker`). Adding a source runs `StudioAnalyzer.prepare` (bounces a dirty
+pattern / renders an un-rendered take — a no-op for samples & loops), resolves it via
+`localURLForPlayback`, then `StudioRender.importAudioFile` writes a canonical-AAC snapshot into the
+arrangements dir. A live mic recording takes the same import path from the recorder's samples file
+(`bakeFromFile`), after which the orphan library file is deleted.
+
+**Synced playback** (`MultitrackPlayer`, `@MainActor @Observable`, view-scoped). Play rebuilds a fresh
+`AVAudioEngine` graph — one `AVAudioPlayerNode → gain(mixer) → mainMixer` per track — decodes each
+clip to a canonical buffer, schedules it at its ms→frame offset on the node's timeline
+(`scheduleBuffer(at: AVAudioTime(sampleTime:atRate:))`), then starts **every** node at one shared
+`AVAudioTime` (now + a 0.12 s pre-roll) so the sample timelines coincide — the same one-host-time sync
+`StudioEngine.restartPatternFromTop` and the MixEngine stem decks use. Per-track mute / solo / gain map
+to each track's mixer `outputVolume` and update **live** mid-play (solo wins); a non-Observable
+`MultitrackClock` (sampled by a `TimelineView`) drives the playhead without re-running the view; an
+auto-stop task ends playback a tail past the last clip.
+
+**Bounce** (`ArrangerBouncer`). Because clips are already-baked snapshots with **no per-clip DSP**, a
+mixdown is a straight **sample-sum** (the `carveStemMix`/`addBuffer` approach, not an offline engine):
+allocate a canonical accumulator sized to the longest track, add each clip (decoded via the
+nonisolated `StudioRender.decodeFileSync`) at its start frame scaled by its track gain, **peak-limit**
+to avoid summing overflow, write AAC — all off the main actor (only `Sendable` `(gain, startFrame,
+url)` tuples cross the boundary, never a buffer). Per-track **gain applies; mute/solo do not** (an
+explicit bounce mixes exactly the tracks you chose). Individual (one track), selected (a toggle
+sheet), or all → each appends a new **`Master`** track holding the mixdown.
+
+**Verify status.** Model round-trip + CRUD + the offline-mix path are unit- and UI-tested on iOS
+(`StudioStoreTests`, `PerformanceUITests` — add/delete/duplicate tracks, add-clip-from-source,
+playback start/stop, bounce-all). **Live mic capture and true audio sync/quality are device-only**
+(permission-gated, no real sim audio); the sim tests verify the Record entry point is wired.
+
+---
+
 ## Next
 
 → [Chapter 5 — Playback & Rip-on-Demand](./05-playback-and-rip-on-demand.md)

@@ -25,7 +25,7 @@ The native app has a **fifth top-level tab**: **Producer** (the **piano-keys** i
 Browser · History · Collections · Mix · Jukebox Hero · Settings), and **⌘P** jumps straight to it. That one physical key now has two deliberate homes: **⌘P**
 opens Producer and **⌥⌘P** is Browser's play-focused ▶ (the Collections tab has since moved to its own **⌘C**).
 
-Inside, a **segmented picker** across the top splits the Studio into **six sub-tabs**, and **⌘1–⌘6**
+Inside, a **segmented picker** across the top splits the Studio into **seven sub-tabs**, and **⌘1–⌘7**
 step between them (scoped to this tab, so they never fight Browser's own ⌘1/⌘2):
 
 **Affordances**
@@ -35,8 +35,9 @@ step between them (scoped to this tab, so they never fight Browser's own ⌘1/�
 - **Instruments** (⌘4, piano-keys) — play and record the virtual instruments.
 - **Cues** (⌘5, flag) — set jump-to points on any track.
 - **Demuxer** (⌘6, waveform-under-a-magnifier) — take any audio apart: lyrics, chords, stems, drum pattern, melody.
+- **Tracks** (⌘7, stacked-lanes) — arrange everything you've made into a **multitrack** — play it, record into it, bounce it down.
 
-On a **narrow iPhone in portrait** the six segments show **just their symbols** (six text labels
+On a **narrow iPhone in portrait** the seven segments show **just their symbols** (seven text labels
 won't fit); a **wider** screen shows symbol *and* word. The Studio **remembers the sub-tab** you were
 last on and reopens there, and — the toolbar-overflow lesson from Collections — its important controls
 stay **in the content**, never buried behind a `•••`.
@@ -384,6 +385,45 @@ gets in/out points over the file — closing the loop back to the start of this 
 **User story:** "I load the record, watch its chords roll by, solo the drums, pull one bar out
 as a pattern, extract the melody as a take I can edit on the staff — and generate the lyrics
 from its vocal stem — all off the same screen."
+
+---
+
+## Tracks — a multitrack arranger
+
+Everything you make in the Studio wants to play *together*. **Tracks** (⌘7) is a lightweight
+**multitrack arranger**: stacked **lanes** you lay clips onto, a shared timeline, and one **Play** that
+sums them all. Its icon says it best — **four bars in the stem colours** (drums · bass · other ·
+vocals), each **broken into discontinuous segments**, because a track is silence *and* sound: the gaps
+are where the singer isn't singing, where the piano rests.
+
+**Arrangements.** You work inside a named **arrangement** (it starts you on "Arrangement 1"); the menu
+at the top switches, creates, renames, and deletes them, so a whole song idea — verse take, drum
+loop, bass sequence — lives as one arrangement you can come back to.
+
+**Tracks.** **＋ Track** adds a lane. Each lane carries a **mix strip** — **M**ute, **S**olo, and a
+**gain** slider — plus a row menu to **rename**, **duplicate** (a real copy — its clips get their own
+audio, so editing one never touches the other), or **delete** it.
+
+**Clips — from anything you've made.** Tap **＋** on a lane and pick from a source list: any **sample,
+loop, sequence, or instrumental** you've built. The Studio **bakes it into the lane** as a clip — an
+**immutable snapshot**, so later tweaks to the original never disturb what you placed (re-add it to
+pick up an edit). Each clip shows its **waveform** in the track's colour; **drag** it along the
+timeline to slide it earlier or later — the empty space you open up *is* the gap.
+
+**Record straight into a lane.** A lane's menu ▸ **Record** captures the **mic** right onto that track;
+stop, and the take lands as a clip at the end of the lane.
+
+**Play it.** **▶** starts every lane together, sample-locked, with a **playhead** sweeping the
+timeline and a running **m:ss**. **Mute**, **solo**, and **gain** move the mix **live** while it plays.
+
+**Bounce it down.** When the arrangement sounds right, **Bounce** mixes it to a single **master track**:
+one lane's **Bounce this track**, the transport's **Bounce ▸ all tracks**, or **Bounce ▸ selected…**
+(tick the lanes you want) — each drops a new **Master** lane holding the mixdown, ready to play, bounce
+again, or build on.
+
+**User story:** "I drop a drum sequence on lane 1, a bass loop on lane 2, sing a hook onto lane 3, nudge
+the hook a bar late so it lands on the drop, solo-check each part, then bounce the whole thing to a
+Master I can keep."
 
 ---
 
