@@ -35,7 +35,7 @@ step between them (scoped to this tab, so they never fight Browser's own ⌘1/�
 - **Instruments** (⌘4, piano-keys) — play and record the virtual instruments.
 - **Cues** (⌘5, flag) — set jump-to points on any track.
 - **Demuxer** (⌘6, waveform-under-a-magnifier) — take any audio apart: lyrics, chords, stems, drum pattern, melody.
-- **Tracks** (⌘7, stacked-lanes) — arrange everything you've made into a **multitrack** — play it, record into it, bounce it down.
+- **Tracks** (⌘7, a **monochrome four-bar** lanes glyph) — arrange everything you've made into a **multitrack** — play it, record into it, bounce it down.
 
 On a **narrow iPhone in portrait** the seven segments show **just their symbols** (seven text labels
 won't fit); a **wider** screen shows symbol *and* word. The Studio **remembers the sub-tab** you were
@@ -394,7 +394,8 @@ Everything you make in the Studio wants to play *together*. **Tracks** (⌘7) is
 **multitrack arranger**: stacked **lanes** you lay clips onto, a shared timeline, and one **Play** that
 sums them all. Its icon says it best — **four bars in the stem colours** (drums · bass · other ·
 vocals), each **broken into discontinuous segments**, because a track is silence *and* sound: the gaps
-are where the singer isn't singing, where the piano rests.
+are where the singer isn't singing, where the piano rests. (The tab's segment shows a **monochrome**
+version of the same four gapped bars — evocative of lanes, distinct from every other tab.)
 
 **Arrangements.** You work inside a named **arrangement** (it starts you on "Arrangement 1"); the menu
 at the top switches, creates, renames, and deletes them, so a whole song idea — verse take, drum
