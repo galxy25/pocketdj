@@ -345,7 +345,10 @@ final class PerformanceUITests: XCTestCase {
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
         let toggle = app.any("tracks-master-fx-toggle")
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), "the Master FX panel header should exist")
+        // The panel's expansion is persisted (@AppStorage), so its initial state isn't guaranteed —
+        // tap to open, and if it was already open (a first tap closed it), tap back.
         toggle.tap()
+        if !app.any("tracks-master-gain").waitForExistence(timeout: 3) { toggle.tap() }
         XCTAssertTrue(app.any("tracks-master-gain").waitForExistence(timeout: 5), "master gain slider appears")
         let phaser = app.any("tracks-fx-phaser")
         XCTAssertTrue(phaser.waitForExistence(timeout: 5)); phaser.tap()
