@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
 import Observation
 
 /// Non-Observable playhead clock (the fast-clock-must-not-invalidate-SwiftUI doctrine —
@@ -40,6 +41,20 @@ final class MultitrackPlayer {
     @ObservationIgnored private var engine = AVAudioEngine()
     @ObservationIgnored private var trackNodes: [(player: AVAudioPlayerNode, gain: AVAudioMixerNode)] = []
     @ObservationIgnored private var trackIds: [String] = []
+    /// The summing bus every track feeds; the master-FX node + limiter sit between it and the main
+    /// mixer. Rebuilt per Play with the rest of the graph.
+    @ObservationIgnored private var masterSum = AVAudioMixerNode()
+    /// The live master-FX AU (nil if instantiation failed → effects don't apply live but the chain
+    /// still plays, and a bounce still bakes them). Params pushed via `applyMasterFX`.
+    @ObservationIgnored private var masterFXAU: MasterFXAudioUnit?
+
+    /// Apple's PeakLimiter — the master safety net so a boosted / effect-laden master can't hard-clip
+    /// (mirrors MixEngine.limiterDesc).
+    private static let limiterDesc = AudioComponentDescription(
+        componentType: kAudioUnitType_Effect,
+        componentSubType: kAudioUnitSubType_PeakLimiter,
+        componentManufacturer: kAudioUnitManufacturer_Apple,
+        componentFlags: 0, componentFlagsMask: 0)
     @ObservationIgnored private var autoStopTask: Task<Void, Never>?
     /// Bumped by every `stop()`; `play()` snapshots it after its own stop() and, after the async
     /// clip-decode gap, bails if it changed — so a stop() (tab exit / record / bounce) or a second
@@ -74,18 +89,36 @@ final class MultitrackPlayer {
         // → bail before building an engine, so stop-during-load wins and only one engine ever runs.
         guard gen == playGeneration else { return false }
 
-        // 2. Fresh graph: one player → gain(mixer) → mainMixer per track (canonical throughout).
+        // 2. Fresh graph: one player → gain(mixer) → masterSum per track, then the master chain
+        //    masterSum → [MasterFX] → PeakLimiter → mainMixer (canonical throughout).
         engine = AVAudioEngine()
-        trackNodes = []; trackIds = []
+        trackNodes = []; trackIds = []; masterFXAU = nil
         let fmt = StudioAudio.canonicalFormat
+        masterSum = AVAudioMixerNode()
+        engine.attach(masterSum)
         for track in arrangement.tracks {
             let p = AVAudioPlayerNode(); let g = AVAudioMixerNode()
             engine.attach(p); engine.attach(g)
             engine.connect(p, to: g, format: fmt)
-            engine.connect(g, to: engine.mainMixerNode, format: fmt)
+            engine.connect(g, to: masterSum, format: fmt)
             trackNodes.append((p, g)); trackIds.append(track.id)
         }
+        // Master chain. The custom FX node is created async (Apple's AVAudioUnit contract); if the
+        // load fails, route straight to the limiter so playback never depends on it.
+        let limiter = AVAudioUnitEffect(audioComponentDescription: Self.limiterDesc)
+        engine.attach(limiter)
+        if let (fxNode, fxAU) = await MasterFXAudioUnit.make() {
+            guard gen == playGeneration else { return false }   // stop() during the async instantiate
+            engine.attach(fxNode)
+            masterFXAU = fxAU
+            engine.connect(masterSum, to: fxNode, format: fmt)
+            engine.connect(fxNode, to: limiter, format: fmt)
+        } else {
+            engine.connect(masterSum, to: limiter, format: fmt)
+        }
+        engine.connect(limiter, to: engine.mainMixerNode, format: fmt)
         applyMix(arrangement.tracks)
+        applyMasterFX(arrangement.masterFX, bpm: arrangement.bpm)
 
         // 3. Session (iOS/visionOS) + start the engine.
         #if !os(macOS)
@@ -186,6 +219,19 @@ final class MultitrackPlayer {
             trackNodes[i].gain.outputVolume = audible ? Float(pow(10.0, db / 20.0)) : 0
             // Stereo placement — AVAudioMixerNode has a native pan (-1…+1); updates live.
             trackNodes[i].gain.pan = Float(min(1, max(-1, track.pan)))
+        }
+    }
+
+    /// Push master-FX + master-gain to the live chain (safe to call mid-play — the panel's knobs).
+    /// With the FX node present, everything (incl. gain) runs in its kernel; without it (load
+    /// failed) master gain falls back to the summing bus (attenuation reliable).
+    func applyMasterFX(_ fx: StudioMasterFX, bpm: Double) {
+        let params = MasterFXParams(fx, bpm: bpm)
+        if let au = masterFXAU {
+            au.kernel.update(params)
+            masterSum.outputVolume = 1
+        } else {
+            masterSum.outputVolume = Float(max(0, min(1, params.masterGain)))
         }
     }
 

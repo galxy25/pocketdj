@@ -58,6 +58,9 @@ struct TracksView: View {
     // Live recording target (the track a take is being captured into).
     @State private var recordingTrackId: String?
 
+    // Master-FX panel expansion (persisted).
+    @AppStorage("pdj.tracks.showMasterFX") private var showMasterFX = false
+
     // Layout grid.
     private let laneHeight: CGFloat = 82
     private let headerWidth: CGFloat = 172
@@ -106,6 +109,7 @@ struct TracksView: View {
                     transportBar(arr)
                     Divider().overlay(Theme.border)
                     arranger(arr)
+                    masterFXPanel(arr)
                 }
             } else {
                 Spacer()
@@ -119,6 +123,12 @@ struct TracksView: View {
         .task(id: clipSignature) { await loadPeaks() }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
+        }
+        .onChange(of: current?.masterFX) {
+            if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
+        }
+        .onChange(of: current?.bpm) {
+            if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
         }
         .onDisappear {
             player.stop()
@@ -717,6 +727,105 @@ struct TracksView: View {
         )
     }
 
+    // MARK: Master FX panel (bottom mix section)
+
+    /// The master mix panel: four effects the Mix tab doesn't have (phaser / ring-mod / freezer /
+    /// Brazilian bass) + an overall master gain, applied live to the summed mix and baked WYSIWYG
+    /// into a bounce (freeze excepted — a live-only hold). Collapsible so it doesn't crowd the lanes.
+    @ViewBuilder private func masterFXPanel(_ arr: StudioArrangement) -> some View {
+        VStack(spacing: 0) {
+            Divider().overlay(Theme.border)
+            Button { withAnimation(.easeInOut(duration: 0.15)) { showMasterFX.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "dial.medium.fill").font(.caption).foregroundStyle(Theme.accent)
+                    Text("Master FX").font(.caption.weight(.semibold)).foregroundStyle(Theme.fg)
+                    if arr.masterFX.anyEffectEnabled {
+                        Text("on").font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Theme.accent.opacity(0.18), in: Capsule()).foregroundStyle(Theme.accent)
+                    }
+                    Spacer()
+                    Text(gainLabel(arr.masterFX.masterGainDb)).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    Image(systemName: showMasterFX ? "chevron.down" : "chevron.up").font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-master-fx-toggle")
+
+            if showMasterFX {
+                VStack(spacing: 8) {
+                    fxGainRow(arr)
+                    fxEffectRow(arr, name: "Phaser", id: "phaser", enabled: arr.masterFX.phaserEnabled,
+                                toggle: { on in setFX(arr) { $0.phaserEnabled = on } },
+                                sliderLabel: "Rate", value: arr.masterFX.phaserRate, range: 0.05...8,
+                                onSlide: { v in setFX(arr) { $0.phaserRate = v } })
+                    fxEffectRow(arr, name: "Ring Mod", id: "ringmod", enabled: arr.masterFX.ringModEnabled,
+                                toggle: { on in setFX(arr) { $0.ringModEnabled = on } },
+                                sliderLabel: "Freq", value: arr.masterFX.ringModFreqHz, range: 40...1200,
+                                onSlide: { v in setFX(arr) { $0.ringModFreqHz = v } })
+                    fxEffectRow(arr, name: "Freezer", id: "freeze", enabled: arr.masterFX.freezeEnabled,
+                                toggle: { on in setFX(arr) { $0.freezeEnabled = on } },
+                                sliderLabel: nil, value: 0, range: 0...1, onSlide: { _ in })
+                    fxEffectRow(arr, name: "Bass Lift", id: "bass", enabled: arr.masterFX.brazilianBassEnabled,
+                                toggle: { on in setFX(arr) { $0.brazilianBassEnabled = on } },
+                                sliderLabel: "Amt", value: arr.masterFX.brazilianBassAmount, range: 0...1,
+                                onSlide: { v in setFX(arr) { $0.brazilianBassAmount = v } })
+                }
+                .padding(.horizontal, 16).padding(.bottom, 10)
+            }
+        }
+        .background(Theme.bgRaised)
+    }
+
+    private func fxGainRow(_ arr: StudioArrangement) -> some View {
+        HStack(spacing: 8) {
+            Text("Gain").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fg).frame(width: 58, alignment: .leading)
+            Slider(value: Binding(get: { arr.masterFX.masterGainDb },
+                                  set: { v in setFX(arr) { $0.masterGainDb = v } }), in: -24...12)
+                .controlSize(.small)
+                .accessibilityIdentifier("tracks-master-gain")
+            Text(gainLabel(arr.masterFX.masterGainDb)).font(.caption2.monospacedDigit())
+                .foregroundStyle(Theme.fgDim).frame(width: 46, alignment: .trailing)
+        }
+    }
+
+    private func fxEffectRow(_ arr: StudioArrangement, name: String, id: String, enabled: Bool,
+                             toggle: @escaping (Bool) -> Void, sliderLabel: String?, value: Double,
+                             range: ClosedRange<Double>, onSlide: @escaping (Double) -> Void) -> some View {
+        HStack(spacing: 8) {
+            Button { toggle(!enabled) } label: {
+                Text(name).font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .frame(width: 76)
+                    .background(enabled ? Theme.accent.opacity(0.85) : Theme.bgOverlay, in: Capsule())
+                    .foregroundStyle(enabled ? .white : Theme.fgDim)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-fx-\(id)")
+            .accessibilityValue(enabled ? "on" : "off")
+            if let sliderLabel {
+                Text(sliderLabel).font(.system(size: 9)).foregroundStyle(Theme.fgDim).frame(width: 30, alignment: .leading)
+                Slider(value: Binding(get: { value }, set: onSlide), in: range)
+                    .controlSize(.mini).disabled(!enabled).opacity(enabled ? 1 : 0.4)
+            } else {
+                Text("hold / release").font(.system(size: 9)).foregroundStyle(Theme.fgDim)
+                Spacer()
+            }
+        }
+    }
+
+    private func setFX(_ arr: StudioArrangement, _ mutate: (inout StudioMasterFX) -> Void) {
+        var fx = arr.masterFX
+        mutate(&fx)
+        studio.setArrangementMasterFX(arr.id, fx)
+    }
+
+    private func gainLabel(_ db: Double) -> String {
+        let v = Int(db.rounded())
+        return v > 0 ? "+\(v) dB" : "\(v) dB"
+    }
+
     private var bakingOverlay: some View {
         ZStack {
             Color.black.opacity(0.25).ignoresSafeArea()
@@ -838,7 +947,8 @@ struct TracksView: View {
         busyMessage = "Bouncing…"; baking = true
         Task {
             defer { baking = false }
-            guard let clip = await ArrangerBouncer.bounce(tracks: selected, store: studio, name: label),
+            guard let clip = await ArrangerBouncer.bounce(tracks: selected, store: studio, name: label,
+                                                          masterFX: a.masterFX, bpm: a.bpm),
                   let master = studio.addTrack(arrangement: a.id, name: masterName(a)) else { return }
             studio.addClip(arrangement: a.id, track: master.id, clip)
         }
