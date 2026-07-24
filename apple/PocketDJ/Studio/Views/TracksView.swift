@@ -132,6 +132,11 @@ struct TracksView: View {
         .overlay { if recordingTrackId != nil { recordingOverlay } }
         .task { mic.settings = settings; mic.store = studio }
         .task(id: clipSignature) { await loadPeaks() }
+        .onChange(of: current?.id) {
+            // The open arrangement vanished (e.g. deleted from another window on the shared store) or
+            // changed — stop a now-orphaned player so a looping mix can't play on with no transport.
+            if player.isPlaying, player.playingArrangementId != current?.id { player.stop() }
+        }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
         }
@@ -577,13 +582,16 @@ struct TracksView: View {
                         .padding(.trailing, 24)
                     }
                     .onChange(of: pxPerSec) {
-                        // Re-center the current second after the strip re-lays-out at the new scale.
-                        let sec = Int(playheadSeconds(arr))
+                        // Re-center the cursor ONLY while following — with ⌖ off, a zoom must leave
+                        // the user's manual scroll where it is (not yank it to the stopped-clock 0:00).
+                        guard followPlayhead else { return }
+                        let sec = cursorAnchorSec(arr)
                         DispatchQueue.main.async { proxy.scrollTo("tracks-sec-\(sec)", anchor: .center) }
                     }
                     .onChange(of: centerNonce) {
+                        // ⌖ pressed → always jump to the cursor (its explicit purpose).
                         withAnimation(.easeInOut(duration: 0.25)) {
-                            proxy.scrollTo("tracks-sec-\(Int(playheadSeconds(arr)))", anchor: .center)
+                            proxy.scrollTo("tracks-sec-\(cursorAnchorSec(arr))", anchor: .center)
                         }
                     }
                     .task(id: followTaskKey(arr)) {
@@ -592,7 +600,7 @@ struct TracksView: View {
                         var lastSec = -1
                         while !Task.isCancelled {
                             if followPlayhead, isPlayingThis(arr) {
-                                let sec = Int(playheadSeconds(arr))
+                                let sec = cursorAnchorSec(arr)
                                 if sec != lastSec {
                                     lastSec = sec
                                     withAnimation(.linear(duration: 0.3)) {
@@ -609,17 +617,29 @@ struct TracksView: View {
         }
     }
 
-    /// Restart the follow task when zoom / follow / play state changes (anchor spacing or gating moved).
+    /// Number of per-second anchors on the timeline (bounded so a runaway length can't spawn unbounded
+    /// views). BOTH the anchors and every scrollTo target derive from this, so a target is never past
+    /// the last anchor (which would make scrollTo a silent no-op — follow would die past the cap).
+    private func anchorSecondsCount(_ arr: StudioArrangement) -> Int {
+        min(3600, max(1, Int(ceil(Double(arr.lengthMs) / 1000)) + 2))
+    }
+    /// The cursor's anchor second, clamped into the anchor range.
+    private func cursorAnchorSec(_ arr: StudioArrangement) -> Int {
+        max(0, min(anchorSecondsCount(arr), Int(playheadSeconds(arr))))
+    }
+
+    /// Restart the follow task when zoom / follow / play / LOOP state changes (anchor spacing, gating,
+    /// or the wrap bounds `playheadSeconds` uses all moved). Loop fields are included so dragging a
+    /// loop handle mid-play re-arms the task with the fresh region.
     private func followTaskKey(_ arr: StudioArrangement) -> String {
-        "\(pxPerSec)-\(followPlayhead)-\(isPlayingThis(arr))-\(arr.id)"
+        "\(pxPerSec)-\(followPlayhead)-\(isPlayingThis(arr))-\(arr.id)-\(arr.loopEnabled)-\(arr.loopStartMs)-\(arr.loopEndMs)"
     }
 
     /// One 1-second-wide LAYOUT cell per second (real HStack flow) so `scrollTo("tracks-sec-k")`
-    /// lands at the right x. Bounded so a runaway timeline can't spawn unbounded views.
+    /// lands at the right x.
     private func followAnchors(_ arr: StudioArrangement) -> some View {
-        let secs = min(3600, max(1, Int(ceil(Double(arr.lengthMs) / 1000)) + 2))
-        return HStack(spacing: 0) {
-            ForEach(0...secs, id: \.self) { sec in
+        HStack(spacing: 0) {
+            ForEach(0...anchorSecondsCount(arr), id: \.self) { sec in
                 Color.clear.frame(width: pxPerSec, height: 1).id("tracks-sec-\(sec)")
             }
         }
