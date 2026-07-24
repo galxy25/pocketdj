@@ -13,6 +13,8 @@ struct TracksView: View {
     @Environment(InstrumentPackStore.self) private var packs
     @Environment(StudioMicRecorder.self) private var mic
     @Environment(SettingsStore.self) private var settings
+    @Environment(BurnStore.self) private var burns
+    @Environment(AppModel.self) private var app
 
     @State private var selectedId = ""
 
@@ -123,10 +125,15 @@ struct TracksView: View {
             if recordingTrackId != nil { _ = mic.stop(); recordingTrackId = nil }
         }
         .sheet(item: pickerTrackBinding) { box in
-            ClipSourcePicker(studio: studio) { sourceId, kind in
-                addClip(sourceId: sourceId, kind: kind, to: box.id)
-                pickerTrackId = nil
-            }
+            ClipSourcePicker(studio: studio, burns: burns, app: app,
+                onPick: { sourceId, kind in
+                    addClip(sourceId: sourceId, kind: kind, to: box.id)
+                    pickerTrackId = nil
+                },
+                onPickStems: { songId in
+                    importStems(songId: songId)
+                    pickerTrackId = nil
+                })
         }
         .sheet(isPresented: $bounceSelecting) { bounceSheet }
         .alert("Rename track", isPresented: renameTrackShown) {
@@ -818,6 +825,29 @@ struct TracksView: View {
         }
     }
 
+    /// Import a song's 4 on-device stems as four new colour-matched tracks on the CURRENT
+    /// arrangement (all aligned at 0:00) — the source-picker counterpart to the Demuxer export.
+    /// Adds tracks in drums/bass/other/vocals order so the palette maps yellow/red/green/purple, and
+    /// holds the BurnStore security scope across all four bakes, releasing once at the end.
+    private func importStems(songId: String) {
+        guard let a = current else { return }
+        let name = app.songsById[songId].map { "\($0.artist) — \($0.name)" } ?? "Stems"
+        busyMessage = "Importing stems…"; baking = true
+        Task {
+            defer { baking = false }
+            guard let got = burns.localStemURLs(forSong: songId) else { return }
+            for stem in ["drums", "bass", "other", "vocals"] {
+                guard let url = got.urls[stem],
+                      let track = studio.addTrack(arrangement: a.id, name: stem.capitalized) else { continue }
+                if let clip = await ArrangerClipBaker.bakeFromFile(
+                    sourceURL: url, name: "\(name) — \(stem)", startMs: 0) {
+                    studio.addClip(arrangement: a.id, track: track.id, clip)
+                }
+            }
+            got.release?()
+        }
+    }
+
     private func loadPeaks() async {
         guard let arr = current else { return }
         for track in arr.tracks {
@@ -855,9 +885,17 @@ struct IdBox: Identifiable { let id: String }
 // only the leaf item rows carry a11y ids.
 private struct ClipSourcePicker: View {
     let studio: StudioStore
+    let burns: BurnStore
+    let app: AppModel
     let onPick: (_ sourceId: String, _ kind: StudioClipSource) -> Void
+    /// Import ALL 4 of a song's on-device stems as four new tracks (fans out — the one target track
+    /// the picker was opened on is ignored). Distinct from onPick because stems aren't studio ids.
+    let onPickStems: (_ songId: String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    /// On-device stem songs (id + display name), loaded once — the availability check scans the
+    /// burn folder, so it's kept off the per-keystroke render path.
+    @State private var stemSongs: [(id: String, name: String)] = []
 
     var body: some View {
         NavigationStack {
@@ -870,7 +908,8 @@ private struct ClipSourcePicker: View {
                         items: studio.patterns.map { ($0.id, $0.name) })
                 section("Instrumentals", key: "takes", kind: .take,
                         items: studio.takes.map { ($0.id, $0.name) })
-                if allEmpty {
+                stemsSection
+                if allEmpty && stemSongs.isEmpty {
                     ContentUnavailableView("No sources yet",
                                            systemImage: "waveform",
                                            description: Text("Make a sample, loop, sequence, or instrumental first, then add it to a track."))
@@ -878,6 +917,7 @@ private struct ClipSourcePicker: View {
             }
             .searchable(text: $query, placement: .automatic, prompt: "Search sources")
             .navigationTitle("Add clip")
+            .task { loadStemSongs() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }.accessibilityIdentifier("clip-picker-cancel")
@@ -888,6 +928,37 @@ private struct ClipSourcePicker: View {
 
     private var allEmpty: Bool {
         studio.samples.isEmpty && studio.loops.isEmpty && studio.patterns.isEmpty && studio.takes.isEmpty
+    }
+
+    private func loadStemSongs() {
+        stemSongs = burns.localStemSongIds()
+            .map { id in (id, app.songsById[id].map { "\($0.artist) — \($0.name)" } ?? "Stems") }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Songs with all 4 stems on device — picking one imports drums/bass/other/vocals as four new
+    /// tracks (a whole-song stem split, not a single clip). Leaf-only a11y, like the other sections.
+    @ViewBuilder private var stemsSection: some View {
+        let filtered = query.isEmpty ? stemSongs
+            : stemSongs.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        if !filtered.isEmpty {
+            Section("Stems (\(filtered.count))") {
+                ForEach(filtered, id: \.id) { item in
+                    Button {
+                        onPickStems(item.id)
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "square.stack.3d.up").foregroundStyle(Theme.accent)
+                            Text(item.name).foregroundStyle(Theme.fg)
+                            Spacer()
+                            Text("4 stems").font(.caption2).foregroundStyle(Theme.fgDim)
+                        }
+                    }
+                    .accessibilityIdentifier("clip-picker-stem-\(item.id)")
+                }
+            }
+        }
     }
 
     @ViewBuilder

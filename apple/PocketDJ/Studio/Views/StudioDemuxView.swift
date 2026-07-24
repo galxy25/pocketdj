@@ -46,6 +46,9 @@ struct StudioDemuxView: View {
     }
 
     @State private var source: DemuxSource?
+    // Export-stems-to-Tracks (round 2): busy flag + the name of the arrangement just created.
+    @State private var stemExporting = false
+    @State private var stemExportedName: String?
     /// Comma-joined set of EXPANDED source-group keys in the picker (absent ⇒ collapsed = default).
     @AppStorage("pdj.demuxExpandedGroups") private var expandedGroupsRaw = ""
     @State private var phase: Phase = .idle
@@ -378,6 +381,7 @@ struct StudioDemuxView: View {
                           onChordTap: { chordDetail = $0 })
         chordStatusRow(doc)
         stemsPanel(source)
+        exportStemsRow(source)
         drumPatternPanel(source, doc)
         instrumentalPanel(source, doc)
         melodyPanel(source, doc)
@@ -744,6 +748,72 @@ struct StudioDemuxView: View {
         } else if let stems = demux.localStemURLs(for: source.key),
                   let url = stems["vocals"] ?? stems["other"] {
             demux.analyzeMelody(source: source, melodyURL: url, force: force)
+        }
+    }
+
+    // MARK: Export stems → a Tracks arrangement (round 2)
+
+    /// Shown once the 4 stems are on device: send them into a NEW multitrack arrangement — drums /
+    /// bass / other / vocals each on their own colour-matched lane, all aligned at 0:00. Gives the
+    /// arranger a real "export stems from any track on device" entry (the requested Demuxer path).
+    @ViewBuilder private func exportStemsRow(_ source: DemuxSource) -> some View {
+        if stemState == .burned {
+            VStack(alignment: .leading, spacing: 6) {
+                sectionTitle("Send to Tracks", icon: "square.stack.3d.up")
+                Button { exportStemsToArrangement(source) } label: {
+                    HStack(spacing: 8) {
+                        if stemExporting { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "square.stack.3d.up.badge.plus") }
+                        Text(stemExporting ? "Sending…" : "Send stems to a new arrangement")
+                            .font(.callout.weight(.semibold))
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(stemExporting)
+                .accessibilityIdentifier("demux-export-stems")
+                if let name = stemExportedName {
+                    Label("Added to Tracks ▸ \(name) — 4 stem lanes.", systemImage: "checkmark.circle.fill")
+                        .font(.caption2).foregroundStyle(Theme.accent)
+                } else {
+                    Text("Creates a Tracks arrangement with drums, bass, other and vocals on their own lanes.")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                }
+            }
+        }
+    }
+
+    /// Resolve the on-device stems (song → BurnStore, custom → DemuxStore — the kickoffMelody dual
+    /// path), create a fresh arrangement, and bake each stem onto its own colour-matched track at
+    /// 0:00. Tracks are added in drums/bass/other/vocals order so the palette maps yellow/red/green/
+    /// purple. The BurnStore scope-release is held across ALL bakes and called exactly once after.
+    private func exportStemsToArrangement(_ source: DemuxSource) {
+        stemExporting = true
+        stemExportedName = nil
+        Task {
+            defer { stemExporting = false }
+            var urls: [String: URL] = [:]
+            var release: (() -> Void)?
+            if let songId = source.songId, let got = burns.localStemURLs(forSong: songId) {
+                urls = got.urls; release = got.release
+            } else if let map = demux.localStemURLs(for: source.key) {
+                urls = map
+            }
+            guard !urls.isEmpty else { return }
+            let arr = studio.createArrangement(name: source.displayName)
+            for stem in ["drums", "bass", "other", "vocals"] {
+                guard let url = urls[stem],
+                      let track = studio.addTrack(arrangement: arr.id, name: stem.capitalized) else { continue }
+                if let clip = await ArrangerClipBaker.bakeFromFile(
+                    sourceURL: url, name: "\(source.displayName) — \(stem)", startMs: 0) {
+                    studio.addClip(arrangement: arr.id, track: track.id, clip)
+                }
+            }
+            release?()
+            stemExportedName = source.displayName
         }
     }
 
