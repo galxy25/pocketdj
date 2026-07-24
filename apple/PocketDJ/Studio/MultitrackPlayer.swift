@@ -41,6 +41,10 @@ final class MultitrackPlayer {
     @ObservationIgnored private var trackNodes: [(player: AVAudioPlayerNode, gain: AVAudioMixerNode)] = []
     @ObservationIgnored private var trackIds: [String] = []
     @ObservationIgnored private var autoStopTask: Task<Void, Never>?
+    /// Bumped by every `stop()`; `play()` snapshots it after its own stop() and, after the async
+    /// clip-decode gap, bails if it changed — so a stop() (tab exit / record / bounce) or a second
+    /// concurrent play() during decode invalidates the in-flight load and at most one engine runs.
+    @ObservationIgnored private var playGeneration = 0
 
     private var sampleRate: Double { StudioAudio.canonicalSampleRate }
 
@@ -49,6 +53,7 @@ final class MultitrackPlayer {
     @discardableResult
     func play(arrangement: StudioArrangement, store: StudioStore) async -> Bool {
         stop()
+        let gen = playGeneration     // snapshot AFTER our own stop(); guarded across the decode gap
         // 1. Decode every clip to a canonical buffer (off-main via the render actor), tagged with
         //    its track index + start frame. A clip whose file can't resolve/decode is skipped.
         struct Scheduled { let trackIndex: Int; let startFrame: AVAudioFramePosition; let buffer: AVAudioPCMBuffer }
@@ -63,6 +68,9 @@ final class MultitrackPlayer {
             }
         }
         guard !scheduled.isEmpty else { return false }
+        // A stop() (tab exit / record / bounce) or a newer play() intervened during the decode above
+        // → bail before building an engine, so stop-during-load wins and only one engine ever runs.
+        guard gen == playGeneration else { return false }
 
         // 2. Fresh graph: one player → gain(mixer) → mainMixer per track (canonical throughout).
         engine = AVAudioEngine()
@@ -102,6 +110,7 @@ final class MultitrackPlayer {
     }
 
     func stop() {
+        playGeneration &+= 1     // invalidate any in-flight play() still in its decode gap
         autoStopTask?.cancel(); autoStopTask = nil
         for (p, _) in trackNodes { p.stop() }
         if engine.isRunning { engine.stop() }
@@ -115,9 +124,12 @@ final class MultitrackPlayer {
     /// tracks audible when any is soloed). Safe to call live during playback.
     func applyMix(_ tracks: [StudioTrack]) {
         let anySolo = tracks.contains { $0.soloed }
-        for (i, track) in tracks.enumerated() where i < trackNodes.count {
+        for track in tracks {
+            // Match by track ID, not array position — a delete/duplicate mid-play shifts indices, so
+            // index-zipping would apply one track's mix to another's still-playing node.
+            guard let i = trackIds.firstIndex(of: track.id) else { continue }
             let audible = anySolo ? track.soloed : !track.muted
-            let db = min(6, max(-24, track.gainDb))
+            let db = min(6.0, max(-24.0, track.gainDb))
             trackNodes[i].gain.outputVolume = audible ? Float(pow(10.0, db / 20.0)) : 0
         }
     }

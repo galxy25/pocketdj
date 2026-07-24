@@ -379,6 +379,33 @@ final class StudioMicRecorder {
         return take
     }
 
+    /// Like `stop()`, but SUSPENDS until the writer's `finishWriting` has completed — for a caller
+    /// that immediately READS (and may delete) the take file. Reading a fragmented-AAC take before
+    /// finalize truncates the last <2 s or fails to open (the stopRecording lesson at the top of this
+    /// file); `stop()` returns synchronously without waiting, so it's unsafe for a read-then-delete
+    /// caller. nil when nothing was recording.
+    @discardableResult
+    func stopAwaitingFinalize() async -> (id: String, fileName: String, durationMs: Int, wasUserFolder: Bool)? {
+        guard isRecording else { return nil }
+        let contentMs = Int(sink.appendedSeconds * 1000)
+        let wallMs = max(0, Int(Date().timeIntervalSince1970 * 1000 - startedAtMs))
+        let durationMs = contentMs > 0 ? contentMs : wallMs
+        let release = scopeRelease
+        scopeRelease = nil
+        isRecording = false
+        captureStalled = false
+        stallAccum = 0
+        lastAppended = -1
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            sink.end {
+                if let release { DispatchQueue.main.async { release() } }
+                cont.resume()
+            }
+        }
+        endMonitoring()
+        return (recId, recFileName, durationMs, recWasUserFolder)
+    }
+
     /// Orderly-exit finalize (the `RecordingExitBridge` contract): file an in-flight take with a
     /// default name and `flush()` the store SYNCHRONOUSLY — the store's normal save is an async
     /// actor write that loses the race with `.terminateNow`/`exit()`. The sink's finalize itself

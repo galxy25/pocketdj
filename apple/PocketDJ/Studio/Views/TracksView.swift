@@ -65,7 +65,9 @@ struct TracksView: View {
 
     /// Signature of the mix strip (mute/solo/gain) — pushes live changes to the player mid-play.
     private var mixSignature: String {
-        (current?.tracks.map { "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int($0.gainDb.rounded()))" } ?? [])
+        // 0.1 dB resolution so a sub-dB live gain drag still fires applyMix (whole-dB rounding made
+        // continuous slider moves audibly stepped mid-play).
+        (current?.tracks.map { "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int(($0.gainDb * 10).rounded()))" } ?? [])
             .joined(separator: ",")
     }
 
@@ -469,22 +471,27 @@ struct TracksView: View {
     /// samples file, bake an independent snapshot into the arrangements dir, then DELETE the orphan
     /// samples file (the arranger recording isn't a library sample). nil take = nothing captured.
     private func stopRecord() {
-        guard let take = mic.stop(), let tid = recordingTrackId, let a = current else {
-            recordingTrackId = nil; return
-        }
+        guard let tid = recordingTrackId, let a = current else { recordingTrackId = nil; return }
         recordingTrackId = nil
         busyMessage = "Saving recording…"; baking = true
         Task {
             defer { baking = false }
+            // AWAIT the writer's finalize before reading the take file — reading a fragmented-AAC
+            // take mid-finalize truncates the tail or fails to open (the stopRecording lesson).
+            guard let take = await mic.stopAwaitingFinalize() else { return }
             let startMs = a.tracks.first { $0.id == tid }?.lengthMs ?? 0
             guard let got = StudioFolders.fileURL(family: .samples, fileName: take.fileName,
                                                   wasUserFolder: take.wasUserFolder,
                                                   bookmark: studio.bookmark(for: .samples)) else { return }
             let clip = await ArrangerClipBaker.bakeFromFile(sourceURL: got.url,
                                                             name: mic.defaultRecordingName, startMs: startMs)
-            try? FileManager.default.removeItem(at: got.url)   // drop the orphan library file
+            if let clip {
+                studio.addClip(arrangement: a.id, track: tid, clip)
+                try? FileManager.default.removeItem(at: got.url)   // orphan gone ONLY after a good bake
+            }
+            // On bake failure the samples file is LEFT on disk (within scope until release) — launch
+            // orphan-recovery files it as a sample, so a recording is never silently destroyed.
             got.release?()
-            if let clip { studio.addClip(arrangement: a.id, track: tid, clip) }
         }
     }
 
