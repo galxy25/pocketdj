@@ -30,6 +30,10 @@ struct TracksView: View {
     @State private var bounceSelecting = false
     @State private var bounceSelection: Set<String> = []
 
+    // Tempo entry (drives the beat grid + looper snap).
+    @State private var pendingBpm = false
+    @State private var bpmText = ""
+
     // Per-clip waveform peaks (immutable clips → compute once, cache).
     @State private var clipPeaks: [String: [Float]] = [:]
 
@@ -126,6 +130,16 @@ struct TracksView: View {
             Button("Cancel", role: .cancel) {}
             Button("Rename") { if let a = current { studio.renameArrangement(a.id, to: nameText) } }
         }
+        .alert("Tempo (BPM)", isPresented: $pendingBpm) {
+            TextField("BPM", text: $bpmText)
+                #if !os(macOS)
+                .keyboardType(.numberPad)
+                #endif
+            Button("Cancel", role: .cancel) {}
+            Button("Set") { if let a = current, let v = Double(bpmText) { studio.setArrangementBpm(a.id, bpm: v) } }
+        } message: {
+            Text("Sets the beat grid and looper snap. 20–300.")
+        }
     }
 
     // MARK: Header (arrangement picker + add track)
@@ -203,6 +217,17 @@ struct TracksView: View {
             TimelineView(.periodic(from: .now, by: 0.1)) { _ in
                 Text(timeLabel(arr)).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
+
+            // Tempo — seeds the beat grid + looper snap. Tap to type a new BPM.
+            Button { bpmText = String(Int(arr.bpm.rounded())); pendingBpm = true } label: {
+                Text("♩ \(Int(arr.bpm.rounded()))")
+                    .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(Theme.fg)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Theme.bgOverlay, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tracks-bpm")
+
             Spacer()
             Menu {
                 Button { bounce(tracks: arr.tracks, label: "Master") } label: {
@@ -255,6 +280,7 @@ struct TracksView: View {
                                 .frame(width: timelineWidth(arr), height: laneHeight)
                         }
                     }
+                    .overlay(alignment: .topLeading) { beatMarkers(arr) }
                     .overlay(alignment: .topLeading) { playhead(arr) }
                     .padding(.trailing, 24)
                 }
@@ -376,18 +402,79 @@ struct TracksView: View {
         }
     }
 
-    /// The moving playhead — a full-height line at `currentSeconds × pxPerSec`. Driven by a
-    /// TimelineView sampling the non-Observable clock (never re-runs the arranger body), and it
-    /// never intercepts clip taps/drags. Hidden when this arrangement isn't playing.
-    @ViewBuilder private func playhead(_ arr: StudioArrangement) -> some View {
-        if isPlayingThis(arr) {
-            TimelineView(.periodic(from: .now, by: 0.03)) { _ in
-                Rectangle().fill(Theme.accent2)
-                    .frame(width: 2).frame(maxHeight: .infinity)
-                    .offset(x: CGFloat(player.clock.currentSeconds) * pxPerSec)
+    /// Pixels per beat on the shared grid (0 when tempo is unusable).
+    private func beatPx(_ arr: StudioArrangement) -> CGFloat {
+        arr.bpm > 0 ? pxPerSec * 60 / CGFloat(arr.bpm) : 0
+    }
+
+    /// The beat/bar grid — thin vertical ticks every beat, bolder every 4 (a 4/4 bar line) with a
+    /// tiny bar number at the top edge. A Canvas (cheap for many lines) sized to the lane VStack, so
+    /// it shares the exact scroll offset the clips use. Drawn as a subtle overlay so it reads over
+    /// any lane background; never intercepts taps.
+    @ViewBuilder private func beatMarkers(_ arr: StudioArrangement) -> some View {
+        let bp = beatPx(arr)
+        if bp >= 4 {
+            Canvas { ctx, size in
+                let barPx = bp * 4
+                let showNumbers = barPx >= 26
+                var k = 0
+                var x: CGFloat = 0
+                while x <= size.width {
+                    let isBar = k % 4 == 0
+                    var path = Path()
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: size.height))
+                    ctx.stroke(path, with: .color(Theme.fg.opacity(isBar ? 0.20 : 0.08)),
+                               lineWidth: isBar ? 1 : 0.5)
+                    if isBar && showNumbers && x <= size.width - 8 {
+                        let bar = k / 4 + 1
+                        ctx.draw(Text("\(bar)").font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(Theme.fgDim.opacity(0.7)),
+                                 at: CGPoint(x: x + 6, y: 6), anchor: .leading)
+                    }
+                    k += 1
+                    x = CGFloat(k) * bp
+                }
             }
             .allowsHitTesting(false)
         }
+    }
+
+    /// The moving playhead — a full-height line at `currentSeconds × pxPerSec` with a small cap and a
+    /// live time bubble at the top. Driven by a TimelineView sampling the non-Observable clock (never
+    /// re-runs the arranger body); never intercepts clip taps/drags. Hidden when this arrangement
+    /// isn't playing. While looping, the line wraps within the loop span.
+    @ViewBuilder private func playhead(_ arr: StudioArrangement) -> some View {
+        if isPlayingThis(arr) {
+            TimelineView(.periodic(from: .now, by: 0.03)) { _ in
+                let sec = playheadSeconds(arr)
+                ZStack(alignment: .top) {
+                    Rectangle().fill(Theme.accent2)
+                        .frame(width: 2).frame(maxHeight: .infinity)
+                    Text(mmss(sec)).font(.system(size: 8, weight: .bold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3).padding(.vertical, 1)
+                        .background(Theme.accent2, in: RoundedRectangle(cornerRadius: 3))
+                        .fixedSize()
+                        .offset(y: -1)
+                }
+                .frame(width: 40)
+                .offset(x: CGFloat(sec) * pxPerSec - 20)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// The playhead's timeline position in seconds — wraps into the loop span while looping so the
+    /// cursor visually repeats the region (the audio node loops; the clock grows unbounded).
+    private func playheadSeconds(_ arr: StudioArrangement) -> Double {
+        let raw = player.clock.currentSeconds
+        guard arr.loopEnabled, arr.loopEndMs > arr.loopStartMs else { return raw }
+        let startS = Double(arr.loopStartMs) / 1000
+        let endS = Double(arr.loopEndMs) / 1000
+        guard raw > startS else { return raw }
+        let span = endS - startS
+        return startS + (raw - startS).truncatingRemainder(dividingBy: span)
     }
 
     private func clipX(_ clip: StudioClip) -> CGFloat {
