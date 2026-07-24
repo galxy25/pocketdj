@@ -405,14 +405,15 @@ arranger); tap any row to reopen it. Group them into **folders** — **New folde
 and an arrangement's context menu (long-press / right-click) has **Move to folder** (pick a folder,
 **No folder**, or **New folder…** in the same tap). Folders **collapse** (remembered across launches);
 deleting one just un-files its arrangements, never deletes them. Inside the arranger, **‹ Arrangements**
-takes you back home. (It's all in-app — nothing touches the Mac menu bar.)
+takes you back home — and while you're editing an arrangement the **sub-tab bar hides**, so the lanes
+get the full screen (it comes back on the home page). (It's all in-app — nothing touches the Mac menu bar.)
 
 **Tracks.** **＋ Track** adds a lane. Each lane carries a **mix strip** — **M**ute, **S**olo, and a
-**gain** slider — plus a **colour chip** you tap to recolour the lane, and a row menu to **rename**,
-**duplicate** (a real copy — its clips get their own audio, so editing one never touches the other), or
-**delete** it. **Pan** is tucked behind a **long-press / right-click** on the track header (presets
-Hard-Left…Center…Hard-Right plus ±10 % nudges), so the strip stays clean; a small **L/R** mark shows
-when a lane is panned.
+**gain** slider — plus a big **colour chip**, and a row menu to **duplicate** (a real copy — its clips
+get their own audio, so editing one never touches the other) or **delete** it. Tap the **colour chip or
+the name** to open one **edit sheet**: rename the track, pick a colour from a **grid of big swatches**
+(no more fat-fingering a 5-pt chip), and set **pan** on a **rotary dial** (with a **Center** reset). A
+small **L/R** mark on the strip shows when a lane is panned.
 
 **Clips — from anything you've made.** Tap **＋** on a lane and pick from a source list: any **sample,
 loop, sequence, or instrumental** you've built — or, under **Stems**, any song whose four stems are on
@@ -431,8 +432,13 @@ stopped — and **▶** starts from that point. Playback starts every lane toget
 full-height **cursor** sweeping ruler and lanes (a little **time bubble** riding its tip) and a running
 **m:ss**. The **♩ tempo** pill (seeded from the first clip's source tempo) sets the grid. **Mute**,
 **solo**, **gain**, and **pan** move the mix **live**. **Scroll** the timeline by hand, **zoom** it in
-and out with **＋/−**, and hit **⌖** to jump to the cursor and have the timeline **follow** it as it
-plays (tap **⌖** again to let go and scroll freely).
+and out with **＋/−** (zoom-out keeps going until the **whole track fits**), and hit **⌖** to jump to
+the cursor and have the timeline **follow** it as it plays (tap **⌖** again to let go and scroll freely).
+On **iPhone** the transport controls **stack** and **fold away** with a tap, so the lanes get the room.
+
+**Master it live.** Hit the red **●** to play *and record the master* — ride the Master-FX knobs, mute
+and pan lanes while it runs, and on stop the captured performance (**exactly what you heard**) lands as
+a new **Master** track. It's mixing to a master take in real time.
 
 **Loop a section.** The **loop** button turns on a shaded region with two **beat-snapped handles** —
 drag them to pick the start and end — and playback **repeats** that span seamlessly so you can dial a

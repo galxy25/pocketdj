@@ -58,6 +58,15 @@ enum StudioSubTab: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Studio navigation state (shared, in-memory)
+
+/// Cross-view flag so the arranger can request a "full screen" — when a Tracks arrangement is open,
+/// PerformanceView hides its sub-tab picker so ONLY the arranger's own back button shows (maximizing
+/// track space). Set by `TracksView`, read by `PerformanceView`.
+@Observable final class StudioNavState {
+    var arrangerFullscreen = false
+}
+
 // MARK: - Performance tab shell (spec §1/§11)
 
 /// The Performance ("Studio") tab: a segmented sub-tab switcher over the five Studio surfaces.
@@ -72,6 +81,7 @@ struct PerformanceView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
     @State private var tab: StudioSubTab = .samples
+    @State private var nav = StudioNavState()
 
     /// macOS has no size classes — it is always "regular" (symbol + text segments).
     private var isCompact: Bool {
@@ -95,26 +105,30 @@ struct PerformanceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // The sub-tab switcher lives IN CONTENT, not the toolbar (the iPhone-portrait
-            // overflow lesson: critical controls must never collapse into a nested "•••").
-            Picker("Studio", selection: $tab) {
-                ForEach(StudioSubTab.allCases) { t in
-                    Group {
-                        if isCompact {
-                            segmentIcon(t)
-                        } else {
-                            Label { Text(t.label) } icon: { segmentIcon(t) }
+            // The sub-tab switcher lives IN CONTENT, not the toolbar (the iPhone-portrait overflow
+            // lesson). Hidden while a Tracks arrangement is open so only the arranger's back button
+            // shows (⌘1–⌘7 still switch; return to the Tracks home to get the picker back).
+            if !nav.arrangerFullscreen {
+                Picker("Studio", selection: $tab) {
+                    ForEach(StudioSubTab.allCases) { t in
+                        Group {
+                            if isCompact {
+                                segmentIcon(t)
+                            } else {
+                                Label { Text(t.label) } icon: { segmentIcon(t) }
+                            }
                         }
+                        .tag(t)
                     }
-                    .tag(t)
                 }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .accessibilityIdentifier("studio-tab-picker")
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .accessibilityIdentifier("studio-tab-picker")
 
             content
         }
+        .environment(nav)
         .background { tabShortcuts }
         .navigationTitle("Producer")
         .background(Theme.bg)

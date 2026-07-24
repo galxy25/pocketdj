@@ -108,6 +108,15 @@ final class PerformanceUITests: XCTestCase {
                       "creating an arrangement should open the arranger")
     }
 
+    /// The iPhone transport stacks its controls in a collapsible section (persisted via @AppStorage),
+    /// so a prior test may have left it collapsed — expand if the given control isn't reachable.
+    private func ensureTransportShows(_ id: String) {
+        if !app.any(id).waitForExistence(timeout: 2) {
+            let toggle = app.any("tracks-transport-collapse")
+            if toggle.exists { toggle.tap() }
+        }
+    }
+
     // MARK: - (1) Tab + picker exist (ALL platforms — the macOS smoke)
 
     func testPerformanceTabAndPickerExist() {
@@ -284,7 +293,8 @@ final class PerformanceUITests: XCTestCase {
         let item = app.any("clip-picker-item-smp_fixture")
         XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
         XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
-        // Bounce all → a new Master track with the mixdown.
+        // Bounce all → a new Master track with the mixdown. (iPhone: expand the stacked transport.)
+        ensureTransportShows("tracks-bounce-menu")
         app.any("tracks-bounce-menu").tap()
         let all = app.buttons["Bounce all tracks"]
         XCTAssertTrue(all.waitForExistence(timeout: 5)); all.tap()
@@ -297,8 +307,9 @@ final class PerformanceUITests: XCTestCase {
     // MARK: - (2c) Tracks round 2 — pan/colour, tempo/looper, master FX, folders
 
     /// Round 2: a lane's COLOUR menu recolours it, and PAN lives behind a right-click / long-press on
-    /// the track header (a context menu with presets), not an inline slider.
-    func testTracksPanAndColourControls() throws {
+    /// Round 4: tapping the lane's colour chip (or name) opens ONE edit sheet with a name field, a
+    /// colour swatch grid (big targets), and a pan dial + Center.
+    func testTracksTrackEditSheet() throws {
         #if os(macOS)
         throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
         #else
@@ -306,20 +317,64 @@ final class PerformanceUITests: XCTestCase {
         openArranger()
         let emptyAdd = app.any("tracks-empty-add-track")
         XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
-        let name = app.any("tracks-track-name-0")
-        XCTAssertTrue(name.waitForExistence(timeout: 10))
-        // Colour menu.
+        // Tap the (now big) colour chip → the edit sheet.
         let colour = app.any("tracks-track-color-0")
-        XCTAssertTrue(colour.waitForExistence(timeout: 5), "lane should expose a colour menu")
-        colour.tap()
-        let red = app.buttons["Red"]
-        if red.waitForExistence(timeout: 5) { red.tap() }
-        // Pan is behind a long-press on the header → a context menu with a Center preset.
-        name.press(forDuration: 1.3)
-        let center = app.any("tracks-track-pan-center-0")
-        XCTAssertTrue(center.waitForExistence(timeout: 5), "long-press should reveal the pan context menu")
-        center.tap()
-        snap("tracks-pan-colour")
+        XCTAssertTrue(colour.waitForExistence(timeout: 10)); colour.tap()
+        XCTAssertTrue(app.any("track-edit-name").waitForExistence(timeout: 5), "the edit sheet shows a name field")
+        // Pick a colour swatch + centre the pan dial.
+        app.any("track-edit-color-1").tap()
+        XCTAssertTrue(app.any("track-edit-pan-dial").exists, "the sheet exposes a pan dial")
+        app.any("track-edit-pan-center").tap()
+        app.any("track-edit-done").tap()
+        XCTAssertTrue(app.any("tracks-track-name-0").waitForExistence(timeout: 5), "back to the arranger")
+        snap("tracks-edit-sheet")
+        #endif
+    }
+
+    /// Round 4: record-to-master — start recording (playback + master capture), stop, and a baked
+    /// Master track appears.
+    func testTracksRecordMaster() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        openArranger()
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        app.any("tracks-add-clip-0").tap()
+        let item = app.any("clip-picker-item-smp_fixture")
+        XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
+        let rec = app.any("tracks-record-master")
+        XCTAssertTrue(rec.waitForExistence(timeout: 5)); rec.tap()   // start play + record
+        wait(for: [expectation(for: NSPredicate(format: "value == 'recording'"), evaluatedWith: rec)], timeout: 8)
+        rec.tap()                                                    // stop → bake
+        XCTAssertTrue(app.staticTexts["Master"].waitForExistence(timeout: 25),
+                      "stopping a master recording should bake a Master track")
+        snap("tracks-record-master")
+        #endif
+    }
+
+    /// Round 4: on iPhone the transport controls stack in a collapsible section (maximize track space).
+    func testTracksTransportCollapse() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: transport is a single row (no collapse)")
+        #else
+        launchPerformance()
+        openArranger()
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        let toggle = app.any("tracks-transport-collapse")
+        guard toggle.waitForExistence(timeout: 5) else {
+            throw XCTSkip("regular width — transport is a single row, no collapse toggle")
+        }
+        ensureTransportShows("tracks-bpm")                           // start expanded
+        XCTAssertTrue(app.any("tracks-bpm").exists)
+        toggle.tap()                                                 // collapse
+        XCTAssertFalse(app.any("tracks-bpm").waitForExistence(timeout: 2), "collapsing hides the stacked controls")
+        toggle.tap()                                                 // expand
+        XCTAssertTrue(app.any("tracks-bpm").waitForExistence(timeout: 3), "expanding shows them again")
+        snap("tracks-transport-collapse")
         #endif
     }
 
@@ -337,7 +392,9 @@ final class PerformanceUITests: XCTestCase {
         let item = app.any("clip-picker-item-smp_fixture")
         XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
         XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
-        // Tempo pill → BPM entry alert.
+        // Tempo pill → BPM entry alert. (iPhone: the tempo/loop controls live in the collapsible
+        // stacked transport — expand if a prior test collapsed it.)
+        ensureTransportShows("tracks-bpm")
         let bpm = app.any("tracks-bpm")
         XCTAssertTrue(bpm.waitForExistence(timeout: 5)); bpm.tap()
         XCTAssertTrue(app.buttons["Set"].waitForExistence(timeout: 5), "tempo pill opens a BPM entry")

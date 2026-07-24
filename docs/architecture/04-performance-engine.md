@@ -1943,6 +1943,15 @@ toggles follow (off ⇒ free manual scroll) and re-centers; zoom re-centers on t
 walks below the ladder floor to a **fit-to-width** `pxPerSec` (`fitPx`, from the viewport width captured
 by a `GeometryReader`), so it always reaches "the whole track on screen".
 
+**Editing + record (round 4).** Tapping a lane's colour chip or name opens **one `TrackEditSheet`**
+(name field + a big colour swatch grid + a rotary `PanDial`) — replacing the mis-hit-prone 5-pt chip
+menu + pan context menu. A shared `@Observable StudioNavState.arrangerFullscreen` (set by `TracksView`,
+read by `PerformanceView`) **hides the sub-tab picker** while an arrangement is open (only the back
+button shows). On iPhone the transport controls **stack + collapse** (`transportCollapsed`
+`@AppStorage`). **Record-to-master** (`play(record:)`) installs a tap on the engine's main mixer (post-
+limiter master, incl. live FX) writing a CAF; on stop the file bakes into a new **Master** track
+(`ArrangerClipBaker.bakeFromFile`) — a live master take.
+
 **Stems in / out.** A song's four on-device stems reach the arranger two ways, both via
 `ArrangerClipBaker.bakeFromFile` (each stem baked to its own colour-matched lane at 0:00, tracks added
 in drums/bass/other/vocals order for the palette match, the `BurnStore` security scope held across all
