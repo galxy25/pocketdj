@@ -34,6 +34,15 @@ struct TracksView: View {
     @State private var pendingBpm = false
     @State private var bpmText = ""
 
+    // Arrangement-folder organizer (in-content only; never the macOS menu bar).
+    @State private var pendingNewFolder = false
+    @State private var folderNameText = ""
+    /// When set at new-folder time, the created folder immediately adopts this arrangement (the
+    /// one-shot "New folder…" from the Move submenu). nil ⇒ just create an empty folder.
+    @State private var newFolderMoveArrangementId: String?
+    @State private var pendingRenameFolderId: String?
+    @State private var pendingDeleteFolderId: String?
+
     // Per-clip waveform peaks (immutable clips → compute once, cache).
     @State private var clipPeaks: [String: [Float]] = [:]
 
@@ -140,6 +149,40 @@ struct TracksView: View {
         } message: {
             Text("Sets the beat grid and looper snap. 20–300.")
         }
+        .alert("New folder", isPresented: $pendingNewFolder) {
+            TextField("Folder name", text: $folderNameText)
+            Button("Cancel", role: .cancel) { newFolderMoveArrangementId = nil }
+            Button("Create") { commitNewFolder() }
+        }
+        .alert("Rename folder", isPresented: renameFolderShown) {
+            TextField("Folder name", text: $folderNameText)
+            Button("Cancel", role: .cancel) { pendingRenameFolderId = nil }
+            Button("Rename") {
+                if let fid = pendingRenameFolderId { studio.renameArrangementFolder(fid, to: folderNameText) }
+                pendingRenameFolderId = nil
+            }
+        }
+        .confirmationDialog("Delete this folder? Its arrangements move to “No folder” (nothing is deleted).",
+                            isPresented: deleteFolderShown, titleVisibility: .visible) {
+            Button("Delete folder", role: .destructive) {
+                if let fid = pendingDeleteFolderId { studio.deleteArrangementFolder(fid) }
+                pendingDeleteFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteFolderId = nil }
+        }
+    }
+
+    private func commitNewFolder() {
+        let f = studio.createArrangementFolder(folderNameText)
+        if let aid = newFolderMoveArrangementId { studio.moveArrangementToFolder(aid, folderId: f.id) }
+        newFolderMoveArrangementId = nil
+    }
+
+    private var renameFolderShown: Binding<Bool> {
+        Binding(get: { pendingRenameFolderId != nil }, set: { if !$0 { pendingRenameFolderId = nil } })
+    }
+    private var deleteFolderShown: Binding<Bool> {
+        Binding(get: { pendingDeleteFolderId != nil }, set: { if !$0 { pendingDeleteFolderId = nil } })
     }
 
     // MARK: Header (arrangement picker + add track)
@@ -149,17 +192,15 @@ struct TracksView: View {
             TracksIcon().frame(width: 30, height: 22)
 
             Menu {
-                ForEach(studio.arrangementsOrdered()) { a in
-                    Button { selectedId = a.id } label: {
-                        Label(a.name.isEmpty ? "Untitled" : a.name,
-                              systemImage: a.id == selectedId ? "checkmark" : "")
-                    }
-                }
+                arrangementPickerItems
                 Divider()
                 Button { newArrangement() } label: { Label("New arrangement", systemImage: "plus") }
                 Button { nameText = current?.name ?? ""; pendingRenameArrangement = true } label: {
                     Label("Rename…", systemImage: "pencil")
                 }
+                if current != nil { moveToFolderMenu }
+                manageFoldersMenu
+                Divider()
                 Button(role: .destructive) { deleteCurrentArrangement() } label: {
                     Label("Delete arrangement", systemImage: "trash")
                 }
@@ -179,6 +220,76 @@ struct TracksView: View {
                 .accessibilityIdentifier("tracks-add-track")
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    /// The arrangement list, grouped into folder sections + a loose ("No folder") section. A folder
+    /// with no arrangements is omitted; the loose section is always present so an unfiled arrangement
+    /// is always reachable.
+    @ViewBuilder private var arrangementPickerItems: some View {
+        ForEach(studio.arrangementFoldersOrdered()) { f in
+            let items = studio.arrangements(inFolder: f.id)
+            if !items.isEmpty {
+                Section(f.name.isEmpty ? "Folder" : f.name) {
+                    ForEach(items) { a in arrangementRow(a) }
+                }
+            }
+        }
+        let loose = studio.arrangements(inFolder: nil)
+        Section(studio.arrangementFolders.isEmpty ? "Arrangements" : "No folder") {
+            ForEach(loose) { a in arrangementRow(a) }
+        }
+    }
+
+    private func arrangementRow(_ a: StudioArrangement) -> some View {
+        Button { selectedId = a.id } label: {
+            Label(a.name.isEmpty ? "Untitled" : a.name,
+                  systemImage: a.id == selectedId ? "checkmark" : "")
+        }
+    }
+
+    /// "Move to folder" submenu for the CURRENT arrangement: None + existing folders + a one-shot
+    /// "New folder…" (creates the folder AND files this arrangement into it — so a UI test never has
+    /// to predict the minted `arrfld_` id).
+    @ViewBuilder private var moveToFolderMenu: some View {
+        Menu {
+            if let a = current {
+                Button { studio.moveArrangementToFolder(a.id, folderId: nil) } label: {
+                    Label("No folder", systemImage: a.folderId == nil ? "checkmark" : "")
+                }
+                ForEach(studio.arrangementFoldersOrdered()) { f in
+                    Button { studio.moveArrangementToFolder(a.id, folderId: f.id) } label: {
+                        Label(f.name.isEmpty ? "Folder" : f.name,
+                              systemImage: a.folderId == f.id ? "checkmark" : "")
+                    }
+                }
+                Divider()
+                Button {
+                    newFolderMoveArrangementId = a.id; folderNameText = ""; pendingNewFolder = true
+                } label: { Label("New folder…", systemImage: "folder.badge.plus") }
+                    .accessibilityIdentifier("tracks-move-new-folder")
+            }
+        } label: { Label("Move to folder", systemImage: "folder") }
+    }
+
+    /// Folder management: create an empty folder, and per-folder rename / delete (delete re-homes its
+    /// arrangements to loose — it never deletes an arrangement).
+    @ViewBuilder private var manageFoldersMenu: some View {
+        Menu {
+            Button {
+                newFolderMoveArrangementId = nil; folderNameText = ""; pendingNewFolder = true
+            } label: { Label("New folder", systemImage: "folder.badge.plus") }
+                .accessibilityIdentifier("tracks-new-folder")
+            ForEach(studio.arrangementFoldersOrdered()) { f in
+                Menu(f.name.isEmpty ? "Folder" : f.name) {
+                    Button {
+                        pendingRenameFolderId = f.id; folderNameText = f.name
+                    } label: { Label("Rename…", systemImage: "pencil") }
+                    Button(role: .destructive) { pendingDeleteFolderId = f.id } label: {
+                        Label("Delete folder", systemImage: "trash")
+                    }
+                }
+            }
+        } label: { Label("Folders", systemImage: "folder.badge.gearshape") }
     }
 
     // MARK: Empty state
