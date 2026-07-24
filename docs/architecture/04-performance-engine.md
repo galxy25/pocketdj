@@ -1360,7 +1360,13 @@ SMF), [`apple/PocketDJ/Studio/ScorePDF.swift`](../../apple/PocketDJ/Studio/Score
    calls sampler.startNote/stopNote DIRECTLY on that thread (a nonisolated Sendable ref; the AU enqueues safely)
    + appends packet-timestamped events into an NSLock-protected buffer, gated on a PRE-LATCHED atomic "recording" flag
    @MainActor state (key highlights) updates via COALESCED hops — NEVER Task{ @MainActor } per note (jitter + reordering corrupts the log)
-   v1 scope: WIRED/USB MIDI + on-screen keys.  Network MIDI + BLE MIDI = OUT (new entitlements) — documented
+   MIDI scope: WIRED/USB MIDI + on-screen keys + BLE MIDI (BLEMIDIManager, below).  Network MIDI = OUT (Bonjour) — documented
+
+ BLE MIDI (I3, cross-platform): BLEMIDIManager = a CoreBluetooth CENTRAL (not CoreMIDI) → universal (iPhone/iPad/Mac/Vision)
+   scans service 03B80E5A-… → subscribes char 7772E5DB-… → parses BLE-MIDI packets (header+timestamp+status, running-status)
+   → feeds engine.noteOn/noteOff — the SAME play+record path as the on-screen keys, so NO CoreMIDI source ⇒ NO double-trigger
+   delegate callbacks on CBCentralManager(queue:.main) = MainActor executor → nonisolated methods MainActor.assumeIsolated back on
+   perms: NSBluetoothAlwaysUsageDescription (all) + com.apple.security.device.bluetooth (macOS sandbox); lazy central = prompt on picker-open
 
  TAKE = click + 1-bar COUNT-IN (both default on):  event onMs measured from beat 1 = END of count-in (= ScoreQuantizer's anchor)
  SCORE:  ScoreQuantizer (anchor beat 1; onsets → 16ths @ take.bpm; durations snapped; chords/rests/measures) — PURE, tested
@@ -1384,9 +1390,23 @@ The **MIDI threading is the load-bearing part**: CoreMIDI receive blocks fire on
 safely) and appends packet-timestamped events into an **`NSLock`-protected buffer** gated on a
 **pre-latched atomic "recording" flag**. `@MainActor` state (key highlights, UI) updates only
 via **coalesced hops** — *never* a `Task { @MainActor }` per note, whose jitter and reordering
-would corrupt the very event log the score is quantized from. v1 MIDI scope is **wired/USB
-devices + the on-screen keys**; network MIDI (needs `NSLocalNetworkUsageDescription` +
-`NSBonjourServices`) and BLE MIDI (new entitlements) are **out of scope**, documented as such.
+would corrupt the very event log the score is quantized from. MIDI scope is **wired/USB
+devices + the on-screen keys + Bluetooth-LE keyboards**; only **network MIDI** (needs
+`NSLocalNetworkUsageDescription` + `NSBonjourServices`) remains out of scope.
+
+**Bluetooth MIDI (I3) is a CoreBluetooth central, not a CoreMIDI source** — deliberately, so it
+works **identically on iPhone, iPad, Mac, and Vision Pro** (the alternative,
+`CABTMIDICentralViewController`, is iOS-only). [`BLEMIDI.swift`](../../apple/PocketDJ/Studio/BLEMIDI.swift)'s
+`BLEMIDIManager` scans the standard BLE-MIDI GATT service (`03B80E5A-…`), subscribes to its data
+characteristic (`7772E5DB-…`), and parses the BLE-MIDI packet stream (header + running-status MIDI)
+into `engine.noteOn`/`noteOff` — the **same play-and-record entry points the on-screen keys use**, so
+a paired keyboard sounds the current instrument and records into a take exactly like the keys. Because
+we own the BLE connection rather than registering a CoreMIDI source, there is **no double-triggering**
+with the wired path. It's an `@Observable @MainActor` class whose `nonisolated` CoreBluetooth delegate
+methods `MainActor.assumeIsolated` back onto the main actor — safe because `CBCentralManager(queue: .main)`
+delivers callbacks on the main queue, the main actor's executor. Permissions: `NSBluetoothAlwaysUsageDescription`
+(all platforms) plus the `com.apple.security.device.bluetooth` entitlement (macOS sandbox); the central is
+created lazily when the user opens the picker, so the Bluetooth prompt only fires on demand.
 
 A **take** records with a **click + 1-bar count-in** (both default-on, toggleable); each
 event's `onMs` is measured from **beat 1 = the end of the count-in**, which is also

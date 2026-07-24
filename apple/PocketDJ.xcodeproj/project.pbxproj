@@ -348,6 +348,7 @@
 		FCD57F69C11ADA24BEC89F69 /* JukeboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82374372AFCCB6A0FCA69855 /* JukeboxTests.swift */; };
 		FCDF38C8D2C4E79044CC637A /* BeatDetectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 505B7D8DECAC73862B21D9E5 /* BeatDetectTests.swift */; };
 		FE0D3742CAF0E52FD9877AB0 /* PerformanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E7EAA0A7C8A152F9720756F /* PerformanceUITests.swift */; };
+		FE3B89DB9E70D3D155F873C3 /* BLEMIDI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BB5B0196F280FE8A6B7E30B /* BLEMIDI.swift */; };
 		FF0E95603D55FFC1D5A46C75 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E18B7F28E2B0EB4FF9B8F3B /* SettingsStore.swift */; };
 /* End PBXBuildFile section */
 
@@ -405,6 +406,7 @@
 		0ADBDEBBAC88D4A9038E2123 /* Interpolate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Interpolate.swift; sourceTree = "<group>"; };
 		0B0A4D3FC482AAB7C3C06971 /* StudioAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioAnalyzer.swift; sourceTree = "<group>"; };
 		0B288ECD80CA84D3032A8774 /* XCUIHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XCUIHelpers.swift; sourceTree = "<group>"; };
+		0BB5B0196F280FE8A6B7E30B /* BLEMIDI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEMIDI.swift; sourceTree = "<group>"; };
 		0BF27083D56884C8A1D9BA60 /* MixWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixWaveform.swift; sourceTree = "<group>"; };
 		0D49AA4F89F97CE3BC8357D3 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		0DE2815FA8B5F6C9FF6963D7 /* BeatDetect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatDetect.swift; sourceTree = "<group>"; };
@@ -1022,6 +1024,7 @@
 				C0BF9868DC6221D995A0E787 /* Demux */,
 				3747B1C832CC148F672337C1 /* Views */,
 				3B8561B212B449EEAD6D13FB /* AudioSessionPolicy.swift */,
+				0BB5B0196F280FE8A6B7E30B /* BLEMIDI.swift */,
 				91949EF48C5464CC0C7376A5 /* InstrumentEngine.swift */,
 				ADDA17469563856CBBA220F1 /* InstrumentPacks.swift */,
 				F104D95B8B6C986BE8416087 /* KeyDetector.swift */,
@@ -1725,6 +1728,7 @@
 				22F36716176B56DE7CF54DA6 /* ArtistDetailView.swift in Sources */,
 				264392EAA39197B78A4C5FEB /* AudioSchema27.swift in Sources */,
 				988FE22DEC8BC69F0A6A40F5 /* AudioSessionPolicy.swift in Sources */,
+				FE3B89DB9E70D3D155F873C3 /* BLEMIDI.swift in Sources */,
 				740A91784FC16249388983AE /* BackupZip.swift in Sources */,
 				C09542D7C94CA0F28546F0BC /* BeatDetect.swift in Sources */,
 				6CD82734D8B6B0844AA80474 /* BeatMath.swift in Sources */,
@@ -2010,6 +2014,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = PocketDJ;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_NSAppleMusicUsageDescription = "PocketDJ uses Apple Music to play and search tracks from your subscription.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "PocketDJ connects to Bluetooth MIDI keyboards so you can play and record the virtual instruments.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = PocketDJ;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PocketDJ uses the microphone to record samples and to identify songs that are playing.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "PocketDJ transcribes song lyrics on this device so they can be shown in time with the music.";
@@ -2100,6 +2105,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = PocketDJ;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_NSAppleMusicUsageDescription = "PocketDJ uses Apple Music to play and search tracks from your subscription.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "PocketDJ connects to Bluetooth MIDI keyboards so you can play and record the virtual instruments.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = PocketDJ;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "PocketDJ uses the microphone to record samples and to identify songs that are playing.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "PocketDJ transcribes song lyrics on this device so they can be shown in time with the music.";

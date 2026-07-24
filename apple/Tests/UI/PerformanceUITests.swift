@@ -492,6 +492,20 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// I3: the Instruments MIDI section shows a Connect-Bluetooth-MIDI button (iOS/iPadOS). The
+    /// pairing sheet itself needs a real Bluetooth radio, so this only asserts the affordance.
+    func testInstrumentsBluetoothMIDIButton() throws {
+        #if os(macOS)
+        throw XCTSkip("Bluetooth MIDI picker is iOS-only (macOS pairs in Audio MIDI Setup)")
+        #else
+        launchPerformance()
+        switchTab(3)                                   // Instruments
+        XCTAssertTrue(reveal(app.el("midi-connect-bluetooth")),
+                      "the Connect Bluetooth MIDI button (scroll to the MIDI section)")
+        // Deliberately not tapped — pairing needs a physical Bluetooth radio (device-only).
+        #endif
+    }
+
     /// SEQ1: tapping a sequencer row header solo-previews just that row — the engine solos it
     /// (`soloedRow`), and the header's a11y label flips Preview → Stop; re-tapping stops.
     func testSequencerRowHeaderSoloPreview() throws {
