@@ -1896,14 +1896,24 @@ tail past the last clip.
 seamlessly; the auto-stop is skipped (a loop runs until `stop()`), and the view wraps the unbounded
 clock into the loop span for the cursor. The region's two handles are **beat-snapped** to `bpm`.
 
-**Master FX** (`MasterFX.swift`). The four effects the Mix tab lacks — **phaser** (all-pass cascade +
-LFO), **ring-modulator** (internal carrier multiply), **freezer** (a 0.25 s buffer hold/loop), and a
-**Brazilian bass lift** (sub low-pass + a sample-accurate per-beat gain pump from `bpm`) — plus the
-master gain, live in **one `MasterFXKernel`**, the project's *first custom render-block DSP* (every Mix
-effect is an Apple built-in AU). The kernel is shared by two callers so live and bounce can't drift:
-**`MasterFXAudioUnit`** — a v3 `AUAudioUnit` registered once and inserted live in the graph (with a
-graceful fallback chain if instantiation ever fails) — and the offline bounce. Freeze is a live
-capture-and-hold, so it's **bypassed when baking**; the other three + master gain bake WYSIWYG.
+**Master FX** (`MasterFX.swift`). The Tracks master grid shows four effects the Mix tab lacks —
+**phaser** (all-pass cascade + LFO), **ring-modulator** (internal carrier multiply), **drive**
+(tanh soft-clip overdrive), and a **Brazilian bass lift** (sub low-pass + a sample-accurate per-beat
+gain pump from `bpm`) — plus the master gain, live in **one `MasterFXKernel`**, the project's *first
+custom render-block DSP* (every Mix effect is an Apple built-in AU). The **freezer** (0.25 s buffer
+hold) also lives in the kernel but is not shown in the Tracks grid — it's kept for reuse on the Mix
+decks (the paged deck-FX are separate follow-up). The kernel is shared by two callers so live and
+bounce can't drift: **`MasterFXAudioUnit`** — a v3 `AUAudioUnit` registered once and inserted live in
+the graph (with a graceful fallback chain if instantiation ever fails) — and the offline bounce. Freeze
+is a live capture-and-hold, **bypassed when baking**; the others + master gain bake WYSIWYG.
+
+**Ruler + seek.** A **beat-number ruler** row (`ruler(_:)`, `tracks-ruler`) sits above the lanes inside
+the SAME horizontal `ScrollView` (a `headerWidth`-wide spacer aligns the left header column), so it
+scrolls with the clips. A `SpatialTapGesture` on it seeks: `seek(toMs:)` sets a `cursorMs` (the stopped
+cursor), re-centers the view, and — if playing — restarts `MultitrackPlayer.play(fromMs:)`. Seek
+windows each clip to the offset (a straddling clip's buffer is head-trimmed via `windowedBuffer`); the
+player exposes `startOffsetMs` so the playhead reads `startOffsetMs + clock`. The cursor line is now
+persistent (static at `cursorMs` when stopped, live while playing) and spans ruler + lanes.
 
 **Bounce** (`ArrangerBouncer`). Clips are already-baked snapshots with **no per-clip DSP**, so a
 mixdown is a straight **sample-sum**: allocate a canonical accumulator sized to the longest track, add

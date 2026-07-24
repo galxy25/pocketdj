@@ -87,6 +87,17 @@ final class MasterFXTests: XCTestCase {
         XCTAssertGreaterThan(abs(ch[0][frames - 1]), 0.3, "freeze must hold the warmed audio, not silence")
     }
 
+    /// Drive soft-clips: a loud input is saturated (tanh) and comes out changed but bounded.
+    func testDriveSaturates() {
+        var p = MasterFXParams(); p.drive = true; p.driveAmount = 1.0
+        let buf = makeBuffer(fill: 0.9)
+        run(p, on: buf)
+        let ch = buf.floatChannelData!
+        // tanh(0.9·10)/(1+1.5) = tanh(9)/2.5 ≈ 0.40
+        XCTAssertEqual(ch[0][0], 0.40, accuracy: 0.03)
+        XCTAssertLessThan(abs(ch[0][0]), 0.9)          // saturated below the input
+    }
+
     /// A bounce strips freeze (a live-only capture-and-hold); playback keeps it.
     func testFreezeBypassedForBounceParams() {
         var fx = StudioMasterFX()

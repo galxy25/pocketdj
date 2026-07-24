@@ -425,22 +425,23 @@ empty space you open up *is* the gap.
 **Record straight into a lane.** A lane's menu ▸ **Record** captures the **mic** right onto that track;
 stop, and the take lands as a clip at the end of the lane.
 
-**Play it — on a beat grid.** **▶** starts every lane together, sample-locked, with a **playhead**
-sweeping the timeline (a little **time bubble** riding its tip) and a running **m:ss**. A **beat grid**
-rules the timeline — thin ticks per beat, bolder bar lines every four, numbered — set by the
-**♩ tempo** pill (which seeds itself from the first clip's source tempo). **Mute**, **solo**, **gain**,
-and **pan** move the mix **live** while it plays. **Scroll** the timeline by hand, **zoom** it in and
-out with **＋/−**, and hit **⌖** to jump to the cursor and have the timeline **follow** it as it plays
-(tap **⌖** again to let go and scroll freely).
+**Play it — on a beat grid.** A **beat-number ruler** sits above the lanes (bar numbers + beat ticks,
+scrolling with the clips); **tap anywhere on it to move the playback cursor there** — playing or
+stopped — and **▶** starts from that point. Playback starts every lane together, sample-locked, with a
+full-height **cursor** sweeping ruler and lanes (a little **time bubble** riding its tip) and a running
+**m:ss**. The **♩ tempo** pill (seeded from the first clip's source tempo) sets the grid. **Mute**,
+**solo**, **gain**, and **pan** move the mix **live**. **Scroll** the timeline by hand, **zoom** it in
+and out with **＋/−**, and hit **⌖** to jump to the cursor and have the timeline **follow** it as it
+plays (tap **⌖** again to let go and scroll freely).
 
 **Loop a section.** The **loop** button turns on a shaded region with two **beat-snapped handles** —
 drag them to pick the start and end — and playback **repeats** that span seamlessly so you can dial a
 groove or overdub against it.
 
 **Master FX.** A **Master FX** panel folds out along the bottom with four effects the Mix tab doesn't
-have — a **Phaser**, a **Ring Modulator**, a **Freezer** (grab-and-hold), and a **Brazilian Bass Lift**
-(fat sub on every beat) — each a toggle plus its own dial, over an overall **master gain**. It shapes
-the **whole mix live** as it plays, and a **bounce bakes exactly what you hear** (the freeze, being a
+have — a **Phaser**, a **Ring Modulator**, a **Drive** (overdrive/soft-clip), and a **Brazilian Bass
+Lift** (fat sub on every beat) — each a toggle plus its own dial, over an overall **master gain**. It
+shapes the **whole mix live** as it plays, and a **bounce bakes exactly what you hear** (the freeze, being a
 live hold, sits out a bounce).
 
 **Bounce it down.** When the arrangement sounds right, **Bounce** mixes it to a single **master track**:

@@ -21,10 +21,11 @@ struct MasterFXParams: Sendable, Equatable {
     var ringMod = false; var ringFreq = 200.0; var ringMix = 0.5
     var freeze = false
     var brazil = false; var brazilAmount = 0.6
+    var drive = false; var driveAmount = 0.5
     var masterGain = 1.0            // linear (from masterGainDb)
     var bpm = 120.0
 
-    var active: Bool { phaser || ringMod || freeze || brazil || abs(masterGain - 1) > 0.001 }
+    var active: Bool { phaser || ringMod || freeze || brazil || drive || abs(masterGain - 1) > 0.001 }
 
     init() {}
     /// `allowFreeze:false` for a bounce (freeze is a live-only hold).
@@ -33,6 +34,7 @@ struct MasterFXParams: Sendable, Equatable {
         ringMod = fx.ringModEnabled; ringFreq = fx.ringModFreqHz; ringMix = fx.ringModMix
         freeze = allowFreeze && fx.freezeEnabled
         brazil = fx.brazilianBassEnabled; brazilAmount = fx.brazilianBassAmount
+        drive = fx.driveEnabled; driveAmount = fx.driveAmount
         masterGain = pow(10.0, max(-24.0, min(12.0, fx.masterGainDb)) / 20.0)
         self.bpm = bpm > 0 ? bpm : 120
     }
@@ -168,6 +170,11 @@ final class MasterFXKernel: @unchecked Sendable {
                 if params.brazil {
                     subLP[c] += subCoeff * (x - subLP[c])
                     x += params.brazilAmount * beatEnv * subLP[c] * 1.6   // fat sub on each beat
+                }
+                if params.drive {
+                    // Soft-clip overdrive: push into tanh, compensate the loudness the saturation adds.
+                    let g = 1.0 + params.driveAmount * 9.0
+                    x = tanh(x * g) / (1.0 + params.driveAmount * 1.5)
                 }
                 x *= params.masterGain
                 d[i] = Float(max(-1.8, min(1.8, x)))          // soft clamp; the limiter finishes

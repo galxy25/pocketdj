@@ -863,18 +863,27 @@ struct StudioMasterFX: Codable, Hashable, Sendable {
     var ringModEnabled: Bool = false
     var ringModFreqHz: Double = 200       // carrier frequency, Hz (20…2000)
     var ringModMix: Double = 0.5          // 0…1 dry↔wet
-    var freezeEnabled: Bool = false       // live-only spectral/buffer hold
+    /// Buffer-hold "freezer". NOT surfaced in the Tracks master grid (Drive took its slot) and NOT
+    /// applied on the Tracks path (`allowFreeze:false` live + bounce); the DSP stays in the kernel for
+    /// planned Mix-deck reuse. Kept as a persisted field only so an older doc round-trips; it is
+    /// deliberately EXCLUDED from `anyEffectEnabled` so a stale `true` from a prior build reads as dry.
+    var freezeEnabled: Bool = false
     var brazilianBassEnabled: Bool = false
     var brazilianBassAmount: Double = 0.6 // 0…1 sub-bass lift + per-beat pump depth
+    var driveEnabled: Bool = false        // overdrive / soft-clip saturation
+    var driveAmount: Double = 0.5         // 0…1 drive amount
     var masterGainDb: Double = 0          // overall mix trim (−24…+12 dB)
 
-    /// True when any effect is on — lets playback skip building the master DSP node entirely when
-    /// the chain is dry (only master gain, applied on the trailing mixer regardless).
-    var anyEffectEnabled: Bool { phaserEnabled || ringModEnabled || freezeEnabled || brazilianBassEnabled }
+    /// True when any GRID effect is on — lets playback skip building the master DSP node entirely when
+    /// the chain is dry. Excludes `freezeEnabled` (not a Tracks control; see above).
+    var anyEffectEnabled: Bool {
+        phaserEnabled || ringModEnabled || brazilianBassEnabled || driveEnabled
+    }
 
     enum CodingKeys: String, CodingKey {
         case phaserEnabled, phaserRate, phaserDepth, ringModEnabled, ringModFreqHz, ringModMix,
-             freezeEnabled, brazilianBassEnabled, brazilianBassAmount, masterGainDb
+             freezeEnabled, brazilianBassEnabled, brazilianBassAmount, driveEnabled, driveAmount,
+             masterGainDb
     }
     init() {}
     init(from decoder: Decoder) throws {
@@ -888,6 +897,8 @@ struct StudioMasterFX: Codable, Hashable, Sendable {
         freezeEnabled = (try? c.decode(Bool.self, forKey: .freezeEnabled)) ?? false
         brazilianBassEnabled = (try? c.decode(Bool.self, forKey: .brazilianBassEnabled)) ?? false
         brazilianBassAmount = (try? c.decode(Double.self, forKey: .brazilianBassAmount)) ?? 0.6
+        driveEnabled = (try? c.decode(Bool.self, forKey: .driveEnabled)) ?? false
+        driveAmount = (try? c.decode(Double.self, forKey: .driveAmount)) ?? 0.5
         masterGainDb = (try? c.decode(Double.self, forKey: .masterGainDb)) ?? 0
     }
 }
