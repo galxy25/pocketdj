@@ -216,6 +216,7 @@ final class StudioStoreTests: XCTestCase {
         var fx = StudioMasterFX()
         fx.phaserEnabled = true; fx.phaserRate = 1.5
         fx.brazilianBassEnabled = true; fx.brazilianBassAmount = 0.8
+        fx.driveEnabled = true; fx.driveAmount = 0.7
         fx.masterGainDb = 3
         store.setArrangementMasterFX(arr.id, fx)
         store.flush()
@@ -228,6 +229,8 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertTrue(ra.masterFX.phaserEnabled)
         XCTAssertEqual(ra.masterFX.phaserRate, 1.5, accuracy: 0.0001)
         XCTAssertTrue(ra.masterFX.brazilianBassEnabled)
+        XCTAssertTrue(ra.masterFX.driveEnabled)
+        XCTAssertEqual(ra.masterFX.driveAmount, 0.7, accuracy: 0.0001)
         XCTAssertEqual(ra.masterFX.masterGainDb, 3, accuracy: 0.0001)
     }
 

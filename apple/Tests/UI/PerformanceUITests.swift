@@ -375,6 +375,31 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// Round 2.1: a beat-number ruler sits above the lanes; tapping it seeks the playback cursor, and
+    /// playback still starts afterwards (from the seek point).
+    func testTracksRulerSeek() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        openArranger()
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        app.any("tracks-add-clip-0").tap()
+        let item = app.any("clip-picker-item-smp_fixture")
+        XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
+        let ruler = app.any("tracks-ruler")
+        XCTAssertTrue(ruler.waitForExistence(timeout: 5), "the beat-number ruler should sit above the lanes")
+        ruler.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()   // seek
+        let play = app.any("tracks-play")
+        XCTAssertTrue(play.waitForExistence(timeout: 5)); play.tap()
+        wait(for: [expectation(for: NSPredicate(format: "value == 'playing'"), evaluatedWith: play)], timeout: 10)
+        play.tap()
+        snap("tracks-ruler-seek")
+        #endif
+    }
+
     /// Round 2: the Tracks HOME browser — create an arrangement (opens the arranger), go back, and it
     /// appears as a row you can reopen.
     func testTracksHomeBrowserCreateOpenBack() throws {

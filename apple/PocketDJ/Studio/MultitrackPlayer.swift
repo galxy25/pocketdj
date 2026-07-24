@@ -35,6 +35,9 @@ final class MultitrackClock: @unchecked Sendable {
 final class MultitrackPlayer {
     private(set) var isPlaying = false
     private(set) var playingArrangementId: String?
+    /// The timeline ms playback STARTED from (a ruler seek) — the view adds it to the clock for the
+    /// cursor position. Non-observed: set once per play(), read in the playhead's TimelineView.
+    @ObservationIgnored private(set) var startOffsetMs = 0
     /// Sampled by the playhead's TimelineView (non-Observable — see `MultitrackClock`).
     @ObservationIgnored let clock = MultitrackClock()
 
@@ -67,9 +70,10 @@ final class MultitrackPlayer {
     private struct Scheduled { let trackIndex: Int; let startFrame: AVAudioFramePosition; let buffer: AVAudioPCMBuffer }
 
     /// Build the graph, decode + schedule every clip, and start all track nodes at one host time.
-    /// Returns false when there's nothing to play (no resolvable clips).
+    /// `fromMs` starts playback at a timeline offset (a ruler seek) — clips are windowed to that point
+    /// (ignored while looping, which always starts the region). Returns false when nothing plays.
     @discardableResult
-    func play(arrangement: StudioArrangement, store: StudioStore) async -> Bool {
+    func play(arrangement: StudioArrangement, store: StudioStore, fromMs: Int = 0) async -> Bool {
         stop()
         let gen = playGeneration     // snapshot AFTER our own stop(); guarded across the decode gap
         // 1. Decode every clip to a canonical buffer (off-main via the render actor), tagged with
@@ -133,6 +137,7 @@ final class MultitrackPlayer {
         //    scheduled with `.loops` so the region repeats seamlessly forever. Node time 0 = the
         //    shared start either way, so the timelines coincide when all nodes start together.
         let looping = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
+        let seekFrame = AVAudioFramePosition((Double(max(0, fromMs)) / 1000 * sampleRate).rounded())
         if looping {
             let startFrame = AVAudioFramePosition((Double(arrangement.loopStartMs) / 1000 * sampleRate).rounded())
             let endFrame = AVAudioFramePosition((Double(arrangement.loopEndMs) / 1000 * sampleRate).rounded())
@@ -140,20 +145,44 @@ final class MultitrackPlayer {
                                                 startFrame: startFrame, endFrame: endFrame, format: fmt) {
                 trackNodes[ti].player.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
             }
+            startOffsetMs = 0                       // the loop wraps into its region; no linear offset
         } else {
             for s in scheduled where s.trackIndex < trackNodes.count {
+                // Skip clips entirely before the seek; window a straddling clip so it starts mid-buffer.
+                let clipLen = AVAudioFramePosition(s.buffer.frameLength)
+                guard s.startFrame + clipLen > seekFrame else { continue }
+                let skip = Int(max(0, seekFrame - s.startFrame))
+                let nodeStart = max(0, s.startFrame - seekFrame)
+                let buf = skip > 0 ? Self.windowedBuffer(s.buffer, skipFrames: skip) : s.buffer
+                guard let buf else { continue }
                 trackNodes[s.trackIndex].player.scheduleBuffer(
-                    s.buffer, at: AVAudioTime(sampleTime: s.startFrame, atRate: sampleRate),
+                    buf, at: AVAudioTime(sampleTime: nodeStart, atRate: sampleRate),
                     options: [], completionHandler: nil)
             }
+            startOffsetMs = max(0, fromMs)
         }
         let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.12))
         for (p, _) in trackNodes { p.play(at: when) }
         clock.start(atHostTime: when.hostTime)
         isPlaying = true
         playingArrangementId = arrangement.id
-        if !looping { scheduleAutoStop(lengthMs: arrangement.lengthMs) }   // a loop runs until stop()
+        // a loop runs until stop(); a linear play stops a tail past the LAST clip, from the seek point.
+        if !looping { scheduleAutoStop(lengthMs: max(0, arrangement.lengthMs - max(0, fromMs))) }
         return true
+    }
+
+    /// Copy a buffer's frames `[skipFrames, frameLength)` into a fresh buffer (drop the head) — used
+    /// to start a clip mid-way when playback seeks into it. nil if nothing remains.
+    private static func windowedBuffer(_ src: AVAudioPCMBuffer, skipFrames: Int) -> AVAudioPCMBuffer? {
+        let total = Int(src.frameLength) - skipFrames
+        guard total > 0, skipFrames >= 0,
+              let out = AVAudioPCMBuffer(pcmFormat: src.format, frameCapacity: AVAudioFrameCount(total)),
+              let sd = src.floatChannelData, let od = out.floatChannelData else { return nil }
+        out.frameLength = AVAudioFrameCount(total)
+        for ch in 0..<Int(src.format.channelCount) {
+            memcpy(od[ch], sd[ch] + skipFrames, total * MemoryLayout<Float>.size)
+        }
+        return out
     }
 
     /// Sum each track's clips that intersect `[startFrame, endFrame)` into one region-length buffer

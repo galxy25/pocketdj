@@ -28,6 +28,8 @@ struct TracksView: View {
     @State private var pxPerSec: CGFloat = 48
     @State private var followPlayhead = true
     @State private var centerNonce = 0
+    /// The playback cursor position (ms) when stopped — set by a ruler tap; Play starts here.
+    @State private var cursorMs = 0
 
     // Rename affordances (cross-platform alert + TextField).
     @State private var pendingRenameTrack: String?
@@ -76,6 +78,7 @@ struct TracksView: View {
     private let laneHeight: CGFloat = 66
     private let headerWidth: CGFloat = 172
     private let laneGap: CGFloat = 8
+    private let rulerHeight: CGFloat = 24
 
     /// Named coordinate space for the scrolling timeline — loop-handle drags read the finger's
     /// position in it (from 0:00), independent of a handle's moved local origin.
@@ -134,8 +137,10 @@ struct TracksView: View {
         .task(id: clipSignature) { await loadPeaks() }
         .onChange(of: current?.id) {
             // The open arrangement vanished (e.g. deleted from another window on the shared store) or
-            // changed — stop a now-orphaned player so a looping mix can't play on with no transport.
+            // changed — stop a now-orphaned player so a looping mix can't play on with no transport,
+            // and reset the seek cursor for the newly-opened arrangement.
             if player.isPlaying, player.playingArrangementId != current?.id { player.stop() }
+            cursorMs = 0
         }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
@@ -551,34 +556,42 @@ struct TracksView: View {
     private func arranger(_ arr: StudioArrangement) -> some View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
-                // Left: fixed track headers.
-                VStack(spacing: laneGap) {
-                    ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
-                        trackHeader(arr: arr, track: track, index: idx)
-                            .frame(width: headerWidth, height: laneHeight)
+                // Left: fixed track headers, with a top spacer so they line up with the lanes below
+                // the ruler.
+                VStack(spacing: 0) {
+                    Color.clear.frame(width: headerWidth, height: rulerHeight)
+                    VStack(spacing: laneGap) {
+                        ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
+                            trackHeader(arr: arr, track: track, index: idx)
+                                .frame(width: headerWidth, height: laneHeight)
+                        }
                     }
                 }
-                // Right: horizontally-scrolling clip lanes on the shared grid, with the playhead.
-                // Wrapped in a ScrollViewReader so playback can auto-follow the cursor (⌖) and zoom
-                // re-centers on it — the Demux timeline pattern.
+                // Right: ONE horizontally-scrolling column — the beat-number ruler on top of the clip
+                // lanes (they share the exact scroll), with a full-height playhead over both. Wrapped
+                // in a ScrollViewReader so playback auto-follows the cursor (⌖) and zoom re-centers on
+                // it — the Demux timeline pattern.
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: true) {
-                        VStack(spacing: laneGap) {
-                            ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
-                                laneStrip(arr: arr, track: track, index: idx)
-                                    .frame(width: timelineWidth(arr), height: laneHeight)
+                        VStack(alignment: .leading, spacing: 0) {
+                            ruler(arr).frame(width: timelineWidth(arr), height: rulerHeight)
+                            VStack(spacing: laneGap) {
+                                ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { idx, track in
+                                    laneStrip(arr: arr, track: track, index: idx)
+                                        .frame(width: timelineWidth(arr), height: laneHeight)
+                                }
                             }
+                            .overlay(alignment: .topLeading) { beatMarkers(arr) }
+                            .overlay(alignment: .topLeading) { loopOverlay(arr) }
+                            // Loop-handle drags read this space (from 0:00), not a handle's moved local
+                            // origin — attached to the LANES so the ruler doesn't shift the x.
+                            .coordinateSpace(name: Self.timelineSpace)
                         }
-                        .overlay(alignment: .topLeading) { beatMarkers(arr) }
-                        .overlay(alignment: .topLeading) { loopOverlay(arr) }
+                        // Full-height cursor over ruler + lanes, and the per-second LAYOUT anchors the
+                        // follow/zoom scrollTo targets by id (a real HStack flow, NOT .offset — scrollTo
+                        // resolves layout frames, so offset anchors all sit at x=0; the Demux lesson).
                         .overlay(alignment: .topLeading) { playhead(arr) }
-                        // Invisible per-second LAYOUT anchors the follow/zoom scroll targets by id
-                        // (must be a real HStack flow, NOT .offset views — scrollTo resolves layout
-                        // frames, so offset anchors all sit at x=0; the Demux lesson).
                         .overlay(alignment: .topLeading) { followAnchors(arr) }
-                        // Stable coordinate space for loop-handle drags — measured from the
-                        // timeline's 0:00, NOT the moved handle's local space.
-                        .coordinateSpace(name: Self.timelineSpace)
                         .padding(.trailing, 24)
                     }
                     .onChange(of: pxPerSec) {
@@ -623,9 +636,9 @@ struct TracksView: View {
     private func anchorSecondsCount(_ arr: StudioArrangement) -> Int {
         min(3600, max(1, Int(ceil(Double(arr.lengthMs) / 1000)) + 2))
     }
-    /// The cursor's anchor second, clamped into the anchor range.
+    /// The cursor's anchor second (live while playing, else the seek position), clamped into range.
     private func cursorAnchorSec(_ arr: StudioArrangement) -> Int {
-        max(0, min(anchorSecondsCount(arr), Int(playheadSeconds(arr))))
+        max(0, min(anchorSecondsCount(arr), Int(cursorSeconds(arr))))
     }
 
     /// Restart the follow task when zoom / follow / play / LOOP state changes (anchor spacing, gating,
@@ -771,16 +784,14 @@ struct TracksView: View {
         arr.bpm > 0 ? pxPerSec * 60 / CGFloat(arr.bpm) : 0
     }
 
-    /// The beat/bar grid — thin vertical ticks every beat, bolder every 4 (a 4/4 bar line) with a
-    /// tiny bar number at the top edge. A Canvas (cheap for many lines) sized to the lane VStack, so
-    /// it shares the exact scroll offset the clips use. Drawn as a subtle overlay so it reads over
-    /// any lane background; never intercepts taps.
+    /// The beat/bar grid over the lanes — thin vertical ticks every beat, bolder every 4 (a 4/4 bar
+    /// line). Bar NUMBERS live in the ruler above; here it's just the subtle grid. A Canvas (cheap for
+    /// many lines) sized to the lane VStack, so it shares the exact scroll offset the clips use; never
+    /// intercepts taps.
     @ViewBuilder private func beatMarkers(_ arr: StudioArrangement) -> some View {
         let bp = beatPx(arr)
         if bp >= 4 {
             Canvas { ctx, size in
-                let barPx = bp * 4
-                let showNumbers = barPx >= 26
                 var k = 0
                 var x: CGFloat = 0
                 while x <= size.width {
@@ -790,12 +801,6 @@ struct TracksView: View {
                     path.addLine(to: CGPoint(x: x, y: size.height))
                     ctx.stroke(path, with: .color(Theme.fg.opacity(isBar ? 0.20 : 0.08)),
                                lineWidth: isBar ? 1 : 0.5)
-                    if isBar && showNumbers && x <= size.width - 8 {
-                        let bar = k / 4 + 1
-                        ctx.draw(Text("\(bar)").font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(Theme.fgDim.opacity(0.7)),
-                                 at: CGPoint(x: x + 6, y: 6), anchor: .leading)
-                    }
                     k += 1
                     x = CGFloat(k) * bp
                 }
@@ -804,29 +809,88 @@ struct TracksView: View {
         }
     }
 
-    /// The moving playhead — a full-height line at `currentSeconds × pxPerSec` with a small cap and a
-    /// live time bubble at the top. Driven by a TimelineView sampling the non-Observable clock (never
-    /// re-runs the arranger body); never intercepts clip taps/drags. Hidden when this arrangement
-    /// isn't playing. While looping, the line wraps within the loop span.
+    /// The beat-number RULER strip above the lanes: bar numbers + beat ticks on the shared timeline
+    /// grid, scrolling with the clips. Tap anywhere on it to move the playback cursor there (seek).
+    private func ruler(_ arr: StudioArrangement) -> some View {
+        let bp = beatPx(arr)
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(Theme.bgRaised)
+            Rectangle().fill(Theme.border).frame(height: 1).frame(maxHeight: .infinity, alignment: .bottom)
+            if bp >= 4 {
+                Canvas { ctx, size in
+                    let barPx = bp * 4
+                    let showNumbers = barPx >= 22
+                    var k = 0
+                    var x: CGFloat = 0
+                    while x <= size.width {
+                        let isBar = k % 4 == 0
+                        var p = Path()
+                        p.move(to: CGPoint(x: x, y: isBar ? size.height * 0.35 : size.height * 0.62))
+                        p.addLine(to: CGPoint(x: x, y: size.height))
+                        ctx.stroke(p, with: .color(Theme.fgDim.opacity(isBar ? 0.7 : 0.3)),
+                                   lineWidth: isBar ? 1 : 0.5)
+                        if isBar && showNumbers && x <= size.width - 10 {
+                            ctx.draw(Text("\(k / 4 + 1)").font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Theme.fg),
+                                     at: CGPoint(x: x + 3, y: 2), anchor: .topLeading)
+                        }
+                        k += 1
+                        x = CGFloat(k) * bp
+                    }
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        // A TAP (not a drag — a drag scrolls) seeks the cursor to that timeline position.
+        .gesture(SpatialTapGesture().onEnded { v in seek(toMs: Int(v.location.x / pxPerSec * 1000)) })
+        .accessibilityIdentifier("tracks-ruler")
+    }
+
+    /// The playback cursor — a full-height line (over ruler + lanes) with a time bubble at the top.
+    /// PLAYING: driven by a TimelineView sampling the non-Observable clock (never re-runs the arranger
+    /// body), wrapping within the loop span. STOPPED: a static line at the seek position (`cursorMs`,
+    /// set by a ruler tap). Never intercepts clip taps/drags.
     @ViewBuilder private func playhead(_ arr: StudioArrangement) -> some View {
         if isPlayingThis(arr) {
             TimelineView(.periodic(from: .now, by: 0.03)) { _ in
-                let sec = playheadSeconds(arr)
-                ZStack(alignment: .top) {
-                    Rectangle().fill(Theme.accent2)
-                        .frame(width: 2).frame(maxHeight: .infinity)
-                    Text(mmss(sec)).font(.system(size: 8, weight: .bold).monospacedDigit())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 3).padding(.vertical, 1)
-                        .background(Theme.accent2, in: RoundedRectangle(cornerRadius: 3))
-                        .fixedSize()
-                        .offset(y: -1)
-                }
-                .frame(width: 40)
-                .offset(x: CGFloat(sec) * pxPerSec - 20)
+                cursorLine(playheadSeconds(arr))
             }
             .allowsHitTesting(false)
+        } else {
+            cursorLine(Double(cursorMs) / 1000).allowsHitTesting(false)
         }
+    }
+
+    private func cursorLine(_ sec: Double) -> some View {
+        ZStack(alignment: .top) {
+            Rectangle().fill(Theme.accent2)
+                .frame(width: 2).frame(maxHeight: .infinity)
+            Text(mmss(sec)).font(.system(size: 8, weight: .bold).monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 3).padding(.vertical, 1)
+                .background(Theme.accent2, in: RoundedRectangle(cornerRadius: 3))
+                .fixedSize()
+                .offset(y: -1)
+        }
+        .frame(width: 40)
+        .offset(x: CGFloat(sec) * pxPerSec - 20)
+    }
+
+    /// Seek the playback cursor to a timeline position (ms). Moves the visible cursor; if this
+    /// arrangement is currently playing, playback restarts from there. Also re-centers the view on it.
+    private func seek(toMs ms: Int) {
+        guard let arr = current else { return }
+        cursorMs = max(0, min(ms, max(0, arr.lengthMs)))
+        centerNonce &+= 1
+        if isPlayingThis(arr) {
+            Task { await player.play(arrangement: arr, store: studio, fromMs: cursorMs) }
+        }
+    }
+
+    /// The cursor's timeline position in seconds — the live clock (+ seek offset, loop-wrapped) while
+    /// playing, else the static seek position.
+    private func cursorSeconds(_ arr: StudioArrangement) -> Double {
+        isPlayingThis(arr) ? playheadSeconds(arr) : Double(cursorMs) / 1000
     }
 
     /// The loop region — a shaded band with two draggable, beat-snapped handles. Only the handles
@@ -896,19 +960,20 @@ struct TracksView: View {
             studio.setArrangementLoop(arr.id, enabled: true, startMs: start, endMs: end)
         }
         if isPlayingThis(arr), let fresh = studio.arrangement(arr.id) {
-            Task { await player.play(arrangement: fresh, store: studio) }
+            Task { await player.play(arrangement: fresh, store: studio, fromMs: cursorMs) }
         }
     }
 
-    /// The playhead's timeline position in seconds — wraps into the loop span while looping so the
-    /// cursor visually repeats the region (the audio node loops; the clock grows unbounded).
+    /// The LIVE playhead position in seconds while playing — the clock plus the seek offset it started
+    /// from; wraps into the loop span while looping (the region loops from node 0, offset is 0 then).
     private func playheadSeconds(_ arr: StudioArrangement) -> Double {
         let raw = player.clock.currentSeconds
-        guard arr.loopEnabled, arr.loopEndMs > arr.loopStartMs else { return raw }
+        guard arr.loopEnabled, arr.loopEndMs > arr.loopStartMs else {
+            return Double(player.startOffsetMs) / 1000 + raw
+        }
         let startS = Double(arr.loopStartMs) / 1000
         let span = Double(arr.loopEndMs - arr.loopStartMs) / 1000
-        guard span > 0 else { return raw }
-        // The region loops from node time 0, so the cursor sits at loopStart and sweeps the region.
+        guard span > 0 else { return startS + raw }
         return startS + raw.truncatingRemainder(dividingBy: span)
     }
 
@@ -988,9 +1053,10 @@ struct TracksView: View {
                                 toggle: { on in setFX(arr) { $0.ringModEnabled = on } },
                                 sliderLabel: "Freq", value: arr.masterFX.ringModFreqHz, range: 40...1200,
                                 onSlide: { v in setFX(arr) { $0.ringModFreqHz = v } })
-                    fxEffectRow(arr, name: "Freezer", id: "freeze", enabled: arr.masterFX.freezeEnabled,
-                                toggle: { on in setFX(arr) { $0.freezeEnabled = on } },
-                                sliderLabel: nil, value: 0, range: 0...1, onSlide: { _ in })
+                    fxEffectRow(arr, name: "Drive", id: "drive", enabled: arr.masterFX.driveEnabled,
+                                toggle: { on in setFX(arr) { $0.driveEnabled = on } },
+                                sliderLabel: "Amt", value: arr.masterFX.driveAmount, range: 0...1,
+                                onSlide: { v in setFX(arr) { $0.driveAmount = v } })
                     fxEffectRow(arr, name: "Bass Lift", id: "bass", enabled: arr.masterFX.brazilianBassEnabled,
                                 toggle: { on in setFX(arr) { $0.brazilianBassEnabled = on } },
                                 sliderLabel: "Amt", value: arr.masterFX.brazilianBassAmount, range: 0...1,
@@ -1107,7 +1173,7 @@ struct TracksView: View {
 
     private func togglePlay(_ arr: StudioArrangement) {
         if isPlayingThis(arr) { player.stop(); return }
-        Task { await player.play(arrangement: arr, store: studio) }
+        Task { await player.play(arrangement: arr, store: studio, fromMs: cursorMs) }
     }
 
     /// Start capturing the mic into `track`. Playback is stopped first (record is a distinct mode —
