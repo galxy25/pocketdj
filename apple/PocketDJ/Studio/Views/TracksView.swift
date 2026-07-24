@@ -44,7 +44,7 @@ struct TracksView: View {
     @State private var recordingTrackId: String?
 
     // Layout grid.
-    private let laneHeight: CGFloat = 58
+    private let laneHeight: CGFloat = 82
     private let headerWidth: CGFloat = 172
     private let pxPerSec: CGFloat = 48
     private let laneGap: CGFloat = 8
@@ -52,8 +52,12 @@ struct TracksView: View {
     /// Track lane colours — the stem palette first (drums·yellow, bass·red, other·green,
     /// vocals·purple) then cue-extra hues, cycling at `StudioStore.trackPaletteSize` (= 8).
     static let trackColors: [Color] = [.yellow, .red, .green, .purple, .cyan, .orange, .pink, .mint]
+    static let trackColorNames = ["Yellow", "Red", "Green", "Purple", "Cyan", "Orange", "Pink", "Mint"]
     static func color(_ index: Int) -> Color {
         trackColors[((index % trackColors.count) + trackColors.count) % trackColors.count]
+    }
+    static func colorName(_ index: Int) -> String {
+        trackColorNames[((index % trackColorNames.count) + trackColorNames.count) % trackColorNames.count]
     }
 
     private var current: StudioArrangement? { studio.arrangement(selectedId) }
@@ -63,12 +67,13 @@ struct TracksView: View {
         (current?.tracks.flatMap { $0.clips.map(\.id) } ?? []).joined(separator: ",")
     }
 
-    /// Signature of the mix strip (mute/solo/gain) — pushes live changes to the player mid-play.
+    /// Signature of the mix strip (mute/solo/gain/pan) — pushes live changes to the player mid-play.
     private var mixSignature: String {
-        // 0.1 dB resolution so a sub-dB live gain drag still fires applyMix (whole-dB rounding made
-        // continuous slider moves audibly stepped mid-play).
-        (current?.tracks.map { "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int(($0.gainDb * 10).rounded()))" } ?? [])
-            .joined(separator: ",")
+        // 0.1 dB / 0.02 pan resolution so a sub-step live drag still fires applyMix (whole-unit
+        // rounding made continuous slider moves audibly stepped mid-play).
+        (current?.tracks.map {
+            "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int(($0.gainDb * 10).rounded()))p\(Int(($0.pan * 50).rounded()))"
+        } ?? []).joined(separator: ",")
     }
 
     private func isPlayingThis(_ arr: StudioArrangement) -> Bool {
@@ -262,7 +267,7 @@ struct TracksView: View {
         let color = Self.color(track.colorIndex)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 5, height: 20)
+                colorMenu(arr: arr, track: track, index: index, color: color)
                 Button {
                     nameText = track.name; pendingRenameTrack = track.id
                 } label: {
@@ -310,10 +315,49 @@ struct TracksView: View {
                 .controlSize(.mini)
                 .accessibilityIdentifier("tracks-track-gain-\(index)")
             }
+            panRow(arr: arr, track: track, index: index)
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .frame(maxHeight: .infinity)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    /// Tappable colour chip → a swatch menu (choose the lane's palette colour). The chip is the
+    /// track's identity everywhere (header + lane + clips), so recolouring is a one-tap affordance.
+    private func colorMenu(arr: StudioArrangement, track: StudioTrack, index: Int, color: Color) -> some View {
+        Menu {
+            ForEach(Array(Self.trackColors.indices), id: \.self) { ci in
+                Button { studio.setTrackColor(arrangement: arr.id, track: track.id, colorIndex: ci) } label: {
+                    Label(Self.colorName(ci), systemImage: ci == track.colorIndex ? "checkmark" : "circle.fill")
+                }
+            }
+        } label: {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 5, height: 20)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .frame(width: 9)
+        .accessibilityIdentifier("tracks-track-color-\(index)")
+    }
+
+    /// Compact stereo-pan row: L …slider… R, center = 0. Snaps to dead-center near 0 so a track is
+    /// easy to re-center. Streams to the store (and live to the player) like gain.
+    private func panRow(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
+        HStack(spacing: 5) {
+            Text("L").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.fgDim)
+            Slider(value: Binding(
+                get: { track.pan },
+                set: { studio.setTrackPan(arrangement: arr.id, track: track.id, pan: abs($0) < 0.06 ? 0 : $0) }
+            ), in: -1...1)
+            .controlSize(.mini)
+            .accessibilityIdentifier("tracks-track-pan-\(index)")
+            .accessibilityValue(panLabel(track.pan))
+            Text("R").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    private func panLabel(_ p: Double) -> String {
+        if abs(p) < 0.02 { return "center" }
+        return p < 0 ? "left \(Int(abs(p) * 100))%" : "right \(Int(p * 100))%"
     }
 
     private func laneStrip(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {

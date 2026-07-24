@@ -16,16 +16,21 @@ enum ArrangerBouncer {
     /// or nil when the tracks hold no resolvable clips. The caller files it onto a new master track.
     static func bounce(tracks: [StudioTrack], store: StudioStore, name: String, startMs: Int = 0) async -> StudioClip? {
         let sr = StudioAudio.canonicalSampleRate
-        var jobs: [(gain: Float, startFrame: Int64, url: URL)] = []
+        var jobs: [(gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)] = []
         var totalFrames: Int64 = 0
         for track in tracks {
             let db = min(6.0, max(-24.0, track.gainDb))
             let gain = Float(pow(10.0, db / 20.0))
+            // Center-unity balance: pan 0 leaves both channels at full; a hard pan silences the
+            // opposite channel. Same direction the live AVAudioMixerNode.pan moves the sound.
+            let p = min(1.0, max(-1.0, track.pan))
+            let panL = Float(p <= 0 ? 1.0 : 1.0 - p)
+            let panR = Float(p >= 0 ? 1.0 : 1.0 + p)
             for clip in track.clips {
                 guard let url = store.clipFileURL(clip.fileName) else { continue }
                 let startFrame = Int64((Double(clip.startMs) / 1000 * sr).rounded())
                 let endFrame = startFrame + Int64((Double(clip.durationMs) / 1000 * sr).rounded())
-                jobs.append((gain, startFrame, url))
+                jobs.append((gain, panL, panR, startFrame, url))
                 totalFrames = max(totalFrames, endFrame)
             }
         }
@@ -47,7 +52,7 @@ enum ArrangerBouncer {
 
     /// Off-main: allocate a canonical accumulator, add each clip (decoded canonical) at its start
     /// frame scaled by its track gain, peak-limit, write AAC. Returns the master length in ms.
-    nonisolated private static func mixAndWrite(jobs: [(gain: Float, startFrame: Int64, url: URL)],
+    nonisolated private static func mixAndWrite(jobs: [(gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)],
                                                 totalFrames: Int64, to dest: URL) -> Int? {
         let fmt = StudioAudio.canonicalFormat
         let total = Int(totalFrames)
@@ -68,7 +73,8 @@ enum ArrangerBouncer {
             for ch in 0..<channels {
                 let s = src[min(ch, srcCh - 1)]
                 let d = accData[ch]
-                for i in 0..<count { d[start + i] += s[i] * job.gain }
+                let g = job.gain * (ch == 0 ? job.panL : job.panR)   // channel 0 = L, 1 = R
+                for i in 0..<count { d[start + i] += s[i] * g }
             }
         }
 

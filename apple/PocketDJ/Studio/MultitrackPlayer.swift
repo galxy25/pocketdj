@@ -131,6 +131,8 @@ final class MultitrackPlayer {
             let audible = anySolo ? track.soloed : !track.muted
             let db = min(6.0, max(-24.0, track.gainDb))
             trackNodes[i].gain.outputVolume = audible ? Float(pow(10.0, db / 20.0)) : 0
+            // Stereo placement — AVAudioMixerNode has a native pan (-1…+1); updates live.
+            trackNodes[i].gain.pan = Float(min(1, max(-1, track.pan)))
         }
     }
 
