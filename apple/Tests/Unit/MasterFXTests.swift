@@ -98,6 +98,53 @@ final class MasterFXTests: XCTestCase {
         XCTAssertLessThan(abs(ch[0][0]), 0.9)          // saturated below the input
     }
 
+    /// The LIVE render path (no custom AudioUnit): the render context mixes per-track clips with
+    /// gain/pan AND applies the master-FX kernel in the SAME pass, so a master-FX change affects the
+    /// audio immediately — the fix for "only gain worked" (the AU failed to instantiate on device).
+    func testRenderContextMixesTracksAndAppliesMasterFXLive() {
+        let frames = 512
+        let bufA = constBuffer(0.3, frames: 2048)
+        let bufB = constBuffer(0.4, frames: 2048)
+        let ctx = MultitrackRenderContext(channels: 2)
+        ctx.load(clips: [renderClip(track: 0, start: 0, buf: bufA),
+                         renderClip(track: 1, start: 0, buf: bufB)],
+                 retain: [bufA, bufB], trackCount: 2, cursor: 0,
+                 looping: false, loopStart: 0, loopEnd: 0, sampleRate: fmt.sampleRate)
+        ctx.setTrackMix(index: 0, gainLinear: 1, pan: 0)   // center-unity
+        ctx.setTrackMix(index: 1, gainLinear: 1, pan: 0)
+        ctx.setMasterFX(MasterFXParams())                   // neutral
+
+        let out = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+        out.frameLength = AVAudioFrameCount(frames)
+        ctx.render(out.mutableAudioBufferList, frames: frames)
+        XCTAssertEqual(out.floatChannelData![0][10], 0.7, accuracy: 1e-4)   // 0.3 + 0.4 summed
+
+        // Flip Drive on and render the NEXT window — the output must change immediately (live FX).
+        var fx = MasterFXParams(); fx.drive = true; fx.driveAmount = 1.0
+        ctx.setMasterFX(fx)
+        ctx.render(out.mutableAudioBufferList, frames: frames)
+        XCTAssertLessThan(out.floatChannelData![0][10], 0.6, "Drive must change the live mix immediately")
+
+        // Muting a track (gain 0) drops it from the mix.
+        ctx.setMasterFX(MasterFXParams())
+        ctx.setTrackMix(index: 1, gainLinear: 0, pan: 0)
+        ctx.render(out.mutableAudioBufferList, frames: frames)
+        XCTAssertEqual(out.floatChannelData![0][10], 0.3, accuracy: 1e-4)   // only track 0 left
+    }
+
+    private func constBuffer(_ v: Float, frames: Int) -> AVAudioPCMBuffer {
+        let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+        b.frameLength = AVAudioFrameCount(frames)
+        for c in 0..<2 { for i in 0..<frames { b.floatChannelData![c][i] = v } }
+        return b
+    }
+    private func renderClip(track: Int, start: Int, buf: AVAudioPCMBuffer) -> MultitrackRenderContext.Clip {
+        let ch = buf.floatChannelData!
+        let srcCh = Int(buf.format.channelCount)
+        return .init(trackIndex: track, startFrame: start, frameLength: Int(buf.frameLength),
+                     data: (0..<srcCh).map { ch[$0] }, srcChannels: srcCh)
+    }
+
     /// A bounce strips freeze (a live-only capture-and-hold); playback keeps it.
     func testFreezeBypassedForBounceParams() {
         var fx = StudioMasterFX()

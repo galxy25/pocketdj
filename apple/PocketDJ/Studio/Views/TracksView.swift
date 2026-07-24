@@ -28,6 +28,9 @@ struct TracksView: View {
     @State private var pxPerSec: CGFloat = 48
     @State private var followPlayhead = true
     @State private var centerNonce = 0
+    /// Visible width of the timeline viewport — lets zoom-out reach a fit-to-width floor so the whole
+    /// arrangement fits on screen.
+    @State private var timelineViewportWidth: CGFloat = 0
     /// The playback cursor position (ms) when stopped — set by a ruler tap; Play starts here.
     @State private var cursorMs = 0
 
@@ -85,9 +88,21 @@ struct TracksView: View {
     private static let timelineSpace = "tracksTimeline"
     /// Horizontal zoom stops (px per second); default 48.
     private static let zoomLadder: [CGFloat] = [16, 24, 36, 48, 72, 108, 160, 240]
-    private func stepZoom(_ dir: Int) {
-        if dir < 0 { pxPerSec = Self.zoomLadder.last(where: { $0 < pxPerSec }) ?? Self.zoomLadder.first! }
-        else { pxPerSec = Self.zoomLadder.first(where: { $0 > pxPerSec }) ?? Self.zoomLadder.last! }
+    /// Fit-to-width px/sec: the whole arrangement fits the timeline viewport. Zoom-OUT keeps going
+    /// down to this even below the ladder floor, so it always reaches "the entire track on screen".
+    private func fitPx(_ arr: StudioArrangement) -> CGFloat {
+        let secs = max(0.5, Double(arr.lengthMs) / 1000)
+        guard timelineViewportWidth > 40 else { return Self.zoomLadder.first! }
+        return max(1, (timelineViewportWidth - 28) / CGFloat(secs))
+    }
+    private func stepZoom(_ dir: Int, arr: StudioArrangement) {
+        let fit = fitPx(arr)
+        if dir < 0 {
+            if let lower = Self.zoomLadder.last(where: { $0 < pxPerSec - 0.01 }), lower > fit { pxPerSec = lower }
+            else { pxPerSec = fit }                    // keep zooming out until the whole track fits
+        } else {
+            pxPerSec = Self.zoomLadder.first(where: { $0 > pxPerSec + 0.01 }) ?? Self.zoomLadder.last!
+        }
     }
 
     /// Track lane colours — the stem palette first (drums·yellow, bass·red, other·green,
@@ -501,12 +516,12 @@ struct TracksView: View {
 
             Spacer()
 
-            // Zoom the timeline scale, and ⌖ = jump to + follow the playhead.
-            Button { stepZoom(-1) } label: { Image(systemName: "minus.magnifyingglass").font(.callout) }
+            // Zoom the timeline scale (out reaches fit-to-width), and ⌖ = jump to + follow the playhead.
+            Button { stepZoom(-1, arr: arr) } label: { Image(systemName: "minus.magnifyingglass").font(.callout) }
                 .buttonStyle(.plain).foregroundStyle(Theme.accent)
-                .disabled(pxPerSec <= Self.zoomLadder.first!)
+                .disabled(pxPerSec <= fitPx(arr) + 0.01)
                 .accessibilityIdentifier("tracks-zoom-out")
-            Button { stepZoom(+1) } label: { Image(systemName: "plus.magnifyingglass").font(.callout) }
+            Button { stepZoom(+1, arr: arr) } label: { Image(systemName: "plus.magnifyingglass").font(.callout) }
                 .buttonStyle(.plain).foregroundStyle(Theme.accent)
                 .disabled(pxPerSec >= Self.zoomLadder.last!)
                 .accessibilityIdentifier("tracks-zoom-in")
@@ -594,6 +609,10 @@ struct TracksView: View {
                         .overlay(alignment: .topLeading) { followAnchors(arr) }
                         .padding(.trailing, 24)
                     }
+                    .background(GeometryReader { g in
+                        Color.clear
+                            .onChange(of: g.size.width, initial: true) { _, w in timelineViewportWidth = w }
+                    })
                     .onChange(of: pxPerSec) {
                         // Re-center the cursor ONLY while following — with ⌖ off, a zoom must leave
                         // the user's manual scroll where it is (not yank it to the stopped-clock 0:00).

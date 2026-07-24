@@ -102,7 +102,10 @@ final class MasterFXKernel: @unchecked Sendable {
     }
 
     private func process(frames: Int, framePos: Double, activeChannels n: Int) {
-        guard n > 0 else { return }
+        // Guard on the per-channel state being allocated — if a render call ever arrives before
+        // configure() (state arrays are sized there), the per-channel loops would index an empty
+        // array. Bail to passthrough rather than crash.
+        guard n > 0, apX.count >= n, freezeBuf.count >= n, subLP.count >= n else { return }
         let params = p                          // one read; stable for this block
         guard params.active else {
             // Neutral ⇒ passthrough, BUT keep the freeze capture ring warm so enabling ONLY the
@@ -182,100 +185,6 @@ final class MasterFXKernel: @unchecked Sendable {
 
             if params.phaser { lfoPhase += lfoInc; if lfoPhase > 2 * .pi { lfoPhase -= 2 * .pi } }
             if params.ringMod { ringPhase += ringInc; if ringPhase > 2 * .pi { ringPhase -= 2 * .pi } }
-        }
-    }
-}
-
-// MARK: - Live AUAudioUnit wrapper
-
-/// A v3 AUAudioUnit that runs `MasterFXKernel` in its render block — the inserted node between the
-/// arranger's summed master and the peak-limiter. Registered once and instantiated via
-/// `AVAudioUnit.instantiate`. If instantiation ever fails, MultitrackPlayer falls back to a chain
-/// without it (effects simply don't apply live; the bounce still bakes them), so playback never
-/// depends on this succeeding.
-final class MasterFXAudioUnit: AUAudioUnit {
-    let kernel = MasterFXKernel()
-    private var _inputBusses: AUAudioUnitBusArray!
-    private var _outputBusses: AUAudioUnitBusArray!
-    private var scratch: [UnsafeMutablePointer<Float>] = []
-    private var scratchFrames = 0
-    private var scratchChannels = 0
-
-    static let desc = AudioComponentDescription(
-        componentType: kAudioUnitType_Effect,
-        componentSubType: 0x70646d78,       // 'pdmx'
-        componentManufacturer: 0x50646a78,  // 'Pdjx'
-        componentFlags: 0, componentFlagsMask: 0)
-
-    private static var registered = false
-    static func registerIfNeeded() {
-        guard !registered else { return }
-        registered = true
-        AUAudioUnit.registerSubclass(MasterFXAudioUnit.self, as: desc,
-                                     name: "PocketDJ Master FX", version: 1)
-    }
-
-    override init(componentDescription: AudioComponentDescription,
-                  options: AudioComponentInstantiationOptions = []) throws {
-        try super.init(componentDescription: componentDescription, options: options)
-        let fmt = StudioAudio.canonicalFormat
-        _inputBusses = AUAudioUnitBusArray(audioUnit: self, busType: .input,
-                                           busses: [try AUAudioUnitBus(format: fmt)])
-        _outputBusses = AUAudioUnitBusArray(audioUnit: self, busType: .output,
-                                            busses: [try AUAudioUnitBus(format: fmt)])
-    }
-
-    override var inputBusses: AUAudioUnitBusArray { _inputBusses }
-    override var outputBusses: AUAudioUnitBusArray { _outputBusses }
-
-    override func allocateRenderResources() throws {
-        try super.allocateRenderResources()
-        let fmt = outputBusses[0].format
-        kernel.configure(sampleRate: fmt.sampleRate, channelCount: Int(fmt.channelCount))
-        // Scratch memory for the (rare) case the host passes null output buffers.
-        scratchFrames = Int(maximumFramesToRender)
-        scratchChannels = Int(fmt.channelCount)
-        scratch = (0..<scratchChannels).map { _ in
-            UnsafeMutablePointer<Float>.allocate(capacity: scratchFrames)
-        }
-    }
-
-    override func deallocateRenderResources() {
-        for p in scratch { p.deallocate() }
-        scratch = []
-        super.deallocateRenderResources()
-    }
-
-    override var internalRenderBlock: AUInternalRenderBlock {
-        let kernel = self.kernel
-        let scratch = self.scratch
-        return { _, timestamp, frameCount, _, outputData, _, pullInputBlock in
-            let abl = UnsafeMutableAudioBufferListPointer(outputData)
-            // Give any null output buffers a home before pulling input into them.
-            for i in 0..<abl.count where abl[i].mData == nil && i < scratch.count {
-                abl[i].mData = UnsafeMutableRawPointer(scratch[i])
-                abl[i].mDataByteSize = frameCount * UInt32(MemoryLayout<Float>.size)
-            }
-            var flags = AudioUnitRenderActionFlags()
-            let err = pullInputBlock?(&flags, timestamp, frameCount, 0, outputData) ?? kAudioUnitErr_NoConnection
-            if err != noErr { return err }
-            kernel.processABL(outputData, frames: Int(frameCount), framePos: timestamp.pointee.mSampleTime)
-            return noErr
-        }
-    }
-
-    /// Instantiate the effect node (async, per Apple's AVAudioUnit contract). Returns the node + its
-    /// kernel-bearing AU, or nil if creation failed (caller then routes around it).
-    static func make() async -> (AVAudioUnit, MasterFXAudioUnit)? {
-        registerIfNeeded()
-        return await withCheckedContinuation { cont in
-            AVAudioUnit.instantiate(with: desc, options: []) { node, _ in
-                if let node, let au = node.auAudioUnit as? MasterFXAudioUnit {
-                    cont.resume(returning: (node, au))
-                } else {
-                    cont.resume(returning: nil)
-                }
-            }
         }
     }
 }
