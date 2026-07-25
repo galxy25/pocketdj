@@ -5,6 +5,10 @@ import CoreImage.CIFilterBuiltins
 /// this onto ITS NavigationStack, so Back lands the DJ right back on the decks.
 struct JukeboxRoute: Hashable {}
 
+/// Pushed-navigation route to a JOINED jukebox's live guest panel — tapping a joined session on the
+/// Jukebox home pushes `JukeboxJoinView` (a native in-app screen, not a popup sheet).
+struct JukeboxJoinRoute: Hashable { let entry: JukeboxStore.JoinedEntry }
+
 // #TOUPDATE: "token-gated" and "capped" describe the target, not today. jukebox-server.mjs
 // serves the guest page as a public object with no guest credential — tokenOk (:413) gates
 // session CREATION only and fail-opens when JUKEBOX_TOKEN is unset — and the server's own
@@ -49,6 +53,46 @@ struct JukeboxView: View {
         }
         .navigationTitle("Jukebox Hero")
         .background(Theme.bg)
+        // Jukeboxes this device JOINED (as a guest) appear as a strip at the top of the home;
+        // tapping one pushes its live native panel. Levi's flow: join → in the list → tap → panel.
+        .safeAreaInset(edge: .top) {
+            if !jukebox.joinedSessions.isEmpty { joinedSessionsStrip }
+        }
+    }
+
+    // MARK: - Joined jukeboxes (this device is a guest of)
+
+    private var joinedSessionsStrip: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Joined jukeboxes")
+                .font(.caption.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 4)
+            ForEach(jukebox.joinedSessions) { entry in
+                NavigationLink(value: JukeboxJoinRoute(entry: entry)) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "qrcode.viewfinder").foregroundStyle(Theme.accent)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(entry.name ?? "Jukebox").font(.subheadline.weight(.medium))
+                                .foregroundStyle(Theme.fg).lineLimit(1)
+                            Text(entry.id).font(.caption2).foregroundStyle(Theme.fgDim)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.fgDim)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("jukebox-joined-\(entry.id)")
+                .contextMenu {
+                    Button(role: .destructive) { jukebox.removeJoined(id: entry.id) } label: {
+                        Label("Leave jukebox", systemImage: "xmark.circle")
+                    }
+                }
+            }
+            Divider().overlay(Theme.border)
+        }
+        .background(Theme.bgRaised)
     }
 
     // MARK: - Create (no session)

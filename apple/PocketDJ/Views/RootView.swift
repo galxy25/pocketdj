@@ -162,6 +162,7 @@ struct RootView: View {
                     .navigationDestination(for: MixSessionsRoute.self) { _ in MixSessionsView() }
                     .navigationDestination(for: MixSessionRoute.self) { MixSessionDetailView(sessionId: $0.sessionId) }
                     .navigationDestination(for: JukeboxRoute.self) { _ in JukeboxView() }
+                    .navigationDestination(for: JukeboxJoinRoute.self) { JukeboxJoinView(entry: $0.entry) }
             }
         }
         .background { navigationShortcuts }
