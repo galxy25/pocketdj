@@ -49,4 +49,15 @@ enum ShareText {
     static func forSongs(_ songs: [IndexSong]) -> String {
         songs.map(forSong).joined(separator: "\n\n")
     }
+
+    /// Share block for a bare title/artist — a now-playing track that isn't in the catalog (an
+    /// ad-hoc rip / studio item), so there are no stored ids: search links for all three services.
+    static func forTitleArtist(title: String, artist: String) -> String {
+        [
+            "\(title) — \(artist)",
+            "Apple Music: https://music.apple.com/search?term=\(query(title, artist))",
+            "Spotify: \(spotifyLine(url: nil, title: title, artist: artist))",
+            "YouTube: \(youtubeLine(url: nil, title: title, artist: artist))",
+        ].joined(separator: "\n")
+    }
 }

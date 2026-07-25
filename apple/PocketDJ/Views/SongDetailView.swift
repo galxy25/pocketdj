@@ -58,6 +58,12 @@ struct SongDetailView: View {
         #endif
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                ShareLink(item: ShareText.forSong(current),
+                          subject: Text("\(current.name) — \(current.artist)")) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .help("Share this song")
+                .accessibilityIdentifier("song-share")
                 Button { showAdd = true } label: { Image(systemName: "plus.circle") }
                     .accessibilityIdentifier("add-song-to")
                 Button("Edit") { showEdit = true }.accessibilityIdentifier("edit-song")

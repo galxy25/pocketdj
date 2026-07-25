@@ -63,6 +63,14 @@ struct AlbumDetailView: View {
                 .disabled(tracks.isEmpty || ripBurn.working || !rips.hasServer)
                 .accessibilityIdentifier("album-stemify")
             }
+            ToolbarItem(placement: .primaryAction) {
+                ShareLink(item: ShareText.forAlbum(current),
+                          subject: Text("\(current.name) — \(current.artist)")) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .help("Share this album")
+                .accessibilityIdentifier("album-share")
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { showAdd = true } label: { Image(systemName: "plus.circle") }
                     .accessibilityIdentifier("add-album-to")

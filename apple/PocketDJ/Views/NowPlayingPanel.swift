@@ -188,6 +188,13 @@ struct NowPlayingPanel: View {
     private var currentAlbum: IndexAlbum? {
         currentItem.flatMap { app.album(forSongId: $0.id) }
     }
+    /// F3 share-text block for the current now-playing track — the catalog song when indexed, else a
+    /// bare title/artist (search links). nil when the deck is idle.
+    private var currentShareText: String? {
+        guard let item = currentItem else { return nil }
+        if let song = app.songsById[item.id] { return ShareText.forSong(song) }
+        return ShareText.forTitleArtist(title: item.title, artist: item.artist)
+    }
     /// Spin rate source: the measured beat grid (preferred — the rip manifest's
     /// `beatGridBpm`), else the catalog BPM; nil ⇒ the view's 33⅓ RPM fallback.
     private var currentBpm: Double? {
@@ -406,15 +413,15 @@ struct NowPlayingPanel: View {
                         // The record is the door to the current track's metadata:
                         // long-press on iOS opens the detail DIRECTLY; macOS gets
                         // the natural right-click menu.
-                        #if os(macOS)
+                        // Right-click (macOS) / long-press (iOS) → Song details + Share (F3).
                         .contextMenu {
                             Button { openCurrentSongDetail() } label: {
                                 Label("Song details", systemImage: "info.circle")
                             }
+                            if let share = currentShareText {
+                                ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
+                            }
                         }
-                        #else
-                        .onLongPressGesture(minimumDuration: 0.4) { openCurrentSongDetail() }
-                        #endif
                 }
                 transport
                 shuffleRepeatRow
