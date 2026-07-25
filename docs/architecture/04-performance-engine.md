@@ -1852,9 +1852,12 @@ composes the four studio families into a timeline. It is deliberately **additive
   `masterFX: StudioMasterFX`.
 - **`StudioTrack`** (`trk_…`) — one lane: `clips: [StudioClip]`, a mix strip (`gainDb` / `pan` /
   `muted` / `soloed`), and a user-settable palette `colorIndex`.
-- **`StudioClip`** (`clip_…`) — a positioned, **immutable baked snapshot**: `fileName`
-  (`clip-<id>.m4a`), `startMs`, `durationMs`, a `StudioClipSource` provenance tag (sample / loop /
-  pattern / take / recording / master / **stem**), and the `sourceId` it was baked from (label only).
+- **`StudioClip`** (`clip_…`) — a positioned baked snapshot: `fileName`
+  (`clip-<id>.m4a`), `startMs`, `durationMs`, an **in-file window offset `fileStartMs`** (0 for a
+  whole-file clip; > 0 for a scissor-cut tail that references its head's file), a `StudioClipSource`
+  provenance tag (sample / loop / pattern / take / recording / master / **stem**), and the `sourceId`
+  it was baked from (label only). The audio file is immutable; the clip is a **non-destructive window**
+  `[fileStartMs, fileStartMs + durationMs)` into it, honored by both read paths.
 - **`StudioArrangementFolder`** (`arrfld_…`) — a flat organizer for arrangements (id + name +
   timestamps; membership via `StudioArrangement.folderId`), riding `StudioDocument.arrangementFolders`.
   Like `sfld_`/`cue_`/`slc_`, `arrfld_` is **excluded from `studioPrefixes`**. Delete re-homes members
@@ -1977,6 +1980,25 @@ an **independent** `smp_` copy — deleting the artifact never touches it), **Ad
 (`ArrangerClipBaker.bakeFromFile`), **Share**, **Delete** (removes record + file). Unit-tested by
 `testArrangementArtifactCRUDAndRoundTrip` / `testCreateSampleFromArtifactIsIndependent` /
 `testBounceToFileWritesAudio` / `testRelabelIsLongerThanCleanImport`.
+
+**Scissor trim** (the ✂ tool — *"one track, leave a gap"*). Removing a span of audio from ONE lane is a
+**pure-data, non-destructive** edit: `StudioStore.trimGap(clips:cutStartMs:cutEndMs:)` (static, pure,
+injectable id for tests) walks a track's clips against the region and, per clip, keeps it whole (disjoint),
+drops it (fully covered), shortens it (a cut off the head/tail — the sole survivor keeps its id), or
+**splits** it into a head (id/file kept, shortened) + a **tail** (new id, the **same** `fileName`, its
+`fileStartMs` slid forward by `cutEnd − startMs`). Nothing else moves — the removed span becomes **silence**
+and every other lane stays frame-aligned ("leave a gap"). The two read paths honor the window: the live
+render adds a `srcStart` frame offset to `MultitrackRenderContext.Clip` (`src[srcStart + srcOff + i]`), and
+the bounce carries `srcStart`/`len` per `MixJob` — the timeline math is identical, so live == bounce. The
+UI (`TracksView`) stages edits in **local `@State`** (`trimStaged` + a `trimHistory` undo stack) and never
+touches the store until **Save**; the region uses a `loopOverlay`-style band with two beat-snapped handles
+driving `trimRegion*` (not the store), so **Cancel** is a pure revert — no file is written during the whole
+session. **`commitTrimmedTrack`** is the only disk step: it **de-dups** any tail still sharing its head's
+file to its own `clip-<id>.m4a` (the `duplicateTrack` "no two records share a file" discipline — byte-copy,
+lossless, so `fileStartMs` persists and the waveform is windowed by `WaveformExtractor.peaks(startMs:lengthMs:)`),
+then **orphan-cleans** any file the track dropped that no clip still references. Unit-tested by
+`testTrimGapAllCases` / `testCommitTrimmedTrackDedupAndOrphanClean` / `testTrimmedTailBounceIsSilent`;
+UI-wired by `testTracksScissorTrim`.
 
 **Stems in / out.** A song's four on-device stems reach the arranger two ways, both via
 `ArrangerClipBaker.bakeFromFile` (each stem baked to its own colour-matched lane at 0:00, tracks added

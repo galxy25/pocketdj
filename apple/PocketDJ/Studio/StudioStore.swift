@@ -1532,6 +1532,79 @@ extension StudioStore {
         }
     }
 
+    // MARK: Scissor trim ("one track, leave a gap")
+
+    /// PURE data model for the scissor tool: remove the audio in `[cutStartMs, cutEndMs)` from ONE
+    /// track's `clips`, splitting/trimming any overlapping clip and leaving SILENCE in the gap (every
+    /// other clip keeps its timeline position — "leave a gap"). No file I/O — a cut is metadata only:
+    ///
+    ///   • no overlap        → clip unchanged
+    ///   • cut covers it     → clip dropped (its region becomes silence)
+    ///   • cut in the middle → HEAD (keeps id/file, shortened) + TAIL (new id, SAME file, offset in)
+    ///   • cut off the head  → clip's start slides to `cutEnd`, `fileStartMs` advances by the removed span
+    ///   • cut off the tail  → clip's `durationMs` shortens to `cutStart`
+    ///
+    /// The TAIL shares the head's `fileName` (windowed by `fileStartMs`); `commitTrimmedTrack`
+    /// de-dups that to its own file so the one-clip-one-file invariant holds after a save. Injectable
+    /// `newId` keeps it deterministic for tests.
+    static func trimGap(clips: [StudioClip], cutStartMs cs: Int, cutEndMs ce: Int,
+                        newId: () -> String = { StudioFactory.newClipId() }) -> [StudioClip] {
+        guard ce > cs else { return clips }
+        var out: [StudioClip] = []
+        for clip in clips {
+            let s = clip.startMs, e = clip.endMs
+            if e <= cs || s >= ce { out.append(clip); continue }   // disjoint → keep whole
+            let hasHead = s < cs, hasTail = e > ce
+            if hasHead {                                           // head piece survives before the cut
+                var head = clip
+                head.durationMs = cs - s
+                out.append(head)
+            }
+            if hasTail {                                           // tail piece survives after the cut
+                var tail = clip
+                // A middle split needs a NEW id for the second piece; a pure head-trim (no head
+                // piece) is the SOLE survivor, so it keeps the clip's identity.
+                if hasHead { tail.id = newId() }
+                tail.startMs = ce
+                tail.fileStartMs = clip.fileStartMs + (ce - s)     // slide the in-file window forward
+                tail.durationMs = e - ce
+                out.append(tail)
+            }
+            // !hasHead && !hasTail → the clip is dropped (pure silence in the gap).
+        }
+        return out
+    }
+
+    /// Commit a scissor edit: replace `track`'s clips with `newClips` (the `trimGap` result), then
+    /// restore the one-clip-one-file invariant. Split tails share their head's `fileName` until now;
+    /// here each duplicate reference is byte-copied to its own `clip-<id>.m4a` (the `duplicateTrack`
+    /// discipline), and any file the track USED to reference that no clip in the arrangement still
+    /// references is deleted. This is the ONLY step of the whole trim session that touches the disk —
+    /// so Cancel (which never calls this) is a pure, safe revert. Saves now.
+    func commitTrimmedTrack(arrangement aid: String, track tid: String, clips newClips: [StudioClip]) {
+        guard let i = arrangements.firstIndex(where: { $0.id == aid }),
+              let j = arrangements[i].tracks.firstIndex(where: { $0.id == tid }) else { return }
+        let oldFiles = Set(arrangements[i].tracks[j].clips.map(\.fileName))
+        // De-dup shared source files so no two clip records point at one file after the edit.
+        var claimed = Set<String>()
+        var deduped: [StudioClip] = []
+        for var clip in newClips {
+            if claimed.contains(clip.fileName) {
+                let unique = Self.clipFileName(clip.id)
+                copyClipFile(from: clip.fileName, to: unique)
+                clip.fileName = unique
+            }
+            claimed.insert(clip.fileName)
+            deduped.append(clip)
+        }
+        arrangements[i].tracks[j].clips = deduped
+        arrangements[i].updatedAt = nowMs
+        // Orphan-clean: delete files this track dropped that NO clip (any track) now references.
+        let live = Set(arrangements[i].tracks.flatMap { $0.clips.map(\.fileName) })
+        for f in oldFiles where !live.contains(f) { deleteClipFile(f) }
+        saveNow()
+    }
+
     // MARK: Clip-file helpers (app-managed dir)
 
     private func deleteClipFile(_ fileName: String) {

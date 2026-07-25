@@ -252,6 +252,51 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// Scissor trim: the ✂ tool opens region-trim mode, Delete stages a cut (enabling Undo + Save),
+    /// Cancel discards it non-destructively (the clip is untouched), and Save commits + leaves trim
+    /// mode. The cut MATH is unit-tested (`StudioStoreTests.testTrimGap*`); this proves the UI wiring.
+    func testTracksScissorTrim() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — arranger flows exercised on iOS")
+        #else
+        launchPerformance()
+        openArranger()
+        let emptyAdd = app.any("tracks-empty-add-track")
+        XCTAssertTrue(emptyAdd.waitForExistence(timeout: 15)); emptyAdd.tap()
+        app.any("tracks-add-clip-0").tap()
+        let item = app.any("clip-picker-item-smp_fixture")
+        XCTAssertTrue(item.waitForExistence(timeout: 10)); item.tap()
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 20))
+
+        // Enter trim mode — the toolbar's Delete control appears; the seeded region overlaps the clip
+        // (both start at 0:00), so Delete stages a real cut.
+        ensureTransportShows("tracks-scissor-toggle")
+        let scissor = app.any("tracks-scissor-toggle")
+        XCTAssertTrue(scissor.waitForExistence(timeout: 5)); scissor.tap()
+        XCTAssertEqual(scissor.value as? String, "on")
+        let del = app.any("tracks-trim-delete")
+        XCTAssertTrue(del.waitForExistence(timeout: 5), "trim toolbar should show Delete")
+        del.tap()
+        XCTAssertTrue(app.any("tracks-trim-undo").isEnabled, "a staged cut enables Undo")
+        XCTAssertTrue(app.any("tracks-trim-save").isEnabled, "a staged cut enables Save")
+        snap("tracks-scissor-active")
+
+        // Cancel is non-destructive — leave trim mode, the clip is untouched.
+        app.any("tracks-trim-cancel").tap()
+        XCTAssertEqual(scissor.value as? String, "off")
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 5),
+                      "Cancel discards the staged cut — the clip stays")
+
+        // Re-enter, cut, and SAVE — commit succeeds and trim mode exits.
+        scissor.tap()
+        XCTAssertEqual(scissor.value as? String, "on")
+        app.any("tracks-trim-delete").tap()
+        app.any("tracks-trim-save").tap()
+        XCTAssertEqual(scissor.value as? String, "off", "Save commits and leaves trim mode")
+        snap("tracks-scissor-saved")
+        #endif
+    }
+
     /// Stage C: synced playback. After baking a clip, Play starts the multitrack engine (the play
     /// button's a11y value flips to "playing" — which only happens when `play()` decoded a clip and
     /// started the graph), and Stop returns it to "stopped".

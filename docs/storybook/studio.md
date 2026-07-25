@@ -466,6 +466,14 @@ arrangement** in the Tracks home browser. **Tap a row to hear it** (tap again to
 row for **Convert to sample** (drops an independent sample into your Samples library — the artifact and
 the sample are separate copies), **Add as track** (place it back on a lane), **Share**, or **Delete**.
 
+**Trim a track.** Need to carve a chunk out of one lane? Tap the **✂ scissors** in the transport to
+enter **trim mode**. Pick the target track (its lane rings red; the others dim), drag the red region
+handles over the part to cut — they beat-snap like the looper — then tap **Delete**: that track's audio
+in the region is removed and both ends stay put, leaving a **silent gap** (every other lane stays
+perfectly in sync). Stack up cuts, **Undo** any of them, then **Save** to commit or **Cancel** to walk
+away. Trims are **non-destructive** — your original recording is never overwritten, so quality never
+degrades, and *nothing* touches your files until you hit Save, which makes Cancel a clean escape.
+
 **User story:** "I send a song's stems to a fresh arrangement, pan the drums a touch left, colour the
 vocal lane purple, set a 4-bar loop over the chorus, ride the Brazilian bass on every beat, then bounce
 the whole thing — fat sub and all. It lands as a dated bounce under the arrangement; I tap to check it,

@@ -142,7 +142,7 @@ final class MasterFXTests: XCTestCase {
         let ch = buf.floatChannelData!
         let srcCh = Int(buf.format.channelCount)
         return .init(trackIndex: track, startFrame: start, frameLength: Int(buf.frameLength),
-                     data: (0..<srcCh).map { ch[$0] }, srcChannels: srcCh)
+                     srcStart: 0, data: (0..<srcCh).map { ch[$0] }, srcChannels: srcCh)
     }
 
     /// A bounce strips freeze (a live-only capture-and-hold); playback keeps it.
