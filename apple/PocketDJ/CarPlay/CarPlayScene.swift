@@ -113,7 +113,10 @@ final class CarPlayController {
     /// queue's upcoming tail (the SAME `SetlistPlayer.toggleShuffle` the deck + widget call), then
     /// rebuilds (CarPlay buttons are immutable). Shown only while a set is running.
     private func shuffleButton() -> CPNowPlayingImageButton {
-        let image = UIImage(systemName: "shuffle") ?? UIImage()
+        // Reflect on/off state at a glance (like the heart + repeat.1): SF Symbols has no
+        // `shuffle.fill`, so use the circled/filled variant for ON. Rebuilt on every toggle.
+        let on = model?.isShuffleOn() ?? false
+        let image = UIImage(systemName: on ? "shuffle.circle.fill" : "shuffle") ?? UIImage()
         return CPNowPlayingImageButton(image: image) { [weak self] _ in
             self?.model?.toggleShuffle()
             self?.refreshNowPlayingButtons()
