@@ -1038,7 +1038,7 @@ struct PlaylistDetailView: View {
                     .font(.caption).foregroundStyle(Theme.fgDim)
             }
             ForEach(Array(children.enumerated()), id: \.element.nodeId) { idx, node in
-                nodeRow(node)
+                nodeRowWithMenu(node, idx: idx, count: children.count)
                     .swipeActions(edge: .trailing) {
                         Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
                     }
@@ -1049,15 +1049,6 @@ struct PlaylistDetailView: View {
                         Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Down", systemImage: "arrow.down") }
                             .tint(Theme.accent2)
                             .disabled(idx == children.count - 1)
-                    }
-                    .contextMenu {
-                        Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Move up", systemImage: "arrow.up") }
-                            .accessibilityIdentifier("move-up-\(node.nodeId)")
-                            .disabled(idx == 0)
-                        Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Move down", systemImage: "arrow.down") }
-                            .accessibilityIdentifier("move-down-\(node.nodeId)")
-                            .disabled(idx == children.count - 1)
-                        Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
                     }
             }
             .onMove { from, to in
@@ -1115,16 +1106,43 @@ struct PlaylistDetailView: View {
         }
     }
 
+    /// The chapter row's context menu, folded into ONE menu per row: catalog-song rows get the
+    /// "Force Apple Music sync" action PLUS the reorder items (via `forceSyncContextMenu`, since a
+    /// second `.contextMenu` would shadow it); every other node gets just the reorder items.
+    @ViewBuilder private func nodeRowWithMenu(_ node: PlaylistNode, idx: Int, count: Int) -> some View {
+        if node.kind == .song, let id = node.songId, let song = app.songsById[id] {
+            nodeRow(node)
+                .forceSyncContextMenu(song: song, kind: .playlist, collectionId: playlistId) {
+                    nodeReorderMenu(node, idx: idx, count: count)
+                }
+        } else {
+            nodeRow(node)
+                .contextMenu { nodeReorderMenu(node, idx: idx, count: count) }
+        }
+    }
+
+    /// The Move up / Move down / Remove items shared by every chapter row's context menu.
+    @ViewBuilder private func nodeReorderMenu(_ node: PlaylistNode, idx: Int, count: Int) -> some View {
+        Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Move up", systemImage: "arrow.up") }
+            .accessibilityIdentifier("move-up-\(node.nodeId)")
+            .disabled(idx == 0)
+        Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Move down", systemImage: "arrow.down") }
+            .accessibilityIdentifier("move-down-\(node.nodeId)")
+            .disabled(idx == count - 1)
+        Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
+    }
+
     @ViewBuilder private func nodeRow(_ node: PlaylistNode) -> some View {
         switch node.kind {
         case .song:
             if let id = node.songId, let song = app.songsById[id] {
                 // One List row = nav link + (when this song is playing) the inline panel
                 // BELOW it, both in a VStack so the panel's taps don't hit the link and the
-                // 1:1 element↔row mapping `onMove`/`onDelete` rely on is preserved.
+                // 1:1 element↔row mapping `onMove`/`onDelete` rely on is preserved. The
+                // force-sync context menu is attached by `nodeRowWithMenu` (folded with the
+                // chapter reorder items) — NOT here, or a second menu would shadow it.
                 VStack(spacing: 0) {
                     NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false) }
-                        .forceSyncContextMenu(song: song, kind: .playlist, collectionId: playlistId)
                     InlinePlayerSlot(songId: song.id)
                 }
             } else if let id = node.songId, StudioFactory.isStudioId(id) {
