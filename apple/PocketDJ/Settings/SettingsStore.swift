@@ -7,6 +7,20 @@ import Observation
 ///   • `.device` — play from burned local files (fall back to cloud for a missing file).
 enum PlaybackMode: String, Codable, Hashable, Sendable { case cloud, device }
 
+/// Whole-session repeat mode for the `SetlistPlayer` run — surfaced on the Now Playing deck,
+/// the widget, and the system lock-screen / CarPlay card. DISTINCT from `SetlistPlayer.Item.repeatCount`
+/// (a per-track performance loop count): this governs what happens at the END of the whole queue.
+///   • `.off` — stop at the end of the queue (today's behaviour).
+///   • `.all` — wrap to the top and keep going (repeat the whole session).
+///   • `.one` — replay the CURRENT track on its natural end (an explicit ⏭ still advances).
+/// Raw values are persisted in the durable playback session — never rename them.
+enum RepeatMode: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
+    case off, all, one
+    var id: String { rawValue }
+    /// off → all → one → off — the Now Playing / widget repeat button's cycle.
+    var next: RepeatMode { self == .off ? .all : (self == .all ? .one : .off) }
+}
+
 /// Which output channel the Mix CUE / monitor bus is sent to (the other side carries the house mix).
 /// Used by the two-deck Mix board's pre-fade-listen: e.g. `.right` ⇒ cue on the right channel, house
 /// on the left — the standard "send main out one channel, cue out the other" booth wiring.

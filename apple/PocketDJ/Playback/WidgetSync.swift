@@ -53,6 +53,9 @@ final class WidgetSync {
         WidgetPlaybackController.shared.previous = { [weak setlist] in setlist?.skipPrevious() }
         // The widget's ♥ flips the CURRENT track's favorite — same store the in-app control uses.
         WidgetPlaybackController.shared.toggleFavorite = { [weak self] in self?.toggleFavoriteForCurrent() }
+        // Repeat/shuffle drive the running set's modes — same methods the in-app deck toggles call.
+        WidgetPlaybackController.shared.cycleRepeat = { [weak setlist] in setlist?.cycleRepeatMode() }
+        WidgetPlaybackController.shared.toggleShuffle = { [weak setlist] in setlist?.toggleShuffle() }
         // Drain a widget transport command the INSTANT it arrives (a widget click doesn't
         // foreground the app, so we can't wait for scenePhase — the Darwin notification does).
         WidgetCommandBridge.onCommand = { [weak self] in
@@ -103,10 +106,12 @@ final class WidgetSync {
         guard let c = WidgetCommandChannel.drain(now: now) else { return }
         NPLog.trace("widgetSync drain cmd=\(c.rawValue)")
         switch c {
-        case .toggle:   transportToggle()
-        case .next:     setlist.skipNext()
-        case .previous: setlist.skipPrevious()
-        case .favorite: toggleFavoriteForCurrent()
+        case .toggle:        transportToggle()
+        case .next:          setlist.skipNext()
+        case .previous:      setlist.skipPrevious()
+        case .favorite:      toggleFavoriteForCurrent()
+        case .cycleRepeat:   setlist.cycleRepeatMode()
+        case .toggleShuffle: setlist.toggleShuffle()
         }
     }
 
@@ -118,6 +123,10 @@ final class WidgetSync {
             _ = setlist.currentSongId
             _ = setlist.index
             _ = setlist.queue.count
+            // Repeat/shuffle mode changes (from the deck, the widget, or a lock-screen command)
+            // must republish so the widget's glyphs reflect the running set's state.
+            _ = setlist.repeatMode
+            _ = setlist.shuffleEnabled
             _ = player.isPlaying
             _ = rips.nowPlaying?.songId
             _ = coordinator.activeBackend
@@ -202,10 +211,15 @@ final class WidgetSync {
         // reflects the store and a widget-originated toggle carries the id the push needs.
         let isFavorite = base.songId.map { favorites.isFavorite($0) } ?? false
         let amCatalogId = base.songId.flatMap { appleMusicId($0) }
+        // Repeat/shuffle are set-level modes — surface them only while a set is running (a single
+        // track / Apple Music play has no queue to repeat or shuffle, so the glyphs read off).
+        let repeatRaw = setlist.isRunning ? setlist.repeatMode.rawValue : "off"
+        let shuffleOn = setlist.isRunning ? setlist.shuffleEnabled : false
         let snap = NowPlayingSnapshot(isPlaying: playing, hasContent: base.hasContent,
                                       title: base.title, artist: base.artist, songId: base.songId,
                                       coverVersion: coverVersion, upNext: base.upNext,
-                                      isFavorite: isFavorite, appleMusicId: amCatalogId)
+                                      isFavorite: isFavorite, appleMusicId: amCatalogId,
+                                      repeatMode: repeatRaw, shuffleEnabled: shuffleOn)
         guard snap != lastPublished else { return }
         lastPublished = snap
         NPLog.trace("widgetSync publish title=\(snap.title) playing=\(snap.isPlaying) hasContent=\(snap.hasContent) upNext=\(snap.upNext.count) coverV=\(snap.coverVersion) groupOK=\(NowPlayingShared.defaults != nil)")

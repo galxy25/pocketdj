@@ -325,6 +325,58 @@ struct NowPlayingPanel: View {
         .accessibilityIdentifier("np-history")
     }
 
+    // MARK: Shuffle / repeat (whole-session modes)
+
+    /// Shuffle (left) + repeat (right) below the transport — set-level modes styled like
+    /// `historyToggle` (accent when active, `fgDim` when off). Shown only while a set is running
+    /// (a single-track play has no queue to shuffle/repeat).
+    @ViewBuilder private var shuffleRepeatRow: some View {
+        if sequencer.isRunning {
+            HStack {
+                shuffleToggle
+                Spacer()
+                repeatToggle
+            }
+            .padding(.horizontal, 44)
+        }
+    }
+
+    private var shuffleToggle: some View {
+        Button { sequencer.toggleShuffle() } label: {
+            Image(systemName: "shuffle")
+                .font(.subheadline)
+                .foregroundStyle(sequencer.shuffleEnabled ? Theme.accent : Theme.fgDim)
+        }
+        .buttonStyle(.plain)
+        .help("Shuffle")
+        .accessibilityLabel("Shuffle")
+        .accessibilityValue(sequencer.shuffleEnabled ? "On" : "Off")
+        .accessibilityIdentifier("np-shuffle")
+    }
+
+    private var repeatToggle: some View {
+        Button { sequencer.cycleRepeatMode() } label: {
+            Image(systemName: sequencer.repeatMode == .one ? "repeat.1" : "repeat")
+                .font(.subheadline)
+                .foregroundStyle(sequencer.repeatMode == .off ? Theme.fgDim : Theme.accent)
+        }
+        .buttonStyle(.plain)
+        .help(repeatHelp)
+        .accessibilityLabel("Repeat")
+        .accessibilityValue(repeatHelp)
+        .accessibilityIdentifier("np-repeat")
+    }
+
+    /// off → "Repeat off"; all → "Repeat session"; one → "Repeat song" (matches the user's ask:
+    /// toggle between repeat-song and repeat-session).
+    private var repeatHelp: String {
+        switch sequencer.repeatMode {
+        case .off: return "Repeat off"
+        case .all: return "Repeat session"
+        case .one: return "Repeat song"
+        }
+    }
+
     /// Static so the collapsed `NowPlayingMiniBar` shares the exact routing.
     @MainActor
     static func togglePlayPause(sequencer: SetlistPlayer, coordinator: PlaybackCoordinator,
@@ -365,6 +417,7 @@ struct NowPlayingPanel: View {
                         #endif
                 }
                 transport
+                shuffleRepeatRow
                 // F4 — the collapsible Mix mini-panel. Self-gates on `SetlistPlayer.mixAvailable`
                 // (hidden entirely for a non-mixable current track or while a Mix session plays),
                 // collapsed by default.

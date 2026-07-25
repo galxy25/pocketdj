@@ -771,6 +771,126 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertNil(rips.nowPlaying, "now-playing cleared on stop")
         cleanBurnedFiles(["sng_z.mp3", "sng_z.txt"])
     }
+
+    // MARK: Repeat mode (whole-session) — wrap-ALL + repeat-ONE
+
+    /// Repeat-ALL wraps at the end of the queue instead of stopping: the last track's natural end
+    /// loops back to the top (index 0) and keeps running. Flipping back to OFF restores the
+    /// stop-at-end behaviour.
+    func testRepeatAllWrapsAtEndOfQueue() async {
+        cleanBurnedFiles(["ra_1.mp3","ra_1.txt","ra_2.mp3","ra_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "ra_1")
+        await burn(rips, burns, songId: "ra_2")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([.init(id: "ra_1", title: "One", artist: "A"),
+                  .init(id: "ra_2", title: "Two", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "ra_1" }
+        seq.setRepeatMode(.all)
+        XCTAssertEqual(seq.repeatMode, .all)
+
+        player.onTrackEnded?()   // end track 0 → advance to 1
+        await waitUntil("advanced to track 1") { rips.nowPlaying?.songId == "ra_2" && seq.index == 1 }
+
+        player.onTrackEnded?()   // end LAST track → repeat-all WRAPS to 0 (does NOT stop)
+        await waitUntil("wrapped to the top") { rips.nowPlaying?.songId == "ra_1" && seq.index == 0 }
+        XCTAssertTrue(seq.isRunning, "repeat-all keeps the set running past the end")
+
+        // OFF again → the next end walks to the last track, then stops at the boundary.
+        seq.setRepeatMode(.off)
+        player.onTrackEnded?()
+        await waitUntil("advanced to last track") { rips.nowPlaying?.songId == "ra_2" && seq.index == 1 }
+        player.onTrackEnded?()
+        await waitUntil("stops at end with repeat off") { !seq.isRunning }
+        cleanBurnedFiles(["ra_1.mp3","ra_1.txt","ra_2.mp3","ra_2.txt"])
+    }
+
+    /// Repeat-ONE replays the CURRENT track on its natural end (index holds, set keeps running);
+    /// an explicit ⏭ still advances — only a NATURAL end repeats.
+    func testRepeatOneReplaysCurrentAndSkipStillAdvances() async {
+        cleanBurnedFiles(["ro_1.mp3","ro_1.txt","ro_2.mp3","ro_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "ro_1")
+        await burn(rips, burns, songId: "ro_2")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([.init(id: "ro_1", title: "One", artist: "A"),
+                  .init(id: "ro_2", title: "Two", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "ro_1" }
+        seq.setRepeatMode(.one)
+
+        player.onTrackEnded?()   // natural end → replay the SAME track (no advance)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(seq.index, 0, "repeat-one replays the current track (no advance)")
+        XCTAssertTrue(seq.isRunning)
+        await waitUntil("track 0 replaying") { rips.nowPlaying?.songId == "ro_1" }
+
+        seq.skipNext()           // explicit skip overrides repeat-one
+        XCTAssertEqual(seq.index, 1, "explicit skip advances even under repeat-one")
+        seq.stop()
+        cleanBurnedFiles(["ro_1.mp3","ro_1.txt","ro_2.mp3","ro_2.txt"])
+    }
+
+    /// Repeat mode round-trips through the durable session snapshot (restore reads it back), and
+    /// the shuffle toggle rides it too. Optional/defaulted so pre-existing snapshots still decode.
+    func testRestoreReadsRepeatAndShuffleState() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let snap = PlaybackSessionStore.Snapshot(
+            sessionId: "pses_x",
+            source: .init(kind: PlayHistoryStore.PlaySource.setlist.rawValue, id: "set_1", name: "S"),
+            queue: [.init(songId: "sng_1", title: "One", artist: "A"),
+                    .init(songId: "sng_2", title: "Two", artist: "A")],
+            index: 0, positionMs: 0, isPlaying: false,
+            repeatMode: "all", shuffleEnabled: true, updatedAt: 0)
+        seq.restore(from: snap)
+        XCTAssertEqual(seq.repeatMode, .all, "restore reads the persisted repeat mode")
+        XCTAssertTrue(seq.shuffleEnabled, "restore reads the persisted shuffle state")
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertTrue(seq.isHeldForResume, "a restored deck is held, not auto-playing")
+        seq.stop()
+    }
+
+    // MARK: Shuffle — live upcoming-tail reorder + restore
+
+    /// Toggling shuffle permutes ONLY the upcoming tail; toggling it back off restores the tail's
+    /// original order. The current track (queue[index]) is never touched.
+    func testShuffleReordersUpcomingTailThenRestores() async {
+        cleanBurnedFiles(["sh_0.mp3","sh_0.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sh_0")   // only the current track needs to be playable
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let ids = ["sh_0","sh_1","sh_2","sh_3","sh_4","sh_5","sh_6","sh_7"]
+        seq.play(ids.map { .init(id: $0, title: $0, artist: "A") })
+        await waitUntil("current track playing") { rips.nowPlaying?.songId == "sh_0" && seq.index == 0 }
+
+        let originalUpcoming = seq.upcoming.map(\.id)
+        XCTAssertEqual(originalUpcoming, Array(ids[1...]))
+
+        seq.toggleShuffle()
+        XCTAssertTrue(seq.shuffleEnabled)
+        XCTAssertEqual(seq.queue[0].id, "sh_0", "the current track is never shuffled")
+        XCTAssertEqual(Set(seq.upcoming.map(\.id)), Set(ids[1...]), "shuffle preserves tail membership")
+
+        seq.toggleShuffle()
+        XCTAssertFalse(seq.shuffleEnabled)
+        XCTAssertEqual(seq.upcoming.map(\.id), originalUpcoming, "shuffle-off restores the original tail order")
+        seq.stop()
+        cleanBurnedFiles(["sh_0.mp3","sh_0.txt"])
+    }
 }
 
 /// The position-based END BOUNDARY (tweak 1): a track inside a shared album-rip mp3 must

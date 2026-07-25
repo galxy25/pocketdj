@@ -75,6 +75,13 @@ final class PlaybackSessionStore {
         /// shared-album-file offset), so restore can resume mid-song.
         var positionMs: Int
         var isPlaying: Bool
+        /// Whole-session repeat mode (`RepeatMode` rawValue). Optional/defaulted so pre-existing
+        /// snapshots (written before this field) still decode without a schema bump — the same
+        /// forward-compat discipline `SourceRef.originKind/originId` follow.
+        var repeatMode: String? = nil
+        /// Whether the running queue's upcoming tail is live-shuffled. Optional/defaulted so
+        /// pre-existing snapshots still decode.
+        var shuffleEnabled: Bool? = nil
         /// Epoch ms of the last write (informational — a session never expires on its own).
         var updatedAt: Double
     }

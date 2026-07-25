@@ -13,6 +13,8 @@ final class WidgetNowPlayingTests: XCTestCase {
         WidgetPlaybackController.shared.next = nil
         WidgetPlaybackController.shared.previous = nil
         WidgetPlaybackController.shared.toggleFavorite = nil
+        WidgetPlaybackController.shared.cycleRepeat = nil
+        WidgetPlaybackController.shared.toggleShuffle = nil
         super.tearDown()
     }
 
@@ -37,6 +39,33 @@ final class WidgetNowPlayingTests: XCTestCase {
         XCTAssertTrue(NowPlayingSnapshot.empty.upNext.isEmpty)
         XCTAssertFalse(NowPlayingSnapshot.empty.isFavorite)
         XCTAssertNil(NowPlayingSnapshot.empty.appleMusicId)
+        XCTAssertEqual(NowPlayingSnapshot.empty.repeatMode, "off")
+        XCTAssertFalse(NowPlayingSnapshot.empty.shuffleEnabled)
+    }
+
+    func testSnapshotRoundTripsRepeatShuffleFields() throws {
+        let snap = NowPlayingSnapshot(
+            isPlaying: true, hasContent: true, title: "T", artist: "A",
+            songId: "sng_1", coverVersion: 1, upNext: [],
+            isFavorite: false, appleMusicId: nil,
+            repeatMode: "one", shuffleEnabled: true)
+        let back = try JSONDecoder().decode(NowPlayingSnapshot.self,
+                                            from: try JSONEncoder().encode(snap))
+        XCTAssertEqual(snap, back)
+        XCTAssertEqual(back.repeatMode, "one")
+        XCTAssertTrue(back.shuffleEnabled)
+    }
+
+    /// A blob from an app build that predates repeat/shuffle still decodes (missing → "off"/false),
+    /// so a stale snapshot never fail-decodes to `.empty`.
+    func testOldFormatBlobWithoutRepeatShuffleDecodes() throws {
+        let json = """
+        {"isPlaying":true,"hasContent":true,"title":"Old","artist":"B","coverVersion":1,"upNext":[]}
+        """
+        let snap = try JSONDecoder().decode(NowPlayingSnapshot.self, from: Data(json.utf8))
+        XCTAssertTrue(snap.hasContent)
+        XCTAssertEqual(snap.repeatMode, "off")
+        XCTAssertFalse(snap.shuffleEnabled)
     }
 
     func testSnapshotRoundTripsFavoriteFields() throws {
@@ -88,6 +117,16 @@ final class WidgetNowPlayingTests: XCTestCase {
         WidgetPlaybackController.shared.toggleFavorite = { favorited += 1 }
         _ = try await NowPlayingFavoriteIntent().perform()
         XCTAssertEqual(favorited, 1, "favorite intent hit the toggleFavorite closure")
+    }
+
+    func testRepeatShuffleIntentsRouteToController() async throws {
+        var repeats = 0, shuffles = 0
+        WidgetPlaybackController.shared.cycleRepeat = { repeats += 1 }
+        WidgetPlaybackController.shared.toggleShuffle = { shuffles += 1 }
+        _ = try await NowPlayingRepeatIntent().perform()
+        _ = try await NowPlayingShuffleIntent().perform()
+        XCTAssertEqual(repeats, 1, "repeat intent hit the cycleRepeat closure")
+        XCTAssertEqual(shuffles, 1, "shuffle intent hit the toggleShuffle closure")
     }
 
     /// When no in-process handler is wired (app quit), the intent must NOT crash — it silently
