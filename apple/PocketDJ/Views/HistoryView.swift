@@ -48,8 +48,9 @@ struct HistoryView: View {
     @State private var showFilter = false
     @State private var showSort = false
     /// Multi-select share (Playback tab): whether we're selecting, and the chosen song ids. Tap a
-    /// row to toggle; ⌘A / ⌃A select every song matching the current filters/sort; Share exports one
-    /// "Title — Artist + links" block per distinct selected song.
+    /// row to toggle; the select-mode menu's "Select all" / "Deselect all" (touch-reachable) or
+    /// ⌘A / ⌃A select every song matching the current filters/sort — the WHOLE filtered universe,
+    /// not just the loaded page; Share exports one "Title — Artist + links" block per distinct song.
     @State private var selecting = false
     @State private var selection: Set<String> = []
     /// Result of a manual write-back backfill (the "send my adds to Apple Music" toolbar action),
@@ -449,6 +450,23 @@ struct HistoryView: View {
             // Sort/filter drive the Playback timeline only — hidden on Unified and Collection.
             if tab == .playback {
                 if selecting {
+                    // Select-all / deselect-all — the touch-reachable equivalent of ⌘A/⌃A. "Select
+                    // all" is the WHOLE filtered universe (`displayedSongs`, the full `displayItems`,
+                    // not just the rendered page), so its count reflects rows not yet scrolled in.
+                    Menu {
+                        Button { selectAllMatching() } label: {
+                            Label("Select all (\(displayedSongs.count))", systemImage: "checkmark.circle")
+                        }
+                        .accessibilityIdentifier("history-select-all")
+                        Button { selection = [] } label: {
+                            Label("Deselect all", systemImage: "circle")
+                        }
+                        .disabled(selection.isEmpty)
+                        .accessibilityIdentifier("history-deselect-all")
+                    } label: {
+                        Image(systemName: "checklist")
+                    }
+                    .accessibilityIdentifier("history-select-menu")
                     ShareLink(item: ShareText.forSongs(selectedSongs),
                               subject: Text("\(selection.count) songs")) {
                         Label("Share (\(selection.count))", systemImage: "square.and.arrow.up")
