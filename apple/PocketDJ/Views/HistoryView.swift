@@ -47,6 +47,11 @@ struct HistoryView: View {
     @State private var groupBySong = false
     @State private var showFilter = false
     @State private var showSort = false
+    /// Multi-select share (Playback tab): whether we're selecting, and the chosen song ids. Tap a
+    /// row to toggle; ⌘A / ⌃A select every song matching the current filters/sort; Share exports one
+    /// "Title — Artist + links" block per distinct selected song.
+    @State private var selecting = false
+    @State private var selection: Set<String> = []
     /// Result of a manual write-back backfill (the "send my adds to Apple Music" toolbar action),
     /// shown in a one-off alert. nil ⇒ no alert.
     @State private var backfillMessage: String?
@@ -361,10 +366,24 @@ struct HistoryView: View {
         return List {
             ForEach(page) { item in
                 if case .song(let song, _, _, _, let play) = item, let play {
-                    row(song: song, play: play)
-                        .contentShape(Rectangle())
-                        .onTapGesture { path.append(song) }
-                        .onAppear { onRowAppear(item, rendered: page, fullCount: items.count) }
+                    HStack(spacing: 10) {
+                        if selecting {
+                            Image(systemName: selection.contains(song.id) ? "checkmark.circle.fill" : "circle")
+                                .font(.title3)
+                                .foregroundStyle(selection.contains(song.id) ? Theme.accent : Theme.fgDim)
+                        }
+                        row(song: song, play: play)
+                    }
+                    .contentShape(Rectangle())
+                    // Select mode: tap toggles the song; otherwise open its detail.
+                    .onTapGesture { if selecting { toggleSelect(song.id) } else { path.append(song) } }
+                    .onAppear { onRowAppear(item, rendered: page, fullCount: items.count) }
+                    // Single-row share (works in either mode) — right-click / long-press.
+                    .contextMenu {
+                        ShareLink(item: ShareText.forSong(song)) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
                 }
             }
         }
@@ -429,14 +448,28 @@ struct HistoryView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             // Sort/filter drive the Playback timeline only — hidden on Unified and Collection.
             if tab == .playback {
-                Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
-                    .accessibilityIdentifier("history-sort")
-                Button { showFilter = true } label: {
-                    Image(systemName: browse.activeFilterCount > 0
-                          ? "line.3.horizontal.decrease.circle.fill"
-                          : "line.3.horizontal.decrease.circle")
+                if selecting {
+                    ShareLink(item: ShareText.forSongs(selectedSongs),
+                              subject: Text("\(selection.count) songs")) {
+                        Label("Share (\(selection.count))", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(selection.isEmpty)
+                    .accessibilityIdentifier("history-share-selected")
+                    Button("Done") { selecting = false; selection = [] }
+                        .accessibilityIdentifier("history-select-done")
+                } else {
+                    Button { selecting = true } label: { Image(systemName: "checklist") }
+                        .help("Select songs to share")
+                        .accessibilityIdentifier("history-select")
+                    Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
+                        .accessibilityIdentifier("history-sort")
+                    Button { showFilter = true } label: {
+                        Image(systemName: browse.activeFilterCount > 0
+                              ? "line.3.horizontal.decrease.circle.fill"
+                              : "line.3.horizontal.decrease.circle")
+                    }
+                    .accessibilityIdentifier("history-filter")
                 }
-                .accessibilityIdentifier("history-filter")
             } else if canBackfill {
                 // Collection + Unified show your ADDs — offer to (re)send the recent ones to the
                 // Apple Music playlists they came from, for adds that never made it upstream (added
@@ -478,8 +511,40 @@ struct HistoryView: View {
                 .keyboardShortcut("f", modifiers: [.command, .option])
             Button("HistorySort-shadow") { showSort = true }
                 .keyboardShortcut("s", modifiers: [.command, .option])
+            // ⌘A / ⌃A — select every song matching the current filters/sort (enters select mode).
+            // Both accelerators map to select-all-matching, per the spec.
+            Button("HistorySelectAll-cmd") { selectAllMatching() }
+                .keyboardShortcut("a", modifiers: .command)
+            Button("HistorySelectAll-ctrl") { selectAllMatching() }
+                .keyboardShortcut("a", modifiers: .control)
         }
         .frame(width: 1, height: 1).opacity(0.01)
+    }
+
+    // MARK: - Multi-select share (Playback tab)
+
+    private func toggleSelect(_ id: String) {
+        if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+    }
+
+    /// Every DISTINCT song currently matching the filters/sort (the displayed set), in order — the
+    /// universe ⌘A selects and that Share exports from.
+    private var displayedSongs: [IndexSong] {
+        var seen = Set<String>(); var out: [IndexSong] = []
+        for item in browse.displayItems {
+            if case .song(let song, _, _, _, _) = item, seen.insert(song.id).inserted { out.append(song) }
+        }
+        return out
+    }
+
+    /// The selected songs in displayed order (deduped — History rows are one-per-event).
+    private var selectedSongs: [IndexSong] { displayedSongs.filter { selection.contains($0.id) } }
+
+    /// ⌘A / ⌃A — select every song matching the current filters (enters select mode). Playback only.
+    private func selectAllMatching() {
+        guard tab == .playback else { return }
+        selecting = true
+        selection = Set(displayedSongs.map(\.id))
     }
 
     // MARK: - Base rows from the event log
