@@ -107,6 +107,17 @@ targets:
         # YES is the only warning-clearing value valid on all three platforms — NO is REJECTED
         # by the macOS archiver, and this plist is shared across iOS/macOS/visionOS.
         LSSupportsOpeningDocumentsInPlace: true
+        # --- Custom URL scheme (jukebox-join deep-link fallback) -------------------
+        # `pocketdj://jukebox/<id>` is the custom-scheme fallback the shared jukebox link uses when
+        # the Universal Link (`applinks:jukebox.pocket-dj.com`, declared in the entitlements) can't
+        # fire — e.g. the "Open in PocketDJ" button on the web guest page. Array/nested key → must
+        # live here (INFOPLIST_KEY_* can't inject it). `onOpenURL` (PocketDJApp) parses BOTH the
+        # universal link and this scheme via `JukeboxLink` and joins as a client.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.levi.pocketdj.jukebox
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes:
+              - pocketdj
     dependencies:
       - package: ZIPFoundation
       # Embed the Now Playing widget extension into the app (all supported platforms).

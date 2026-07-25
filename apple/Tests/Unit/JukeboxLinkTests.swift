@@ -97,3 +97,70 @@ final class JukeboxLinkTests: XCTestCase {
         XCTAssertNil(s.apiBase)
     }
 }
+
+/// The guest-client verbs a JOINED device uses — `guestState` reads the public CloudFront
+/// state.json (no hostKey); `submitGuestRequest` posts to the broker's public request endpoint,
+/// mirroring the web guest page's `<apiBase>/jukebox/<id>/request`.
+@MainActor
+final class JukeboxGuestClientTests: XCTestCase {
+    private func makeClient() -> JukeboxClient {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [JukeboxGuestStub.self]
+        return JukeboxClient(baseURL: "", token: "", session: URLSession(configuration: config))
+    }
+
+    func testGuestStateDecodes() async throws {
+        JukeboxGuestStub.reset()
+        JukeboxGuestStub.getBody = Data("""
+        {"jukeboxId":"abc23xyz","name":"Party","nowPlaying":{"title":"Pulse","artist":"Aria"},
+         "upNext":[{"title":"Drift","artist":"Cass"}],"played":[],"requests":[],
+         "apiBase":"https://host.example/jukebox"}
+        """.utf8)
+        let s = try await makeClient().guestState(
+            url: URL(string: "https://jukebox.pocket-dj.com/abc23xyz/state.json")!)
+        XCTAssertEqual(s.jukeboxId, "abc23xyz")
+        XCTAssertEqual(s.nowPlaying?.title, "Pulse")
+        XCTAssertEqual(s.upNext.first?.artist, "Cass")
+        XCTAssertEqual(s.apiBase, "https://host.example/jukebox")
+    }
+
+    func testSubmitGuestRequestHitsPublicEndpoint() async throws {
+        JukeboxGuestStub.reset()
+        try await makeClient().submitGuestRequest(
+            apiBase: "https://host.example/jukebox", jukeboxId: "abc23xyz",
+            title: "Neon", artist: "Ivo", clientId: "dev1")
+        // Mirrors the web guest page: <apiBase>/jukebox/<id>/request.
+        XCTAssertEqual(JukeboxGuestStub.lastPOSTURL?.absoluteString,
+                       "https://host.example/jukebox/jukebox/abc23xyz/request")
+    }
+
+    /// A trailing slash on apiBase doesn't double up into `//jukebox`.
+    func testSubmitGuestRequestTrimsTrailingSlash() async throws {
+        JukeboxGuestStub.reset()
+        try await makeClient().submitGuestRequest(
+            apiBase: "https://host.example/jukebox/", jukeboxId: "abc23xyz",
+            title: "Neon", artist: "Ivo", clientId: "dev1")
+        XCTAssertEqual(JukeboxGuestStub.lastPOSTURL?.absoluteString,
+                       "https://host.example/jukebox/jukebox/abc23xyz/request")
+    }
+}
+
+/// Serves a canned state.json for GETs and records POST URLs (the guest request endpoint).
+private final class JukeboxGuestStub: URLProtocol {
+    static var getBody = Data("{}".utf8)
+    static var lastPOSTURL: URL?
+    static func reset() { getBody = Data("{}".utf8); lastPOSTURL = nil }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let isPost = request.httpMethod == "POST"
+        if isPost { Self.lastPOSTURL = request.url }
+        let body = isPost ? Data("{\"ok\":true}".utf8) : Self.getBody
+        let resp = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                   httpVersion: "HTTP/1.1", headerFields: nil)!
+        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}

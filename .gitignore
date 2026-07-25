@@ -76,3 +76,4 @@ dev-dist/
 .aoss-prod-endpoint.txt
 .aoss-proxy-url.txt
 .aoss-proxy-api.txt
+.worktrees/

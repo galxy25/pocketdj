@@ -207,6 +207,7 @@
 		86023A0E7007263EFE1FB553 /* SMFWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADC99437AEB5BB2133D5D0EA /* SMFWriter.swift */; };
 		8635DA3BB908925B738B0A1E /* OnboardingStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1CFF8AEA6487C5EF9A258BC /* OnboardingStoreTests.swift */; };
 		863D21BA53280AAA929949D9 /* StudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5658BF6FB3E1C0B4C53EF88B /* StudioEngine.swift */; };
+		87113C7F42ADBEABB2220CE2 /* JukeboxJoinView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E8B350FAAC7E6D5EB518D0A /* JukeboxJoinView.swift */; };
 		88E32129E5358D19D6F98119 /* MixDeckRestoreUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFAA1E03182C9C9DF14534B1 /* MixDeckRestoreUITests.swift */; };
 		89360CE52D9C298BF7BA8ADC /* SearchLibraryIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0B9B129B58386DFDD6BC425 /* SearchLibraryIntent.swift */; };
 		896901E405EF6769FC15C828 /* StudioDemuxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19F8C3A6DE8DE9279E790216 /* StudioDemuxView.swift */; };
@@ -551,6 +552,7 @@
 		5D879B9DFE28B91D03DDB23A /* CollectionSortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionSortTests.swift; sourceTree = "<group>"; };
 		5E16A1B5B945843E398FD9AE /* MixRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixRecorder.swift; sourceTree = "<group>"; };
 		5E68B627E11B43B6DA0FFC32 /* NowPlayingSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingSnapshot.swift; sourceTree = "<group>"; };
+		5E8B350FAAC7E6D5EB518D0A /* JukeboxJoinView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxJoinView.swift; sourceTree = "<group>"; };
 		5FBF57030AF5B6DB195B3FCC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		5FEA4DEE54FAEFC06E6FD8ED /* PocketsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketsView.swift; sourceTree = "<group>"; };
 		60A82984324AB6439E6A1FCC /* DemuxTranscriberFieldProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxTranscriberFieldProbeTests.swift; sourceTree = "<group>"; };
@@ -1112,6 +1114,7 @@
 				16B6FE9E1D33BD016D9B4C90 /* ForceSyncMenu.swift */,
 				F167BA69383E2AFE262B4B03 /* HistoryView.swift */,
 				544311547E8C26054F81158C /* JukeboxIcon.swift */,
+				5E8B350FAAC7E6D5EB518D0A /* JukeboxJoinView.swift */,
 				7266D9DD5E60E6B11B393E85 /* JukeboxView.swift */,
 				25741D198A372D9021096109 /* KeyChip.swift */,
 				02AE25A0F889C29EFF74A434 /* MixSessionsView.swift */,
@@ -1838,6 +1841,7 @@
 				7DCB26276F56470130254B3D /* JukeboxFoundationModel.swift in Sources */,
 				FBE235BBAE93EFCAD4E67CFF /* JukeboxGuest.swift in Sources */,
 				E9C26DB2FE5D41E987D0E623 /* JukeboxIcon.swift in Sources */,
+				87113C7F42ADBEABB2220CE2 /* JukeboxJoinView.swift in Sources */,
 				C670EE5E38747E3D31FAD8E8 /* JukeboxLink.swift in Sources */,
 				36A883B304E45248774E60E7 /* JukeboxMatcher.swift in Sources */,
 				798E50C301DAFDD54862DFEC /* JukeboxModels.swift in Sources */,
