@@ -33,5 +33,17 @@
   <array>
     <string>iCloud.com.levi.pocketdj</string>
   </array>
+  <!-- Universal Links (jukebox join). The Associated Domains capability is enabled on the
+       App ID (com.levi.pocketdj) and the AASA is hosted at
+       https://jukebox.pocket-dj.com/.well-known/apple-app-site-association
+       (appID EC27UF79GL.com.levi.pocketdj, components /*). `applinks:` lets a tapped
+       https://jukebox.pocket-dj.com/<id>/ open the app; PocketDJApp.onOpenURL parses it via
+       JukeboxLink and joins as a client. The `pocketdj://jukebox/<id>` custom scheme
+       (CFBundleURLTypes in project.yml) remains the fallback. Same key across all three
+       app entitlement files. -->
+  <key>com.apple.developer.associated-domains</key>
+  <array>
+    <string>applinks:jukebox.pocket-dj.com</string>
+  </array>
 </dict>
 </plist>

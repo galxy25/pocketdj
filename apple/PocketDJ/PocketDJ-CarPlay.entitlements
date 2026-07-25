@@ -34,5 +34,12 @@
     <array>
       <string>iCloud.com.levi.pocketdj</string>
     </array>
+    <!-- Universal Links (jukebox join) — iOS device/simulator. Associated Domains capability
+         is enabled on the App ID; AASA hosted at jukebox.pocket-dj.com. See the base
+         PocketDJ.entitlements for the full note. Same key across all three app files. -->
+    <key>com.apple.developer.associated-domains</key>
+    <array>
+      <string>applinks:jukebox.pocket-dj.com</string>
+    </array>
 </dict>
 </plist>
