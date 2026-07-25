@@ -214,128 +214,89 @@ final class JukeboxStore {
         }
     }
 
-    // MARK: - Client join (this device JOINED someone else's jukebox via a shared link)
+    // MARK: - Client join (this device JOINED other people's jukeboxes via shared links)
     //
-    // A joined device is a CLIENT, not the host: it polls the public `state.json` (straight off
-    // CloudFront, no hostKey) to render now-playing / up-next / played, and posts song requests to
-    // the broker's public endpoint. The device that STARTED the jukebox keeps the hostKey and is the
-    // lead — joining never confers it. The same profile can be a client here while it is the lead
-    // broadcaster on another device (`session` above is the HOST role; these are independent).
+    // A joined device is a CLIENT, not the host: it reads the public `state.json` (straight off
+    // CloudFront, no hostKey) and posts song requests to the broker's public endpoint. The device
+    // that STARTED the jukebox keeps the hostKey and is the lead — joining never confers it.
+    //
+    // Joined jukeboxes are a persisted LIST shown on the Jukebox home; tapping one PUSHES a native
+    // panel (`JukeboxJoinView`) that owns its OWN 4s poll (a SwiftUI `.task`, auto-cancelled when the
+    // panel closes). No shared mutable poll state ⇒ no stale-poll clobber across sessions, no
+    // forever-loop on a dead jukebox, no popup sheet, no auto-present at launch.
 
-    /// The live public state of a jukebox this device JOINED via link (nil = not joined).
-    private(set) var joined: JukeboxGuestState?
-    /// The parsed link/id of the joined jukebox; any transient join error; whether the first poll
-    /// is still in flight.
-    private(set) var joinedLink: JukeboxLink?
-    private(set) var joinError: String?
-    private(set) var joining = false
-    /// Request keys ("title|artist", lowercased) THIS client has submitted, so the join view can
-    /// mark them "requested" even before the poll reflects the server's copy.
-    private(set) var myRequestKeys: Set<String> = []
+    /// One joined jukebox in the persisted list. `id` is the jukeboxId; `name` is filled from the
+    /// first `state.json` read; `guestBase` is the https origin the link carried (nil ⇒ canonical host).
+    struct JoinedEntry: Codable, Identifiable, Hashable {
+        var id: String
+        var name: String?
+        var guestBase: String?
+    }
 
-    private var joinLoopTask: Task<Void, Never>?
-    /// Monotonic token bumped on every join/leave. A poll turn captures it before its network await
-    /// and re-checks after; a result that arrives once the user has switched jukeboxes or left is
-    /// DROPPED, so a stale in-flight `guestState`/request can't clobber the current join or cancel a
-    /// freshly-started loop (the check-after-await race). Client-join is EPHEMERAL — deliberately NOT
-    /// persisted (unlike the HOST session): a relaunch doesn't re-adopt a guest join or re-present the
-    /// sheet; the user re-taps the link / banner to rejoin. That removes the "dead jukebox re-adopted
-    /// every launch" + "ended party auto-presents forever" failure modes entirely.
-    private var joinGeneration = 0
+    private(set) var joinedSessions: [JoinedEntry] = []
+    private static let joinedListKey = "pdj.jukebox.joined.list.v1"
     /// Stable per-install client id for guest requests (server pacing + "my requests" tracking).
     private var jukeboxClientId: String { DeviceIdentity.current }
 
-    /// Join an in-progress jukebox from a parsed deep-link: start polling its public `state.json`
-    /// and surface the guest view. No hostKey — the starter stays lead. Idempotent for the same id.
-    /// Joining is independent of hosting: a device already hosting can also join another jukebox.
-    func joinJukebox(_ link: JukeboxLink) {
-        if joinedLink?.jukeboxId == link.jukeboxId, joined != nil { return }
-        joinGeneration &+= 1                       // supersede any in-flight tick from a prior join
-        joinedLink = link
-        joinError = nil
-        joining = true
-        joined = nil
-        myRequestKeys = []
-        startJoinLoop()
+    /// Load the persisted joined-jukebox list (call from App.init). Shows them on the home; does NOT
+    /// start any polling or present anything — a panel polls only while it is on screen.
+    func loadJoinedSessions() {
+        guard joinedSessions.isEmpty, let data = defaults.data(forKey: Self.joinedListKey),
+              let list = try? JSONDecoder().decode([JoinedEntry].self, from: data) else { return }
+        joinedSessions = list
     }
 
-    /// Leave the joined jukebox (stop polling, clear the guest view).
-    func leaveJukebox() {
-        joinGeneration &+= 1                       // drop any in-flight tick's result
-        joinLoopTask?.cancel(); joinLoopTask = nil
-        joined = nil
-        joinedLink = nil
-        joinError = nil
-        joining = false
-        myRequestKeys = []
+    private func persistJoinedSessions() {
+        if let data = try? JSONEncoder().encode(joinedSessions) { defaults.set(data, forKey: Self.joinedListKey) }
     }
 
-    private func startJoinLoop() {
-        joinLoopTask?.cancel()
-        joinLoopTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.joinTick()
-                try? await Task.sleep(for: .seconds(4))
-            }
-        }
+    /// Add a jukebox (from a tapped link / "Open in PocketDJ" banner) to the joined list — it appears
+    /// on the Jukebox home for the user to open. Idempotent by id; moves an existing entry to the top.
+    func addJoined(_ link: JukeboxLink) {
+        joinedSessions.removeAll { $0.id == link.jukeboxId }
+        joinedSessions.insert(JoinedEntry(id: link.jukeboxId, name: nil,
+                                          guestBase: link.guestBase?.absoluteString), at: 0)
+        persistJoinedSessions()
     }
 
-    /// One client poll turn (also the test seam): read the joined jukebox's public `state.json`.
-    /// A transport blip lands on `joinError` and the loop retries; an `ended` state stops polling
-    /// (the final snapshot stays on screen so the client sees the party signed off).
-    func joinTick() async {
-        guard let link = joinedLink, let url = link.stateURL else { return }
-        let gen = joinGeneration
-        do {
-            let state = try await client.guestState(url: url)
-            guard gen == joinGeneration else { return }   // switched jukeboxes / left during the await
-            joined = state
-            joining = false
-            joinError = nil
-            if state.ended == true { joinLoopTask?.cancel(); joinLoopTask = nil }
-        } catch {
-            guard gen == joinGeneration else { return }
-            // A deleted / expired jukebox (404/410) is gone for good — mirror the host tick: stop
-            // polling and show the ended state, rather than hammering the dead URL every 4s forever.
-            if case JukeboxClient.ClientError.http(let code) = error, code == 404 || code == 410 {
-                var s = joined ?? .empty
-                s.ended = true
-                joined = s
-                joining = false
-                joinError = nil
-                joinLoopTask?.cancel(); joinLoopTask = nil
-                return
-            }
-            joining = false
-            joinError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
+    /// Remove a joined jukebox from the list (the panel's "Leave" / a swipe on the home list).
+    func removeJoined(id: String) {
+        joinedSessions.removeAll { $0.id == id }
+        persistJoinedSessions()
     }
 
-    /// Submit a song request to the joined jukebox (client → broker's PUBLIC request endpoint).
-    /// Prefers the `apiBase` the broker published in `state.json`; falls back to the app's own
-    /// configured jukebox server URL when absent (older broker). No-op with no link.
-    func submitJoinedRequest(title: String, artist: String) async {
-        guard let link = joinedLink else { return }
-        let gen = joinGeneration
-        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let a = artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        let apiBase = joined?.apiBase ?? settings?.jukeboxServerURL ?? ""
-        guard !apiBase.isEmpty else {
-            joinError = "This jukebox isn’t accepting requests from the app yet."
-            return
+    /// Record the display name from a session's first `state.json` read, so the home row labels it.
+    func updateJoinedName(id: String, name: String?) {
+        guard let name, !name.isEmpty, let i = joinedSessions.firstIndex(where: { $0.id == id }),
+              joinedSessions[i].name != name else { return }
+        joinedSessions[i].name = name
+        persistJoinedSessions()
+    }
+
+    /// Rebuild the `JukeboxLink` for a joined entry (its https origin when known, else the canonical host).
+    func link(for entry: JoinedEntry) -> JukeboxLink? {
+        if let base = entry.guestBase, let url = URL(string: "\(base)/\(entry.id)/") {
+            return JukeboxLink(url: url)
         }
-        do {
-            try await client.submitGuestRequest(apiBase: apiBase, jukeboxId: link.jukeboxId,
-                                                 title: t, artist: a, clientId: jukeboxClientId)
-            guard gen == joinGeneration else { return }   // left / switched during the POST
-            myRequestKeys.insert(t.lowercased() + "|" + a.lowercased())
-            joinError = nil
-            await joinTick()   // reflect the new request promptly
-        } catch {
-            guard gen == joinGeneration else { return }
-            joinError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
+        return URL(string: "\(JukeboxLink.scheme)://jukebox/\(entry.id)").flatMap { JukeboxLink(url: $0) }
+    }
+
+    // Per-session client verbs used by the pushed `JukeboxJoinView` (which owns the poll lifecycle).
+
+    /// Read a joined jukebox's public `state.json`. Throws on transport / a 404 (deleted jukebox) —
+    /// the panel maps a 404/410 to the "ended" state.
+    func guestState(_ link: JukeboxLink) async throws -> JukeboxGuestState {
+        guard let url = link.stateURL else { throw JukeboxClient.ClientError.badURL }
+        return try await client.guestState(url: url)
+    }
+
+    /// Post a song request to a joined jukebox. `apiBase` comes from the session's `state.json` (the
+    /// panel has it), falling back to the app's configured jukebox server URL.
+    func submitGuestRequest(jukeboxId: String, apiBase: String?, title: String, artist: String) async throws {
+        let base = (apiBase.flatMap { $0.isEmpty ? nil : $0 }) ?? settings?.jukeboxServerURL ?? ""
+        guard !base.isEmpty else { throw JukeboxClient.ClientError.badURL }
+        try await client.submitGuestRequest(apiBase: base, jukeboxId: jukeboxId,
+                                             title: title, artist: artist, clientId: jukeboxClientId)
     }
 
     // MARK: - The session loop (state up, requests down)

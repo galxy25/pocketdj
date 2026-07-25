@@ -688,11 +688,11 @@ struct PocketDJApp: App {
         // picked up immediately (weak so the id closures never retain the profile graph).
         rips.profileIdProvider = { [weak profile] in profile?.id ?? "" }
         musicSync.profileIdProvider = { [weak profile] in profile?.id ?? "" }
-        // Jukebox calls now carry X-PocketDJ-Profile too (host + client) — the substrate for the
-        // same profile being lead on one device and a client on another. Client-join is EPHEMERAL
-        // (deliberately not persisted), so there's no join to re-adopt on launch — the user re-taps
-        // the link / banner to rejoin. (The HOST session still persists + resumes below.)
+        // Jukebox calls now carry X-PocketDJ-Profile too (host + client). Load the persisted list of
+        // JOINED jukeboxes so they show on the Jukebox home (no auto-poll / no auto-present — a panel
+        // polls only while it's open). The HOST session persists + resumes separately above.
         jukebox.profileIdProvider = { [weak profile] in profile?.id ?? "" }
+        jukebox.loadJoinedSessions()
         _profile = State(initialValue: profile)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
@@ -839,11 +839,12 @@ struct PocketDJApp: App {
                     // because it's a non-file URL that would otherwise fall into the OAuth branch;
                     // `JukeboxLink` returns nil for redirects + .pdjcollection files, so those still
                     // route below unchanged.
-                    // Gate on onboarding like the file-import branch below: a link tapped during
-                    // first-run is DEFERRED (pendingJukeboxLink) and joined once onboarding finishes,
-                    // so it never starts a poll / presents the guest sheet behind the onboarding modal.
+                    // Gate on onboarding like the file-import branch below (a link tapped during
+                    // first-run is DEFERRED via pendingJukeboxLink). Joining ADDS the jukebox to the
+                    // persisted list on the Jukebox home (Levi's flow); it presents NOTHING — the user
+                    // taps the session on the home to push its live native panel.
                     if let link = JukeboxLink(url: url) {
-                        if onboarding.isComplete { jukebox.joinJukebox(link) } else { pendingJukeboxLink = link }
+                        if onboarding.isComplete { jukebox.addJoined(link) } else { pendingJukeboxLink = link }
                         return
                     }
                     // A streaming provider's OAuth redirect, OR a collection file
@@ -851,20 +852,10 @@ struct PocketDJApp: App {
                     guard url.isFileURL else { streaming.handleCallback(url: url); return }
                     if onboarding.isComplete { importCollectionFile(url) } else { pendingOpenURL = url }
                 }
-                // Joining a jukebox (via link) presents the native guest view as a sheet over
-                // whatever's on screen; dismissing it leaves the jukebox (stops the poll).
-                .sheet(isPresented: Binding(
-                    get: { jukebox.joinedLink != nil },
-                    set: { if !$0 { jukebox.leaveJukebox() } }
-                )) {
-                    JukeboxJoinView()
-                        .environment(jukebox)
-                        .environment(app)
-                }
                 // Drain a file opened at cold launch once onboarding finishes (catalog loaded).
                 .onChange(of: onboarding.isComplete) { _, done in
                     if done, let u = pendingOpenURL { pendingOpenURL = nil; importCollectionFile(u) }
-                    if done, let link = pendingJukeboxLink { pendingJukeboxLink = nil; jukebox.joinJukebox(link) }
+                    if done, let link = pendingJukeboxLink { pendingJukeboxLink = nil; jukebox.addJoined(link) }
                     if done { syncFavoritesIfReady() }
                 }
                 // The LAUNCH favorites pass. It hangs off the catalog reaching `.loaded`
