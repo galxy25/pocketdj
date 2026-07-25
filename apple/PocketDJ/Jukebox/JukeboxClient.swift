@@ -138,4 +138,43 @@ struct JukeboxClient {
                         bearer: s.hostKey, body: Body(action: action.rawValue)),
             as: Ack.self)
     }
+
+    // MARK: - Guest / client join (join an in-progress jukebox via link — NO hostKey)
+    //
+    // A device that JOINED a jukebox via a shared link (`JukeboxLink`) acts as a CLIENT: it reads
+    // the SAME public `state.json` the web guests do (straight off CloudFront, no auth) and posts
+    // requests to the broker's public request endpoint. It never holds the `hostKey` — only the
+    // device that STARTED the jukebox is the lead. These two verbs hit ABSOLUTE URLs (the guest
+    // CloudFront object + the broker's public request base), not the host `base`, so they bypass
+    // the bearer plumbing above (identity headers still ride for forward-compat attribution).
+
+    /// Read a jukebox's public `state.json` (from CloudFront) — `<guestBase>/<id>/state.json`, via
+    /// `JukeboxLink.stateURL`. No auth (public object); cache-busting so a joined client sees the
+    /// live now-playing rather than a stale CDN copy.
+    func guestState(url: URL) async throws -> JukeboxGuestState {
+        var req = URLRequest(url: url, timeoutInterval: 12)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        PDJIdentityHeaders.apply(to: &req, profileId: profileId)
+        return try await run(req, as: JukeboxGuestState.self)
+    }
+
+    /// Submit a guest song request to the broker's PUBLIC request endpoint, mirroring the web guest
+    /// page's `POST <apiBase>/jukebox/<id>/request` (rate-limited, no auth). `clientId` is a stable
+    /// per-install id so the server's per-client pacing + "my requests" tracking work.
+    func submitGuestRequest(apiBase: String, jukeboxId: String,
+                            title: String, artist: String, clientId: String) async throws {
+        let trimmed = apiBase.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(trimmed)/jukebox/\(jukeboxId)/request") else {
+            throw ClientError.badURL
+        }
+        struct Body: Encodable { let title: String; let artist: String; let clientId: String }
+        var req = URLRequest(url: url, timeoutInterval: 12)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        PDJIdentityHeaders.apply(to: &req, profileId: profileId)
+        req.httpBody = try JSONEncoder().encode(Body(title: title, artist: artist, clientId: clientId))
+        struct Ack: Decodable { let ok: Bool? }
+        _ = try await run(req, as: Ack.self)
+    }
 }
