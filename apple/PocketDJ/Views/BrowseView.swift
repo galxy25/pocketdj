@@ -796,6 +796,12 @@ struct SongRow: View {
     var body: some View {
         SongRowView(data: SongRowData(song: song, album: album))
             .padding(.horizontal, 2)
+            .contextMenu {
+                ShareLink(item: ShareText.forSong(song),
+                          subject: Text("\(song.name) — \(song.artist)")) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
     }
 }
 
