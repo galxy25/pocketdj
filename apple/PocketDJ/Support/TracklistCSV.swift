@@ -13,15 +13,21 @@ enum TracklistCSV {
         var album: String
         var year: Int?
         var genre: String
+        /// F3 Sharing: canonical streaming links we MATCHED (blank when unresolved — the data export
+        /// carries only real links, unlike the share-text block which falls back to a search URL).
+        var appleMusicUrl: String = ""
+        var spotifyUrl: String = ""
+        var youtubeUrl: String = ""
     }
 
-    static let header = ["#", "Title", "Artist", "Album", "Year", "Genre"]
+    static let header = ["#", "Title", "Artist", "Album", "Year", "Genre", "Apple Music", "Spotify", "YouTube"]
 
     /// UTF-8 CSV bytes: 1-indexed `#` column, CRLF line endings + a trailing CRLF.
     static func data(rows: [Row]) -> Data {
         var lines = [header.joined(separator: ",")]
         for (i, r) in rows.enumerated() {
-            let cells = ["\(i + 1)", r.title, r.artist, r.album, r.year.map(String.init) ?? "", r.genre]
+            let cells = ["\(i + 1)", r.title, r.artist, r.album, r.year.map(String.init) ?? "", r.genre,
+                         r.appleMusicUrl, r.spotifyUrl, r.youtubeUrl]
             lines.append(cells.map(cell).joined(separator: ","))
         }
         return Data((lines.joined(separator: "\r\n") + "\r\n").utf8)
