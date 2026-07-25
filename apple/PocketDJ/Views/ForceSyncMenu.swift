@@ -112,13 +112,20 @@ enum CollectionForceSync {
 /// row. Self-contained — owns its own result state so callers add it with one modifier and need no
 /// shared plumbing. Applied only to CATALOG song rows in a pocket / playlist detail (studio
 /// performance items have no Apple Music identity, so they don't get it).
-private struct ForceSyncContextMenu: ViewModifier {
+///
+/// `Extra` lets a caller fold its OWN row context-menu items (e.g. a playlist chapter's Move
+/// up / Move down / Remove) into the SAME menu. SwiftUI does not merge stacked `.contextMenu`
+/// modifiers — the outermost replaces the inner — so a caller that already owns a row context
+/// menu MUST pass those items here, or the force-sync action gets shadowed (the playlist-row
+/// bug: Levi 2026-07-24). Callers with no existing menu use the no-`extraMenuItems` overload.
+private struct ForceSyncContextMenu<Extra: View>: ViewModifier {
     @Environment(CollectionsStore.self) private var collections
     @Environment(StreamingStore.self) private var streaming
     @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
     let song: IndexSong
     let kind: AddTarget.Kind
     let collectionId: String
+    let extraMenuItems: Extra
 
     @State private var working = false
     @State private var result: String?
@@ -140,6 +147,7 @@ private struct ForceSyncContextMenu: ViewModifier {
                 }
                 .disabled(working)
                 .accessibilityIdentifier("force-sync-\(song.id)")
+                extraMenuItems
             }
             .alert("Apple Music sync", isPresented: Binding(
                 get: { result != nil }, set: { if !$0 { result = nil } })) {
@@ -154,6 +162,16 @@ extension View {
     /// Add the collection-row "Force Apple Music sync" context menu for a catalog `song` in the
     /// collection `(kind, collectionId)`. See `ForceSyncContextMenu`.
     func forceSyncContextMenu(song: IndexSong, kind: AddTarget.Kind, collectionId: String) -> some View {
-        modifier(ForceSyncContextMenu(song: song, kind: kind, collectionId: collectionId))
+        modifier(ForceSyncContextMenu(song: song, kind: kind, collectionId: collectionId,
+                                      extraMenuItems: EmptyView()))
+    }
+
+    /// Same, but folds the caller's own row context-menu items (`extraMenuItems`) into the SAME
+    /// menu as the force-sync action — use this wherever the row already carries a `.contextMenu`
+    /// (which would otherwise shadow the force-sync one). See `ForceSyncContextMenu`.
+    func forceSyncContextMenu<Extra: View>(song: IndexSong, kind: AddTarget.Kind, collectionId: String,
+                                           @ViewBuilder extraMenuItems: () -> Extra) -> some View {
+        modifier(ForceSyncContextMenu(song: song, kind: kind, collectionId: collectionId,
+                                      extraMenuItems: extraMenuItems()))
     }
 }
