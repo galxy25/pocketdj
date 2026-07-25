@@ -32,6 +32,7 @@ final class MultitrackClock: @unchecked Sendable {
 /// immediately, exactly like riding faders on a mixer. Pure buffer math, no allocation in the loop.
 final class MultitrackRenderContext: @unchecked Sendable {
     struct Clip { let trackIndex: Int; let startFrame: Int; let frameLength: Int
+                  let srcStart: Int   // in-file offset (frames) — the scissor-cut window start
                   let data: [UnsafeMutablePointer<Float>]; let srcChannels: Int }
 
     private let channels: Int
@@ -125,11 +126,12 @@ final class MultitrackRenderContext: @unchecked Sendable {
                 let srcOff = os - cs
                 let cnt = oe - os
                 let gl = panL[ti] * g, gr = panR[ti] * g
+                let base = clip.srcStart + srcOff
                 for c in 0..<nCh {
                     guard let dst = outPtrs[c] else { continue }
                     let src = clip.data[min(c, clip.srcChannels - 1)]
                     let cg = c == 0 ? gl : gr
-                    for i in 0..<cnt { dst[dstOff + i] += src[srcOff + i] * cg }
+                    for i in 0..<cnt { dst[dstOff + i] += src[base + i] * cg }
                 }
             }
             written += chunk
@@ -213,8 +215,16 @@ final class MultitrackPlayer {
                 let srcCh = Int(buf.format.channelCount)
                 let data = (0..<srcCh).map { ch[$0] }
                 let startFrame = Int((Double(clip.startMs) / 1000 * sampleRate).rounded())
-                clips.append(.init(trackIndex: ti, startFrame: startFrame, frameLength: Int(buf.frameLength),
-                                   data: data, srcChannels: srcCh))
+                // Honor the non-destructive scissor window: play only file frames
+                // [srcStart, srcStart + frameLength), clamped to what the decoded buffer holds.
+                let bufFrames = Int(buf.frameLength)
+                let srcStart = max(0, min(bufFrames, Int((Double(clip.fileStartMs) / 1000 * sampleRate).rounded())))
+                let avail = bufFrames - srcStart
+                let durFrames = clip.durationMs > 0 ? Int((Double(clip.durationMs) / 1000 * sampleRate).rounded()) : avail
+                let frameLength = max(0, min(avail, durFrames))
+                guard frameLength > 0 else { continue }
+                clips.append(.init(trackIndex: ti, startFrame: startFrame, frameLength: frameLength,
+                                   srcStart: srcStart, data: data, srcChannels: srcCh))
                 retained.append(buf)
             }
         }

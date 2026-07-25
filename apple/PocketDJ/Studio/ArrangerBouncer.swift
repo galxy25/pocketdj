@@ -12,7 +12,8 @@ enum ArrangerBouncer {
     /// Cap the master length so a runaway timeline can't allocate an unbounded accumulator.
     private static let maxSeconds = 30 * 60
 
-    private typealias MixJob = (gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)
+    private typealias MixJob = (gain: Float, panL: Float, panR: Float, startFrame: Int64,
+                                srcStart: Int64, len: Int64, url: URL)
 
     /// Resolve the tracks into per-clip mix jobs + the master length, or nil when nothing resolves /
     /// the timeline is absurdly long. Shared by both bounce entry points so gain/pan handling can't
@@ -32,8 +33,11 @@ enum ArrangerBouncer {
             for clip in track.clips {
                 guard let url = store.clipFileURL(clip.fileName) else { continue }
                 let startFrame = Int64((Double(clip.startMs) / 1000 * sr).rounded())
-                let endFrame = startFrame + Int64((Double(clip.durationMs) / 1000 * sr).rounded())
-                jobs.append((gain, panL, panR, startFrame, url))
+                // Non-destructive scissor window: read [srcStart, srcStart+len) from the file.
+                let srcStart = max(0, Int64((Double(clip.fileStartMs) / 1000 * sr).rounded()))
+                let len = Int64((Double(clip.durationMs) / 1000 * sr).rounded())
+                let endFrame = startFrame + len
+                jobs.append((gain, panL, panR, startFrame, srcStart, len, url))
                 totalFrames = max(totalFrames, endFrame)
             }
         }
@@ -81,7 +85,8 @@ enum ArrangerBouncer {
 
     /// Off-main: allocate a canonical accumulator, add each clip (decoded canonical) at its start
     /// frame scaled by its track gain, peak-limit, write AAC. Returns the master length in ms.
-    nonisolated private static func mixAndWrite(jobs: [(gain: Float, panL: Float, panR: Float, startFrame: Int64, url: URL)],
+    nonisolated private static func mixAndWrite(jobs: [(gain: Float, panL: Float, panR: Float, startFrame: Int64,
+                                                        srcStart: Int64, len: Int64, url: URL)],
                                                 totalFrames: Int64, to dest: URL, fx: MasterFXParams) -> Int? {
         let fmt = StudioAudio.canonicalFormat
         let total = Int(totalFrames)
@@ -96,14 +101,18 @@ enum ArrangerBouncer {
                   buf.frameLength > 0, let src = buf.floatChannelData else { continue }
             let srcCh = Int(buf.format.channelCount)
             let n = Int(buf.frameLength)
+            let srcStart = max(0, min(n, Int(job.srcStart)))     // in-file window start (clamped)
+            let avail = n - srcStart
+            let want = job.len > 0 ? Int(job.len) : avail
             let start = Int(job.startFrame)
-            guard start < total else { continue }
-            let count = min(n, total - start)
+            guard start < total, avail > 0 else { continue }
+            let count = min(want, avail, total - start)
+            guard count > 0 else { continue }
             for ch in 0..<channels {
                 let s = src[min(ch, srcCh - 1)]
                 let d = accData[ch]
                 let g = job.gain * (ch == 0 ? job.panL : job.panR)   // channel 0 = L, 1 = R
-                for i in 0..<count { d[start + i] += s[i] * g }
+                for i in 0..<count { d[start + i] += s[srcStart + i] * g }
             }
         }
 

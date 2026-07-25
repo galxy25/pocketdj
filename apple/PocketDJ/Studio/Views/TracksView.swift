@@ -95,6 +95,20 @@ struct TracksView: View {
     @State private var auditionPlayer = ArtifactAuditionPlayer()
     /// Which arrangement→kind artifact disclosure groups are expanded in the home browser.
     @State private var expandedArtifactGroups: Set<String> = []
+
+    // MARK: Scissor trim state (the ✂ tool — "one track, leave a gap")
+    /// True while the scissor tool is active: the timeline shows a region band + the trim toolbar,
+    /// and edits are STAGED locally (never touching the store) until Save.
+    @State private var trimMode = false
+    /// The track being trimmed (its lane renders the staged clips; other lanes dim).
+    @State private var trimTrackId: String?
+    /// The cut region (ms), driven by two draggable handles — like the looper's region.
+    @State private var trimRegionStartMs = 0
+    @State private var trimRegionEndMs = 0
+    /// The staged clip array for the target track — the live working copy the Delete icon cuts.
+    @State private var trimStaged: [StudioClip] = []
+    /// Undo stack: each Delete pushes the prior staged array so Undo pops back one cut.
+    @State private var trimHistory: [[StudioClip]] = []
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
     #endif
@@ -189,6 +203,10 @@ struct TracksView: View {
             // and reset the seek cursor for the newly-opened arrangement.
             if player.isPlaying, player.playingArrangementId != current?.id { player.stop() }
             cursorMs = 0
+            // A trim session is scoped to ONE arrangement/track — dropping into home or another
+            // arrangement must discard it (else its staged clips + region strand a broken, dimmed
+            // trim state on the next arrangement, and Save would target a track that isn't there).
+            if trimMode { exitTrimMode() }
         }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
@@ -629,15 +647,16 @@ struct TracksView: View {
                     .accessibilityIdentifier("tracks-transport-collapse")
                     .accessibilityValue(transportCollapsed ? "collapsed" : "expanded")
                 } else {
-                    bpmControl(arr); loopControl(arr)
+                    bpmControl(arr); loopControl(arr); scissorControl(arr)
                     Spacer()
                     zoomControls(arr); bounceControl(arr)
                 }
             }
             if isCompact && !transportCollapsed {
-                HStack(spacing: 12) { bpmControl(arr); loopControl(arr); Spacer(); bounceControl(arr) }
+                HStack(spacing: 12) { bpmControl(arr); loopControl(arr); scissorControl(arr); Spacer(); bounceControl(arr) }
                 HStack(spacing: 12) { Spacer(); zoomControls(arr) }
             }
+            if trimMode { trimToolbar(arr) }
         }
         .padding(.horizontal, 16).padding(.vertical, 6)
     }
@@ -699,6 +718,84 @@ struct TracksView: View {
         .buttonStyle(.plain).disabled(arr.lengthMs == 0)
         .accessibilityIdentifier("tracks-loop-toggle").accessibilityValue(arr.loopEnabled ? "on" : "off")
     }
+    /// The scissor tool: enter/exit region-trim mode. Highlighted (accent) while trimming; disabled
+    /// on an empty arrangement (nothing to cut).
+    private func scissorControl(_ arr: StudioArrangement) -> some View {
+        Button { trimMode ? exitTrimMode() : enterTrimMode(arr) } label: {
+            Image(systemName: "scissors").font(.callout.weight(.semibold))
+                .foregroundStyle(trimMode ? Theme.accent : Theme.fgDim)
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(trimMode ? Theme.accent.opacity(0.16) : Theme.bgOverlay, in: Capsule())
+        }
+        .buttonStyle(.plain).disabled(arr.lengthMs == 0)
+        .accessibilityIdentifier("tracks-scissor-toggle").accessibilityValue(trimMode ? "on" : "off")
+    }
+
+    /// The trim toolbar (shown only while trimming): pick the target track, delete the selected
+    /// region, undo the last cut, or cancel / save the whole session.
+    @ViewBuilder private func trimToolbar(_ arr: StudioArrangement) -> some View {
+        HStack(spacing: 10) {
+            Menu {
+                // A session commits ONE track; switching tracks re-stages from scratch, so it's
+                // disabled once there are unsaved cuts — Save or Cancel first (no silent data loss).
+                if !trimHistory.isEmpty {
+                    Text("Save or Cancel before switching tracks").font(.caption2)
+                }
+                ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { _, track in
+                    Button { switchTrimTrack(track.id, arr: arr) } label: {
+                        Label(track.name.isEmpty ? "Track" : track.name,
+                              systemImage: track.id == trimTrackId ? "checkmark" : "")
+                    }
+                    .disabled(!trimHistory.isEmpty && track.id != trimTrackId)
+                }
+            } label: {
+                Label(trimTargetName(arr), systemImage: "square.stack.3d.up")
+                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.fg)
+                    .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.bgOverlay, in: Capsule())
+            }
+            .accessibilityIdentifier("tracks-trim-track")
+
+            Button { performCut() } label: {
+                Label("Delete", systemImage: "delete.left.fill").font(.caption.weight(.semibold))
+                    .foregroundStyle(canCut ? Theme.danger : Theme.fgDim)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background((canCut ? Theme.danger : Theme.fgDim).opacity(0.14), in: Capsule())
+            }
+            .buttonStyle(.plain).disabled(!canCut).accessibilityIdentifier("tracks-trim-delete")
+
+            Button { undoCut() } label: {
+                Image(systemName: "arrow.uturn.backward").font(.caption.weight(.semibold))
+                    .foregroundStyle(trimHistory.isEmpty ? Theme.fgDim : Theme.accent)
+            }
+            .buttonStyle(.plain).disabled(trimHistory.isEmpty).accessibilityIdentifier("tracks-trim-undo")
+
+            Spacer()
+
+            Button { exitTrimMode() } label: {
+                Text("Cancel").font(.caption.weight(.semibold)).foregroundStyle(Theme.fgDim)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("tracks-trim-cancel")
+            Button { saveTrim(arr) } label: {
+                Text("Save").font(.caption.weight(.semibold)).foregroundStyle(Theme.bg)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(trimHistory.isEmpty ? Theme.fgDim : Theme.accent, in: Capsule())
+            }
+            .buttonStyle(.plain).disabled(trimHistory.isEmpty).accessibilityIdentifier("tracks-trim-save")
+        }
+        .padding(.top, 2)
+    }
+
+    /// The staged clips for a lane: while trimming the target track, its edited working copy; every
+    /// other lane (and every lane when not trimming) shows the committed clips.
+    private func laneClips(_ track: StudioTrack) -> [StudioClip] {
+        (trimMode && track.id == trimTrackId) ? trimStaged : track.clips
+    }
+    private var canCut: Bool { trimMode && trimRegionEndMs > trimRegionStartMs }
+    private func trimTargetName(_ arr: StudioArrangement) -> String {
+        let n = arr.tracks.first { $0.id == trimTrackId }?.name ?? ""
+        return n.isEmpty ? "Track" : n
+    }
+
     @ViewBuilder private func zoomControls(_ arr: StudioArrangement) -> some View {
         Button { stepZoom(-1, arr: arr) } label: { Image(systemName: "minus.magnifyingglass").font(.callout) }
             .buttonStyle(.plain).foregroundStyle(Theme.accent)
@@ -775,6 +872,7 @@ struct TracksView: View {
                             }
                             .overlay(alignment: .topLeading) { beatMarkers(arr) }
                             .overlay(alignment: .topLeading) { loopOverlay(arr) }
+                            .overlay(alignment: .topLeading) { trimOverlay(arr) }
                             // Loop-handle drags read this space (from 0:00), not a handle's moved local
                             // origin — attached to the LANES so the ruler doesn't shift the x.
                             .coordinateSpace(name: Self.timelineSpace)
@@ -930,18 +1028,27 @@ struct TracksView: View {
 
     private func laneStrip(arr: StudioArrangement, track: StudioTrack, index: Int) -> some View {
         let color = Self.color(track.colorIndex)
+        let isTarget = trimMode && track.id == trimTrackId
+        let clips = laneClips(track)          // staged working copy while trimming the target lane
         return ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 6).fill(Theme.bgOverlay)
-            if track.clips.isEmpty {
+            if clips.isEmpty {
                 Text("Tap ＋ to add a clip")
                     .font(.caption2).foregroundStyle(Theme.fgDim.opacity(0.6))
                     .padding(.leading, 10).padding(.top, 8)
             }
-            ForEach(Array(track.clips.enumerated()), id: \.element.id) { ci, clip in
+            ForEach(Array(clips.enumerated()), id: \.element.id) { ci, clip in
                 clipBlock(arr: arr, track: track, trackIndex: index, clip: clip, clipIndex: ci, color: color)
                     .offset(x: clipX(clip), y: 4)
             }
         }
+        // In trim mode: ring the target lane, dim the others (they aren't editable this session).
+        .overlay {
+            if isTarget {
+                RoundedRectangle(cornerRadius: 6).stroke(Theme.danger.opacity(0.8), lineWidth: 1.5)
+            }
+        }
+        .opacity(trimMode && !isTarget ? 0.45 : 1)
     }
 
     /// Pixels per beat on the shared grid (0 when tempo is unusable).
@@ -1109,6 +1216,47 @@ struct TracksView: View {
             )
     }
 
+    /// The scissor cut region — a red band with two beat-snapped handles, shown only while trimming.
+    /// Mirrors `loopOverlay` (shares the timeline grid) but drives the LOCAL `trimRegion*` state, not
+    /// the store, so dragging it never persists anything (Cancel-safe).
+    @ViewBuilder private func trimOverlay(_ arr: StudioArrangement) -> some View {
+        if trimMode {
+            let sPx = CGFloat(trimRegionStartMs) / 1000 * pxPerSec
+            let ePx = CGFloat(trimRegionEndMs) / 1000 * pxPerSec
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(Theme.danger.opacity(0.14))
+                    .frame(width: max(2, ePx - sPx)).frame(maxHeight: .infinity)
+                    .offset(x: sPx)
+                    .allowsHitTesting(false)
+                trimHandle(arr: arr, isStart: true, xPx: sPx)
+                trimHandle(arr: arr, isStart: false, xPx: ePx)
+            }
+            .accessibilityIdentifier("tracks-trim-region")
+        }
+    }
+
+    private func trimHandle(arr: StudioArrangement, isStart: Bool, xPx: CGFloat) -> some View {
+        Rectangle().fill(Theme.danger)
+            .frame(width: 3).frame(maxHeight: .infinity)
+            .overlay(alignment: isStart ? .topLeading : .topTrailing) {
+                Image(systemName: "scissors").font(.system(size: 9)).foregroundStyle(Theme.danger).offset(y: 2)
+            }
+            .contentShape(Rectangle().inset(by: -9))
+            .offset(x: xPx - 1.5)
+            .accessibilityIdentifier(isStart ? "tracks-trim-start" : "tracks-trim-end")
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.timelineSpace))
+                    .onChanged { v in
+                        let ms = snapMs(Int(v.location.x / pxPerSec * 1000), bpm: arr.bpm)
+                        if isStart {
+                            trimRegionStartMs = max(0, min(ms, trimRegionEndMs - 1))
+                        } else {
+                            trimRegionEndMs = max(trimRegionStartMs + 1, min(ms, max(1, arr.lengthMs)))
+                        }
+                    }
+            )
+    }
+
     /// Snap a timeline position (ms) to the nearest beat on the arrangement grid.
     private func snapMs(_ ms: Int, bpm: Double) -> Int {
         guard bpm > 0 else { return max(0, ms) }
@@ -1136,6 +1284,80 @@ struct TracksView: View {
             Task { await player.play(arrangement: fresh, store: studio, fromMs: effectiveCursorMs(fresh),
                                      record: recordingMaster, quantized: recordingWasQuantized) }
         }
+    }
+
+    // MARK: Scissor trim session
+
+    /// Enter trim mode: stop playback (staged edits aren't live), pick a target track (soloed → first
+    /// non-empty → first), seed a 4-bar region at the cursor, and stage the target's clips. Nothing
+    /// touches the store until Save — so entering + cancelling is a no-op on disk.
+    private func enterTrimMode(_ arr: StudioArrangement) {
+        guard !arr.tracks.isEmpty else { return }
+        if isPlayingThis(arr) { togglePlay(arr) }   // freeze the transport while region-editing
+        let target = arr.tracks.first { $0.soloed && !$0.clips.isEmpty }
+            ?? arr.tracks.first { !$0.clips.isEmpty }
+            ?? arr.tracks[0]
+        trimTrackId = target.id
+        trimStaged = target.clips
+        trimHistory = []
+        // Seed a 4-bar band from the cursor, clamped into the timeline.
+        let bar4 = arr.bpm > 0 ? Int((60_000.0 / arr.bpm) * 4) : 2_000
+        let len = max(0, arr.lengthMs)
+        var start = min(effectiveCursorMs(arr), max(0, len - 1))
+        var end = min(start + bar4, len)
+        if end <= start { start = 0; end = min(bar4, max(1, len)) }
+        trimRegionStartMs = snapMs(start, bpm: arr.bpm)
+        trimRegionEndMs = max(trimRegionStartMs + 1, snapMs(end, bpm: arr.bpm))
+        withAnimation(.easeInOut(duration: 0.15)) { trimMode = true }
+    }
+
+    /// Leave trim mode, discarding all staged edits (Cancel). No disk change — the store was never
+    /// touched during the session.
+    private func exitTrimMode() {
+        withAnimation(.easeInOut(duration: 0.15)) { trimMode = false }
+        trimTrackId = nil
+        trimStaged = []
+        trimHistory = []
+    }
+
+    /// Switch the track being trimmed: re-stage from that track's committed clips and clear the undo
+    /// history (the stack is per-track). Ignored when there are UNSAVED cuts (the menu disables it
+    /// too) so a switch can never silently drop staged edits, and for an already-selected track.
+    private func switchTrimTrack(_ tid: String, arr: StudioArrangement) {
+        guard trimHistory.isEmpty, tid != trimTrackId,
+              let track = arr.tracks.first(where: { $0.id == tid }) else { return }
+        trimTrackId = tid
+        trimStaged = track.clips
+        trimHistory = []
+    }
+
+    /// Apply the selected region as a cut on the staged clips (pushing the prior state for Undo). Pure
+    /// data — `StudioStore.trimGap` splits/trims/drops clips and leaves a silent gap.
+    private func performCut() {
+        guard canCut else { return }
+        trimHistory.append(trimStaged)
+        trimStaged = StudioStore.trimGap(clips: trimStaged,
+                                         cutStartMs: trimRegionStartMs, cutEndMs: trimRegionEndMs)
+    }
+
+    /// Undo the last cut (pop the staged-array stack).
+    private func undoCut() {
+        guard let prev = trimHistory.popLast() else { return }
+        trimStaged = prev
+    }
+
+    /// Commit the staged edits: write them through `commitTrimmedTrack` (de-dup + orphan-clean),
+    /// invalidate the affected waveforms so they redraw windowed, then leave trim mode.
+    private func saveTrim(_ arr: StudioArrangement) {
+        guard let tid = trimTrackId, !trimHistory.isEmpty else { exitTrimMode(); return }
+        // Peaks are keyed by clip id; a head/tail-only cut KEEPS the clip id (only a split mints a
+        // new one), so clipSignature can be unchanged after the commit and the `.task(id:)` peak
+        // reload won't re-fire. Clear the affected peaks AND reload directly so windowed waveforms
+        // always redraw — never rely on the signature moving.
+        for clip in arr.tracks.first(where: { $0.id == tid })?.clips ?? [] { clipPeaks[clip.id] = nil }
+        studio.commitTrimmedTrack(arrangement: arr.id, track: tid, clips: trimStaged)
+        exitTrimMode()
+        Task { await loadPeaks() }
     }
 
     /// The LIVE playhead position in seconds while playing — the clock plus the seek offset it started
@@ -1172,11 +1394,15 @@ struct TracksView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("tracks-clip-\(trackIndex)-\(clipIndex)")
         .accessibilityLabel(clip.name)
+        // Move / Remove are for the committed timeline. While trimming, clips are STAGED (new tail
+        // ids aren't in the store yet) and the region handles own the interaction — so suppress both.
         .contextMenu {
-            Button(role: .destructive) {
-                studio.removeClip(arrangement: arr.id, track: track.id, clip: clip.id)
-                clipPeaks[clip.id] = nil
-            } label: { Label("Remove clip", systemImage: "trash") }
+            if !trimMode {
+                Button(role: .destructive) {
+                    studio.removeClip(arrangement: arr.id, track: track.id, clip: clip.id)
+                    clipPeaks[clip.id] = nil
+                } label: { Label("Remove clip", systemImage: "trash") }
+            }
         }
         .gesture(
             DragGesture(minimumDistance: 6)
@@ -1186,8 +1412,8 @@ struct TracksView: View {
                     studio.moveClip(arrangement: arr.id, track: track.id, clip: clip.id,
                                     toStartMs: max(0, clip.startMs + deltaMs))
                     dragClipId = nil; dragDX = 0
-                }
-        )
+                },
+            including: trimMode ? .subviews : .all)   // trim mode: region handles own the drag
     }
 
     // MARK: Master FX panel (bottom mix section)
@@ -1510,6 +1736,9 @@ struct TracksView: View {
     }
 
     private func deleteTrack(arr: StudioArrangement, track: StudioTrack) {
+        // Deleting a track mid-trim would strand the session's staged clips (they'd point at a lane
+        // that no longer exists, and the same-arrangement id doesn't trip the onChange reset) — cancel.
+        if trimMode { exitTrimMode() }
         for clip in track.clips { clipPeaks[clip.id] = nil }
         studio.deleteTrack(arrangement: arr.id, track: track.id)
     }
@@ -1555,7 +1784,13 @@ struct TracksView: View {
         for track in arr.tracks {
             for clip in track.clips where clipPeaks[clip.id] == nil {
                 guard let url = studio.clipFileURL(clip.fileName) else { continue }
-                clipPeaks[clip.id] = await WaveformExtractor.peaks(url: url, targetCount: 120)
+                // Window to the clip's scissor slice so a trimmed tail shows ITS audio, not the
+                // whole shared source (nil,nil = whole file, the untrimmed default).
+                clipPeaks[clip.id] = await WaveformExtractor.peaks(
+                    url: url,
+                    startMs: clip.fileStartMs > 0 ? clip.fileStartMs : nil,
+                    lengthMs: clip.durationMs > 0 ? clip.durationMs : nil,
+                    targetCount: 120)
             }
         }
     }

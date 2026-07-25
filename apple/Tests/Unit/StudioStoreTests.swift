@@ -435,6 +435,150 @@ final class StudioStoreTests: XCTestCase {
                              "48 kHz frames relabelled to 44.1 play ~1.088× longer / downpitched")
     }
 
+    // MARK: Scissor trim ("one track, leave a gap")
+
+    /// `trimGap` is PURE: every case — disjoint keep, middle split, head trim, tail trim, full drop,
+    /// degenerate region — with the exact id / fileName / fileStartMs / duration bookkeeping.
+    func testTrimGapAllCases() {
+        let c = StudioClip(id: "clip_a", name: "A", fileName: "clip-clip_a.m4a",
+                           startMs: 100, durationMs: 400)   // timeline [100, 500), file window [0,400)
+        var n = 0
+        let mint = { () -> String in n += 1; return "clip_t\(n)" }
+
+        // Disjoint (region entirely before / after) → unchanged.
+        XCTAssertEqual(StudioStore.trimGap(clips: [c], cutStartMs: 0, cutEndMs: 100), [c])
+        XCTAssertEqual(StudioStore.trimGap(clips: [c], cutStartMs: 500, cutEndMs: 600), [c])
+        // Degenerate region → no-op.
+        XCTAssertEqual(StudioStore.trimGap(clips: [c], cutStartMs: 200, cutEndMs: 200), [c])
+
+        // Middle split → head (id/file/offset kept, shortened) + tail (new id, SAME file, offset in).
+        let mid = StudioStore.trimGap(clips: [c], cutStartMs: 200, cutEndMs: 300, newId: mint)
+        XCTAssertEqual(mid.count, 2)
+        XCTAssertEqual(mid[0].id, "clip_a")
+        XCTAssertEqual(mid[0].startMs, 100); XCTAssertEqual(mid[0].durationMs, 100)   // [100,200)
+        XCTAssertEqual(mid[0].fileStartMs, 0); XCTAssertEqual(mid[0].fileName, "clip-clip_a.m4a")
+        XCTAssertEqual(mid[1].id, "clip_t1")
+        XCTAssertEqual(mid[1].startMs, 300); XCTAssertEqual(mid[1].durationMs, 200)   // [300,500)
+        XCTAssertEqual(mid[1].fileStartMs, 200)                                        // 300 - 100
+        XCTAssertEqual(mid[1].fileName, "clip-clip_a.m4a", "tail shares the head's file until commit")
+
+        // Cut off the head → the sole survivor keeps its id, slides to cutEnd, fileStartMs advances.
+        let headCut = StudioStore.trimGap(clips: [c], cutStartMs: 50, cutEndMs: 250, newId: mint)
+        XCTAssertEqual(headCut.count, 1)
+        XCTAssertEqual(headCut[0].id, "clip_a", "a single surviving piece keeps the clip identity")
+        XCTAssertEqual(headCut[0].startMs, 250); XCTAssertEqual(headCut[0].durationMs, 250)  // [250,500)
+        XCTAssertEqual(headCut[0].fileStartMs, 150)                                          // 250 - 100
+
+        // Cut off the tail → duration shortens, everything else kept.
+        let tailCut = StudioStore.trimGap(clips: [c], cutStartMs: 350, cutEndMs: 900, newId: mint)
+        XCTAssertEqual(tailCut.count, 1)
+        XCTAssertEqual(tailCut[0].id, "clip_a")
+        XCTAssertEqual(tailCut[0].startMs, 100); XCTAssertEqual(tailCut[0].durationMs, 250)  // [100,350)
+        XCTAssertEqual(tailCut[0].fileStartMs, 0)
+
+        // Region covers the whole clip → dropped (pure silence in the gap).
+        XCTAssertEqual(StudioStore.trimGap(clips: [c], cutStartMs: 0, cutEndMs: 900), [])
+    }
+
+    /// Commit de-dups the shared tail file to its own `clip-<id>.m4a`, keeps the head's file, persists
+    /// `fileStartMs`, and orphan-cleans a fully-cut clip's file.
+    func testCommitTrimmedTrackDedupAndOrphanClean() async throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "A")
+        let t = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        let dir = try StudioStore.arrangementsDir()
+        let keepId = "clip_keep", dropId = "clip_drop"
+        let keepFile = StudioStore.clipFileName(keepId), dropFile = StudioStore.clipFileName(dropId)
+        try writeSineClip(to: dir.appendingPathComponent(keepFile), seconds: 0.5, freq: 440, amp: 0.6)
+        try writeSineClip(to: dir.appendingPathComponent(dropFile), seconds: 0.3, freq: 330, amp: 0.6)
+        store.addClip(arrangement: arr.id, track: t.id,
+                      StudioClip(id: keepId, name: "keep", fileName: keepFile, startMs: 0, durationMs: 500))
+        store.addClip(arrangement: arr.id, track: t.id,
+                      StudioClip(id: dropId, name: "drop", fileName: dropFile, startMs: 600, durationMs: 300))
+
+        // Middle-split `keep` [200,300) AND fully cover `drop`.
+        let live = try XCTUnwrap(store.arrangement(arr.id)?.tracks.first?.clips)
+        var staged = StudioStore.trimGap(clips: live, cutStartMs: 200, cutEndMs: 300)  // splits keep
+        staged = StudioStore.trimGap(clips: staged, cutStartMs: 600, cutEndMs: 900)    // drops drop
+        store.commitTrimmedTrack(arrangement: arr.id, track: t.id, clips: staged)
+        store.flush()   // saveNow is async; force the write before reloading
+
+        let after = try XCTUnwrap(StudioStore(fileURL: storeURL).arrangement(arr.id)?.tracks.first?.clips)
+        XCTAssertEqual(after.count, 2, "head + tail of keep; drop is gone")
+        let head = try XCTUnwrap(after.first { $0.id == keepId })
+        let tail = try XCTUnwrap(after.first { $0.id != keepId })
+        XCTAssertEqual(head.fileName, keepFile, "head keeps the original file")
+        XCTAssertEqual(head.fileStartMs, 0)
+        XCTAssertNotEqual(tail.fileName, keepFile, "tail is de-duped to its own file")
+        XCTAssertEqual(tail.fileStartMs, 300, "tail resumes at file offset ce − startMs (300 − 0)")
+        XCTAssertEqual(tail.startMs, 300); XCTAssertEqual(tail.durationMs, 200)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(head.fileName).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(tail.fileName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent(dropFile).path),
+                       "the fully-cut clip's file is orphan-cleaned")
+    }
+
+    /// The payoff: a cut on ONE track really removes that audio from the mix. A clip whose file is
+    /// LOUD then SILENT, cut to leave only the silent tail, bounces near-silent — proving both read
+    /// paths honor the `fileStartMs`/`durationMs` window (the bounce path exercises the same math the
+    /// player does).
+    func testTrimmedTailBounceIsSilent() async throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "A")
+        let t = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        let dir = try StudioStore.arrangementsDir()
+        let cid = "clip_split"
+        let file = StudioStore.clipFileName(cid)
+        // 0.25s loud sine, then 0.25s silence.
+        try writeSplitClip(to: dir.appendingPathComponent(file), loudSeconds: 0.25, silentSeconds: 0.25)
+        store.addClip(arrangement: arr.id, track: t.id,
+                      StudioClip(id: cid, name: "S", fileName: file, startMs: 0, durationMs: 500))
+
+        // Baseline: the untrimmed bounce is LOUD.
+        let full = dir.appendingPathComponent("bounce-full.m4a")
+        _ = await ArrangerBouncer.bounceToFile(tracks: try XCTUnwrap(store.arrangement(arr.id)?.tracks),
+                                               store: store, to: full)
+        XCTAssertGreaterThan(try peakOfFile(full), 0.4, "untrimmed bounce keeps the loud half")
+
+        // Cut off the loud head [0,250) → only the silent tail survives.
+        let live = try XCTUnwrap(store.arrangement(arr.id)?.tracks.first?.clips)
+        let staged = StudioStore.trimGap(clips: live, cutStartMs: 0, cutEndMs: 250)
+        store.commitTrimmedTrack(arrangement: arr.id, track: t.id, clips: staged)
+
+        let trimmed = dir.appendingPathComponent("bounce-trimmed.m4a")
+        _ = await ArrangerBouncer.bounceToFile(tracks: try XCTUnwrap(store.arrangement(arr.id)?.tracks),
+                                               store: store, to: trimmed)
+        XCTAssertLessThan(try peakOfFile(trimmed), 0.1, "the loud half was cut — the tail is silent")
+    }
+
+    /// A canonical AAC clip: `loudSeconds` of 440 Hz sine then `silentSeconds` of silence.
+    private func writeSplitClip(to url: URL, loudSeconds: Double, silentSeconds: Double) throws {
+        let fmt = StudioAudio.canonicalFormat
+        let sr = fmt.sampleRate
+        let loudN = Int(loudSeconds * sr), total = loudN + Int(silentSeconds * sr)
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(total))!
+        buf.frameLength = AVAudioFrameCount(total)
+        for c in 0..<Int(fmt.channelCount) {
+            let d = buf.floatChannelData![c]
+            for i in 0..<total {
+                d[i] = i < loudN ? 0.7 * sinf(2 * .pi * 440 * Float(i) / Float(sr)) : 0
+            }
+        }
+        let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                                        AVSampleRateKey: sr, AVNumberOfChannelsKey: 2]
+        try AVAudioFile(forWriting: url, settings: settings).write(from: buf)
+    }
+
+    private func peakOfFile(_ url: URL) throws -> Float {
+        let f = try AVAudioFile(forReading: url)
+        let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length))!
+        try f.read(into: buf)
+        var p: Float = 0
+        let ch = buf.floatChannelData!
+        for c in 0..<Int(buf.format.channelCount) { for i in 0..<Int(buf.frameLength) { p = max(p, abs(ch[c][i])) } }
+        return p
+    }
+
     /// Write a stereo sine at an ARBITRARY rate (CAF/LPCM) — for the relabel test's 48 kHz source.
     private func writeSine(to url: URL, seconds: Double, freq: Double, amp: Float, sampleRate: Double) throws {
         let fmt = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!

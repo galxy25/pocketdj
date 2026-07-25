@@ -785,7 +785,13 @@ struct StudioClip: Codable, Identifiable, Hashable, Sendable {
     var name: String                  // display label (the source's name at add time)
     var fileName: String              // "clip-<id>.m4a" inside studio/arrangements/ (app-managed)
     var startMs: Int = 0              // position on the arrangement timeline (ms from 0:00)
-    var durationMs: Int = 0           // baked audio length
+    var durationMs: Int = 0           // played length (may be < the source file when trimmed)
+    /// In-file offset (ms): the point INSIDE `fileName` where this clip's audio begins. 0 for a
+    /// whole-file clip; > 0 for the TAIL half of a scissor cut, which references the SAME source
+    /// file as its head via this offset (non-destructive trim — no audio is rewritten, only the
+    /// window `[fileStartMs, fileStartMs + durationMs)` sounds). Honored by BOTH read paths
+    /// (`MultitrackPlayer.play` + `ArrangerBouncer`). See `StudioStore.trimGap`.
+    var fileStartMs: Int = 0
     var source: StudioClipSource = .recording
     /// The `smp_`/`lp_`/`ptn_`/`tk_` id this was baked from (nil for a mic recording / a master
     /// bounce) — provenance only, kept for the "from <source>" label; playback reads `fileName`.
@@ -795,11 +801,13 @@ struct StudioClip: Codable, Identifiable, Hashable, Sendable {
     /// Timeline end (ms) — where the clip stops sounding.
     var endMs: Int { startMs + durationMs }
 
-    enum CodingKeys: String, CodingKey { case id, name, fileName, startMs, durationMs, source, sourceId, createdAt }
+    enum CodingKeys: String, CodingKey { case id, name, fileName, startMs, durationMs, fileStartMs, source, sourceId, createdAt }
     init(id: String, name: String, fileName: String, startMs: Int = 0, durationMs: Int = 0,
-         source: StudioClipSource = .recording, sourceId: String? = nil, createdAt: Double = 0) {
+         fileStartMs: Int = 0, source: StudioClipSource = .recording, sourceId: String? = nil,
+         createdAt: Double = 0) {
         self.id = id; self.name = name; self.fileName = fileName; self.startMs = startMs
-        self.durationMs = durationMs; self.source = source; self.sourceId = sourceId; self.createdAt = createdAt
+        self.durationMs = durationMs; self.fileStartMs = fileStartMs; self.source = source
+        self.sourceId = sourceId; self.createdAt = createdAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -808,6 +816,7 @@ struct StudioClip: Codable, Identifiable, Hashable, Sendable {
         fileName = (try? c.decode(String.self, forKey: .fileName)) ?? ""
         startMs = (try? c.decode(Int.self, forKey: .startMs)) ?? 0
         durationMs = (try? c.decode(Int.self, forKey: .durationMs)) ?? 0
+        fileStartMs = (try? c.decode(Int.self, forKey: .fileStartMs)) ?? 0
         source = (try? c.decode(StudioClipSource.self, forKey: .source)) ?? .recording
         sourceId = try? c.decode(String.self, forKey: .sourceId)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
