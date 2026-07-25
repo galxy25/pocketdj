@@ -147,6 +147,10 @@ struct HistoryView: View {
                 activityContent
             }
         }
+        // Match every other tab's dark-blue canvas (the Lists are made transparent via
+        // .scrollContentBackground(.hidden), so this shows through instead of the system black).
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
     }
 
     // MARK: - Tab control (two destinations = the views you're NOT in)
@@ -178,10 +182,12 @@ struct HistoryView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.fg)
-                .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                // bgOverlay (not bgRaised) + a stronger accent stroke so the toggle stands out
+                // against the dark-blue Theme.bg canvas (bgRaised is nearly bg — too low-contrast).
+                .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Theme.accent.opacity(0.25), lineWidth: 1)
+                        .stroke(Theme.accent.opacity(0.45), lineWidth: 1)
                 )
                 .accessibilityIdentifier("history-tab-\(t.rawValue.lowercased())")
             }
@@ -205,6 +211,7 @@ struct HistoryView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
     }
 
@@ -284,6 +291,7 @@ struct HistoryView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
     }
 
@@ -361,6 +369,7 @@ struct HistoryView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     /// The last RENDERED row scrolled into view → grow the render budget toward the full result
