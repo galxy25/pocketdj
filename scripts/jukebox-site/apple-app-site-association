@@ -1,0 +1,12 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["EC27UF79GL.com.levi.pocketdj"],
+        "components": [
+          { "/": "/*", "comment": "Every jukebox.pocket-dj.com path (guest pages live at /<id>/) opens the PocketDJ app, which parses the jukebox id via JukeboxLink and joins as a client." }
+        ]
+      }
+    ]
+  }
+}
