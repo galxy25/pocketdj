@@ -1585,7 +1585,13 @@ extension StudioStore {
         guard let i = arrangements.firstIndex(where: { $0.id == aid }),
               let j = arrangements[i].tracks.firstIndex(where: { $0.id == tid }) else { return }
         let oldFiles = Set(arrangements[i].tracks[j].clips.map(\.fileName))
-        // De-dup shared source files so no two clip records point at one file after the edit.
+        // De-dup shared source files so no two clip records point at one file after the edit. This is
+        // a FULL byte-copy (not a windowed trim): an AAC file can't be losslessly sliced to a byte
+        // range (frames span the whole file), so the choices are a lossless full copy, a re-encode
+        // (generational quality loss on every trim), or ref-counted sharing (which would reintroduce
+        // the shared-file deletion hazards this restores away). Full-copy is the safe, lossless pick;
+        // the cost is disk (one full copy per split tail — acceptable for an occasional edit, and the
+        // Storage manager can reclaim it). `fileStartMs` still windows playback into the copy.
         var claimed = Set<String>()
         var deduped: [StudioClip] = []
         for var clip in newClips {

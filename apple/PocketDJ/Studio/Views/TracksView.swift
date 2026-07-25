@@ -203,6 +203,10 @@ struct TracksView: View {
             // and reset the seek cursor for the newly-opened arrangement.
             if player.isPlaying, player.playingArrangementId != current?.id { player.stop() }
             cursorMs = 0
+            // A trim session is scoped to ONE arrangement/track — dropping into home or another
+            // arrangement must discard it (else its staged clips + region strand a broken, dimmed
+            // trim state on the next arrangement, and Save would target a track that isn't there).
+            if trimMode { exitTrimMode() }
         }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
@@ -732,11 +736,17 @@ struct TracksView: View {
     @ViewBuilder private func trimToolbar(_ arr: StudioArrangement) -> some View {
         HStack(spacing: 10) {
             Menu {
+                // A session commits ONE track; switching tracks re-stages from scratch, so it's
+                // disabled once there are unsaved cuts — Save or Cancel first (no silent data loss).
+                if !trimHistory.isEmpty {
+                    Text("Save or Cancel before switching tracks").font(.caption2)
+                }
                 ForEach(Array(arr.tracks.enumerated()), id: \.element.id) { _, track in
                     Button { switchTrimTrack(track.id, arr: arr) } label: {
                         Label(track.name.isEmpty ? "Track" : track.name,
                               systemImage: track.id == trimTrackId ? "checkmark" : "")
                     }
+                    .disabled(!trimHistory.isEmpty && track.id != trimTrackId)
                 }
             } label: {
                 Label(trimTargetName(arr), systemImage: "square.stack.3d.up")
@@ -1311,9 +1321,11 @@ struct TracksView: View {
     }
 
     /// Switch the track being trimmed: re-stage from that track's committed clips and clear the undo
-    /// history (the stack is per-track). Silently ignores an already-selected track.
+    /// history (the stack is per-track). Ignored when there are UNSAVED cuts (the menu disables it
+    /// too) so a switch can never silently drop staged edits, and for an already-selected track.
     private func switchTrimTrack(_ tid: String, arr: StudioArrangement) {
-        guard tid != trimTrackId, let track = arr.tracks.first(where: { $0.id == tid }) else { return }
+        guard trimHistory.isEmpty, tid != trimTrackId,
+              let track = arr.tracks.first(where: { $0.id == tid }) else { return }
         trimTrackId = tid
         trimStaged = track.clips
         trimHistory = []
@@ -1338,11 +1350,14 @@ struct TracksView: View {
     /// invalidate the affected waveforms so they redraw windowed, then leave trim mode.
     private func saveTrim(_ arr: StudioArrangement) {
         guard let tid = trimTrackId, !trimHistory.isEmpty else { exitTrimMode(); return }
-        // Peaks are keyed by clip id; heads keep their id but changed duration, so clear the old set
-        // (the peak task refills every missing one, windowed, after the commit changes clipSignature).
+        // Peaks are keyed by clip id; a head/tail-only cut KEEPS the clip id (only a split mints a
+        // new one), so clipSignature can be unchanged after the commit and the `.task(id:)` peak
+        // reload won't re-fire. Clear the affected peaks AND reload directly so windowed waveforms
+        // always redraw — never rely on the signature moving.
         for clip in arr.tracks.first(where: { $0.id == tid })?.clips ?? [] { clipPeaks[clip.id] = nil }
         studio.commitTrimmedTrack(arrangement: arr.id, track: tid, clips: trimStaged)
         exitTrimMode()
+        Task { await loadPeaks() }
     }
 
     /// The LIVE playhead position in seconds while playing — the clock plus the seek offset it started
@@ -1721,6 +1736,9 @@ struct TracksView: View {
     }
 
     private func deleteTrack(arr: StudioArrangement, track: StudioTrack) {
+        // Deleting a track mid-trim would strand the session's staged clips (they'd point at a lane
+        // that no longer exists, and the same-arrangement id doesn't trip the onChange reset) — cancel.
+        if trimMode { exitTrimMode() }
         for clip in track.clips { clipPeaks[clip.id] = nil }
         studio.deleteTrack(arrangement: arr.id, track: track.id)
     }

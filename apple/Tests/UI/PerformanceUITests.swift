@@ -287,8 +287,21 @@ final class PerformanceUITests: XCTestCase {
         XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 5),
                       "Cancel discards the staged cut — the clip stays")
 
-        // Re-enter, cut, and SAVE — commit succeeds and trim mode exits.
+        // Navigating away mid-trim discards the session — re-opening must NOT strand trim state.
         scissor.tap()
+        XCTAssertEqual(scissor.value as? String, "on")
+        app.any("tracks-home-back").tap()
+        XCTAssertTrue(app.any("tracks-new-arrangement").waitForExistence(timeout: 10), "Back returns home")
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tracks-arr-row-'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10)); row.tap()
+        XCTAssertTrue(app.any("tracks-clip-0-0").waitForExistence(timeout: 15), "arrangement reopened")
+        ensureTransportShows("tracks-scissor-toggle")
+        XCTAssertEqual(app.any("tracks-scissor-toggle").value as? String, "off",
+                       "trim state is reset on nav-away — the scissors isn't stuck on")
+        XCTAssertFalse(app.any("tracks-trim-delete").exists, "no stranded trim toolbar after re-open")
+
+        // Re-enter, cut, and SAVE — commit succeeds and trim mode exits.
+        app.any("tracks-scissor-toggle").tap()
         XCTAssertEqual(scissor.value as? String, "on")
         app.any("tracks-trim-delete").tap()
         app.any("tracks-trim-save").tap()
