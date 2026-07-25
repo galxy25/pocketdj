@@ -57,7 +57,12 @@ final class AppModel {
             guard let s = songsById[id] else { return nil }
             let album = s.albumId.flatMap { albumsById[$0] }
             return TracklistCSV.Row(title: s.name, artist: s.artist, album: album?.name ?? "",
-                                    year: s.year ?? album?.year, genre: album?.genre ?? "")
+                                    year: s.year ?? album?.year, genre: album?.genre ?? "",
+                                    // F3 Sharing: the canonical links we matched (blank until resolved).
+                                    // Apple Music prefers the stamped url, else the id-derived short link.
+                                    appleMusicUrl: s.appleMusicUrl ?? s.appleMusicId.map { "https://music.apple.com/song/\($0)" } ?? "",
+                                    spotifyUrl: s.spotifyUrl ?? "",
+                                    youtubeUrl: s.youtubeUrl ?? "")
         }
     }
     /// Read-only playlists carried in the enabled sources (e.g. Apple Music user
