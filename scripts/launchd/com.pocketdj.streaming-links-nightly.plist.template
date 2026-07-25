@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PocketDJ "streaming links" nightly backfill (F3 "Sharing") — launchd timer TEMPLATE.
+
+  Install/refresh with:  scripts/install-streaming-links-nightly.sh
+  (fills __LAUNCHER__ / __HOME__, copies to ~/Library/LaunchAgents, reloads the job).
+
+  Points at the STABLE launcher in ~/.pocketdj/bin — never at a checkout — so whatever branch
+  the dev repo is on at 06:00 is irrelevant. The launcher hands off to the dedicated sync clone
+  (~/.pocketdj/streaming-links-clone), which always runs origin/main: fold Apple Music links
+  (id-derived), browser-resolve the next batch of Spotify + YouTube canonical links into the
+  persistent cache (~/.pocketdj/streaming-links/links-cache.ndjson), fold them into the indexes,
+  and if anything changed commit + push (GitHub first) then publish each changed index to its
+  home web bucket (vinyl + Apple Music → prod, My Digital → dev) and invalidate. A no-change
+  night is a true no-op. RunAtLoad stays false so (re)loading the job doesn't fire a run.
+
+  06:00 — one hour AFTER the 05:00 digital-sync nightly (two after the 04:00 Apple Music
+  nightly) so they never contend for the git clone lock or the deploy pipeline.
+
+  Stop:     launchctl unload ~/Library/LaunchAgents/com.pocketdj.streaming-links-nightly.plist
+  Preview:  scripts/streaming-links-nightly.sh --dry-run  (no clone/resolve/commit/publish).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.streaming-links-nightly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__LAUNCHER__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <!-- launchd has a minimal PATH; include node, npm, aws, git locations. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- 06:00 daily (after the 05:00 digital-sync nightly). -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>6</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.pocketdj/streaming-links-nightly.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.pocketdj/streaming-links-nightly.err.log</string>
+</dict>
+</plist>

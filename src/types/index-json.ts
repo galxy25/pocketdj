@@ -100,6 +100,17 @@ export interface IndexAlbum {
   audioTracks?: IndexAudioTrack[];
   /** AUDIO stage: total analyzed audio duration, in seconds. */
   audioDurationSec?: number;
+  /** Apple Music album store id (iTunes `collectionId`); see IndexSong.appleMusicId. */
+  appleMusicId?: string;
+  /**
+   * F3 "Sharing" canonical deep-links. `appleMusicUrl` is derived from `appleMusicId`
+   * (`https://music.apple.com/album/<id>`, scripts/fold-apple-music-links.mjs);
+   * `spotifyUrl` / `youtubeUrl` are resolved by the headless-browser worker
+   * (scripts/resolve-streaming-links.mjs). Absent until the pipeline stamps them.
+   */
+  appleMusicUrl?: string;
+  spotifyUrl?: string;
+  youtubeUrl?: string;
 }
 
 /** One detected audio segment, on disk. Mirrors model.AudioTrack 1:1. */
@@ -139,6 +150,20 @@ export interface IndexSong {
   length?: number;
   fileType?: string;
   pointer?: IndexPointer;
+  /**
+   * Apple Music catalog store id ("adam id"), resolved via the iTunes Search API
+   * (scripts/resolve-apple-music-catalog.mjs). A bare numeric string; absent when unresolved.
+   */
+  appleMusicId?: string;
+  /**
+   * F3 "Sharing" canonical deep-links. `appleMusicUrl` is derived from `appleMusicId`
+   * (`https://music.apple.com/song/<id>`, scripts/fold-apple-music-links.mjs);
+   * `spotifyUrl` / `youtubeUrl` are resolved by the headless-browser worker
+   * (scripts/resolve-streaming-links.mjs). Absent until the pipeline stamps them.
+   */
+  appleMusicUrl?: string;
+  spotifyUrl?: string;
+  youtubeUrl?: string;
 }
 
 export interface IndexPointer {
