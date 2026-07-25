@@ -518,6 +518,38 @@ final class StudioStoreTests: XCTestCase {
                        "the fully-cut clip's file is orphan-cleaned")
     }
 
+    /// Multi-track cut (the scissor selector's default "All tracks"): committing the SAME region cut
+    /// on two tracks removes it from BOTH, leaving each in a gap — the store half of what `saveTrim`
+    /// loops over the selected tracks. Fully-covering the clips drops them and orphan-cleans the files.
+    func testMultiTrackTrimCommit() async throws {
+        let store = StudioStore(fileURL: storeURL)
+        let arr = store.createArrangement(name: "A")
+        let t0 = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        let t1 = try XCTUnwrap(store.addTrack(arrangement: arr.id))
+        let dir = try StudioStore.arrangementsDir()
+        let f0 = StudioStore.clipFileName("clip_m0"), f1 = StudioStore.clipFileName("clip_m1")
+        try writeSineClip(to: dir.appendingPathComponent(f0), seconds: 0.4, freq: 440, amp: 0.6)
+        try writeSineClip(to: dir.appendingPathComponent(f1), seconds: 0.4, freq: 330, amp: 0.6)
+        store.addClip(arrangement: arr.id, track: t0.id,
+                      StudioClip(id: "clip_m0", name: "0", fileName: f0, startMs: 0, durationMs: 400))
+        store.addClip(arrangement: arr.id, track: t1.id,
+                      StudioClip(id: "clip_m1", name: "1", fileName: f1, startMs: 0, durationMs: 400))
+
+        // Cut a region covering both clips on BOTH tracks (what performCut does for each selected id).
+        for tid in [t0.id, t1.id] {
+            let live = try XCTUnwrap(store.arrangement(arr.id)?.tracks.first(where: { $0.id == tid })?.clips)
+            let staged = StudioStore.trimGap(clips: live, cutStartMs: 0, cutEndMs: 900)
+            store.commitTrimmedTrack(arrangement: arr.id, track: tid, clips: staged)
+        }
+        store.flush()
+
+        let tracks = try XCTUnwrap(StudioStore(fileURL: storeURL).arrangement(arr.id)?.tracks)
+        XCTAssertEqual(tracks.first(where: { $0.id == t0.id })?.clips.count, 0, "track 0 cut empty")
+        XCTAssertEqual(tracks.first(where: { $0.id == t1.id })?.clips.count, 0, "track 1 cut empty")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent(f0).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent(f1).path))
+    }
+
     /// The payoff: a cut on ONE track really removes that audio from the mix. A clip whose file is
     /// LOUD then SILENT, cut to leave only the silent tail, bounces near-silent — proving both read
     /// paths honor the `fileStartMs`/`durationMs` window (the bounce path exercises the same math the

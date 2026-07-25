@@ -274,6 +274,13 @@ final class PerformanceUITests: XCTestCase {
         let scissor = app.any("tracks-scissor-toggle")
         XCTAssertTrue(scissor.waitForExistence(timeout: 5)); scissor.tap()
         XCTAssertEqual(scissor.value as? String, "on")
+        // The track selector defaults to "All tracks" (multi-select). Open it, confirm the default
+        // option is present, then dismiss by selecting it (keeps all selected).
+        let selector = app.any("tracks-trim-track")
+        XCTAssertTrue(selector.waitForExistence(timeout: 5)); selector.tap()
+        let allTracks = app.any("tracks-trim-all")
+        XCTAssertTrue(allTracks.waitForExistence(timeout: 5), "the selector defaults to an All tracks option")
+        allTracks.tap()
         let del = app.any("tracks-trim-delete")
         XCTAssertTrue(del.waitForExistence(timeout: 5), "trim toolbar should show Delete")
         del.tap()

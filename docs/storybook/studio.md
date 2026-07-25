@@ -466,13 +466,15 @@ arrangement** in the Tracks home browser. **Tap a row to hear it** (tap again to
 row for **Convert to sample** (drops an independent sample into your Samples library — the artifact and
 the sample are separate copies), **Add as track** (place it back on a lane), **Share**, or **Delete**.
 
-**Trim a track.** Need to carve a chunk out of one lane? Tap the **✂ scissors** in the transport to
-enter **trim mode**. Pick the target track (its lane rings red; the others dim), drag the red region
-handles over the part to cut — they beat-snap like the looper — then tap **Delete**: that track's audio
-in the region is removed and both ends stay put, leaving a **silent gap** (every other lane stays
-perfectly in sync). Stack up cuts, **Undo** any of them, then **Save** to commit or **Cancel** to walk
-away. Trims are **non-destructive** — your original recording is never overwritten, so quality never
-degrades, and *nothing* touches your files until you hit Save, which makes Cancel a clean escape.
+**Trim tracks.** Need to carve a chunk out of your arrangement? Tap the **✂ scissors** in the transport
+to enter **trim mode**. The track selector defaults to **All tracks** — every lane rings red and gets the
+cut — but tap it to pick exactly which tracks to trim (multi-select). Drag the red region handles over the
+part to cut — they beat-snap like the looper — then tap **Delete**: the region's audio is removed from
+**every selected track** and both ends stay put, leaving a **silent gap** (unselected lanes are untouched,
+and nothing shifts, so everything stays perfectly in sync). Stack up cuts, **Undo** any of them, then
+**Save** to commit or **Cancel** to walk away. Trims are **non-destructive** — your original recording is
+never overwritten, so quality never degrades, and *nothing* touches your files until you hit Save, which
+makes Cancel a clean escape.
 
 **User story:** "I send a song's stems to a fresh arrangement, pan the drums a touch left, colour the
 vocal lane purple, set a 4-bar loop over the chorus, ride the Brazilian bass on every beat, then bounce

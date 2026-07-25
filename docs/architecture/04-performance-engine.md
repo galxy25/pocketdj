@@ -1981,24 +1981,30 @@ an **independent** `smp_` copy — deleting the artifact never touches it), **Ad
 `testArrangementArtifactCRUDAndRoundTrip` / `testCreateSampleFromArtifactIsIndependent` /
 `testBounceToFileWritesAudio` / `testRelabelIsLongerThanCleanImport`.
 
-**Scissor trim** (the ✂ tool — *"one track, leave a gap"*). Removing a span of audio from ONE lane is a
-**pure-data, non-destructive** edit: `StudioStore.trimGap(clips:cutStartMs:cutEndMs:)` (static, pure,
-injectable id for tests) walks a track's clips against the region and, per clip, keeps it whole (disjoint),
-drops it (fully covered), shortens it (a cut off the head/tail — the sole survivor keeps its id), or
-**splits** it into a head (id/file kept, shortened) + a **tail** (new id, the **same** `fileName`, its
-`fileStartMs` slid forward by `cutEnd − startMs`). Nothing else moves — the removed span becomes **silence**
-and every other lane stays frame-aligned ("leave a gap"). The two read paths honor the window: the live
-render adds a `srcStart` frame offset to `MultitrackRenderContext.Clip` (`src[srcStart + srcOff + i]`), and
-the bounce carries `srcStart`/`len` per `MixJob` — the timeline math is identical, so live == bounce. The
-UI (`TracksView`) stages edits in **local `@State`** (`trimStaged` + a `trimHistory` undo stack) and never
-touches the store until **Save**; the region uses a `loopOverlay`-style band with two beat-snapped handles
-driving `trimRegion*` (not the store), so **Cancel** is a pure revert — no file is written during the whole
-session. **`commitTrimmedTrack`** is the only disk step: it **de-dups** any tail still sharing its head's
-file to its own `clip-<id>.m4a` (the `duplicateTrack` "no two records share a file" discipline — byte-copy,
-lossless, so `fileStartMs` persists and the waveform is windowed by `WaveformExtractor.peaks(startMs:lengthMs:)`),
-then **orphan-cleans** any file the track dropped that no clip still references. Unit-tested by
-`testTrimGapAllCases` / `testCommitTrimmedTrackDedupAndOrphanClean` / `testTrimmedTailBounceIsSilent`;
-UI-wired by `testTracksScissorTrim`.
+**Scissor trim** (the ✂ tool — *cut a region out of the selected tracks, leave a gap*). Removing a span of
+audio from a lane is a **pure-data, non-destructive** edit: `StudioStore.trimGap(clips:cutStartMs:cutEndMs:)`
+(static, pure, injectable id for tests) walks ONE track's clips against the region and, per clip, keeps it
+whole (disjoint), drops it (fully covered), shortens it (a cut off the head/tail — the sole survivor keeps
+its id), or **splits** it into a head (id/file kept, shortened) + a **tail** (new id, the **same** `fileName`,
+its `fileStartMs` slid forward by `cutEnd − startMs`). Nothing else moves — the removed span becomes
+**silence** and every other lane stays frame-aligned ("leave a gap"). The two read paths honor the window:
+the live render adds a `srcStart` frame offset to `MultitrackRenderContext.Clip` (`src[srcStart + srcOff + i]`),
+and the bounce carries `srcStart`/`len` per `MixJob` — the timeline math is identical, so live == bounce.
+**Multi-track selection.** The toolbar's track selector is **multi-select, defaulting to All tracks**;
+`TracksView` holds `trimTrackIds: Set<String>` and a per-track staged map `trimStaged: [String: [StudioClip]]`
+(+ a `trimHistory` stack of whole-map snapshots for Undo). A Delete runs `trimGap` on **every selected
+track's** staged array; the selection is **locked once a cut is staged** (button + toggles + the binding
+setter all gate on a non-empty history) so changing it can never strand staged edits. Everything stays in
+**local `@State`** until **Save** — the region band (`loopOverlay`-style, two beat-snapped handles) drives
+`trimRegion*`, not the store — so **Cancel** is a pure revert, no file written all session. **Save** loops
+the selected tracks through **`commitTrimmedTrack`** (the only disk step): it **de-dups** any tail still
+sharing its head's file to its own `clip-<id>.m4a` (the `duplicateTrack` "no two records share a file"
+discipline — byte-copy, lossless, so `fileStartMs` persists and the waveform is windowed by
+`WaveformExtractor.peaks(startMs:lengthMs:)`), then **orphan-cleans** any file that track dropped that no
+clip still references, and reloads peaks directly (a head/tail cut keeps the clip id, so `clipSignature` may
+not move). Trim state resets on nav-away (`onChange(current?.id)`) and mid-trim track deletion. Unit-tested
+by `testTrimGapAllCases` / `testCommitTrimmedTrackDedupAndOrphanClean` / `testTrimmedTailBounceIsSilent` /
+`testMultiTrackTrimCommit`; UI-wired by `testTracksScissorTrim` (incl. the All-tracks default + nav-away reset).
 
 **Stems in / out.** A song's four on-device stems reach the arranger two ways, both via
 `ArrangerClipBaker.bakeFromFile` (each stem baked to its own colour-matched lane at 0:00, tracks added
