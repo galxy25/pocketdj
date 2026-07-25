@@ -212,6 +212,18 @@ final class CarPlayModel {
         services.favorites.toggle(id, appleMusicId: app.songsById[id]?.appleMusicId)
     }
 
+    // MARK: - CarPlay repeat / shuffle (mirror the Now Playing deck + widget)
+
+    /// Whether a set is running — CarPlay shows the repeat + shuffle buttons only then (they're
+    /// meaningless for a single-track play, matching the in-app deck + widget gating).
+    func isSetRunning() -> Bool { services.setlistPlayer.isRunning }
+    /// Live shuffle of the running queue's upcoming tail.
+    func isShuffleOn() -> Bool { services.setlistPlayer.shuffleEnabled }
+    func toggleShuffle() { services.setlistPlayer.toggleShuffle() }
+    /// Whole-session repeat mode (off / all / one).
+    func repeatMode() -> RepeatMode { services.setlistPlayer.repeatMode }
+    func cycleRepeat() { services.setlistPlayer.cycleRepeatMode() }
+
     func removeFromQueue(uid: UUID) { services.setlistPlayer.removeUpcoming(uids: [uid]) }
     func playNext(uid: UUID) { services.setlistPlayer.moveUpcomingNext(uid: uid) }
     func moveToEnd(uid: UUID) { services.setlistPlayer.moveUpcomingToEnd(uid: uid) }

@@ -109,11 +109,41 @@ final class CarPlayController {
         }
     }
 
-    /// Rebuild the Now Playing template's buttons — called on BOTH a track change AND a favorite
-    /// change (via the shared favorites observer → `CarPlayController.current`), because the heart
-    /// glyph depends on both and the button objects are immutable.
+    /// Shuffle button for the shared Now Playing template. Toggles live shuffle of the running
+    /// queue's upcoming tail (the SAME `SetlistPlayer.toggleShuffle` the deck + widget call), then
+    /// rebuilds (CarPlay buttons are immutable). Shown only while a set is running.
+    private func shuffleButton() -> CPNowPlayingImageButton {
+        let image = UIImage(systemName: "shuffle") ?? UIImage()
+        return CPNowPlayingImageButton(image: image) { [weak self] _ in
+            self?.model?.toggleShuffle()
+            self?.refreshNowPlayingButtons()
+        }
+    }
+
+    /// Repeat button — cycles off → session → song (`SetlistPlayer.cycleRepeatMode`). The glyph
+    /// shows `repeat.1` in repeat-song mode so the driver can tell that state apart at a glance.
+    private func repeatButton() -> CPNowPlayingImageButton {
+        let one = (model?.repeatMode() ?? .off) == .one
+        let image = UIImage(systemName: one ? "repeat.1" : "repeat") ?? UIImage()
+        return CPNowPlayingImageButton(image: image) { [weak self] _ in
+            self?.model?.cycleRepeat()
+            self?.refreshNowPlayingButtons()
+        }
+    }
+
+    /// Rebuild the Now Playing template's buttons — called on a track change, a favorite change, AND
+    /// a repeat/shuffle change (all fan out through the shared observer → `CarPlayController.current`),
+    /// because the glyphs depend on that state and the button objects are immutable. Shuffle + repeat
+    /// appear only while a set is running (meaningless for a single-track play); CarPlay allows up to
+    /// five Now Playing buttons, so the ♥ + the two mode buttons fit comfortably.
     func refreshNowPlayingButtons() {
-        CPNowPlayingTemplate.shared.updateNowPlayingButtons([heartButton()])
+        var buttons: [CPNowPlayingButton] = []
+        if model?.isSetRunning() == true {
+            buttons.append(shuffleButton())
+            buttons.append(repeatButton())
+        }
+        buttons.append(heartButton())
+        CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons)
     }
 
     // MARK: - List templates
