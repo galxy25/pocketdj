@@ -1005,14 +1005,19 @@ struct TracksView: View {
                 .accessibilityIdentifier("tracks-track-name-\(index)")
                 Spacer(minLength: 0)
                 Button { pickerTrackId = track.id } label: {
-                    Image(systemName: "plus.circle.fill").font(.caption).foregroundStyle(color)
+                    Image(systemName: "plus.circle.fill").font(.caption).foregroundStyle(trimMode ? Theme.fgDim : color)
                 }
                 .buttonStyle(.plain)
+                // Adding/recording a clip mid-trim would be clobbered on Save by the stale staged
+                // snapshot (taken at trim entry) — so these clip-appending actions are off in trim mode.
+                .disabled(trimMode)
                 .accessibilityIdentifier("tracks-add-clip-\(index)")
                 Menu {
                     Button { editTrackId = track.id } label: { Label("Edit track…", systemImage: "pencil") }
                     Button { pickerTrackId = track.id } label: { Label("Add clip…", systemImage: "waveform.badge.plus") }
+                        .disabled(trimMode)
                     Button { startRecord(arr: arr, track: track) } label: { Label("Record…", systemImage: "mic") }
+                        .disabled(trimMode)
                     Button { bounce(tracks: [track], label: "\(track.name) (bounce)") } label: { Label("Bounce this track", systemImage: "square.and.arrow.down") }
                         .disabled(track.clips.isEmpty)
                     Button { studio.duplicateTrack(arrangement: arr.id, track: track.id) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
