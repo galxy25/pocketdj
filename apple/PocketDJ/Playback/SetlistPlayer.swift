@@ -113,6 +113,23 @@ final class SetlistPlayer {
     /// point `advance()` moves on. Always ≥ 1 (`normalizedRepeat`).
     private var currentPlaysRemaining = 1
 
+    /// Whole-session repeat mode (off / all / one) — see `RepeatMode`. Sticky across `play()`
+    /// calls (a system-player convention) and restored from the durable session. `.all` wraps the
+    /// queue at its end; `.one` replays the current track on natural end (an explicit ⏭ still
+    /// advances). Observed by the Now Playing deck + widget; mirrored to the lock-screen /
+    /// CarPlay `changeRepeatModeCommand`.
+    private(set) var repeatMode: RepeatMode = .off
+    /// Whether the running queue's UPCOMING tail is live-shuffled. Reset per `play()` (the new
+    /// queue is presented in its given order — the one-shot `playNow(shuffle:)` handles initial
+    /// randomization). Toggling ON permutes `queue[(index+1)...]`; OFF restores the tail's
+    /// pre-shuffle order. Never touches the current/played region (the live-queue-edit contract).
+    private(set) var shuffleEnabled = false
+    /// The original relative order (by `Item.uid`) captured the FIRST time shuffle is enabled in a
+    /// run, so shuffle-OFF can restore the upcoming tail's pre-shuffle order. Session-only (uids are
+    /// per-instance and not persisted) — a restored run whose shuffle was on keeps its shuffled
+    /// order (which is what was playing) and can't recover a pre-shuffle order it never saw.
+    @ObservationIgnored private var canonicalOrder: [UUID]?
+
     private let player: PlayerEngine
     private let rips: RipsStore
     private let burns: BurnStore
@@ -192,6 +209,10 @@ final class SetlistPlayer {
         capturedOrigin = originProvider?(sourceSetlistId)
         queue = items
         index = 0
+        // Live shuffle is per-run (repeat mode is sticky). The one-shot `playNow(shuffle:)` already
+        // randomized the incoming order when requested; the live toggle starts OFF for the new queue.
+        shuffleEnabled = false
+        canonicalOrder = nil
         isRunning = true
         deviceQueueUnplayable = false   // fresh run — clear any prior banner signal
         loadedAnyDeviceTrack = false
@@ -216,6 +237,14 @@ final class SetlistPlayer {
         player.onNext = { [weak self] in self?.skipNext() }
         player.onPrevious = { [weak self] in self?.skipPrevious() }
         player.setNextPreviousEnabled(true)
+        // Lock-screen / Control Center / CarPlay repeat + shuffle (the system Now Playing card's
+        // changeRepeatMode / changeShuffleMode commands) drive the SET's modes while it runs. Only
+        // enabled while a set is running, so a single-song play shows no repeat/shuffle glyphs.
+        player.onRepeatModeChange = { [weak self] in self?.setRepeatMode($0) }
+        player.onShuffleChange = { [weak self] in self?.setShuffle($0) }
+        player.setRepeatShuffleCommandsEnabled(true)
+        player.setRemoteRepeatMode(repeatMode)
+        player.setRemoteShuffle(shuffleEnabled)
         // Apple Music STREAMS through MusicKit's own player, which the PlayerEngine end hook
         // above never sees — so wire its end-of-track straight into the sequencer's advance,
         // else the set freezes after the first streamed song.
@@ -234,6 +263,9 @@ final class SetlistPlayer {
         player.onNext = nil
         player.onPrevious = nil
         player.setNextPreviousEnabled(false)
+        player.onRepeatModeChange = nil
+        player.onShuffleChange = nil
+        player.setRepeatShuffleCommandsEnabled(false)
         coordinator.appleMusic.onTrackEnded = nil
         coordinator.appleMusic.onTrackRestarted = nil
         player.stop()
@@ -268,9 +300,75 @@ final class SetlistPlayer {
         guard isRunning else { return }
         exitHoldIfNeeded()
         waitingForLive = false
-        index = max(0, index - 1)
+        if index == 0 {
+            // Repeat-ALL wraps ⏮ from the top back to the last track; otherwise stay at 0
+            // (⏮ on the first track restarts it — today's `max(0, index-1)` behaviour).
+            if repeatMode == .all, queue.count > 1 { index = queue.count - 1 }
+        } else {
+            index -= 1
+        }
         persistSession(positionMs: 0)
         Task { await playCurrent() }
+    }
+
+    // MARK: - Repeat & shuffle (Now Playing deck / widget / lock-screen)
+
+    /// Cycle the whole-session repeat mode off → all → one → off (the Now Playing / widget repeat
+    /// button). Sticky across runs; persisted; mirrored to the lock-screen / CarPlay card.
+    func cycleRepeatMode() { setRepeatMode(repeatMode.next) }
+
+    /// Set the whole-session repeat mode explicitly (the lock-screen / CarPlay changeRepeatMode
+    /// command routes here). No-op when unchanged. Safe while idle/held — the mode simply rides
+    /// the next run; only a running set persists it.
+    func setRepeatMode(_ mode: RepeatMode) {
+        guard mode != repeatMode else { return }
+        repeatMode = mode
+        player.setRemoteRepeatMode(mode)
+        persistSession()
+    }
+
+    /// Toggle live shuffle of the upcoming tail (the Now Playing / widget shuffle button).
+    func toggleShuffle() { setShuffle(!shuffleEnabled) }
+
+    /// Enable/disable live shuffle of the UPCOMING tail (`queue[(index+1)...]`). ON permutes the
+    /// tail (remembering the pre-shuffle order the first time); OFF restores that order. Never
+    /// touches `queue[index]` or the played head — the same contract every live-queue edit honors.
+    /// The lock-screen / CarPlay changeShuffleMode command routes here.
+    func setShuffle(_ on: Bool) {
+        guard on != shuffleEnabled else { return }
+        shuffleEnabled = on
+        if on {
+            if canonicalOrder == nil { canonicalOrder = queue.map(\.uid) }
+            shuffleUpcomingTail()
+        } else {
+            restoreUpcomingOrder()
+        }
+        player.setRemoteShuffle(on)
+        persistSession()
+    }
+
+    /// Permute the upcoming tail in place (never the current/played region).
+    private func shuffleUpcomingTail() {
+        guard isRunning, index + 1 < queue.count else { return }
+        var tail = Array(queue[(index + 1)...])
+        tail.shuffle()
+        queue.replaceSubrange((index + 1)..., with: tail)
+    }
+
+    /// Restore the upcoming tail to its captured pre-shuffle relative order. Items added AFTER the
+    /// shuffle (unknown to `canonicalOrder`) sort to the end, preserving their arrival order.
+    private func restoreUpcomingOrder() {
+        guard let canon = canonicalOrder, isRunning, index + 1 < queue.count else { return }
+        let rank = Dictionary(canon.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        var tail = Array(queue[(index + 1)...])
+        tail.sort { (rank[$0.uid] ?? Int.max) < (rank[$1.uid] ?? Int.max) }
+        queue.replaceSubrange((index + 1)..., with: tail)
+    }
+
+    /// Reshuffle the ENTIRE queue (used on a repeat-all wrap, where every item is upcoming again).
+    private func reshuffleEntireQueue() {
+        guard queue.count > 1 else { return }
+        queue.shuffle()
     }
 
     // MARK: - Live queue edits (the Now Playing panel's Up-Next list)
@@ -468,6 +566,12 @@ final class SetlistPlayer {
     private func handleDSPEnded() {
         guard mixEngaged, isRunning, index < queue.count else { return }
         endMixEngagement()
+        // Repeat-ONE: replay the current track from the top (through the AVPlayer) instead of
+        // advancing. Only on a NATURAL end — an explicit ⏭ goes through `advanceToNext`.
+        if repeatMode == .one {
+            Task { await playCurrent(fresh: true) }
+            return
+        }
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
             Task { await playCurrent(fresh: false) }   // reloads the AVPlayer for the repeat
@@ -633,6 +737,12 @@ final class SetlistPlayer {
     private func handleEnded() {
         guard isRunning, index < queue.count,
               rips.nowPlaying?.songId == queue[index].id else { return }
+        // Repeat-ONE (whole-session mode) takes precedence: replay the current track from the top.
+        // Only on a NATURAL end — an explicit ⏭ / dead source goes through `advanceToNext`.
+        if repeatMode == .one {
+            Task { await playCurrent(fresh: true) }
+            return
+        }
         // REPEAT only on a NATURAL end: a track that played through loops in place while it has
         // plays left (a performance item's repeat count) instead of advancing. `normalizedRepeat`
         // clamps to [1, 99], so this can never spin forever; `fresh: false` keeps the counter.
@@ -653,6 +763,11 @@ final class SetlistPlayer {
         guard isRunning, index < queue.count,
               coordinator.activeBackend == .appleMusic,
               coordinator.appleMusic.nowPlaying?.songId == queue[index].id else { return }
+        // Repeat-ONE (whole-session mode): replay the current AM track from the top.
+        if repeatMode == .one {
+            Task { await playCurrent(fresh: true) }
+            return
+        }
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
             Task { await playCurrent(fresh: false) }
@@ -679,6 +794,18 @@ final class SetlistPlayer {
         waitingForLive = false
         index += 1
         if index >= queue.count {
+            // Repeat-ALL: wrap to the top and keep going instead of stopping. (Repeat-ONE is
+            // handled on natural end in the `handle*Ended` paths, so it never reaches here; an
+            // explicit ⏭ past the end with repeat-one/off still stops.)
+            if repeatMode == .all, !queue.isEmpty {
+                index = 0
+                // Reshuffle the whole queue on a shuffle wrap so the next pass differs (standard
+                // player behaviour); `canonicalOrder` is untouched so shuffle-OFF still restores.
+                if shuffleEnabled { reshuffleEntireQueue() }
+                persistSession(positionMs: 0)
+                Task { await playCurrent(fresh: true) }
+                return
+            }
             // CRITIC-D — a DEVICE-mode set that reached the end having never loaded a single
             // burned file: raise the one-shot banner so the surface tells the DJ nothing was
             // playable on-device (rather than silently ending with no audio).
@@ -842,6 +969,14 @@ final class SetlistPlayer {
         }
         sessionId = snap.sessionId
         pendingResumeMs = snap.positionMs > 0 ? snap.positionMs : nil
+        // Repeat/shuffle ride the snapshot (optional → default off/false for pre-existing files).
+        // The queue's shuffled ORDER is already baked into `snap.queue`; only the toggle state is
+        // reconstructed here. Seed `canonicalOrder` from the restored order so a later shuffle-OFF
+        // has a target (best-effort — the true pre-shuffle order isn't persisted). The lock-screen
+        // command state is (re)pushed by `armEngineHooks` when real playback starts.
+        repeatMode = RepeatMode(rawValue: snap.repeatMode ?? "") ?? .off
+        shuffleEnabled = snap.shuffleEnabled ?? false
+        canonicalOrder = shuffleEnabled ? queue.map(\.uid) : nil
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
         deviceQueueUnplayable = false
         loadedAnyDeviceTrack = false
@@ -902,6 +1037,8 @@ final class SetlistPlayer {
             queue: rows, index: index,
             positionMs: positionMs ?? sessionPositionMs(),
             isPlaying: sessionIsPlaying(),
+            repeatMode: repeatMode.rawValue,
+            shuffleEnabled: shuffleEnabled,
             updatedAt: Date().timeIntervalSince1970 * 1000)
         sessionStore.save(snap)
     }

@@ -18,13 +18,17 @@ final class WidgetPlaybackController {
     var previous: (() -> Void)?
     /// Flip the CURRENT track's favorite (♥) state (mirrors the in-app `FavoriteToggle`).
     var toggleFavorite: (() -> Void)?
+    /// Cycle the whole-session repeat mode off → all → one (mirrors the deck's repeat button).
+    var cycleRepeat: (() -> Void)?
+    /// Toggle live shuffle of the running set's upcoming tail (mirrors the deck's shuffle button).
+    var toggleShuffle: (() -> Void)?
 }
 
 /// Cross-process fallback: when a transport intent runs in the widget-extension process (the
 /// app was fully quit), it can't reach the live `WidgetPlaybackController`, so it drops the
 /// command into the shared App Group and the app drains it the moment it next becomes active.
 enum WidgetCommandChannel {
-    enum Command: String { case toggle, next, previous, favorite }
+    enum Command: String { case toggle, next, previous, favorite, cycleRepeat, toggleShuffle }
     private static let key = "pendingTransportCommand"
     private static let atKey = "pendingTransportCommandAt"
 
@@ -83,10 +87,12 @@ private func dispatchWidgetTransport(_ command: WidgetCommandChannel.Command) {
     let c = WidgetPlaybackController.shared
     let inProcess: (() -> Void)?
     switch command {
-    case .toggle:   inProcess = c.toggle
-    case .next:     inProcess = c.next
-    case .previous: inProcess = c.previous
-    case .favorite: inProcess = c.toggleFavorite
+    case .toggle:        inProcess = c.toggle
+    case .next:          inProcess = c.next
+    case .previous:      inProcess = c.previous
+    case .favorite:      inProcess = c.toggleFavorite
+    case .cycleRepeat:   inProcess = c.cycleRepeat
+    case .toggleShuffle: inProcess = c.toggleShuffle
     }
     // Which PROCESS an intent ran in is the crux of widget-button debugging: in the app
     // process the closure is wired (direct drive); in the widget process it's nil → the
@@ -127,6 +133,24 @@ struct NowPlayingFavoriteIntent: AudioPlaybackIntent {
     static var title: LocalizedStringResource = "Favorite"
     @MainActor func perform() async throws -> some IntentResult {
         dispatchWidgetTransport(.favorite)
+        return .result()
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingRepeatIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "Repeat"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.cycleRepeat)
+        return .result()
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingShuffleIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "Shuffle"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.toggleShuffle)
         return .result()
     }
 }

@@ -128,9 +128,21 @@ private struct TitleBlock: View {
 private struct TransportRow: View {
     let isPlaying: Bool
     let isFavorite: Bool
+    /// Shuffle + repeat flank the trio only where there's room (the full-width Large family);
+    /// Medium keeps the core ⏮⏯⏭♥ so 6 glyphs never crowd the cover.
+    var showShuffleRepeat: Bool = false
+    var shuffleOn: Bool = false
+    var repeatMode: String = "off"
     var iconSize: CGFloat = 18
     var body: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: showShuffleRepeat ? 18 : 22) {
+            if showShuffleRepeat {
+                Button(intent: NowPlayingShuffleIntent()) {
+                    Image(systemName: "shuffle")
+                        .foregroundStyle(shuffleOn ? Color.accentColor : Color.primary)
+                }
+                .accessibilityIdentifier("widget-shuffle-toggle")
+            }
             Button(intent: NowPlayingPreviousIntent()) {
                 Image(systemName: "backward.fill")
             }
@@ -139,6 +151,13 @@ private struct TransportRow: View {
             }
             Button(intent: NowPlayingNextIntent()) {
                 Image(systemName: "forward.fill")
+            }
+            if showShuffleRepeat {
+                Button(intent: NowPlayingRepeatIntent()) {
+                    Image(systemName: repeatMode == "one" ? "repeat.1" : "repeat")
+                        .foregroundStyle(repeatMode == "off" ? Color.primary : Color.accentColor)
+                }
+                .accessibilityIdentifier("widget-repeat-toggle")
             }
             Button(intent: NowPlayingFavoriteIntent()) {
                 Image(systemName: isFavorite ? "heart.fill" : "heart")
@@ -204,7 +223,9 @@ private struct LargeView: View {
                 TitleBlock(title: entry.snapshot.title, artist: entry.snapshot.artist)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            TransportRow(isPlaying: entry.snapshot.isPlaying, isFavorite: entry.snapshot.isFavorite, iconSize: 20)
+            TransportRow(isPlaying: entry.snapshot.isPlaying, isFavorite: entry.snapshot.isFavorite,
+                         showShuffleRepeat: true, shuffleOn: entry.snapshot.shuffleEnabled,
+                         repeatMode: entry.snapshot.repeatMode, iconSize: 20)
                 .frame(maxWidth: .infinity)
 
             if entry.snapshot.upNext.isEmpty {
@@ -254,5 +275,6 @@ extension NowPlayingSnapshot {
             .init(id: "2", songId: "b", title: "Reunion", artist: "M83"),
             .init(id: "3", songId: "c", title: "Wait", artist: "M83"),
         ],
-        isFavorite: true, appleMusicId: nil)
+        isFavorite: true, appleMusicId: nil,
+        repeatMode: "all", shuffleEnabled: true)
 }

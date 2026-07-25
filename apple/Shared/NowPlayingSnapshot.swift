@@ -29,6 +29,13 @@ struct NowPlayingSnapshot: Codable, Equatable {
     /// Studio). Carried so a widget ♥ reaches Apple Music via the owner-gated sync; a local track
     /// without one still favorites, it just never syncs upstream.
     var appleMusicId: String?
+    /// The running set's whole-session repeat mode (`RepeatMode` rawValue: "off"/"all"/"one"), or
+    /// "off" when no set is running. Drives the widget's repeat glyph. Decode-tolerant (a blob from
+    /// an OLD app build that predates this field decodes to "off").
+    var repeatMode: String
+    /// Whether the running set's upcoming tail is live-shuffled — drives the widget's shuffle glyph.
+    /// Decode-tolerant (defaults false for pre-existing blobs).
+    var shuffleEnabled: Bool
 
     struct Track: Codable, Equatable, Identifiable {
         /// Per-row identity (the setlist `Item.uid`), so repeats render as distinct rows.
@@ -39,7 +46,8 @@ struct NowPlayingSnapshot: Codable, Equatable {
     }
 
     init(isPlaying: Bool, hasContent: Bool, title: String, artist: String, songId: String?,
-         coverVersion: Int, upNext: [Track], isFavorite: Bool = false, appleMusicId: String? = nil) {
+         coverVersion: Int, upNext: [Track], isFavorite: Bool = false, appleMusicId: String? = nil,
+         repeatMode: String = "off", shuffleEnabled: Bool = false) {
         self.isPlaying = isPlaying
         self.hasContent = hasContent
         self.title = title
@@ -49,6 +57,8 @@ struct NowPlayingSnapshot: Codable, Equatable {
         self.upNext = upNext
         self.isFavorite = isFavorite
         self.appleMusicId = appleMusicId
+        self.repeatMode = repeatMode
+        self.shuffleEnabled = shuffleEnabled
     }
 
     /// Custom decode ONLY to tolerate blobs written before `isFavorite`/`appleMusicId` existed:
@@ -66,6 +76,8 @@ struct NowPlayingSnapshot: Codable, Equatable {
         upNext = try c.decode([Track].self, forKey: .upNext)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         appleMusicId = try c.decodeIfPresent(String.self, forKey: .appleMusicId)
+        repeatMode = try c.decodeIfPresent(String.self, forKey: .repeatMode) ?? "off"
+        shuffleEnabled = try c.decodeIfPresent(Bool.self, forKey: .shuffleEnabled) ?? false
     }
 
     static let empty = NowPlayingSnapshot(isPlaying: false, hasContent: false,

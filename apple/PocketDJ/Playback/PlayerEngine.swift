@@ -103,6 +103,18 @@ final class PlayerEngine {
     /// `onTrackEnded`); nil ⇒ no set is running, so the commands are disabled + reject input.
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
+    /// Lock-screen / Control Center / CarPlay REPEAT + SHUFFLE (`changeRepeatModeCommand` /
+    /// `changeShuffleModeCommand`) drive these. The setlist sequencer owns them across its
+    /// play()/stop() lifecycle (mirroring `onNext`/`onPrevious`); nil ⇒ no set is running, so the
+    /// commands stay disabled and reject input. Repeat maps `MPRepeatType`↔`RepeatMode`; shuffle is
+    /// a plain on/off (`.items`/`.off`).
+    var onRepeatModeChange: ((RepeatMode) -> Void)?
+    var onShuffleChange: ((Bool) -> Void)?
+    /// The repeat/shuffle state advertised on the system card's changeRepeat/changeShuffle commands,
+    /// set by the setlist and RE-ASSERTED on every card write (like `likeCommand.isActive`) so a Mix
+    /// interlude that reclaims the card can't leave a stale glyph.
+    @ObservationIgnored private var remoteRepeatType: MPRepeatType = .off
+    @ObservationIgnored private var remoteShuffleType: MPShuffleType = .off
     /// The lock-screen / Control Center ♥ (`MPRemoteCommandCenter.likeCommand`) drives these.
     /// Injected once at launch (mirroring `artworkURLsProvider`) from the favorites store + the
     /// catalog: `toggleCurrentFavorite` flips the CURRENT track's favorite (resolving its Apple
@@ -482,6 +494,35 @@ final class PlayerEngine {
         if center.likeCommand.isEnabled != enabled { center.likeCommand.isEnabled = enabled }
     }
 
+    /// Enable/disable the lock-screen / CarPlay REPEAT + SHUFFLE commands — the setlist sequencer
+    /// turns them on while a set runs (so they drive the SET's modes) and off otherwise (a
+    /// single-song play shows no repeat/shuffle glyph). Diffed so a same-value set doesn't churn the
+    /// process-global command center.
+    func setRepeatShuffleCommandsEnabled(_ enabled: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        if center.changeRepeatModeCommand.isEnabled != enabled { center.changeRepeatModeCommand.isEnabled = enabled }
+        if center.changeShuffleModeCommand.isEnabled != enabled { center.changeShuffleModeCommand.isEnabled = enabled }
+    }
+
+    /// Advertise the whole-session repeat mode on the system card (the sequencer calls this on every
+    /// mode change). Stored in `remoteRepeatType` + re-asserted on each card write, like `likeCommand`.
+    func setRemoteRepeatMode(_ mode: RepeatMode) {
+        switch mode {
+        case .off: remoteRepeatType = .off
+        case .all: remoteRepeatType = .all
+        case .one: remoteRepeatType = .one
+        }
+        MPRemoteCommandCenter.shared().changeRepeatModeCommand.currentRepeatType = remoteRepeatType
+        updateNowPlayingInfo()
+    }
+
+    /// Advertise the shuffle state on the system card (on ⇒ `.items`).
+    func setRemoteShuffle(_ on: Bool) {
+        remoteShuffleType = on ? .items : .off
+        MPRemoteCommandCenter.shared().changeShuffleModeCommand.currentShuffleType = remoteShuffleType
+        updateNowPlayingInfo()
+    }
+
     // MARK: - Lock-screen / Control Center (MPNowPlayingInfoCenter + remote commands)
 
     /// Wire the remote command center once: the lock screen, Control Center, AirPods,
@@ -529,6 +570,35 @@ final class PlayerEngine {
         center.likeCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
             return self.handleLikeCommand()
+        }
+
+        // REPEAT + SHUFFLE — one wiring surfaces them on the lock screen, Control Center, AND
+        // CarPlay's `CPNowPlayingTemplate` at once (the head unit auto-renders the affordances when
+        // the commands are enabled + `currentRepeatType`/`currentShuffleType` are set). Enabled only
+        // while a set runs (`setRepeatShuffleCommandsEnabled`, driven by the sequencer's arm/stop),
+        // and guarded by the SAME single-owner arbiter as play/pause so a Mix interlude that owns the
+        // card rejects them. Glyph state is re-asserted on every card write (`updateNowPlayingInfo`).
+        center.changeRepeatModeCommand.isEnabled = false
+        center.changeRepeatModeCommand.addTarget { [weak self] event in
+            guard let self, NowPlayingArbiter.shared.isActive(self),
+                  let onRepeat = self.onRepeatModeChange,
+                  let e = event as? MPChangeRepeatModeCommandEvent else { return .commandFailed }
+            let mode: RepeatMode
+            switch e.repeatType {
+            case .off: mode = .off
+            case .one: mode = .one
+            case .all: mode = .all
+            @unknown default: mode = .off
+            }
+            onRepeat(mode); return .success
+        }
+        center.changeShuffleModeCommand.isEnabled = false
+        center.changeShuffleModeCommand.addTarget { [weak self] event in
+            guard let self, NowPlayingArbiter.shared.isActive(self),
+                  let onShuffle = self.onShuffleChange,
+                  let e = event as? MPChangeShuffleModeCommandEvent else { return .commandFailed }
+            // Any non-off shuffle type (.items / .collections) reads as "on".
+            onShuffle(e.shuffleType != .off); return .success
         }
     }
 
@@ -585,6 +655,12 @@ final class PlayerEngine {
         // load/play/pause/seek AND on a favorite change via refreshFavoriteState). Reads through
         // the injected closure; stays false when unwired (tests) or no current song.
         MPRemoteCommandCenter.shared().likeCommand.isActive = isCurrentFavorite?() ?? false
+        // Re-assert the repeat/shuffle glyph state on every card write — a Mix interlude that
+        // reclaimed the card would otherwise leave a stale type. Harmless while the commands are
+        // disabled (a single-song play): the glyphs are hidden then regardless.
+        let rc = MPRemoteCommandCenter.shared()
+        rc.changeRepeatModeCommand.currentRepeatType = remoteRepeatType
+        rc.changeShuffleModeCommand.currentShuffleType = remoteShuffleType
     }
 
     /// Resolve + fetch the current track's cover art and attach it to the Now Playing card.
