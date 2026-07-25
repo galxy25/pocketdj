@@ -409,12 +409,13 @@ struct MixSessionDetailView: View {
         .padding(12)
     }
 
-    /// `<session name>.csv` for the tracklist export.
+    /// `<session name>.csv` for the tracklist export. The `.csv` is written EXPLICITLY:
+    /// `.fileExporter` doesn't reliably append even a standard type's extension on-device.
     private var csvFilename: String {
         let base = (store.session(sessionId)?.name ?? "session")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return base.isEmpty ? "session" : base
+        return "\(base.isEmpty ? "session" : base).csv"
     }
 
     /// Export the session's PLAYED tracks (in order) as a universal tracklist CSV.

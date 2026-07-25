@@ -1004,12 +1004,14 @@ struct PlaylistDetailView: View {
         if let sl = collections.realize(playlistId: playlistId) { path.append(sl) }
     }
 
-    /// `<sanitized name>.csv` — the universal tracklist filename.
+    /// `<sanitized name>.csv` — the universal tracklist filename. The `.csv` is written EXPLICITLY
+    /// (like `.pdjcollection` above): `.fileExporter` doesn't reliably append even a standard type's
+    /// extension on-device, so it shipped bare, extension-less files.
     private var csvFilename: String {
         let base = (playlist?.name ?? "playlist")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return base.isEmpty ? "playlist" : base
+        return "\(base.isEmpty ? "playlist" : base).csv"
     }
 
     private func exportPocketDJ() {

@@ -323,12 +323,14 @@ struct PocketDetailView: View {
         return "\(base.isEmpty ? "pocket" : base).pocket.pdjcollection"
     }
 
-    /// `<sanitized name>.csv` — the universal tracklist filename.
+    /// `<sanitized name>.csv` — the universal tracklist filename. The `.csv` is written EXPLICITLY
+    /// (like `.pdjcollection` above): `.fileExporter` doesn't reliably append even a standard type's
+    /// extension on-device, so it shipped bare, extension-less files.
     private var csvFilename: String {
         let base = (pocket?.name ?? "pocket")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return base.isEmpty ? "pocket" : base
+        return "\(base.isEmpty ? "pocket" : base).csv"
     }
 
     private func exportPocketDJ() {
