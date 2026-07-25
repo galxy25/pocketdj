@@ -252,6 +252,11 @@ function composeState(s) {
     v: 1, jukeboxId: s.id, name: s.name, updatedAt: Date.now(), ended: s.ended,
     timeless: !!s.timeless, expiresAt: s.timeless ? null : (s.expiresAt ?? null),
     hear: !!s.hear, nowPlaying: s.nowPlaying || null, upNext: s.upNext || [],
+    // apiBase: the broker's PUBLIC request-endpoint base. The web guest page bakes this into
+    // __API_BASE__; a NATIVE client that joined via link (JukeboxLink) reads it FROM state.json so
+    // it can POST requests without pre-configuring a jukebox server URL. See
+    // JukeboxClient.submitGuestRequest (native) — it hits `<apiBase>/jukebox/<id>/request`.
+    apiBase: CFG.publicBase,
     played: collapsePlayed((s.played || []).slice(-PLAYED_KEEP)).slice(-PLAYED_PUBLISH), requests,
   };
 }
