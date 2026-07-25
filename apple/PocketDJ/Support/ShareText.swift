@@ -9,8 +9,13 @@ import Foundation
 enum ShareText {
 
     private static func query(_ title: String, _ artist: String) -> String {
-        let s = "\(artist) \(title)".trimmingCharacters(in: .whitespaces)
-        return s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+        // Collapse any run of whitespace to a single space — a stray double-space leaves Spotify's
+        // /search/<q> showing an empty box — then percent-encode for a PATH segment: allow only
+        // unreserved characters so a "/" / "?" / "#" in a title can't split the path (space → %20).
+        // Also safe for the ?q= / ?term= query-param URLs (Apple Music / YouTube).
+        let raw = "\(artist) \(title)".split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let allowed = CharacterSet(charactersIn: "-._~").union(.alphanumerics)
+        return raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
     }
 
     /// Apple Music: canonical URL → `appleMusicId`-derived short link → catalog search.
@@ -21,7 +26,7 @@ enum ShareText {
         return "https://music.apple.com/search?term=\(query(title, artist))"
     }
     private static func spotifyLine(url: String?, title: String, artist: String) -> String {
-        (url?.isEmpty == false ? url! : "https://open.spotify.com/search/\(query(title, artist))")
+        (url?.isEmpty == false ? url! : "https://open.spotify.com/search/results/\(query(title, artist))")
     }
     private static func youtubeLine(url: String?, title: String, artist: String) -> String {
         (url?.isEmpty == false ? url! : "https://music.youtube.com/search?q=\(query(title, artist))")
