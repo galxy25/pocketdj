@@ -84,7 +84,11 @@
               "score": { "type": "number" },
               "sources": { "type": "array", "items": { "type": "string" } }
             }
-          }
+          },
+          "appleMusicId": { "type": "string", "description": "Apple Music album store id (iTunes collectionId)." },
+          "appleMusicUrl": { "type": "string", "description": "F3 canonical Apple Music album deep-link." },
+          "spotifyUrl": { "type": "string", "description": "F3 canonical Spotify album/track deep-link." },
+          "youtubeUrl": { "type": "string", "description": "F3 canonical YouTube Music deep-link." }
         }
       }
     },
@@ -111,7 +115,11 @@
           "camelot": { "type": ["string", "null"] },
           "length": { "type": "integer", "description": "milliseconds" },
           "fileType": { "type": "string" },
-          "pointer": { "$ref": "#/definitions/pointer" }
+          "pointer": { "$ref": "#/definitions/pointer" },
+          "appleMusicId": { "type": "string", "description": "Apple Music catalog store id (adam id)." },
+          "appleMusicUrl": { "type": "string", "description": "F3 canonical Apple Music song deep-link." },
+          "spotifyUrl": { "type": "string", "description": "F3 canonical Spotify track deep-link." },
+          "youtubeUrl": { "type": "string", "description": "F3 canonical YouTube Music deep-link." }
         }
       }
     },

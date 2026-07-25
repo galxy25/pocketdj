@@ -98,6 +98,17 @@ struct IndexAlbum: Decodable, Identifiable, Hashable {
     /// collectionId is resolvable. A bare numeric string when present.
     let appleMusicId: String?
 
+    /// Canonical "Sharing" deep-links (F3), backfilled by the streaming-links pipeline.
+    /// `appleMusicUrl` is derived directly from `appleMusicId`
+    /// (`https://music.apple.com/album/<id>`); `spotifyUrl` / `youtubeUrl` come from the
+    /// headless-browser resolver (`scripts/resolve-streaming-links.mjs`). All optional —
+    /// absent until stamped. The inline `= nil` defaults keep the synthesized memberwise
+    /// init source-compatible for `applying(_:)` + `OnlineSearchModel`, while the `Optional`
+    /// type keeps decoding tolerant of the (many) index rows that lack them.
+    var appleMusicUrl: String? = nil
+    var spotifyUrl: String? = nil
+    var youtubeUrl: String? = nil
+
     var hasAudioAnalysis: Bool { !(audioTracks ?? []).isEmpty }
 
     /// Ordered cover-art candidates: self-hosted CDN thumbnails first (fast,
@@ -134,6 +145,17 @@ struct IndexSong: Decodable, Identifiable, Hashable {
     /// streaming provider must verify with a real MusicKit fetch before use — see
     /// `AppleMusicProvider.resolve(_:)`.
     let appleMusicId: String?
+
+    /// Canonical "Sharing" deep-links (F3), backfilled by the streaming-links pipeline.
+    /// `appleMusicUrl` is derived directly from `appleMusicId`
+    /// (`https://music.apple.com/song/<id>`); `spotifyUrl` / `youtubeUrl` come from the
+    /// headless-browser resolver (`scripts/resolve-streaming-links.mjs`). All optional —
+    /// absent until stamped. The inline `= nil` defaults keep the synthesized memberwise
+    /// init source-compatible for `applying(_:)` + `OnlineSearchModel`, while the `Optional`
+    /// type keeps decoding tolerant of the (many) index rows that lack them.
+    var appleMusicUrl: String? = nil
+    var spotifyUrl: String? = nil
+    var youtubeUrl: String? = nil
 
     /// A minimal `IndexSong` carrying only the fields the playback engine needs (id +
     /// title + artist). `IndexSong` is Decodable-only (no memberwise init), so — like

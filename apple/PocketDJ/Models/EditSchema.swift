@@ -170,7 +170,8 @@ extension IndexAlbum {
                           genre: e.genre ?? genre, year: e.year ?? year, country: e.country ?? country,
                           trackList: trackList, fileType: fileType,
                           audioTracks: Self.overlayAudio(audioTracks, e.audioTracks),
-                          audioDurationSec: audioDurationSec, appleMusicId: appleMusicId)
+                          audioDurationSec: audioDurationSec, appleMusicId: appleMusicId,
+                          appleMusicUrl: appleMusicUrl, spotifyUrl: spotifyUrl, youtubeUrl: youtubeUrl)
     }
 
     /// Overlay per-segment audio edits onto detected segments, overriding only the
@@ -210,6 +211,7 @@ extension IndexSong {
                          explicit: e.explicit ?? explicit, bpm: e.bpm ?? bpm,
                          key: e.key ?? key, camelot: e.camelot ?? camelot,
                          length: length, fileType: fileType, lyricsStatus: lyricsStatus,
-                         appleMusicId: appleMusicId)
+                         appleMusicId: appleMusicId,
+                         appleMusicUrl: appleMusicUrl, spotifyUrl: spotifyUrl, youtubeUrl: youtubeUrl)
     }
 }
