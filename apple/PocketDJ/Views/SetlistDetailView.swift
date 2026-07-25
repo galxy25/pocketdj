@@ -43,12 +43,13 @@ struct SetlistDetailView: View {
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
 
-    /// `<setlist name>.csv` for the tracklist export.
+    /// `<setlist name>.csv` for the tracklist export. The `.csv` is written EXPLICITLY:
+    /// `.fileExporter` doesn't reliably append even a standard type's extension on-device.
     private var csvFilename: String {
         let base = (setlist?.name ?? "setlist")
             .components(separatedBy: CharacterSet(charactersIn: "\\/:*?\"<>|")).joined()
             .trimmingCharacters(in: .whitespaces)
-        return base.isEmpty ? "setlist" : base
+        return "\(base.isEmpty ? "setlist" : base).csv"
     }
     private func exportCSV() {
         if let data = collections.exportSetlistCSV(setlistId) {
