@@ -30,8 +30,10 @@ enum ArrangerBouncer {
     /// Resolve the tracks into per-track jobs. Shared by both bounce entry points so gain/pan/strip
     /// handling can't drift. `totalFrames` is NOT computed here — per-track tempo changes each clip's
     /// length, so the true master length is only known after the warp (computed in `mixAndWrite`).
-    private static func plan(tracks: [StudioTrack], store: StudioStore, bpm: Double) -> [TrackJob]? {
+    private static func plan(tracks: [StudioTrack], store: StudioStore, bpm: Double,
+                             beatMatch: Bool) -> [TrackJob]? {
         let sr = StudioAudio.canonicalSampleRate
+        let beatFrames = bpm > 0 ? 60.0 / bpm * sr : 0   // Beat Match: snap starts to this grid
         var jobs: [TrackJob] = []
         for track in tracks {
             let strip = track.strip.clamped()
@@ -44,11 +46,17 @@ enum ArrangerBouncer {
             var clips: [ClipJob] = []
             for clip in track.clips {
                 guard let url = store.clipFileURL(clip.fileName) else { continue }
-                let startFrame = Int64((Double(clip.startMs) / 1000 * sr).rounded())
+                // Beat-match warp + start-snap — the SAME ArrangerBeatMatch helpers as
+                // MultitrackPlayer.play so a bounce matches playback exactly.
+                let rate = ArrangerBeatMatch.rate(clipBpm: clip.grid?.bpm ?? 0, masterBpm: bpm,
+                                                  tempoRatio: strip.tempoRatio, beatMatch: beatMatch)
+                let startFrame = Int64(ArrangerBeatMatch.snappedStartFrame(
+                    Int((Double(clip.startMs) / 1000 * sr).rounded()),
+                    beatFrames: beatFrames, beatMatch: beatMatch))
                 let srcStart = max(0, Int64((Double(clip.fileStartMs) / 1000 * sr).rounded()))
                 let len = Int64((Double(clip.durationMs) / 1000 * sr).rounded())
                 clips.append(ClipJob(startFrame: startFrame, srcStart: srcStart, len: len, url: url,
-                                     rate: strip.tempoRatio, pitchCents: strip.pitchSemitones * 100))
+                                     rate: rate, pitchCents: strip.pitchSemitones * 100))
             }
             guard !clips.isEmpty else { continue }
             jobs.append(TrackJob(gain: gain, panL: panL, panR: panR,
@@ -60,8 +68,9 @@ enum ArrangerBouncer {
     /// Returns a ready-to-file master `StudioClip` (audio already written), positioned at `startMs`,
     /// or nil when the tracks hold no resolvable clips. The caller files it onto a new master track.
     static func bounce(tracks: [StudioTrack], store: StudioStore, name: String, startMs: Int = 0,
-                       masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120) async -> StudioClip? {
-        guard let jobs = plan(tracks: tracks, store: store, bpm: bpm) else { return nil }
+                       masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120,
+                       beatMatch: Bool = false) async -> StudioClip? {
+        guard let jobs = plan(tracks: tracks, store: store, bpm: bpm, beatMatch: beatMatch) else { return nil }
         let clipId = StudioFactory.newClipId()
         let fileName = StudioStore.clipFileName(clipId)
         guard let dir = try? StudioStore.arrangementsDir() else { return nil }
@@ -76,8 +85,9 @@ enum ArrangerBouncer {
     /// Bounce straight to a caller-provided file URL (a dated artifact in the arrangements dir),
     /// returning the master length in ms — the artifact-only Bounce path. No clip/track is created.
     static func bounceToFile(tracks: [StudioTrack], store: StudioStore, to dest: URL,
-                             masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120) async -> Int? {
-        guard let jobs = plan(tracks: tracks, store: store, bpm: bpm) else { return nil }
+                             masterFX: StudioMasterFX = StudioMasterFX(), bpm: Double = 120,
+                             beatMatch: Bool = false) async -> Int? {
+        guard let jobs = plan(tracks: tracks, store: store, bpm: bpm, beatMatch: beatMatch) else { return nil }
         guard let durationMs = await render(jobs: jobs, masterFX: masterFX, bpm: bpm, to: dest),
               durationMs > 0 else { return nil }
         return durationMs

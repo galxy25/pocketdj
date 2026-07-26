@@ -269,13 +269,25 @@ final class MultitrackPlayer {
         let channels = Int(fmt.channelCount)
         var clips: [MultitrackRenderContext.Clip] = []
         var retained: [AVAudioPCMBuffer] = []
+        // Beat Match: warp every clip to the master tempo + snap starts to the grid.
+        let beatMatch = arrangement.beatMatchEnabled
+        let masterBpm = arrangement.bpm
+        let beatFrames = masterBpm > 0 ? 60.0 / masterBpm * sampleRate : 0
         for (ti, track) in arrangement.tracks.enumerated() {
             let strip = track.strip.clamped()
             for clip in track.clips {
                 guard let url = store.clipFileURL(clip.fileName),
                       let buf = try? await StudioRender.shared.decodeBuffer(url: url),
                       buf.frameLength > 0, let ch = buf.floatChannelData else { continue }
-                let startFrame = Int((Double(clip.startMs) / 1000 * sampleRate).rounded())
+                // Beat-match warp (clip tempo → master) × per-track tempo, and a grid-snapped start —
+                // shared with ArrangerBouncer via ArrangerBeatMatch so a bounce matches playback.
+                let rate = ArrangerBeatMatch.rate(clipBpm: clip.grid?.bpm ?? 0, masterBpm: masterBpm,
+                                                  tempoRatio: strip.tempoRatio, beatMatch: beatMatch)
+                let pitchCents = strip.pitchSemitones * 100
+                let needsBake = abs(rate - 1) > 0.0005 || abs(pitchCents) > 0.5
+                let startFrame = ArrangerBeatMatch.snappedStartFrame(
+                    Int((Double(clip.startMs) / 1000 * sampleRate).rounded()),
+                    beatFrames: beatFrames, beatMatch: beatMatch)
                 // Honor the non-destructive scissor window: play only file frames
                 // [srcStart, srcStart + frameLength), clamped to what the decoded buffer holds.
                 let bufFrames = Int(buf.frameLength)
@@ -284,15 +296,15 @@ final class MultitrackPlayer {
                 let durFrames = clip.durationMs > 0 ? Int((Double(clip.durationMs) / 1000 * sampleRate).rounded()) : avail
                 let frameLength = max(0, min(avail, durFrames))
                 guard frameLength > 0 else { continue }
-                // Per-track PITCH/TEMPO pre-bake: warp the scissor WINDOW offline (a raw-sum render loop
-                // can't host a live time-stretch), then play the warped buffer from frame 0. Both read
-                // paths (here + ArrangerBouncer) apply the same transform so a bounce matches. On a
-                // neutral strip `transformBuffer` short-circuits to a plain slice; on failure we fall
-                // back to the raw window so a clip never drops out.
-                if strip.bakesAudio,
+                // PITCH/TEMPO + BEAT-MATCH pre-bake: warp the scissor WINDOW offline (a raw-sum render
+                // loop can't host a live time-stretch), then play the warped buffer from frame 0. Both
+                // read paths (here + ArrangerBouncer) apply the same transform so a bounce matches. A
+                // neutral warp short-circuits to a plain slice; on failure we fall back to the raw
+                // window so a clip never drops out.
+                if needsBake,
                    let warped = try? await StudioRender.shared.transformBuffer(
                         buf, from: Int64(srcStart), frames: Int64(frameLength),
-                        rate: strip.tempoRatio, pitchCents: strip.pitchSemitones * 100),
+                        rate: rate, pitchCents: pitchCents),
                    warped.frameLength > 0, let wch = warped.floatChannelData {
                     let wCh = Int(warped.format.channelCount)
                     clips.append(.init(trackIndex: ti, startFrame: startFrame, frameLength: Int(warped.frameLength),

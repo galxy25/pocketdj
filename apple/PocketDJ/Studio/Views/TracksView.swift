@@ -218,7 +218,7 @@ struct TracksView: View {
             // Ask PerformanceView to hide its sub-tab picker while an arrangement is open (#1).
             nav.arrangerFullscreen = openArrangementId != nil
         }
-        .onChange(of: current?.id) {
+        .onChange(of: current?.id, initial: true) {
             // The open arrangement vanished (e.g. deleted from another window on the shared store) or
             // changed — stop a now-orphaned player so a looping mix can't play on with no transport,
             // and reset the seek cursor for the newly-opened arrangement.
@@ -228,6 +228,11 @@ struct TracksView: View {
             // arrangement must discard it (else its staged clips + region strand a broken, dimmed
             // trim state on the next arrangement, and Save would target a track that isn't there).
             if trimMode { exitTrimMode() }
+            // Opening an arrangement that predates Beat Match (or whose analysis was interrupted) →
+            // build any missing beat grids in the background so the control can un-grey. Idempotent.
+            if let id = current?.id, current?.beatGridReady == false {
+                Task { await StudioArrangerGridAnalyzer.ensureGrids(forArrangement: id, studio: studio) }
+            }
         }
         .onChange(of: mixSignature) {
             if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks, bpm: arr.bpm) }
@@ -730,12 +735,34 @@ struct TracksView: View {
         }
     }
     private func bpmControl(_ arr: StudioArrangement) -> some View {
-        Button { bpmText = String(Int(arr.bpm.rounded())); pendingBpm = true } label: {
-            Text("♩ \(Int(arr.bpm.rounded()))")
-                .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(Theme.fg)
-                .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.bgOverlay, in: Capsule())
+        let bm = arr.beatMatchEnabled
+        return Button { bpmText = String(Int(arr.bpm.rounded())); pendingBpm = true } label: {
+            HStack(spacing: 3) {
+                if bm { Image(systemName: "metronome.fill").font(.system(size: 8, weight: .bold)) }
+                Text("♩ \(Int(arr.bpm.rounded()))")
+            }
+            .font(.caption.monospacedDigit().weight(.semibold))
+            .foregroundStyle(bm ? Theme.accent : Theme.fg)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(bm ? Theme.accent.opacity(0.16) : Theme.bgOverlay, in: Capsule())
         }
         .buttonStyle(.plain).accessibilityIdentifier("tracks-bpm")
+        // Long-press (iOS) / right-click (macOS) → Beat Match. Greyed with an "under construction"
+        // note until every clip has a background-detected beat grid (StudioArrangement.beatGridReady).
+        .contextMenu {
+            Section("Beat Match") {
+                if arr.beatGridReady {
+                    Button { studio.setArrangementBeatMatch(arr.id, !bm) } label: {
+                        Label("Beat Match mode", systemImage: bm ? "checkmark" : "metronome")
+                    }
+                    .accessibilityIdentifier("tracks-beatmatch-toggle")
+                } else {
+                    Button {} label: { Label("Beat grid under construction…", systemImage: "hourglass") }
+                        .disabled(true)
+                        .accessibilityIdentifier("tracks-beatmatch-building")
+                }
+            }
+        }
     }
     private func loopControl(_ arr: StudioArrangement) -> some View {
         Button { toggleLoop(arr) } label: {
@@ -1480,8 +1507,11 @@ struct TracksView: View {
                 .onChanged { dragClipId = clip.id; dragDX = $0.translation.width }
                 .onEnded { v in
                     let deltaMs = Int(v.translation.width / pxPerSec * 1000)
-                    studio.moveClip(arrangement: arr.id, track: track.id, clip: clip.id,
-                                    toStartMs: max(0, clip.startMs + deltaMs))
+                    var target = max(0, clip.startMs + deltaMs)
+                    // Beat Match: snap the drop to the nearest beat so the timeline matches the grid-
+                    // snapped playback (same rounding as ArrangerBeatMatch.snappedStartFrame).
+                    if arr.beatMatchEnabled { target = snapMs(target, bpm: arr.bpm) }
+                    studio.moveClip(arrangement: arr.id, track: track.id, clip: clip.id, toStartMs: target)
                     dragClipId = nil; dragDX = 0
                 },
             including: trimMode ? .subviews : .all)   // trim mode: region handles own the drag
@@ -1756,7 +1786,8 @@ struct TracksView: View {
             guard let dir = try? StudioStore.arrangementsDir() else { return }
             let dest = dir.appendingPathComponent(fileName)
             guard let ms = await ArrangerBouncer.bounceToFile(tracks: selected, store: studio, to: dest,
-                                                              masterFX: a.masterFX, bpm: a.bpm), ms > 0 else { return }
+                                                              masterFX: a.masterFX, bpm: a.bpm,
+                                                              beatMatch: a.beatMatchEnabled), ms > 0 else { return }
             studio.addArrangementArtifact(StudioArrangementArtifact(
                 id: StudioFactory.newArtifactId(), arrangementId: a.id, kind: .bounce,
                 name: "bounce-\(stamp)", fileName: fileName, durationMs: ms,
