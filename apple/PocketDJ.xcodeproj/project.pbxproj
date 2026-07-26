@@ -23,6 +23,7 @@
 		07F7BDC860F9618FC26A555C /* StemPlayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB07D65C3ACAA9CF4E74D3BD /* StemPlayerTests.swift */; };
 		080A252DED04A1AF4C0395E6 /* OnboardingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F00EE6539DFCCBBD0E5773 /* OnboardingStore.swift */; };
 		0881321A75A0851B5E4CDC58 /* PlaybackModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A44274EC530895D9DCA349DF /* PlaybackModeTests.swift */; };
+		08ADC6A2A38C3D63690F03C3 /* StudioMIDIImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716F2667F0AAC0AADE06AAD0 /* StudioMIDIImport.swift */; };
 		08D5D95518CDE5EC9A4AFD08 /* StudioMicRecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 642B97D1FD3512E8004132F1 /* StudioMicRecordView.swift */; };
 		0A048AF0DED167E8F14A121E /* DemuxMelodySwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494A29267BF1E47AA92BE17D /* DemuxMelodySwitchTests.swift */; };
 		0A420C679FC34124D6A2F253 /* MixRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86121DD37BEE5F5D72A8A72 /* MixRecorderTests.swift */; };
@@ -182,6 +183,7 @@
 		77FF94EDA7EFA78A4F8E5C19 /* TracksGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583031210C6CC89D16565023 /* TracksGlyph.swift */; };
 		785A2283E86AF6FBB36C7E97 /* NowPlayingSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E68B627E11B43B6DA0FFC32 /* NowPlayingSnapshot.swift */; };
 		78EF1A8ECCC69029C9189883 /* PocketDJUTType.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */; };
+		79077DE77DA19996E79E74CE /* StudioMIDIImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A638839E33F70B5BB606068 /* StudioMIDIImportTests.swift */; };
 		795FD609679C7C11A4F7F170 /* StudioStepModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C408F5E0FE5F2891C7B35D7 /* StudioStepModeTests.swift */; };
 		798E50C301DAFDD54862DFEC /* JukeboxModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 394BC3F5EEF6BB8C34A8903A /* JukeboxModels.swift */; };
 		79C3B32F7D074CD5D11AEB6B /* PlaylistsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE97BCE395E79206B4AF1156 /* PlaylistsView.swift */; };
@@ -423,6 +425,7 @@
 		0885F3744213F8187192B18C /* DemuxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxTests.swift; sourceTree = "<group>"; };
 		08891E1958AB58EB754B52C9 /* DemuxInstrumentalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxInstrumentalView.swift; sourceTree = "<group>"; };
 		095D095BA4F32AF9F76E2845 /* ShazamRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShazamRecognizer.swift; sourceTree = "<group>"; };
+		0A638839E33F70B5BB606068 /* StudioMIDIImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioMIDIImportTests.swift; sourceTree = "<group>"; };
 		0ADBDEBBAC88D4A9038E2123 /* Interpolate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Interpolate.swift; sourceTree = "<group>"; };
 		0B0A4D3FC482AAB7C3C06971 /* StudioAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioAnalyzer.swift; sourceTree = "<group>"; };
 		0B288ECD80CA84D3032A8774 /* XCUIHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XCUIHelpers.swift; sourceTree = "<group>"; };
@@ -593,6 +596,7 @@
 		70CA1E471270B08E47CCA895 /* NowPlayingDSP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingDSP.swift; sourceTree = "<group>"; };
 		715AB831C0016619550FFEEA /* StudioStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioStore.swift; sourceTree = "<group>"; };
 		716673B40CDC4A04D4485070 /* DemuxModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxModels.swift; sourceTree = "<group>"; };
+		716F2667F0AAC0AADE06AAD0 /* StudioMIDIImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioMIDIImport.swift; sourceTree = "<group>"; };
 		724E20A01740CD3684F83596 /* StreamingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingService.swift; sourceTree = "<group>"; };
 		725DEA73B0A1B7F94B3D335B /* VUMeterAndCueUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VUMeterAndCueUITests.swift; sourceTree = "<group>"; };
 		7266D9DD5E60E6B11B393E85 /* JukeboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxView.swift; sourceTree = "<group>"; };
@@ -954,6 +958,7 @@
 				1A492DFF20D12B0B40DDC34A /* StudioEngineMathTests.swift */,
 				6BDE5713FB04603512577AF2 /* StudioFoldersTests.swift */,
 				4928D27784081864D2776F1B /* StudioMicRecorderTests.swift */,
+				0A638839E33F70B5BB606068 /* StudioMIDIImportTests.swift */,
 				9B9937C62AF0BC45009823AB /* StudioRenderTests.swift */,
 				3C408F5E0FE5F2891C7B35D7 /* StudioStepModeTests.swift */,
 				B63459D37D4840D3D9176324 /* StudioStoreTests.swift */,
@@ -1091,6 +1096,7 @@
 				5658BF6FB3E1C0B4C53EF88B /* StudioEngine.swift */,
 				FD092F0A0E9902C7C1C595C6 /* StudioFolders.swift */,
 				9B9B9B7FD84BD26BBFECC5C5 /* StudioMicRecorder.swift */,
+				716F2667F0AAC0AADE06AAD0 /* StudioMIDIImport.swift */,
 				A839ABF17F1E9D5F80461A03 /* StudioModels.swift */,
 				D9B8DAE7F1A6BAD5DDE91D4B /* StudioRender.swift */,
 				715AB831C0016619550FFEEA /* StudioStore.swift */,
@@ -1749,6 +1755,7 @@
 				2B2B59DEEC464D27512E2867 /* StreamingProviderTests.swift in Sources */,
 				C551980B55691B322E918045 /* StudioEngineMathTests.swift in Sources */,
 				4D0C744C62507A752563EFCF /* StudioFoldersTests.swift in Sources */,
+				79077DE77DA19996E79E74CE /* StudioMIDIImportTests.swift in Sources */,
 				1E24D94C729F6C56C60F0C8A /* StudioMicRecorderTests.swift in Sources */,
 				0B98FE9F6D0AB47948463EDB /* StudioRenderTests.swift in Sources */,
 				795FD609679C7C11A4F7F170 /* StudioStepModeTests.swift in Sources */,
@@ -1960,6 +1967,7 @@
 				F8772450A4B5E5BB58C7508F /* StudioFolders.swift in Sources */,
 				7F410A79591C39ED23618154 /* StudioInstrumentsView.swift in Sources */,
 				B9A7D3A3CE5FE4F3975EE67A /* StudioLoopsView.swift in Sources */,
+				08ADC6A2A38C3D63690F03C3 /* StudioMIDIImport.swift in Sources */,
 				08D5D95518CDE5EC9A4AFD08 /* StudioMicRecordView.swift in Sources */,
 				F2F142080C34E4172F159B55 /* StudioMicRecorder.swift in Sources */,
 				CFED1982EFBB66519E96A5ED /* StudioMixerDeck.swift in Sources */,

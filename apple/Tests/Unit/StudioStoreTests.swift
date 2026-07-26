@@ -97,6 +97,27 @@ final class StudioStoreTests: XCTestCase {
     }
 
     /// Upsert-by-id: re-filing the same id replaces the record, never duplicates a row.
+    func testSetTakeTempoRescalesEventsAndInstrumentSwitch() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_t", name: "T", instrument: .piano, fileName: "take-tk_t.m4a",
+                                 bpm: 120,
+                                 events: [StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 100),
+                                          StudioNoteEvent(onMs: 1000, offMs: 1500, note: 64, velocity: 100)],
+                                 durationMs: 1500))
+        // Double the tempo (120 → 240) halves every note time.
+        store.setTakeTempo("tk_t", newBpm: 240)
+        let t = store.take("tk_t")!
+        XCTAssertEqual(t.bpm, 240)
+        XCTAssertEqual(t.events[0].offMs, 250)
+        XCTAssertEqual(t.events[1].onMs, 500)
+        XCTAssertEqual(t.events[1].offMs, 750)
+        XCTAssertEqual(t.durationMs, 750)
+        XCTAssertEqual(t.events.map(\.note), [60, 64], "pitches unchanged by tempo")
+        // Instrument switch is a plain field change.
+        store.setTakeInstrument("tk_t", .violin)
+        XCTAssertEqual(store.take("tk_t")?.instrument, .violin)
+    }
+
     func testAddIsUpsertById() {
         let store = StudioStore(fileURL: storeURL)
         store.addSample(makeSample("smp_a"))

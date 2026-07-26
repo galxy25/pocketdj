@@ -19,6 +19,14 @@ struct StudioTakesView: View {
 
     @State private var renamingId: String?
     @State private var nameDraft = ""
+    @State private var tempoId: String?
+    @State private var tempoDraft = ""
+
+    /// Relative tempo presets offered in the take's Tempo submenu (applied to the current bpm).
+    private static let tempoMultipliers: [Double] = [0.5, 0.75, 0.9, 1.1, 1.25, 1.5, 2.0]
+    private static func multLabel(_ m: Double) -> String {
+        m == m.rounded() ? String(Int(m)) : String(format: "%.2g", m)
+    }
     /// Takes already sampled THIS visit — flips the button to a checkmark so a double-tap doesn't
     /// mint two identical samples by accident (a re-sample is still allowed after leaving and
     /// returning; samples are cheap and explicitly user-owned).
@@ -64,6 +72,22 @@ struct StudioTakesView: View {
             .accessibilityIdentifier("take-rename-confirm")
             Button("Cancel", role: .cancel) { renamingId = nil }
         }
+        .alert("Set tempo (BPM)", isPresented: Binding(get: { tempoId != nil },
+                                                       set: { if !$0 { tempoId = nil } })) {
+            TextField("BPM", text: $tempoDraft)
+                #if !os(macOS)
+                .keyboardType(.numberPad)
+                #endif
+                .accessibilityIdentifier("take-tempo-field")
+            Button("Set") {
+                if let id = tempoId, let bpm = Double(tempoDraft.trimmingCharacters(in: .whitespaces)) {
+                    studio.setTakeTempo(id, newBpm: bpm)
+                }
+                tempoId = nil
+            }
+            .accessibilityIdentifier("take-tempo-confirm")
+            Button("Cancel", role: .cancel) { tempoId = nil }
+        } message: { Text("Re-times the whole instrumental — the notes play faster or slower.") }
         .alert("Takes", isPresented: Binding(get: { errorText != nil },
                                              set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
@@ -133,6 +157,24 @@ struct StudioTakesView: View {
         }
         .contextMenu {   // right-click (macOS) / long-press (iOS) — swipe parity
             Button { beginRename(take) } label: { Label("Rename…", systemImage: "pencil") }
+            // Switch the playback instrument — re-synthesizes the same notes through the new SoundFont.
+            Menu {
+                ForEach(InstrumentKey.allCases, id: \.self) { inst in
+                    Button { studio.setTakeInstrument(take.id, inst) } label: {
+                        Label(inst.displayName, systemImage: take.instrument == inst ? "checkmark" : "")
+                    }
+                }
+            } label: { Label("Instrument", systemImage: "pianokeys") }
+            // Re-time the whole take — scales the notes so it plays faster/slower.
+            Menu {
+                ForEach(Self.tempoMultipliers, id: \.self) { mult in
+                    let newBpm = min(max(take.bpm * mult, 20), 300)
+                    Button { studio.setTakeTempo(take.id, newBpm: newBpm) } label: {
+                        Text("×\(Self.multLabel(mult)) — \(Int(newBpm.rounded())) BPM")
+                    }
+                }
+                Button { beginTempo(take) } label: { Label("Set exact BPM…", systemImage: "metronome") }
+            } label: { Label("Tempo (\(Int(take.bpm.rounded())) BPM)", systemImage: "gauge.with.dots.needle.bottom.50percent") }
             // F8 slice B: flip a Demux instrumental between chord-comping and true melody by
             // re-extracting the OTHER mode from the same demux source (only for demux takes).
             if take.demuxSourceKey != nil {
@@ -163,6 +205,11 @@ struct StudioTakesView: View {
     private func beginRename(_ take: StudioTake) {
         nameDraft = take.name
         renamingId = take.id
+    }
+
+    private func beginTempo(_ take: StudioTake) {
+        tempoDraft = String(Int(take.bpm.rounded()))
+        tempoId = take.id
     }
 
     // MARK: Switch mode (comping ↔ melody, F8 slice B)
