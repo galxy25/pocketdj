@@ -35,6 +35,10 @@ struct TracksView: View {
     @State private var timelineViewportWidth: CGFloat = 0
     /// The playback cursor position (ms) when stopped — set by a ruler tap; Play starts here.
     @State private var cursorMs = 0
+    /// Debounces the re-prime triggered by a per-track pitch/tempo (or Beat Match) change while playing
+    /// — those alter the baked clip buffers, so playback must restart; without a debounce a dial drag
+    /// would restart on every tick.
+    @State private var reprimeTask: Task<Void, Never>?
 
     // Rename affordances (cross-platform alert + TextField).
     @State private var pendingRenameArrangementId: String?
@@ -168,12 +172,27 @@ struct TracksView: View {
         (current?.tracks.flatMap { $0.clips.map(\.id) } ?? []).joined(separator: ",")
     }
 
-    /// Signature of the mix strip (mute/solo/gain/pan) — pushes live changes to the player mid-play.
+    /// Signature of the mix strip (mute/solo/gain/pan + LIVE channel-strip FX: EQ + reverb/delay/
+    /// chorus) — pushes live changes to the player mid-play. Pitch/tempo are EXCLUDED here (they alter
+    /// the baked buffers → they re-prime playback via `stripBakeSignature`, not this live push).
     private var mixSignature: String {
         // 0.1 dB / 0.02 pan resolution so a sub-step live drag still fires applyMix (whole-unit
         // rounding made continuous slider moves audibly stepped mid-play).
-        (current?.tracks.map {
-            "\($0.muted ? 1 : 0)\($0.soloed ? 1 : 0)\(Int(($0.gainDb * 10).rounded()))p\(Int(($0.pan * 50).rounded()))"
+        (current?.tracks.map { t -> String in
+            let s = t.strip
+            let fx = "\(Int((s.eqLowDb*10).rounded()))/\(Int((s.eqMidDb*10).rounded()))/\(Int((s.eqHighDb*10).rounded()))"
+                + "r\(Int((s.reverb*100).rounded()))d\(Int((s.delay*100).rounded()))c\(Int((s.chorus*100).rounded()))"
+            return "\(t.muted ? 1 : 0)\(t.soloed ? 1 : 0)\(Int((t.gainDb * 10).rounded()))p\(Int((t.pan * 50).rounded()))\(fx)"
+        } ?? []).joined(separator: ",")
+    }
+
+    /// Signature of the parts that are BAKED into the clip buffers (per-track pitch/tempo). A change
+    /// here can't be pushed live — playback must re-prime — so it's tracked separately from
+    /// `mixSignature`. The master bpm is included: in Beat Match mode it changes every clip's warp.
+    private var stripBakeSignature: String {
+        let bm = (current?.beatMatchEnabled ?? false) ? "B\(Int((current?.bpm ?? 120).rounded()))" : ""
+        return bm + "|" + (current?.tracks.map {
+            "\(Int(($0.strip.pitchSemitones * 100).rounded()))t\(Int(($0.strip.tempoRatio * 1000).rounded()))"
         } ?? []).joined(separator: ",")
     }
 
@@ -211,13 +230,21 @@ struct TracksView: View {
             if trimMode { exitTrimMode() }
         }
         .onChange(of: mixSignature) {
-            if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks) }
+            if let arr = current, isPlayingThis(arr) { player.applyMix(arr.tracks, bpm: arr.bpm) }
         }
         .onChange(of: current?.masterFX) {
             if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
         }
         .onChange(of: current?.bpm) {
-            if let arr = current, isPlayingThis(arr) { player.applyMasterFX(arr.masterFX, bpm: arr.bpm) }
+            if let arr = current, isPlayingThis(arr) {
+                player.applyMasterFX(arr.masterFX, bpm: arr.bpm)
+                player.applyMix(arr.tracks, bpm: arr.bpm)   // delay sync follows the master bpm
+            }
+        }
+        .onChange(of: stripBakeSignature) {
+            // Per-track pitch/tempo (and Beat Match warp) are baked into the clip buffers at play(), so
+            // a change can't ride the live mix push — re-prime from the current cursor to rebuild them.
+            if let arr = current, isPlayingThis(arr) { reprimePlayback(arr) }
         }
         .onChange(of: player.recordingFinishedNonce) {
             // Playback reached its NATURAL end while master-recording → bake the take. (A manual stop
@@ -1199,6 +1226,22 @@ struct TracksView: View {
         }
     }
 
+    /// Re-prime a PLAYING arrangement from the current playhead — used when a change to the BAKED audio
+    /// (per-track pitch/tempo, or Beat Match warp) needs the clip buffers rebuilt. Debounced ~350 ms so
+    /// a dial drag settles before the (offline-render) restart; re-fetches `current` at fire time so a
+    /// burst of edits collapses to one re-prime with the latest values. Preserves record mode.
+    private func reprimePlayback(_ arr: StudioArrangement) {
+        reprimeTask?.cancel()
+        let id = arr.id
+        reprimeTask = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let fresh = current, fresh.id == id, isPlayingThis(fresh) else { return }
+            let fromMs = Int((playheadSeconds(fresh) * 1000).rounded())
+            await player.play(arrangement: fresh, store: studio, fromMs: fromMs,
+                              record: recordingMaster, quantized: recordingWasQuantized)
+        }
+    }
+
     /// The cursor's timeline position in seconds — the live clock (+ seek offset, loop-wrapped) while
     /// playing, else the static seek position.
     private func cursorSeconds(_ arr: StudioArrangement) -> Double {
@@ -1888,6 +1931,38 @@ private struct TrackEditSheet: View {
                             .accessibilityIdentifier("track-edit-pan-center")
                     }
                 }
+                Section {
+                    stripRow("Pitch", value: strip.pitchSemitones, in: -12...12, step: 1,
+                             fmt: { "\($0 > 0 ? "+" : "")\(Int($0.rounded())) st" }, id: "pitch") { v in
+                        setStrip { $0.pitchSemitones = v }
+                    }
+                    stripRow("Tempo", value: strip.tempoRatio, in: 0.5...2, step: 0.01,
+                             fmt: { String(format: "%.2f×", $0) }, id: "tempo") { v in
+                        setStrip { $0.tempoRatio = v }
+                    }
+                } header: { Text("Pitch & tempo") } footer: {
+                    Text("Pitch shifts without changing speed; tempo changes speed. Applied while playing on release.")
+                }
+                Section("EQ") {
+                    stripRow("Low", value: strip.eqLowDb, in: -18...18, step: 0.5,
+                             fmt: dbText, id: "eq-low") { v in setStrip { $0.eqLowDb = v } }
+                    stripRow("Mid", value: strip.eqMidDb, in: -18...18, step: 0.5,
+                             fmt: dbText, id: "eq-mid") { v in setStrip { $0.eqMidDb = v } }
+                    stripRow("High", value: strip.eqHighDb, in: -18...18, step: 0.5,
+                             fmt: dbText, id: "eq-high") { v in setStrip { $0.eqHighDb = v } }
+                }
+                Section("Effects") {
+                    stripRow("Reverb", value: strip.reverb, in: 0...1, step: 0.01,
+                             fmt: pctText, id: "reverb") { v in setStrip { $0.reverb = v } }
+                    stripRow("Delay", value: strip.delay, in: 0...1, step: 0.01,
+                             fmt: pctText, id: "delay") { v in setStrip { $0.delay = v } }
+                    stripRow("Chorus", value: strip.chorus, in: 0...1, step: 0.01,
+                             fmt: pctText, id: "chorus") { v in setStrip { $0.chorus = v } }
+                    Button("Reset channel strip") {
+                        studio.setTrackStrip(arrangement: arrangementId, track: trackId, StudioChannelStrip())
+                    }
+                    .accessibilityIdentifier("track-edit-strip-reset")
+                }
             }
             .navigationTitle("Edit track")
             #if !os(macOS)
@@ -1911,6 +1986,31 @@ private struct TrackEditSheet: View {
     private func panText(_ p: Double) -> String {
         if abs(p) < 0.02 { return "Center" }
         return p < 0 ? "Left \(Int(abs(p) * 100))%" : "Right \(Int(p * 100))%"
+    }
+
+    // Channel strip (pitch/tempo + EQ + reverb/delay/chorus). Reads/writes the whole `strip` via the
+    // store's clamped setter, so any single dial mutates a copy and pushes it.
+    private var strip: StudioChannelStrip { track?.strip ?? StudioChannelStrip() }
+    private func setStrip(_ mutate: (inout StudioChannelStrip) -> Void) {
+        var s = strip; mutate(&s)
+        studio.setTrackStrip(arrangement: arrangementId, track: trackId, s)
+    }
+    private func dbText(_ v: Double) -> String { "\(v > 0 ? "+" : "")\(String(format: "%.1f", v)) dB" }
+    private func pctText(_ v: Double) -> String { "\(Int((v * 100).rounded()))%" }
+
+    /// A labelled slider row for one channel-strip parameter: name + live value + slider.
+    @ViewBuilder private func stripRow(_ label: String, value: Double, in range: ClosedRange<Double>,
+                                       step: Double, fmt: @escaping (Double) -> String, id: String,
+                                       set: @escaping (Double) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label).font(.callout)
+                Spacer()
+                Text(fmt(value)).font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
+            }
+            Slider(value: Binding(get: { value }, set: { set($0) }), in: range, step: step)
+                .accessibilityIdentifier("track-edit-\(id)")
+        }
     }
 }
 

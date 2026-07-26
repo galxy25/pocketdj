@@ -1313,6 +1313,24 @@ extension StudioStore {
         mutateArrangement(id, stream: true) { $0.masterFX = fx }
     }
 
+    /// Toggle Beat Match mode (grid-snap all audio to `bpm`). Discrete ⇒ saves now. Guard the "ready"
+    /// gate at the UI layer (`beatGridReady`); this setter trusts the caller so a test/programmatic
+    /// path can force it. Toggling requires the player to re-prime (warped vs raw buffers).
+    func setArrangementBeatMatch(_ id: String, _ enabled: Bool) {
+        mutateArrangement(id) { $0.beatMatchEnabled = enabled }
+    }
+
+    /// Cache a clip's detected beat grid (background analysis result). Re-fetches by id so a delete /
+    /// trim between kickoff and write-back can't clobber; a nil-bpm sentinel marks "analyzed, no tempo"
+    /// so `beatGridReady` can't wedge on an un-detectable clip. Discrete ⇒ saves now.
+    func setClipGrid(arrangement aid: String, track tid: String, clip cid: String, _ grid: StudioGrid) {
+        mutateArrangement(aid) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }),
+                  let k = arr.tracks[j].clips.firstIndex(where: { $0.id == cid }) else { return }
+            arr.tracks[j].clips[k].grid = grid
+        }
+    }
+
     // MARK: Arrangement folders (flat, device-local; membership via StudioArrangement.folderId)
     //
     // Mirrors the sample-folder CRUD above: pure in-document metadata, delete re-homes members
@@ -1484,6 +1502,17 @@ extension StudioStore {
         mutateArrangement(aid, stream: true) { arr in
             guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
             arr.tracks[j].pan = max(-1, min(1, pan))
+        }
+    }
+
+    /// Replace a track's whole channel strip (pitch/tempo + EQ + reverb/delay/chorus). Streamed — the
+    /// strip's dials are dragged. Clamped on write so a bad value never reaches the DSP/pre-bake.
+    /// The caller is responsible for re-priming playback when `strip.bakesAudio` changed (pitch/tempo
+    /// alter the clip buffers, which are frozen at `play()`); the live EQ/sends take effect immediately.
+    func setTrackStrip(arrangement aid: String, track tid: String, _ strip: StudioChannelStrip) {
+        mutateArrangement(aid, stream: true) { arr in
+            guard let j = arr.tracks.firstIndex(where: { $0.id == tid }) else { return }
+            arr.tracks[j].strip = strip.clamped()
         }
     }
 

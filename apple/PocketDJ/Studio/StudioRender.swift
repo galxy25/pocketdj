@@ -340,6 +340,46 @@ actor StudioRender {
         return out
     }
 
+    /// Apply per-track PITCH + TEMPO to a WINDOW of a canonical buffer, offline (the arranger's
+    /// channel-strip pre-bake — the raw-sum render loop can't host a live time-stretch). `from`/`frames`
+    /// select the scissor window in the source; `rate` = tempoRatio (>1 = faster ⇒ shorter),
+    /// `pitchCents` = semitones×100 (pitch shift, tempo-independent). Output length ≈ frames/rate; head
+    /// latency trimmed like `stretchBuffer`. A neutral request (rate≈1 AND pitch≈0) short-circuits to a
+    /// plain window slice — no engine — so an un-warped track is free. Used by BOTH read paths
+    /// (`MultitrackPlayer.play` live + `ArrangerBouncer`) so a bounce matches what plays.
+    func transformBuffer(_ source: AVAudioPCMBuffer, from: Int64, frames: Int64,
+                         rate: Double, pitchCents: Double) async throws -> AVAudioPCMBuffer {
+        guard frames > 0, from >= 0, from + frames <= Int64(source.frameLength) else {
+            throw StudioRenderError.emptyWindow
+        }
+        guard StudioAudio.isCanonical(source.format) else { throw StudioRenderError.cannotCreateBuffer }
+        guard let window = Self.sliceBuffer(source, from: from, frames: frames) else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        let r = min(max(rate, 1.0 / 32.0), 32.0)
+        if abs(r - 1) < 0.0005 && abs(pitchCents) < 0.5 { return window }   // neutral ⇒ just the slice
+        let outFrames = max(1, Int64((Double(frames) / r).rounded()))
+        let engine = AVAudioEngine()
+        do { try engine.enableManualRenderingMode(.offline, format: Self.canonicalFormat,
+                                                  maximumFrameCount: Self.chunkFrames) }
+        catch { throw StudioRenderError.engineStart(error) }
+        let player = AVAudioPlayerNode()
+        let tp = AVAudioUnitTimePitch()
+        tp.rate = Float(r); tp.pitch = Float(pitchCents)
+        engine.attach(player); engine.attach(tp)
+        engine.connect(player, to: tp, format: Self.canonicalFormat)
+        engine.connect(tp, to: engine.mainMixerNode, format: Self.canonicalFormat)
+        defer { engine.stop() }
+        do { try engine.start() } catch { throw StudioRenderError.engineStart(error) }
+        Self.scheduleWhole(window, on: player)
+        player.play()
+        let headSec = tp.auAudioUnit.latency + engine.outputNode.auAudioUnit.latency
+        let head = max(0, Int64((headSec * Self.canonicalSampleRate).rounded()))
+        let out = try Self.pullFrames(engine: engine, skipHead: head, count: outFrames)
+        Self.rlog("transform \(frames)f → \(outFrames)f (rate \(String(format: "%.3f", r)), pitch \(Int(pitchCents))¢)")
+        return out
+    }
+
     /// Neutral-edit region carve for sample creation (spec §4/§10): read the `[startMs, endMs)`
     /// frames, convert to canonical, write AAC `.m4a`. No FX graph — nothing to bake, so a plain
     /// read+convert+write is exact and fast (the sample's edit starts neutral).
