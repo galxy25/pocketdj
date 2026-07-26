@@ -840,9 +840,10 @@ struct PocketDJApp: App {
                     // `JukeboxLink` returns nil for redirects + .pdjcollection files, so those still
                     // route below unchanged.
                     // Gate on onboarding like the file-import branch below (a link tapped during
-                    // first-run is DEFERRED via pendingJukeboxLink). Joining ADDS the jukebox to the
-                    // persisted list on the Jukebox home (Levi's flow); it presents NOTHING — the user
-                    // taps the session on the home to push its live native panel.
+                    // first-run is DEFERRED via pendingJukeboxLink). `addJoined` ADDS the jukebox to
+                    // the persisted Jukebox-home list AND parks its id in `jukebox.pendingOpenId`, which
+                    // RootView consumes to switch to the Jukebox tab and push the live join panel — so a
+                    // tapped link/banner TAKES the user into the session, not just onto the home list.
                     if let link = JukeboxLink(url: url) {
                         if onboarding.isComplete { jukebox.addJoined(link) } else { pendingJukeboxLink = link }
                         return

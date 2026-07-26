@@ -346,4 +346,25 @@ final class JukeboxTests: XCTestCase {
         XCTAssertEqual(stack.sequencer.queue.map(\.id), ["a"], "none of those may touch the queue")
         stack.sequencer.stop()
     }
+
+    // MARK: - Joined list + deep-link open signal
+
+    /// A tapped share-link / "Open in PocketDJ" banner must BOTH add the jukebox to the joined list
+    /// AND park its id in `pendingOpenId` — RootView consumes that to switch to the Jukebox tab and
+    /// push the live join panel. Without the signal, deep-links opened the app but stranded the user
+    /// on whatever tab they were on (the reported regression).
+    func testAddJoinedInsertsEntryAndParksOpenSignal() async {
+        let app = await makeApp()
+        let store = makeStore(app, makeStack())
+        XCTAssertNil(store.pendingOpenId)
+        // Ids are base32 [a-z2-7], 8 chars (the server's shape) — a "1"/"0" would fail to parse.
+        let link = JukeboxLink(url: URL(string: "pocketdj://jukebox/erjjo4jn")!)!
+        store.addJoined(link)
+        XCTAssertEqual(store.joinedSessions.first?.id, "erjjo4jn", "entry inserted at the top")
+        XCTAssertEqual(store.pendingOpenId, "erjjo4jn", "deep-link open signal parked for RootView")
+        // A second link parks the newer id (RootView takes the latest tap to the front).
+        store.addJoined(JukeboxLink(url: URL(string: "pocketdj://jukebox/qrstuv67")!)!)
+        XCTAssertEqual(store.pendingOpenId, "qrstuv67")
+        XCTAssertEqual(store.joinedSessions.first?.id, "qrstuv67")
+    }
 }
