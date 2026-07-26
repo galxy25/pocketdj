@@ -33,7 +33,20 @@ final class CollectionCatalogTests: XCTestCase {
         let s = cat.stats(forPlaylist: pl)
         XCTAssertEqual(s.count, 2)
         XCTAssertEqual(s.runtimeMs, 222000 + 201000)
-        XCTAssertEqual(s.summary, "2 songs · \(Fmt.duration(423000))")
+        XCTAssertEqual(s.summary, "2 songs · \(Fmt.longDuration(423000))")
+    }
+
+    /// Collection/setlist runtime totals format adaptively (Levi): days+hours, hours+minutes,
+    /// else minutes — never a raw pure-minute count.
+    func testLongDurationFormatting() {
+        XCTAssertEqual(Fmt.longDuration(nil), "–")
+        XCTAssertEqual(Fmt.longDuration(0), "–")
+        XCTAssertEqual(Fmt.longDuration(423_000), "7m")                    // < 1h, seconds floored
+        XCTAssertEqual(Fmt.longDuration(25 * 60_000), "25m")
+        XCTAssertEqual(Fmt.longDuration(60 * 60_000), "1h 0m")             // exactly 1 hour
+        XCTAssertEqual(Fmt.longDuration(145 * 60_000), "2h 25m")
+        XCTAssertEqual(Fmt.longDuration(24 * 60 * 60_000), "1d 0h")        // exactly 1 day
+        XCTAssertEqual(Fmt.longDuration((27 * 60 + 3) * 60_000), "1d 3h")  // 1 day 3 hours
     }
 
     func testTextAndMissingNodesContributeNothing() throws {

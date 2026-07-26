@@ -1094,7 +1094,7 @@ struct PlaylistDetailView: View {
                 Image(systemName: "waveform").foregroundStyle(Theme.accent2)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(sl.name ?? "Set list").foregroundStyle(Theme.fg)
-                    Text("\(sl.tracks.count) track\(sl.tracks.count == 1 ? "" : "s") · \(Fmt.duration(sl.totalMs))")
+                    Text("\(sl.tracks.count) track\(sl.tracks.count == 1 ? "" : "s") · \(Fmt.longDuration(sl.totalMs))")
                         .font(.caption).foregroundStyle(Theme.fgDim)
                 }
             }
