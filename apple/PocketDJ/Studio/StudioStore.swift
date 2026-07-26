@@ -46,6 +46,11 @@ final class StudioStore {
     /// F9: flat sample folders (device-local). Membership is by `StudioSample.folderId`; the
     /// Samples sub-tab groups off these.
     private(set) var folders: [StudioSampleFolder] = []
+    /// Flat folders for Loops / Sequences / Instrumentals (device-local). Membership is by each
+    /// item's optional `folderId`; the respective sub-tabs group off these (mirrors `folders`).
+    private(set) var loopFolders: [StudioLoopFolder] = []
+    private(set) var patternFolders: [StudioPatternFolder] = []
+    private(set) var takeFolders: [StudioTakeFolder] = []
     /// On-device detected key (Camelot) per performance item — see `StudioDocument.keys`.
     private(set) var keys: [String: String] = [:]
     /// Multitrack arrangements (the "Tracks" sub-tab). Clip audio lives app-managed in
@@ -87,6 +92,9 @@ final class StudioStore {
             cues = doc.cues
             slices = doc.slices
             folders = doc.folders
+            loopFolders = doc.loopFolders
+            patternFolders = doc.patternFolders
+            takeFolders = doc.takeFolders
             keys = doc.keys
             arrangements = doc.arrangements
             arrangementFolders = doc.arrangementFolders
@@ -287,6 +295,155 @@ final class StudioStore {
     func setSampleFolder(_ sampleId: String, folderId: String?) {
         guard let i = samples.firstIndex(where: { $0.id == sampleId }) else { return }
         samples[i].folderId = folderId
+        saveNow()
+    }
+
+    // MARK: - Loop / Sequence / Instrumental folders (flat, device-local)
+    //
+    // The same flat foldering as samples (F9), extended to loops, sequences (patterns), and
+    // instrumentals (takes). Pure in-document metadata mirroring the sample-folder CRUD above: a
+    // "move" sets a string — NO audio file is ever touched. Delete re-homes members to Unfiled.
+    // Every mutation ends with saveNow() (folder edits are discrete, not slider-streamed).
+
+    func loopFolder(_ id: String) -> StudioLoopFolder? { loopFolders.first { $0.id == id } }
+
+    func loopFoldersOrdered() -> [StudioLoopFolder] {
+        loopFolders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The loops in a folder (nil ⇒ Unfiled), newest-first. A `folderId` pointing at a folder no
+    /// longer in the document reads as Unfiled (defensive — never vanishes from the UI).
+    func loops(inFolder id: String?) -> [StudioLoop] {
+        let known = Set(loopFolders.map(\.id))
+        return loops.filter { x in
+            if let fid = x.folderId, known.contains(fid) { return fid == id }
+            return id == nil
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    @discardableResult
+    func createLoopFolder(_ name: String) -> StudioLoopFolder {
+        let f = StudioLoopFolder(id: StudioFactory.newLoopFolderId(),
+                                 name: name.trimmingCharacters(in: .whitespaces),
+                                 createdAt: nowMs, updatedAt: nowMs)
+        loopFolders.append(f)
+        saveNow()
+        return f
+    }
+
+    func renameLoopFolder(_ id: String, to name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, let i = loopFolders.firstIndex(where: { $0.id == id }) else { return }
+        loopFolders[i].name = n
+        loopFolders[i].updatedAt = nowMs
+        saveNow()
+    }
+
+    /// Delete a folder; its member loops fall back to Unfiled. NO loop record or audio is deleted.
+    func deleteLoopFolder(_ id: String) {
+        loopFolders.removeAll { $0.id == id }
+        for i in loops.indices where loops[i].folderId == id { loops[i].folderId = nil }
+        saveNow()
+    }
+
+    /// Move a loop into a folder (nil ⇒ Unfiled). In-memory only — the audio never moves.
+    func setLoopFolder(_ loopId: String, folderId: String?) {
+        guard let i = loops.firstIndex(where: { $0.id == loopId }) else { return }
+        loops[i].folderId = folderId
+        saveNow()
+    }
+
+    func patternFolder(_ id: String) -> StudioPatternFolder? { patternFolders.first { $0.id == id } }
+
+    func patternFoldersOrdered() -> [StudioPatternFolder] {
+        patternFolders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The sequences in a folder (nil ⇒ Unfiled), newest-first. Dangling id ⇒ Unfiled (defensive).
+    func patterns(inFolder id: String?) -> [StudioPattern] {
+        let known = Set(patternFolders.map(\.id))
+        return patterns.filter { x in
+            if let fid = x.folderId, known.contains(fid) { return fid == id }
+            return id == nil
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    @discardableResult
+    func createPatternFolder(_ name: String) -> StudioPatternFolder {
+        let f = StudioPatternFolder(id: StudioFactory.newPatternFolderId(),
+                                    name: name.trimmingCharacters(in: .whitespaces),
+                                    createdAt: nowMs, updatedAt: nowMs)
+        patternFolders.append(f)
+        saveNow()
+        return f
+    }
+
+    func renamePatternFolder(_ id: String, to name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, let i = patternFolders.firstIndex(where: { $0.id == id }) else { return }
+        patternFolders[i].name = n
+        patternFolders[i].updatedAt = nowMs
+        saveNow()
+    }
+
+    /// Delete a folder; its member sequences fall back to Unfiled. NO pattern record is deleted.
+    func deletePatternFolder(_ id: String) {
+        patternFolders.removeAll { $0.id == id }
+        for i in patterns.indices where patterns[i].folderId == id { patterns[i].folderId = nil }
+        saveNow()
+    }
+
+    /// Move a sequence into a folder (nil ⇒ Unfiled). In-memory only.
+    func setPatternFolder(_ patternId: String, folderId: String?) {
+        guard let i = patterns.firstIndex(where: { $0.id == patternId }) else { return }
+        patterns[i].folderId = folderId
+        saveNow()
+    }
+
+    func takeFolder(_ id: String) -> StudioTakeFolder? { takeFolders.first { $0.id == id } }
+
+    func takeFoldersOrdered() -> [StudioTakeFolder] {
+        takeFolders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The instrumentals in a folder (nil ⇒ Unfiled), newest-first. Dangling id ⇒ Unfiled (defensive).
+    func takes(inFolder id: String?) -> [StudioTake] {
+        let known = Set(takeFolders.map(\.id))
+        return takes.filter { x in
+            if let fid = x.folderId, known.contains(fid) { return fid == id }
+            return id == nil
+        }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    @discardableResult
+    func createTakeFolder(_ name: String) -> StudioTakeFolder {
+        let f = StudioTakeFolder(id: StudioFactory.newTakeFolderId(),
+                                 name: name.trimmingCharacters(in: .whitespaces),
+                                 createdAt: nowMs, updatedAt: nowMs)
+        takeFolders.append(f)
+        saveNow()
+        return f
+    }
+
+    func renameTakeFolder(_ id: String, to name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, let i = takeFolders.firstIndex(where: { $0.id == id }) else { return }
+        takeFolders[i].name = n
+        takeFolders[i].updatedAt = nowMs
+        saveNow()
+    }
+
+    /// Delete a folder; its member instrumentals fall back to Unfiled. NO take record is deleted.
+    func deleteTakeFolder(_ id: String) {
+        takeFolders.removeAll { $0.id == id }
+        for i in takes.indices where takes[i].folderId == id { takes[i].folderId = nil }
+        saveNow()
+    }
+
+    /// Move an instrumental into a folder (nil ⇒ Unfiled). In-memory only.
+    func setTakeFolder(_ takeId: String, folderId: String?) {
+        guard let i = takes.firstIndex(where: { $0.id == takeId }) else { return }
+        takes[i].folderId = folderId
         saveNow()
     }
 
@@ -1144,7 +1301,9 @@ final class StudioStore {
                        patterns: patterns, takes: takes, cues: cues, slices: slices,
                        folders: folders, keys: keys, arrangements: arrangements,
                        arrangementFolders: arrangementFolders,
-                       arrangementArtifacts: arrangementArtifacts)
+                       arrangementArtifacts: arrangementArtifacts,
+                       loopFolders: loopFolders, patternFolders: patternFolders,
+                       takeFolders: takeFolders)
     }
 
     /// Debounced save for continuous streams (edit sliders, cue nudges) — ~0.6 s of quiescence.

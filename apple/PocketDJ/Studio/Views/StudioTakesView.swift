@@ -38,23 +38,27 @@ struct StudioTakesView: View {
     /// The instrumental whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
     @State private var addRef: StudioAddRef?
 
-    private var takesNewestFirst: [StudioTake] {
-        studio.takes.sorted { $0.createdAt > $1.createdAt }
-    }
+    // Folder organization for INSTRUMENTALS (mirrors StudioSamplesView). Device-local; NO audio moves.
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    /// When "New folder…" is chosen from a take's Move submenu, the new folder is created AND this
+    /// take is moved into it (nil ⇒ a plain "New folder" from the toolbar, just create).
+    @State private var pendingMoveTakeId: String?
+    @State private var renamingFolderId: String?
+    @State private var folderNameDraft = ""
+    @State private var deletingFolderId: String?
+    /// Collapsed take-folder ids, persisted across launches (missing ⇒ expanded).
+    @State private var collapsed: Set<String> = StudioTakesView.loadCollapsed()
 
     var body: some View {
         Group {
-            if takesNewestFirst.isEmpty {
+            // Empty state only when there is nothing at all — a folder with no instrumentals still
+            // needs its section shown so the user can move instrumentals in / manage it.
+            if studio.takes.isEmpty && studio.takeFolders.isEmpty {
                 ContentUnavailableView("No instrumentals yet", systemImage: "pianokeys",
                     description: Text("Record an instrumental on the Instruments tab — it lands here with its score, replay, and export."))
             } else {
-                List {
-                    ForEach(takesNewestFirst) { take in
-                        row(take)
-                    }
-                }
-                .scrollContentBackground(.hidden)
-                .accessibilityIdentifier("takes-list")
+                takeList
             }
         }
         .background(Theme.bg)
@@ -62,6 +66,19 @@ struct StudioTakesView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .toolbar {
+            // New instrumentals are created on the Instruments tab; this browse list has no in-content
+            // creation bar, so the organizational New-folder affordance lives in the toolbar (the
+            // StudioSamplesView "folder.badge.plus" button, adapted to this view's nav-pushed shape).
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    newFolderName = ""; pendingMoveTakeId = nil; showNewFolder = true
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .accessibilityIdentifier("take-new-folder")
+            }
+        }
         .alert("Rename instrumental", isPresented: Binding(get: { renamingId != nil },
                                                    set: { if !$0 { renamingId = nil } })) {
             TextField("Name", text: $nameDraft).accessibilityIdentifier("take-rename-field")
@@ -93,6 +110,132 @@ struct StudioTakesView: View {
             Button("OK", role: .cancel) {}
         } message: { Text(errorText ?? "") }
         .studioAddToCollection($addRef)
+        // Folder create / rename / delete (the StudioSamplesView precedent) — device-local, additive.
+        .alert("New folder", isPresented: $showNewFolder) {
+            TextField("Name", text: $newFolderName)
+            Button("Create") {
+                let n = newFolderName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty {
+                    let f = studio.createTakeFolder(n)
+                    // Chosen from an instrumental's Move submenu ⇒ file that take into the new folder.
+                    if let tid = pendingMoveTakeId { studio.setTakeFolder(tid, folderId: f.id) }
+                }
+                newFolderName = ""; pendingMoveTakeId = nil
+            }
+            Button("Cancel", role: .cancel) { newFolderName = ""; pendingMoveTakeId = nil }
+        }
+        .alert("Rename folder", isPresented: folderRenameBinding) {
+            TextField("Name", text: $folderNameDraft)
+            Button("Save") {
+                if let id = renamingFolderId { studio.renameTakeFolder(id, to: folderNameDraft) }
+                renamingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingFolderId = nil }
+        }
+        .confirmationDialog("Delete this folder?", isPresented: folderDeleteBinding,
+                            titleVisibility: .visible) {
+            Button("Delete folder", role: .destructive) {
+                if let id = deletingFolderId { studio.deleteTakeFolder(id) }
+                deletingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { deletingFolderId = nil }
+        } message: {
+            Text("The folder's instrumentals move back to Unfiled. No instrumentals or audio are deleted.")
+        }
+    }
+
+    // MARK: Folder-grouped list (Unfiled section + one collapsible DisclosureGroup per folder)
+
+    private var takeList: some View {
+        List {
+            unfiledSection
+            ForEach(studio.takeFoldersOrdered()) { folder in
+                folderSection(folder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .accessibilityIdentifier("takes-list")
+    }
+
+    /// The Unfiled section — instrumentals with no folder (or a dangling one). Always shown (it's
+    /// the default home + the "Move to Unfiled" drop target).
+    @ViewBuilder private var unfiledSection: some View {
+        let unfiled = studio.takes(inFolder: nil)
+        Section {
+            if unfiled.isEmpty {
+                Text("No unfiled instrumentals.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(unfiled) { take in row(take) }
+            }
+        } header: {
+            Text("Unfiled").foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    /// One collapsible FOLDER of instrumentals, name-ordered. Collapse state persists (UserDefaults).
+    @ViewBuilder private func folderSection(_ folder: StudioTakeFolder) -> some View {
+        let members = studio.takes(inFolder: folder.id)
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if members.isEmpty {
+                    Text("Empty folder — move an instrumental in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                        .listRowBackground(Color.clear)
+                }
+                ForEach(members) { take in row(take) }
+            } label: {
+                HStack {
+                    Label(folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
+                    Spacer()
+                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                // The id rides the LABEL (a leaf), never the Section/DisclosureGroup container —
+                // a container id would clobber descendant ids on macOS (the StemAuditionPanel trap).
+                .accessibilityIdentifier("folder-\(folder.id)")
+                .contextMenu {
+                    Button {
+                        folderNameDraft = folder.name; renamingFolderId = folder.id
+                    } label: { Label("Rename folder", systemImage: "pencil") }
+                        .accessibilityIdentifier("folder-rename-\(folder.id)")
+                    Button(role: .destructive) { deletingFolderId = folder.id } label: {
+                        Label("Delete folder", systemImage: "trash")
+                    }
+                        .accessibilityIdentifier("folder-delete-\(folder.id)")
+                }
+            }
+        }
+    }
+
+    // MARK: Folder bindings + collapse persistence (the StudioSamplesView precedent)
+
+    private var folderRenameBinding: Binding<Bool> {
+        Binding(get: { renamingFolderId != nil }, set: { if !$0 { renamingFolderId = nil } })
+    }
+
+    private var folderDeleteBinding: Binding<Bool> {
+        Binding(get: { deletingFolderId != nil }, set: { if !$0 { deletingFolderId = nil } })
+    }
+
+    /// NEW key (device-local, distinct from the sample/loop/pattern-folder keys) per the spec.
+    private static let collapsedKey = "pdj.takeFolders.collapsed"
+    private static func loadCollapsed() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [])
+    }
+    private func persistCollapsed() {
+        UserDefaults.standard.set(Array(collapsed), forKey: StudioTakesView.collapsedKey)
+    }
+    /// A binding into `collapsed` for a folder's DisclosureGroup, persisting on change (presence in
+    /// the set = COLLAPSED, so a never-touched folder reads as expanded).
+    private func folderExpansion(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsed.contains(id) },
+            set: { expanded in
+                if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                persistCollapsed()
+            })
     }
 
     // MARK: Row
@@ -157,6 +300,38 @@ struct StudioTakesView: View {
         }
         .contextMenu {   // right-click (macOS) / long-press (iOS) — swipe parity
             Button { beginRename(take) } label: { Label("Rename…", systemImage: "pencil") }
+            // Folder organization — file this instrumental into a folder (or Unfiled / a brand-new
+            // folder). Sets a string only; the audio never moves.
+            Menu {
+                ForEach(studio.takeFoldersOrdered()) { f in
+                    Button { studio.setTakeFolder(take.id, folderId: f.id) } label: {
+                        if take.folderId == f.id {
+                            Label(f.name, systemImage: "checkmark")
+                        } else {
+                            Text(f.name)
+                        }
+                    }
+                    .accessibilityIdentifier("move-to-\(f.id)-\(take.id)")
+                }
+                Divider()
+                Button { studio.setTakeFolder(take.id, folderId: nil) } label: {
+                    if take.folderId == nil {
+                        Label("Unfiled", systemImage: "checkmark")
+                    } else {
+                        Text("Unfiled")
+                    }
+                }
+                .accessibilityIdentifier("move-to-unfiled-\(take.id)")
+                Button {
+                    pendingMoveTakeId = take.id; newFolderName = ""; showNewFolder = true
+                } label: {
+                    Label("New folder…", systemImage: "folder.badge.plus")
+                }
+                .accessibilityIdentifier("move-to-new-\(take.id)")
+            } label: {
+                Label("Move to folder", systemImage: "folder")
+            }
+            .accessibilityIdentifier("take-move-\(take.id)")
             // Switch the playback instrument — re-synthesizes the same notes through the new SoundFont.
             Menu {
                 ForEach(InstrumentKey.allCases, id: \.self) { inst in

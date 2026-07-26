@@ -53,13 +53,24 @@ private struct SequencerListView: View {
     /// The pattern whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
     @State private var addRef: StudioAddRef?
 
-    private var patternsNewestFirst: [StudioPattern] {
-        studio.patterns.sorted { $0.createdAt > $1.createdAt }
-    }
+    // Sequence folders (create / rename / delete + move-into) — the StudioSamplesView idiom applied
+    // to saved patterns. Device-local organization; NO bounce audio moves, no pattern record deleted.
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    /// When "New folder…" is chosen from a pattern's Move submenu, the new folder is created AND
+    /// this pattern is moved into it (nil ⇒ a plain "New folder" from the header, just create).
+    @State private var pendingMovePatternId: String?
+    @State private var renamingFolderId: String?
+    @State private var folderNameDraft = ""
+    @State private var deletingFolderId: String?
+    /// Collapsed sequence-folder ids, persisted across launches (missing ⇒ expanded).
+    @State private var collapsed: Set<String> = SequencerListView.loadCollapsed()
 
     var body: some View {
         Group {
-            if studio.patterns.isEmpty {
+            // Empty state only when there is NOTHING at all — a folder with no patterns still needs
+            // its section shown so the user can move sequences in / manage it.
+            if studio.patterns.isEmpty && studio.patternFolders.isEmpty {
                 ContentUnavailableView {
                     Label("No patterns yet", systemImage: "square.grid.4x3.fill")
                 } description: {
@@ -73,16 +84,12 @@ private struct SequencerListView: View {
                     HStack {
                         Text("Patterns").font(.headline).foregroundStyle(Theme.fg)
                         Spacer()
+                        newFolderButton
                         newPatternButton
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    List {
-                        ForEach(patternsNewestFirst) { p in
-                            row(p)
-                        }
-                    }
-                    .scrollContentBackground(.hidden)
+                    patternList
                 }
             }
         }
@@ -116,6 +123,143 @@ private struct SequencerListView: View {
         } message: {
             Text("Removes the pattern and its bounced audio. The samples and loops it uses are kept.")
         }
+        // Sequence-folder create / rename / delete (the StudioSamplesView / PlaylistsView precedent).
+        .alert("New folder", isPresented: $showNewFolder) {
+            TextField("Name", text: $newFolderName)
+            Button("Create") {
+                let n = newFolderName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty {
+                    let f = studio.createPatternFolder(n)
+                    // Chosen from a pattern's Move submenu ⇒ file that pattern into the new folder.
+                    if let pid = pendingMovePatternId { studio.setPatternFolder(pid, folderId: f.id) }
+                }
+                newFolderName = ""; pendingMovePatternId = nil
+            }
+            Button("Cancel", role: .cancel) { newFolderName = ""; pendingMovePatternId = nil }
+        }
+        .alert("Rename folder", isPresented: folderRenameBinding) {
+            TextField("Name", text: $folderNameDraft)
+            Button("Save") {
+                if let id = renamingFolderId { studio.renamePatternFolder(id, to: folderNameDraft) }
+                renamingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingFolderId = nil }
+        }
+        .confirmationDialog("Delete this folder?", isPresented: folderDeleteBinding,
+                            titleVisibility: .visible) {
+            Button("Delete folder", role: .destructive) {
+                if let id = deletingFolderId { studio.deletePatternFolder(id) }
+                deletingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { deletingFolderId = nil }
+        } message: {
+            Text("The folder's sequences move back to Unfiled. No sequences or audio are deleted.")
+        }
+    }
+
+    // MARK: Folder-grouped list (Unfiled section + one collapsible DisclosureGroup per folder)
+
+    private var patternList: some View {
+        List {
+            unfiledSection
+            ForEach(studio.patternFoldersOrdered()) { folder in
+                folderSection(folder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+    }
+
+    /// The Unfiled section — patterns with no folder (or a dangling one). Always shown (it's the
+    /// default home + the drop target for "Move to Unfiled").
+    @ViewBuilder private var unfiledSection: some View {
+        let unfiled = studio.patterns(inFolder: nil)
+        Section {
+            if unfiled.isEmpty {
+                Text("No unfiled sequences.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(unfiled) { p in row(p) }
+            }
+        } header: {
+            Text("Unfiled").foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    /// One collapsible FOLDER of sequences, name-ordered. Collapse state persists (UserDefaults).
+    @ViewBuilder private func folderSection(_ folder: StudioPatternFolder) -> some View {
+        let members = studio.patterns(inFolder: folder.id)
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if members.isEmpty {
+                    Text("Empty folder — move a sequence in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                        .listRowBackground(Color.clear)
+                }
+                ForEach(members) { p in row(p) }
+            } label: {
+                HStack {
+                    Label(folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
+                    Spacer()
+                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                // The id rides the LABEL (a leaf), never the Section/DisclosureGroup container —
+                // a container id would clobber descendant ids on macOS (the StemAuditionPanel trap).
+                .accessibilityIdentifier("seq-folder-\(folder.id)")
+                .contextMenu {
+                    Button {
+                        folderNameDraft = folder.name; renamingFolderId = folder.id
+                    } label: { Label("Rename folder", systemImage: "pencil") }
+                        .accessibilityIdentifier("seq-folder-rename-\(folder.id)")
+                    Button(role: .destructive) { deletingFolderId = folder.id } label: {
+                        Label("Delete folder", systemImage: "trash")
+                    }
+                        .accessibilityIdentifier("seq-folder-delete-\(folder.id)")
+                }
+            }
+        }
+    }
+
+    private var newFolderButton: some View {
+        Button {
+            newFolderName = ""; pendingMovePatternId = nil; showNewFolder = true
+        } label: {
+            Label("New folder", systemImage: "folder.badge.plus").labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .tint(Theme.accent2)
+        .accessibilityIdentifier("seq-new-folder")
+        .help("New sequence folder")
+    }
+
+    // MARK: Folder bindings + collapse persistence (the StudioSamplesView precedent)
+
+    private var folderRenameBinding: Binding<Bool> {
+        Binding(get: { renamingFolderId != nil }, set: { if !$0 { renamingFolderId = nil } })
+    }
+
+    private var folderDeleteBinding: Binding<Bool> {
+        Binding(get: { deletingFolderId != nil }, set: { if !$0 { deletingFolderId = nil } })
+    }
+
+    /// NEW key (device-local, distinct from the sample/playlist-folder keys) per the spec.
+    private static let collapsedKey = "pdj.patternFolders.collapsed"
+    private static func loadCollapsed() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [])
+    }
+    private func persistCollapsed() {
+        UserDefaults.standard.set(Array(collapsed), forKey: SequencerListView.collapsedKey)
+    }
+    /// A binding into `collapsed` for a folder's DisclosureGroup, persisting on change (presence
+    /// in the set = COLLAPSED, so a never-touched folder reads as expanded).
+    private func folderExpansion(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsed.contains(id) },
+            set: { expanded in
+                if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                persistCollapsed()
+            })
     }
 
     private var newPatternButton: some View {
@@ -173,6 +317,38 @@ private struct SequencerListView: View {
         .contextMenu {   // right-click (macOS) / long-press (iOS) parity for the swipe actions
             Button { beginRename(p) } label: { Label("Rename…", systemImage: "pencil") }
             Button { duplicate(p) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+            // File this sequence into a folder (or Unfiled / a brand-new folder). Sets a string
+            // only; the pattern record and its bounce audio never move.
+            Menu {
+                ForEach(studio.patternFoldersOrdered()) { f in
+                    Button { studio.setPatternFolder(p.id, folderId: f.id) } label: {
+                        if p.folderId == f.id {
+                            Label(f.name, systemImage: "checkmark")
+                        } else {
+                            Text(f.name)
+                        }
+                    }
+                    .accessibilityIdentifier("seq-move-to-\(f.id)-\(p.id)")
+                }
+                Divider()
+                Button { studio.setPatternFolder(p.id, folderId: nil) } label: {
+                    if p.folderId == nil {
+                        Label("Unfiled", systemImage: "checkmark")
+                    } else {
+                        Text("Unfiled")
+                    }
+                }
+                .accessibilityIdentifier("seq-move-to-unfiled-\(p.id)")
+                Button {
+                    pendingMovePatternId = p.id; newFolderName = ""; showNewFolder = true
+                } label: {
+                    Label("New folder…", systemImage: "folder.badge.plus")
+                }
+                .accessibilityIdentifier("seq-move-to-new-\(p.id)")
+            } label: {
+                Label("Move to folder", systemImage: "folder")
+            }
+            .accessibilityIdentifier("seq-move-\(p.id)")
             Button {
                 addRef = StudioAddRef(id: p.id, title: p.name)
                 let pid = p.id
