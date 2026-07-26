@@ -243,6 +243,12 @@ private struct SequencerEditor: View {
     @State private var barsPerLine = 1
     @State private var renamingRow: Int?
     @State private var rowNameDraft = ""
+    /// SEQ5 playhead + looper. `startStep` is the cursor — where Play begins, jumped to the last
+    /// pad you touch, reset to 0 by the refresh button. The ∞ looper cycles a `loopBars`-bar window
+    /// anchored at the cursor. All transient (a performance control, per editor session).
+    @State private var startStep = 0
+    @State private var loopEnabled = false
+    @State private var loopBars = 2
     @State private var prepareTask: Task<Void, Never>?
     /// Monotonic token pairing each prepare run with ITS `preparing` flag: a cancelled run's
     /// deferred cleanup must not clobber the state of the run that replaced it (the cancelled
@@ -342,9 +348,11 @@ private struct SequencerEditor: View {
                         PatternRowCard(patternId: patternId, rowIndex: i, row: pattern.rows[i],
                                        compact: compact, playingThis: isPlayingThis,
                                        collapsed: collapsedRows.contains(i), barsPerLine: barsPerLine,
+                                       cursorStep: startStep, loopEnabled: loopEnabled, loopBars: loopBars,
                                        onSolo: { toggleSolo(row: $0) },
                                        onToggleCollapse: { toggleCollapse(i) },
-                                       onRename: { beginRowRename(i, pattern) })
+                                       onRename: { beginRowRename(i, pattern) },
+                                       onTouchStep: { touchStep($0) })
                     }
                     addRowControl(pattern)
                     bounceStatus(pattern)
@@ -409,6 +417,8 @@ private struct SequencerEditor: View {
 
             Spacer()
 
+            refreshButton
+            loopButton
             playButton(pattern)
 
             Menu {
@@ -449,6 +459,69 @@ private struct SequencerEditor: View {
         // refuses to play — zero-frame schedules crash; the engine ALSO refuses, this is the UX).
         .disabled(preparing || !pattern.hasSoundingSteps)
         .accessibilityIdentifier("seq-play")
+    }
+
+    // MARK: Transport — refresh (playhead → start) + ∞ looper (SEQ5)
+
+    /// Reset the playhead to the top. Acts live while playing (re-anchors from step 0) and just
+    /// moves the resting cursor while stopped — either way the next Play begins at the start.
+    private var refreshButton: some View {
+        Button {
+            startStep = 0
+            if isPlayingThis { engine.setPatternStartStep(0) }
+        } label: {
+            Image(systemName: "arrow.counterclockwise")
+                .font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
+                .frame(width: 30, height: 30).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Reset playhead to start")
+        .accessibilityIdentifier("seq-refresh")
+        .help("Reset the playhead to the beginning")
+    }
+
+    /// The ∞ looper: tap to cycle a `loopBars`-bar window anchored at the playhead; right-click /
+    /// long-press to set the bar count (default 2). Turquoise + a bar-count badge when on. Acts
+    /// live while playing (re-anchors so the loop starts immediately).
+    private var loopButton: some View {
+        Button {
+            loopEnabled.toggle()
+            if isPlayingThis { engine.setPatternLoop(enabled: loopEnabled, bars: loopBars) }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "infinity")
+                if loopEnabled {
+                    Text("\(loopBars)").font(.caption2.weight(.bold)).monospacedDigit()
+                }
+            }
+            .font(.body.weight(.semibold))
+            .foregroundStyle(loopEnabled ? Theme.accent2 : Theme.fgDim)
+            .frame(height: 30).padding(.horizontal, 6).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(loopEnabled ? "Looper on, \(loopBars) bars" : "Looper off")
+        .accessibilityIdentifier("seq-loop")
+        .help("Loop a section — right-click to set how many bars")
+        .contextMenu {
+            Picker("Loop length", selection: Binding(
+                get: { loopBars },
+                set: { loopBars = $0
+                       if isPlayingThis { engine.setPatternLoop(enabled: loopEnabled, bars: $0) } })) {
+                ForEach([1, 2, 4, 8, 16], id: \.self) { n in
+                    Text("\(n) bar\(n == 1 ? "" : "s")").tag(n)
+                }
+            }
+            .accessibilityIdentifier("seq-loop-bars")
+        }
+    }
+
+    /// A pad was touched (any cell, on or off): jump the resting cursor there. While stopped this
+    /// is where the next Play begins; while playing it just re-homes the cursor for the next manual
+    /// Play (we deliberately do NOT live-seek per tap — that would stutter the audio and fight
+    /// live step editing; the refresh/∞ transport buttons are the live re-anchor controls).
+    private func touchStep(_ col: Int) {
+        let n = studio.pattern(patternId)?.stepCount ?? StudioPattern.defaultStepCount
+        startStep = min(max(0, col), max(0, n - 1))
     }
 
     // MARK: BPM
@@ -657,7 +730,8 @@ private struct SequencerEditor: View {
                 && current.rows.map(\.targetId) == pattern.rows.map(\.targetId)
                 && current.rows.map(\.stepSpans) == pattern.rows.map(\.stepSpans)
             engine.loadPattern(compatible ? current : pattern,
-                               buffers: buffers, spanBuffers: spanBuffers)
+                               buffers: buffers, spanBuffers: spanBuffers,
+                               startStep: startStep, loopEnabled: loopEnabled, loopBars: loopBars)
             engine.startPattern()
         }
     }
@@ -799,10 +873,19 @@ private struct PatternRowCard: View {
     /// Zoom: bars (16 steps) shown per grid line. 1 = one bar/line (big cells, focus a bar); higher
     /// packs more bars per line (smaller cells → the whole song fits in fewer lines).
     let barsPerLine: Int
+    /// SEQ5: the resting playhead cursor (a pattern step) — drawn as a start-locator on the grid;
+    /// where Play begins. Jumps to the last pad touched; reset by the refresh button.
+    let cursorStep: Int
+    /// SEQ5: the ∞ looper — when on, the loop window (a `loopBars`-bar span anchored at the cursor)
+    /// is tinted so the repeating section reads at a glance.
+    let loopEnabled: Bool
+    let loopBars: Int
     /// Tap the row header to solo-preview just this row (SEQ1).
     var onSolo: (Int) -> Void
     var onToggleCollapse: () -> Void
     var onRename: () -> Void
+    /// SEQ5: a pad in this row was touched — re-home the playhead cursor to that column.
+    var onTouchStep: (Int) -> Void
 
     /// SEQ3: reveal this row's per-track mixer deck (collapsed by default so a long pattern's
     /// rows stay compact).
@@ -1051,6 +1134,7 @@ private struct PatternRowCard: View {
                 }
             }
         }
+        .overlay { markerLayer(cols) }          // SEQ5: static loop-window band + playhead cursor
         .overlay {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !playingThis)) { _ in
                 // Sampled, never observed: `patternClock` is deliberately not @Observable.
@@ -1071,6 +1155,48 @@ private struct PatternRowCard: View {
             }
             .allowsHitTesting(false)
         }
+    }
+
+    /// SEQ5 static overlay: the ∞ loop-window band (faint turquoise fill on the bars that repeat)
+    /// and the playhead cursor (a start-locator outline + a ▼ tab on the column Play begins at).
+    /// Persistent (not in a TimelineView) — it depends only on the cursor/loop props, so it
+    /// redraws on a control change, never on the fast clock. Hit-testing off so it never eats a
+    /// pad tap. Mirrors `stepLine`'s exact group/cell geometry so it stays pixel-aligned.
+    private func markerLayer(_ cols: Range<Int>) -> some View {
+        let groups = beatGroups(cols)
+        let n = max(1, row.steps.count)
+        let cursor = min(max(0, cursorStep), n - 1)
+        let window = loopEnabled
+            ? StudioEngine.loopWindow(startStep: cursorStep, loopBars: loopBars, stepCount: n)
+            : nil
+        return HStack(spacing: Self.groupSpacing) {
+            ForEach(groups, id: \.lowerBound) { group in
+                HStack(spacing: Self.cellSpacing) {
+                    ForEach(group, id: \.self) { col in
+                        let inLoop = window.map { col >= $0.start && col < $0.start + $0.len } ?? false
+                        ZStack {
+                            RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
+                                .fill(Theme.accent2.opacity(inLoop ? 0.14 : 0))
+                                .frame(height: Self.cellHeight)
+                                .frame(maxWidth: .infinity)
+                            if col == cursor {
+                                RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
+                                    .strokeBorder(Theme.fg.opacity(0.9), lineWidth: 2)
+                                    .frame(height: Self.cellHeight)
+                                    .frame(maxWidth: .infinity)
+                                    .overlay(alignment: .top) {
+                                        Image(systemName: "arrowtriangle.down.fill")
+                                            .font(.system(size: 7))
+                                            .foregroundStyle(Theme.fg)
+                                            .offset(y: -5)
+                                    }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     /// Split a column range into beat groups of 4 — the visual beat-group separators are the
@@ -1101,6 +1227,7 @@ private struct PatternRowCard: View {
         return Button {
             studio.setPatternStep(patternId, row: rowIndex, col: col, on: !on)
             if sequencerLive, playingThis { engine.updateLiveStep(row: rowIndex, col: col, on: !on) }
+            onTouchStep(col)   // SEQ5: re-home the playhead cursor to the touched pad
         } label: {
             RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
                 // A missing row's on-steps render dimmed: the data is kept (re-adding the target

@@ -137,18 +137,29 @@ final class StudioPatternClock {
     var bpm: Double = 120
     /// The running pattern's length in steps (SEQ4) — the highlight wraps modulo this.
     var stepCount: Int = StudioPattern.defaultStepCount
+    /// SEQ5 playhead: the pattern step playback began at (the cursor). With loop OFF, playback
+    /// wraps the whole pattern starting here; with loop ON, the loop window is anchored from here.
+    var startStep: Int = 0
+    /// SEQ5 looper: when on, the highlight (and audio) cycle a `loopBars`-bar window instead of
+    /// the whole pattern.
+    var loopEnabled = false
+    var loopBars = 2
     /// True only while the pattern is actually rendering (set by the engine on start/stop and
     /// cleared across stalls, so a frozen highlight never keeps marching during silence).
     var running = false
 
-    /// The 0…15 step currently sounding, or nil when stopped / still inside the start latency
-    /// pre-roll. Sampled — never observed.
+    /// The pattern step currently sounding, or nil when stopped / still inside the start latency
+    /// pre-roll. Maps the elapsed-time slot through the same start-offset / loop-window math the
+    /// scheduler uses (`StudioEngine.mappedStep`), so the moving highlight always lands on the
+    /// cell that is actually triggering. Sampled — never observed.
     var currentStep: Int? {
         guard running, bpm > 0 else { return nil }
         let elapsed = CACurrentMediaTime() - startedAtHost
         guard elapsed >= 0 else { return nil }             // start latency window — nothing sounds yet
         let stepDur = 60.0 / bpm / 4.0
-        return Int(elapsed / stepDur) % max(1, stepCount)
+        let slot = Int(elapsed / stepDur)
+        return StudioEngine.mappedStep(slot: slot, startStep: startStep, loopEnabled: loopEnabled,
+                                       loopBars: loopBars, stepCount: stepCount)
     }
 }
 
@@ -291,12 +302,23 @@ final class StudioEngine {
     /// to EXACTLY span×step frames at the loaded bpm. Validated like `patternBuffers`.
     @ObservationIgnored private var patternSpanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:]
     @ObservationIgnored private var patternBpm: Double = 120
-    /// The running pattern's step count (SEQ4) — armPass's per-pass index math and the horizon
-    /// bar length use it instead of the fixed default.
+    /// The running pattern's step count (SEQ4) — the slot→step mapping and the horizon use it
+    /// instead of the fixed default.
     @ObservationIgnored private var patternStepCount = StudioPattern.defaultStepCount
-    /// Number of 1-bar passes whose steps are already scheduled. The tick keeps this one pass
-    /// ahead of the audible pass (the spec's 1-bar scheduling horizon).
-    @ObservationIgnored private var armedThroughPass = 0
+    /// SEQ5 playhead: the pattern step playback started at (the cursor). Loop OFF wraps the whole
+    /// pattern from here; loop ON anchors the loop window here. Clamped into [0, stepCount).
+    @ObservationIgnored private var patternStartStep = 0
+    /// SEQ5 looper: cycle a `patternLoopBars`-bar window instead of the whole pattern.
+    @ObservationIgnored private var patternLoopEnabled = false
+    @ObservationIgnored private var patternLoopBars = 2
+    /// Number of playback SLOTS (monotonic steps since the shared start) already scheduled. The
+    /// tick keeps a bounded horizon armed AHEAD of the audible slot — bounded, so a whole-song
+    /// pattern (hundreds of bars) schedules a few bars at a time instead of the entire song up
+    /// front (the old per-whole-pattern arming stalled the audio thread on long patterns).
+    @ObservationIgnored private var armedThroughSlot = 0
+    /// How many slots to keep scheduled ahead of the audible slot (4 bars). Bounds the per-start
+    /// and per-tick scheduling work regardless of pattern length.
+    private static let patternHorizonSlots = StudioPattern.defaultStepCount * 4
     /// `play(at:)` pre-roll so all row players start on ONE shared host time (StemPlayer's
     /// sample-sync start), far enough out that scheduling completes before it arrives.
     private static let patternStartLatency = 0.1
@@ -364,6 +386,37 @@ final class StudioEngine {
         let sr = sampleRate > 0 ? sampleRate : StudioAudio.canonicalSampleRate
         let frames = stepFrames(bpm: bpm, sampleRate: sr)
         return AVAudioTime(sampleTime: anchor.sampleTime + AVAudioFramePosition(index) * frames, atRate: sr)
+    }
+
+    // MARK: - SEQ5 playhead + loop mapping (nonisolated — the ONE source of truth for the clock
+    // highlight AND the scheduler, so what lights up is always what sounds)
+
+    /// The loop window (start step + length in steps) for a `loopBars`-bar looper anchored at the
+    /// playhead `startStep`. The window is kept a full `loopBars` bars wherever the pattern is long
+    /// enough — near the tail it slides back so it still fits (rather than shrinking); on a pattern
+    /// shorter than the window it collapses to the whole pattern. Pure + unit-tested.
+    nonisolated static func loopWindow(startStep: Int, loopBars: Int, stepCount: Int) -> (start: Int, len: Int) {
+        let sc = max(1, stepCount)
+        let full = max(1, min(max(1, loopBars) * StudioPattern.defaultStepCount, sc))
+        let start = min(max(0, startStep), max(0, sc - full))
+        return (start, full)
+    }
+
+    /// Map a monotonic playback slot (0,1,2,… steps since the shared start) to the PATTERN step it
+    /// triggers. Loop OFF ⇒ the whole pattern cycles, beginning at `startStep`. Loop ON ⇒ only the
+    /// `loopBars`-bar window (anchored at `startStep`) repeats. This is what makes the playhead
+    /// begin where you touched, what makes the ∞ looper cycle a sub-region, and — because the
+    /// scheduler arms slots through the SAME function — guarantees audio and highlight agree.
+    nonisolated static func mappedStep(slot: Int, startStep: Int, loopEnabled: Bool,
+                                       loopBars: Int, stepCount: Int) -> Int {
+        let sc = max(1, stepCount)
+        let s = max(0, slot)
+        if loopEnabled {
+            let w = loopWindow(startStep: startStep, loopBars: loopBars, stepCount: sc)
+            return w.start + (s % w.len)
+        }
+        let begin = min(max(0, startStep), sc - 1)
+        return (begin + s) % sc
     }
 
     // MARK: - Lifecycle
@@ -816,7 +869,8 @@ final class StudioEngine {
     /// while stopped (a running pattern is stopped first) — the attach set is fixed, so this
     /// never touches the live graph.
     func loadPattern(_ pattern: StudioPattern, buffers: [Int: AVAudioPCMBuffer],
-                     spanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:], soloedRow: Int? = nil) {
+                     spanBuffers: [Int: [Int: AVAudioPCMBuffer]] = [:], soloedRow: Int? = nil,
+                     startStep: Int = 0, loopEnabled: Bool = false, loopBars: Int = 2) {
         ensureEngine()
         if isPlayingPattern { stopPattern() }
         let rows = Array(pattern.rows.prefix(Self.maxPatternRows))
@@ -828,6 +882,9 @@ final class StudioEngine {
         patternStepSpans = rows.map(\.stepSpans)
         patternBpm = pattern.bpm > 0 ? pattern.bpm : 120
         patternStepCount = max(1, pattern.stepCount)
+        patternStartStep = min(max(0, startStep), patternStepCount - 1)
+        patternLoopEnabled = loopEnabled
+        patternLoopBars = max(1, loopBars)
         patternBuffers = [:]
         patternSpanBuffers = [:]
         for (i, row) in rows.enumerated() {
@@ -904,8 +961,30 @@ final class StudioEngine {
         rowGains[row].outputVolume = StudioAudio.gainMultiplier(db: gainDb)
     }
 
-    /// SEQ2 live edit: mirror a step on/off into the RUNNING pattern's arrays. `armPass` reads
-    /// `patternSteps`, so the change is heard at the NEXT bar — no re-anchor, no buffer work (the
+    /// SEQ5: move the playhead (the cursor) to `step`. While a pattern is playing this is a live
+    /// SEEK — the row players re-anchor so playback jumps to that step on the next beat-accurate
+    /// restart (the same top-of-bar re-anchor the engine already uses for recovery). While stopped
+    /// it just records where the next Play begins. Clamped into the loaded pattern.
+    func setPatternStartStep(_ step: Int) {
+        guard loadedPatternId != nil else { return }
+        patternStartStep = min(max(0, step), max(0, patternStepCount - 1))
+        patternClock.startStep = patternStartStep
+        if isPlayingPattern, startEngineIfNeeded() { restartPatternFromTop() }
+    }
+
+    /// SEQ5: enable/resize the ∞ looper. While playing, re-anchors so the loop window takes effect
+    /// immediately; while stopped, applies on the next Play. `bars` is the loop length in bars.
+    func setPatternLoop(enabled: Bool, bars: Int) {
+        guard loadedPatternId != nil else { return }
+        patternLoopEnabled = enabled
+        patternLoopBars = max(1, bars)
+        patternClock.loopEnabled = enabled
+        patternClock.loopBars = patternLoopBars
+        if isPlayingPattern, startEngineIfNeeded() { restartPatternFromTop() }
+    }
+
+    /// SEQ2 live edit: mirror a step on/off into the RUNNING pattern's arrays. `armSlot` reads
+    /// `patternSteps`, so the change is heard as the horizon advances — no re-anchor, no buffer work (the
     /// natural buffer for the row is already loaded). Off also clears the step's live loop/span
     /// mirror, matching `StudioStore.setPatternStep`. Bounds-guarded; a no-op if the row/col isn't
     /// loaded (e.g. during a single-row solo).
@@ -936,64 +1015,70 @@ final class StudioEngine {
     private func restartPatternFromTop() {
         guard built, engine.isRunning, patternHasContent else { return }
         for p in rowPlayers { p.stop() }   // stop() resets each player's sample timeline to 0
-        armedThroughPass = 0
-        armPass(0)
-        armPass(1)
-        armedThroughPass = 2
+        armedThroughSlot = 0
+        for slot in 0..<Self.patternHorizonSlots { armSlot(slot) }   // bounded: a few bars, not the whole song
+        armedThroughSlot = Self.patternHorizonSlots
         let when = AVAudioTime(hostTime: mach_absolute_time()
             + AVAudioTime.hostTime(forSeconds: Self.patternStartLatency))
         for (row, _) in patternBuffers { rowPlayers[row].play(at: when) }
         patternClock.startedAtHost = CACurrentMediaTime() + Self.patternStartLatency
         patternClock.bpm = patternBpm
         patternClock.stepCount = patternStepCount
+        patternClock.startStep = patternStartStep
+        patternClock.loopEnabled = patternLoopEnabled
+        patternClock.loopBars = patternLoopBars
         patternClock.running = true
-        dlog("pattern (re)start bpm=\(patternBpm) rows=\(patternBuffers.count)")
+        dlog("pattern (re)start bpm=\(patternBpm) rows=\(patternBuffers.count) from=\(patternStartStep) loop=\(patternLoopEnabled ? patternLoopBars : 0)")
     }
 
-    /// Schedule one 1-bar pass of steps. Times are on each row player's OWN timeline (sample
-    /// time 0 = the shared start), `.interrupts` = the classic mono-choke: a retrigger cuts the
-    /// ringing previous hit on that row (spec §4).
+    /// Schedule ONE playback slot (a monotonic step index since the shared start) onto whichever
+    /// rows fire on the PATTERN step it maps to. Times are on each row player's OWN timeline
+    /// (sample time 0 = the shared start); `.interrupts` = the classic mono-choke: a retrigger cuts
+    /// the ringing previous hit on that row (spec §4).
     ///
-    /// Per-step modes: a span > 0 picks the pre-stretched buffer (tempo-fit to span×step frames,
-    /// natural fallback); a LOOP step adds `.loops` — one queue entry that keeps looping until
-    /// the row's next trigger's `.interrupts` takes over at its own schedule time. The wrap case
-    /// is the same mechanism: the NEXT pass arms the same step a bar later, cutting and
-    /// restarting the loop exactly on the wrap (the user-facing loop contract).
-    private func armPass(_ pass: Int) {
+    /// The slot→step mapping (`mappedStep`) is what applies the playhead start-offset and the ∞
+    /// loop window — the SAME function the highlight clock samples, so audio and cursor never
+    /// diverge. Per-step modes: a span > 0 picks the pre-stretched buffer (tempo-fit to span×step
+    /// frames, natural fallback); a LOOP step adds `.loops` — one queue entry that keeps looping
+    /// until the row's next trigger's `.interrupts` takes over at its own schedule time (the wrap
+    /// case is the same mechanism: the next occurrence of that step arms `.interrupts` and restarts
+    /// the loop exactly on the wrap — the user-facing loop contract).
+    private func armSlot(_ slot: Int) {
         let sr = StudioAudio.canonicalSampleRate
+        let col = Self.mappedStep(slot: slot, startStep: patternStartStep,
+                                  loopEnabled: patternLoopEnabled, loopBars: patternLoopBars,
+                                  stepCount: patternStepCount)
+        let at = Self.stepTime(anchor: AVAudioTime(sampleTime: 0, atRate: sr),
+                               index: slot, bpm: patternBpm, sampleRate: sr)
         for (row, buf) in patternBuffers {
-            guard patternSteps.indices.contains(row), rowPlayers.indices.contains(row) else { continue }
-            let steps = patternSteps[row]
-            let player = rowPlayers[row]
-            for col in steps.indices where steps[col] {
-                let at = Self.stepTime(anchor: AVAudioTime(sampleTime: 0, atRate: sr),
-                                       index: pass * patternStepCount + col,
-                                       bpm: patternBpm, sampleRate: sr)
-                let span = patternStepSpans.indices.contains(row)
-                    && patternStepSpans[row].indices.contains(col) ? patternStepSpans[row][col] : 0
-                let stepBuf = span > 0 ? (patternSpanBuffers[row]?[span] ?? buf) : buf
-                let loops = patternLoopSteps.indices.contains(row)
-                    && patternLoopSteps[row].indices.contains(col) && patternLoopSteps[row][col]
-                player.scheduleBuffer(stepBuf, at: at,
-                                      options: loops ? [.loops, .interrupts] : .interrupts)
-            }
+            guard patternSteps.indices.contains(row), rowPlayers.indices.contains(row),
+                  patternSteps[row].indices.contains(col), patternSteps[row][col] else { continue }
+            let span = patternStepSpans.indices.contains(row)
+                && patternStepSpans[row].indices.contains(col) ? patternStepSpans[row][col] : 0
+            let stepBuf = span > 0 ? (patternSpanBuffers[row]?[span] ?? buf) : buf
+            let loops = patternLoopSteps.indices.contains(row)
+                && patternLoopSteps[row].indices.contains(col) && patternLoopSteps[row][col]
+            rowPlayers[row].scheduleBuffer(stepBuf, at: at,
+                                           options: loops ? [.loops, .interrupts] : .interrupts)
         }
     }
 
-    /// Tick duty: keep the schedule one full bar ahead of the audible pass (the 1-bar horizon).
-    /// Host-clock based — the passes are armed a bar early, so millisecond host/render drift is
-    /// irrelevant; the sample-accurate truth is the step times themselves.
-    private func armPatternPassesIfNeeded() {
+    /// Tick duty: keep a bounded horizon (a few bars) of slots armed AHEAD of the audible slot.
+    /// Host-clock based — slots are armed early, so millisecond host/render drift is irrelevant;
+    /// the sample-accurate truth is the step times themselves. Bounded so a 100-bar pattern
+    /// schedules a few bars per tick, never the whole song at once.
+    private func armPatternHorizonIfNeeded() {
         guard isPlayingPattern, patternClock.running else { return }
         let stepF = Self.stepFrames(bpm: patternBpm, sampleRate: StudioAudio.canonicalSampleRate)
-        let barSec = Double(stepF) * Double(patternStepCount) / StudioAudio.canonicalSampleRate
-        guard barSec > 0 else { return }
+        let stepSec = Double(stepF) / StudioAudio.canonicalSampleRate
+        guard stepSec > 0 else { return }
         let elapsed = CACurrentMediaTime() - patternClock.startedAtHost
         guard elapsed >= 0 else { return }
-        let currentPass = Int(elapsed / barSec)
-        while armedThroughPass <= currentPass + 1 {
-            armPass(armedThroughPass)
-            armedThroughPass += 1
+        let currentSlot = Int(elapsed / stepSec)
+        let target = currentSlot + Self.patternHorizonSlots
+        while armedThroughSlot <= target {
+            armSlot(armedThroughSlot)
+            armedThroughSlot += 1
         }
     }
 
@@ -1044,7 +1129,7 @@ final class StudioEngine {
             }
             healParkedPlayers()          // macOS device switch: engine renders on, nodes parked
             checkSampleEndBoundary()
-            armPatternPassesIfNeeded()
+            armPatternHorizonIfNeeded()
         } else if anyIntentPlaying {
             // WATCHDOG: the system stopped the engine (route change / missed interruption-.ended
             // / config change) while something intends to play — bring it back (~1 try/s).
@@ -1067,7 +1152,7 @@ final class StudioEngine {
         dlog("hb render=\(rendering ? 1 : 0) run=\(engine.isRunning ? 1 : 0)"
              + " smp=(\(isPlayingSample ? 1 : 0),\(smpNode),\(String(format: "%.1f", samplePausedAt)))"
              + " loop=(\(isPlayingLoop ? 1 : 0),\(loopNode))"
-             + " ptn=(\(isPlayingPattern ? 1 : 0),rows=\(rowsOn),pass=\(armedThroughPass),step=\(patternClock.currentStep ?? -1))"
+             + " ptn=(\(isPlayingPattern ? 1 : 0),rows=\(rowsOn),slot=\(armedThroughSlot),step=\(patternClock.currentStep ?? -1))"
              + " out=\(Int(engine.outputNode.outputFormat(forBus: 0).sampleRate))Hz")
     }
 
