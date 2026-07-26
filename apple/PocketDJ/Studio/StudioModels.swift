@@ -412,15 +412,20 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
     /// EXACTLY n steps (time-stretch via rate, pitch preserved). Meaningful only where `steps`
     /// is on. Same additive treatment as `loopSteps` (absent ⇒ all 0).
     var stepSpans: [Int]
+    /// Optional custom lane name (SEQ collapse/rename). nil ⇒ the row shows its target sample/loop's
+    /// name (the default). Additive-optional: old docs decode nil; an older build that re-saves drops
+    /// it (accepted doctrine). Survives `resized` since that copies the row wholesale.
+    var label: String?
 
     /// A row with no sounding step (contributes nothing; also the freshly-added state).
     var isSilent: Bool { !steps.contains(true) }
 
-    enum CodingKeys: String, CodingKey { case targetId, steps, gainDb, loopSteps, stepSpans }
+    enum CodingKeys: String, CodingKey { case targetId, steps, gainDb, loopSteps, stepSpans, label }
     init(targetId: String, steps: [Bool] = Array(repeating: false, count: StudioPattern.defaultStepCount),
          gainDb: Double = 0,
          loopSteps: [Bool] = Array(repeating: false, count: StudioPattern.defaultStepCount),
-         stepSpans: [Int] = Array(repeating: 0, count: StudioPattern.defaultStepCount)) {
+         stepSpans: [Int] = Array(repeating: 0, count: StudioPattern.defaultStepCount),
+         label: String? = nil) {
         // Length-preserving: a row built with a long `steps` keeps it; a default row is 16.
         // StudioPattern.resized re-sizes it to the owning pattern's stepCount when it differs (SEQ4).
         let n = max(steps.count, StudioPattern.defaultStepCount)
@@ -429,6 +434,7 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
         self.gainDb = gainDb
         self.loopSteps = StudioPatternRow.normalized(loopSteps, to: n)
         self.stepSpans = StudioPatternRow.normalizedSpans(stepSpans, to: n)
+        self.label = label
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -437,13 +443,14 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
         // default here, or a long SEQ4 pattern's rows would silently lose steps 16+ on load.
         // StudioPattern.init(from:) resizes every row to the pattern's own stepCount afterward.
         let rawSteps = (try? c.decode([Bool].self, forKey: .steps)) ?? []
-        // Pad short/legacy arrays up to the default (16) but PRESERVE longer ones (up to 365) —
-        // StudioPattern.init(from:) then resizes every row to the pattern's authoritative stepCount.
+        // Pad short/legacy arrays up to the default (16) but PRESERVE longer ones (up to maxStepCount)
+        // — StudioPattern.init(from:) then resizes every row to the pattern's authoritative stepCount.
         let n = max(rawSteps.count, StudioPattern.defaultStepCount)
         steps = StudioPatternRow.normalized(rawSteps, to: n)
         gainDb = (try? c.decode(Double.self, forKey: .gainDb)) ?? 0
         loopSteps = StudioPatternRow.normalized((try? c.decode([Bool].self, forKey: .loopSteps)) ?? [], to: n)
         stepSpans = StudioPatternRow.normalizedSpans((try? c.decode([Int].self, forKey: .stepSpans)) ?? [], to: n)
+        label = try? c.decode(String.self, forKey: .label)
     }
 
     /// Pad/truncate a bool array to exactly `count` (pure, testable).

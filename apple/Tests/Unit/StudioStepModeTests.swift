@@ -110,6 +110,28 @@ final class StudioStepModeTests: XCTestCase {
         XCTAssertTrue(p.rows[0].steps[4])
     }
 
+    func testRowLabelRoundTripAndLegacyNil() throws {
+        var row = StudioPatternRow(targetId: "smp_a", label: "Kick").resized(to: 32)
+        XCTAssertEqual(row.label, "Kick")   // survives resize
+        row.steps[3] = true
+        let back = try JSONDecoder().decode(StudioPatternRow.self, from: JSONEncoder().encode(row))
+        XCTAssertEqual(back.label, "Kick")
+        XCTAssertTrue(back.steps[3])
+        // A pre-feature row (no label key) decodes to nil, no throw.
+        let legacy = try JSONDecoder().decode(StudioPatternRow.self,
+            from: Data(#"{"targetId":"smp_b","steps":[false,false]}"#.utf8))
+        XCTAssertNil(legacy.label)
+    }
+
+    func testSetPatternRowLabelBlankClearsToNil() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addPattern(StudioPattern(id: "ptn_a", name: "P", rows: [StudioPatternRow(targetId: "smp_a")]))
+        store.setPatternRowLabel("ptn_a", row: 0, label: "Snare")
+        XCTAssertEqual(store.pattern("ptn_a")?.rows[0].label, "Snare")
+        store.setPatternRowLabel("ptn_a", row: 0, label: "   ")   // blank ⇒ back to default (nil)
+        XCTAssertNil(store.pattern("ptn_a")?.rows[0].label)
+    }
+
     func testStepCountClampAndLengthMs() {
         XCTAssertEqual(StudioPattern.clampStepCount(999_999), StudioPattern.maxStepCount)
         XCTAssertEqual(StudioPattern.clampStepCount(0), 1)
