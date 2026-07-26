@@ -175,6 +175,10 @@ struct RootView: View {
         // the same captured route, but only the first finds the live value non-nil — the
         // guard-let + clear inside consumeIntentRoute is an atomic take on the main actor.
         .onChange(of: intents.pendingRoute) { _, _ in consumeIntentRoute(intents.pendingRoute) }
+        // Jukebox deep-link (shared Universal Link / pocketdj:// scheme / "Open in PocketDJ" banner):
+        // onOpenURL adds the session then parks its id here; consume it to open the live join panel —
+        // same atomic-take-across-windows discipline as the intent route above.
+        .onChange(of: jukebox.pendingOpenId) { _, _ in consumeJukeboxOpen(jukebox.pendingOpenId) }
         // ZERO-TO-HERO gate: a fresh install (or reinstall) walks the three-stage
         // onboarding before the app proper. fullScreenCover on iOS/visionOS; macOS has
         // no fullScreenCover, so a non-dismissable sheet. Every window of a multi-window
@@ -266,6 +270,7 @@ struct RootView: View {
                 path.append(first)
             }
             consumeIntentRoute(intents.pendingRoute)   // route parked by a cold intent launch
+            consumeJukeboxOpen(jukebox.pendingOpenId)  // jukebox link tapped at cold launch
         }
         // Remember where the user is so the next iOS launch reopens there (nil —
         // the home menu — persists as "" and restores as home).
@@ -390,6 +395,23 @@ struct RootView: View {
                 try? await Task.sleep(for: .milliseconds(450))
                 push()
             }
+        }
+    }
+
+    /// Consume a pending jukebox deep-link (shared link / "Open in PocketDJ" banner): switch to the
+    /// Jukebox tab and PUSH the live join panel on a FRESH stack. Same discipline as
+    /// `consumeIntentRoute` — clear the signal FIRST (atomic take; with several windows open only the
+    /// first finds it non-nil), section lands now, and the push is staged a runloop later so a
+    /// section-swap / sheet-dismiss mid-flight can't drop it.
+    private func consumeJukeboxOpen(_ id: String?) {
+        guard let id else { return }
+        jukebox.pendingOpenId = nil
+        guard let entry = jukebox.joinedSessions.first(where: { $0.id == id }) else { return }
+        path = NavigationPath()
+        section = .jukebox
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            path.append(JukeboxJoinRoute(entry: entry))
         }
     }
 

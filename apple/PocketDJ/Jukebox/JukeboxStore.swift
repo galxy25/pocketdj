@@ -234,6 +234,11 @@ final class JukeboxStore {
     }
 
     private(set) var joinedSessions: [JoinedEntry] = []
+    /// Set to the jukeboxId when a shared link / "Open in PocketDJ" banner is tapped, so RootView can
+    /// switch to the Jukebox tab and PUSH the live join panel — adding to the list isn't enough, the
+    /// user expects the link to TAKE them into the session. RootView consumes + clears it (atomic take,
+    /// multi-window-safe). Not `private(set)`: RootView clears it on consume.
+    var pendingOpenId: String?
     private static let joinedListKey = "pdj.jukebox.joined.list.v1"
     /// Stable per-install client id for guest requests (server pacing + "my requests" tracking).
     private var jukeboxClientId: String { DeviceIdentity.current }
@@ -257,6 +262,8 @@ final class JukeboxStore {
         joinedSessions.insert(JoinedEntry(id: link.jukeboxId, name: nil,
                                           guestBase: link.guestBase?.absoluteString), at: 0)
         persistJoinedSessions()
+        // Signal RootView to open the live panel for this jukebox (entry inserted first, above).
+        pendingOpenId = link.jukeboxId
     }
 
     /// Remove a joined jukebox from the list (the panel's "Leave" / a swipe on the home list).
