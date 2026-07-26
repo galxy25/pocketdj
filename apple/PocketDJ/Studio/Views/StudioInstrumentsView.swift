@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UniformTypeIdentifiers
 
 // MARK: - Studio ▸ Instruments (spec §1/§7)
 //
@@ -36,6 +37,7 @@ struct StudioInstrumentsView: View {
     /// iPhone, iPad, Mac, and Vision Pro — CoreBluetooth is universal).
     @State private var showBTMIDIPicker = false
     @State private var bleMIDI = BLEMIDIManager()
+    @State private var showMIDIImporter = false
 
     var body: some View {
         ScrollView {
@@ -48,6 +50,7 @@ struct StudioInstrumentsView: View {
                     .frame(height: 200)
                 liveStaffSection
                 takesLink
+                midiImportButton
                 packsSection
                 midiSection
             }
@@ -393,6 +396,59 @@ struct StudioInstrumentsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("takes-open")
+    }
+
+    /// Accepted MIDI UTIs (Standard MIDI File — a few spellings across sources).
+    private static let midiTypes: [UTType] = [.midi,
+                                              UTType(filenameExtension: "mid") ?? .midi,
+                                              UTType(filenameExtension: "midi") ?? .midi]
+
+    /// Import a Standard MIDI File as an instrumental take — parsed into notes that play through the
+    /// CURRENTLY-SELECTED instrument (switchable afterward from the Instrumentals list). Renders the
+    /// real audio in the background like a live-saved take.
+    private var midiImportButton: some View {
+        Button { showMIDIImporter = true } label: {
+            HStack {
+                Label("Import MIDI file…", systemImage: "square.and.arrow.down").foregroundStyle(Theme.fg)
+                Spacer()
+                Text("→ \(instruments.currentInstrument?.displayName ?? InstrumentKey.piano.displayName)")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).fill(Theme.bgRaised))
+            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("midi-import")
+        .fileImporter(isPresented: $showMIDIImporter, allowedContentTypes: Self.midiTypes) { result in
+            if case .success(let url) = result { handleMIDIImport(url) }
+        }
+    }
+
+    private func handleMIDIImport(_ url: URL) {
+        guard let takesDir = try? StudioFolders.appRoot(.takes) else {
+            notice = "Couldn't save — the takes folder isn't reachable."
+            return
+        }
+        do {
+            let parsed = try StudioMIDIImport.parse(url: url)
+            let takeId = StudioFactory.newTakeId()
+            let fileName = StudioFolders.fileName(.takes, id: takeId)
+            writePlaceholderTakeAudio(to: takesDir.appendingPathComponent(fileName), durationMs: parsed.durationMs)
+            let base = url.deletingPathExtension().lastPathComponent
+            let inst = instruments.currentInstrument ?? .piano
+            studio.addTakeRelocating(StudioTake(id: takeId, name: base.isEmpty ? defaultTakeName() : base,
+                                                instrument: inst, fileName: fileName, bpm: parsed.bpm,
+                                                events: parsed.events, durationMs: parsed.durationMs,
+                                                createdAt: Date().timeIntervalSince1970 * 1000))
+            Task { await StudioTakeRenderer.ensureRendered(takeId: takeId, studio: studio, packs: packs) }
+            notice = "Imported “\(base)” — \(parsed.events.count) notes on \(inst.displayName). "
+                + "Change its instrument or tempo from Instrumentals."
+        } catch {
+            notice = (error as? StudioMIDIImport.ImportError)?.errorDescription ?? "Couldn’t read that MIDI file."
+        }
     }
 
     // MARK: Pack management (spec §6)

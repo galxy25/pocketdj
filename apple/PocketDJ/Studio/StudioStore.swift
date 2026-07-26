@@ -562,6 +562,38 @@ final class StudioStore {
         saveNow()
     }
 
+    /// Switch a take's playback instrument (Instruments mode). Clears the rendered-audio cache so the
+    /// next play re-synthesizes the SAME notes through the new instrument's SoundFont program.
+    func setTakeInstrument(_ id: String, _ instrument: InstrumentKey) {
+        guard let i = takes.firstIndex(where: { $0.id == id }), takes[i].instrument != instrument else { return }
+        takes[i].instrument = instrument
+        invalidateTakeRender(&takes[i])
+        saveNow()
+    }
+
+    /// Re-time a take to a new tempo — scales every note's on/off (and the edited stream, if any) by
+    /// oldBpm/newBpm so the performance plays faster/slower, keeping its beat alignment (bpm scales
+    /// with it). Destructive but reversible by re-setting the tempo; the rendered audio is invalidated
+    /// so playback re-synthesizes at the new tempo. Clamped to a musical range.
+    func setTakeTempo(_ id: String, newBpm: Double) {
+        guard let i = takes.firstIndex(where: { $0.id == id }) else { return }
+        let old = takes[i].bpm
+        let target = min(max(newBpm, 20), 300)
+        guard old > 0, target > 0, abs(target - old) > 0.01 else { return }
+        let scale = old / target   // higher target bpm ⇒ shorter ms
+        func rescale(_ e: StudioNoteEvent) -> StudioNoteEvent {
+            StudioNoteEvent(onMs: Int((Double(e.onMs) * scale).rounded()),
+                            offMs: Int((Double(e.offMs) * scale).rounded()),
+                            note: e.note, velocity: e.velocity, accidental: e.accidental)
+        }
+        takes[i].events = takes[i].events.map(rescale)
+        if let edited = takes[i].editedEvents { takes[i].editedEvents = edited.map(rescale) }
+        takes[i].bpm = target
+        takes[i].durationMs = Int((Double(takes[i].durationMs) * scale).rounded())
+        invalidateTakeRender(&takes[i])
+        saveNow()
+    }
+
     /// Delete + forget a take's rendered-audio cache (its events changed, so the synth is stale).
     private func invalidateTakeRender(_ take: inout StudioTake) {
         if let rf = take.renderedFileName,
