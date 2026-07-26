@@ -230,37 +230,50 @@ struct DemuxDrumPatternView: View {
                 Text(exportNotice).font(.caption2).foregroundStyle(Theme.fgDim)
                     .accessibilityIdentifier("demux-drum-export-notice")
             }
-            Button { Task { await export() } } label: {
-                HStack(spacing: 8) {
-                    if exporting { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "square.grid.4x3.fill") }
-                    Text(exporting ? "Building sequence…" : "Send bar \(selectedBar + 1) to Sequencer")
-                        .font(.callout.weight(.semibold))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 9)
-                .background(Theme.accent.opacity(0.18),
-                            in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-                .contentShape(Rectangle())
+            Button { Task { await export(wholeSong: false) } } label: {
+                exportButtonLabel("square.grid.4x3.fill", "Send bar \(selectedBar + 1) to Sequencer")
             }
             .buttonStyle(.plain).foregroundStyle(Theme.accent)
             .disabled(exporting || bars.isEmpty
                       || !(grid.indices.contains(selectedBar) && !grid[selectedBar].isEmpty))
             .accessibilityIdentifier("demux-drum-export")
+            // Whole song → one long multi-bar pattern (every detected bar, up to the sequencer's cap).
+            Button { Task { await export(wholeSong: true) } } label: {
+                exportButtonLabel("rectangle.grid.1x2.fill", "Send all \(bars.count) bars to Sequencer")
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .disabled(exporting || bars.count < 2 || grid.allSatisfy { $0.isEmpty })
+            .accessibilityIdentifier("demux-drum-export-whole")
         }
     }
 
-    /// Carve one representative hit per class into an `smp_` kit sample, build a row per lane
-    /// from the selected bar's steps, and file the pattern. The bar's own length sets the
-    /// pattern bpm (240000 / barMs — one 4/4 bar of 16ths).
-    private func export() async {
+    @ViewBuilder private func exportButtonLabel(_ icon: String, _ title: String) -> some View {
+        HStack(spacing: 8) {
+            if exporting { ProgressView().controlSize(.small) } else { Image(systemName: icon) }
+            Text(exporting ? "Building sequence…" : title).font(.callout.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 9)
+        .background(Theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .contentShape(Rectangle())
+    }
+
+    /// Carve one representative hit per class into an `smp_` kit sample, then build a row per lane
+    /// whose steps span the chosen bars — either the single selected bar or, for `wholeSong`, EVERY
+    /// detected bar concatenated into one long multi-bar pattern (16 steps each). The median bar
+    /// length sets the pattern bpm (240000 / barMs — one 4/4 bar of 16ths).
+    private func export(wholeSong: Bool) async {
         exporting = true
         exportNotice = nil
         defer { exporting = false }
-        guard bars.indices.contains(selectedBar), grid.indices.contains(selectedBar) else { return }
-        let barLanes = grid[selectedBar]
-        let kinds = DemuxDrumKind.laneOrder.filter { (barLanes[$0] ?? []).contains(true) }
-        guard !kinds.isEmpty else { exportNotice = "No hits in this bar."; return }
+        let barCount = min(bars.count, grid.count)
+        guard barCount > 0 else { return }
+        // The bar indices this export covers.
+        let range: [Int] = wholeSong ? Array(0..<barCount)
+                                      : (grid.indices.contains(selectedBar) ? [selectedBar] : [])
+        guard !range.isEmpty else { return }
+        // Classes that fire in ANY covered bar get a lane.
+        let kinds = DemuxDrumKind.laneOrder.filter { kind in range.contains { (grid[$0][kind] ?? []).contains(true) } }
+        guard !kinds.isEmpty else { exportNotice = wholeSong ? "No hits detected." : "No hits in this bar."; return }
         guard let stems = resolveStems() else {
             exportNotice = "The stems aren’t on the device anymore — download them again."
             return
@@ -291,7 +304,9 @@ struct DemuxDrumPatternView: View {
                     createdAt: Date().timeIntervalSince1970 * 1000,
                     durationMs: carved.durationMs,
                     source: provenance, grid: nil, edit: .neutral))
-                rows.append(StudioPatternRow(targetId: id, steps: barLanes[kind] ?? []))
+                // Concatenate each covered bar's 16 steps (missing bar → 16 rests).
+                let steps = range.flatMap { StudioPatternRow.normalized(grid[$0][kind] ?? [], to: 16) }
+                rows.append(StudioPatternRow(targetId: id, steps: steps))
             } catch {
                 continue   // one unusable lane never blocks the rest of the kit
             }
@@ -300,16 +315,17 @@ struct DemuxDrumPatternView: View {
             exportNotice = "Couldn’t carve any hits from the stems."
             return
         }
-        let bar = bars[selectedBar]
-        let barLen = max(1, bar.endMs - bar.startMs)
-        let bpm = min(max(240_000.0 / Double(barLen), 40), 300)
+        // Median bar length → bpm (robust to an odd first/last bar in a whole-song export).
+        let lens = range.map { max(1, bars[$0].endMs - bars[$0].startMs) }.sorted()
+        let bpm = min(max(240_000.0 / Double(lens[lens.count / 2]), 40), 300)
+        let name = wholeSong ? "\(source.displayName) · full (\(range.count) bars)"
+                             : "\(source.displayName) · bar \(selectedBar + 1)"
         studio.addPattern(StudioPattern(
-            id: StudioFactory.newPatternId(),
-            name: "\(source.displayName) · bar \(selectedBar + 1)",
-            bpm: bpm, rows: rows,
+            id: StudioFactory.newPatternId(), name: name,
+            bpm: bpm, stepCount: range.count * 16, rows: rows,
             createdAt: Date().timeIntervalSince1970 * 1000))
-        exportNotice = "Sequence created with \(rows.count) lane\(rows.count == 1 ? "" : "s") — "
-            + "open the Sequencer and use each row’s swap menu to morph lanes onto other samples."
+        exportNotice = "Sequence created — \(rows.count) lane\(rows.count == 1 ? "" : "s") × \(range.count) bar\(range.count == 1 ? "" : "s"). "
+            + "Open the Sequencer and use each row’s swap menu to morph lanes onto other samples."
     }
 
     /// The freshest local stem files (a NEW scope per call — never the demux player's):

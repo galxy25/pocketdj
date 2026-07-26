@@ -18,6 +18,29 @@ final class StudioStepModeTests: XCTestCase {
             .appendingPathComponent("pdj-stepmodes-\(UUID().uuidString).json")
     }
 
+    // MARK: Whole-song patterns (Demuxer "send all bars") — the raised step cap
+
+    func testStepCountCapAllowsWholeSong() {
+        // 512 bars × 16 = 8192 steps is the ceiling; over-long requests clamp there, not to 365.
+        XCTAssertEqual(StudioPattern.maxStepCount, 512 * 16)
+        XCTAssertEqual(StudioPattern.clampStepCount(512 * 16), 512 * 16)
+        XCTAssertEqual(StudioPattern.clampStepCount(999_999), 512 * 16)
+        XCTAssertEqual(StudioPattern.clampStepCount(0), 1)
+    }
+
+    func testLongPatternPreservesEveryStepThroughRoundTrip() throws {
+        // A 90-bar whole-song pattern (1440 steps) must not be truncated by the init/decoder resize.
+        let steps = (0..<(90 * 16)).map { $0 % 16 == 0 }   // a hit on each bar's downbeat
+        let pattern = StudioPattern(id: "ptn_x", name: "full", bpm: 120, stepCount: 90 * 16,
+                                    rows: [StudioPatternRow(targetId: "smp_1", steps: steps)])
+        XCTAssertEqual(pattern.stepCount, 1440)
+        XCTAssertEqual(pattern.rows.first?.steps.count, 1440)
+        let back = try JSONDecoder().decode(StudioPattern.self, from: JSONEncoder().encode(pattern))
+        XCTAssertEqual(back.stepCount, 1440)
+        XCTAssertEqual(back.rows.first?.steps.count, 1440)
+        XCTAssertEqual(back.rows.first?.steps, steps)
+    }
+
     override func tearDown() {
         try? FileManager.default.removeItem(at: storeURL)
         super.tearDown()
@@ -88,7 +111,7 @@ final class StudioStepModeTests: XCTestCase {
     }
 
     func testStepCountClampAndLengthMs() {
-        XCTAssertEqual(StudioPattern.clampStepCount(999), StudioPattern.maxStepCount)
+        XCTAssertEqual(StudioPattern.clampStepCount(999_999), StudioPattern.maxStepCount)
         XCTAssertEqual(StudioPattern.clampStepCount(0), 1)
         // 32 steps at 120 BPM = 2 bars.
         let p = StudioPattern(id: "p", name: "n", bpm: 120, stepCount: 32)
