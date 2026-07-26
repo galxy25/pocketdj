@@ -478,8 +478,10 @@ struct StudioPatternRow: Codable, Hashable, Sendable {
 struct StudioPattern: Codable, Identifiable, Hashable, Sendable {
     /// The default pattern length — one bar of 16th notes in 4/4 (step duration = 60/bpm/4 s).
     static let defaultStepCount = 16
-    /// The longest supported pattern (SEQ4): ~23 bars of 16ths.
-    static let maxStepCount = 365
+    /// The longest supported pattern: 512 bars of 16ths — enough for a WHOLE SONG's drum pattern sent
+    /// from the Demuxer (its bar detector caps at 512 bars). The manual Length stepper stays modest;
+    /// only the Demuxer's "send whole song" path reaches these lengths (Levi 2026-07-26).
+    static let maxStepCount = 512 * 16
 
     var id: String                    // "ptn_…"
     var name: String

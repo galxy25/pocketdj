@@ -775,11 +775,32 @@ struct StudioDemuxView: View {
                 }
                 .buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(stemExporting)
                 .accessibilityIdentifier("demux-export-stems")
+                // Layer these stems onto an EXISTING arrangement — fast remixing (swap one song's
+                // drums/piano for another's). Only when there's somewhere to add them.
+                if !studio.arrangements.isEmpty {
+                    Menu {
+                        ForEach(studio.arrangements) { arr in
+                            Button(arr.name) { exportStemsToArrangement(source, into: arr.id) }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "rectangle.stack.badge.plus")
+                            Text("Add stems to an existing arrangement…").font(.callout.weight(.semibold))
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.fgDim)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.fg).disabled(stemExporting)
+                    .accessibilityIdentifier("demux-export-stems-existing")
+                }
                 if let name = stemExportedName {
                     Label("Added to Tracks ▸ \(name) — 4 stem lanes.", systemImage: "checkmark.circle.fill")
                         .font(.caption2).foregroundStyle(Theme.accent)
                 } else {
-                    Text("Creates a Tracks arrangement with drums, bass, other and vocals on their own lanes.")
+                    Text("New arrangement, or layer onto an existing one to remix — drums, bass, other, vocals on their own lanes.")
                         .font(.caption2).foregroundStyle(Theme.fgDim)
                 }
             }
@@ -787,10 +808,12 @@ struct StudioDemuxView: View {
     }
 
     /// Resolve the on-device stems (song → BurnStore, custom → DemuxStore — the kickoffMelody dual
-    /// path), create a fresh arrangement, and bake each stem onto its own colour-matched track at
-    /// 0:00. Tracks are added in drums/bass/other/vocals order so the palette maps yellow/red/green/
-    /// purple. The BurnStore scope-release is held across ALL bakes and called exactly once after.
-    private func exportStemsToArrangement(_ source: DemuxSource) {
+    /// path) and bake each stem onto its own colour-matched track at 0:00. `into` nil ⇒ a FRESH
+    /// arrangement (the original flow); non-nil ⇒ layer 4 new stem lanes onto an EXISTING arrangement
+    /// for fast remixing — swap one song's drums/piano for another's (old lanes stay, mute/delete as
+    /// you like). Tracks are added drums/bass/other/vocals so the palette maps yellow/red/green/purple.
+    /// The BurnStore scope-release is held across ALL bakes and called exactly once after.
+    private func exportStemsToArrangement(_ source: DemuxSource, into targetId: String? = nil) {
         stemExporting = true
         stemExportedName = nil
         Task {
@@ -803,17 +826,22 @@ struct StudioDemuxView: View {
                 urls = map
             }
             guard !urls.isEmpty else { return }
-            let arr = studio.createArrangement(name: source.displayName)
+            // New arrangement, or an existing one chosen from the picker.
+            let existing = targetId.flatMap { studio.arrangement($0) }
+            let arrId = existing?.id ?? studio.createArrangement(name: source.displayName).id
             for stem in ["drums", "bass", "other", "vocals"] {
+                // In an EXISTING arrangement, tag lanes with the song so multiple songs' stems are
+                // distinguishable; a fresh arrangement keeps the clean "Drums"/"Bass"/… names.
+                let trackName = existing == nil ? stem.capitalized : "\(source.displayName) \(stem.capitalized)"
                 guard let url = urls[stem],
-                      let track = studio.addTrack(arrangement: arr.id, name: stem.capitalized) else { continue }
+                      let track = studio.addTrack(arrangement: arrId, name: trackName) else { continue }
                 if let clip = await ArrangerClipBaker.bakeFromFile(
                     sourceURL: url, name: "\(source.displayName) — \(stem)", startMs: 0) {
-                    studio.addClip(arrangement: arr.id, track: track.id, clip)
+                    studio.addClip(arrangement: arrId, track: track.id, clip)
                 }
             }
             release?()
-            stemExportedName = source.displayName
+            stemExportedName = existing?.name ?? source.displayName
         }
     }
 

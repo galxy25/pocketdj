@@ -247,16 +247,19 @@ private struct SequencerEditor: View {
         engine.isPlayingPattern && engine.loadedPatternId == patternId && engine.soloedRow == nil
     }
 
-    /// SEQ4: pattern length in whole bars (16 steps each), up to maxStepCount (365). Growing pads
-    /// with off steps; shrinking drops the tail. Applies on the next Play (like BPM).
+    /// SEQ4: pattern length in whole bars (16 steps each), up to maxStepCount bars. Growing pads
+    /// with off steps; shrinking drops the tail. Applies on the next Play (like BPM). A whole-song
+    /// pattern sent from the Demuxer can be far longer than you'd dial by hand — the stepper still
+    /// displays and edits it (its range covers the full cap so an imported length isn't clamped down).
     private func lengthRow(_ pattern: StudioPattern) -> some View {
         let bars = max(1, (pattern.stepCount + 15) / 16)
+        let maxBars = StudioPattern.maxStepCount / 16
         return HStack(spacing: 10) {
             Text("Length").font(.caption.weight(.semibold)).foregroundStyle(Theme.fgDim)
             Stepper(value: Binding(
                 get: { bars },
                 set: { studio.setPatternStepCount(patternId, count: min($0 * 16, StudioPattern.maxStepCount)) }),
-                    in: 1...23) {
+                    in: 1...maxBars) {
                 Text("\(bars) bar\(bars == 1 ? "" : "s") · \(pattern.stepCount) steps")
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
             }
