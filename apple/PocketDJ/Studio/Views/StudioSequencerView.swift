@@ -441,7 +441,21 @@ private struct SequencerEditor: View {
 
     private func playButton(_ pattern: StudioPattern) -> some View {
         Button {
-            if isPlayingThis { engine.stopPattern() } else { startPlayback(pattern) }
+            if isPlayingThis {
+                // SEQ5: park the cursor at the last PLAYED pad on stop (a resume-from-here feel),
+                // rather than snapping back to where Play began. It only moves again when the user
+                // taps another pad or hits the refresh (restart) button. Read the live step BEFORE
+                // stopping — stopPattern() clears the clock, after which currentStep is nil.
+                //
+                // NOT while the ∞ looper is on: there `startStep` doubles as the loop-window
+                // ANCHOR, so moving it would silently slide the chosen loop region forward on every
+                // stop→replay (and jump the highlight band the instant Stop is pressed). Looping
+                // also ignores the stop position on replay, so parking would buy nothing there.
+                if !loopEnabled, let s = engine.patternClock.currentStep { startStep = s }
+                engine.stopPattern()
+            } else {
+                startPlayback(pattern)
+            }
         } label: {
             HStack(spacing: 6) {
                 if preparing { ProgressView().controlSize(.small) }
@@ -1138,7 +1152,12 @@ private struct PatternRowCard: View {
         .overlay {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !playingThis)) { _ in
                 // Sampled, never observed: `patternClock` is deliberately not @Observable.
-                let current = playingThis ? engine.patternClock.currentStep : nil
+                // During the ~0.1s start-latency pre-roll `currentStep` is nil (nothing sounds yet);
+                // the resting white cursor is already hidden, so light the FIRST step Play will hit
+                // (mappedStep at slot 0) to bridge the gap — no marker-less flicker at Play start.
+                let preroll = StudioEngine.mappedStep(slot: 0, startStep: cursorStep, loopEnabled: loopEnabled,
+                                                      loopBars: loopBars, stepCount: max(1, row.steps.count))
+                let current = playingThis ? (engine.patternClock.currentStep ?? preroll) : nil
                 HStack(spacing: Self.groupSpacing) {
                     ForEach(groups, id: \.lowerBound) { group in
                         HStack(spacing: Self.cellSpacing) {
@@ -1179,7 +1198,10 @@ private struct PatternRowCard: View {
                                 .fill(Theme.accent2.opacity(inLoop ? 0.14 : 0))
                                 .frame(height: Self.cellHeight)
                                 .frame(maxWidth: .infinity)
-                            if col == cursor {
+                            // The resting cursor shows only while stopped — during play the moving
+                            // turquoise playhead is the live position, and on stop the cursor parks
+                            // at the last played pad (playButton writes `startStep` there).
+                            if col == cursor, !playingThis {
                                 RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
                                     .strokeBorder(Theme.fg.opacity(0.9), lineWidth: 2)
                                     .frame(height: Self.cellHeight)
