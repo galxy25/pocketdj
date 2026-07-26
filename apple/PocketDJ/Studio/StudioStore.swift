@@ -1539,6 +1539,10 @@ extension StudioStore {
                 arr.tracks[j].clips.append(clip)
             }
         }
+        // Kick background on-device beat-grid analysis so Beat Match can tempo-warp this clip.
+        // Idempotent (only clips with no cached grid are touched); the Beat Match control stays greyed
+        // ("Beat grid under construction") until every clip resolves. See StudioArrangerGridAnalyzer.
+        Task { await StudioArrangerGridAnalyzer.ensureGrids(forArrangement: aid, studio: self) }
     }
 
     @discardableResult

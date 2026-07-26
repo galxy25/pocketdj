@@ -140,6 +140,37 @@ final class ArrangerChannelStripTests: XCTestCase {
         XCTAssertLessThan(peak, 8, "kernel blew up the signal")
     }
 
+    // MARK: Beat Match geometry (shared by play + bounce)
+
+    func testBeatMatchRateWarpsToMaster() {
+        // 100-bpm clip → 120 master = 1.2× (faster). Composes with the per-track tempo knob.
+        XCTAssertEqual(ArrangerBeatMatch.rate(clipBpm: 100, masterBpm: 120, tempoRatio: 1, beatMatch: true), 1.2, accuracy: 1e-9)
+        XCTAssertEqual(ArrangerBeatMatch.rate(clipBpm: 100, masterBpm: 120, tempoRatio: 2, beatMatch: true), 2.4, accuracy: 1e-9)
+    }
+
+    func testBeatMatchRateNeutralWhenOffOrNoGrid() {
+        // Beat Match OFF → only the per-track tempo applies.
+        XCTAssertEqual(ArrangerBeatMatch.rate(clipBpm: 100, masterBpm: 120, tempoRatio: 1.5, beatMatch: false), 1.5, accuracy: 1e-9)
+        // ON but clip has no usable grid (0-bpm sentinel / unanalyzed) → warp 1×, tempo only.
+        XCTAssertEqual(ArrangerBeatMatch.rate(clipBpm: 0, masterBpm: 120, tempoRatio: 1.5, beatMatch: true), 1.5, accuracy: 1e-9)
+    }
+
+    func testBeatMatchRateClampsToTimePitchLimit() {
+        XCTAssertEqual(ArrangerBeatMatch.rate(clipBpm: 1, masterBpm: 300, tempoRatio: 10, beatMatch: true), 32, accuracy: 1e-9)
+    }
+
+    func testSnappedStartFrame() {
+        let beatFrames = 22_050.0   // 120 bpm @ 44.1k = 0.5 s
+        // Off → unchanged.
+        XCTAssertEqual(ArrangerBeatMatch.snappedStartFrame(23_000, beatFrames: beatFrames, beatMatch: false), 23_000)
+        // On → nearest beat: 23000/22050 ≈ 1.04 → beat 1 → 22050.
+        XCTAssertEqual(ArrangerBeatMatch.snappedStartFrame(23_000, beatFrames: beatFrames, beatMatch: true), 22_050)
+        // 34000/22050 ≈ 1.54 → beat 2 → 44100.
+        XCTAssertEqual(ArrangerBeatMatch.snappedStartFrame(34_000, beatFrames: beatFrames, beatMatch: true), 44_100)
+        // 0 stays 0.
+        XCTAssertEqual(ArrangerBeatMatch.snappedStartFrame(0, beatFrames: beatFrames, beatMatch: true), 0)
+    }
+
     func testNeutralKernelIsPassthrough() {
         let fmt = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
         let frames = 1024
