@@ -143,6 +143,7 @@
 		5D4F33D757216C3E23A658CF /* CollectionRipBurnControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5699B98E5ECF46FBDDFB34C0 /* CollectionRipBurnControllerTests.swift */; };
 		5D7F079408A49731738024B8 /* BurnStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7304C1DA297093F0EA312C68 /* BurnStoreTests.swift */; };
 		5E7B2D5DCDF33E16AC01FAF5 /* BrowseModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7257571E557F27140C1C7A1 /* BrowseModel.swift */; };
+		5ECBE194A0D903030FA468B4 /* ArrangerChannelStripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C8B0DD1221CA3AB83290638 /* ArrangerChannelStripTests.swift */; };
 		5F565246A69D7F36C9ACF0EE /* CloudSyncOnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA26669FF3F14F5E34CE5460 /* CloudSyncOnboardingTests.swift */; };
 		5F6EA6897418DE94CC18B31B /* PlayStatsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D5980E93946D7C929149EE0 /* PlayStatsStoreTests.swift */; };
 		5FCFD11EF0E507D083FE771E /* LyricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F657F3CC2CA8A462CFEE474C /* LyricsStore.swift */; };
@@ -158,6 +159,7 @@
 		681F0BD165334999BF76F79C /* PocketDJWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D2029A228A8A050D0687E5F1 /* PocketDJWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		686E9034C4D7C2EA0C21C1E8 /* NowPlayingMixPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AD9F97EAF7433D3F6F609C /* NowPlayingMixPanel.swift */; };
 		68B28C265931C66F5916BD28 /* PlaybackIntegrationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62A4B879BDD1D84B5A769EFF /* PlaybackIntegrationUITests.swift */; };
+		6A0F89E74EFBC822EE00BCED /* TrackFX.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61A285F613D77D6A393989E6 /* TrackFX.swift */; };
 		6A79B3600895EFD172DDDFB1 /* EditSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0029684BDA7DC34827547955 /* EditSchema.swift */; };
 		6B4E87B81AF2C6B6D0AA1382 /* ScoreQuantizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79C5857685C327C3B6D91F0D /* ScoreQuantizerTests.swift */; };
 		6BA5E598F6796642BCFCCE45 /* NewWindowButtonUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D664CA7347D6586CFB4A535 /* NewWindowButtonUITests.swift */; };
@@ -526,6 +528,7 @@
 		4AAA16326C9972435232F275 /* NowPlayingDSPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingDSPTests.swift; sourceTree = "<group>"; };
 		4BA1B9BA1FAD98E98FFA18C9 /* SessionFoldersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionFoldersTests.swift; sourceTree = "<group>"; };
 		4C3A971B345113403B50653A /* CloudSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncService.swift; sourceTree = "<group>"; };
+		4C8B0DD1221CA3AB83290638 /* ArrangerChannelStripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrangerChannelStripTests.swift; sourceTree = "<group>"; };
 		4E25E7FB4C04F9A8F995C191 /* CloudDocDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDocDatabase.swift; sourceTree = "<group>"; };
 		4E57D669298B63F0D5DC1DC7 /* AlbumArtworkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumArtworkStore.swift; sourceTree = "<group>"; };
 		4F1635A9088C4ABB0954C692 /* NowPlayingArtworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingArtworkTests.swift; sourceTree = "<group>"; };
@@ -559,6 +562,7 @@
 		5FBF57030AF5B6DB195B3FCC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		5FEA4DEE54FAEFC06E6FD8ED /* PocketsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketsView.swift; sourceTree = "<group>"; };
 		60A82984324AB6439E6A1FCC /* DemuxTranscriberFieldProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxTranscriberFieldProbeTests.swift; sourceTree = "<group>"; };
+		61A285F613D77D6A393989E6 /* TrackFX.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackFX.swift; sourceTree = "<group>"; };
 		628C64899408477D306669EA /* AppleMusicProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicProvider.swift; sourceTree = "<group>"; };
 		62A4B879BDD1D84B5A769EFF /* PlaybackIntegrationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackIntegrationUITests.swift; sourceTree = "<group>"; };
 		635C99784DD82527D709A026 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -842,6 +846,7 @@
 				3DAC7F1334FC87BC1B2CB1FB /* AppleMusicMonitorTests.swift */,
 				1E8E69F5B0CD8F0D9434D7A2 /* AppleMusicRecognitionTests.swift */,
 				8D3603260B7C084EE40DEA53 /* AppModelSourceTests.swift */,
+				4C8B0DD1221CA3AB83290638 /* ArrangerChannelStripTests.swift */,
 				BAB42DFE8927E5854E1AAD47 /* ArtistBrowseTests.swift */,
 				26044E640932C5D8941C1609 /* BackupZipTests.swift */,
 				505B7D8DECAC73862B21D9E5 /* BeatDetectTests.swift */,
@@ -1083,6 +1088,7 @@
 				A839ABF17F1E9D5F80461A03 /* StudioModels.swift */,
 				D9B8DAE7F1A6BAD5DDE91D4B /* StudioRender.swift */,
 				715AB831C0016619550FFEEA /* StudioStore.swift */,
+				61A285F613D77D6A393989E6 /* TrackFX.swift */,
 			);
 			path = Studio;
 			sourceTree = "<group>";
@@ -1634,6 +1640,7 @@
 				079E4350FE60872DDA783819 /* AppleMusicFavoritesTests.swift in Sources */,
 				EFA57B5D3B5F7931E6EA1DD6 /* AppleMusicMonitorTests.swift in Sources */,
 				FA7B4A7B192B5B1ED5386B09 /* AppleMusicRecognitionTests.swift in Sources */,
+				5ECBE194A0D903030FA468B4 /* ArrangerChannelStripTests.swift in Sources */,
 				A68306EE2C7E18F6780DB8D0 /* ArtistBrowseTests.swift in Sources */,
 				E2CAF81D921F22EE4E57F77D /* BackupZipTests.swift in Sources */,
 				FCDF38C8D2C4E79044CC637A /* BeatDetectTests.swift in Sources */,
@@ -1960,6 +1967,7 @@
 				EA697BA8FDCEB44225AC2E91 /* StudioTakesView.swift in Sources */,
 				458810C38441BC66EBCC3E79 /* SyncSettingsView.swift in Sources */,
 				167CA1A9D7FC945EBC0F90F1 /* Theme.swift in Sources */,
+				6A0F89E74EFBC822EE00BCED /* TrackFX.swift in Sources */,
 				266297FB3BFA553880CF2A94 /* TrackPlaybackProvider.swift in Sources */,
 				29BB8D9C94C0D6531FBD237F /* TracklistCSV.swift in Sources */,
 				77FF94EDA7EFA78A4F8E5C19 /* TracksGlyph.swift in Sources */,

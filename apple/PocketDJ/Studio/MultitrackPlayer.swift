@@ -37,6 +37,7 @@ final class MultitrackRenderContext: @unchecked Sendable {
 
     private let channels: Int
     private var clips: [Clip] = []
+    private var clipsByTrack: [[Clip]] = []          // grouped once at load (fast per-track iteration)
     private var retained: [AVAudioPCMBuffer] = []   // keep the decoded buffers (clip.data) alive
     private var trackCount = 0
 
@@ -44,6 +45,14 @@ final class MultitrackRenderContext: @unchecked Sendable {
     private var gain: [Float] = []      // linear, 0 when inaudible (mute / not-soloed)
     private var panL: [Float] = []
     private var panR: [Float] = []
+
+    // Per-track channel-strip FX (EQ + reverb/delay/chorus). One kernel per track; `fxOn[ti]` gates
+    // the scratch path so a neutral track keeps the fast direct-sum path.
+    private var trackFX: [TrackFXKernel] = []
+    private var fxOn: [Bool] = []
+    // Per-channel scratch (one track's summed clips, pre-gain) for the FX path — allocated once.
+    private var scratch: [UnsafeMutablePointer<Float>] = []
+    private let scratchCap = 16_384
 
     // Loop + cursor (cursor lives on the audio thread only).
     private var looping = false
@@ -61,7 +70,12 @@ final class MultitrackRenderContext: @unchecked Sendable {
     init(channels: Int) {
         self.channels = max(1, channels)
         outPtrs = Array(repeating: nil, count: self.channels)
+        scratch = (0..<self.channels).map { _ in
+            UnsafeMutablePointer<Float>.allocate(capacity: scratchCap)
+        }
     }
+
+    deinit { for p in scratch { p.deallocate() } }
 
     /// Build the immutable clip set + initial cursor/loop from the decoded buffers (called on main
     /// before the engine starts).
@@ -73,6 +87,17 @@ final class MultitrackRenderContext: @unchecked Sendable {
         gain = Array(repeating: 0, count: self.trackCount)
         panL = Array(repeating: 1, count: self.trackCount)
         panR = Array(repeating: 1, count: self.trackCount)
+        // Group clips per track for the per-track scratch pass (and keep the flat list for anything
+        // that still wants it).
+        clipsByTrack = Array(repeating: [], count: self.trackCount)
+        for clip in clips where clip.trackIndex >= 0 && clip.trackIndex < self.trackCount {
+            clipsByTrack[clip.trackIndex].append(clip)
+        }
+        // One FX kernel per track, configured (neutral until setTrackFX pushes params).
+        trackFX = (0..<self.trackCount).map { _ in
+            let k = TrackFXKernel(); k.configure(sampleRate: sampleRate, channelCount: channels); return k
+        }
+        fxOn = Array(repeating: false, count: self.trackCount)
         self.cursor = cursor
         // Anchor the FX phase base to the START frame (seek / loopStart) so the beat-synced Brazilian
         // bass pump lands on the arrangement's real beats after a seek, not offset from playback start.
@@ -92,6 +117,13 @@ final class MultitrackRenderContext: @unchecked Sendable {
         panR[index] = p >= 0 ? 1 : 1 + p
     }
 
+    /// Live per-track FX (called from `applyMix`). Neutral params disengage the scratch path.
+    func setTrackFX(index: Int, _ params: TrackFXParams) {
+        guard index >= 0, index < trackFX.count else { return }
+        trackFX[index].update(params)
+        fxOn[index] = params.active
+    }
+
     /// Live master FX (called from `applyMasterFX`).
     func setMasterFX(_ params: MasterFXParams) {
         kernel.update(params)
@@ -99,6 +131,9 @@ final class MultitrackRenderContext: @unchecked Sendable {
     }
 
     /// The audio-thread render: mix overlapping clips (loop-aware) then apply master FX in place.
+    /// A track with active channel-strip FX is summed into a per-track scratch buffer, run through its
+    /// kernel (so reverb/delay tails ring past a clip's end), then panned/gained into the master; a
+    /// neutral track takes the original direct-sum fast path.
     func render(_ abl: UnsafeMutablePointer<AudioBufferList>, frames: Int) {
         let bufs = UnsafeMutableAudioBufferListPointer(abl)
         let nCh = min(bufs.count, channels)
@@ -113,25 +148,52 @@ final class MultitrackRenderContext: @unchecked Sendable {
         var pos = cursor
         let hasLoop = looping && loopEnd > loopStart
         while written < frames {
-            let chunk = hasLoop ? min(frames - written, max(1, loopEnd - pos)) : frames - written
-            for clip in clips {
-                let ti = clip.trackIndex
+            var chunk = hasLoop ? min(frames - written, max(1, loopEnd - pos)) : frames - written
+            if chunk > scratchCap { chunk = scratchCap }   // bound the scratch buffer
+            for ti in 0..<trackCount {
                 guard ti < gain.count else { continue }
                 let g = gain[ti]
                 if g == 0 { continue }
-                let cs = clip.startFrame, ce = cs + clip.frameLength
-                let os = max(cs, pos), oe = min(ce, pos + chunk)
-                if oe <= os { continue }
-                let dstOff = written + (os - pos)
-                let srcOff = os - cs
-                let cnt = oe - os
                 let gl = panL[ti] * g, gr = panR[ti] * g
-                let base = clip.srcStart + srcOff
-                for c in 0..<nCh {
-                    guard let dst = outPtrs[c] else { continue }
-                    let src = clip.data[min(c, clip.srcChannels - 1)]
-                    let cg = c == 0 ? gl : gr
-                    for i in 0..<cnt { dst[dstOff + i] += src[base + i] * cg }
+                if ti < fxOn.count && fxOn[ti] {
+                    // Scratch path: sum this track's clips (raw), run FX, then pan/gain into master.
+                    for c in 0..<nCh { memset(scratch[c], 0, chunk * MemoryLayout<Float>.size) }
+                    for clip in clipsByTrack[ti] {
+                        let cs = clip.startFrame, ce = cs + clip.frameLength
+                        let os = max(cs, pos), oe = min(ce, pos + chunk)
+                        if oe <= os { continue }
+                        let localOff = os - pos, srcOff = os - cs, cnt = oe - os
+                        let base = clip.srcStart + srcOff
+                        for c in 0..<nCh {
+                            let src = clip.data[min(c, clip.srcChannels - 1)]
+                            let dst = scratch[c]
+                            for i in 0..<cnt { dst[localOff + i] += src[base + i] }
+                        }
+                    }
+                    scratch.withUnsafeBufferPointer { sp in
+                        trackFX[ti].processFloatChannels(sp.baseAddress!, channelCount: nCh, frames: chunk)
+                    }
+                    for c in 0..<nCh {
+                        guard let dst = outPtrs[c] else { continue }
+                        let src = scratch[c]
+                        let cg = c == 0 ? gl : gr
+                        for i in 0..<chunk { dst[written + i] += src[i] * cg }
+                    }
+                } else {
+                    // Fast direct-sum path (neutral track).
+                    for clip in clipsByTrack[ti] {
+                        let cs = clip.startFrame, ce = cs + clip.frameLength
+                        let os = max(cs, pos), oe = min(ce, pos + chunk)
+                        if oe <= os { continue }
+                        let dstOff = written + (os - pos), srcOff = os - cs, cnt = oe - os
+                        let base = clip.srcStart + srcOff
+                        for c in 0..<nCh {
+                            guard let dst = outPtrs[c] else { continue }
+                            let src = clip.data[min(c, clip.srcChannels - 1)]
+                            let cg = c == 0 ? gl : gr
+                            for i in 0..<cnt { dst[dstOff + i] += src[base + i] * cg }
+                        }
+                    }
                 }
             }
             written += chunk
@@ -208,12 +270,11 @@ final class MultitrackPlayer {
         var clips: [MultitrackRenderContext.Clip] = []
         var retained: [AVAudioPCMBuffer] = []
         for (ti, track) in arrangement.tracks.enumerated() {
+            let strip = track.strip.clamped()
             for clip in track.clips {
                 guard let url = store.clipFileURL(clip.fileName),
                       let buf = try? await StudioRender.shared.decodeBuffer(url: url),
                       buf.frameLength > 0, let ch = buf.floatChannelData else { continue }
-                let srcCh = Int(buf.format.channelCount)
-                let data = (0..<srcCh).map { ch[$0] }
                 let startFrame = Int((Double(clip.startMs) / 1000 * sampleRate).rounded())
                 // Honor the non-destructive scissor window: play only file frames
                 // [srcStart, srcStart + frameLength), clamped to what the decoded buffer holds.
@@ -223,9 +284,26 @@ final class MultitrackPlayer {
                 let durFrames = clip.durationMs > 0 ? Int((Double(clip.durationMs) / 1000 * sampleRate).rounded()) : avail
                 let frameLength = max(0, min(avail, durFrames))
                 guard frameLength > 0 else { continue }
-                clips.append(.init(trackIndex: ti, startFrame: startFrame, frameLength: frameLength,
-                                   srcStart: srcStart, data: data, srcChannels: srcCh))
-                retained.append(buf)
+                // Per-track PITCH/TEMPO pre-bake: warp the scissor WINDOW offline (a raw-sum render loop
+                // can't host a live time-stretch), then play the warped buffer from frame 0. Both read
+                // paths (here + ArrangerBouncer) apply the same transform so a bounce matches. On a
+                // neutral strip `transformBuffer` short-circuits to a plain slice; on failure we fall
+                // back to the raw window so a clip never drops out.
+                if strip.bakesAudio,
+                   let warped = try? await StudioRender.shared.transformBuffer(
+                        buf, from: Int64(srcStart), frames: Int64(frameLength),
+                        rate: strip.tempoRatio, pitchCents: strip.pitchSemitones * 100),
+                   warped.frameLength > 0, let wch = warped.floatChannelData {
+                    let wCh = Int(warped.format.channelCount)
+                    clips.append(.init(trackIndex: ti, startFrame: startFrame, frameLength: Int(warped.frameLength),
+                                       srcStart: 0, data: (0..<wCh).map { wch[$0] }, srcChannels: wCh))
+                    retained.append(warped)
+                } else {
+                    let srcCh = Int(buf.format.channelCount)
+                    clips.append(.init(trackIndex: ti, startFrame: startFrame, frameLength: frameLength,
+                                       srcStart: srcStart, data: (0..<srcCh).map { ch[$0] }, srcChannels: srcCh))
+                    retained.append(buf)
+                }
             }
         }
         guard !clips.isEmpty else { return false }
@@ -258,7 +336,7 @@ final class MultitrackPlayer {
         engine.connect(src, to: limiter, format: fmt)
         engine.connect(limiter, to: engine.mainMixerNode, format: fmt)
 
-        applyMix(arrangement.tracks)
+        applyMix(arrangement.tracks, bpm: arrangement.bpm)
         applyMasterFX(arrangement.masterFX, bpm: arrangement.bpm)
 
         #if !os(macOS)
@@ -329,8 +407,11 @@ final class MultitrackPlayer {
     }
 
     /// Recompute each track's audible gain + pan from mute / solo / gain (solo wins) and push to the
-    /// render context — takes effect on the next render callback. Safe to call live during playback.
-    func applyMix(_ tracks: [StudioTrack]) {
+    /// render context along with its live channel-strip FX (EQ + reverb/delay/chorus). Takes effect on
+    /// the next render callback. Safe to call live during playback. `bpm` syncs each track's delay.
+    /// NOTE: pitch/tempo are NOT pushed here — they alter the clip buffers baked at `play()`; a change
+    /// needs a re-prime (re-play), unlike the live EQ/sends.
+    func applyMix(_ tracks: [StudioTrack], bpm: Double) {
         guard let ctx = context else { return }
         let anySolo = tracks.contains { $0.soloed }
         for track in tracks {
@@ -339,6 +420,7 @@ final class MultitrackPlayer {
             let audible = anySolo ? track.soloed : !track.muted
             let db = min(6.0, max(-24.0, track.gainDb))
             ctx.setTrackMix(index: i, gainLinear: audible ? Float(pow(10.0, db / 20.0)) : 0, pan: Float(track.pan))
+            ctx.setTrackFX(index: i, TrackFXParams(track.strip, bpm: bpm))
         }
     }
 

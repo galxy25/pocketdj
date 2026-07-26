@@ -796,18 +796,23 @@ struct StudioClip: Codable, Identifiable, Hashable, Sendable {
     /// The `smp_`/`lp_`/`ptn_`/`tk_` id this was baked from (nil for a mic recording / a master
     /// bounce) — provenance only, kept for the "from <source>" label; playback reads `fileName`.
     var sourceId: String?
+    /// Cached on-device beat grid for this clip's SOURCE FILE (`fileName`), keyed to the whole file's
+    /// 0:00 — NOT the scissor window (a trimmed tail shares its head's grid; the window offset is
+    /// applied at playback). nil = not yet analyzed ("beat grid under construction"). Populated in the
+    /// background by `StudioArrangerGridAnalyzer`; consumed by Beat Match to warp the clip to master.
+    var grid: StudioGrid?
     var createdAt: Double = 0
 
     /// Timeline end (ms) — where the clip stops sounding.
     var endMs: Int { startMs + durationMs }
 
-    enum CodingKeys: String, CodingKey { case id, name, fileName, startMs, durationMs, fileStartMs, source, sourceId, createdAt }
+    enum CodingKeys: String, CodingKey { case id, name, fileName, startMs, durationMs, fileStartMs, source, sourceId, grid, createdAt }
     init(id: String, name: String, fileName: String, startMs: Int = 0, durationMs: Int = 0,
          fileStartMs: Int = 0, source: StudioClipSource = .recording, sourceId: String? = nil,
-         createdAt: Double = 0) {
+         grid: StudioGrid? = nil, createdAt: Double = 0) {
         self.id = id; self.name = name; self.fileName = fileName; self.startMs = startMs
         self.durationMs = durationMs; self.fileStartMs = fileStartMs; self.source = source
-        self.sourceId = sourceId; self.createdAt = createdAt
+        self.sourceId = sourceId; self.grid = grid; self.createdAt = createdAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -819,7 +824,67 @@ struct StudioClip: Codable, Identifiable, Hashable, Sendable {
         fileStartMs = (try? c.decode(Int.self, forKey: .fileStartMs)) ?? 0
         source = (try? c.decode(StudioClipSource.self, forKey: .source)) ?? .recording
         sourceId = try? c.decode(String.self, forKey: .sourceId)
+        grid = try? c.decode(StudioGrid.self, forKey: .grid)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+    }
+}
+
+/// A per-track channel strip (mixer): pitch + tempo (BAKED into the clip buffers at play/bounce —
+/// see `MultitrackPlayer`), a 3-band EQ, and reverb / delay / chorus sends. The EQ + the three sends
+/// are LIVE render-block DSP (torn-read-safe value type, like `StudioMasterFX`); pitch + tempo drive
+/// an offline pre-bake of each clip's audio (they can't run in the raw-sum render loop). One "amount"
+/// dial per effect keeps the UI simple: the internal effect voicing (delay time synced to the master
+/// bpm, reverb size, chorus rate/depth) is fixed; the dial is the wet mix. Neutral = no DSP built.
+/// Lenient/all-optional decode: a partial/legacy blob degrades field-by-field. Ranges are clamped by
+/// `clamped()` before use so a corrupt value can't detune the whole mix.
+struct StudioChannelStrip: Codable, Hashable, Sendable {
+    var pitchSemitones: Double = 0    // -12…+12; 0 = neutral. Pitch shift, tempo preserved (baked).
+    var tempoRatio: Double = 1        // 0.5…2.0 playback rate, pitch preserved (baked); 1 = neutral.
+    var eqLowDb: Double = 0           // low-shelf gain,  -18…+18 dB
+    var eqMidDb: Double = 0           // mid-peak gain,   -18…+18 dB
+    var eqHighDb: Double = 0          // high-shelf gain, -18…+18 dB
+    var reverb: Double = 0            // 0…1 wet send (0 = dry)
+    var delay: Double = 0             // 0…1 wet send (0 = dry), 1/8-note synced to the master bpm
+    var chorus: Double = 0            // 0…1 wet send (0 = dry)
+
+    /// True when pitch/tempo change the AUDIO CONTENT — so the player knows to pre-bake this track's
+    /// clip buffers (an offline stretch/repitch) rather than play them raw.
+    var bakesAudio: Bool { abs(pitchSemitones) > 0.001 || abs(tempoRatio - 1) > 0.001 }
+    /// True when any LIVE render-block effect (EQ or a send) is active — lets the mixer skip the
+    /// per-track DSP entirely on a neutral strip.
+    var hasLiveFX: Bool {
+        abs(eqLowDb) > 0.01 || abs(eqMidDb) > 0.01 || abs(eqHighDb) > 0.01 ||
+        reverb > 0.001 || delay > 0.001 || chorus > 0.001
+    }
+
+    /// Clamp every field into its musical range (defensive: read from persisted docs + slider input).
+    func clamped() -> StudioChannelStrip {
+        var s = self
+        s.pitchSemitones = min(12, max(-12, pitchSemitones))
+        s.tempoRatio = min(2, max(0.5, tempoRatio))
+        s.eqLowDb = min(18, max(-18, eqLowDb))
+        s.eqMidDb = min(18, max(-18, eqMidDb))
+        s.eqHighDb = min(18, max(-18, eqHighDb))
+        s.reverb = min(1, max(0, reverb))
+        s.delay = min(1, max(0, delay))
+        s.chorus = min(1, max(0, chorus))
+        return s
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case pitchSemitones, tempoRatio, eqLowDb, eqMidDb, eqHighDb, reverb, delay, chorus
+    }
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pitchSemitones = (try? c.decode(Double.self, forKey: .pitchSemitones)) ?? 0
+        tempoRatio = (try? c.decode(Double.self, forKey: .tempoRatio)) ?? 1
+        eqLowDb = (try? c.decode(Double.self, forKey: .eqLowDb)) ?? 0
+        eqMidDb = (try? c.decode(Double.self, forKey: .eqMidDb)) ?? 0
+        eqHighDb = (try? c.decode(Double.self, forKey: .eqHighDb)) ?? 0
+        reverb = (try? c.decode(Double.self, forKey: .reverb)) ?? 0
+        delay = (try? c.decode(Double.self, forKey: .delay)) ?? 0
+        chorus = (try? c.decode(Double.self, forKey: .chorus)) ?? 0
     }
 }
 
@@ -834,16 +899,21 @@ struct StudioTrack: Codable, Identifiable, Hashable, Sendable {
     var muted: Bool = false
     var soloed: Bool = false
     var colorIndex: Int = 0           // index into the stem/track palette (wraps)
+    /// Per-track channel strip: pitch/tempo + 3-band EQ + reverb/delay/chorus sends. Additive-optional
+    /// (older docs decode a neutral strip); surfaced in the track-header ⋯ menu next to pan.
+    var strip: StudioChannelStrip = StudioChannelStrip()
     var createdAt: Double = 0
 
     /// The track's played length (ms) = the end of its last clip.
     var lengthMs: Int { clips.map(\.endMs).max() ?? 0 }
 
-    enum CodingKeys: String, CodingKey { case id, name, clips, gainDb, pan, muted, soloed, colorIndex, createdAt }
+    enum CodingKeys: String, CodingKey { case id, name, clips, gainDb, pan, muted, soloed, colorIndex, strip, createdAt }
     init(id: String, name: String, clips: [StudioClip] = [], gainDb: Double = 0, pan: Double = 0,
-         muted: Bool = false, soloed: Bool = false, colorIndex: Int = 0, createdAt: Double = 0) {
+         muted: Bool = false, soloed: Bool = false, colorIndex: Int = 0,
+         strip: StudioChannelStrip = StudioChannelStrip(), createdAt: Double = 0) {
         self.id = id; self.name = name; self.clips = clips; self.gainDb = gainDb; self.pan = pan
-        self.muted = muted; self.soloed = soloed; self.colorIndex = colorIndex; self.createdAt = createdAt
+        self.muted = muted; self.soloed = soloed; self.colorIndex = colorIndex
+        self.strip = strip; self.createdAt = createdAt
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -855,6 +925,7 @@ struct StudioTrack: Codable, Identifiable, Hashable, Sendable {
         muted = (try? c.decode(Bool.self, forKey: .muted)) ?? false
         soloed = (try? c.decode(Bool.self, forKey: .soloed)) ?? false
         colorIndex = (try? c.decode(Int.self, forKey: .colorIndex)) ?? 0
+        strip = ((try? c.decode(StudioChannelStrip.self, forKey: .strip)) ?? StudioChannelStrip()).clamped()
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
     }
 }
@@ -928,21 +999,35 @@ struct StudioArrangement: Codable, Identifiable, Hashable, Sendable {
     var loopStartMs: Int = 0
     var loopEndMs: Int = 0
     var masterFX: StudioMasterFX = StudioMasterFX()
+    /// Beat Match mode: when true, every clip is time-warped so its intrinsic tempo == `bpm` and its
+    /// start snaps to the beat grid, and trim/move edits quantize to the grid. Toggled from the master-
+    /// tempo control's context menu; gated OFF until every musical clip has a cached `grid`. Additive-
+    /// optional (older docs default to false = play original audio).
+    var beatMatchEnabled: Bool = false
     var createdAt: Double = 0
     var updatedAt: Double = 0
 
     /// The arrangement timeline end (ms) = the longest track — what the ruler/transport spans.
     var lengthMs: Int { tracks.map(\.lengthMs).max() ?? 0 }
 
+    /// Every clip across all tracks (flattened) — used by the grid analyzer + Beat Match gating.
+    var allClips: [StudioClip] { tracks.flatMap(\.clips) }
+    /// True once every clip has a cached beat grid (or there are no clips) — i.e. Beat Match is ready
+    /// and the control can leave its "Beat grid under construction" state. A clip whose analysis
+    /// returned nil (too short/quiet) still counts as "analyzed" via a zero-bpm sentinel grid, so a
+    /// single un-detectable clip can't wedge the gate forever.
+    var beatGridReady: Bool { allClips.allSatisfy { $0.grid != nil } }
+
     enum CodingKeys: String, CodingKey {
-        case id, name, tracks, folderId, bpm, loopEnabled, loopStartMs, loopEndMs, masterFX, createdAt, updatedAt
+        case id, name, tracks, folderId, bpm, loopEnabled, loopStartMs, loopEndMs, masterFX, beatMatchEnabled, createdAt, updatedAt
     }
     init(id: String, name: String, tracks: [StudioTrack] = [], folderId: String? = nil,
          bpm: Double = 120, loopEnabled: Bool = false, loopStartMs: Int = 0, loopEndMs: Int = 0,
-         masterFX: StudioMasterFX = StudioMasterFX(), createdAt: Double = 0, updatedAt: Double = 0) {
+         masterFX: StudioMasterFX = StudioMasterFX(), beatMatchEnabled: Bool = false,
+         createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.tracks = tracks; self.folderId = folderId
         self.bpm = bpm; self.loopEnabled = loopEnabled; self.loopStartMs = loopStartMs
-        self.loopEndMs = loopEndMs; self.masterFX = masterFX
+        self.loopEndMs = loopEndMs; self.masterFX = masterFX; self.beatMatchEnabled = beatMatchEnabled
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
@@ -956,6 +1041,7 @@ struct StudioArrangement: Codable, Identifiable, Hashable, Sendable {
         loopStartMs = (try? c.decode(Int.self, forKey: .loopStartMs)) ?? 0
         loopEndMs = (try? c.decode(Int.self, forKey: .loopEndMs)) ?? 0
         masterFX = (try? c.decode(StudioMasterFX.self, forKey: .masterFX)) ?? StudioMasterFX()
+        beatMatchEnabled = (try? c.decode(Bool.self, forKey: .beatMatchEnabled)) ?? false
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
