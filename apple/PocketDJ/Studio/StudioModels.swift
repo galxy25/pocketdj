@@ -839,7 +839,7 @@ struct StudioClip: Codable, Identifiable, Hashable, Sendable {
 /// `clamped()` before use so a corrupt value can't detune the whole mix.
 struct StudioChannelStrip: Codable, Hashable, Sendable {
     var pitchSemitones: Double = 0    // -12…+12; 0 = neutral. Pitch shift, tempo preserved (baked).
-    var tempoRatio: Double = 1        // 0.5…2.0 playback rate, pitch preserved (baked); 1 = neutral.
+    var tempoRatio: Double = 1        // 0.1…10× playback rate, pitch preserved (baked); 1 = neutral.
     var eqLowDb: Double = 0           // low-shelf gain,  -18…+18 dB
     var eqMidDb: Double = 0           // mid-peak gain,   -18…+18 dB
     var eqHighDb: Double = 0          // high-shelf gain, -18…+18 dB
@@ -861,7 +861,7 @@ struct StudioChannelStrip: Codable, Hashable, Sendable {
     func clamped() -> StudioChannelStrip {
         var s = self
         s.pitchSemitones = min(12, max(-12, pitchSemitones))
-        s.tempoRatio = min(2, max(0.5, tempoRatio))
+        s.tempoRatio = min(10, max(0.1, tempoRatio))
         s.eqLowDb = min(18, max(-18, eqLowDb))
         s.eqMidDb = min(18, max(-18, eqMidDb))
         s.eqHighDb = min(18, max(-18, eqHighDb))

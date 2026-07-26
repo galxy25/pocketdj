@@ -1936,7 +1936,7 @@ private struct TrackEditSheet: View {
                              fmt: { "\($0 > 0 ? "+" : "")\(Int($0.rounded())) st" }, id: "pitch") { v in
                         setStrip { $0.pitchSemitones = v }
                     }
-                    stripRow("Tempo", value: strip.tempoRatio, in: 0.5...2, step: 0.01,
+                    stripRow("Tempo", value: strip.tempoRatio, in: 0.1...10, step: 0.05,
                              fmt: { String(format: "%.2f×", $0) }, id: "tempo") { v in
                         setStrip { $0.tempoRatio = v }
                     }

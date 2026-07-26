@@ -15,17 +15,24 @@ final class ArrangerChannelStripTests: XCTestCase {
 
     func testStripClampsEveryFieldIntoRange() {
         var s = StudioChannelStrip()
-        s.pitchSemitones = 99; s.tempoRatio = 9; s.eqLowDb = -80; s.eqMidDb = 80
+        s.pitchSemitones = 99; s.tempoRatio = 7.5; s.eqLowDb = -80; s.eqMidDb = 80
         s.eqHighDb = 0.5; s.reverb = 3; s.delay = -1; s.chorus = 0.4
         let c = s.clamped()
         XCTAssertEqual(c.pitchSemitones, 12)
-        XCTAssertEqual(c.tempoRatio, 2)
+        XCTAssertEqual(c.tempoRatio, 7.5)          // 0.1…10× range → 7.5 is valid
         XCTAssertEqual(c.eqLowDb, -18)
         XCTAssertEqual(c.eqMidDb, 18)
         XCTAssertEqual(c.eqHighDb, 0.5)
         XCTAssertEqual(c.reverb, 1)
         XCTAssertEqual(c.delay, 0)
         XCTAssertEqual(c.chorus, 0.4)
+    }
+
+    func testTempoRatioClampsToWideBounds() {
+        var hi = StudioChannelStrip(); hi.tempoRatio = 50
+        XCTAssertEqual(hi.clamped().tempoRatio, 10)     // up to 10×
+        var lo = StudioChannelStrip(); lo.tempoRatio = 0.001
+        XCTAssertEqual(lo.clamped().tempoRatio, 0.1)    // down to 0.1×
     }
 
     // MARK: flags
