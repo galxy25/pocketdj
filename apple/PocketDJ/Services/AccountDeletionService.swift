@@ -41,7 +41,7 @@ final class AccountDeletionService {
     static let cloudDocKeys: [String] = [
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
         "collection-activity", "mix-sessions", "playback-session", "mix-decks",
-        "discover-adds", "imported-songs",
+        "discover-adds", "imported-songs", "profile-source",
     ]
 
     private static let log = Logger(subsystem: "com.levi.pocketdj", category: "account-deletion")

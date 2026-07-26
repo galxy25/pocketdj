@@ -118,6 +118,10 @@ final class AppModel {
     /// a synthetic source appended LAST, so real sources shadow them by merge order
     /// alone and the entries survive as durable fallbacks (set by the app at launch).
     var importedSongs: ImportedSongsStore?
+    /// The per-profile "Pocket DJ" custom-audio source — device-local items (samples + demuxes)
+    /// merged as a synthetic source appended LAST (like Imported); its DISPLAY name is the profile
+    /// name (set at launch, re-tagged on rename via a catalog rebuild). Present once it has ≥1 item.
+    var profileSource: ProfileSourceStore?
     /// Supersede hook: (provisional id → indexed id) pairs for the collections remap —
     /// Discover amrec_ supersedes AND imported amrec_ remaps ride the same seam
     /// (set by the app at launch).
@@ -183,12 +187,15 @@ final class AppModel {
         let provisionalAlbums = discoverAdds?.albums ?? []
         let importedS = importedSongs?.songs ?? []
         let importedA = importedSongs?.albums ?? []
+        let profileSongs = profileSource?.songs ?? []
+        let profileName = profileSource?.sourceName ?? ProfileSourceStore.defaultName
         let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)])? in
             let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
             guard !cached.isEmpty else { return nil }
             let (indexes, discoverPairs, importedPairs, discoverAlbumPairs) = AppModel.withProvisionalSources(
                 discover: provisional, discoverAlbums: provisionalAlbums,
-                importedSongs: importedS, importedAlbums: importedA, indexes: cached)
+                importedSongs: importedS, importedAlbums: importedA,
+                profileSongs: profileSongs, profileName: profileName, indexes: cached)
             return (AppModel.buildDerived(indexes: indexes, albumEdits: albumEdits, songEdits: songEdits),
                     discoverPairs, importedPairs, discoverAlbumPairs)
         }.value
@@ -222,13 +229,15 @@ final class AppModel {
                                                    discoverAlbums: [DiscoverAddsStore.AlbumEntry] = [],
                                                    importedSongs: [ImportedSongsStore.SongEntry],
                                                    importedAlbums: [ImportedSongsStore.AlbumEntry],
+                                                   profileSongs: [ProfileSourceStore.SongEntry] = [],
+                                                   profileName: String = ProfileSourceStore.defaultName,
                                                    indexes: [IndexJSON])
         -> (indexes: [IndexJSON],
             discoverSuperseded: [(from: String, to: String)],
             importedSuperseded: [(from: String, to: String)],
             discoverAlbumSuperseded: [(from: String, to: String)]) {
         guard !discover.isEmpty || !discoverAlbums.isEmpty
-                || !importedSongs.isEmpty || !importedAlbums.isEmpty else {
+                || !importedSongs.isEmpty || !importedAlbums.isEmpty || !profileSongs.isEmpty else {
             return (indexes, [], [], [])
         }
         var byAppleMusicId: [String: String] = [:]
@@ -253,6 +262,11 @@ final class AppModel {
         }
         if !keptImported.isEmpty || !importedAlbums.isEmpty {
             all.append(ImportedSongsStore.syntheticIndex(songs: keptImported, albums: importedAlbums))
+        }
+        // The per-profile "Pocket DJ" source — appended LAST (after Imported). Present only once
+        // the user has ≥1 item; carries its 2 default albums + the profile name as source/artist.
+        if !profileSongs.isEmpty {
+            all.append(ProfileSourceStore.syntheticIndex(songs: profileSongs, profileName: profileName))
         }
         return (all, split.superseded, importedPairs, albumSplit.superseded)
     }
@@ -353,6 +367,33 @@ final class AppModel {
         applyEdits()
     }
 
+    /// A profile-source SAVE (or cloud pull) landing while the catalog is LIVE: append unknown
+    /// songs + UPSERT the two default albums (their trackList GROWS — unlike `injectImported`'s
+    /// skip-if-known), tag them the profile source, then ONE effective rebuild. Known song ids are
+    /// skipped; `pdj_` ids are stripped from rip/CSV downstream (`CollectionsStore.songIds`).
+    func injectProfileItem(songs newSongs: [IndexSong], albums newAlbums: [IndexAlbum]) {
+        guard let name = profileSource?.sourceName else { return }
+        var changed = false
+        for s in newSongs where rawSongsById[s.id] == nil && songsById[s.id] == nil {
+            rawSongs.append(s); rawSongsById[s.id] = s
+            songSourceById[s.id] = name
+            changed = true
+        }
+        // Default albums are UPSERTED (their trackList grew) — replace the raw row if present, else
+        // append; always (re)tag the source. `injectImported` skips known albums; profile albums
+        // must update because a new item extends the album's trackList.
+        for a in newAlbums {
+            if let i = rawAlbums.firstIndex(where: { $0.id == a.id }) { rawAlbums[i] = a }
+            else { rawAlbums.append(a) }
+            rawAlbumsById[a.id] = a
+            albumSourceById[a.id] = name
+            changed = true
+        }
+        guard changed else { return }
+        if !availableSources.contains(name) { availableSources.append(name) }
+        applyEdits()
+    }
+
     /// If the user saved a metadata edit DURING an off-main catalog build, that build's `derived`
     /// captured a STALE edit snapshot — re-overlay the current edits so a mid-load save isn't visually
     /// clobbered (the edit itself is already persisted in `EditsStore`). Common case: no change → no-op.
@@ -374,12 +415,15 @@ final class AppModel {
             let provisionalAlbums = discoverAdds?.albums ?? []
             let importedS = importedSongs?.songs ?? []
             let importedA = importedSongs?.albums ?? []
+            let profileSongs = profileSource?.songs ?? []
+            let profileName = profileSource?.sourceName ?? ProfileSourceStore.defaultName
             // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
             // OFF the main actor; only the finished value is assigned back on `@MainActor`.
             let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)]) in
                 let (all, discoverPairs, importedPairs, discoverAlbumPairs) = AppModel.withProvisionalSources(
                     discover: provisional, discoverAlbums: provisionalAlbums,
-                    importedSongs: importedS, importedAlbums: importedA, indexes: indexes)
+                    importedSongs: importedS, importedAlbums: importedA,
+                    profileSongs: profileSongs, profileName: profileName, indexes: indexes)
                 return (AppModel.buildDerived(indexes: all, albumEdits: albumEdits, songEdits: songEdits),
                         discoverPairs, importedPairs, discoverAlbumPairs)
             }.value
