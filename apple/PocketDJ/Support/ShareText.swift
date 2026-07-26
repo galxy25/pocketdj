@@ -18,35 +18,40 @@ enum ShareText {
         return raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
     }
 
+    // Per-service link resolvers: a canonical/direct link when we have one, else a "search for this
+    // track" deep-link so the recipient still lands on it. Shared by the share-text block AND the CSV
+    // tracklist export (`AppModel.tracklistCSVRows`) so exports never carry a blank cell — a search
+    // link is always better than nothing (Levi 2026-07-25). `kind` is "song"/"album" for Apple Music.
+
     /// Apple Music: canonical URL → `appleMusicId`-derived short link → catalog search.
-    private static func appleMusicLine(url: String?, id: String?, kind: String,
-                                       title: String, artist: String) -> String {
+    static func appleMusicURL(url: String?, id: String?, kind: String,
+                              title: String, artist: String) -> String {
         if let url, !url.isEmpty { return url }
         if let id, !id.isEmpty { return "https://music.apple.com/\(kind)/\(id)" }
         return "https://music.apple.com/search?term=\(query(title, artist))"
     }
-    private static func spotifyLine(url: String?, title: String, artist: String) -> String {
+    static func spotifyURL(url: String?, title: String, artist: String) -> String {
         (url?.isEmpty == false ? url! : "https://open.spotify.com/search/results/\(query(title, artist))")
     }
-    private static func youtubeLine(url: String?, title: String, artist: String) -> String {
+    static func youtubeURL(url: String?, title: String, artist: String) -> String {
         (url?.isEmpty == false ? url! : "https://music.youtube.com/search?q=\(query(title, artist))")
     }
 
     static func forSong(_ s: IndexSong) -> String {
         [
             "\(s.name) — \(s.artist)",
-            "Apple Music: \(appleMusicLine(url: s.appleMusicUrl, id: s.appleMusicId, kind: "song", title: s.name, artist: s.artist))",
-            "Spotify: \(spotifyLine(url: s.spotifyUrl, title: s.name, artist: s.artist))",
-            "YouTube: \(youtubeLine(url: s.youtubeUrl, title: s.name, artist: s.artist))",
+            "Apple Music: \(appleMusicURL(url: s.appleMusicUrl, id: s.appleMusicId, kind: "song", title: s.name, artist: s.artist))",
+            "Spotify: \(spotifyURL(url: s.spotifyUrl, title: s.name, artist: s.artist))",
+            "YouTube: \(youtubeURL(url: s.youtubeUrl, title: s.name, artist: s.artist))",
         ].joined(separator: "\n")
     }
 
     static func forAlbum(_ a: IndexAlbum) -> String {
         [
             "\(a.name) — \(a.artist)",
-            "Apple Music: \(appleMusicLine(url: a.appleMusicUrl, id: a.appleMusicId, kind: "album", title: a.name, artist: a.artist))",
-            "Spotify: \(spotifyLine(url: a.spotifyUrl, title: a.name, artist: a.artist))",
-            "YouTube: \(youtubeLine(url: a.youtubeUrl, title: a.name, artist: a.artist))",
+            "Apple Music: \(appleMusicURL(url: a.appleMusicUrl, id: a.appleMusicId, kind: "album", title: a.name, artist: a.artist))",
+            "Spotify: \(spotifyURL(url: a.spotifyUrl, title: a.name, artist: a.artist))",
+            "YouTube: \(youtubeURL(url: a.youtubeUrl, title: a.name, artist: a.artist))",
         ].joined(separator: "\n")
     }
 
@@ -60,9 +65,9 @@ enum ShareText {
     static func forTitleArtist(title: String, artist: String) -> String {
         [
             "\(title) — \(artist)",
-            "Apple Music: https://music.apple.com/search?term=\(query(title, artist))",
-            "Spotify: \(spotifyLine(url: nil, title: title, artist: artist))",
-            "YouTube: \(youtubeLine(url: nil, title: title, artist: artist))",
+            "Apple Music: \(appleMusicURL(url: nil, id: nil, kind: "song", title: title, artist: artist))",
+            "Spotify: \(spotifyURL(url: nil, title: title, artist: artist))",
+            "YouTube: \(youtubeURL(url: nil, title: title, artist: artist))",
         ].joined(separator: "\n")
     }
 }
