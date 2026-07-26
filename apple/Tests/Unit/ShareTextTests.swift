@@ -56,4 +56,27 @@ final class ShareTextTests: XCTestCase {
         XCTAssertTrue(text.contains("Two — B"))
         XCTAssertTrue(text.contains("\n\n"))   // blocks separated by a blank line
     }
+
+    /// The per-service resolvers shared by the share block AND the CSV tracklist export: a direct link
+    /// when we have one, else a per-service SEARCH link — never blank. (CSV export fallback, Levi.)
+    func testResolversPreferDirectLinkElseSearch() {
+        // Direct/canonical link always wins.
+        XCTAssertEqual(ShareText.spotifyURL(url: "https://open.spotify.com/track/x", title: "T", artist: "A"),
+                       "https://open.spotify.com/track/x")
+        XCTAssertEqual(ShareText.youtubeURL(url: "https://music.youtube.com/watch?v=x", title: "T", artist: "A"),
+                       "https://music.youtube.com/watch?v=x")
+        XCTAssertEqual(ShareText.appleMusicURL(url: "https://music.apple.com/song/9", id: "1", kind: "song",
+                                               title: "T", artist: "A"),
+                       "https://music.apple.com/song/9")
+        // Apple Music with no url but an id → id-derived short link.
+        XCTAssertEqual(ShareText.appleMusicURL(url: nil, id: "123", kind: "song", title: "T", artist: "A"),
+                       "https://music.apple.com/song/123")
+        // Nothing indexed (nil / empty) → search links, so an export cell is never blank.
+        XCTAssertTrue(ShareText.spotifyURL(url: nil, title: "T", artist: "A")
+            .hasPrefix("https://open.spotify.com/search/results/"))
+        XCTAssertTrue(ShareText.youtubeURL(url: "", title: "T", artist: "A")
+            .contains("music.youtube.com/search?q="))
+        XCTAssertTrue(ShareText.appleMusicURL(url: nil, id: nil, kind: "song", title: "T", artist: "A")
+            .contains("music.apple.com/search?term="))
+    }
 }

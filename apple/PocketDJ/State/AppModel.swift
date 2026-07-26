@@ -58,11 +58,14 @@ final class AppModel {
             let album = s.albumId.flatMap { albumsById[$0] }
             return TracklistCSV.Row(title: s.name, artist: s.artist, album: album?.name ?? "",
                                     year: s.year ?? album?.year, genre: album?.genre ?? "",
-                                    // F3 Sharing: the canonical links we matched (blank until resolved).
-                                    // Apple Music prefers the stamped url, else the id-derived short link.
-                                    appleMusicUrl: s.appleMusicUrl ?? s.appleMusicId.map { "https://music.apple.com/song/\($0)" } ?? "",
-                                    spotifyUrl: s.spotifyUrl ?? "",
-                                    youtubeUrl: s.youtubeUrl ?? "")
+                                    // F3 Sharing: the direct link we matched, else a per-service SEARCH
+                                    // link (Levi 2026-07-25 — a search link beats a blank cell when the
+                                    // backfill hasn't resolved a canonical URL). Same resolvers as the
+                                    // share-text block, so exports and shares agree.
+                                    appleMusicUrl: ShareText.appleMusicURL(url: s.appleMusicUrl, id: s.appleMusicId,
+                                                                           kind: "song", title: s.name, artist: s.artist),
+                                    spotifyUrl: ShareText.spotifyURL(url: s.spotifyUrl, title: s.name, artist: s.artist),
+                                    youtubeUrl: ShareText.youtubeURL(url: s.youtubeUrl, title: s.name, artist: s.artist))
         }
     }
     /// Read-only playlists carried in the enabled sources (e.g. Apple Music user

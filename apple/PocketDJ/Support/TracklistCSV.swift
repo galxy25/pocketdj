@@ -13,8 +13,9 @@ enum TracklistCSV {
         var album: String
         var year: Int?
         var genre: String
-        /// F3 Sharing: canonical streaming links we MATCHED (blank when unresolved — the data export
-        /// carries only real links, unlike the share-text block which falls back to a search URL).
+        /// F3 Sharing: per-service links — a direct/canonical link when matched, else a "search for this
+        /// track" link (the row builder fills these via the shared `ShareText` resolvers, so an export
+        /// never carries a blank cell). Default "" only for the rare row built without a catalog song.
         var appleMusicUrl: String = ""
         var spotifyUrl: String = ""
         var youtubeUrl: String = ""
