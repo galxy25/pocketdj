@@ -237,6 +237,12 @@ private struct SequencerEditor: View {
     @State private var notice: String?
     @State private var renaming = false
     @State private var nameDraft = ""
+    /// SEQ collapse/zoom/rename: which lanes are collapsed, the bars-per-line zoom, and the lane
+    /// being renamed (with its draft).
+    @State private var collapsedRows: Set<Int> = []
+    @State private var barsPerLine = 1
+    @State private var renamingRow: Int?
+    @State private var rowNameDraft = ""
     @State private var prepareTask: Task<Void, Never>?
     /// Monotonic token pairing each prepare run with ITS `preparing` flag: a cancelled run's
     /// deferred cleanup must not clobber the state of the run that replaced it (the cancelled
@@ -289,6 +295,38 @@ private struct SequencerEditor: View {
         }
     }
 
+    /// SEQ collapse/zoom: collapse-all/expand-all + a bars-per-line zoom (1 bar = big cells/focus a
+    /// bar; 8 = compact so a whole-song pattern fits in far fewer lines).
+    private func lanesControlRow(_ pattern: StudioPattern) -> some View {
+        let allCollapsed = !pattern.rows.isEmpty && collapsedRows.count >= pattern.rows.count
+        return HStack(spacing: 10) {
+            Button {
+                if allCollapsed { collapsedRows.removeAll() } else { collapsedRows = Set(pattern.rows.indices) }
+            } label: {
+                Label(allCollapsed ? "Expand all" : "Collapse all",
+                      systemImage: allCollapsed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("seq-collapse-all")
+            Spacer(minLength: 0)
+            Text("Zoom").font(.caption).foregroundStyle(Theme.fgDim)
+            Picker("Zoom", selection: $barsPerLine) {
+                Text("1 bar").tag(1); Text("2").tag(2); Text("4").tag(4); Text("8").tag(8)
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 220)
+            .accessibilityIdentifier("seq-zoom")
+        }
+    }
+
+    private func toggleCollapse(_ i: Int) {
+        if collapsedRows.contains(i) { collapsedRows.remove(i) } else { collapsedRows.insert(i) }
+    }
+    private func beginRowRename(_ i: Int, _ pattern: StudioPattern) {
+        rowNameDraft = pattern.rows.indices.contains(i) ? (pattern.rows[i].label ?? "") : ""
+        renamingRow = i
+    }
+
     var body: some View {
         ScrollView {
             if let pattern = studio.pattern(patternId) {
@@ -297,12 +335,16 @@ private struct SequencerEditor: View {
                     bpmRow(pattern)
                     lengthRow(pattern)
                     liveModeRow
+                    if pattern.rows.count > 1 || pattern.stepCount > 16 { lanesControlRow(pattern) }
                     if !pattern.hasSoundingSteps { emptyNotice }
                     if let notice { noticeLine(notice) }
                     ForEach(pattern.rows.indices, id: \.self) { i in
                         PatternRowCard(patternId: patternId, rowIndex: i, row: pattern.rows[i],
                                        compact: compact, playingThis: isPlayingThis,
-                                       onSolo: { toggleSolo(row: $0) })
+                                       collapsed: collapsedRows.contains(i), barsPerLine: barsPerLine,
+                                       onSolo: { toggleSolo(row: $0) },
+                                       onToggleCollapse: { toggleCollapse(i) },
+                                       onRename: { beginRowRename(i, pattern) })
                     }
                     addRowControl(pattern)
                     bounceStatus(pattern)
@@ -329,6 +371,16 @@ private struct SequencerEditor: View {
                 .accessibilityIdentifier("seq-rename-confirm")
             Button("Cancel", role: .cancel) { renaming = false }
         }
+        .alert("Rename lane", isPresented: Binding(get: { renamingRow != nil },
+                                                   set: { if !$0 { renamingRow = nil } })) {
+            TextField("Lane name", text: $rowNameDraft).accessibilityIdentifier("seq-row-rename-field")
+            Button("Save") {
+                if let i = renamingRow { studio.setPatternRowLabel(patternId, row: i, label: rowNameDraft) }
+                renamingRow = nil
+            }
+            .accessibilityIdentifier("seq-row-rename-confirm")
+            Button("Cancel", role: .cancel) { renamingRow = nil }
+        } message: { Text("A custom lane name — leave blank to restore the sample’s name.") }
     }
 
     // MARK: Header (back · name · rename · play · overflow)
@@ -741,8 +793,16 @@ private struct PatternRowCard: View {
     /// This pattern is the one the engine is currently playing — gates the step highlight so a
     /// DIFFERENT loaded pattern's clock never lights up this grid.
     let playingThis: Bool
+    /// Collapsed ⇒ show only the header (hide the step grid + mixer deck) so a many-lane pattern
+    /// (e.g. a Demuxer kick/snare/bass/perc export) stays scannable.
+    let collapsed: Bool
+    /// Zoom: bars (16 steps) shown per grid line. 1 = one bar/line (big cells, focus a bar); higher
+    /// packs more bars per line (smaller cells → the whole song fits in fewer lines).
+    let barsPerLine: Int
     /// Tap the row header to solo-preview just this row (SEQ1).
     var onSolo: (Int) -> Void
+    var onToggleCollapse: () -> Void
+    var onRename: () -> Void
 
     /// SEQ3: reveal this row's per-track mixer deck (collapsed by default so a long pattern's
     /// rows stay compact).
@@ -768,8 +828,13 @@ private struct PatternRowCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            stepGrid
-            rowDeck
+            if !collapsed {
+                stepGrid
+                rowDeck
+            } else {
+                Text("\(row.steps.filter { $0 }.count) hit\(row.steps.filter { $0 }.count == 1 ? "" : "s") · collapsed")
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
+            }
         }
         .padding(10)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
@@ -834,8 +899,24 @@ private struct PatternRowCard: View {
 
     // MARK: Header (label · gain · remove)
 
+    /// The lane's display name: a custom row label if set, else the target's own name.
+    private var displayTitle: String {
+        if let l = row.label, !l.isEmpty { return l }
+        if let t = info?.title, !t.isEmpty { return t }
+        return row.targetId.hasPrefix("lp_") ? "Loop" : "Sample"
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
+            // Collapse/expand just this lane (hides its step grid + deck).
+            Button { onToggleCollapse() } label: {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption.weight(.bold)).foregroundStyle(Theme.fgDim)
+                    .frame(width: 18, height: 24).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(collapsed ? "Expand lane" : "Collapse lane")
+            .accessibilityIdentifier("seq-row-collapse-\(rowIndex)")
             // Tap the icon+title to SOLO-preview just this row (SEQ1). Kept separate from the
             // retarget / gain / remove controls so a preview tap can't fire them by accident.
             Button {
@@ -847,8 +928,7 @@ private struct PatternRowCard: View {
                         .foregroundStyle(soloingThis ? Theme.accent2 : (missing ? Theme.fgDim : Theme.accent))
                         .frame(width: 20)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(info?.title.isEmpty == false ? info!.title
-                             : (row.targetId.hasPrefix("lp_") ? "Loop" : "Sample"))
+                        Text(displayTitle)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(missing ? Theme.fgDim : Theme.fg)
                             .italic(missing)
@@ -876,6 +956,13 @@ private struct PatternRowCard: View {
                     engine.setPatternRowGain(row: rowIndex, gainDb: db)
                 }
             }
+            Button { onRename() } label: {
+                Image(systemName: "pencil").foregroundStyle(Theme.fgDim)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Rename lane")
+            .accessibilityIdentifier("seq-row-rename-\(rowIndex)")
+            .help("Rename this lane")
             Button {
                 studio.removePatternRow(patternId, row: rowIndex)
             } label: {
@@ -938,7 +1025,9 @@ private struct PatternRowCard: View {
         VStack(spacing: 6) {
             // SEQ4: wrap the row's steps into lines of one bar (16), or half-bars (8) on compact
             // iPhone. A 16-step pattern lays out exactly as before; a long one stacks its bars.
-            let perLine = compact ? 8 : 16
+            // Zoom: one bar per line (16, or 8 on compact) times barsPerLine — more bars per line
+            // shrinks the cells so a long pattern fits in fewer lines.
+            let perLine = (compact ? 8 : 16) * max(1, barsPerLine)
             let n = row.steps.count
             let lines = max(1, (n + perLine - 1) / perLine)
             ForEach(0..<lines, id: \.self) { line in

@@ -402,6 +402,15 @@ final class StudioStore {
         }
     }
 
+    /// Rename a sequencer lane (SEQ collapse/rename). Empty/blank ⇒ nil = back to the target's own
+    /// name. Cosmetic, so it does NOT mark the pattern bounce-dirty (a rename can't change the audio).
+    func setPatternRowLabel(_ id: String, row: Int, label: String?) {
+        guard let i = patterns.firstIndex(where: { $0.id == id }), patterns[i].rows.indices.contains(row) else { return }
+        let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        patterns[i].rows[row].label = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        saveNow()
+    }
+
     /// Re-point a row at a different sample/loop, keeping its steps, modes, and gain — the
     /// "morph" move: an extracted drum pattern re-triggers a hit cut from another song.
     func setPatternRowTarget(_ id: String, row: Int, targetId: String) {
