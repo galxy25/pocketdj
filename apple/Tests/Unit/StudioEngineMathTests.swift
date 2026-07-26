@@ -129,4 +129,91 @@ final class StudioEngineMathTests: XCTestCase {
         clock.startedAtHost = CACurrentMediaTime() - 1.94      // 15.5 steps in → step 15
         XCTAssertEqual(clock.currentStep, 15)
     }
+
+    // MARK: SEQ5 — loopWindow (the ∞ looper's repeating span)
+
+    func testLoopWindowBasic() {
+        // 2 bars = 32 steps, anchored at the top of a 64-step (4-bar) pattern.
+        let w = StudioEngine.loopWindow(startStep: 0, loopBars: 2, stepCount: 64)
+        XCTAssertEqual(w.start, 0)
+        XCTAssertEqual(w.len, 32)
+    }
+
+    func testLoopWindowSlidesBackToFitAtTheTail() {
+        // Anchored near the end, the full 2-bar window would overrun — it slides back so it stays
+        // a full 32 steps (rather than shrinking) and still ends at the pattern's last step.
+        let w = StudioEngine.loopWindow(startStep: 60, loopBars: 2, stepCount: 64)
+        XCTAssertEqual(w.start, 32)
+        XCTAssertEqual(w.len, 32)
+    }
+
+    func testLoopWindowCollapsesToWholePatternWhenShorterThanWindow() {
+        // A 1-bar (16-step) pattern can't hold a 2-bar loop — the window collapses to the whole thing.
+        let w = StudioEngine.loopWindow(startStep: 8, loopBars: 2, stepCount: 16)
+        XCTAssertEqual(w.start, 0)
+        XCTAssertEqual(w.len, 16)
+    }
+
+    func testLoopWindowGuardsDegenerateBarsAndCount() {
+        // loopBars < 1 is treated as 1 bar; a zero step count as a 1-step pattern.
+        XCTAssertEqual(StudioEngine.loopWindow(startStep: 0, loopBars: 0, stepCount: 64).len, 16)
+        let z = StudioEngine.loopWindow(startStep: 5, loopBars: 4, stepCount: 0)
+        XCTAssertEqual(z.start, 0)
+        XCTAssertEqual(z.len, 1)
+    }
+
+    // MARK: SEQ5 — mappedStep (slot → pattern step; the playhead offset + loop mapping)
+
+    func testMappedStepLoopOffWrapsWholePatternFromStart() {
+        // Loop off, cursor at 0: slot k → k mod stepCount (the classic whole-pattern cycle).
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 0, startStep: 0, loopEnabled: false, loopBars: 2, stepCount: 16), 0)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 16, startStep: 0, loopEnabled: false, loopBars: 2, stepCount: 16), 0)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 20, startStep: 0, loopEnabled: false, loopBars: 2, stepCount: 16), 4)
+    }
+
+    func testMappedStepLoopOffHonorsCursorOffset() {
+        // Cursor at step 5 in a 16-step pattern: playback begins at 5 and wraps back to 0 at the top.
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 0, startStep: 5, loopEnabled: false, loopBars: 2, stepCount: 16), 5)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 11, startStep: 5, loopEnabled: false, loopBars: 2, stepCount: 16), 0)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 12, startStep: 5, loopEnabled: false, loopBars: 2, stepCount: 16), 1)
+    }
+
+    func testMappedStepLoopOnCyclesWindow() {
+        // Loop on, 2-bar window at the top of a 64-step pattern: slot cycles 0…31 then repeats.
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 31, startStep: 0, loopEnabled: true, loopBars: 2, stepCount: 64), 31)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 32, startStep: 0, loopEnabled: true, loopBars: 2, stepCount: 64), 0)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 33, startStep: 0, loopEnabled: true, loopBars: 2, stepCount: 64), 1)
+    }
+
+    func testMappedStepLoopOnWindowSlidesAtTail() {
+        // Cursor near the end slides the window back to [32,64); it never leaves the pattern.
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 0, startStep: 60, loopEnabled: true, loopBars: 2, stepCount: 64), 32)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 31, startStep: 60, loopEnabled: true, loopBars: 2, stepCount: 64), 63)
+        XCTAssertEqual(StudioEngine.mappedStep(slot: 32, startStep: 60, loopEnabled: true, loopBars: 2, stepCount: 64), 32)
+    }
+
+    // MARK: SEQ5 — the clock reflects the cursor offset + loop window
+
+    @MainActor
+    func testPatternClockHonorsCursorOffset() {
+        let clock = StudioPatternClock()
+        clock.running = true
+        clock.bpm = 120                                        // step = 0.125 s
+        clock.stepCount = 16
+        clock.startStep = 5
+        clock.startedAtHost = CACurrentMediaTime() - 0.31      // slot 2 → step 5 + 2 = 7
+        XCTAssertEqual(clock.currentStep, 7)
+    }
+
+    @MainActor
+    func testPatternClockHonorsLoopWindow() {
+        let clock = StudioPatternClock()
+        clock.running = true
+        clock.bpm = 120                                        // step = 0.125 s
+        clock.stepCount = 64
+        clock.loopEnabled = true
+        clock.loopBars = 1                                     // 16-step window at the top
+        clock.startedAtHost = CACurrentMediaTime() - 2.53      // slot 20 → 20 mod 16 = 4
+        XCTAssertEqual(clock.currentStep, 4)
+    }
 }
