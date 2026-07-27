@@ -74,6 +74,11 @@ final class StudioStore {
     /// the take and crashes the writer (the MixRecorder.activeTake doctrine).
     @ObservationIgnored var activeTakeFileName: (() -> String?)?
 
+    /// Fired ONCE for each NEWLY created sample (never on an upsert / crash-retry re-file) — the app
+    /// wires this to auto-file the sample as a first-class "Pocket DJ Samples" profile item. NEW-ONLY
+    /// (no backfill of pre-existing samples). Nil in tests / when the profile source isn't wired.
+    @ObservationIgnored var onSampleAdded: ((StudioSample) -> Void)?
+
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private let writer = StudioWriter()
     @ObservationIgnored private var saveTask: Task<Void, Never>?
@@ -143,12 +148,17 @@ final class StudioStore {
     /// first, then records it here). Upserts by id so a crash-retry can never duplicate a row.
     @discardableResult
     func addSample(_ sample: StudioSample) -> StudioSample {
+        var isNew = false
         if let i = samples.firstIndex(where: { $0.id == sample.id }) {
             samples[i] = sample
         } else {
             samples.append(sample)
+            isNew = true
         }
         saveNow()
+        // Auto-file only a genuinely NEW sample into the Pocket DJ source — an upsert/crash-retry
+        // re-file (same id) must not create a second profile item.
+        if isNew { onSampleAdded?(sample) }
         return sample
     }
 

@@ -685,6 +685,21 @@ struct PocketDJApp: App {
         // locals are already in scope; profileSource just entered scope above.
         mix.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
         setlistPlayer.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
+        // Stage 5 — auto-file every NEW sampler sample as a "Pocket DJ Samples" profile item (copies
+        // its durable audio into the profile store; new-only, no backfill of existing samples). The
+        // original's security scope is held across the off-main copy.
+        studio.onSampleAdded = { [weak profileSource, weak studio] sample in
+            guard let profileSource, let studio,
+                  let h = studio.localURLForPlayback(id: sample.id) else { return }
+            let dur = sample.effectiveDurationMs
+            let bpm = sample.grid?.bpm
+            Task {
+                _ = await profileSource.ingest(kind: .sample, title: sample.name, originalURL: h.url,
+                                               durationMs: dur > 0 ? dur : nil, stems: nil,
+                                               bpm: bpm, key: nil, camelot: nil)
+                h.release?()
+            }
+        }
         profile.onNameApplied = { [weak settings, weak collections, weak profileSource] name in
             settings?.pocketDJName = name
             settings?.persist()

@@ -337,6 +337,19 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(Set(reloaded.arrangements(inFolder: nil).map(\.id)), [a1.id, a2.id])
     }
 
+    /// New-sample auto-file hook (Stage 5): `onSampleAdded` fires exactly once per NEWLY created
+    /// sample — never on an upsert / crash-retry re-file of an existing id — so a sample is filed
+    /// into the "Pocket DJ Samples" source once, and a re-file can't duplicate it.
+    func testOnSampleAddedFiresForNewSampleOnly() {
+        let store = StudioStore(fileURL: storeURL)
+        var fired: [String] = []
+        store.onSampleAdded = { fired.append($0.id) }
+        store.addSample(makeSample("smp_x"))
+        store.addSample(makeSample("smp_x"))   // upsert (same id) — must NOT re-fire
+        store.addSample(makeSample("smp_y"))
+        XCTAssertEqual(fired, ["smp_x", "smp_y"])
+    }
+
     /// Loop-folder CRUD (Stage 1 foldering): mints an `lpfld_` id (NOT collection-riding), partitions
     /// loops(inFolder:), rename trims, dangling ⇒ Unfiled, round-trips, delete re-homes (deletes NO loop).
     func testLoopFolderCrudRehomeDanglingRoundTrip() throws {
