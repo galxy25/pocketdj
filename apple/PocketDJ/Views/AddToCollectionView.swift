@@ -25,7 +25,8 @@ struct AddToCollectionView: View {
     /// Studio items only; 1 = normal single play. Applied to whichever target is tapped.
     @State private var repeatCount = 1
     /// What an "add to a source playlist" tap actually did. Non-nil ⇒ the result alert is up.
-    /// Unlike the pocket/playlist rows (which just dismiss), this path silently CREATES a
+    /// Like the pocket/playlist rows, this path does NOT dismiss the picker (you stay to keep
+    /// adding); the alert exists because adding to a shared source silently CREATES a local
     /// playlist and may write to the user's Apple Music library — it has to say so.
     @State private var sourceResult: SourceAddResult?
 
@@ -46,6 +47,16 @@ struct AddToCollectionView: View {
     /// Source ("From your sources") playlists, name-ordered.
     private var sourcePlaylists: [SourcePlaylist] {
         app.indexPlaylists.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    /// Your pockets + playlists, sorted alphabetically by default (the raw stored arrays are in
+    /// arbitrary insertion order — a quick-add picker should list them A–Z so you can scan by name,
+    /// matching the "From your sources" section below and the app's `localizedCaseInsensitiveCompare`
+    /// collection convention).
+    private var sortedPockets: [Pocket] {
+        collections.pockets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    private var sortedPlaylists: [Playlist] {
+        collections.playlists.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     var body: some View {
@@ -103,7 +114,7 @@ struct AddToCollectionView: View {
                 }
 
                 Section {
-                    ForEach(collections.pockets) { pocket in
+                    ForEach(sortedPockets) { pocket in
                         Button { togglePocket(pocket) } label: {
                             HStack {
                                 Label(pocket.name, systemImage: "rectangle.stack")
@@ -124,7 +135,7 @@ struct AddToCollectionView: View {
                 }
 
                 Section {
-                    ForEach(collections.playlists) { pl in
+                    ForEach(sortedPlaylists) { pl in
                         // Tap toggles WHOLE-playlist membership: add lands in the default chapter
                         // (sequences[0]), remove clears the item from every chapter. The per-chapter
                         // rows below add to a specific chapter when you want one.
@@ -169,7 +180,10 @@ struct AddToCollectionView: View {
             #endif
             .alert(sourceResult?.title ?? "", isPresented: sourceResultShowing,
                    presenting: sourceResult) { _ in
-                Button("Done") { sourceResult = nil; dismiss() }
+                // Acknowledge the "made a local copy" notice but STAY on the picker (don't dismiss
+                // back to song detail) — the source playlist is now in your collections, so you can
+                // keep adding elsewhere; the toolbar "Done" closes the picker when you're finished.
+                Button("Done") { sourceResult = nil }
             } message: { result in
                 Text(result.message)
             }
