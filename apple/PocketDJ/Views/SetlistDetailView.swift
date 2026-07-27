@@ -95,7 +95,7 @@ struct SetlistDetailView: View {
                             Text("Spin these tracks, in this order.")
                                 .font(.caption).foregroundStyle(Theme.fgDim)
                             HStack(spacing: 14) {
-                                stat(Fmt.duration(setlist.totalMs), "total")
+                                stat(Fmt.longDuration(setlist.totalMs), "total")
                                 stat("\(setlist.tracks.count)", setlist.tracks.count == 1 ? "track" : "tracks")
                                 if setlist.generatedAt > 0 {
                                     Text(Date(timeIntervalSince1970: setlist.generatedAt / 1000),
@@ -466,7 +466,7 @@ struct SetlistDetailView: View {
         HStack {
             Text(names.count <= 1 ? (names.first ?? "Set") : names.joined(separator: " · "))
             Spacer()
-            Text("\(tracks.count) · \(Fmt.duration(tracks.reduce(0) { $0 + $1.shownMs }))")
+            Text("\(tracks.count) · \(Fmt.longDuration(tracks.reduce(0) { $0 + $1.shownMs }))")
                 .foregroundStyle(Theme.fgDim)
         }
         .accessibilityIdentifier("setlist-chapter-legend")

@@ -136,9 +136,9 @@ struct CollectionCatalog {
 }
 
 extension CollectionCatalog.Stats {
-    /// "12 songs · 47:31" — the standard container subtitle (count + Fmt.duration).
+    /// "12 songs · 2h 25m" — the standard container subtitle (count + Fmt.longDuration).
     var summary: String {
-        "\(count) song\(count == 1 ? "" : "s") · \(Fmt.duration(runtimeMs))"
+        "\(count) song\(count == 1 ? "" : "s") · \(Fmt.longDuration(runtimeMs))"
     }
 }
 
