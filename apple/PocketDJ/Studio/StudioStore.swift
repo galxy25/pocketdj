@@ -859,7 +859,20 @@ final class StudioStore {
         guard let data = try? Data(contentsOf: cuesFileURL),
               let doc = try? JSONDecoder().decode(StudioCueDoc.self, from: data) else { return }
         cues = doc.cues
-        saveNow()   // studio-doc durability only — never writeCueMirror() here (no push-back loop)
+        // Persist into the authoritative studio doc SYNCHRONOUSLY (mirrors flush(), NOT the async
+        // saveNow). The pulled cues must be durable before this returns: otherwise a hard-kill in the
+        // window right after a launch/foreground pull would leave the next init() reading the stale
+        // pre-pull studio doc, while the mirror's mtime already equals the sync watermark (so no
+        // re-pull fires) — stranding the pull and later re-pushing the reverted set over the cloud's
+        // newer cues. Never writes the mirror (cuesFileURL) → no push-back loop.
+        saveTask?.cancel(); saveTask = nil
+        saveVersion += 1
+        let v = saveVersion
+        if let out = try? JSONEncoder().encode(snapshotDocument()) {
+            try? out.write(to: fileURL, options: .atomic)
+        }
+        let w = writer
+        Task { await w.markWritten(v) }
     }
 
     /// Account-deletion wipe of the SYNCED cue data (mirrors the profile-source `clear()` lesson —

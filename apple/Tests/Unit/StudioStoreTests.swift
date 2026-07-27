@@ -1502,6 +1502,22 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(reopened.cues(forSong: "sng_2").first?.positionMs, 8000)
     }
 
+    /// A pull is durable to the studio doc WITHOUT any flush/background — a hard-kill right after a
+    /// launch/foreground pull must not leave the next init() reading stale pre-pull cues (which would
+    /// later re-push the reverted set and clobber the cloud). Regression for the sync-clobber finding.
+    func testReloadCuesIsDurableWithoutFlush() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.setCue(songId: "sng_1", slot: 0, positionMs: 1000)
+        let cloud = StudioCueDoc(cues: [StudioCue(id: "cue_z", songId: "sng_2", slot: 2, positionMs: 5000)])
+        try JSONEncoder().encode(cloud).write(to: mirrorURL, options: .atomic)
+
+        store.reloadCuesFromDisk()   // NO flush() afterwards — simulates a pull then hard-kill
+
+        let reopened = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reopened.cues(forSong: "sng_2").first?.positionMs, 5000, "pull must be durable pre-flush")
+        XCTAssertEqual(reopened.cues(forSong: "sng_1").count, 0)
+    }
+
     /// Account-deletion `clearCues()` empties the live cues, wipes them from the studio doc, and
     /// deletes the mirror file (the profile-source finding-1 lesson: cloud delete ⇒ local wipe).
     func testClearCuesWipesLiveDocAndMirror() throws {
