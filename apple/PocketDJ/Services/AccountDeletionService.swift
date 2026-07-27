@@ -41,7 +41,7 @@ final class AccountDeletionService {
     static let cloudDocKeys: [String] = [
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
         "collection-activity", "mix-sessions", "playback-session", "mix-decks",
-        "discover-adds", "imported-songs",
+        "discover-adds", "imported-songs", "profile-source",
     ]
 
     private static let log = Logger(subsystem: "com.levi.pocketdj", category: "account-deletion")
@@ -71,6 +71,11 @@ final class AccountDeletionService {
     private let edits: EditsStore
     private let discoverAdds: DiscoverAddsStore
     private let importedSongs: ImportedSongsStore
+    /// The per-profile "Pocket DJ" custom-audio source. A real synced store (cloud key
+    /// "profile-source", step 2) that ALSO owns durable on-disk media — its `clear()` purges both
+    /// the JSON and `profile-audio/` (originals + stems), so it must be wiped in step 3 like every
+    /// other local store.
+    private let profileSource: ProfileSourceStore
     private let playlistWriteBack: PlaylistWriteBack
     private let mixSessions: MixSessionStore
     private let playbackSession: PlaybackSessionStore
@@ -98,6 +103,7 @@ final class AccountDeletionService {
          edits: EditsStore,
          discoverAdds: DiscoverAddsStore,
          importedSongs: ImportedSongsStore,
+         profileSource: ProfileSourceStore,
          playlistWriteBack: PlaylistWriteBack,
          mixSessions: MixSessionStore,
          playbackSession: PlaybackSessionStore,
@@ -122,6 +128,7 @@ final class AccountDeletionService {
         self.edits = edits
         self.discoverAdds = discoverAdds
         self.importedSongs = importedSongs
+        self.profileSource = profileSource
         self.playlistWriteBack = playlistWriteBack
         self.mixSessions = mixSessions
         self.playbackSession = playbackSession
@@ -180,6 +187,7 @@ final class AccountDeletionService {
         edits.clearAll()
         discoverAdds.clear()
         importedSongs.clear()
+        profileSource.clear()        // wipes both the JSON metadata AND profile-audio/ (originals + stems)
         playlistWriteBack.clear()
         mixSessions.clear(bookmark: sessionBookmark)
         playbackSession.clear()      // idempotent with setlistPlayer.stop()'s own clear

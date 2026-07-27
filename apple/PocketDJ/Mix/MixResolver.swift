@@ -45,6 +45,7 @@ struct MixResolver {
         return songIds.compactMap { id -> MixLoadable? in
             guard seen.insert(id).inserted else { return nil }
             if StudioFactory.isStudioId(id) { return studioLoadable(id) }
+            if ProfileSourceStore.isProfileSongId(id) { return profileLoadable(id) }
             guard let song = app.songsById[id], isLoadable(id) else { return nil }
             return MixLoadable(songId: id, title: song.name, artist: song.artist,
                                bpm: song.bpm, camelot: song.camelot, key: song.key, albumId: song.albumId,
@@ -64,6 +65,16 @@ struct MixResolver {
                            key: nil, albumId: nil, lengthMs: info.lengthMs)
     }
 
+    /// A "Pocket DJ" profile item → a MixLoadable from its catalog row, loadable iff its ORIGINAL
+    /// asset is on THIS device. `pdj_` items ARE full `songsById` citizens (injectProfileItem), so
+    /// this reads them like a catalog song — no BurnStore file, no studio seam.
+    private func profileLoadable(_ id: String) -> MixLoadable? {
+        guard app.profileSource?.hasLocalAsset(id) == true, let song = app.songsById[id] else { return nil }
+        return MixLoadable(songId: id, title: song.name, artist: song.artist,
+                           bpm: song.bpm, camelot: song.camelot, key: song.key, albumId: song.albumId,
+                           lengthMs: song.length)
+    }
+
     /// A setlist: iterate FROZEN tracks in order (snapshots carry artist/name/bpm/camelot),
     /// skipping text cues + blanks, keeping loadables. Falls back to the catalog for albumId +
     /// key (snapshots don't store them) and any field the snapshot left nil.
@@ -78,6 +89,7 @@ struct MixResolver {
                 if let l = studioLoadable(t.songId) { return l }
                 return nil
             }
+            if ProfileSourceStore.isProfileSongId(t.songId) { return profileLoadable(t.songId) }
             guard isLoadable(t.songId) else { return nil }
             let song = app.songsById[t.songId]
             return MixLoadable(songId: t.songId,

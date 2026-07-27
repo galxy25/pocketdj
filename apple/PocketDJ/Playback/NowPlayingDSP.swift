@@ -46,6 +46,10 @@ final class NowPlayingDSP {
     @ObservationIgnored private var built = false
 
     private let burns: BurnStore
+    /// Stage 7 seam (wired at app init to `ProfileSourceStore.stemURLs`): a "Pocket DJ" profile
+    /// item's 4 app-managed stem URLs (release-less), else nil — lets a profile item's stems drive
+    /// the same per-stem DSP as a burned song's.
+    @ObservationIgnored var profileStemResolve: ((String) -> [String: URL]?)?
 
     // MARK: Loaded-file state (non-observed — the schedule geometry, not UI)
 
@@ -228,7 +232,8 @@ final class NowPlayingDSP {
         segEndFrame = segStart + count
         duration = Double(count) / sr
         loadedSongId = songId
-        stemsAvailable = songId.map { burns.stemsBurned(forSong: $0) } ?? false
+        stemsAvailable = songId.map { burns.stemsBurned(forSong: $0)
+            || (ProfileSourceStore.isProfileSongId($0) && profileStemResolve?($0) != nil) } ?? false
         isEngaged = true
 
         // Bind the varying `player → inputMixer` link to the file's real format (only that link).
@@ -507,18 +512,29 @@ final class NowPlayingDSP {
     /// Open the 4 burned stem files + reconnect each stem node at the file's format (only that link).
     /// Holds the burn-folder scope. False when the track isn't stem-burned locally / a file won't open.
     private func wireStems() -> Bool {
-        guard built, let songId = loadedSongId, let resolved = burns.localStemURLs(forSong: songId) else { return false }
+        guard built, let songId = loadedSongId else { return false }
+        // Stem source: a "Pocket DJ" profile item's app-managed stems (no security scope), else the
+        // burned set (scoped). Everything downstream is source-agnostic; profile just feeds release=nil.
+        let urls: [String: URL]
+        let release: (() -> Void)?
+        if ProfileSourceStore.isProfileSongId(songId), let u = profileStemResolve?(songId) {
+            urls = u; release = nil
+        } else if let r = burns.localStemURLs(forSong: songId) {
+            urls = r.urls; release = r.release
+        } else {
+            return false
+        }
         var opened: [String: AVAudioFile] = [:]
-        for (name, url) in resolved.urls {
+        for (name, url) in urls {
             if let f = try? AVAudioFile(forReading: url) { opened[name] = f }
         }
-        guard opened.count == MixEngine.stemNames.count else { resolved.release?(); return false }
+        guard opened.count == MixEngine.stemNames.count else { release?(); return false }
         for (name, f) in opened {
             guard let node = stemNodes[name] else { continue }
             node.stop()
             engine.connect(node, to: inputMixer, format: f.processingFormat)
         }
-        stemRelease?(); stemRelease = resolved.release
+        stemRelease?(); stemRelease = release
         stemFiles = opened
         return true
     }

@@ -322,6 +322,74 @@ struct StudioSampleFolder: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+// MARK: - Item folders (Loops / Sequences / Instrumentals — flat, device-local)
+//
+// Three families gain the same flat foldering as samples (F9) and arrangements. Each mirrors
+// `StudioSampleFolder` exactly — an id + name + timestamps, membership by the item's optional
+// `folderId` (nil = Unfiled). Separate structs per family (the `StudioSampleFolder` /
+// `StudioArrangementFolder` idiom) so each id namespace is self-documenting and can diverge.
+// DEVICE-LOCAL (Studio is deliberately not in the CloudSync registry). Lenient/all-optional decode.
+
+/// A flat, named folder for organizing LOOPS. Membership is by `StudioLoop.folderId` (nil = Unfiled).
+struct StudioLoopFolder: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "lpfld_…" — NON-collection-riding (like sfld_/arrfld_)
+    var name: String
+    var createdAt: Double = 0
+    var updatedAt: Double = 0
+
+    enum CodingKeys: String, CodingKey { case id, name, createdAt, updatedAt }
+    init(id: String, name: String, createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newLoopFolderId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
+}
+
+/// A flat, named folder for organizing SEQUENCES (patterns). Membership by `StudioPattern.folderId`.
+struct StudioPatternFolder: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "ptnfld_…" — NON-collection-riding
+    var name: String
+    var createdAt: Double = 0
+    var updatedAt: Double = 0
+
+    enum CodingKeys: String, CodingKey { case id, name, createdAt, updatedAt }
+    init(id: String, name: String, createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newPatternFolderId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
+}
+
+/// A flat, named folder for organizing INSTRUMENTALS (takes). Membership by `StudioTake.folderId`.
+struct StudioTakeFolder: Codable, Identifiable, Hashable, Sendable {
+    var id: String                    // "tkfld_…" — NON-collection-riding
+    var name: String
+    var createdAt: Double = 0
+    var updatedAt: Double = 0
+
+    enum CodingKeys: String, CodingKey { case id, name, createdAt, updatedAt }
+    init(id: String, name: String, createdAt: Double = 0, updatedAt: Double = 0) {
+        self.id = id; self.name = name; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newTakeFolderId()
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+    }
+}
+
 // MARK: - Loop
 
 /// Beat-window sizes a loop can be sliced at (spec §1: ½, 1, 2, 4, 8, 16, 32 beats). Raw value
@@ -363,16 +431,22 @@ struct StudioLoop: Codable, Identifiable, Hashable, Sendable {
     var fileName: String
     var wasUserFolder: Bool = false
     var createdAt: Double = 0
+    /// The loop folder this belongs to (a `StudioLoopFolder` `lpfld_…` id), or nil = Unfiled.
+    /// ADDITIVE + OPTIONAL organizational metadata (the `StudioSample.folderId` doctrine): a legacy
+    /// document with no `folderId` key decodes to nil, and a `folderId` pointing at a folder no
+    /// longer in the document reads as Unfiled at the view layer — never a decode failure, never a wipe.
+    var folderId: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, sampleId, anchorMs, beats, bpm, lengthMs, frames, fileName, wasUserFolder, createdAt
+        case id, name, sampleId, anchorMs, beats, bpm, lengthMs, frames, fileName, wasUserFolder, createdAt, folderId
     }
     init(id: String, name: String, sampleId: String, anchorMs: Int = 0, beats: LoopBeats = .four,
          bpm: Double = 120, lengthMs: Int = 0, frames: Int64 = 0, fileName: String,
-         wasUserFolder: Bool = false, createdAt: Double = 0) {
+         wasUserFolder: Bool = false, createdAt: Double = 0, folderId: String? = nil) {
         self.id = id; self.name = name; self.sampleId = sampleId; self.anchorMs = anchorMs
         self.beats = beats; self.bpm = bpm; self.lengthMs = lengthMs; self.frames = frames
         self.fileName = fileName; self.wasUserFolder = wasUserFolder; self.createdAt = createdAt
+        self.folderId = folderId
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -387,6 +461,7 @@ struct StudioLoop: Codable, Identifiable, Hashable, Sendable {
         fileName = (try? c.decode(String.self, forKey: .fileName)) ?? ""
         wasUserFolder = (try? c.decode(Bool.self, forKey: .wasUserFolder)) ?? false
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        folderId = try? c.decode(String.self, forKey: .folderId)
     }
 }
 
@@ -506,6 +581,10 @@ struct StudioPattern: Codable, Identifiable, Hashable, Sendable {
     /// Root the BOUNCE file was written to (the pattern itself lives in the document).
     var wasUserFolder: Bool = false
     var createdAt: Double = 0
+    /// The sequence folder this belongs to (a `StudioPatternFolder` `ptnfld_…` id), or nil = Unfiled.
+    /// ADDITIVE + OPTIONAL (the `StudioSample.folderId` doctrine): absent ⇒ nil; a dangling id reads
+    /// as Unfiled at the view layer — never a decode failure, never a wipe.
+    var folderId: String?
 
     /// Any sounding step at all? A pattern with zero sounding steps refuses to bounce/play with
     /// an inline notice — zero-frame schedules crash (spec §2). The engine additionally skips
@@ -528,16 +607,17 @@ struct StudioPattern: Codable, Identifiable, Hashable, Sendable {
     static func clampStepCount(_ n: Int) -> Int { min(max(n, 1), maxStepCount) }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, bpm, stepCount, rows, fileName, bounceDirty, wasUserFolder, createdAt
+        case id, name, bpm, stepCount, rows, fileName, bounceDirty, wasUserFolder, createdAt, folderId
     }
     init(id: String, name: String, bpm: Double = 120, stepCount: Int = defaultStepCount,
          rows: [StudioPatternRow] = [], fileName: String? = nil, bounceDirty: Bool = true,
-         wasUserFolder: Bool = false, createdAt: Double = 0) {
+         wasUserFolder: Bool = false, createdAt: Double = 0, folderId: String? = nil) {
         self.id = id; self.name = name; self.bpm = bpm
         self.stepCount = StudioPattern.clampStepCount(stepCount)
         self.rows = rows.map { $0.resized(to: self.stepCount) }
         self.fileName = fileName; self.bounceDirty = bounceDirty
         self.wasUserFolder = wasUserFolder; self.createdAt = createdAt
+        self.folderId = folderId
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -552,6 +632,7 @@ struct StudioPattern: Codable, Identifiable, Hashable, Sendable {
         bounceDirty = (try? c.decode(Bool.self, forKey: .bounceDirty)) ?? true
         wasUserFolder = (try? c.decode(Bool.self, forKey: .wasUserFolder)) ?? false
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+        folderId = try? c.decode(String.self, forKey: .folderId)
     }
 }
 
@@ -669,21 +750,26 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     /// an old take without them decodes intact.
     var demuxSourceKey: String?
     var demuxMode: String?
+    /// The instrumental folder this belongs to (a `StudioTakeFolder` `tkfld_…` id), or nil = Unfiled.
+    /// ADDITIVE + OPTIONAL (the `StudioSample.folderId`/`editedEvents` doctrine): absent ⇒ nil; a
+    /// dangling id reads as Unfiled at the view layer — never a decode failure, never a wipe.
+    var folderId: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, instrument, fileName, wasUserFolder, bpm, events, durationMs, createdAt, editedEvents
-        case renderedFileName, renderedWasUserFolder, demuxSourceKey, demuxMode
+        case renderedFileName, renderedWasUserFolder, demuxSourceKey, demuxMode, folderId
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
          wasUserFolder: Bool = false, bpm: Double = 120, events: [StudioNoteEvent] = [],
          durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil,
          renderedFileName: String? = nil, renderedWasUserFolder: Bool? = nil,
-         demuxSourceKey: String? = nil, demuxMode: String? = nil) {
+         demuxSourceKey: String? = nil, demuxMode: String? = nil, folderId: String? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
         self.wasUserFolder = wasUserFolder; self.bpm = bpm; self.events = events
         self.durationMs = durationMs; self.createdAt = createdAt; self.editedEvents = editedEvents
         self.renderedFileName = renderedFileName; self.renderedWasUserFolder = renderedWasUserFolder
         self.demuxSourceKey = demuxSourceKey; self.demuxMode = demuxMode
+        self.folderId = folderId
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -703,6 +789,7 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
         renderedWasUserFolder = try? c.decode(Bool.self, forKey: .renderedWasUserFolder)
         demuxSourceKey = try? c.decode(String.self, forKey: .demuxSourceKey)
         demuxMode = try? c.decode(String.self, forKey: .demuxMode)
+        folderId = try? c.decode(String.self, forKey: .folderId)
     }
 }
 
@@ -1129,6 +1216,11 @@ struct StudioDocument: Codable, Sendable {
     /// F9: flat sample folders (device-local). New OPTIONAL collection: a legacy document with no
     /// `folders` key decodes to `[]`, and the list decodes per-element lossily like every other.
     var folders: [StudioSampleFolder] = []
+    /// Flat folders for Loops / Sequences / Instrumentals (device-local). Same additive-optional
+    /// shape as `folders`: a legacy document with no key decodes to `[]`, per-element lossy.
+    var loopFolders: [StudioLoopFolder] = []
+    var patternFolders: [StudioPatternFolder] = []
+    var takeFolders: [StudioTakeFolder] = []
     /// Multitrack arrangements (the "Tracks" sub-tab, device-local). Same additive-optional shape:
     /// a legacy document with no `arrangements` key decodes to `[]`, per-element lossy.
     var arrangements: [StudioArrangement] = []
@@ -1147,18 +1239,23 @@ struct StudioDocument: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, samples, loops, patterns, takes, cues, slices, folders, keys,
-             arrangements, arrangementFolders, arrangementArtifacts
+             arrangements, arrangementFolders, arrangementArtifacts,
+             loopFolders, patternFolders, takeFolders
     }
     init(schemaVersion: Int = studioSchemaVersion, samples: [StudioSample] = [],
          loops: [StudioLoop] = [], patterns: [StudioPattern] = [], takes: [StudioTake] = [],
          cues: [StudioCue] = [], slices: [StudioSlice] = [],
          folders: [StudioSampleFolder] = [], keys: [String: String] = [:],
          arrangements: [StudioArrangement] = [], arrangementFolders: [StudioArrangementFolder] = [],
-         arrangementArtifacts: [StudioArrangementArtifact] = []) {
+         arrangementArtifacts: [StudioArrangementArtifact] = [],
+         loopFolders: [StudioLoopFolder] = [], patternFolders: [StudioPatternFolder] = [],
+         takeFolders: [StudioTakeFolder] = []) {
         self.schemaVersion = schemaVersion; self.samples = samples; self.loops = loops
         self.patterns = patterns; self.takes = takes; self.cues = cues; self.slices = slices
         self.folders = folders; self.keys = keys; self.arrangements = arrangements
         self.arrangementFolders = arrangementFolders; self.arrangementArtifacts = arrangementArtifacts
+        self.loopFolders = loopFolders; self.patternFolders = patternFolders
+        self.takeFolders = takeFolders
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1183,6 +1280,12 @@ struct StudioDocument: Codable, Sendable {
         arrangementFolders = ((try? c.decode([StudioLossyBox<StudioArrangementFolder>].self, forKey: .arrangementFolders)) ?? [])
             .compactMap(\.value)
         arrangementArtifacts = ((try? c.decode([StudioLossyBox<StudioArrangementArtifact>].self, forKey: .arrangementArtifacts)) ?? [])
+            .compactMap(\.value)
+        loopFolders = ((try? c.decode([StudioLossyBox<StudioLoopFolder>].self, forKey: .loopFolders)) ?? [])
+            .compactMap(\.value)
+        patternFolders = ((try? c.decode([StudioLossyBox<StudioPatternFolder>].self, forKey: .patternFolders)) ?? [])
+            .compactMap(\.value)
+        takeFolders = ((try? c.decode([StudioLossyBox<StudioTakeFolder>].self, forKey: .takeFolders)) ?? [])
             .compactMap(\.value)
     }
 }
@@ -1218,6 +1321,11 @@ enum StudioFactory {
     /// Arrangement artifacts (bounces / live recordings). Like `arr_`/`clip_`/`arrfld_`, an `art_`
     /// id NEVER rides a collection's string array, so it is deliberately NOT in `studioPrefixes`.
     static func newArtifactId() -> String { "art_" + uid() }
+    /// Loop / sequence / instrumental folders. Like `sfld_`/`arrfld_`, these organizational ids
+    /// NEVER ride a collection's string array, so they are deliberately NOT in `studioPrefixes`.
+    static func newLoopFolderId() -> String { "lpfld_" + uid() }
+    static func newPatternFolderId() -> String { "ptnfld_" + uid() }
+    static func newTakeFolderId() -> String { "tkfld_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore

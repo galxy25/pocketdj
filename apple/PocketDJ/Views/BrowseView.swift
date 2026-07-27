@@ -16,6 +16,9 @@ struct BrowseView: View {
     /// hasn't injected the store (previews, and any window built before it was wired up) rather
     /// than trapping the way a non-optional `@Environment` store lookup does.
     @Environment(FavoritesStore.self) private var favorites: FavoritesStore?
+    /// OPTIONAL like `favorites` — the profile source's device-local visibility gate degrades to
+    /// "no gate" on a host that hasn't injected it (previews) rather than trapping.
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
     @Environment(IntentServices.self) private var intents
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(MixEngine.self) private var mix
@@ -274,9 +277,16 @@ struct BrowseView: View {
         browse.query = term
     }
 
+    /// The device-local visibility gate for "Pocket DJ" profile songs (nil ⇒ no gate when the
+    /// source isn't wired). Threaded into `visibleResults` so an asset-absent profile item is hidden.
+    private var profileLocal: ((String) -> Bool)? {
+        profileSource.map { ps in { ps.hasLocalAsset($0) } }
+    }
+
     /// The visible items (on-device or online) for the current kind, in display order.
     private var visibleItems: [BrowseItem] {
-        browse.searchOnline ? online.items : browse.visibleResults(collections, favorites: favorites)
+        browse.searchOnline ? online.items
+            : browse.visibleResults(collections, favorites: favorites, profileLocal: profileLocal)
     }
 
     /// The row ids currently shown in WHICHEVER list is up (on-device or online), in
@@ -525,7 +535,7 @@ struct BrowseView: View {
             } else {
                 // Full ordered set is memoized (cheap); render only a growing prefix so the
                 // ForEach stays small no matter how large the catalog is.
-                let items = browse.visibleResults(collections, favorites: favorites)
+                let items = browse.visibleResults(collections, favorites: favorites, profileLocal: profileLocal)
                 let page = BrowsePaging.page(items, visible: liveVisible)
                 resultsHeader(items.count)
                 switch browse.kind {

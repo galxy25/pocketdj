@@ -245,14 +245,17 @@ final class RipsStore {
     /// the requests from ever leaving the device. (`cue_` ids pass through on purpose: cues
     /// never ride collection arrays — see `StudioFactory.newCueId`.)
     nonisolated static func excludingStudioIds(_ ids: [String]) -> [String] {
-        ids.filter { !StudioFactory.isStudioId($0) }
+        // Also drops "Pocket DJ" profile ids (pdj_) — device-local custom audio must never leave the
+        // device for a rip (kept under the studio-named helper; both are device-local fences).
+        ids.filter { !StudioFactory.isStudioId($0) && !ProfileSourceStore.isProfileSongId($0) }
     }
 
-    /// Guard-return check for the SINGLE-song rip/stemify entry points: true (and one log
-    /// line) when `id` is studio-namespaced and the caller must bail before any network.
+    /// Guard-return check for the SINGLE-song rip/stemify entry points: true (and one log line)
+    /// when `id` is DEVICE-LOCAL (studio OR "Pocket DJ" profile) and the caller must bail before any
+    /// network. Mirrors the batch `excludingStudioIds` fence so single-song + batch fail SAFE alike.
     private func fencedStudioId(_ id: String, path: String) -> Bool {
-        guard StudioFactory.isStudioId(id) else { return false }
-        dlog("\(path): skipped studio id \(id) — studio items never rip (spec §8)")
+        guard StudioFactory.isStudioId(id) || ProfileSourceStore.isProfileSongId(id) else { return false }
+        dlog("\(path): skipped device-local id \(id) — studio + Pocket DJ items never rip (spec §8)")
         return true
     }
 

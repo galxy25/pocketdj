@@ -615,6 +615,7 @@ private struct DeckView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(SettingsStore.self) private var settings
     @Environment(StudioStore.self) private var studio   // positional cue points, keyed by songId
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
 
     let deck: MixEngine.Deck
     let engine: MixEngine
@@ -635,9 +636,12 @@ private struct DeckView: View {
 
     private var loaded: MixEngine.LoadedTrack? { engine.loaded(deck) }
     private var a11y: String { "deck-\(deck.rawValue)" }      // "deck-A" / "deck-B"
-    /// The loaded track has server-side stems (⇒ show the stem-mode toggle; tapping it burns the
-    /// stems locally if needed, then enters stem mode).
-    private var stemmed: Bool { loaded.map { rips.isStemmed($0.songId) } ?? false }
+    /// The loaded track has stems (⇒ show the stem-mode toggle). Server-side (rips) OR a "Pocket DJ"
+    /// profile item whose 4 stems are already on disk (no burn — StemModeButton skips the burn step).
+    private var stemmed: Bool {
+        loaded.map { rips.isStemmed($0.songId)
+            || (ProfileSourceStore.isProfileSongId($0.songId) && profileSource?.stemURLs(id: $0.songId) != nil) } ?? false
+    }
 
     /// iPhone portrait (cramped two-deck width) → render Lead/Sync icon-only; macOS/iPad keep labels.
     private var compactControls: Bool {
@@ -887,15 +891,47 @@ private struct DeckView: View {
     @ViewBuilder private var cueJumpRow: some View {
         if let songId = loaded?.songId {
             let cues = studio.cues(forSong: songId)
-            if !cues.isEmpty {
-                // NO accessibilityIdentifier on this grid: an id on a button *container* merges the
-                // child cue buttons into one a11y element, hiding each `deck-X-cue-N` id/label (the
-                // toolbar-overflow lesson). The per-cue ids below are the targets.
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(cues) { cue in cueButton(cue) }
+            VStack(spacing: 4) {
+                // Drop a cue at the LIVE playhead — settable DURING a mix (not only in Performance ▸
+                // Cues). Works for any loaded track, including "Pocket DJ" profile items.
+                HStack(spacing: 6) { dropCueButton(songId); Spacer() }
+                if !cues.isEmpty {
+                    // NO accessibilityIdentifier on this grid: an id on a button *container* merges the
+                    // child cue buttons into one a11y element, hiding each `deck-X-cue-N` id/label (the
+                    // toolbar-overflow lesson). The per-cue ids below are the targets.
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                        ForEach(cues) { cue in cueButton(cue) }
+                    }
                 }
             }
         }
+    }
+
+    /// The next free cue slot for a song (0..<maxSlots), or nil when all 8 are taken.
+    private func nextFreeCueSlot(_ songId: String) -> Int? {
+        let used = Set(studio.cues(forSong: songId).map(\.slot))
+        return (0..<StudioCue.maxSlots).first { !used.contains($0) }
+    }
+
+    /// Drop a cue at the deck's LIVE playhead into the next free slot. Disabled once all 8 exist.
+    /// `StudioCue.positionMs` is song-relative from 0:00 — exactly what `truePlayhead` reports.
+    @ViewBuilder private func dropCueButton(_ songId: String) -> some View {
+        let free = nextFreeCueSlot(songId)
+        Button {
+            guard let slot = free else { return }
+            let ms = Int(((engine.truePlayhead(deck) ?? engine.position(deck)) * 1000).rounded())
+            _ = studio.setCue(songId: songId, slot: slot, positionMs: max(0, ms))
+        } label: {
+            Label("Cue", systemImage: "flag.fill")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Theme.accent2.opacity(0.18), in: Capsule())
+                .foregroundStyle(Theme.accent2)
+        }
+        .buttonStyle(.plain)
+        .disabled(free == nil)
+        .help(free == nil ? "All 8 cue slots are set" : "Drop a cue at the current playhead")
+        .accessibilityIdentifier("\(a11y)-drop-cue")
     }
 
     private func cueButton(_ cue: StudioCue) -> some View {
@@ -1664,6 +1700,7 @@ private struct StemModeButton: View {
     let compact: Bool          // iPhone portrait → icon-only (cramped two-deck row)
     let a11y: String
     @Environment(BurnStore.self) private var burns
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
     @State private var burning = false
 
     var body: some View {
@@ -1698,6 +1735,10 @@ private struct StemModeButton: View {
 
     private func toggle() {
         if engine.stemModeOn(deck) { engine.setStemMode(false, on: deck); return }
+        // A "Pocket DJ" profile item's stems are already on disk (no burn) — enter stem mode directly.
+        if ProfileSourceStore.isProfileSongId(songId), profileSource?.stemURLs(id: songId) != nil {
+            engine.setStemMode(true, on: deck); return
+        }
         // Stems must be BURNED locally to play (no streaming). Burn first if needed, then enter.
         if burns.stemsBurned(forSong: songId) { engine.setStemMode(true, on: deck); return }
         burning = true

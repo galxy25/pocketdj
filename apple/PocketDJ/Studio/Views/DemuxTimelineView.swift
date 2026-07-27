@@ -21,6 +21,10 @@ struct DemuxTimelineView: View {
     /// Song-relative seek (the player owns any file offset mapping upstream).
     var onSeek: (Int) -> Void
     var onChordTap: (DemuxChordSegment) -> Void
+    /// Save the loaded demux as a "Pocket DJ" profile item (persist original + stems) then offer
+    /// Add-to-Collection. nil ⇒ the Save affordance is hidden. Threaded from StudioDemuxView.readyBody,
+    /// which owns the source/audio/stem context (this timeline view carries no item identity).
+    var onSave: (() -> Void)? = nil
 
     /// Zoom: points per second. The stepper walks the ladder; "fit" derives from width.
     @State private var pxPerSec: CGFloat = 10
@@ -234,6 +238,17 @@ struct DemuxTimelineView: View {
                 .disabled(pxPerSec >= Self.zoomLadder.last!)
                 .accessibilityIdentifier("demux-zoom-in")
             Spacer()
+            // Save this demux to the user's "Pocket DJ" library (original + stems) + add to a
+            // collection — immediately LEFT of the ⌖ bullseye.
+            if let onSave {
+                Button(action: onSave) {
+                    Image(systemName: "square.and.arrow.up").foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                }
+                .buttonStyle(.borderless)
+                .help("Save this demux to your Pocket DJ library and add it to a collection")
+                .accessibilityIdentifier("demux-save")
+            }
             // ⌖ = "take me to the playhead": ALWAYS centers immediately (paused too), and
             // arms auto-follow for playback. A scrub/manual scroll disarms follow; the
             // filled capsule makes armed/disarmed legible ("scope" has no .fill variant,

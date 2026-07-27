@@ -185,24 +185,27 @@ final class BrowseState {
     /// OFF-main `displayItems` via `visibleResults` (see `refreshResults`) so the heavy work never
     /// runs on the main actor.
     func results(_ app: AppModel, collections: CollectionsStore? = nil,
-                 favorites: FavoritesStore? = nil) -> [BrowseItem] {
+                 favorites: FavoritesStore? = nil,
+                 profileLocal: ((String) -> Bool)? = nil) -> [BrowseItem] {
         let sorted = app.cachedBrowseResults(resultsKey(app)) { computeSorted(app) }
-        return applyReadTimeFilters(sorted, collections, favorites)
+        return applyReadTimeFilters(sorted, collections, favorites, profileLocal)
     }
 
     /// The rows the BrowseView renders: the OFF-main-computed `displayItems` with the cheap
     /// collection-membership + favorite filters (song mode) layered on at read time so they always
     /// reflect the live stores. Never does the heavy filter/sort — that lands in `displayItems`.
     func visibleResults(_ collections: CollectionsStore? = nil,
-                        favorites: FavoritesStore? = nil) -> [BrowseItem] {
-        applyReadTimeFilters(displayItems, collections, favorites)
+                        favorites: FavoritesStore? = nil,
+                        profileLocal: ((String) -> Bool)? = nil) -> [BrowseItem] {
+        applyReadTimeFilters(displayItems, collections, favorites, profileLocal)
     }
 
     /// The read-time layer shared by `results` and `visibleResults`: the filters whose inputs
     /// live OUTSIDE the memo key. Order is irrelevant (both are independent row predicates);
     /// membership runs first only because it's the older of the two.
     private func applyReadTimeFilters(_ items: [BrowseItem], _ collections: CollectionsStore?,
-                                      _ favorites: FavoritesStore?) -> [BrowseItem] {
+                                      _ favorites: FavoritesStore?,
+                                      _ profileLocal: ((String) -> Bool)? = nil) -> [BrowseItem] {
         var out = items
         if kind == .song, membershipActive, let collections {
             out = applyMembership(out, collections)
@@ -210,7 +213,23 @@ final class BrowseState {
         if kind == .song, favoriteActive, let favorites {
             out = applyFavorites(out, favorites)
         }
+        // A "Pocket DJ" profile song is HIDDEN unless its original asset is on THIS device — the
+        // metadata syncs cross-device, but a metadata-only item (asset absent) must not show in
+        // Browse. Always applied in song mode (not behind a toggle); a nil resolver is a no-op.
+        if kind == .song, let profileLocal {
+            out = applyProfileLocal(out, profileLocal)
+        }
         return out
+    }
+
+    /// Keep a "Pocket DJ" (`pdj_`) SONG row only when its original asset is on this device
+    /// (`profileLocal`); every non-profile / non-song row passes untouched. O(1) per row (a prefix
+    /// check, then a fileExists-backed lookup only for the profile rows).
+    private func applyProfileLocal(_ items: [BrowseItem], _ profileLocal: (String) -> Bool) -> [BrowseItem] {
+        items.filter { item in
+            guard case .song(let s, _, _, _, _) = item, ProfileSourceStore.isProfileSongId(s.id) else { return true }
+            return profileLocal(s.id)
+        }
     }
 
     /// The `.task(id:)` signature the BrowseView keys its off-main recompute on: changes whenever any

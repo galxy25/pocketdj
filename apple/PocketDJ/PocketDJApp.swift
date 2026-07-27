@@ -165,6 +165,7 @@ struct PocketDJApp: App {
     /// Provisional IMPORTED catalog entries (cross-user playlist/pocket transfers) — see
     /// ImportedSongsStore.
     @State private var importedSongs: ImportedSongsStore
+    @State private var profileSource: ProfileSourceStore
     /// The user's synced identity (PocketDJ name + durable id) — see ProfileStore.
     @State private var profile: ProfileStore
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
@@ -670,10 +671,43 @@ struct PocketDJApp: App {
         // CloudKit DB so a beta tester's data follows their Apple ID across devices.
         let profile = ProfileStore(fileURL: ProfileStore.launchURL())
         profile.migrateIfNeeded(settingsName: settings.pocketDJName)
-        profile.onNameApplied = { [weak settings, weak collections] name in
+        // The per-profile "Pocket DJ" custom-audio source. Display name = the profile name (seeded
+        // BEFORE onNameChanged is wired, so the seed never fires a spurious launch reload); `onAdded`
+        // feeds saved/pulled items to the live catalog; a rename re-tags via a rebuild (onNameChanged).
+        let profileSource = ProfileSourceStore(fileURL: ProfileSourceStore.launchURL())
+        profileSource.profileName = profile.name.isEmpty ? ProfileSourceStore.defaultName : profile.name
+        profileSource.onAdded = { [weak app] songs, albums in app?.injectProfileItem(songs: songs, albums: albums) }
+        profileSource.onNameChanged = { [weak app] in Task { await app?.reload() } }
+        app.profileSource = profileSource
+        _profileSource = State(initialValue: profileSource)
+        // Stage 3 — the profileResolve playback seams: a `pdj_` item plays from its device-local
+        // original in BOTH Now Playing (setlistPlayer) and the Mix decks (mix). `mix`/`setlistPlayer`
+        // locals are already in scope; profileSource just entered scope above.
+        mix.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
+        setlistPlayer.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
+        // Stage 7 — a profile item's stems drive the same per-stem DSP as burned stems (Now Playing + Mix).
+        mix.profileStemResolve = { [weak profileSource] id in profileSource?.stemURLs(id: id) }
+        nowPlayingDSP.profileStemResolve = { [weak profileSource] id in profileSource?.stemURLs(id: id) }
+        // Stage 5 — auto-file every NEW sampler sample as a "Pocket DJ Samples" profile item (copies
+        // its durable audio into the profile store; new-only, no backfill of existing samples). The
+        // original's security scope is held across the off-main copy.
+        studio.onSampleAdded = { [weak profileSource, weak studio] sample in
+            guard let profileSource, let studio,
+                  let h = studio.localURLForPlayback(id: sample.id) else { return }
+            let dur = sample.effectiveDurationMs
+            let bpm = sample.grid?.bpm
+            Task {
+                _ = await profileSource.ingest(kind: .sample, title: sample.name, originalURL: h.url,
+                                               durationMs: dur > 0 ? dur : nil, stems: nil,
+                                               bpm: bpm, key: nil, camelot: nil)
+                h.release?()
+            }
+        }
+        profile.onNameApplied = { [weak settings, weak collections, weak profileSource] name in
             settings?.pocketDJName = name
             settings?.persist()
             collections?.performerName = name
+            profileSource?.profileName = name   // re-tag the Pocket DJ source + item artists (→ reload)
         }
         // A device whose profile already pulled a name (second device of the same Apple ID)
         // mirrors it into settings/collections now, before the first frame renders.
@@ -708,7 +742,13 @@ struct PocketDJApp: App {
         // calls read them (syncAtLaunch is awaited first).
         cloudSync.register("profile", fileURL: profile.syncFileURL) { [weak profile] in profile?.reloadFromDisk() }
         cloudSync.register("collections", fileURL: collections.syncFileURL) { [weak collections] in collections?.reloadFromDisk() }
-        cloudSync.register("edits", fileURL: edits.syncFileURL) { [weak edits] in edits?.reloadFromDisk() }
+        cloudSync.register("edits", fileURL: edits.syncFileURL) { [weak edits, weak app] in
+            edits?.reloadFromDisk()
+            // Re-overlay a cross-device metadata edit into the LIVE catalog NOW (a title/artist/album
+            // edit — incl. on a Pocket DJ item — otherwise only shows on the next catalog build).
+            // applyEdits only READS the edits doc, so this can't push back up (no LWW loop).
+            app?.applyEdits()
+        }
         cloudSync.register("favorites", fileURL: favorites.syncFileURL) { [weak favorites] in
             favorites?.reloadFromDisk()   // no onChanged on reload — a pull must not push back up
         }
@@ -724,6 +764,9 @@ struct PocketDJApp: App {
         cloudSync.register("imported-songs", fileURL: importedSongs.syncFileURL) { [weak importedSongs] in
             importedSongs?.reloadFromDisk()  // same doctrine — imports follow the Apple ID
         }
+        cloudSync.register("profile-source", fileURL: profileSource.syncFileURL) { [weak profileSource] in
+            profileSource?.reloadFromDisk()  // pulled custom-audio metadata follows the Apple ID
+        }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the
@@ -738,7 +781,7 @@ struct PocketDJApp: App {
 
         // ── Account deletion (App Store Guideline 5.1.1(v)) ────────────────────
         // Constructed with the LIVE stores/services it must wipe (no globals of its own). It
-        // deletes the same 11 PDJDoc keys registered above, via its OWN CKCloudDocDatabase()
+        // deletes the same 12 PDJDoc keys registered above, via its OWN CKCloudDocDatabase()
         // (a stateless struct, identical to the one cloudSync holds). `cloudDeleteEnabled` is
         // `{ !fixtureRun }` — UI-test runs must never touch a real iCloud account — and the
         // background-transfer cancel is wired to the process-wide TransferCoordinator here so
@@ -751,7 +794,7 @@ struct PocketDJApp: App {
             collections: collections, favorites: favorites, playStats: playStats,
             playHistory: playHistory, collectionActivity: collectionActivity,
             edits: edits, discoverAdds: discoverAdds,
-            importedSongs: importedSongs, playlistWriteBack: playlistWriteBack,
+            importedSongs: importedSongs, profileSource: profileSource, playlistWriteBack: playlistWriteBack,
             mixSessions: mixSessions, playbackSession: playbackSession,
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
             streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)
@@ -808,6 +851,7 @@ struct PocketDJApp: App {
                 .environment(albumArt)
                 .environment(lyrics)
                 .environment(demux)
+                .environment(profileSource)
                 .environment(mix)
                 .environment(mixSessions)
                 .environment(mixRecorder)

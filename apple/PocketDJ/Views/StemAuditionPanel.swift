@@ -11,6 +11,7 @@ import SwiftUI
 /// mute / solo specific stems live. Uses the same control idioms as the inline player.
 struct StemAuditionPanel: View {
     @Environment(BurnStore.self) private var burns
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
     let song: (id: String, title: String, artist: String)
     /// Owned by `SongDetailView` (survives the panel collapsing) so playback isn't torn down by a
     /// transient re-render; the panel stops it on disappear / song change.
@@ -199,6 +200,13 @@ struct StemAuditionPanel: View {
 
     private func prepare() async {
         if player.loadedSongId == song.id, player.ready { phase = .ready; return }
+        // A "Pocket DJ" profile item's stems are already on disk (app-managed, no burn/no scope) —
+        // load them directly; only rip/burn ids need the burn-to-local step below.
+        if ProfileSourceStore.isProfileSongId(song.id), let urls = profileSource?.stemURLs(id: song.id) {
+            player.load(songId: song.id, localURLs: urls, release: nil)
+            phase = player.loadError == nil ? .ready : .failed(player.loadError ?? "Couldn’t load stems.")
+            return
+        }
         phase = .burning
         guard let (urls, release) = await burns.burnStems(forSong: song.id) else {
             phase = .failed("Couldn’t prepare stems for offline playback.")

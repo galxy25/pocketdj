@@ -149,6 +149,12 @@ final class SetlistPlayer {
     /// unresolvable song — no end event would ever fire for it.
     var studioResolve: ((String) -> (url: URL, release: (() -> Void)?, title: String, lengthMs: Int)?)?
 
+    /// PROFILE ("Pocket DJ") SEAM (wired at app init to `ProfileSourceStore.localURLForPlayback`):
+    /// resolve a `pdj_` id to its device-local original. Same tuple as `studioResolve`; `release` is
+    /// always nil (app-managed audio holds no security scope). A nil RESULT (absent local file, e.g.
+    /// a metadata-synced item whose asset isn't on this device) makes the row skip forward.
+    var profileResolve: ((String) -> (url: URL, release: (() -> Void)?, title: String, lengthMs: Int)?)?
+
     /// F4 SEAM (wired at app init): the single-deck DSP engine the Now Playing mix mini-panel drives.
     /// nil in unit tests that don't exercise the hand-off. The sequencer owns the AVPlayer↔DSP swap so
     /// end-advance, the durable session, and the single-owner lock-screen card stay coherent across it.
@@ -855,6 +861,23 @@ final class SetlistPlayer {
             // made of loops never raises the "no burned files" banner (CRITIC-D).
             loadedAnyDeviceTrack = true
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
+            playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
+                          startMs: nil, rips: rips, player: player,
+                          endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
+            return
+        }
+
+        // PROFILE ("Pocket DJ") rows: device-local original resolved via the profileResolve seam,
+        // ABOVE the device/cloud split like studio rows — a profile item is a local file in both
+        // modes. `pdj_` is outside StudioFactory.studioPrefixes, so this never collides with the
+        // studio arm; unresolvable (absent asset) ⇒ skip forward.
+        if ProfileSourceStore.isProfileSongId(it.id) {
+            guard let res = profileResolve?(it.id) else {
+                advanceToNext()
+                return
+            }
+            loadedAnyDeviceTrack = true
+            coordinator.stopAppleMusicIfActive()
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)

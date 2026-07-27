@@ -56,6 +56,19 @@ struct StudioLoopsView: View {
     /// The loop whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
     @State private var addRef: StudioAddRef?
 
+    // Loop folders (create / rename / delete + move-into) — mirrors the Samples folder feature.
+    // Device-local organizational metadata; NO audio moves, the loop's file stays put.
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    /// When "New folder…" is chosen from a loop's Move submenu, the new folder is created AND this
+    /// loop is moved into it (nil ⇒ a plain "New folder" from the header, just create).
+    @State private var pendingMoveLoopId: String?
+    @State private var renamingFolderId: String?
+    @State private var folderNameDraft = ""
+    @State private var deletingFolderId: String?
+    /// Collapsed loop-folder ids, persisted across launches (missing ⇒ expanded).
+    @State private var collapsed: Set<String> = StudioLoopsView.loadCollapsed()
+
     /// The synthetic id the preview auditions under. Deliberately NOT a minted uuid: stable, so
     /// "is the preview playing?" is a plain equality check against `engine.loadedLoopId`, and
     /// it can never collide with a stored loop (uuids never equal the literal "preview").
@@ -63,7 +76,12 @@ struct StudioLoopsView: View {
 
     var body: some View {
         List {
-            loopsSection
+            // Loops browse: an Unfiled section + one collapsible DisclosureGroup per folder. The
+            // builder always follows (it's how loops are made — never hidden behind an empty state).
+            unfiledSection
+            ForEach(studio.loopFoldersOrdered()) { folder in
+                folderSection(folder)
+            }
             builderSection
         }
         .scrollContentBackground(.hidden)
@@ -103,60 +121,182 @@ struct StudioLoopsView: View {
         } message: { loop in
             Text(deleteMessage(loop))
         }
+        // Loop-folder create / rename / delete (the Samples-folder precedent).
+        .alert("New folder", isPresented: $showNewFolder) {
+            TextField("Name", text: $newFolderName)
+            Button("Create") {
+                let n = newFolderName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty {
+                    let f = studio.createLoopFolder(n)
+                    // Chosen from a loop's Move submenu ⇒ file that loop into the new folder.
+                    if let lid = pendingMoveLoopId { studio.setLoopFolder(lid, folderId: f.id) }
+                }
+                newFolderName = ""; pendingMoveLoopId = nil
+            }
+            Button("Cancel", role: .cancel) { newFolderName = ""; pendingMoveLoopId = nil }
+        }
+        .alert("Rename folder", isPresented: folderRenameBinding) {
+            TextField("Name", text: $folderNameDraft)
+            Button("Save") {
+                if let id = renamingFolderId { studio.renameLoopFolder(id, to: folderNameDraft) }
+                renamingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { renamingFolderId = nil }
+        }
+        .confirmationDialog("Delete this folder?", isPresented: folderDeleteBinding,
+                            titleVisibility: .visible) {
+            Button("Delete folder", role: .destructive) {
+                if let id = deletingFolderId { studio.deleteLoopFolder(id) }
+                deletingFolderId = nil
+            }
+            Button("Cancel", role: .cancel) { deletingFolderId = nil }
+        } message: {
+            Text("The folder's loops move back to Unfiled. No loops or audio are deleted.")
+        }
     }
 
     // MARK: - Section (a): saved loops
 
-    /// Newest first — matches the sessions/recordings lists (the thing you just made is the
-    /// thing you want to hear).
-    private var loopsNewestFirst: [StudioLoop] {
-        studio.loops.sorted { $0.createdAt > $1.createdAt }
-    }
-
-    private var loopsSection: some View {
+    /// The Unfiled section — loops with no folder (or a dangling one). Always shown: it's the
+    /// default home, hosts the "New folder" affordance, and is the "Move to Unfiled" drop target.
+    /// It also carries the global empty state (nothing at all yet) + the list-level delete notice.
+    @ViewBuilder private var unfiledSection: some View {
+        let unfiled = studio.loops(inFolder: nil)
         Section {
-            if loopsNewestFirst.isEmpty {
+            if studio.loops.isEmpty && studio.loopFolders.isEmpty {
+                // Global empty state — nothing at all yet; point at the builder below (loops are
+                // DERIVED, so don't dead-end). Shown only when BOTH loops and folders are empty.
                 Text("No loops yet — pick a sample below and slice a beat-synced window.")
                     .font(.callout).foregroundStyle(Theme.fgDim)
+            } else if unfiled.isEmpty {
+                Text("No unfiled loops.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
             } else {
-                ForEach(loopsNewestFirst) { loop in
-                    loopRow(loop)
-                        // Rename/delete ride swipe actions (iOS) + context menu (macOS
-                        // right-click / iOS long-press) — the MixSessionsView precedent.
-                        .swipeActions(edge: .leading) {
-                            Button { beginRename(loop) } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-                            .tint(Theme.accent2)
-                            .accessibilityIdentifier("loop-rename-\(loop.id)")
-                        }
-                        .swipeActions {
-                            Button(role: .destructive) { pendingDelete = loop } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            .accessibilityIdentifier("loop-delete-\(loop.id)")
-                        }
-                        .contextMenu {
-                            Button { beginRename(loop) } label: { Label("Rename…", systemImage: "pencil") }
-                            Button {
-                                addRef = StudioAddRef(id: loop.id, title: loop.name)
-                                let lid = loop.id
-                                Task { await StudioAnalyzer.prepare(forStudioId: lid, studio: studio, packs: nil) }
-                            } label: {
-                                Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
-                            }
-                            Button(role: .destructive) { pendingDelete = loop } label: {
-                                Label("Delete loop", systemImage: "trash")
-                            }
-                        }
-                }
+                ForEach(unfiled) { loop in loopListRow(loop) }
             }
             if let listNote {
                 Text(listNote).font(.caption).foregroundStyle(Theme.danger)
             }
         } header: {
-            Text("Loops")
+            HStack {
+                Text("Loops").foregroundStyle(Theme.fgDim)
+                Spacer()
+                newFolderButton
+            }
         }
+    }
+
+    /// One collapsible FOLDER of loops, newest-first (store order). Collapse state persists across
+    /// launches (UserDefaults). Shown even when empty so it can be renamed / deleted / filled.
+    @ViewBuilder private func folderSection(_ folder: StudioLoopFolder) -> some View {
+        let members = studio.loops(inFolder: folder.id)
+        Section {
+            DisclosureGroup(isExpanded: folderExpansion(folder.id)) {
+                if members.isEmpty {
+                    Text("Empty folder — move a loop in with its ⋯ menu.")
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                ForEach(members) { loop in loopListRow(loop) }
+            } label: {
+                HStack {
+                    Label(folder.name, systemImage: "folder").foregroundStyle(Theme.accent2)
+                    Spacer()
+                    Text("\(members.count)").font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                // The id rides the LABEL (a leaf), never the Section/DisclosureGroup container —
+                // a container id would clobber descendant ids on macOS (the StemAuditionPanel trap).
+                .accessibilityIdentifier("folder-\(folder.id)")
+                .contextMenu {
+                    Button {
+                        folderNameDraft = folder.name; renamingFolderId = folder.id
+                    } label: { Label("Rename folder", systemImage: "pencil") }
+                        .accessibilityIdentifier("folder-rename-\(folder.id)")
+                    Button(role: .destructive) { deletingFolderId = folder.id } label: {
+                        Label("Delete folder", systemImage: "trash")
+                    }
+                        .accessibilityIdentifier("folder-delete-\(folder.id)")
+                }
+            }
+        }
+    }
+
+    /// The header affordance to mint a fresh (empty) loop folder. In-content beside the list — the
+    /// iPhone toolbar-overflow lesson: organizational controls must never be toolbar-only.
+    private var newFolderButton: some View {
+        Button {
+            newFolderName = ""; pendingMoveLoopId = nil; showNewFolder = true
+        } label: {
+            Image(systemName: "folder.badge.plus").font(.callout.weight(.semibold))
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(Theme.accent2)
+        .accessibilityIdentifier("loop-new-folder")
+    }
+
+    /// A saved-loop row with its rename/delete swipe actions + full context menu (Rename / Move to
+    /// folder / Add to collection / Delete). Shared by the Unfiled section and every folder section.
+    private func loopListRow(_ loop: StudioLoop) -> some View {
+        loopRow(loop)
+            // Rename/delete ride swipe actions (iOS) + context menu (macOS right-click / iOS
+            // long-press) — the MixSessionsView precedent.
+            .swipeActions(edge: .leading) {
+                Button { beginRename(loop) } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                .tint(Theme.accent2)
+                .accessibilityIdentifier("loop-rename-\(loop.id)")
+            }
+            .swipeActions {
+                Button(role: .destructive) { pendingDelete = loop } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .accessibilityIdentifier("loop-delete-\(loop.id)")
+            }
+            .contextMenu {
+                Button { beginRename(loop) } label: { Label("Rename…", systemImage: "pencil") }
+                // File this loop into a folder (or Unfiled / a brand-new folder). Sets a string
+                // only; the loop's audio file never moves (mirrors the Samples Move submenu).
+                Menu {
+                    ForEach(studio.loopFoldersOrdered()) { f in
+                        Button { studio.setLoopFolder(loop.id, folderId: f.id) } label: {
+                            if loop.folderId == f.id {
+                                Label(f.name, systemImage: "checkmark")
+                            } else {
+                                Text(f.name)
+                            }
+                        }
+                        .accessibilityIdentifier("move-to-\(f.id)-\(loop.id)")
+                    }
+                    Divider()
+                    Button { studio.setLoopFolder(loop.id, folderId: nil) } label: {
+                        if loop.folderId == nil {
+                            Label("Unfiled", systemImage: "checkmark")
+                        } else {
+                            Text("Unfiled")
+                        }
+                    }
+                    .accessibilityIdentifier("move-to-unfiled-\(loop.id)")
+                    Button {
+                        pendingMoveLoopId = loop.id; newFolderName = ""; showNewFolder = true
+                    } label: {
+                        Label("New folder…", systemImage: "folder.badge.plus")
+                    }
+                    .accessibilityIdentifier("move-to-new-\(loop.id)")
+                } label: {
+                    Label("Move to folder", systemImage: "folder")
+                }
+                .accessibilityIdentifier("loop-move-\(loop.id)")
+                Button {
+                    addRef = StudioAddRef(id: loop.id, title: loop.name)
+                    let lid = loop.id
+                    Task { await StudioAnalyzer.prepare(forStudioId: lid, studio: studio, packs: nil) }
+                } label: {
+                    Label("Add to playlist or pocket…", systemImage: "plus.rectangle.on.folder")
+                }
+                Button(role: .destructive) { pendingDelete = loop } label: {
+                    Label("Delete loop", systemImage: "trash")
+                }
+            }
     }
 
     private func loopRow(_ loop: StudioLoop) -> some View {
@@ -688,5 +828,34 @@ struct StudioLoopsView: View {
         case .unreadableSource: return "The sample’s audio file can’t be read."
         default: return "Rendering failed — please try again."
         }
+    }
+
+    // MARK: - Folder bindings + collapse persistence (mirrors StudioSamplesView)
+
+    private var folderRenameBinding: Binding<Bool> {
+        Binding(get: { renamingFolderId != nil }, set: { if !$0 { renamingFolderId = nil } })
+    }
+
+    private var folderDeleteBinding: Binding<Bool> {
+        Binding(get: { deletingFolderId != nil }, set: { if !$0 { deletingFolderId = nil } })
+    }
+
+    /// NEW key (device-local, distinct from the sample-folder + playlist-folder keys) per the spec.
+    private static let collapsedKey = "pdj.loopFolders.collapsed"
+    private static func loadCollapsed() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [])
+    }
+    private func persistCollapsed() {
+        UserDefaults.standard.set(Array(collapsed), forKey: StudioLoopsView.collapsedKey)
+    }
+    /// A binding into `collapsed` for a folder's DisclosureGroup, persisting on change (presence
+    /// in the set = COLLAPSED, so a never-touched folder reads as expanded).
+    private func folderExpansion(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsed.contains(id) },
+            set: { expanded in
+                if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
+                persistCollapsed()
+            })
     }
 }

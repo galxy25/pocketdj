@@ -337,6 +337,119 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(Set(reloaded.arrangements(inFolder: nil).map(\.id)), [a1.id, a2.id])
     }
 
+    /// New-sample auto-file hook (Stage 5): `onSampleAdded` fires exactly once per NEWLY created
+    /// sample — never on an upsert / crash-retry re-file of an existing id — so a sample is filed
+    /// into the "Pocket DJ Samples" source once, and a re-file can't duplicate it.
+    func testOnSampleAddedFiresForNewSampleOnly() {
+        let store = StudioStore(fileURL: storeURL)
+        var fired: [String] = []
+        store.onSampleAdded = { fired.append($0.id) }
+        store.addSample(makeSample("smp_x"))
+        store.addSample(makeSample("smp_x"))   // upsert (same id) — must NOT re-fire
+        store.addSample(makeSample("smp_y"))
+        XCTAssertEqual(fired, ["smp_x", "smp_y"])
+    }
+
+    /// Loop-folder CRUD (Stage 1 foldering): mints an `lpfld_` id (NOT collection-riding), partitions
+    /// loops(inFolder:), rename trims, dangling ⇒ Unfiled, round-trips, delete re-homes (deletes NO loop).
+    func testLoopFolderCrudRehomeDanglingRoundTrip() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addLoop(makeLoop("lp_a", sampleId: "smp_a"))
+        store.addLoop(makeLoop("lp_b", sampleId: "smp_b"))
+        let f = store.createLoopFolder("Grooves")
+        XCTAssertTrue(f.id.hasPrefix("lpfld_"))
+        XCTAssertFalse(StudioFactory.isStudioId(f.id), "lpfld_ must NOT ride collections")
+
+        store.setLoopFolder("lp_a", folderId: f.id)
+        XCTAssertEqual(store.loops(inFolder: f.id).map(\.id), ["lp_a"])
+        XCTAssertEqual(store.loops(inFolder: nil).map(\.id), ["lp_b"])
+
+        store.renameLoopFolder(f.id, to: "  Beats ")
+        XCTAssertEqual(store.loopFolder(f.id)?.name, "Beats")
+
+        // Dangling membership (folder id not in the document) reads as Unfiled.
+        store.setLoopFolder("lp_b", folderId: "lpfld_ghost")
+        XCTAssertEqual(Set(store.loops(inFolder: nil).map(\.id)), ["lp_b"])
+
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.loopFoldersOrdered().map(\.name), ["Beats"])
+        XCTAssertEqual(reloaded.loop("lp_a")?.folderId, f.id)
+
+        // Delete → members re-home to Unfiled; NO loop deleted.
+        reloaded.deleteLoopFolder(f.id)
+        XCTAssertNil(reloaded.loopFolder(f.id))
+        XCTAssertNotNil(reloaded.loop("lp_a"))
+        XCTAssertNil(reloaded.loop("lp_a")?.folderId)
+        XCTAssertEqual(Set(reloaded.loops(inFolder: nil).map(\.id)), ["lp_a", "lp_b"])
+    }
+
+    /// Sequence(pattern)-folder CRUD: `ptnfld_` id (NOT collection-riding), partition, rename-trim,
+    /// dangling ⇒ Unfiled, round-trip, delete re-homes (deletes NO pattern).
+    func testPatternFolderCrudRehomeDanglingRoundTrip() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addPattern(StudioPattern(id: "ptn_a", name: "A", bpm: 100, createdAt: 1_000))
+        store.addPattern(StudioPattern(id: "ptn_b", name: "B", bpm: 100, createdAt: 2_000))
+        let f = store.createPatternFolder("Verses")
+        XCTAssertTrue(f.id.hasPrefix("ptnfld_"))
+        XCTAssertFalse(StudioFactory.isStudioId(f.id), "ptnfld_ must NOT ride collections")
+
+        store.setPatternFolder("ptn_a", folderId: f.id)
+        XCTAssertEqual(store.patterns(inFolder: f.id).map(\.id), ["ptn_a"])
+        XCTAssertEqual(store.patterns(inFolder: nil).map(\.id), ["ptn_b"])
+
+        store.renamePatternFolder(f.id, to: "  Choruses ")
+        XCTAssertEqual(store.patternFolder(f.id)?.name, "Choruses")
+
+        store.setPatternFolder("ptn_b", folderId: "ptnfld_ghost")
+        XCTAssertEqual(Set(store.patterns(inFolder: nil).map(\.id)), ["ptn_b"])
+
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.patternFoldersOrdered().map(\.name), ["Choruses"])
+        XCTAssertEqual(reloaded.pattern("ptn_a")?.folderId, f.id)
+
+        reloaded.deletePatternFolder(f.id)
+        XCTAssertNil(reloaded.patternFolder(f.id))
+        XCTAssertNotNil(reloaded.pattern("ptn_a"))
+        XCTAssertNil(reloaded.pattern("ptn_a")?.folderId)
+        XCTAssertEqual(Set(reloaded.patterns(inFolder: nil).map(\.id)), ["ptn_a", "ptn_b"])
+    }
+
+    /// Instrumental(take)-folder CRUD: `tkfld_` id (NOT collection-riding), partition, rename-trim,
+    /// dangling ⇒ Unfiled, round-trip, delete re-homes (deletes NO take).
+    func testTakeFolderCrudRehomeDanglingRoundTrip() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(StudioTake(id: "tk_a", name: "A", instrument: .piano,
+                                 fileName: "take-tk_a.m4a", createdAt: 1_000))
+        store.addTake(StudioTake(id: "tk_b", name: "B", instrument: .harp,
+                                 fileName: "take-tk_b.m4a", createdAt: 2_000))
+        let f = store.createTakeFolder("Leads")
+        XCTAssertTrue(f.id.hasPrefix("tkfld_"))
+        XCTAssertFalse(StudioFactory.isStudioId(f.id), "tkfld_ must NOT ride collections")
+
+        store.setTakeFolder("tk_a", folderId: f.id)
+        XCTAssertEqual(store.takes(inFolder: f.id).map(\.id), ["tk_a"])
+        XCTAssertEqual(store.takes(inFolder: nil).map(\.id), ["tk_b"])
+
+        store.renameTakeFolder(f.id, to: "  Solos ")
+        XCTAssertEqual(store.takeFolder(f.id)?.name, "Solos")
+
+        store.setTakeFolder("tk_b", folderId: "tkfld_ghost")
+        XCTAssertEqual(Set(store.takes(inFolder: nil).map(\.id)), ["tk_b"])
+
+        store.flush()
+        let reloaded = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reloaded.takeFoldersOrdered().map(\.name), ["Solos"])
+        XCTAssertEqual(reloaded.take("tk_a")?.folderId, f.id)
+
+        reloaded.deleteTakeFolder(f.id)
+        XCTAssertNil(reloaded.takeFolder(f.id))
+        XCTAssertNotNil(reloaded.take("tk_a"))
+        XCTAssertNil(reloaded.take("tk_a")?.folderId)
+        XCTAssertEqual(Set(reloaded.takes(inFolder: nil).map(\.id)), ["tk_a", "tk_b"])
+    }
+
     /// A bounce BAKES the master FX into the written audio (Levi: "add tests that bouncing includes
     /// the master fx affect on the bounced audio"). Bounce a 440 Hz sine dry vs with Drive and require
     /// the driven bounce's peak to be soft-clipped well below the dry one.

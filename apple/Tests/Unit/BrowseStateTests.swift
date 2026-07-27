@@ -29,6 +29,28 @@ final class BrowseStateTests: XCTestCase {
         XCTAssertEqual(app.sourceName, "Test Crate")
     }
 
+    /// Stage 6 gate: a "Pocket DJ" profile song is HIDDEN in Browse when its asset isn't local, shown
+    /// when it is, and a normal catalog song is unaffected either way.
+    func testProfileSongHiddenWhenAssetAbsent() async {
+        let app = await loadedApp()
+        let ps = ProfileSourceStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-browse-src-\(UUID().uuidString).json"))
+        ps.profileName = "Levi"
+        app.profileSource = ps
+        let entry = ProfileSourceStore.SongEntry(songId: "pdj_test", title: "My Kick", kind: .sample,
+                                                 fileName: "pdj_test.m4a", durationMs: 1000,
+                                                 bpm: nil, key: nil, camelot: nil, addedAtMs: 0)
+        app.injectProfileItem(songs: [ProfileSourceStore.indexSong(entry, profileName: "Levi")], albums: [])
+        let b = BrowseState(); b.kind = .song
+
+        let hidden = b.results(app, profileLocal: { _ in false }).map(\.idString)
+        XCTAssertFalse(hidden.contains("pdj_test"))     // no local asset ⇒ hidden
+        XCTAssertTrue(hidden.contains("sng_1"))         // catalog song unaffected
+
+        let shown = b.results(app, profileLocal: { _ in true }).map(\.idString)
+        XCTAssertTrue(shown.contains("pdj_test"))        // asset present ⇒ shown
+    }
+
     func testBaseItemsByKind() async {
         let app = await loadedApp()
         let b = BrowseState()

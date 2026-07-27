@@ -20,6 +20,7 @@ struct NowPlayingMixPanel: View {
     @Environment(NowPlayingDSP.self) private var dsp
     @Environment(MixEngine.self) private var mix
     @Environment(BurnStore.self) private var burns
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
 
     @AppStorage("nowPlayingMixExpanded") private var expanded = false
 
@@ -32,6 +33,7 @@ struct NowPlayingMixPanel: View {
     private var stemsBurned: Bool {
         guard expanded, let id = sequencer.currentSongId else { return false }
         return burns.stemsBurned(forSong: id)
+            || (ProfileSourceStore.isProfileSongId(id) && profileSource?.stemURLs(id: id) != nil)
     }
 
     /// Idempotent: the first control touch performs the AVPlayer→DSP hand-off.
