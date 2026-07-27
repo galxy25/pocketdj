@@ -827,6 +827,7 @@ struct PocketDJApp: App {
                 .environment(albumArt)
                 .environment(lyrics)
                 .environment(demux)
+                .environment(profileSource)
                 .environment(mix)
                 .environment(mixSessions)
                 .environment(mixRecorder)

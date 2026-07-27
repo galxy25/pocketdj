@@ -28,6 +28,7 @@ struct StudioDemuxView: View {
     @Environment(AppModel.self) private var app
     @Environment(BurnStore.self) private var burns
     @Environment(RipsStore.self) private var rips
+    @Environment(ProfileSourceStore.self) private var profileSource
 
     private enum Phase: Equatable {
         case idle, resolving, ready, needsBurn, burning, ripFirst
@@ -55,6 +56,11 @@ struct StudioDemuxView: View {
     @State private var stemState: StemState = .none
     /// The resolved single-mix local audio (the timeline/analysis source).
     @State private var audioURL: URL?
+    /// The just-saved "Pocket DJ" profile item awaiting its Add-to-Collection sheet (nil ⇒ closed).
+    @State private var addToCollectionRef: StudioAddRef?
+    /// True during a Save's async copy — re-entrancy guard so an impatient double-tap can't file a
+    /// duplicate profile item (mirrors `stemExporting`).
+    @State private var savingDemux = false
     @State private var durationMs = 0
     @State private var peaks: [Float] = []
     /// The shared synced player: single-mix mode loads one file, stem mode loads all four.
@@ -351,6 +357,9 @@ struct StudioDemuxView: View {
             }
             .padding(16)
         }
+        // A saved demux (Add-to-Collection). `pdj_` items are full catalog citizens, so the sheet
+        // adds them as .song — the same multi-select toggle sheet every song uses.
+        .sheet(item: $addToCollectionRef) { ref in AddToCollectionView(item: .song(ref.id)) }
     }
 
     private func loadedHeader(_ source: DemuxSource) -> some View {
@@ -378,7 +387,8 @@ struct StudioDemuxView: View {
         DemuxTimelineView(durationMs: durationMs, peaks: peaks,
                           chords: doc?.chords ?? [], player: player, follow: $demuxFollow,
                           onSeek: { seek(toMs: $0) },
-                          onChordTap: { chordDetail = $0 })
+                          onChordTap: { chordDetail = $0 },
+                          onSave: { saveDemux(source) })
         chordStatusRow(doc)
         stemsPanel(source)
         exportStemsRow(source)
@@ -399,6 +409,38 @@ struct StudioDemuxView: View {
         // the stems being on the device — exactly like the drum/melody extract panels.
         if !DemuxFeatures.lyricsEnabled && !cloud {
             lyricsPanel(source, doc)
+        }
+    }
+
+    /// Save the loaded demux as a first-class "Pocket DJ" profile item: persist its ORIGINAL
+    /// full-mix (primary) + stems (when present) via `ProfileSourceStore.ingest` (files under
+    /// "Pocket DJ Demuxes", artist = the profile name), then present Add-to-Collection. Stems prefer
+    /// the burned set (catalog song) else the demux cache (custom source). The original's security
+    /// scope (if any — imported-file sources) is held across the off-main copy.
+    private func saveDemux(_ source: DemuxSource) {
+        guard let audioURL, !savingDemux else { return }
+        savingDemux = true
+        // Burned stems (catalog song) come security-scoped as (urls, release); demux-cache stems
+        // (custom source) are plain app-managed URLs. Hold any burned-stem scope across the copy.
+        var stems: [String: URL]?
+        var stemRelease: (() -> Void)?
+        if let songId = source.songId, let burned = burns.localStemURLs(forSong: songId) {
+            stems = burned.urls; stemRelease = burned.release
+        } else {
+            stems = demux.localStemURLs(for: source.key)
+        }
+        let song = source.songId.flatMap { app.songsById[$0] }
+        let title = source.displayName
+        let dur = durationMs
+        let scoped = audioURL.startAccessingSecurityScopedResource()
+        Task {
+            let entry = await profileSource.ingest(kind: .demux, title: title, originalURL: audioURL,
+                                                   durationMs: dur > 0 ? dur : nil, stems: stems,
+                                                   bpm: song?.bpm, key: song?.key, camelot: song?.camelot)
+            if scoped { audioURL.stopAccessingSecurityScopedResource() }
+            stemRelease?()
+            savingDemux = false
+            if let entry { addToCollectionRef = StudioAddRef(id: entry.songId, title: title) }
         }
     }
 
