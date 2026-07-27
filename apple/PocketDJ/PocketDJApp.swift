@@ -767,6 +767,9 @@ struct PocketDJApp: App {
         cloudSync.register("profile-source", fileURL: profileSource.syncFileURL) { [weak profileSource] in
             profileSource?.reloadFromDisk()  // pulled custom-audio metadata follows the Apple ID
         }
+        cloudSync.register("studio-cues", fileURL: studio.cueSyncFileURL) { [weak studio] in
+            studio?.reloadCuesFromDisk()     // cue points follow the Apple ID (media-free; NOT the full studio doc)
+        }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the

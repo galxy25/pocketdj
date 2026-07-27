@@ -84,10 +84,26 @@ final class StudioStore {
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var saveVersion = 0
 
+    /// The media-free cue mirror (`…/pocketdj-studio.cues.json`, sibling of `fileURL`) — the ONLY
+    /// Studio data that syncs cross-device (`"studio-cues"`). Derived from `fileURL` so the fixture
+    /// seam covers both. See [[StudioCueDoc]] / [[profile-custom-audio-source-program]].
+    @ObservationIgnored private let cuesFileURL: URL
+    @ObservationIgnored private var cueSaveTask: Task<Void, Never>?
+    /// A cue change is pending an un-flushed mirror write (set by `nudgeCue`'s debounce, cleared by
+    /// `writeCueMirror`) — so `flush()` can persist a pending nudge on background WITHOUT the mirror
+    /// being touched on non-cue saves (which would stamp a fresh mtime and cause spurious pushes).
+    @ObservationIgnored private var cueMirrorDirty = false
+
+    /// The cue mirror path for a given studio-doc URL (`pocketdj-studio.json` → `…-studio.cues.json`).
+    nonisolated static func cuesURL(forStudio studioURL: URL) -> URL {
+        studioURL.deletingPathExtension().appendingPathExtension("cues.json")
+    }
+
     // MARK: Init / persistence location
 
     init(fileURL: URL = StudioStore.defaultURL()) {
         self.fileURL = fileURL
+        self.cuesFileURL = StudioStore.cuesURL(forStudio: fileURL)
         if let data = try? Data(contentsOf: fileURL),
            let doc = try? JSONDecoder().decode(StudioDocument.self, from: data) {
             samples = doc.samples
@@ -120,6 +136,7 @@ final class StudioStore {
         if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-uitest-studio.json")
             try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: cuesURL(forStudio: url))   // clear the cue mirror too
             return url
         }
         return defaultURL()
@@ -803,6 +820,58 @@ final class StudioStore {
 
     // MARK: - Cues (max 8 slots per song, store-enforced)
 
+    /// The media-free cue mirror CloudSync ships as `"studio-cues"` — registration reads the SAME
+    /// URL the store was constructed with (never re-derived), so the fixture seam stays intact.
+    /// ONLY cues sync; the full studio doc (media-referencing) never leaves the device.
+    var cueSyncFileURL: URL { cuesFileURL }
+
+    /// Persist the synced cue mirror (`pocketdj-studio.cues.json`). Written ONLY on a cue MUTATION —
+    /// never on init/launch — so a fresh launch can't stamp a newer mtime and LWW-clobber a
+    /// returning device's cloud cues. Whole-doc, media-free.
+    private func writeCueMirror() {
+        cueMirrorDirty = false
+        let doc = StudioCueDoc(schemaVersion: studioCueSchemaVersion, cues: cues)
+        if let data = try? JSONEncoder().encode(doc) { try? data.write(to: cuesFileURL, options: .atomic) }
+    }
+
+    /// A discrete cue change: persist the authoritative studio doc AND the synced mirror at once.
+    private func saveCuesNow() { saveNow(); writeCueMirror() }
+
+    /// Debounced cue persist (nudge buttons fire repeatedly) — writes both the studio doc and the
+    /// synced mirror after ~0.6 s of quiescence. Separate from `scheduleSave` (whose non-cue callers,
+    /// e.g. edit sliders, must NOT bump the cue mirror's mtime).
+    private func scheduleCueSave() {
+        cueMirrorDirty = true
+        cueSaveTask?.cancel()
+        cueSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.saveNow()
+            self.writeCueMirror()
+        }
+    }
+
+    /// Apply a pulled cloud cue set (whole-doc LWW, exactly like `EditsStore.reloadFromDisk`):
+    /// re-decode the mirror, REPLACE the live cues (so Mix / Studio surfaces re-render — the store
+    /// is `@Observable` and every cue read is live), and persist into the authoritative studio doc.
+    /// Deliberately does NOT re-write the mirror — that would bump its mtime and push straight back.
+    func reloadCuesFromDisk() {
+        guard let data = try? Data(contentsOf: cuesFileURL),
+              let doc = try? JSONDecoder().decode(StudioCueDoc.self, from: data) else { return }
+        cues = doc.cues
+        saveNow()   // studio-doc durability only — never writeCueMirror() here (no push-back loop)
+    }
+
+    /// Account-deletion wipe of the SYNCED cue data (mirrors the profile-source `clear()` lesson —
+    /// deleting the cloud copy must also wipe the local copy): empty the live cues, persist the
+    /// emptied studio doc, and delete the mirror file. Called from `AccountDeletionService` step 3.
+    func clearCues() {
+        cueSaveTask?.cancel(); cueSaveTask = nil; cueMirrorDirty = false
+        cues = []
+        saveNow()
+        try? FileManager.default.removeItem(at: cuesFileURL)
+    }
+
     /// A song's cues, slot-ordered (the 8-button row maps by slot, not array position).
     func cues(forSong songId: String) -> [StudioCue] {
         cues.filter { $0.songId == songId }.sorted { $0.slot < $1.slot }
@@ -823,27 +892,27 @@ final class StudioStore {
         if let i = cues.firstIndex(where: { $0.songId == songId && $0.slot == slot }) {
             cues[i].positionMs = pos
             if let name { cues[i].name = normalizedCueName(name) }
-            saveNow()
+            saveCuesNow()
             return cues[i]
         }
         let cue = StudioCue(id: StudioFactory.newCueId(), songId: songId, slot: slot,
                             positionMs: pos, name: name.flatMap(normalizedCueName))
         cues.append(cue)
-        saveNow()
+        saveCuesNow()
         return cue
     }
 
     func removeCue(songId: String, slot: Int) {
         let before = cues.count
         cues.removeAll { $0.songId == songId && $0.slot == slot }
-        if cues.count != before { saveNow() }
+        if cues.count != before { saveCuesNow() }
     }
 
     /// Rename a cue (nil/blank clears back to the slot's default label).
     func renameCue(songId: String, slot: Int, name: String?) {
         guard let i = cues.firstIndex(where: { $0.songId == songId && $0.slot == slot }) else { return }
         cues[i].name = name.flatMap(normalizedCueName)
-        saveNow()
+        saveCuesNow()
     }
 
     /// Nudge a cue's position by ±deltaMs (clamped to ≥ 0). Debounced save — nudge buttons are
@@ -851,7 +920,7 @@ final class StudioStore {
     func nudgeCue(songId: String, slot: Int, deltaMs: Int) {
         guard let i = cues.firstIndex(where: { $0.songId == songId && $0.slot == slot }) else { return }
         cues[i].positionMs = max(0, cues[i].positionMs + deltaMs)
-        scheduleSave()
+        scheduleCueSave()
     }
 
     // MARK: - Slices (max 8 pads per sample, store-enforced; the 8-cap mirrors cues)
@@ -1342,12 +1411,16 @@ final class StudioStore {
     /// watermark so an in-flight async save carrying an older snapshot can't regress it.
     func flush() {
         saveTask?.cancel(); saveTask = nil
+        cueSaveTask?.cancel(); cueSaveTask = nil
         saveVersion += 1
         let v = saveVersion
         let doc = snapshotDocument()
         if let data = try? JSONEncoder().encode(doc) {
             try? data.write(to: fileURL, options: .atomic)
         }
+        // Persist a pending debounced cue nudge to the SYNCED mirror before suspension (only when a
+        // cue change is actually pending — never on a non-cue background flush, so no spurious push).
+        if cueMirrorDirty { writeCueMirror() }
         let w = writer
         Task { await w.markWritten(v) }
     }
