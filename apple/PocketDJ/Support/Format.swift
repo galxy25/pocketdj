@@ -9,8 +9,9 @@ enum Fmt {
     }
 
     /// Milliseconds → a compact runtime SUMMARY: "1d 3h" (≥ a day), "2h 25m" (≥ an hour),
-    /// else "25m" (and "–" for nil/zero). For COLLECTION / setlist TOTALS, which read as an
-    /// unwieldy pure-minute count via `duration` ("145:23") — per-track lengths keep `m:ss`.
+    /// "25m" (≥ a minute), else "<1m" for a positive sub-minute total (a 45s skit/loop must not
+    /// read as "0m" = zero runtime) — and "–" for nil/zero. For COLLECTION / setlist TOTALS, which
+    /// read as an unwieldy pure-minute count via `duration` ("145:23") — per-track lengths keep `m:ss`.
     static func longDuration(_ ms: Int?) -> String {
         guard let ms, ms > 0 else { return "–" }
         let totalMinutes = ms / 60_000
@@ -19,7 +20,8 @@ enum Fmt {
         let minutes = totalMinutes % 60
         if days > 0 { return "\(days)d \(hours)h" }
         if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+        if minutes > 0 { return "\(minutes)m" }
+        return "<1m"
     }
 
     static func bpm(_ value: Double?) -> String {

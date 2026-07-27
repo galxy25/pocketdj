@@ -41,6 +41,10 @@ final class CollectionCatalogTests: XCTestCase {
     func testLongDurationFormatting() {
         XCTAssertEqual(Fmt.longDuration(nil), "–")
         XCTAssertEqual(Fmt.longDuration(0), "–")
+        XCTAssertEqual(Fmt.longDuration(45_000), "<1m")                    // positive sub-minute ≠ "0m"
+        XCTAssertEqual(Fmt.longDuration(1), "<1m")                         // 1ms still reads as some runtime
+        XCTAssertEqual(Fmt.longDuration(59_999), "<1m")                    // just under a minute
+        XCTAssertEqual(Fmt.longDuration(60_000), "1m")                     // exactly a minute
         XCTAssertEqual(Fmt.longDuration(423_000), "7m")                    // < 1h, seconds floored
         XCTAssertEqual(Fmt.longDuration(25 * 60_000), "25m")
         XCTAssertEqual(Fmt.longDuration(60 * 60_000), "1h 0m")             // exactly 1 hour
