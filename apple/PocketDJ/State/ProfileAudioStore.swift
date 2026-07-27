@@ -32,9 +32,9 @@ enum ProfileAudioFolders {
             base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                appropriateFor: nil, create: true)
         }
-        let dir = base.appendingPathComponent("profile-audio", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        // PATH ONLY — never create on a READ path (resolveOriginal / resolveStems / hasLocalAsset run
+        // on the render hot-path; a read must not mutate the filesystem). `ingest` creates it on write.
+        return base.appendingPathComponent("profile-audio", isDirectory: true)
     }
 
     /// The per-item stems folder `…/profile-audio/stems/<songId>/` (path only — NOT created here;
@@ -91,6 +91,7 @@ extension ProfileSourceStore {
         let fileName = "\(id).\(ext)"
         let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
             guard let dir = try? ProfileAudioFolders.dir() else { return false }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let dest = dir.appendingPathComponent(fileName)
             try? FileManager.default.removeItem(at: dest)
             do { try FileManager.default.copyItem(at: originalURL, to: dest) } catch { return false }

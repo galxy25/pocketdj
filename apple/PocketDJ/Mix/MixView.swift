@@ -615,6 +615,7 @@ private struct DeckView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(SettingsStore.self) private var settings
     @Environment(StudioStore.self) private var studio   // positional cue points, keyed by songId
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
 
     let deck: MixEngine.Deck
     let engine: MixEngine
@@ -635,9 +636,12 @@ private struct DeckView: View {
 
     private var loaded: MixEngine.LoadedTrack? { engine.loaded(deck) }
     private var a11y: String { "deck-\(deck.rawValue)" }      // "deck-A" / "deck-B"
-    /// The loaded track has server-side stems (⇒ show the stem-mode toggle; tapping it burns the
-    /// stems locally if needed, then enters stem mode).
-    private var stemmed: Bool { loaded.map { rips.isStemmed($0.songId) } ?? false }
+    /// The loaded track has stems (⇒ show the stem-mode toggle). Server-side (rips) OR a "Pocket DJ"
+    /// profile item whose 4 stems are already on disk (no burn — StemModeButton skips the burn step).
+    private var stemmed: Bool {
+        loaded.map { rips.isStemmed($0.songId)
+            || (ProfileSourceStore.isProfileSongId($0.songId) && profileSource?.stemURLs(id: $0.songId) != nil) } ?? false
+    }
 
     /// iPhone portrait (cramped two-deck width) → render Lead/Sync icon-only; macOS/iPad keep labels.
     private var compactControls: Bool {
@@ -1664,6 +1668,7 @@ private struct StemModeButton: View {
     let compact: Bool          // iPhone portrait → icon-only (cramped two-deck row)
     let a11y: String
     @Environment(BurnStore.self) private var burns
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
     @State private var burning = false
 
     var body: some View {
@@ -1698,6 +1703,10 @@ private struct StemModeButton: View {
 
     private func toggle() {
         if engine.stemModeOn(deck) { engine.setStemMode(false, on: deck); return }
+        // A "Pocket DJ" profile item's stems are already on disk (no burn) — enter stem mode directly.
+        if ProfileSourceStore.isProfileSongId(songId), profileSource?.stemURLs(id: songId) != nil {
+            engine.setStemMode(true, on: deck); return
+        }
         // Stems must be BURNED locally to play (no streaming). Burn first if needed, then enter.
         if burns.stemsBurned(forSong: songId) { engine.setStemMode(true, on: deck); return }
         burning = true

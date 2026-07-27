@@ -322,6 +322,9 @@ final class MixEngine {
     /// resolve a `pdj_` id to its device-local original. `release` is always nil (app-managed audio,
     /// no security scope). nil ⇒ absent local file ⇒ the deck load is skipped.
     @ObservationIgnored var profileResolve: ((String) -> (url: URL, release: (() -> Void)?, title: String, lengthMs: Int)?)?
+    /// Stage 7 seam (wired at app init to `ProfileSourceStore.stemURLs`): a "Pocket DJ" profile
+    /// item's 4 app-managed stem URLs (release-less), else nil.
+    @ObservationIgnored var profileStemResolve: ((String) -> [String: URL]?)?
 
     // MARK: Private — graph
 
@@ -2561,20 +2564,30 @@ final class MixEngine {
     /// format (only that link; the chain stays canonical). Holds the burn-folder scope. Returns false
     /// when the track isn't stem-burned locally / a file won't open.
     private func wireStems(_ deck: Deck) -> Bool {
-        guard built, let songId = state(deck).loaded?.songId, let inputMixer = inputMixers[deck],
-              let resolved = burns.localStemURLs(forSong: songId) else { return false }
+        guard built, let songId = state(deck).loaded?.songId, let inputMixer = inputMixers[deck] else { return false }
+        // Stem source: a "Pocket DJ" profile item's app-managed stems (no security scope), else the
+        // burned set (scoped). Everything downstream is source-agnostic; profile just feeds release=nil.
+        let urls: [String: URL]
+        let release: (() -> Void)?
+        if ProfileSourceStore.isProfileSongId(songId), let u = profileStemResolve?(songId) {
+            urls = u; release = nil
+        } else if let r = burns.localStemURLs(forSong: songId) {
+            urls = r.urls; release = r.release
+        } else {
+            return false
+        }
         var opened: [String: AVAudioFile] = [:]
-        for (name, url) in resolved.urls {
+        for (name, url) in urls {
             if let f = try? AVAudioFile(forReading: url) { opened[name] = f }
         }
-        guard opened.count == Self.stemNames.count else { resolved.release?(); return false }
+        guard opened.count == Self.stemNames.count else { release?(); return false }
         for (name, file) in opened {
             guard let node = stemPlayers[deck]?[name] else { continue }
             node.stop()
             engine.connect(node, to: inputMixer, format: file.processingFormat)
         }
         stemReleases[deck]?()              // release a prior wiring's scope, hold the new one
-        stemReleases[deck] = resolved.release
+        stemReleases[deck] = release
         stemFiles[deck] = opened
         return true
     }

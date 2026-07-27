@@ -685,6 +685,9 @@ struct PocketDJApp: App {
         // locals are already in scope; profileSource just entered scope above.
         mix.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
         setlistPlayer.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
+        // Stage 7 — a profile item's stems drive the same per-stem DSP as burned stems (Now Playing + Mix).
+        mix.profileStemResolve = { [weak profileSource] id in profileSource?.stemURLs(id: id) }
+        nowPlayingDSP.profileStemResolve = { [weak profileSource] id in profileSource?.stemURLs(id: id) }
         // Stage 5 — auto-file every NEW sampler sample as a "Pocket DJ Samples" profile item (copies
         // its durable audio into the profile store; new-only, no backfill of existing samples). The
         // original's security scope is held across the off-main copy.

@@ -377,6 +377,7 @@ struct RowTransport: View {
     @Environment(PlaybackCoordinator.self) private var coordinator
     @Environment(SettingsStore.self) private var settings
     @Environment(BurnStore.self) private var burns
+    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
     let song: (id: String, title: String, artist: String)
     var startMs: Int?
     /// SongDetail-only: when set AND this song is already stemmed, tapping the stem glyph runs
@@ -400,7 +401,10 @@ struct RowTransport: View {
     private var errored: Bool { rips.jobs[song.id]?.phase == .error }
     private var cached: Bool { rips.cachedURL(song.id) != nil }
     /// This song has been separated into stems (accent-tint the line.3.horizontal glyph).
-    private var stemmed: Bool { rips.isStemmed(song.id) }
+    private var stemmed: Bool {
+        rips.isStemmed(song.id)
+            || (ProfileSourceStore.isProfileSongId(song.id) && profileSource?.stemURLs(id: song.id) != nil)
+    }
     /// The stem job's phase only while actively working (not ready/error/ineligible).
     private var stemJobPhase: RipsStore.StemPhase? {
         // Already stemmed (per the manifest) ⇒ NOT busy, even if a stale collection-stemify job
