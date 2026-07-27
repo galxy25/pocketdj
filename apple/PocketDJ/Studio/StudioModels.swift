@@ -823,6 +823,33 @@ struct StudioCue: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+// MARK: - Cue cross-device sync document
+
+/// Schema version for the SYNCED cue sub-document (`pocketdj-studio.cues.json`). Independent of
+/// `studioSchemaVersion` — this tiny, media-free doc is the ONLY Studio data that leaves the device.
+let studioCueSchemaVersion = 1
+
+/// The cross-device cue mirror: JUST cue points (media-free, `songId`-keyed). Whole-document LWW,
+/// exactly like `EditsDocument` — a returning device's newest copy wins wholesale. NEVER carries
+/// samples / loops / patterns / takes / arrangements: those reference device-local audio blobs that
+/// the CloudSync doctrine deliberately excludes, so only cues sync. Beat grids are NOT here either —
+/// the deck grid is server-sourced (`analysis-<songId>.json` + rips manifest) and already portable.
+/// Per-element lossy decode (`StudioLossyBox`) so one corrupt cue can't sink the whole pull.
+struct StudioCueDoc: Codable, Sendable {
+    var schemaVersion: Int = studioCueSchemaVersion
+    var cues: [StudioCue] = []
+
+    enum CodingKeys: String, CodingKey { case schemaVersion, cues }
+    init(schemaVersion: Int = studioCueSchemaVersion, cues: [StudioCue] = []) {
+        self.schemaVersion = schemaVersion; self.cues = cues
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? 0
+        cues = ((try? c.decode([StudioLossyBox<StudioCue>].self, forKey: .cues)) ?? []).compactMap(\.value)
+    }
+}
+
 // MARK: - Slices (sample partition → performance pads)
 
 /// One slice of a SAMPLE — a start-marker cue point that plays until the NEXT slice's start (by

@@ -28,7 +28,16 @@ final class StudioStoreTests: XCTestCase {
         StudioFolders.appRootOverride = nil
         try? FileManager.default.removeItem(at: root)
         try? FileManager.default.removeItem(at: storeURL)
+        try? FileManager.default.removeItem(at: StudioStore.cuesURL(forStudio: storeURL))
         super.tearDown()
+    }
+
+    // MARK: Cue cross-device sync helpers
+
+    private var mirrorURL: URL { StudioStore.cuesURL(forStudio: storeURL) }
+    private func mirrorDoc() -> StudioCueDoc? {
+        guard let data = try? Data(contentsOf: mirrorURL) else { return nil }
+        return try? JSONDecoder().decode(StudioCueDoc.self, from: data)
     }
 
     // MARK: Helpers
@@ -1431,5 +1440,96 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertFalse(StudioFactory.isStudioId("pkt_abc"))
         XCTAssertFalse(StudioFactory.isStudioId("sfld_abc"))
         XCTAssertFalse(StudioFactory.isStudioId("arrfld_abc"))
+    }
+
+    // MARK: - Cue cross-device sync (the media-free "studio-cues" mirror)
+
+    /// A cue MUTATION writes the media-free mirror (`pocketdj-studio.cues.json`) carrying the cue.
+    func testCueMutationWritesMirror() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.setCue(songId: "sng_1", slot: 0, positionMs: 4200, name: "Drop")
+        let doc = try XCTUnwrap(mirrorDoc())
+        XCTAssertEqual(doc.schemaVersion, studioCueSchemaVersion)
+        XCTAssertEqual(doc.cues.count, 1)
+        XCTAssertEqual(doc.cues.first?.songId, "sng_1")
+        XCTAssertEqual(doc.cues.first?.positionMs, 4200)
+        XCTAssertEqual(doc.cues.first?.name, "Drop")
+    }
+
+    /// The mirror is NEVER written on init or on a NON-cue save — only a cue mutation stamps it.
+    /// This is the LWW-clobber guard: a launch must not stamp a fresh mtime over a returning
+    /// device's cloud cues, and a sample edit must not spuriously push the cue doc.
+    func testMirrorNotWrittenOnInitOrNonCueSave() throws {
+        // Seed a cue, then delete the mirror to simulate a device that has cues in its studio doc
+        // but no mirror yet (pre-feature state).
+        let seed = StudioStore(fileURL: storeURL)
+        seed.setCue(songId: "sng_1", slot: 0, positionMs: 1000)
+        seed.flush()   // force the async studio-doc write so the reopen below sees the cue
+        try FileManager.default.removeItem(at: mirrorURL)
+        XCTAssertNil(mirrorDoc())
+
+        // A fresh store over the same doc: init loads the cue from the studio doc but writes NO mirror.
+        let reopened = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reopened.cues(forSong: "sng_1").count, 1)   // cue still present locally
+        XCTAssertNil(mirrorDoc(), "init must not write the mirror")
+
+        // A non-cue mutation (add a sample) persists the studio doc but still writes NO mirror.
+        reopened.addSample(makeSample("smp_a"))
+        XCTAssertNil(mirrorDoc(), "a non-cue save must not stamp the cue mirror")
+    }
+
+    /// A pulled cloud cue set REPLACES the live cues (whole-doc LWW, like EditsStore) and persists
+    /// into the studio doc — but must NOT re-write the mirror (that would push straight back).
+    func testReloadCuesReplacesLiveAndDoesNotRewriteMirror() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.setCue(songId: "sng_1", slot: 0, positionMs: 1000)   // local cue A + a mirror
+        // Overwrite the mirror with a DIFFERENT cloud cue set (as CloudSync would after a pull).
+        let cloud = StudioCueDoc(cues: [StudioCue(id: "cue_z", songId: "sng_2", slot: 3, positionMs: 8000, name: "Break")])
+        try JSONEncoder().encode(cloud).write(to: mirrorURL, options: .atomic)
+        let beforeMtime = try FileManager.default.attributesOfItem(atPath: mirrorURL.path)[.modificationDate] as? Date
+
+        store.reloadCuesFromDisk()
+
+        // Live cues are wholesale-replaced by the cloud set.
+        XCTAssertEqual(store.cues(forSong: "sng_1").count, 0)
+        XCTAssertEqual(store.cues(forSong: "sng_2").map(\.slot), [3])
+        // No push-back: the mirror file was NOT re-written by the pull (nor by the durability flush).
+        store.flush()   // force the studio-doc write; flush must NOT touch the mirror (cue not dirty)
+        let afterMtime = try FileManager.default.attributesOfItem(atPath: mirrorURL.path)[.modificationDate] as? Date
+        XCTAssertEqual(beforeMtime, afterMtime, "reload must not re-stamp the mirror (push-back loop)")
+        // The studio doc now carries the pulled cues (durability): a fresh reopen sees them.
+        let reopened = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reopened.cues(forSong: "sng_2").first?.positionMs, 8000)
+    }
+
+    /// A pull is durable to the studio doc WITHOUT any flush/background — a hard-kill right after a
+    /// launch/foreground pull must not leave the next init() reading stale pre-pull cues (which would
+    /// later re-push the reverted set and clobber the cloud). Regression for the sync-clobber finding.
+    func testReloadCuesIsDurableWithoutFlush() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.setCue(songId: "sng_1", slot: 0, positionMs: 1000)
+        let cloud = StudioCueDoc(cues: [StudioCue(id: "cue_z", songId: "sng_2", slot: 2, positionMs: 5000)])
+        try JSONEncoder().encode(cloud).write(to: mirrorURL, options: .atomic)
+
+        store.reloadCuesFromDisk()   // NO flush() afterwards — simulates a pull then hard-kill
+
+        let reopened = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reopened.cues(forSong: "sng_2").first?.positionMs, 5000, "pull must be durable pre-flush")
+        XCTAssertEqual(reopened.cues(forSong: "sng_1").count, 0)
+    }
+
+    /// Account-deletion `clearCues()` empties the live cues, wipes them from the studio doc, and
+    /// deletes the mirror file (the profile-source finding-1 lesson: cloud delete ⇒ local wipe).
+    func testClearCuesWipesLiveDocAndMirror() throws {
+        let store = StudioStore(fileURL: storeURL)
+        store.setCue(songId: "sng_1", slot: 0, positionMs: 1000)
+        XCTAssertNotNil(mirrorDoc())
+
+        store.clearCues()
+
+        XCTAssertEqual(store.cues(forSong: "sng_1").count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mirrorURL.path), "mirror file gone")
+        let reopened = StudioStore(fileURL: storeURL)
+        XCTAssertEqual(reopened.cues(forSong: "sng_1").count, 0, "studio doc cues wiped too")
     }
 }

@@ -41,7 +41,7 @@ final class AccountDeletionService {
     static let cloudDocKeys: [String] = [
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
         "collection-activity", "mix-sessions", "playback-session", "mix-decks",
-        "discover-adds", "imported-songs", "profile-source",
+        "discover-adds", "imported-songs", "profile-source", "studio-cues",
     ]
 
     private static let log = Logger(subsystem: "com.levi.pocketdj", category: "account-deletion")
@@ -194,6 +194,7 @@ final class AccountDeletionService {
         mixDeckSession.clear()       // idempotent with mix.ejectAll()'s own clear
         burns.removeAllBurns()
         for family in StudioFamily.allCases { studio.deleteAll(family: family) }
+        studio.clearCues()   // the synced "studio-cues" doc — deleting the cloud copy must wipe local too
 
         // ── 4) CLEAR THE KEYCHAIN (streaming account links) ──────────────────
         // Each provider's `logout()` severs the link and forgets its stored token — for a
