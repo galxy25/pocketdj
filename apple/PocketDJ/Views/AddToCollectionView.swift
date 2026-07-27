@@ -86,13 +86,15 @@ struct AddToCollectionView: View {
                 if !recentTargets.isEmpty {
                     Section("Recent") {
                         ForEach(Array(recentTargets.enumerated()), id: \.offset) { idx, target in
-                            Button { addTo(target); dismiss() } label: {
+                            Button { toggleTarget(target) } label: {
                                 HStack {
                                     Image(systemName: target.kind == .pocket ? "rectangle.stack" : "music.note.list")
                                         .foregroundStyle(Theme.accent2)
                                     Text(collections.lastTargetLabel(target) ?? "").foregroundStyle(Theme.fg)
                                     Spacer()
-                                    Image(systemName: "arrow.uturn.left").foregroundStyle(Theme.fgDim)
+                                    // Member ⇒ checkmark (tap removes); not ⇒ the re-add arrow (tap adds).
+                                    Image(systemName: isMember(target) ? "checkmark" : "arrow.uturn.left")
+                                        .foregroundStyle(isMember(target) ? Theme.accent : Theme.fgDim)
                                 }
                             }
                             .accessibilityIdentifier("recent-add-\(idx)")
@@ -100,34 +102,44 @@ struct AddToCollectionView: View {
                     }
                 }
 
-                Section("Pockets") {
+                Section {
                     ForEach(collections.pockets) { pocket in
-                        Button { addTo(AddTarget(kind: .pocket, id: pocket.id)); dismiss() } label: {
+                        Button { togglePocket(pocket) } label: {
                             HStack {
                                 Label(pocket.name, systemImage: "rectangle.stack")
                                 Spacer()
                                 if inPocket(pocket) { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
                             }
                         }
+                        .accessibilityIdentifier("add-pocket-\(pocket.id)")
                     }
                     newRow("New pocket", text: $newPocket) { name in
                         let p = collections.createPocket(name)
-                        addTo(AddTarget(kind: .pocket, id: p.id)); dismiss()
+                        addTo(AddTarget(kind: .pocket, id: p.id))
                     }
+                } header: {
+                    Text("Pockets")
+                } footer: {
+                    Text("Tap to add or remove — an item can live in several.")
                 }
 
                 Section {
                     ForEach(collections.playlists) { pl in
-                        // Tapping the playlist always lands in its default chapter
-                        // (sequences[0]) — no need to pick. Extra chapters are offered
-                        // below for when you do want a specific one.
-                        Button {
-                            addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences.first?.nodeId)); dismiss()
-                        } label: { Label(pl.name, systemImage: "music.note.list") }
+                        // Tap toggles WHOLE-playlist membership: add lands in the default chapter
+                        // (sequences[0]), remove clears the item from every chapter. The per-chapter
+                        // rows below add to a specific chapter when you want one.
+                        Button { togglePlaylist(pl) } label: {
+                            HStack {
+                                Label(pl.name, systemImage: "music.note.list")
+                                Spacer()
+                                if inPlaylist(pl) { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
+                            }
+                        }
+                        .accessibilityIdentifier("add-playlist-\(pl.id)")
                         if pl.sequences.count > 1 {
                             ForEach(pl.sequences) { seq in
                                 Button {
-                                    addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: seq.nodeId)); dismiss()
+                                    addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: seq.nodeId))
                                 } label: {
                                     Label(seq.name ?? "Chapter", systemImage: "chevron.right")
                                         .font(.caption).foregroundStyle(Theme.fgDim).padding(.leading, 20)
@@ -137,12 +149,12 @@ struct AddToCollectionView: View {
                     }
                     newRow("New playlist", text: $newPlaylist) { name in
                         let p = collections.createPlaylist(name)
-                        addTo(AddTarget(kind: .playlist, id: p.id, sequenceId: p.sequences.first?.nodeId)); dismiss()
+                        addTo(AddTarget(kind: .playlist, id: p.id, sequenceId: p.sequences.first?.nodeId))
                     }
                 } header: {
                     Text("Playlists")
                 } footer: {
-                    Text("Tapping a playlist adds to its default chapter.")
+                    Text("Tap to add or remove. Chapters add to a specific one.")
                 }
 
                 sourcePlaylistsSection
@@ -305,6 +317,56 @@ struct AddToCollectionView: View {
         case .song(let s): return p.songIds.contains(s)
         case .album(let a): return p.albumIds.contains(a)
         case .studio(let id, _): return p.songIds.contains(id)   // rides songIds (see addTo)
+        }
+    }
+
+    // MARK: - Multi-select toggle (add ⇄ remove across many collections, without dismissing)
+
+    /// The song/studio id being toggled (studio ids ride the song plumbing — see `addTo`); nil
+    /// for an album item.
+    private var toggleSongId: String? {
+        switch item { case .song(let s): return s; case .studio(let id, _): return id; case .album: return nil }
+    }
+    private var toggleAlbumId: String? { if case .album(let a) = item { return a }; return nil }
+
+    /// Whole-playlist membership of the current item (present in ANY chapter).
+    private func inPlaylist(_ pl: Playlist) -> Bool {
+        if let s = toggleSongId { return collections.playlist(pl.id, contains: s) }
+        if let a = toggleAlbumId { return collections.playlist(pl.id, containsAlbum: a) }
+        return false
+    }
+
+    /// Tap a POCKET: add if absent, remove if present. Never dismisses (multi-select).
+    private func togglePocket(_ p: Pocket) {
+        if inPocket(p) { removeFromPocket(p.id) } else { addTo(AddTarget(kind: .pocket, id: p.id)) }
+    }
+    /// Tap a PLAYLIST: toggle whole-playlist membership — add lands in the default chapter, remove
+    /// clears the item from EVERY chapter. Never dismisses.
+    private func togglePlaylist(_ pl: Playlist) {
+        if inPlaylist(pl) { removeFromPlaylist(pl.id) }
+        else { addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences.first?.nodeId)) }
+    }
+    private func removeFromPocket(_ id: String) {
+        if let s = toggleSongId { collections.removeSong(s, fromPocket: id) }
+        else if let a = toggleAlbumId { collections.removeAlbum(a, fromPocket: id) }
+    }
+    private func removeFromPlaylist(_ id: String) {
+        if let s = toggleSongId { collections.removeSong(s, fromPlaylist: id) }
+        else if let a = toggleAlbumId { collections.removeAlbum(a, fromPlaylist: id) }
+    }
+
+    /// A Recent quick-target's current membership + its toggle (kind-dispatched).
+    private func isMember(_ target: AddTarget) -> Bool {
+        switch target.kind {
+        case .pocket: return collections.pocket(target.id).map(inPocket) ?? false
+        case .playlist: return collections.playlist(target.id).map(inPlaylist) ?? false
+        }
+    }
+    private func toggleTarget(_ target: AddTarget) {
+        guard isMember(target) else { addTo(target); return }
+        switch target.kind {
+        case .pocket: removeFromPocket(target.id)
+        case .playlist: removeFromPlaylist(target.id)
         }
     }
 

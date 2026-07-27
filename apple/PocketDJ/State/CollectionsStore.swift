@@ -571,6 +571,61 @@ final class CollectionsStore {
         return out
     }
 
+    /// DIRECT album membership test (the `.album`-node twin of `playlist(_:contains:)`).
+    func playlist(_ id: String, containsAlbum albumId: String) -> Bool {
+        guard let pl = playlist(id) else { return false }
+        return albumIdsInNodes(pl.sequences).contains(albumId)
+    }
+
+    private func albumIdsInNodes(_ nodes: [PlaylistNode]) -> Set<String> {
+        var out = Set<String>()
+        func walk(_ ns: [PlaylistNode]) {
+            for n in ns {
+                if n.kind == .album, let id = n.albumId { out.insert(id) }
+                if let kids = n.children { walk(kids) }
+            }
+        }
+        walk(nodes)
+        return out
+    }
+
+    /// Toggle-OFF for the multi-select Add sheet: remove EVERY `.song` node for `songId` from a
+    /// playlist (all chapters + nested sub-chapters). No-op when absent; one remove activity.
+    func removeSong(_ songId: String, fromPlaylist id: String) {
+        guard playlist(id, contains: songId) else { return }
+        let name = playlist(id)?.name
+        mutatePlaylist(id) { pl in
+            for i in pl.sequences.indices {
+                var kids = pl.sequences[i].children ?? []
+                CollectionsStore.pruneNodes(&kids) { $0.kind == .song && $0.songId == songId }
+                pl.sequences[i].children = kids
+            }
+        }
+        emitRemoveActivity(itemId: songId, collectionId: id, kind: .playlist, name: name)
+    }
+
+    /// Toggle-OFF for an `.album` node (all chapters). No-op when absent; one remove activity.
+    func removeAlbum(_ albumId: String, fromPlaylist id: String) {
+        guard playlist(id, containsAlbum: albumId) else { return }
+        let name = playlist(id)?.name
+        mutatePlaylist(id) { pl in
+            for i in pl.sequences.indices {
+                var kids = pl.sequences[i].children ?? []
+                CollectionsStore.pruneNodes(&kids) { $0.kind == .album && $0.albumId == albumId }
+                pl.sequences[i].children = kids
+            }
+        }
+        emitRemoveActivity(itemId: albumId, collectionId: id, kind: .playlist, name: name)
+    }
+
+    /// Recursively drop every node matching `pred`, recursing into surviving nodes' children.
+    private static func pruneNodes(_ nodes: inout [PlaylistNode], where pred: (PlaylistNode) -> Bool) {
+        nodes.removeAll(where: pred)
+        for i in nodes.indices {
+            if var kids = nodes[i].children { pruneNodes(&kids, where: pred); nodes[i].children = kids }
+        }
+    }
+
     // MARK: Convert playlist → pocket
 
     /// Convert an editable playlist TEMPLATE into a NEW, reusable Pocket. Its song /

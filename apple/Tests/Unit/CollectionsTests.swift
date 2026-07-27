@@ -139,6 +139,30 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(s.pocket(p.id)?.name, "Funk")
     }
 
+    /// Multi-select Add sheet helpers: playlist membership (song + album) + toggle-off removal,
+    /// no-op when absent, and studio ids riding the song plumbing. Mirrors the sheet's add ⇄ remove.
+    func testPlaylistToggleMembershipAndRemove() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        s.addSong("sng_1", toPlaylist: pl.id)
+        s.addAlbum("alb_1", toPlaylist: pl.id)
+        XCTAssertTrue(s.playlist(pl.id, contains: "sng_1"))
+        XCTAssertTrue(s.playlist(pl.id, containsAlbum: "alb_1"))
+        XCTAssertFalse(s.playlist(pl.id, contains: "sng_2"))
+
+        s.removeSong("sng_1", fromPlaylist: pl.id)
+        XCTAssertFalse(s.playlist(pl.id, contains: "sng_1"))
+        s.removeAlbum("alb_1", fromPlaylist: pl.id)
+        XCTAssertFalse(s.playlist(pl.id, containsAlbum: "alb_1"))
+        s.removeSong("sng_ghost", fromPlaylist: pl.id)   // absent ⇒ no-op, no crash
+
+        // Studio ids ride addSong/removeSong verbatim (spec §8).
+        s.addSong("lp_b", toPlaylist: pl.id)
+        XCTAssertTrue(s.playlist(pl.id, contains: "lp_b"))
+        s.removeSong("lp_b", fromPlaylist: pl.id)
+        XCTAssertFalse(s.playlist(pl.id, contains: "lp_b"))
+    }
+
     func testNestingIsCycleGuarded() {
         let s = store()
         let a = s.createPocket("A"), b = s.createPocket("B")
