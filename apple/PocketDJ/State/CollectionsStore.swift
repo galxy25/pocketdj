@@ -1041,8 +1041,11 @@ final class CollectionsStore {
         guard let enqueue = enqueueSourceWriteBack,
               let plId = sourcePlaylistId,
               PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return .notLinked }
-        // Only CATALOG songs can be written back — a studio performance item isn't in `songsById`,
-        // so this also excludes samples/loops/instrumentals by construction.
+        // Only CATALOG songs can be written back. Studio performance items aren't in `songsById`
+        // (excluded by construction), but "Pocket DJ" PROFILE items ARE full songsById citizens —
+        // device-local custom audio has NO Apple Music counterpart, so fence it EXPLICITLY, else a
+        // title/artist match could push a WRONG track into the user's real Apple Music playlist.
+        guard !ProfileSourceStore.isProfileSongId(songId) else { return .notCatalogSong }
         guard let song = app?.songsById[songId] else { return .notCatalogSong }
         let amId = (song.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
         let title = song.name.trimmingCharacters(in: .whitespaces)
@@ -1212,14 +1215,15 @@ final class CollectionsStore {
     /// otherwise leak them into every rip/burn/CSV consumer of this method.
     func songIds(forPlaylist id: String) -> [String] {
         guard let pl = playlist(id) else { return [] }
-        return catalog().songs(inPlaylist: pl).map { $0.id }.filter { !StudioFactory.isStudioId($0) }
+        return catalog().songs(inPlaylist: pl).map { $0.id }
+            .filter { !StudioFactory.isStudioId($0) && !ProfileSourceStore.isProfileSongId($0) }
     }
     /// Every resolved song id of a pocket DAG (own + album tracks + nested, cycle-guarded).
     /// CATALOG-ONLY — same studio strip as `songIds(forPlaylist:)`, same reason.
     func songIds(forPocket id: String) -> [String] {
         var seen = Set<String>()
         return catalog().resolvePocketSongs(id, seen: &seen).map { $0.id }
-            .filter { !StudioFactory.isStudioId($0) }
+            .filter { !StudioFactory.isStudioId($0) && !ProfileSourceStore.isProfileSongId($0) }
     }
     /// Every audio track's song id of a frozen setlist (text cues excluded). STUDIO rows
     /// are excluded exactly like text cues: this raw-passthrough resolver feeds the
@@ -1229,7 +1233,8 @@ final class CollectionsStore {
     func songIds(forSetlist id: String) -> [String] {
         guard let sl = setlist(id) else { return [] }
         return sl.tracks
-            .filter { $0.isText != true && !$0.songId.isEmpty && !StudioFactory.isStudioId($0.songId) }
+            .filter { $0.isText != true && !$0.songId.isEmpty && !StudioFactory.isStudioId($0.songId)
+                      && !ProfileSourceStore.isProfileSongId($0.songId) }
             .map { $0.songId }
     }
     /// A read-only "From your sources" playlist's song ids (already a flat list).
@@ -1285,7 +1290,10 @@ final class CollectionsStore {
     /// Studio ids drop here too (`songsById` never contains them) — a third fence behind
     /// the `songIds(...)` strip and the RipsStore/rip-server guards.
     func burnTuples(_ songIds: [String]) -> [(id: String, title: String, artist: String)] {
-        songIds.compactMap { id in app?.songsById[id].map { (id: id, title: $0.name, artist: $0.artist) } }
+        // Profile ("Pocket DJ") ids ARE in songsById (unlike studio ids), so skip them here too —
+        // a device-local custom item must never be named into a BURN sidecar (a fourth fence).
+        songIds.filter { !ProfileSourceStore.isProfileSongId($0) }
+            .compactMap { id in app?.songsById[id].map { (id: id, title: $0.name, artist: $0.artist) } }
     }
 
     // MARK: Setlists (Play → realize → freeze)

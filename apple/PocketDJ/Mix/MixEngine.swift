@@ -318,6 +318,10 @@ final class MixEngine {
     /// The item's beat grid + key for the LoadedTrack (bpm/firstDownbeat/beatsMs/camelot). The grid
     /// is derived from the item's KNOWN bpm; the key is on-device detected.
     @ObservationIgnored var studioMixInfo: ((String) -> (bpm: Double?, firstDownbeatMs: Int, beatsMs: [Int]?, camelot: String?)?)?
+    /// PROFILE ("Pocket DJ") seam (wired at app init to `ProfileSourceStore.localURLForPlayback`):
+    /// resolve a `pdj_` id to its device-local original. `release` is always nil (app-managed audio,
+    /// no security scope). nil ⇒ absent local file ⇒ the deck load is skipped.
+    @ObservationIgnored var profileResolve: ((String) -> (url: URL, release: (() -> Void)?, title: String, lengthMs: Int)?)?
 
     // MARK: Private — graph
 
@@ -877,6 +881,19 @@ final class MixEngine {
                                        albumId: nil,
                                        gridBpm: info?.bpm, firstDownbeatMs: info?.firstDownbeatMs,
                                        steady: true, beatsMs: info?.beatsMs, downbeatsMs: nil),
+                     on: deck)
+            return
+        }
+        // PROFILE ("Pocket DJ") items: device-local original via the profileResolve seam (no
+        // BurnStore file). albumId rides through for cover art; the constant beat grid comes from
+        // the item's known bpm. Stems are NOT wired here (Stage 7) — a fresh load resets stem state,
+        // so this arm must not pre-set any. `pdj_` is outside studioPrefixes (no collision).
+        if ProfileSourceStore.isProfileSongId(songId), let resolve = profileResolve, let res = resolve(songId) {
+            loadFile(res.url, release: res.release, startMs: nil, lengthMs: nil,
+                     meta: LoadedTrack(songId: songId, title: title, artist: artist,
+                                       bpm: bpm, camelot: camelot, key: key, albumId: albumId,
+                                       gridBpm: bpm, firstDownbeatMs: 0,
+                                       steady: true, beatsMs: nil, downbeatsMs: nil),
                      on: deck)
             return
         }

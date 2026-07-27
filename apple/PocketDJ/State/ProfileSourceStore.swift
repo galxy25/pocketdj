@@ -36,6 +36,14 @@ final class ProfileSourceStore {
     nonisolated static let samplesAlbumName = "Pocket DJ Samples"
     nonisolated static let demuxesAlbumName = "Pocket DJ Demuxes"
 
+    /// Item id namespace. A fresh `pdj_…` per item — NEVER a source song's id (a demux of a
+    /// catalog song never shadows the original). The fence rip/CSV/burn key on. NOTE the trailing
+    /// underscore: `pdjalb_…` (the default-album ids) does NOT match, so albums are never fenced
+    /// as songs. `pdj_` is deliberately OUTSIDE `StudioFactory.studioPrefixes` — profile items are
+    /// full `songsById` catalog citizens, resolved via the normal catalog + the profileResolve lane.
+    nonisolated static let songIdPrefix = "pdj_"
+    nonisolated static func isProfileSongId(_ id: String) -> Bool { id.hasPrefix(songIdPrefix) }
+
     /// Which default album an entry files into.
     enum Kind: String, Codable, Sendable { case sample, demux
         var albumId: String { self == .sample ? samplesAlbumId : demuxesAlbumId }

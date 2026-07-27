@@ -62,7 +62,8 @@ enum PortableItems {
         func walk(_ nodes: [PlaylistNode]) {
             for n in nodes {
                 switch n.kind {
-                case .song: if let id = n.songId, !StudioFactory.isStudioId(id) { songIds.insert(id) }
+                case .song: if let id = n.songId, !StudioFactory.isStudioId(id),
+                               !ProfileSourceStore.isProfileSongId(id) { songIds.insert(id) }
                 case .album: if let id = n.albumId { albumIds.insert(id) }
                 case .sequence: walk(n.children ?? [])
                 default: break
@@ -83,7 +84,7 @@ enum PortableItems {
 
     private static func collect(pockets: [Pocket], into songIds: inout Set<String>, albums albumIds: inout Set<String>) {
         for p in pockets {
-            for id in p.songIds where !StudioFactory.isStudioId(id) { songIds.insert(id) }
+            for id in p.songIds where !StudioFactory.isStudioId(id) && !ProfileSourceStore.isProfileSongId(id) { songIds.insert(id) }
             for id in p.albumIds { albumIds.insert(id) }
         }
     }

@@ -680,6 +680,11 @@ struct PocketDJApp: App {
         profileSource.onNameChanged = { [weak app] in Task { await app?.reload() } }
         app.profileSource = profileSource
         _profileSource = State(initialValue: profileSource)
+        // Stage 3 — the profileResolve playback seams: a `pdj_` item plays from its device-local
+        // original in BOTH Now Playing (setlistPlayer) and the Mix decks (mix). `mix`/`setlistPlayer`
+        // locals are already in scope; profileSource just entered scope above.
+        mix.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
+        setlistPlayer.profileResolve = { [weak profileSource] id in profileSource?.localURLForPlayback(id: id) }
         profile.onNameApplied = { [weak settings, weak collections, weak profileSource] name in
             settings?.pocketDJName = name
             settings?.persist()
