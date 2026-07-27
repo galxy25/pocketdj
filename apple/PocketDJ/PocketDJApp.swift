@@ -742,7 +742,13 @@ struct PocketDJApp: App {
         // calls read them (syncAtLaunch is awaited first).
         cloudSync.register("profile", fileURL: profile.syncFileURL) { [weak profile] in profile?.reloadFromDisk() }
         cloudSync.register("collections", fileURL: collections.syncFileURL) { [weak collections] in collections?.reloadFromDisk() }
-        cloudSync.register("edits", fileURL: edits.syncFileURL) { [weak edits] in edits?.reloadFromDisk() }
+        cloudSync.register("edits", fileURL: edits.syncFileURL) { [weak edits, weak app] in
+            edits?.reloadFromDisk()
+            // Re-overlay a cross-device metadata edit into the LIVE catalog NOW (a title/artist/album
+            // edit — incl. on a Pocket DJ item — otherwise only shows on the next catalog build).
+            // applyEdits only READS the edits doc, so this can't push back up (no LWW loop).
+            app?.applyEdits()
+        }
         cloudSync.register("favorites", fileURL: favorites.syncFileURL) { [weak favorites] in
             favorites?.reloadFromDisk()   // no onChanged on reload — a pull must not push back up
         }
