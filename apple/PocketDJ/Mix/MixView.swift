@@ -891,15 +891,47 @@ private struct DeckView: View {
     @ViewBuilder private var cueJumpRow: some View {
         if let songId = loaded?.songId {
             let cues = studio.cues(forSong: songId)
-            if !cues.isEmpty {
-                // NO accessibilityIdentifier on this grid: an id on a button *container* merges the
-                // child cue buttons into one a11y element, hiding each `deck-X-cue-N` id/label (the
-                // toolbar-overflow lesson). The per-cue ids below are the targets.
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(cues) { cue in cueButton(cue) }
+            VStack(spacing: 4) {
+                // Drop a cue at the LIVE playhead — settable DURING a mix (not only in Performance ▸
+                // Cues). Works for any loaded track, including "Pocket DJ" profile items.
+                HStack(spacing: 6) { dropCueButton(songId); Spacer() }
+                if !cues.isEmpty {
+                    // NO accessibilityIdentifier on this grid: an id on a button *container* merges the
+                    // child cue buttons into one a11y element, hiding each `deck-X-cue-N` id/label (the
+                    // toolbar-overflow lesson). The per-cue ids below are the targets.
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                        ForEach(cues) { cue in cueButton(cue) }
+                    }
                 }
             }
         }
+    }
+
+    /// The next free cue slot for a song (0..<maxSlots), or nil when all 8 are taken.
+    private func nextFreeCueSlot(_ songId: String) -> Int? {
+        let used = Set(studio.cues(forSong: songId).map(\.slot))
+        return (0..<StudioCue.maxSlots).first { !used.contains($0) }
+    }
+
+    /// Drop a cue at the deck's LIVE playhead into the next free slot. Disabled once all 8 exist.
+    /// `StudioCue.positionMs` is song-relative from 0:00 — exactly what `truePlayhead` reports.
+    @ViewBuilder private func dropCueButton(_ songId: String) -> some View {
+        let free = nextFreeCueSlot(songId)
+        Button {
+            guard let slot = free else { return }
+            let ms = Int(((engine.truePlayhead(deck) ?? engine.position(deck)) * 1000).rounded())
+            _ = studio.setCue(songId: songId, slot: slot, positionMs: max(0, ms))
+        } label: {
+            Label("Cue", systemImage: "flag.fill")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Theme.accent2.opacity(0.18), in: Capsule())
+                .foregroundStyle(Theme.accent2)
+        }
+        .buttonStyle(.plain)
+        .disabled(free == nil)
+        .help(free == nil ? "All 8 cue slots are set" : "Drop a cue at the current playhead")
+        .accessibilityIdentifier("\(a11y)-drop-cue")
     }
 
     private func cueButton(_ cue: StudioCue) -> some View {
