@@ -77,6 +77,7 @@ private struct SequencerListView: View {
                     Text("A pattern is one bar of 16 steps over your samples and loops — program hits, play it in a loop, bounce it for offline.")
                 } actions: {
                     newPatternButton
+                    newFolderButton   // pre-create a folder before any pattern exists (Loops/Takes parity)
                 }
             } else {
                 VStack(spacing: 0) {

@@ -85,6 +85,28 @@ final class ProfileAudioStoreTests: XCTestCase {
         XCTAssertFalse(s.hasLocalAsset(e.songId))
     }
 
+    /// Account deletion (`AccountDeletionService` step 3) must leave NOTHING behind: `clear()`
+    /// wipes the JSON metadata AND the whole `profile-audio/` tree (originals + stems), so a
+    /// re-created account can't re-surface the deleted user's custom audio. Regression for the
+    /// pre-ship review's major finding.
+    func testClearWipesJSONAndAllAudio() async throws {
+        let jsonURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-src-\(UUID().uuidString).json")
+        let s = ProfileSourceStore(fileURL: jsonURL)
+        let stems = Dictionary(uniqueKeysWithValues: StemPlayer.stems.map { ($0, srcFile($0)) })
+        let made = await s.ingest(kind: .demux, title: "Full", originalURL: srcFile("orig"), stems: stems)
+        _ = try XCTUnwrap(made)
+        let audioDir = try ProfileAudioFolders.dir()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: jsonURL.path))   // JSON written
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioDir.path))  // original + stems on disk
+
+        s.clear()
+
+        XCTAssertTrue(s.songs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: jsonURL.path))   // JSON gone
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioDir.path))  // profile-audio/ gone (originals + stems)
+    }
+
     /// The fence predicate: pdj_ song ids match; the pdjalb_ album ids and catalog ids do NOT.
     func testIsProfileSongIdVsAlbumId() {
         XCTAssertTrue(ProfileSourceStore.isProfileSongId("pdj_abc"))

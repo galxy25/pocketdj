@@ -143,10 +143,18 @@ final class ProfileSourceStore {
         if songs.count != before { save() }
     }
 
-    /// Wipe every entry and delete the on-disk document (the ImportedSongsStore.clear contract).
+    /// Wipe every entry and delete the on-disk document AND the app-managed audio it points at
+    /// (originals + stems under `profile-audio/`). Unlike a plain `ImportedSongsStore.clear`, this
+    /// store OWNS durable media, so — like `BurnStore.removeAllBurns` / `StudioStore.deleteAll` —
+    /// clearing it must purge that media too, or an account deletion would strand every custom
+    /// original/stem on disk (and the surviving JSON would re-surface them on next launch). Used by
+    /// `AccountDeletionService` step 3.
     func clear() {
         songs = []
         try? FileManager.default.removeItem(at: fileURL)
+        if let audio = try? ProfileAudioFolders.dir() {
+            try? FileManager.default.removeItem(at: audio)
+        }
     }
 
     /// Re-decode after CloudSyncService pulled a newer copy, surfacing NEW entries through

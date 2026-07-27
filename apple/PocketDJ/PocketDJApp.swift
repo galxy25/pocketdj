@@ -794,7 +794,7 @@ struct PocketDJApp: App {
             collections: collections, favorites: favorites, playStats: playStats,
             playHistory: playHistory, collectionActivity: collectionActivity,
             edits: edits, discoverAdds: discoverAdds,
-            importedSongs: importedSongs, playlistWriteBack: playlistWriteBack,
+            importedSongs: importedSongs, profileSource: profileSource, playlistWriteBack: playlistWriteBack,
             mixSessions: mixSessions, playbackSession: playbackSession,
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
             streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)
