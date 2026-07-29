@@ -1,46 +1,53 @@
-// PocketDJ Apple Music playlist-sync Lambda — the server half of WS2 (bidirectional
-// PocketDJ <-> Apple Music library-playlist sync), replacing the iMac/Tailscale path with an
-// on-demand AWS endpoint (API Gateway HTTP API -> this Lambda).
+// PocketDJ Apple Music playlist-sync Lambda — the server half of WS2 (bidirectional PocketDJ <->
+// Apple Music library-playlist sync), replacing the iMac/Tailscale path with an on-demand AWS
+// endpoint (API Gateway HTTP API -> this Lambda).
 //
-// ── The two-token model ────────────────────────────────────────────────────────────────────────
-// A per-user Apple Music library call needs BOTH:
-//   (1) an app-wide DEVELOPER token — an ES256 JWT this Lambda mints from the MusicKit .p8
-//       (kid 9JRN4H68X4 / team EC27UF79GL), lifted verbatim from scripts/rip-server.mjs. The .p8
-//       and the app bearer token live in AWS Secrets Manager (SECRET_ID) — NEVER in the artifact.
-//   (2) a per-user MUSIC-USER-TOKEN — minted on-device by the app via MusicKit's
-//       MusicUserTokenProvider and sent with each request. This Lambda NEVER stores it (per-call).
-// The Music-User-Token is the real per-user gate: without a valid one Apple rejects every /v1/me
-// call, and a token only ever affects its own owner's library. The app bearer token is
-// defence-in-depth (stops the endpoint being a free developer-token oracle).
+// ── ASYNC JOB + POLL (why) ──────────────────────────────────────────────────────────────────────
+// Pulling a real library (100+ playlists, each needing a tracks fetch) is >100 sequential Apple
+// Music calls and easily exceeds API Gateway's HARD 30s integration timeout -> a 503 to the client.
+// So the API-facing calls are FAST: POST /pull|/push writes a "pending" job to S3, ASYNC self-invokes
+// the Lambda (InvocationType Event) to do the long work, and returns { jobId } immediately. The
+// worker invocation (no API Gateway timeout — bounded only by the Lambda timeout, 300s) does the
+// full pull/push and writes the result to S3. The client POLLS GET /job/{jobId} until done.
 //
-// ── What the server can and can't do (Apple Music Web API, verified 2026) ───────────────────────
-// Library playlists are CREATE + APPEND only: list, read tracks, create (with an ordered initial
-// track list), append tracks. There is NO server-side remove or reorder — those happen on-device
-// via MusicKit MusicLibrary.edit (the app's hybrid push). So this Lambda does: pull (list+read),
-// create, and append. Reorder/remove are the client's job.
+// ── The two-token model ─────────────────────────────────────────────────────────────────────────
+// A per-user Apple Music library call needs an app-wide DEVELOPER token (ES256 JWT this Lambda mints
+// from the MusicKit .p8 in Secrets Manager) AND a per-user MUSIC-USER-TOKEN (minted on-device, sent
+// per request, NEVER stored — it rides in the job payload only for the worker's lifetime). The
+// Music-User-Token is the per-user gate: Apple rejects any /v1/me call without a valid one.
 //
-// Routes (all POST unless noted; JSON in/out; API Gateway HTTP API $default catch-all -> rawPath):
-//   GET  /musickit-token          -> { token, expiresAt }         (developer token for the client)
-//   POST /pull   { musicUserToken } -> { storefront, playlists: [{ id, name, canEdit, trackCatalogIds, trackTitles }] }
-//   POST /push   { musicUserToken, playlists: [{ name, description?, trackCatalogIds: [] }] }
-//                                  -> { created: [{ name, id }], errors: [{ name, error }] }
-//   GET  /health                  -> { ok: true }
+// ── What the server can/can't do (Apple Music Web API) ──────────────────────────────────────────
+// Library playlists are CREATE + APPEND only. Reorder/remove happen on-device (MusicLibrary.edit).
 //
-// Dependency-free: node20 runtime globals only (fetch, crypto, SecretsManager via a signed fetch is
-// avoided — we use the AWS SDK v3 that ships in the runtime).
+// Routes (API Gateway HTTP API $default catch-all -> rawPath):
+//   GET  /musickit-token          -> { token, expiresAt }               (developer token for the client)
+//   POST /pull   { musicUserToken } -> 202 { jobId }
+//   POST /push   { musicUserToken, playlists:[{name,description?,trackCatalogIds}] } -> 202 { jobId }
+//   GET  /job/{jobId}             -> { status:'pending'|'done'|'error', result?, error? }
+//   GET  /health                  -> { ok:true }
+//
+// Result store: a PRIVATE S3 bucket (JOBS_BUCKET), key am-sync-jobs/<jobId>.json, read only via this
+// Lambda (GET /job) so the user's playlist data never leaves through a public object. jobIds are
+// UUIDs (unguessable); a lifecycle rule expires the prefix after a day.
 
-import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
+import { createPrivateKey, sign as cryptoSign, randomUUID } from 'node:crypto';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 
 const AM = 'https://api.music.apple.com';
 const SECRET_ID = process.env.SECRET_ID || 'pocketdj/am-playlist-sync';
 const REGION = process.env.AWS_REGION || 'us-west-2';
+const JOBS_BUCKET = process.env.JOBS_BUCKET;
+const SELF_FUNCTION = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 const sm = new SecretsManagerClient({ region: REGION });
+const s3 = new S3Client({ region: REGION });
+const lambda = new LambdaClient({ region: REGION });
 
 // ── Secret + developer-token caching (survives warm invocations) ────────────────────────────────
-let _secret = null;                       // { p8, kid, team, appToken, ttlSec }
-let _devToken = null;                      // { token, exp }
+let _secret = null;
+let _devToken = null;
 
 async function loadSecret() {
   if (_secret) return _secret;
@@ -55,8 +62,6 @@ function b64url(input) {
   return Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
-// ES256 developer token — identical algorithm to rip-server.mjs mintMusicKitToken (raw r‖s / JOSE
-// signature via dsaEncoding 'ieee-p1363'; a DER signature 401s at Apple).
 async function mintDeveloperToken() {
   const now = Math.floor(Date.now() / 1000);
   if (_devToken && _devToken.exp - now > 7 * 24 * 3600) return _devToken;
@@ -93,7 +98,6 @@ async function getStorefront(devToken, userToken) {
   return r?.data?.[0]?.id || 'us';
 }
 
-// ── PULL: read the user's library playlists + their tracks (catalog ids where available) ─────────
 async function pull(devToken, userToken) {
   const storefront = await getStorefront(devToken, userToken);
   const playlists = [];
@@ -130,7 +134,6 @@ async function pullTracks(devToken, userToken, playlistId) {
     }
     for (const t of page?.data || []) {
       const attrs = t.attributes || {};
-      // A library-song exposes its catalog id via playParams.catalogId (streamable) when present.
       const catalogId = attrs.playParams?.catalogId || attrs.playParams?.id || null;
       out.push({ catalogId, title: attrs.name || '' });
     }
@@ -139,7 +142,6 @@ async function pullTracks(devToken, userToken, playlistId) {
   return out;
 }
 
-// ── PUSH: create library playlists with their ordered catalog tracks ─────────────────────────────
 async function push(devToken, userToken, incoming) {
   const created = [];
   const errors = [];
@@ -147,7 +149,7 @@ async function push(devToken, userToken, incoming) {
     try {
       const trackData = (pl.trackCatalogIds || [])
         .filter(Boolean)
-        .map((id) => ({ id: String(id), type: 'songs' })); // catalog id + type songs (also adds to library)
+        .map((id) => ({ id: String(id), type: 'songs' }));
       const body = {
         attributes: { name: pl.name, ...(pl.description ? { description: pl.description } : {}) },
         ...(trackData.length ? { relationships: { tracks: { data: trackData } } } : {}),
@@ -161,11 +163,24 @@ async function push(devToken, userToken, incoming) {
   return { created, errors };
 }
 
+// ── Job store (private S3) ──────────────────────────────────────────────────────────────────────
+async function writeJob(jobId, obj) {
+  await s3.send(new PutObjectCommand({
+    Bucket: JOBS_BUCKET, Key: `am-sync-jobs/${jobId}.json`,
+    Body: JSON.stringify(obj), ContentType: 'application/json',
+  }));
+}
+async function readJob(jobId) {
+  try {
+    const out = await s3.send(new GetObjectCommand({ Bucket: JOBS_BUCKET, Key: `am-sync-jobs/${jobId}.json` }));
+    return JSON.parse(await out.Body.transformToString());
+  } catch { return null; }
+}
+
 // ── HTTP plumbing ───────────────────────────────────────────────────────────────────────────────
 function reply(status, obj) {
   return { statusCode: status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) };
 }
-
 function bearerOf(event) {
   const h = event.headers || {};
   const raw = h.authorization || h.Authorization || '';
@@ -173,32 +188,61 @@ function bearerOf(event) {
 }
 
 export async function handler(event) {
+  // ── WORKER MODE (async self-invoke): do the long pull/push, write the result to S3. No API
+  // Gateway timeout applies here — only the Lambda timeout (raised for this path).
+  if (event && event.worker) {
+    const { jobId, op, musicUserToken, playlists } = event;
+    try {
+      const dev = (await mintDeveloperToken()).token;
+      const result = op === 'pull' ? await pull(dev, musicUserToken) : await push(dev, musicUserToken, playlists);
+      await writeJob(jobId, { status: 'done', result });
+    } catch (e) {
+      await writeJob(jobId, { status: 'error', error: e.message, detail: e.body ?? undefined });
+    }
+    return { ok: true };
+  }
+
+  // ── API GATEWAY MODE (fast: submit a job, or poll one) ──────────────────────────────────────────
   const method = event.requestContext?.http?.method || 'GET';
   const path = (event.rawPath || '/').replace(/\/+$/, '') || '/';
 
   if (method === 'GET' && path === '/health') return reply(200, { ok: true });
 
   let secret;
-  try { secret = await loadSecret(); } catch (e) { return reply(500, { error: 'secret unavailable' }); }
-
-  // App bearer token (defence-in-depth). Enforced when the secret defines one.
-  if (secret.appToken && bearerOf(event) !== secret.appToken) {
-    return reply(401, { error: 'unauthorized' });
-  }
+  try { secret = await loadSecret(); } catch { return reply(500, { error: 'secret unavailable' }); }
+  if (secret.appToken && bearerOf(event) !== secret.appToken) return reply(401, { error: 'unauthorized' });
 
   try {
-    const dev = await mintDeveloperToken();
-
     if (method === 'GET' && path === '/musickit-token') {
+      const dev = await mintDeveloperToken();
       return reply(200, { token: dev.token, expiresAt: dev.exp * 1000, ttlSec: secret.ttlSec });
     }
 
+    // Poll a job's status/result.
+    if (method === 'GET' && path.startsWith('/job/')) {
+      const jobId = path.slice('/job/'.length);
+      const job = await readJob(jobId);
+      // Absent object ⇒ the worker hasn't written it yet (or an unknown id) — report pending.
+      return reply(200, job || { status: 'pending' });
+    }
+
+    // Submit an async pull/push job and return immediately.
     if (method === 'POST' && (path === '/pull' || path === '/push')) {
-      const req = event.body ? JSON.parse(event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString() : event.body) : {};
-      const userToken = req.musicUserToken;
-      if (!userToken) return reply(400, { error: 'musicUserToken required' });
-      if (path === '/pull') return reply(200, await pull(dev.token, userToken));
-      return reply(200, await push(dev.token, userToken, req.playlists));
+      const req = event.body
+        ? JSON.parse(event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString() : event.body)
+        : {};
+      if (!req.musicUserToken) return reply(400, { error: 'musicUserToken required' });
+      const jobId = randomUUID();
+      await writeJob(jobId, { status: 'pending' });
+      await lambda.send(new InvokeCommand({
+        FunctionName: SELF_FUNCTION,
+        InvocationType: 'Event',
+        Payload: Buffer.from(JSON.stringify({
+          worker: true, jobId, op: path.slice(1),
+          musicUserToken: req.musicUserToken, playlists: req.playlists,
+        })),
+      }));
+      return reply(202, { jobId });
     }
 
     return reply(404, { error: 'not found', path });

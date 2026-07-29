@@ -16,6 +16,9 @@ export AWS_PROFILE="${AWS_PROFILE:-levi}"
 REGION="us-west-2"; ACCT="011183829623"
 FN="pocketdj-am-playlist-sync"; ROLE="pocketdj-am-playlist-sync-role"; API_NAME="pocketdj-am-playlist-sync"
 SECRET_ID="pocketdj/am-playlist-sync"
+# Private bucket for async job results (POST /pull|/push -> worker writes here -> GET /job/{id} reads).
+JOBS_BUCKET="pocketdj-am-sync-jobs-${ACCT}"
+LAMBDA_ARN="arn:aws:lambda:${REGION}:${ACCT}:function:${FN}"
 SELF="$(cd "$(dirname "$0")" && pwd)"
 P8_PATH="${MUSICKIT_P8:-$HOME/.appstoreconnect/private_keys/AuthKey_9JRN4H68X4.p8}"
 KID="${MUSICKIT_KID:-9JRN4H68X4}"; TEAM="${MUSICKIT_TEAM:-EC27UF79GL}"
@@ -34,6 +37,17 @@ else
 fi
 SECRET_ARN="$(aws secretsmanager describe-secret --secret-id "$SECRET_ID" --region "$REGION" --query ARN --output text)"
 
+# 1b) private jobs bucket (async job results). Block ALL public access; expire objects after 1 day.
+if ! aws s3api head-bucket --bucket "$JOBS_BUCKET" --region "$REGION" >/dev/null 2>&1; then
+  say "creating private jobs bucket $JOBS_BUCKET"
+  aws s3api create-bucket --bucket "$JOBS_BUCKET" --region "$REGION" \
+    --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null
+fi
+aws s3api put-public-access-block --bucket "$JOBS_BUCKET" --region "$REGION" \
+  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true >/dev/null
+aws s3api put-bucket-lifecycle-configuration --bucket "$JOBS_BUCKET" --region "$REGION" \
+  --lifecycle-configuration '{"Rules":[{"ID":"expire-jobs","Status":"Enabled","Filter":{"Prefix":"am-sync-jobs/"},"Expiration":{"Days":1}}]}' >/dev/null
+
 # 2) execution role: basic logs + read ONLY this secret.
 if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
   say "creating role $ROLE"
@@ -42,27 +56,36 @@ if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
   aws iam attach-role-policy --role-name "$ROLE" --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null
   say "waiting for role to propagate…"; sleep 12
 fi
-# (Re)apply the least-privilege secret-read policy (scoped to the wildcard suffix Secrets Manager adds).
-aws iam put-role-policy --role-name "$ROLE" --policy-name "read-am-sync-secret" --policy-document \
-  "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"${SECRET_ARN%-*}-*\"}]}" >/dev/null
+# (Re)apply the least-privilege policy: read ONLY this secret, read/write ONLY the job objects, and
+# self-invoke ONLY this function (async worker fan-out).
+aws iam put-role-policy --role-name "$ROLE" --policy-name "am-sync-access" --policy-document \
+  "{\"Version\":\"2012-10-17\",\"Statement\":[
+     {\"Effect\":\"Allow\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"${SECRET_ARN%-*}-*\"},
+     {\"Effect\":\"Allow\",\"Action\":[\"s3:PutObject\",\"s3:GetObject\"],\"Resource\":\"arn:aws:s3:::${JOBS_BUCKET}/am-sync-jobs/*\"},
+     {\"Effect\":\"Allow\",\"Action\":\"lambda:InvokeFunction\",\"Resource\":\"${LAMBDA_ARN}\"}
+   ]}" >/dev/null
+# Remove the old narrower policy name if it lingers from a prior deploy (ignore if absent).
+aws iam delete-role-policy --role-name "$ROLE" --policy-name "read-am-sync-secret" >/dev/null 2>&1 || true
 ROLE_ARN="arn:aws:iam::${ACCT}:role/${ROLE}"
 
 # 3) package + create/update the function (index.mjs only; @aws-sdk is bundled in the runtime).
 ZIP="$(mktemp -d)/fn.zip"; ( cd "$SELF" && zip -q -r "$ZIP" index.mjs )
+# timeout 300: the async WORKER path does the full 100+-call pull; the API-facing path returns in <1s.
+ENVVARS="Variables={SECRET_ID=$SECRET_ID,JOBS_BUCKET=$JOBS_BUCKET}"
 if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
   say "updating function code"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null
   aws lambda wait function-updated --function-name "$FN" --region "$REGION"
   aws lambda update-function-configuration --function-name "$FN" --region "$REGION" \
-    --timeout 30 --memory-size 256 --environment "Variables={SECRET_ID=$SECRET_ID}" >/dev/null
+    --timeout 300 --memory-size 256 --environment "$ENVVARS" >/dev/null
+  aws lambda wait function-updated --function-name "$FN" --region "$REGION"
 else
   say "creating function $FN"
   aws lambda create-function --function-name "$FN" --runtime nodejs20.x --role "$ROLE_ARN" \
-    --handler index.handler --timeout 30 --memory-size 256 --environment "Variables={SECRET_ID=$SECRET_ID}" \
+    --handler index.handler --timeout 300 --memory-size 256 --environment "$ENVVARS" \
     --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null
   aws lambda wait function-active --function-name "$FN" --region "$REGION"
 fi
-LAMBDA_ARN="arn:aws:lambda:${REGION}:${ACCT}:function:${FN}"
 
 # 4) HTTP API ($default catch-all -> Lambda; the handler dispatches on rawPath).
 API_ID="$(aws apigatewayv2 get-apis --region "$REGION" --query "Items[?Name=='${API_NAME}'].ApiId | [0]" --output text 2>/dev/null)"
