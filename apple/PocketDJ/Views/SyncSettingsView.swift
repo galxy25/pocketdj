@@ -24,6 +24,8 @@ struct SyncSettingsView: View {
 
     @State private var syncing = false
     @State private var syncStatus: SyncStatus?
+    /// WS2 bidirectional PocketDJ ↔ Apple Music playlist sync (the AWS Lambda, no iMac/Tailscale).
+    @State private var playlistSync = PlaylistAppleMusicSync()
     @State private var collectionsSyncResult: String?
     @State private var backfillResult: String?
     /// This install's owner hash, resolved once on appear (CloudKit round-trip, then cached
@@ -52,6 +54,7 @@ struct SyncSettingsView: View {
     var body: some View {
         Form {
             appleMusicSection
+            playlistSyncSection
             collectionsSection
             backfillSection
             writeBackSection
@@ -281,6 +284,39 @@ struct SyncSettingsView: View {
                 Text(musicSync.hasServer
                     ? "Checks the Apple Music library on the PocketDJ server for newly-added music. It's also checked automatically every day at 04:00. New songs appear in the “Apple Music (Local)” source after the next catalog publish — not instantly; use “Reload catalog” if one is still landing."
                     : "Requires the import server (Settings ▸ Import server). Once set, this checks the Apple Music library on the PocketDJ server for newly-added music; it's also checked automatically every day at 04:00.")
+            }
+        }
+    }
+
+    /// WS2 — bidirectional PocketDJ ↔ Apple Music PLAYLIST sync, run through the first-party AWS
+    /// endpoint (no import server / iMac / Tailscale required). Pushes your playlists into your
+    /// Apple Music library and imports your Apple Music playlists back. Device-only (mints a
+    /// per-user Apple Music token on the device).
+    @ViewBuilder private var playlistSyncSection: some View {
+        if playlistSync.isAvailable {
+            Section {
+                HStack {
+                    Button {
+                        Task { await playlistSync.syncNow(collections: collections, app: app) }
+                    } label: {
+                        if playlistSync.isSyncing {
+                            ProgressView()
+                        } else {
+                            Label("Sync playlists with Apple Music", systemImage: "arrow.triangle.2.circlepath.circle")
+                        }
+                    }
+                    .disabled(playlistSync.isSyncing)
+                    .accessibilityIdentifier("settings-am-playlist-sync")
+                    Spacer()
+                    if let r = playlistSync.lastResult {
+                        Text(r).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(2)
+                            .accessibilityIdentifier("settings-am-playlist-sync-status")
+                    }
+                }
+            } header: {
+                Text("Apple Music playlists")
+            } footer: {
+                Text("Two-way sync between your PocketDJ playlists and your Apple Music library — no import server needed. Runs on your device (requires an Apple Music subscription). New playlists and added tracks sync both ways.")
             }
         }
     }

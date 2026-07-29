@@ -77,3 +77,4 @@ dev-dist/
 .aoss-proxy-url.txt
 .aoss-proxy-api.txt
 .worktrees/
+scripts/lambda/am-playlist-sync/.endpoint-url.txt
