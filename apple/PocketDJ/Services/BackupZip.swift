@@ -113,18 +113,25 @@ enum BackupZip {
         var setlists: [Setlist]
         var folders: [PlaylistFolder]
         var editsData: Data?
+        /// Raw `FavoritesStore.Document` bytes (favorites + un-favorite tombstones + seedVersion),
+        /// kept as Data so FavoritesStore's own codec owns the decode/merge. Nil in a pre-favorites
+        /// backup (older export or a PWA backup) — the importer treats absence as "nothing to merge".
+        var favoritesData: Data?
 
         init(sources: [SourceConfig], pockets: [Pocket], playlists: [Playlist],
-             setlists: [Setlist], folders: [PlaylistFolder] = [], editsData: Data?) {
+             setlists: [Setlist], folders: [PlaylistFolder] = [], editsData: Data?,
+             favoritesData: Data? = nil) {
             self.sources = sources; self.pockets = pockets; self.playlists = playlists
             self.setlists = setlists; self.folders = folders; self.editsData = editsData
+            self.favoritesData = favoritesData
         }
     }
 
     /// Build a `.pocketdj.zip` from the collections + sources + edits. `items.json`
     /// and `art/` are intentionally OMITTED (client-only catalog); their counts are 0.
     static func export(sources: [SourceConfig], pockets: [Pocket], playlists: [Playlist],
-                       setlists: [Setlist], folders: [PlaylistFolder] = [], editsData: Data) throws -> Data {
+                       setlists: [Setlist], folders: [PlaylistFolder] = [], editsData: Data,
+                       favoritesData: Data? = nil) throws -> Data {
         let manifest = Manifest(
             schemaVersion: schemaVersion,
             portable: false,
@@ -133,7 +140,7 @@ enum BackupZip {
                           pockets: pockets.count, playlists: playlists.count, setlists: setlists.count)
         )
 
-        let files: [String: Data] = [
+        var files: [String: Data] = [
             "manifest.json": try encoder.encode(manifest),
             "sources.json": try encoder.encode(sources),
             "pockets.json": try encoder.encode(pockets),
@@ -142,6 +149,9 @@ enum BackupZip {
             "folders.json": try encoder.encode(folders),
             "edits.json": editsData,
         ]
+        // Favorites (+ un-favorite tombstones) — the personal ♥ backup. Additive: an older
+        // importer that doesn't read favorites.json simply ignores it.
+        if let favoritesData { files["favorites.json"] = favoritesData }
 
         let archive: Archive
         do { archive = try Archive(accessMode: .create) } catch { throw BackupZipError.archiveUnreadable }
@@ -200,6 +210,7 @@ enum BackupZip {
             .flatMap { try? decoder.decode([PlaylistFolder].self, from: $0) } ?? []
 
         let editsData = extract("edits.json")
+        let favoritesData = extract("favorites.json")
 
         // Catalog entries that travel in a PWA portable backup but native ignores.
         let itemCount = extract("items.json")
@@ -208,7 +219,8 @@ enum BackupZip {
         for entry in archive where entry.path.hasPrefix("art/") && entry.path.hasSuffix(".webp") { artCount += 1 }
 
         let payload = Payload(sources: sources, pockets: pockets, playlists: playlists,
-                              setlists: setlists, folders: folders, editsData: editsData)
+                              setlists: setlists, folders: folders, editsData: editsData,
+                              favoritesData: favoritesData)
         return (payload, SkippedCatalog(items: itemCount, art: artCount))
     }
 }

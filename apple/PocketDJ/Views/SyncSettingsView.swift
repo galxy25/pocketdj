@@ -22,6 +22,11 @@ struct SyncSettingsView: View {
     /// Optional for the same reason as `favoritesSync` — a preview host may not inject it.
     @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
 
+    /// WS2 bidirectional PocketDJ ↔ Apple Music playlist sync (the AWS Lambda, no iMac/Tailscale).
+    /// APP-SCOPED and injected (like `favoritesSync`): a per-panel instance would re-enable the
+    /// sync button on re-entry mid-sync and fork the audit trail. Optional for preview hosts.
+    @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
+
     @State private var syncing = false
     @State private var syncStatus: SyncStatus?
     @State private var collectionsSyncResult: String?
@@ -52,6 +57,7 @@ struct SyncSettingsView: View {
     var body: some View {
         Form {
             appleMusicSection
+            playlistSyncSection
             collectionsSection
             backfillSection
             writeBackSection
@@ -283,6 +289,140 @@ struct SyncSettingsView: View {
                     : "Requires the import server (Settings ▸ Import server). Once set, this checks the Apple Music library on the PocketDJ server for newly-added music; it's also checked automatically every day at 04:00.")
             }
         }
+    }
+
+    /// WS2 — bidirectional PocketDJ ↔ Apple Music PLAYLIST sync, run through the first-party AWS
+    /// endpoint (no import server / iMac / Tailscale required). Pushes your playlists into your
+    /// Apple Music library and imports your Apple Music playlists back. Device-only (mints a
+    /// per-user Apple Music token on the device).
+    ///
+    /// NOT a bare spinner (Levi 2026-07-29): while syncing this renders the live STEP LIST
+    /// (server-published progress — "Reading “Roadtrip” (37/126)"), and afterwards the persisted
+    /// AUDIT TRAIL: per-playlist created/updated/reconciled/imported with +added/−removed counts.
+    @ViewBuilder private var playlistSyncSection: some View {
+        if let playlistSync, playlistSync.isAvailable {
+            Section {
+                Button {
+                    Task { await playlistSync.syncNow(collections: collections, app: app) }
+                } label: {
+                    Label(playlistSync.isSyncing ? "Syncing…" : "Sync playlists with Apple Music",
+                          systemImage: "arrow.triangle.2.circlepath.circle")
+                }
+                .disabled(playlistSync.isSyncing)
+                .accessibilityIdentifier("settings-am-playlist-sync")
+
+                // Live step-by-step progress — persisted to app storage on every change, so this
+                // recap survives navigating away, backgrounding, and even an app kill mid-sync
+                // (an interrupted run hydrates back with ⏸ steps and the resume hint below).
+                if let startedMs = playlistSync.currentRunStartedMs, !playlistSync.steps.isEmpty {
+                    HStack {
+                        Text(playlistSync.isSyncing ? "Syncing now"
+                             : playlistSync.currentRunCompleted ? "Last sync" : "Interrupted sync")
+                            .font(.caption.bold())
+                        Spacer()
+                        Text(Date(timeIntervalSince1970: startedMs / 1000)
+                            .formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                    .accessibilityIdentifier("am-playlist-sync-run-header")
+                }
+                ForEach(playlistSync.steps) { step in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        switch step.state {
+                        case .running: ProgressView().controlSize(.small)
+                        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.danger)
+                        case .interrupted: Image(systemName: "pause.circle.fill").foregroundStyle(Theme.accent2)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(step.label).font(.callout)
+                            if let detail = step.detail {
+                                Text(detail).font(.caption).foregroundStyle(Theme.fgDim)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("am-playlist-sync-step")
+                }
+                if !playlistSync.isSyncing, !playlistSync.currentRunCompleted, !playlistSync.steps.isEmpty {
+                    Text("This sync was interrupted — tap Sync to resume where it left off.")
+                        .font(.caption).foregroundStyle(Theme.accent2)
+                        .accessibilityIdentifier("am-playlist-sync-resume-hint")
+                }
+
+                if !playlistSync.isSyncing, let r = playlistSync.lastResult, playlistSync.steps.isEmpty {
+                    Text(r).font(.caption).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("settings-am-playlist-sync-status")
+                }
+
+                // Audit trail: what each sync actually did, per playlist, newest first.
+                if !playlistSync.auditTrail.isEmpty {
+                    DisclosureGroup {
+                        ForEach(playlistSync.auditTrail) { report in
+                            auditReportRows(report)
+                        }
+                    } label: {
+                        Label("Sync history", systemImage: "list.bullet.rectangle")
+                            .font(.callout)
+                    }
+                    .accessibilityIdentifier("am-playlist-sync-history")
+                }
+            } header: {
+                Text("Apple Music playlists")
+            } footer: {
+                Text("Two-way sync between your PocketDJ playlists and your Apple Music library — no import server needed. Runs on your device (requires an Apple Music subscription). A playlist is created in Apple Music only if it isn't there yet; after that, syncs only add its missing songs — an interrupted sync picks up where it left off.")
+            }
+        }
+    }
+
+    /// One audit-trail entry: the run's summary line, then a per-playlist change list.
+    @ViewBuilder private func auditReportRows(_ report: PlaylistAppleMusicSync.SyncReport) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(Date(timeIntervalSince1970: report.dateMs / 1000)
+                    .formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption.bold())
+                Spacer()
+                Text(report.summary).font(.caption).foregroundStyle(Theme.fgDim)
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            // Positional identity on purpose: one report can hold several changes with the same
+            // kind+name (two same-named playlists both "updated") and identical error strings —
+            // value-derived ids would collide. Reports are immutable once appended, so offsets
+            // are stable.
+            ForEach(Array(report.changes.enumerated()), id: \.offset) { _, change in
+                HStack(spacing: 6) {
+                    Text(changeBadge(change.kind))
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Theme.bgOverlay, in: Capsule())
+                    Text(change.name).font(.caption).lineLimit(1)
+                    Spacer()
+                    Text(changeDelta(change)).font(.caption2.monospaced()).foregroundStyle(Theme.fgDim)
+                }
+            }
+            ForEach(Array(report.errors.enumerated()), id: \.offset) { _, error in
+                Text(error).font(.caption2).foregroundStyle(Theme.danger).lineLimit(2)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityIdentifier("am-playlist-sync-report")
+    }
+
+    private func changeBadge(_ kind: String) -> String {
+        switch kind {
+        case "created": return "NEW"
+        case "updated": return "＋"
+        case "reconciled": return "⇅"
+        case "imported": return "IN"
+        default: return kind.uppercased()
+        }
+    }
+
+    private func changeDelta(_ change: PlaylistAppleMusicSync.SyncReport.Change) -> String {
+        var parts: [String] = []
+        if change.added > 0 { parts.append("+\(change.added)") }
+        if change.removed > 0 { parts.append("−\(change.removed)") }
+        return parts.isEmpty ? (change.detail ?? "") : parts.joined(separator: " ")
     }
 
     @ViewBuilder private var syncStatusView: some View {

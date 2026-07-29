@@ -60,9 +60,9 @@ final class BackupZipTests: XCTestCase {
         XCTAssertEqual(added.setlists, 1)
         XCTAssertEqual(s2.pockets.first?.name, "Warmups")
         XCTAssertEqual(s2.playlists.first?.name, "Night Set")
-        // …with reminted ids (disjoint from the source store).
-        XCTAssertNotEqual(s2.pockets.first?.id, pocket.id)
-        XCTAssertNotEqual(s2.playlists.first?.id, pl.id)
+        // …with ids PRESERVED (match-by-id merge — so a re-import merges, never duplicates).
+        XCTAssertEqual(s2.pockets.first?.id, pocket.id)
+        XCTAssertEqual(s2.playlists.first?.id, pl.id)
         // Setlist re-pointed at the reminted playlist.
         XCTAssertEqual(s2.setlists.first?.playlistId, s2.playlists.first?.id)
         // Playlist's pocket node remapped to the reminted pocket.
@@ -75,6 +75,102 @@ final class BackupZipTests: XCTestCase {
         // Nothing skipped (no catalog in a native backup).
         XCTAssertEqual(skipped.items, 0)
         XCTAssertEqual(skipped.art, 0)
+    }
+
+    // MARK: Favorites round-trip through the backup (♥ + un-favorite tombstones + appleMusicId)
+
+    @MainActor
+    func testFavoritesRoundTripThroughBackup() throws {
+        let favA = makeFavorites()
+        favA.set("sng_am", favorited: true, appleMusicId: "12345")   // Apple Music ♥ (keeps its id)
+        favA.set("sng_vinyl", favorited: true, appleMusicId: nil)    // vinyl ♥ (no AM id)
+        favA.set("sng_gone", favorited: false, appleMusicId: nil)    // deliberate un-favorite (tombstone)
+
+        // EXPORT a full backup carrying favorites, then IMPORT into a FRESH favorites store.
+        let zip = try BackupZip.export(sources: [], pockets: [], playlists: [], setlists: [],
+                                       editsData: Data("{}".utf8), favoritesData: favA.exportData())
+        XCTAssertNotNil(entry("favorites.json", in: zip), "favorites travel in the backup zip")
+        let (payload, _) = try BackupZip.import(data: zip)
+        let favB = makeFavorites()
+        let adopted = favB.importMerging(data: try XCTUnwrap(payload.favoritesData))
+
+        XCTAssertEqual(adopted, 3)
+        XCTAssertTrue(favB.isFavorite("sng_am"))
+        XCTAssertTrue(favB.isFavorite("sng_vinyl"))
+        XCTAssertFalse(favB.isFavorite("sng_gone"))
+        // The un-favorite TOMBSTONE survives (present but not favorited) — not merely absent.
+        XCTAssertNotNil(favB.entry("sng_gone"))
+        XCTAssertEqual(favB.entry("sng_gone")?.favorited, false)
+        // The Apple Music link is preserved (so a later outbound push can resolve it).
+        XCTAssertEqual(favB.entry("sng_am")?.appleMusicId, "12345")
+    }
+
+    /// Restore merges by song, NEWEST edit wins — an older backup ♥ never resurrects a song the
+    /// user has since un-favorited locally.
+    @MainActor
+    func testFavoritesRestoreDoesNotClobberNewerLocalEdit() throws {
+        // A backup that recorded sng_x as favorited at an OLD timestamp.
+        let olderBackup = Data(#"{"schemaVersion":1,"entries":[{"songId":"sng_x","favorited":true,"atMs":1000}]}"#.utf8)
+        let local = makeFavorites()
+        local.set("sng_x", favorited: false, appleMusicId: nil)   // local un-favorite, stamped "now" (>> 1000)
+        local.importMerging(data: olderBackup)
+        XCTAssertFalse(local.isFavorite("sng_x"), "the newer local un-favorite wins over the older backup ♥")
+    }
+
+    // MARK: Idempotent import — re-import merges by id, never duplicates a collection or a song
+
+    @MainActor
+    func testReimportIsIdempotentAndDoesNotDuplicate() async throws {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let src = makeStore(); src.app = app
+        let pocket = src.createPocket("Warmups")
+        src.addSong("sng_1", toPocket: pocket.id)
+        _ = src.createPlaylist("Set", songIds: ["sng_1", "sng_2"])
+        let zip = try BackupZip.export(sources: [], pockets: src.pockets, playlists: src.playlists,
+                                       setlists: src.setlists, editsData: Data("{}".utf8))
+        let (payload, _) = try BackupZip.import(data: zip)
+
+        let dest = makeStore(); dest.app = app
+        dest.mergeBackupCollections(pockets: payload.pockets, playlists: payload.playlists,
+                                    setlists: payload.setlists, folders: payload.folders)
+        XCTAssertEqual(dest.pockets.count, 1)
+        XCTAssertEqual(dest.playlists.count, 1)
+
+        // Import the SAME backup AGAIN — must not duplicate the pocket, the playlist, or its songs.
+        dest.mergeBackupCollections(pockets: payload.pockets, playlists: payload.playlists,
+                                    setlists: payload.setlists, folders: payload.folders)
+        XCTAssertEqual(dest.pockets.count, 1, "no duplicate pocket on re-import")
+        XCTAssertEqual(dest.playlists.count, 1, "no duplicate playlist on re-import")
+        XCTAssertEqual(dest.pockets[0].songIds, ["sng_1"], "no duplicate song in the pocket")
+        // The playlist's default chapter still has exactly its two songs (no dupes).
+        let songNodes = dest.playlists[0].sequences.flatMap { $0.children ?? [] }.filter { $0.kind == .song }
+        XCTAssertEqual(songNodes.compactMap(\.songId), ["sng_1", "sng_2"])
+    }
+
+    /// A MODIFIED re-import (same id, an added song) merges the new member in — one collection, both
+    /// songs, the pre-existing one not duplicated.
+    @MainActor
+    func testModifiedReimportMergesNewMembersById() async throws {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let dest = makeStore(); dest.app = app
+        let src = makeStore(); src.app = app
+        let pk = src.createPocket("Crate")
+        src.addSong("sng_1", toPocket: pk.id)
+
+        let zip1 = try BackupZip.export(sources: [], pockets: src.pockets, playlists: [], setlists: [], editsData: Data("{}".utf8))
+        let (p1, _) = try BackupZip.import(data: zip1)
+        dest.mergeBackupCollections(pockets: p1.pockets, playlists: [], setlists: [], folders: p1.folders)
+
+        // Add a second song to the SAME pocket and re-import.
+        src.addSong("sng_2", toPocket: pk.id)
+        let zip2 = try BackupZip.export(sources: [], pockets: src.pockets, playlists: [], setlists: [], editsData: Data("{}".utf8))
+        let (p2, _) = try BackupZip.import(data: zip2)
+        dest.mergeBackupCollections(pockets: p2.pockets, playlists: [], setlists: [], folders: p2.folders)
+
+        XCTAssertEqual(dest.pockets.count, 1, "merged by id, not duplicated")
+        XCTAssertEqual(dest.pockets[0].songIds, ["sng_1", "sng_2"], "new song unioned in; existing not duplicated")
     }
 
     // MARK: A backup omitting items/art still imports (and reports skips when present)
@@ -155,6 +251,11 @@ final class BackupZipTests: XCTestCase {
     @MainActor private func makeEdits() -> EditsStore {
         EditsStore(fileURL: FileManager.default.temporaryDirectory
             .appendingPathComponent("pdj-bk-edits-\(UUID().uuidString).json"))
+    }
+
+    @MainActor private func makeFavorites() -> FavoritesStore {
+        FavoritesStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-bk-fav-\(UUID().uuidString).json"))
     }
 
     private func makeZip(_ files: [String: Data]) throws -> Data {

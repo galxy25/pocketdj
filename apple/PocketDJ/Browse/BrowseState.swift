@@ -200,6 +200,15 @@ final class BrowseState {
         applyReadTimeFilters(displayItems, collections, favorites, profileLocal)
     }
 
+    /// Apply the read-time filter layer (membership / favorites / profile-local) to an ARBITRARY
+    /// item list — the collection detail views run the Browse pipeline on their own song subset
+    /// (`BrowseState.filterSort(...)` then this), reusing the exact Browser semantics off the memo.
+    func applyReadTimeFilters(to items: [BrowseItem], collections: CollectionsStore? = nil,
+                              favorites: FavoritesStore? = nil,
+                              profileLocal: ((String) -> Bool)? = nil) -> [BrowseItem] {
+        applyReadTimeFilters(items, collections, favorites, profileLocal)
+    }
+
     /// The read-time layer shared by `results` and `visibleResults`: the filters whose inputs
     /// live OUTSIDE the memo key. Order is irrelevant (both are independent row predicates);
     /// membership runs first only because it's the older of the two.

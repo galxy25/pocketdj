@@ -21,6 +21,13 @@ enum Config {
     /// Public S3 rips bucket: `rips/manifest.json` + `rips/<songId>.mp3`.
     static let ripsBase = URL(string: "https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com")!
 
+    /// First-party Apple Music PLAYLIST-SYNC endpoint (WS2) — the AWS API Gateway HTTP API in front
+    /// of the `pocketdj-am-playlist-sync` Lambda, replacing the iMac/Tailscale `/am-sync` path.
+    /// Unlike the rip/jukebox servers (user-configured, seeded blank), this is a fixed FIRST-PARTY
+    /// cloud endpoint, so it ships seeded. `GET /musickit-token`, `POST /pull`, `POST /push`. The
+    /// per-user Music-User-Token is minted on-device and sent per call (never stored server-side).
+    static let amPlaylistSyncBase = URL(string: "https://ynwdaa8vh2.execute-api.us-west-2.amazonaws.com")!
+
     // Rip server (rip-on-demand + live HLS + Discover search) and Jukebox Hero session
     // broker: there is intentionally NO shipped default base URL for either. The app seeds
     // BOTH `SettingsData.default.ripServerURL` and `.jukeboxServerURL` blank, so `hasServer`

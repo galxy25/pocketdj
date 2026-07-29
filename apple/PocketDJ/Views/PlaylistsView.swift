@@ -254,7 +254,10 @@ struct PlaylistsView: View {
         } else {
             switch mode {
             case .user:
-                if collections.playlists.isEmpty && collections.pockets.isEmpty {
+                // Show the list when there are own collections OR any recently-added items (the
+                // virtual "Recently added" row lives at the top of the User tab).
+                if collections.playlists.isEmpty && collections.pockets.isEmpty
+                    && app.recentlyAddedPlaylist(limit: settings.defaultRecentlyAddedCount) == nil {
                     userEmptyState
                 } else {
                     List { userSections }
@@ -271,12 +274,32 @@ struct PlaylistsView: View {
 
     // MARK: - Sections
 
-    /// USER tab — your editable playlists + pockets + folders (no source rows).
+    /// USER tab — your editable playlists + pockets + folders (no source rows), with the virtual
+    /// "Recently added" row pinned at the top.
     @ViewBuilder private var userSections: some View {
+        recentlyAddedSection
         yourPlaylistsSection
         yourPocketsSection
         ForEach(collections.foldersOrdered()) { folder in
             folderSection(folder)
+        }
+    }
+
+    /// The synthetic "Recently added" row — the last N items the profile added to its library
+    /// (Apple Music adds + ＋Add + imports + custom audio), N from Settings ▸ Collections. Navigates
+    /// to the read-only source-playlist detail (Play / Shuffle / Duplicate / Convert / Rip-Burn).
+    @ViewBuilder private var recentlyAddedSection: some View {
+        if let ra = app.recentlyAddedPlaylist(limit: settings.defaultRecentlyAddedCount) {
+            Section {
+                NavigationLink(value: ra) {
+                    Label("\(ra.playlist.songIds.count) songs — newest first",
+                          systemImage: "clock.badge.checkmark")
+                        .foregroundStyle(Theme.fg)
+                }
+                .accessibilityIdentifier("recently-added-row")
+            } header: {
+                Text("Recently added")
+            }
         }
     }
 
@@ -694,11 +717,26 @@ private struct FolderDialogs: ViewModifier {
 struct IndexPlaylistDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
+    @Environment(FavoritesStore.self) private var favorites
     let source: SourcePlaylist
     @Binding var path: NavigationPath
     @State private var ripBurn = CollectionRipBurnController()
+    /// Per-collection sort/filter — its own `BrowseState` keyed by the collection id, so the sort
+    /// and filters persist on-device PER collection (reusing the Browser's exact machinery).
+    @State private var browse: BrowseState
+    @State private var showSort = false
+    @State private var showFilter = false
 
-    private var songs: [IndexSong] { source.songIds.compactMap { app.songsById[$0] } }
+    init(source: SourcePlaylist, path: Binding<NavigationPath>) {
+        self.source = source
+        self._path = path
+        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(source.id)"))
+    }
+
+    /// The songs AFTER the per-collection sort + filters (stored order until the user sorts).
+    private var songs: [IndexSong] {
+        app.sortedFilteredSongs(ids: source.songIds, browse: browse, collections: collections, favorites: favorites)
+    }
     /// An on-device duplicate of THIS source already exists (see `duplicate()`).
     private var hasDuplicate: Bool { collections.existingDuplicate(forSource: source) != nil }
 
@@ -740,6 +778,8 @@ struct IndexPlaylistDetailView: View {
         .accessibilityIdentifier("indexplaylist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
+        .collectionSortFilterToolbar(browse: browse, showSort: $showSort, showFilter: $showFilter,
+                                     app: app, collections: collections)
     }
 
     private func play() {
@@ -775,8 +815,14 @@ struct IndexPlaylistDetailView: View {
 struct PlaylistDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
+    @Environment(FavoritesStore.self) private var favorites
     let playlistId: String
     @Binding var path: NavigationPath
+    /// Per-collection sort/filter (keyed by playlist id → remembered per playlist, on-device). Applies
+    /// WITHIN each chapter to the song leaves; non-song nodes pin to the end while sorting/filtering.
+    @State private var browse: BrowseState
+    @State private var showSort = false
+    @State private var showFilter = false
     @State private var newSeq = ""
     @State private var showNewSeq = false
     @State private var renaming = false
@@ -802,6 +848,12 @@ struct PlaylistDetailView: View {
     @State private var nowPlayingPushed = false
     /// Feedback for the manual "Sync from source now" action (nil = no alert showing).
     @State private var syncResult: String?
+
+    init(playlistId: String, path: Binding<NavigationPath>) {
+        self.playlistId = playlistId
+        self._path = path
+        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(playlistId)"))
+    }
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
@@ -832,6 +884,8 @@ struct PlaylistDetailView: View {
                 }
             }
         }
+        .collectionSortFilterSheets(browse: browse, showSort: $showSort, showFilter: $showFilter,
+                                    app: app, collections: collections)
         .navigationTitle(playlist?.name ?? "Playlist")
         .accessibilityIdentifier("playlist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
@@ -858,6 +912,9 @@ struct PlaylistDetailView: View {
             // item used to collapse the whole menu behind a nested system "More").
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    // Per-playlist sort + filter (folded into the ⋯ menu). Applies within each chapter.
+                    CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
+                    Divider()
                     Button { realizeToSetlist() } label: { Label("Make set list", systemImage: "list.bullet.clipboard") }
                         .disabled(itemCount == 0)
                         .accessibilityIdentifier("playlist-realize")
@@ -1032,32 +1089,62 @@ struct PlaylistDetailView: View {
         if let pocket = collections.convertToPocket(playlistId: playlistId) { path.append(pocket) }
     }
 
+    /// A chapter's children reordered by the per-collection sort/filter: SONG leaves ordered by the
+    /// Browser pipeline (`AppModel.sortedFilteredSongs`, no-dateAdded songs last), then the non-song
+    /// nodes (album/pocket/text/studio) appended — hidden while a FILTER is active (they carry no
+    /// song fields to match). Dup-safe: several nodes for the same songId each consume one slot.
+    private func displayChildren(_ children: [PlaylistNode]) -> [PlaylistNode] {
+        let songNodes = children.filter { $0.kind == .song }
+        var nodesBySongId: [String: [PlaylistNode]] = [:]
+        for n in songNodes { if let sid = n.songId { nodesBySongId[sid, default: []].append(n) } }
+        let orderedSongs = app.sortedFilteredSongs(ids: songNodes.compactMap(\.songId), browse: browse,
+                                                   collections: collections, favorites: favorites)
+        var orderedSongNodes: [PlaylistNode] = []
+        for song in orderedSongs {
+            if var q = nodesBySongId[song.id], !q.isEmpty {
+                orderedSongNodes.append(q.removeFirst())
+                nodesBySongId[song.id] = q
+            }
+        }
+        let tail = browse.activeFilterCount == 0 ? children.filter { $0.kind != .song } : []
+        return orderedSongNodes + tail
+    }
+
     @ViewBuilder private func chapterSection(_ seq: PlaylistNode, chapterCount: Int) -> some View {
         let children = seq.children ?? []
+        // DEFAULT (no sort/filter): stored node order, with drag-reorder + up/down. SORTED/FILTERED:
+        // the chapter's SONG leaves ordered by the Browser pipeline (no-dateAdded songs sort to the
+        // END), with non-song nodes (album/pocket/text/studio) pinned last; reorder is disabled while
+        // the display order ≠ the stored order. The stored order is never mutated.
+        let isDefaultOrder = browse.sortKeys.isEmpty && browse.activeFilterCount == 0
+        let displayed = isDefaultOrder ? children : displayChildren(children)
         Section {
             if children.isEmpty {
                 Text("Empty chapter — add items from a song/album ▸ Add to…")
                     .font(.caption).foregroundStyle(Theme.fgDim)
             }
-            ForEach(Array(children.enumerated()), id: \.element.nodeId) { idx, node in
-                nodeRowWithMenu(node, idx: idx, count: children.count)
+            ForEach(Array(displayed.enumerated()), id: \.element.nodeId) { idx, node in
+                nodeRowWithMenu(node, idx: idx, count: displayed.count)
                     .swipeActions(edge: .trailing) {
                         Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
                     }
                     .swipeActions(edge: .leading) {
-                        Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Up", systemImage: "arrow.up") }
-                            .tint(Theme.accent)
-                            .disabled(idx == 0)
-                        Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Down", systemImage: "arrow.down") }
-                            .tint(Theme.accent2)
-                            .disabled(idx == children.count - 1)
+                        if isDefaultOrder {
+                            Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Up", systemImage: "arrow.up") }
+                                .tint(Theme.accent)
+                                .disabled(idx == 0)
+                            Button { collections.moveNodeDown(node.nodeId, inPlaylist: playlistId) } label: { Label("Down", systemImage: "arrow.down") }
+                                .tint(Theme.accent2)
+                                .disabled(idx == displayed.count - 1)
+                        }
                     }
             }
             .onMove { from, to in
-                collections.moveNodes(inPlaylist: playlistId, sequenceId: seq.nodeId, from: from, to: to)
+                // Reorder only makes sense on the stored order — ignored while sorted/filtered.
+                if isDefaultOrder { collections.moveNodes(inPlaylist: playlistId, sequenceId: seq.nodeId, from: from, to: to) }
             }
             .onDelete { offsets in
-                offsets.map { children[$0].nodeId }.forEach { collections.removeNode($0, fromPlaylist: playlistId) }
+                offsets.map { displayed[$0].nodeId }.forEach { collections.removeNode($0, fromPlaylist: playlistId) }
             }
             chapterActions(seq, chapterCount: chapterCount)
         } header: {

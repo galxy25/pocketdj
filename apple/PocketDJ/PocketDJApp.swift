@@ -29,7 +29,21 @@ struct PocketDJApp: App {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let beforePlaylists = Set(collections.playlists.map(\.id))
         let beforePockets = Set(collections.pockets.map(\.id))
-        try? collections.importAny(url: url)
+        // A full `.pocketdj.zip` backup carries sources + edits + FAVORITES alongside collections.
+        // `importAny` alone restores only the collections and silently drops the rest, so route a
+        // full backup through the SAME complete restore as Settings ▸ Import backup.
+        if let data = try? Data(contentsOf: url), CollectionsStore.detectKind(data: data) == .backup,
+           let (payload, _) = try? BackupZip.import(data: data) {
+            _ = collections.mergeBackupCollections(pockets: payload.pockets, playlists: payload.playlists,
+                                                   setlists: payload.setlists, folders: payload.folders)
+            let addedSources = settings.addSources(payload.sources)
+            if let ed = payload.editsData { try? edits.importData(ed) }
+            if let fd = payload.favoritesData { favorites.importMerging(data: fd) }
+            app.applyEdits()
+            if addedSources > 0 { Task { await app.reload() } }
+        } else {
+            try? collections.importAny(url: url)
+        }
         if let p = collections.playlists.first(where: { !beforePlaylists.contains($0.id) }) {
             intents.pendingRoute = .playlist(p.id)
         } else if let k = collections.pockets.first(where: { !beforePockets.contains($0.id) }) {
@@ -160,6 +174,11 @@ struct PocketDJApp: App {
     /// Durable outbound queue for "added a song to an Apple Music source playlist" — the
     /// write-back half of source-playlist adds (see PlaylistWriteBack).
     @State private var playlistWriteBack: PlaylistWriteBack
+    /// WS2 bidirectional PocketDJ ↔ Apple Music playlist sync. APP-SCOPED on purpose: a per-panel
+    /// `@State` instance would (a) let a re-entered Settings panel start a second concurrent sync
+    /// (per-instance `isSyncing`) and (b) fork the persisted audit trail across stale in-memory
+    /// copies. One instance = one gate + one trail; a sync also keeps reporting after navigation.
+    @State private var playlistSync = PlaylistAppleMusicSync()
     /// Provisional Discover-add catalog entries (eventual consistency) — see DiscoverAddsStore.
     @State private var discoverAdds: DiscoverAddsStore
     /// Provisional IMPORTED catalog entries (cross-user playlist/pocket transfers) — see
@@ -642,6 +661,12 @@ struct PocketDJApp: App {
         discoverAdds.onAlbumBatchAdded = { [weak app] songs, album in
             app?.injectDiscoverAlbumBatch(songs: songs, album: album)
         }
+        // Catalog-ADD History events for user ＋Add gestures (song or album), recorded straight into
+        // the collection-activity timeline. User-origin only (never cloud-pull) — see the store's
+        // `onUserCatalogAdd` doc — so a peer device's add isn't double-logged after the union sync.
+        discoverAdds.onUserCatalogAdd = { [weak collectionActivity] items in
+            for it in items { collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title) }
+        }
         app.discoverAdds = discoverAdds
         // A superseded provisional id must be rewritten EVERYWHERE it is referenced — the
         // collections AND the favorites — or a ♥ made on a Discover add silently detaches
@@ -649,6 +674,11 @@ struct PocketDJApp: App {
         app.onDiscoverSupersede = { [weak collections, weak favorites] pairs in
             collections?.remapSongIds(pairs)
             favorites?.remapSongIds(pairs)
+        }
+        // "Remove from Library" → a catalog-REMOVE History event (the eject itself is inline in
+        // AppModel.removeFromLibrary). User-origin by construction (only the row action calls it).
+        app.onCatalogRemove = { [weak collectionActivity] itemId, itemTitle in
+            collectionActivity?.record(kind: .catalogRemove, itemId: itemId, itemTitle: itemTitle)
         }
         rips.discoverAdds = discoverAdds
         _discoverAdds = State(initialValue: discoverAdds)
@@ -660,6 +690,9 @@ struct PocketDJApp: App {
         let importedSongs = ImportedSongsStore(fileURL: ImportedSongsStore.launchURL())
         importedSongs.onAdded = { [weak app] songs, albums in
             app?.injectImported(songs: songs, albums: albums)
+        }
+        importedSongs.onUserCatalogAdd = { [weak collectionActivity] items in
+            for it in items { collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title) }
         }
         app.importedSongs = importedSongs
         collections.importedSongs = importedSongs
@@ -677,6 +710,9 @@ struct PocketDJApp: App {
         let profileSource = ProfileSourceStore(fileURL: ProfileSourceStore.launchURL())
         profileSource.profileName = profile.name.isEmpty ? ProfileSourceStore.defaultName : profile.name
         profileSource.onAdded = { [weak app] songs, albums in app?.injectProfileItem(songs: songs, albums: albums) }
+        profileSource.onUserCatalogAdd = { [weak collectionActivity] items in
+            for it in items { collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title) }
+        }
         profileSource.onNameChanged = { [weak app] in Task { await app?.reload() } }
         app.profileSource = profileSource
         _profileSource = State(initialValue: profileSource)
@@ -875,6 +911,7 @@ struct PocketDJApp: App {
                 .environment(favorites)
                 .environment(favoritesSync)
                 .environment(playlistWriteBack)
+                .environment(playlistSync)
                 .environment(accountDeletion)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)

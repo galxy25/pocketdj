@@ -92,6 +92,10 @@ final class ProfileSourceStore {
     /// Fired when the profile name changes — the app rebuilds the catalog so the source tag +
     /// item artists re-render under the new name (wired in PocketDJApp).
     @ObservationIgnored var onNameChanged: (() -> Void)?
+    /// Fired ONLY from the USER add path (`add`), NEVER from `reloadFromDisk` (cloud pull), with
+    /// the custom-audio item(s) to log as `.catalogAdd` in the History activity timeline. Wired in
+    /// PocketDJApp to `CollectionActivityStore.record(kind: .catalogAdd)`.
+    @ObservationIgnored var onUserCatalogAdd: (([(id: String, title: String)]) -> Void)?
 
     init(fileURL: URL = ProfileSourceStore.defaultURL()) {
         self.fileURL = fileURL
@@ -132,6 +136,7 @@ final class ProfileSourceStore {
         songs.append(contentsOf: fresh)
         save()
         onAdded?(fresh.map { Self.indexSong($0, profileName: sourceName) }, defaultAlbums())
+        onUserCatalogAdd?(fresh.map { ($0.songId, $0.title) })
     }
 
     /// Drop items by id (e.g. the durable asset was deleted). Idempotent.

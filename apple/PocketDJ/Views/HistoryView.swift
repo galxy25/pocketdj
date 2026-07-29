@@ -323,10 +323,12 @@ struct HistoryView: View {
         let item = displayTitle(e)
         let coll = e.collectionName ?? "a collection"
         switch e.kind {
-        case .add:     return "Added \(item) to \(coll)"
-        case .heart:   return "Hearted \(item)"
-        case .unheart: return "Removed heart from \(item)"
-        case .remove:  return "Removed \(item) from \(coll)"
+        case .add:           return "Added \(item) to \(coll)"
+        case .heart:         return "Hearted \(item)"
+        case .unheart:       return "Removed heart from \(item)"
+        case .remove:        return "Removed \(item) from \(coll)"
+        case .catalogAdd:    return "Added \(item) to your library"
+        case .catalogRemove: return "Removed \(item) from your library"
         }
     }
 

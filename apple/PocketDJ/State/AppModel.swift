@@ -126,6 +126,9 @@ final class AppModel {
     /// Discover amrec_ supersedes AND imported amrec_ remaps ride the same seam
     /// (set by the app at launch).
     var onDiscoverSupersede: (([(from: String, to: String)]) -> Void)?
+    /// Fired when the user removes an item from their library via `removeFromLibrary` — wired at
+    /// launch to log a `.catalogRemove` History event. The catalog eject itself is handled inline.
+    var onCatalogRemove: ((_ itemId: String, _ itemTitle: String) -> Void)?
 
     init(loader: CatalogLoading? = nil) {
         if let loader {
@@ -394,6 +397,91 @@ final class AppModel {
         applyEdits()
     }
 
+    /// True when `songId` was USER-ADDED to the library from a provisional streaming source
+    /// (Discover ＋Add or an Imported transfer) and can therefore be removed from it — drives the
+    /// "Remove from Library" action's visibility. Deliberately EXCLUDES the profile custom-audio
+    /// source (its items own device-local media with their own delete lifecycle) and every real
+    /// catalog source (Apple Music / vinyl / digital — the user doesn't "un-add" those here).
+    func isRemovableFromLibrary(songId: String) -> Bool {
+        let src = songSourceById[songId]
+        return src == DiscoverAddsStore.sourceName || src == ImportedSongsStore.sourceName
+    }
+
+    /// "Remove from Library": drop a user-added provisional song from its backing store, eject it
+    /// from the LIVE catalog, and log a `.catalogRemove` History event. No-op for ids that aren't
+    /// user-removable (see `isRemovableFromLibrary`). The store removal is DISTINCT from the
+    /// supersede `remove(...)` paths (which yield an id to its real indexed twin).
+    func removeFromLibrary(songId: String) {
+        let src = songSourceById[songId]
+        var removed: (id: String, title: String)?
+        if src == DiscoverAddsStore.sourceName {
+            removed = discoverAdds?.userRemove(songId: songId)
+        } else if src == ImportedSongsStore.sourceName {
+            removed = importedSongs?.userRemove(songId: songId)
+        }
+        guard let removed else { return }
+        ejectCatalogSong(id: songId)
+        onCatalogRemove?(removed.id, removed.title)
+    }
+
+    /// Eject a provisional user-added song from the LIVE catalog — the inverse of the `inject*`
+    /// methods: drop the raw row + its source tag, rebuild the effective catalog, then prune the
+    /// synthetic source from `availableSources` if it holds no more songs OR albums.
+    func ejectCatalogSong(id: String) {
+        guard rawSongsById[id] != nil else { return }
+        let src = songSourceById[id]
+        rawSongs.removeAll { $0.id == id }
+        rawSongsById[id] = nil
+        songSourceById[id] = nil
+        applyEdits()
+        if let src, !songSourceById.values.contains(src), !albumSourceById.values.contains(src) {
+            availableSources.removeAll { $0 == src }
+        }
+    }
+
+    // MARK: - Recently added (virtual playlist)
+
+    /// The reserved id of the synthetic "Recently added" playlist.
+    static let recentlyAddedPlaylistId = "__pdj_recently_added__"
+    /// Display name of the synthetic "Recently added" source/playlist.
+    static let recentlyAddedName = "Recently added"
+
+    /// The last-`limit` song ids the profile added to its library, NEWEST FIRST — the union of
+    /// catalog `dateAdded` (Apple Music library adds, from the indexer) and the in-app add stores'
+    /// `addedAtMs` (Discover ＋Add / imports / custom audio), deduped by id (newest add-time wins)
+    /// and filtered to songs still resolvable in the live catalog (removed items are already ejected,
+    /// so they drop out here automatically). Drives the "Recently added" virtual playlist; `limit`
+    /// comes from Settings ▸ Collections (`SettingsStore.defaultRecentlyAddedCount`). Recomputed on
+    /// read so an @Observable view re-derives it as adds/removes land.
+    func recentlyAddedSongIds(limit: Int) -> [String] {
+        guard limit > 0 else { return [] }
+        var addedAt: [String: Double] = [:]
+        for (id, song) in songsById {
+            if let d = song.dateAdded, d > 0, d > (addedAt[id] ?? 0) { addedAt[id] = d }
+        }
+        for e in discoverAdds?.entries ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
+        for e in importedSongs?.songs ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
+        for e in profileSource?.songs ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
+        return addedAt
+            .filter { songsById[$0.key] != nil }
+            .sorted { $0.value > $1.value }
+            .prefix(limit)
+            .map(\.key)
+    }
+
+    /// The synthetic "Recently added" `SourcePlaylist` (nil when there are no adds) — a read-only
+    /// virtual collection that inherits the full source-playlist action set (Play / Shuffle /
+    /// Duplicate-as-editable / Convert-to-pocket / Rip-Burn) for free via `IndexPlaylistDetailView`.
+    /// NOT a persisted Playlist (so adding to it can't recursively log add-events) — it mirrors the
+    /// reserved Now Playing setlist's "synthetic, read-derived" pattern.
+    func recentlyAddedPlaylist(limit: Int) -> SourcePlaylist? {
+        let ids = recentlyAddedSongIds(limit: limit)
+        guard !ids.isEmpty else { return nil }
+        return SourcePlaylist(playlist: IndexPlaylist(id: Self.recentlyAddedPlaylistId,
+                                                      name: Self.recentlyAddedName, songIds: ids),
+                              sourceName: Self.recentlyAddedName)
+    }
+
     /// If the user saved a metadata edit DURING an off-main catalog build, that build's `derived`
     /// captured a STALE edit snapshot — re-overlay the current edits so a mid-load save isn't visually
     /// clobbered (the edit itself is already persisted in `EditsStore`). Common case: no change → no-op.
@@ -631,6 +719,36 @@ final class AppModel {
         case .song:   return songSearchKeys
         case .artist: return artistSearchKeys
         }
+    }
+
+    /// Build the Browse rows (+ parallel folded search keys) for an ORDERED list of song ids — a
+    /// collection's members — so a collection detail view can run the Browse sort/filter pipeline
+    /// (`BrowseState.filterSort`) on its own subset. Same construction as `songBrowseItems`.
+    /// Unresolved ids (studio/absent songs) are dropped.
+    func browseItems(forSongIds ids: [String]) -> (items: [BrowseItem], keys: [String]) {
+        var items: [BrowseItem] = []; var keys: [String] = []
+        items.reserveCapacity(ids.count); keys.reserveCapacity(ids.count)
+        for id in ids {
+            guard let song = songsById[id] else { continue }
+            let album = song.albumId.flatMap { albumsById[$0] }
+            items.append(.song(song, albumName: album?.name ?? "",
+                               source: songSourceById[id], genre: Genre.category(album?.genre)))
+            keys.append(Self.searchKey(song.name, song.artist, album?.name ?? ""))
+        }
+        return (items, keys)
+    }
+
+    /// A collection's songs (by ordered ids) after applying a `BrowseState`'s sort + filters — the
+    /// display list for a collection detail view with sort/filter enabled. At default state (no
+    /// clauses, no sort keys, no query, no active read-time filter) it returns the ids' songs in
+    /// their STORED order, so the collection's own order is preserved until the user sorts.
+    func sortedFilteredSongs(ids: [String], browse: BrowseState,
+                             collections: CollectionsStore?, favorites: FavoritesStore?) -> [IndexSong] {
+        let (items, keys) = browseItems(forSongIds: ids)
+        let filtered = BrowseState.filterSort(base: items, searchKeys: keys, query: browse.query,
+                                              clauses: browse.clauses, sortKeys: browse.sortKeys)
+        let visible = browse.applyReadTimeFilters(to: filtered, collections: collections, favorites: favorites)
+        return visible.compactMap { if case .song(let s, _, _, _, _) = $0 { return s } else { return nil } }
     }
 
     /// Return the memoized browse results for `key`, computing + caching on a miss. The

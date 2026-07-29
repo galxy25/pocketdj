@@ -73,6 +73,12 @@ final class ImportedSongsStore {
     /// Fired with each batch of NEW entries (local import or cloud pull) — the app wires
     /// this to `AppModel.injectImported` so the live catalog updates without a reload.
     @ObservationIgnored var onAdded: ((_ songs: [IndexSong], _ albums: [IndexAlbum]) -> Void)?
+    /// Fired ONLY from the USER import path (`add`), NEVER from `reloadFromDisk` (cloud pull),
+    /// with the item(s) to log as `.catalogAdd` in the History activity timeline — one entry per
+    /// fresh ALBUM plus one per fresh LOOSE song (a song not covered by a fresh album), so an
+    /// album import reads as a single "Added <album>" row rather than N track rows. Wired in
+    /// PocketDJApp to `CollectionActivityStore.record(kind: .catalogAdd)`.
+    @ObservationIgnored var onUserCatalogAdd: (([(id: String, title: String)]) -> Void)?
 
     init(fileURL: URL = ImportedSongsStore.defaultURL()) {
         self.fileURL = fileURL
@@ -116,6 +122,25 @@ final class ImportedSongsStore {
         albums.append(contentsOf: freshAlbums)
         save()
         onAdded?(freshSongs.map(Self.indexSong), freshAlbums.map(Self.indexAlbum))
+        // History catalog-add log, at gesture granularity: one row per fresh album, plus one per
+        // fresh LOOSE song (not covered by a fresh album) so an album import isn't N track rows.
+        let freshAlbumIds = Set(freshAlbums.map(\.albumId))
+        var catalogAdds: [(id: String, title: String)] = freshAlbums.map { ($0.albumId, $0.name) }
+        catalogAdds += freshSongs
+            .filter { $0.albumId == nil || !freshAlbumIds.contains($0.albumId!) }
+            .map { ($0.songId, $0.title) }
+        if !catalogAdds.isEmpty { onUserCatalogAdd?(catalogAdds) }
+    }
+
+    /// USER "Remove from Library" for an imported SONG — DISTINCT from the supersede
+    /// `remove(songIds:)` below. Drops the entry and returns its (id, title) so the app can eject it
+    /// from the live catalog AND log a `.catalogRemove` History event. Idempotent.
+    @discardableResult
+    func userRemove(songId: String) -> (id: String, title: String)? {
+        guard let e = songs.first(where: { $0.songId == songId }) else { return nil }
+        songs.removeAll { $0.songId == songId }
+        save()
+        return (e.songId, e.title)
     }
 
     /// Drop remapped entries (amrec_ supersede only — see the header doctrine).

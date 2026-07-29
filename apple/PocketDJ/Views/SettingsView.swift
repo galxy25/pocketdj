@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(EditsStore.self) private var edits
     @Environment(CollectionsStore.self) private var collections
+    @Environment(FavoritesStore.self) private var favorites
     // The nuclear reset ends the whole mix (ejects both decks), which also clears the durable
     // mix-deck session — a reset device must launch quiet, not rehydrate yesterday's decks.
     @Environment(MixEngine.self) private var mix
@@ -49,6 +50,7 @@ struct SettingsView: View {
         Form {
             identitySection
             sourcesSection
+            collectionsSection
             streamingSection
             searchSection
             ripSection
@@ -142,18 +144,19 @@ struct SettingsView: View {
         } header: {
             Text("Backup")
         } footer: {
-            Text("A full `.pocketdj.zip` — your pockets, playlists, set lists, sources, and metadata edits. The remote catalog (songs/albums + cover art) is NOT bundled (it re-seeds from the same index), so this is portable across your devices and interchangeable with the web app’s export. Import merges everything in under fresh ids (never overwrites).")
+            Text("A full `.pocketdj.zip` — your pockets, playlists, set lists, sources, metadata edits, and favorites (♥ and un-favorites). The remote catalog (songs/albums + cover art) is NOT bundled (it re-seeds from the same index), so this is portable across your devices and interchangeable with the web app’s export. Collections import under fresh ids; favorites merge by song (newest edit wins).")
         }
     }
 
-    /// Build the full-backup bytes from all three stores.
+    /// Build the full-backup bytes from all the stores (collections + sources + edits + favorites).
     private func makeBackup() throws -> Data {
         try BackupZip.export(sources: settings.sources,
                              pockets: collections.pockets,
                              playlists: collections.playlists,
                              setlists: collections.setlists,
                              folders: collections.folders,
-                             editsData: try edits.exportData())
+                             editsData: try edits.exportData(),
+                             favoritesData: favorites.exportData())
     }
 
     /// Import a full backup: merge collections (fresh ids) + edits, and adopt any new
@@ -166,12 +169,14 @@ struct SettingsView: View {
                                                    folders: payload.folders)
         let addedSources = settings.addSources(payload.sources)
         if let ed = payload.editsData { try? edits.importData(ed); app.applyEdits() }
+        let favs = payload.favoritesData.map { favorites.importMerging(data: $0) } ?? 0
         if addedSources > 0 { Task { await app.reload() } }
 
         var parts = ["\(c.pockets) pocket\(c.pockets == 1 ? "" : "s")",
                      "\(c.playlists) playlist\(c.playlists == 1 ? "" : "s")",
                      "\(c.setlists) set list\(c.setlists == 1 ? "" : "s")",
-                     "\(addedSources) source\(addedSources == 1 ? "" : "s")"]
+                     "\(addedSources) source\(addedSources == 1 ? "" : "s")",
+                     "\(favs) favorite\(favs == 1 ? "" : "s")"]
         if skipped.items > 0 || skipped.art > 0 {
             parts.append("skipped \(skipped.items) catalog item\(skipped.items == 1 ? "" : "s") + \(skipped.art) cover\(skipped.art == 1 ? "" : "s") (resolved remotely)")
         }
@@ -414,6 +419,27 @@ struct SettingsView: View {
     /// Auto-Mix crossfade timing: when to start fading before a track ends, and how long the
     /// fade (volume sweep) lasts. Whole-second steppers — the engine reads these the moment an
     /// auto-mix starts. Persisted on change.
+    private var collectionsSection: some View {
+        Section {
+            HStack {
+                Text("Default recently added")
+                Spacer()
+                TextField("Count", value: $settings.defaultRecentlyAddedCount, format: .number)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 90)
+                    #if os(iOS)
+                    .keyboardType(.numberPad)
+                    #endif
+                    .accessibilityIdentifier("settings-default-recently-added")
+                    .onChange(of: settings.defaultRecentlyAddedCount) { settings.persist() }
+            }
+        } header: {
+            Text("Collections")
+        } footer: {
+            Text("How many items the “Recently added” playlist shows — the last N songs you added to your library (Apple Music adds, ＋Add, imports, and custom audio).")
+        }
+    }
+
     private var mixSection: some View {
         Section {
             Stepper(value: $settings.autoMixLeadSeconds, in: 3...60, step: 1) {

@@ -779,6 +779,19 @@ enum WriteBackMatcher {
 }
 
 @MainActor
+/// Outcome of reconciling an app-created Apple Music playlist to an exact ordered track list
+/// (the destructive remove+reorder half of the hybrid sync).
+enum PlaylistReconcileResult: Equatable {
+    /// Replaced the playlist's contents with `count` ordered tracks; `added`/`removed` are the
+    /// net membership delta vs. what was live before the edit (reorders alone are 0/0) — the
+    /// audit-trail numbers the sync UI reports.
+    case edited(count: Int, added: Int, removed: Int)
+    case alreadyInSync    // live contents already equal the target — no destructive edit performed
+    case notEditable      // the playlist isn't app-created (user-authored) — never replace-all
+    case skippedEmpty     // empty target — refuse to wipe the playlist
+    case unsupported      // platform without MusicKit library editing (macOS/Catalyst)
+}
+
 protocol PlaylistWriteBackTransport: AnyObject {
     /// Can this platform write to library playlists AT ALL? PERMANENT, not a runtime
     /// condition — false on macOS / Catalyst, where `MusicLibrary.add(_:to:)` is
@@ -808,11 +821,17 @@ protocol PlaylistWriteBackTransport: AnyObject {
     /// Set by `resolvePlaylistId` when the answer was a GUESS (duplicate names, no track
     /// overlap to arbitrate). Defaulted so a stub never has to care.
     var lastResolutionNote: String? { get }
+    /// Reconcile an EXISTING app-created library playlist to `orderedAppleMusicIds` — replace its
+    /// contents with exactly that ordered catalog-id list (the remove-missing + reorder half of the
+    /// hybrid sync the append-only Web API can't do). See `PlaylistReconcileResult`. Defaulted to
+    /// `.unsupported` so non-MusicKit platforms + stubs need not implement it.
+    func reconcile(playlistId: String, orderedAppleMusicIds: [String]) async throws -> PlaylistReconcileResult
 }
 
 extension PlaylistWriteBackTransport {
     var lastResolutionNote: String? { nil }
     func resolveCatalogId(for song: WriteBackSong) async throws -> String? { nil }
+    func reconcile(playlistId: String, orderedAppleMusicIds: [String]) async throws -> PlaylistReconcileResult { .unsupported }
 }
 
 #if canImport(MusicKit) && !os(macOS) && !targetEnvironment(macCatalyst)
@@ -996,6 +1015,68 @@ final class MusicKitPlaylistWriteBackTransport: PlaylistWriteBackTransport {
                                       album: $0.albumTitle, durationSec: $0.duration)
         }
         return WriteBackMatcher.bestMatch(for: song, among: candidates)
+    }
+
+    // MARK: Reconcile (the destructive remove + reorder half of the hybrid)
+
+    /// Replace an app-created library playlist's contents with EXACTLY `orderedAppleMusicIds`, in
+    /// order — the half the Apple Music Web API can't do (it's append-only). Guards, in order:
+    ///  1. never edit toward an EMPTY list (a replace-all with [] wipes the playlist);
+    ///  2. only edit a playlist THIS APP can edit (`isEditable`) — never a user-authored Music.app
+    ///     playlist (both a MusicKit permission fact and the core data-safety rule);
+    ///  3. resolve EVERY id to a `Song` FIRST — a partial resolve must NOT edit, or it truncates the
+    ///     playlist to only the resolvable songs; abort instead;
+    ///  4. idempotent — if the live ordered catalog ids already equal the target, skip the edit.
+    /// DEVICE-ONLY (needs authorization + a subscription); untestable on the Simulator.
+    func reconcile(playlistId: String, orderedAppleMusicIds ids: [String]) async throws -> PlaylistReconcileResult {
+        guard canWrite else { throw PlaylistWriteBackError.notAuthorized }
+        guard !ids.isEmpty else { return .skippedEmpty }
+
+        var listReq = MusicLibraryRequest<MusicKit.Playlist>()
+        listReq.filter(matching: \.id, equalTo: MusicItemID(playlistId))
+        listReq.limit = 1
+        guard let playlist = try await listReq.response().items.first else {
+            throw PlaylistWriteBackError.playlistGone(playlistId)
+        }
+
+        // Fetch the live contents FIRST — and make the fetch LOAD-BEARING (a plain `try`, not
+        // `try?`): a transient failure here must skip this playlist for the pass (the caller's
+        // `try?` absorbs the throw; reconcile re-runs next sync), never fall through to a blind
+        // replace-all reported as "+everything". The in-sync no-op check also runs before the
+        // per-song catalog resolution below (a 1,000-song playlist would otherwise pay 1,000
+        // lookups just to learn nothing changed). A live track may carry several catalog ids, so
+        // membership checks the full id set.
+        let tracks = try await playlist.with([.tracks]).tracks.map(Array.init) ?? []
+        let liveIdSets = tracks.map { Set(Self.catalogIds(of: $0)) }
+        if tracks.count == ids.count {
+            let live = tracks.map { Self.catalogIds(of: $0).first(where: ids.contains) ?? "" }
+            if live == ids { return .alreadyInSync }
+        }
+        let added = ids.filter { id in !liveIdSets.contains(where: { $0.contains(id) }) }.count
+        let removed = liveIdSets.filter { set in !ids.contains(where: { set.contains($0) }) }.count
+        // Resolve every id BEFORE editing — abort on any miss so we never truncate.
+        var songs: [MusicKit.Song] = []
+        songs.reserveCapacity(ids.count)
+        for id in ids {
+            var songReq = MusicCatalogResourceRequest<MusicKit.Song>(matching: \.id, equalTo: MusicItemID(id))
+            songReq.limit = 1
+            guard let song = try await songReq.response().items.first else {
+                throw PlaylistWriteBackError.songNotFound(id)
+            }
+            songs.append(song)
+        }
+        // MusicKit has no pre-check for "did this app create this playlist" — a replace-all `edit`
+        // succeeds ONLY on playlists the app owns and THROWS on a user-authored / foreign one. So we
+        // FAIL CLOSED: attempt the edit and, on any failure, leave the playlist untouched and report
+        // `.notEditable`. (DEVICE-VERIFY which playlists qualify — Web-API-created ones may or may
+        // not be MusicKit-editable; if not, only on-device-created playlists reconcile, which is the
+        // safe outcome, never a clobbered user playlist.)
+        do {
+            _ = try await MusicLibrary.shared.edit(playlist, items: songs)
+            return .edited(count: songs.count, added: added, removed: removed)
+        } catch {
+            return .notEditable
+        }
     }
 }
 #endif

@@ -22,16 +22,24 @@ import Observation
 final class CollectionActivityStore {
 
     /// What happened. Raw values are the persisted tokens — never rename.
+    /// `catalogAdd`/`catalogRemove` (appended 2026-07) track adds/removals to the user's
+    /// LIBRARY/CATALOG itself (Discover ＋Add, imports, custom audio, and the Remove-from-Library
+    /// action) — distinct from `.add`/`.remove` which scope to a pocket/playlist. They carry no
+    /// `collection*` fields (like `.heart`). New raw values are decoded leniently (see
+    /// `Document.init(from:)`) so an older build that lacks these cases skips the events instead of
+    /// dropping the whole log.
     enum ActivityKind: String, Codable, CaseIterable, Hashable {
-        case add, heart, unheart, remove
+        case add, heart, unheart, remove, catalogAdd, catalogRemove
 
         /// SF Symbol for the timeline accessory.
         var symbol: String {
             switch self {
-            case .add:     return "plus.circle"
-            case .heart:   return "heart.fill"
-            case .unheart: return "heart.slash"
-            case .remove:  return "minus.circle"
+            case .add:           return "plus.circle"
+            case .heart:         return "heart.fill"
+            case .unheart:       return "heart.slash"
+            case .remove:        return "minus.circle"
+            case .catalogAdd:    return "square.and.arrow.down"
+            case .catalogRemove: return "trash"
             }
         }
     }
@@ -80,8 +88,23 @@ final class CollectionActivityStore {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? collectionActivitySchemaVersion
             installId = (try? c.decode(String.self, forKey: .installId)) ?? UUID().uuidString
-            events = (try? c.decode([ActivityEvent].self, forKey: .events)) ?? []
+            // Decode each event LENIENTLY: a single event whose `kind` is an unknown raw value —
+            // e.g. a NEWER app version (which added an ActivityKind case) synced this doc down to an
+            // OLDER build — would otherwise throw and, via the `try?`, reset the ENTIRE log to []
+            // (and then re-push that truncated log, clobbering peers' events in the cloud). Wrapping
+            // each element so an unknown/malformed event decodes to nil and is dropped keeps every
+            // event this build DOES understand. Forward-compatible for any future kinds too.
+            events = ((try? c.decode([LenientEvent].self, forKey: .events)) ?? []).compactMap(\.event)
         }
+    }
+
+    /// Per-element tolerant wrapper: decodes an `ActivityEvent`, yielding nil instead of throwing
+    /// when the event can't be decoded (chiefly an unknown `ActivityKind` raw value written by a
+    /// newer build). Its own `init(from:)` never throws, so the containing `[LenientEvent]` decode
+    /// always succeeds and simply omits the un-decodable rows.
+    private struct LenientEvent: Decodable {
+        let event: ActivityEvent?
+        init(from decoder: Decoder) throws { event = try? ActivityEvent(from: decoder) }
     }
 
     /// The append-only log, oldest → newest.

@@ -252,6 +252,20 @@ final class SettingsStore {
         }
     }
 
+    /// How many items the "Recently added" virtual playlist shows — the last N the profile added to
+    /// its library (Apple Music library adds ranked by `dateAdded`, unioned with in-app ＋Add /
+    /// imports / custom audio). Configurable in Settings ▸ Collections. Device-global like every
+    /// SettingsStore value; the clamping didSet keeps a bad value from breaking the consumer. See
+    /// `AppModel.recentlyAddedSongIds(limit:)`.
+    var defaultRecentlyAddedCount: Int {
+        didSet {
+            let c = min(max(defaultRecentlyAddedCount, 1), Self.recentlyAddedMaxCount)
+            if c != defaultRecentlyAddedCount { defaultRecentlyAddedCount = c }
+        }
+    }
+    static let recentlyAddedDefaultCount = 3650
+    static let recentlyAddedMaxCount = 100_000
+
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
 
@@ -311,6 +325,8 @@ final class SettingsStore {
         self.cloudSyncEnabled = data.cloudSyncEnabled ?? true
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                              1), CollectionsStore.writeBackBackfillMaxDays)
+        self.defaultRecentlyAddedCount = min(max(data.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
+                                                 1), Self.recentlyAddedMaxCount)
 
         // UI-test seam: pin the Mix deck layout deterministically, independent of the persisted
         // value, so a test can exercise a specific arrangement (or hold the classic side-by-side
@@ -445,7 +461,8 @@ final class SettingsStore {
             studioCountInEnabled: studioCountInEnabled,
             syncConvertedPockets: syncConvertedPockets,
             cloudSyncEnabled: cloudSyncEnabled,
-            writeBackBackfillDays: writeBackBackfillDays)
+            writeBackBackfillDays: writeBackBackfillDays,
+            defaultRecentlyAddedCount: defaultRecentlyAddedCount)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -500,6 +517,8 @@ final class SettingsStore {
         cloudSyncEnabled = d.cloudSyncEnabled ?? true
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                         1), CollectionsStore.writeBackBackfillMaxDays)
+        defaultRecentlyAddedCount = min(max(d.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
+                                            1), Self.recentlyAddedMaxCount)
     }
 
     private static func load(from defaults: UserDefaults) -> SettingsData {
@@ -590,6 +609,9 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced + clamped to 1…90 at the read sites,
     /// default 2 — the Apple Music write-back backfill look-back window).
     var writeBackBackfillDays: Int?
+    /// Optional so older blobs still decode (coalesced + clamped at the read sites, default 3650 —
+    /// how many items the "Recently added" virtual playlist shows).
+    var defaultRecentlyAddedCount: Int?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -632,5 +654,6 @@ struct SettingsData: Codable {
         studioCountInEnabled: nil,
         syncConvertedPockets: nil,
         cloudSyncEnabled: nil,
-        writeBackBackfillDays: nil)
+        writeBackBackfillDays: nil,
+        defaultRecentlyAddedCount: nil)
 }

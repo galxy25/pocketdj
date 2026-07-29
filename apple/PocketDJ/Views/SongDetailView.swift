@@ -12,6 +12,9 @@ struct SongDetailView: View {
     let song: IndexSong
     @State private var showEdit = false
     @State private var showAdd = false
+    /// "Remove from Library" (PocketDJ catalog) confirmation — only for user-added provisional
+    /// items (Discover ＋Add / Imported). Distinct from the Apple Music library affordance below.
+    @State private var showRemoveFromLibraryConfirm = false
     /// Apple Music LIBRARY affordance (the platter long-press ask): resolved
     /// membership for AM-backed tracks → "in your library" / ＋ Add / open-in-Music.
     @State private var libraryResolution: AppleMusicResolution?
@@ -45,6 +48,7 @@ struct SongDetailView: View {
                 if let lyrics, !lyrics.isEmpty { lyricsSection(lyrics) }
                 playback
                 appleMusicLibrary
+                catalogLibrary
             }
             .padding(20)
             .frame(maxWidth: 760, alignment: .leading)
@@ -71,6 +75,16 @@ struct SongDetailView: View {
         }
         .sheet(isPresented: $showEdit) { EditSongView(song: current) }
         .sheet(isPresented: $showAdd) { AddToCollectionView(item: .song(current.id)) }
+        .confirmationDialog("Remove from Library?", isPresented: $showRemoveFromLibraryConfirm,
+                            titleVisibility: .visible) {
+            Button("Remove from Library", role: .destructive) {
+                app.removeFromLibrary(songId: current.id)
+                dismiss()   // the song is gone from the catalog — leave the now-orphaned detail view
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("“\(current.name)” will be removed from your library and won't appear in Recently Added. This won't delete it from Apple Music.")
+        }
         // Lyrics: fetch-once + on-disk cache, only when this song's `lyricsStatus == "found"`.
         .task(id: current.id) { lyrics = await lyricsStore?.lyrics(for: current) }
         // Refresh the rips manifest so the stem glyph reflects the latest stemmed state (a job
@@ -122,6 +136,25 @@ struct SongDetailView: View {
                 if let libraryError {
                     Text(libraryError).font(.caption).foregroundStyle(Theme.danger)
                 }
+                Spacer()
+            }
+        }
+    }
+
+    /// The PocketDJ-catalog "Remove from Library" row — shown ONLY for user-added provisional items
+    /// (Discover ＋Add / Imported transfers), the inverse of the ＋Add gesture. Removing drops the
+    /// item from the live catalog, logs a catalog-remove History event, and (via the dedupe) takes
+    /// it out of Recently Added. Real catalog sources and profile custom-audio are not offered here.
+    @ViewBuilder private var catalogLibrary: some View {
+        if app.isRemovableFromLibrary(songId: current.id) {
+            Divider().overlay(Theme.border)
+            HStack(spacing: 10) {
+                Button(role: .destructive) {
+                    showRemoveFromLibraryConfirm = true
+                } label: {
+                    Label("Remove from Library", systemImage: "trash")
+                }
+                .accessibilityIdentifier("song-remove-from-library")
                 Spacer()
             }
         }

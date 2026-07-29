@@ -45,6 +45,85 @@ final class AppModelSourceTests: XCTestCase {
         XCTAssertEqual(app.source(ofSong: "sng_1"), "Test Crate")
         XCTAssertNil(app.source(ofAlbum: "nope"))
     }
+
+    // MARK: - Recently added (virtual playlist)
+
+    private func songWithDateAdded(_ id: String, dateAdded: Double) -> IndexSong {
+        try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization.data(
+            withJSONObject: ["id": id, "name": id, "artist": "A", "dateAdded": dateAdded]))
+    }
+
+    /// recentlyAddedSongIds unions add-times, ranks NEWEST FIRST, dedupes to resolvable catalog
+    /// songs, and honors the cap; recentlyAddedPlaylist wraps it as the reserved SourcePlaylist.
+    func testRecentlyAddedRanksNewestFirstAndCaps() {
+        let app = AppModel()
+        // Inject catalog songs carrying `dateAdded` (the Apple-Music-library-add ranking signal).
+        app.injectDiscoverAdd(songWithDateAdded("s1", dateAdded: 1_000))
+        app.injectDiscoverAdd(songWithDateAdded("s2", dateAdded: 3_000))
+        app.injectDiscoverAdd(songWithDateAdded("s3", dateAdded: 2_000))
+
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 10), ["s2", "s3", "s1"], "newest first")
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 2), ["s2", "s3"], "capped at N")
+        XCTAssertTrue(app.recentlyAddedSongIds(limit: 0).isEmpty, "zero limit → empty")
+
+        let ra = app.recentlyAddedPlaylist(limit: 10)
+        XCTAssertEqual(ra?.playlist.id, AppModel.recentlyAddedPlaylistId)
+        XCTAssertEqual(ra?.playlist.songIds, ["s2", "s3", "s1"])
+        XCTAssertEqual(ra?.sourceName, AppModel.recentlyAddedName)
+    }
+
+    /// Per-collection sort/filter: `sortedFilteredSongs` sorts a collection's songs by a BrowseState
+    /// sort key (date added asc/desc) and preserves the stored order at default state.
+    func testCollectionSortedFilteredSongsByDateAdded() {
+        let app = AppModel()
+        app.injectDiscoverAdd(songWithDateAdded("s1", dateAdded: 1_000))
+        app.injectDiscoverAdd(songWithDateAdded("s2", dateAdded: 3_000))
+        app.injectDiscoverAdd(songWithDateAdded("s3", dateAdded: 2_000))
+        let browse = BrowseState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
+                                 persistenceKey: "pdj.collection.test")
+        browse.kind = .song
+
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .desc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id),
+                       ["s2", "s3", "s1"], "newest first")
+
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .asc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id),
+                       ["s1", "s3", "s2"], "oldest first")
+
+        // Default (no sort keys) preserves the collection's stored order.
+        browse.sortKeys = []
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s2", "s1", "s3"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id),
+                       ["s2", "s1", "s3"])
+
+        // A song with NO dateAdded sorts to the END regardless of direction ("add at the end").
+        app.injectDiscoverAdd(IndexSong.minimal(id: "s4", name: "s4", artist: "A"))
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .desc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3", "s4"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id).last, "s4")
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .asc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3", "s4"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id).last, "s4")
+    }
+
+    /// An empty library yields no synthetic playlist (the row hides), and an ejected song drops out.
+    func testRecentlyAddedEmptyAndAfterEject() {
+        let app = AppModel()
+        XCTAssertNil(app.recentlyAddedPlaylist(limit: 10), "no adds → no row")
+
+        let discover = DiscoverAddsStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-ra-\(UUID().uuidString).json"))
+        app.discoverAdds = discover
+        discover.onAdded = { song in app.injectDiscoverAdd(song) }
+        discover.add(songId: "amrec_r", appleMusicId: "1", title: "R", artist: "A")
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 10), ["amrec_r"])
+
+        app.removeFromLibrary(songId: "amrec_r")
+        XCTAssertTrue(app.recentlyAddedSongIds(limit: 10).isEmpty, "ejected song drops out of Recently Added")
+    }
 }
 
 /// The explicit on-disk catalog cache (OFFLINE support): a successful `loadIndex` persists the

@@ -141,6 +141,11 @@ enum Fields {
               appliesTo: [.song], ops: [.eq], hasOptions: false),
         Field(id: "sentiment", label: "Sentiment", kind: .stringArray, numeric: false, sortable: false,
               appliesTo: [.song], ops: [.inList, .eq, .neq], hasOptions: true),
+        // Epoch-ms the song was added to the library (Apple Music "Date Added"; nil for most
+        // vinyl/digital rows → nulls-last). Sortable gives newest/oldest ordering; `.between`
+        // powers a date-range filter (rendered as DatePickers by the FilterSheet, like Last played).
+        Field(id: "dateAdded", label: "Date added", kind: .number, numeric: true, sortable: true,
+              appliesTo: [.song], ops: [.between], hasOptions: false),
         // HISTORY-only. Epoch-ms of the play. `.between` powers the date-range filter ("played
         // between May and August 2026"); sortable gives most/least-recently ordering. The
         // FilterSheet renders DatePickers for this field (see its `.between` branch).
@@ -188,6 +193,7 @@ enum Fields {
             case "camelot": return s.camelot.map { .string($0) } ?? .none
             case "explicit": return .bool(s.explicit ?? false)
             case "sentiment": return .strings(s.sentimentKeywords ?? [])
+            case "dateAdded": return s.dateAdded.map { .number($0) } ?? .none
             // History: the play event's timestamp (nil for non-history rows → nulls-last).
             case "lastPlayedAt": return play.map { .number($0.playedAt) } ?? .none
             default: return .none
