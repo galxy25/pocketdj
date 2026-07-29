@@ -2,8 +2,10 @@ import XCTest
 @testable import PocketDJ
 
 /// WS2 Apple Music playlist sync — the testable (non-device) logic: the PUSH payload resolution
-/// (PocketDJ playlists -> Apple Music catalog ids, dropping the un-hostable) and the PULL decode.
-/// The token mint + live HTTP are device-only and verified separately (server side via curl).
+/// (PocketDJ playlists -> Apple Music catalog ids, dropping the un-hostable), the PULL/PUSH wire
+/// decodes (including the idempotent-push row shape and job progress), and the audit-trail
+/// summaries. The token mint + live HTTP are device-only and verified separately (server side via
+/// curl).
 @MainActor
 final class AMPlaylistSyncTests: XCTestCase {
 
@@ -52,12 +54,103 @@ final class AMPlaylistSyncTests: XCTestCase {
         XCTAssertNil(pl.trackTitles)
     }
 
-    /// A push result (created + errors) decodes.
+    /// The IDEMPOTENT push result decodes: per-playlist rows carry created-vs-matched and how many
+    /// tracks this sync actually appended (the "only add the missing 209" contract).
     func testPushResultDecodes() throws {
         let r = try JSONDecoder().decode(AMPlaylistSyncClient.PushResult.self, from: Data("""
-        {"created":[{"name":"Mix","id":"p.abc"}],"errors":[{"name":"Bad","error":"AM POST -> 403"}]}
+        {"playlists":[{"name":"comfort zone","id":"p.abc","created":false,"added":209,"total":1000},
+                      {"name":"Fresh","id":"p.def","created":true,"added":42,"total":42}],
+         "errors":[{"name":"Bad","error":"AM POST -> 403"}]}
         """.utf8))
-        XCTAssertEqual(r.created.first?.id, "p.abc")
+        XCTAssertEqual(r.playlists.count, 2)
+        XCTAssertEqual(r.playlists[0].name, "comfort zone")
+        XCTAssertFalse(r.playlists[0].created)          // matched an existing playlist — no duplicate
+        XCTAssertEqual(r.playlists[0].added, 209)       // topped up only the missing tracks
+        XCTAssertEqual(r.playlists[0].total, 1000)
+        XCTAssertTrue(r.playlists[1].created)
         XCTAssertEqual(r.errors.first?.name, "Bad")
+    }
+
+    /// Job progress decodes and renders a human step line for the sync UI.
+    func testJobProgressDisplay() throws {
+        let p = try JSONDecoder().decode(AMPlaylistSyncClient.JobProgress.self, from: Data("""
+        {"label":"Reading “Roadtrip”","done":37,"total":126}
+        """.utf8))
+        XCTAssertEqual(p.display, "Reading “Roadtrip” (37/126)")
+        let open = try JSONDecoder().decode(AMPlaylistSyncClient.JobProgress.self, from: Data("""
+        {"label":"Listing Apple Music playlists","done":200,"total":null}
+        """.utf8))
+        XCTAssertEqual(open.display, "Listing Apple Music playlists (200)")
+    }
+
+    /// The audit-trail summary lines compress the per-playlist changes faithfully.
+    func testSummaryTexts() {
+        XCTAssertEqual(
+            PlaylistAppleMusicSync.pushSummaryText(created: 2, updated: 1, addedTracks: 209, unchanged: 9, failed: 0),
+            "created 2 · updated 1 (+209 songs) · 9 already in sync")
+        XCTAssertEqual(
+            PlaylistAppleMusicSync.pushSummaryText(created: 0, updated: 0, addedTracks: 0, unchanged: 0, failed: 0),
+            "Nothing to push")
+        let changes: [PlaylistAppleMusicSync.SyncReport.Change] = [
+            .init(kind: "created", name: "Fresh", added: 42, removed: 0, detail: nil),
+            .init(kind: "updated", name: "comfort zone", added: 209, removed: 0, detail: nil),
+            .init(kind: "reconciled", name: "Mix", added: 0, removed: 3, detail: nil),
+        ]
+        XCTAssertEqual(PlaylistAppleMusicSync.reportSummaryText(changes: changes, errors: []),
+                       "1 created · 1 updated · 1 reconciled")
+        XCTAssertEqual(PlaylistAppleMusicSync.reportSummaryText(changes: [], errors: ["boom"]),
+                       "Everything in sync · 1 error")
+    }
+
+    /// normName mirrors the server's rule (trim + lowercase + collapse whitespace) — client and
+    /// server must agree on what "same name" means or the pull re-imports what the push merged.
+    func testNormName() {
+        XCTAssertEqual(PlaylistAppleMusicSync.normName("Sap "), "sap")            // Library.xml trailing space
+        XCTAssertEqual(PlaylistAppleMusicSync.normName("  Comfort   Zone "), "comfort zone")
+        XCTAssertEqual(PlaylistAppleMusicSync.normName("MIX"), "mix")
+    }
+
+    /// Same-named local playlists merge into ONE outgoing list (ordered union, duplicate ids
+    /// dropped) — otherwise push and reconcile fight over the single remote playlist forever.
+    func testResolveOutgoingMergesNormNameCollisions() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("s2", am: "222"))
+        app.injectDiscoverAdd(song("s3", am: "333"))
+        let collections = CollectionsStore(fileURL: tempURL("col2"))
+        collections.app = app
+        _ = collections.createPlaylist("Sap ", songIds: ["s1", "s2"])   // trailing space
+        _ = collections.createPlaylist("Sap", songIds: ["s2", "s3"])    // same normName, overlap s2
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertEqual(out.count, 1)                                    // merged, not two
+        XCTAssertEqual(out.first?.trackCatalogIds, ["111", "222", "333"]) // ordered union, no dup 222
+    }
+
+    /// Pull-import skips normName matches of existing locals and collapses same-named remote
+    /// copies (old-bug duplicates) to the fullest one — k copies import once, not k times.
+    func testNewImportsDedupesAndSkipsExisting() {
+        let remote: [AMPlaylistSyncClient.RemotePlaylist] = [
+            .init(id: "p.1", name: "Sap", canEdit: true, description: nil, trackCatalogIds: ["1"], trackTitles: nil),
+            .init(id: "p.2", name: "comfort zone", canEdit: true, description: nil, trackCatalogIds: ["1", "2"], trackTitles: nil),
+            .init(id: "p.3", name: "Comfort Zone", canEdit: true, description: nil, trackCatalogIds: ["1", "2", "3"], trackTitles: nil),
+            .init(id: "p.4", name: "Fresh", canEdit: true, description: nil, trackCatalogIds: ["9"], trackTitles: nil),
+        ]
+        // Local already has "Sap " (normName "sap") -> remote "Sap" must NOT re-import.
+        let existing = Set([PlaylistAppleMusicSync.normName("Sap ")])
+        let imports = PlaylistAppleMusicSync.newImports(remote: remote, existingNames: existing)
+        XCTAssertEqual(imports.map(\.id), ["p.3", "p.4"])   // fullest comfort-zone copy + Fresh
+    }
+
+    /// A sync report round-trips through Codable (the persisted audit-trail format).
+    func testSyncReportCodableRoundTrip() throws {
+        let report = PlaylistAppleMusicSync.SyncReport(
+            dateMs: 1_785_400_000_000,
+            changes: [.init(kind: "updated", name: "comfort zone", added: 209, removed: 0,
+                            detail: "209 of 1000 tracks sent")],
+            errors: [], summary: "1 updated")
+        let data = try JSONEncoder().encode([report])
+        let back = try JSONDecoder().decode([PlaylistAppleMusicSync.SyncReport].self, from: data)
+        XCTAssertEqual(back, [report])
     }
 }

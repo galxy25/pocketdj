@@ -782,7 +782,10 @@ enum WriteBackMatcher {
 /// Outcome of reconciling an app-created Apple Music playlist to an exact ordered track list
 /// (the destructive remove+reorder half of the hybrid sync).
 enum PlaylistReconcileResult: Equatable {
-    case edited(Int)      // replaced the playlist's contents with N ordered tracks
+    /// Replaced the playlist's contents with `count` ordered tracks; `added`/`removed` are the
+    /// net membership delta vs. what was live before the edit (reorders alone are 0/0) — the
+    /// audit-trail numbers the sync UI reports.
+    case edited(count: Int, added: Int, removed: Int)
     case alreadyInSync    // live contents already equal the target — no destructive edit performed
     case notEditable      // the playlist isn't app-created (user-authored) — never replace-all
     case skippedEmpty     // empty target — refuse to wipe the playlist
@@ -1036,6 +1039,21 @@ final class MusicKitPlaylistWriteBackTransport: PlaylistWriteBackTransport {
             throw PlaylistWriteBackError.playlistGone(playlistId)
         }
 
+        // Fetch the live contents FIRST — and make the fetch LOAD-BEARING (a plain `try`, not
+        // `try?`): a transient failure here must skip this playlist for the pass (the caller's
+        // `try?` absorbs the throw; reconcile re-runs next sync), never fall through to a blind
+        // replace-all reported as "+everything". The in-sync no-op check also runs before the
+        // per-song catalog resolution below (a 1,000-song playlist would otherwise pay 1,000
+        // lookups just to learn nothing changed). A live track may carry several catalog ids, so
+        // membership checks the full id set.
+        let tracks = try await playlist.with([.tracks]).tracks.map(Array.init) ?? []
+        let liveIdSets = tracks.map { Set(Self.catalogIds(of: $0)) }
+        if tracks.count == ids.count {
+            let live = tracks.map { Self.catalogIds(of: $0).first(where: ids.contains) ?? "" }
+            if live == ids { return .alreadyInSync }
+        }
+        let added = ids.filter { id in !liveIdSets.contains(where: { $0.contains(id) }) }.count
+        let removed = liveIdSets.filter { set in !ids.contains(where: { set.contains($0) }) }.count
         // Resolve every id BEFORE editing — abort on any miss so we never truncate.
         var songs: [MusicKit.Song] = []
         songs.reserveCapacity(ids.count)
@@ -1047,11 +1065,6 @@ final class MusicKitPlaylistWriteBackTransport: PlaylistWriteBackTransport {
             }
             songs.append(song)
         }
-        // Idempotent no-op: skip when the live ordered catalog ids already match the target.
-        if let tracks = (try? await playlist.with([.tracks]))?.tracks, tracks.count == ids.count {
-            let live = tracks.map { Self.catalogIds(of: $0).first(where: ids.contains) ?? "" }
-            if live == ids { return .alreadyInSync }
-        }
         // MusicKit has no pre-check for "did this app create this playlist" — a replace-all `edit`
         // succeeds ONLY on playlists the app owns and THROWS on a user-authored / foreign one. So we
         // FAIL CLOSED: attempt the edit and, on any failure, leave the playlist untouched and report
@@ -1060,7 +1073,7 @@ final class MusicKitPlaylistWriteBackTransport: PlaylistWriteBackTransport {
         // safe outcome, never a clobbered user playlist.)
         do {
             _ = try await MusicLibrary.shared.edit(playlist, items: songs)
-            return .edited(songs.count)
+            return .edited(count: songs.count, added: added, removed: removed)
         } catch {
             return .notEditable
         }

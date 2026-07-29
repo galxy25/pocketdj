@@ -174,6 +174,11 @@ struct PocketDJApp: App {
     /// Durable outbound queue for "added a song to an Apple Music source playlist" — the
     /// write-back half of source-playlist adds (see PlaylistWriteBack).
     @State private var playlistWriteBack: PlaylistWriteBack
+    /// WS2 bidirectional PocketDJ ↔ Apple Music playlist sync. APP-SCOPED on purpose: a per-panel
+    /// `@State` instance would (a) let a re-entered Settings panel start a second concurrent sync
+    /// (per-instance `isSyncing`) and (b) fork the persisted audit trail across stale in-memory
+    /// copies. One instance = one gate + one trail; a sync also keeps reporting after navigation.
+    @State private var playlistSync = PlaylistAppleMusicSync()
     /// Provisional Discover-add catalog entries (eventual consistency) — see DiscoverAddsStore.
     @State private var discoverAdds: DiscoverAddsStore
     /// Provisional IMPORTED catalog entries (cross-user playlist/pocket transfers) — see
@@ -906,6 +911,7 @@ struct PocketDJApp: App {
                 .environment(favorites)
                 .environment(favoritesSync)
                 .environment(playlistWriteBack)
+                .environment(playlistSync)
                 .environment(accountDeletion)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
