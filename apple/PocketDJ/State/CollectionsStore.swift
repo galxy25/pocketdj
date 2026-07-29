@@ -1741,42 +1741,13 @@ final class CollectionsStore {
     /// the referenced item is part of the same import. Setlists are not imported.
     func importCollection(data: Data) throws {
         let doc = try CollectionsCodec.decode(data)
-
-        // 1) Allocate fresh ids for every imported pocket + playlist up-front so
-        //    intra-import references can be remapped.
-        var pocketIdMap: [String: String] = [:]
-        for p in doc.pockets { pocketIdMap[p.id] = CollectionsFactory.newPocketId() }
-        var playlistIdMap: [String: String] = [:]
-        for pl in doc.playlists { playlistIdMap[pl.id] = CollectionsFactory.newPlaylistId() }
-        // CRITIC-G: carry folders + remap their ids (a full-doc import preserves grouping).
-        var folderIdMap: [String: String] = [:]
-        for f in doc.folders { folderIdMap[f.id] = CollectionsFactory.newFolderId() }
-
-        // 2) Pockets: remap id + child refs + folder ref (drop refs not in the import).
-        for var p in doc.pockets {
-            p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
-            p.childPocketIds = p.childPocketIds.compactMap { pocketIdMap[$0] }
-            p.folderId = p.folderId.flatMap { folderIdMap[$0] }
-            p.createdAt = now; p.updatedAt = now
-            pockets.append(p)
-        }
-
-        // 3) Folders: remap id (kept only when present in the import).
-        for var f in doc.folders {
-            f.id = folderIdMap[f.id] ?? CollectionsFactory.newFolderId()
-            f.createdAt = now; f.updatedAt = now
-            folders.append(f)
-        }
-
-        // 4) Playlists: remap id + folder ref (drop a folder ref not in the import) +
-        //    freshen every node id (recursively for sub-sequences).
-        for var pl in doc.playlists {
-            pl.id = playlistIdMap[pl.id] ?? CollectionsFactory.newPlaylistId()
-            pl.folderId = pl.folderId.flatMap { folderIdMap[$0] }
-            pl.sequences = pl.sequences.map { remintNode($0, pocketIdMap: pocketIdMap) }
-            pl.createdAt = now; pl.updatedAt = now
-            playlists.append(pl)
-        }
+        // Match-by-id merge (same idempotent doctrine as mergeBackupCollections): ids are PRESERVED,
+        // so an item that already exists is merged (members unioned, songs deduped) rather than
+        // duplicated, and its intra-doc references (childPocketIds, pocket nodes, folderId, setlist
+        // playlistId) stay valid without remapping. A re-import is a no-op.
+        for f in doc.folders { upsertFolder(f) }
+        for p in doc.pockets { upsertPocket(p) }
+        for pl in doc.playlists { upsertPlaylist(pl) }
         save()
     }
 
@@ -1884,47 +1855,129 @@ final class CollectionsStore {
     /// playlist pocket nodes) and re-pointing setlists at their reminted playlists.
     /// Returns the number of pockets/playlists/setlists added.
     @discardableResult
+    // MARK: - Idempotent import merge (match-by-id; never duplicate a collection or a song in it)
+
+    /// Restore/import merges by PRESERVING ids and matching an incoming collection to the existing
+    /// one of the same id: a re-import of the same backup is a no-op, and a MODIFIED re-import unions
+    /// in only the genuinely-new members (songs/albums/child-pockets/nodes) — it never creates a
+    /// duplicate collection or re-adds a song already present. (This aligns the file backup with the
+    /// CloudKit sync's stable-id model; the old behaviour reminted every id and appended, so a
+    /// second import duplicated everything.)
     func mergeBackupCollections(pockets incPockets: [Pocket], playlists incPlaylists: [Playlist],
                                 setlists incSetlists: [Setlist],
                                 folders incFolders: [PlaylistFolder] = []) -> (pockets: Int, playlists: Int, setlists: Int) {
-        var pocketIdMap: [String: String] = [:]
-        for p in incPockets { pocketIdMap[p.id] = CollectionsFactory.newPocketId() }
-        var playlistIdMap: [String: String] = [:]
-        for pl in incPlaylists { playlistIdMap[pl.id] = CollectionsFactory.newPlaylistId() }
-        // CRITIC-G: carry folders + remap their ids (preserve playlist grouping on merge).
-        var folderIdMap: [String: String] = [:]
-        for f in incFolders { folderIdMap[f.id] = CollectionsFactory.newFolderId() }
-
-        for var p in incPockets {
-            p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
-            p.childPocketIds = p.childPocketIds.compactMap { pocketIdMap[$0] }
-            p.folderId = p.folderId.flatMap { folderIdMap[$0] }
-            p.createdAt = now; p.updatedAt = now
-            pockets.append(p)
-        }
-        for var f in incFolders {
-            f.id = folderIdMap[f.id] ?? CollectionsFactory.newFolderId()
-            f.createdAt = now; f.updatedAt = now
-            folders.append(f)
-        }
-        for var pl in incPlaylists {
-            pl.id = playlistIdMap[pl.id] ?? CollectionsFactory.newPlaylistId()
-            pl.folderId = pl.folderId.flatMap { folderIdMap[$0] }
-            pl.sequences = pl.sequences.map { remintNode($0, pocketIdMap: pocketIdMap) }
-            pl.createdAt = now; pl.updatedAt = now
-            playlists.append(pl)
-        }
-        // Setlists: re-point at the reminted playlist (drop orphans whose playlist
-        // wasn't in the import) and mint fresh setlist ids.
-        var addedSetlists = 0
-        for var sl in incSetlists {
-            guard let newPid = playlistIdMap[sl.playlistId] else { continue }
-            sl = Setlist(id: CollectionsFactory.newSetlistId(), playlistId: newPid, name: sl.name,
-                         seed: sl.seed, generatedAt: sl.generatedAt, totalMs: sl.totalMs, tracks: sl.tracks)
-            setlists.append(sl); addedSetlists += 1
-        }
+        for f in incFolders { upsertFolder(f) }
+        for p in incPockets { upsertPocket(p) }
+        for pl in incPlaylists { upsertPlaylist(pl) }
+        // Setlists are frozen snapshots — keep one only when its parent playlist is present (drop
+        // orphans, as before); upsert dedupes by setlist id so a re-import doesn't duplicate them.
+        for sl in incSetlists where playlists.contains(where: { $0.id == sl.playlistId }) { upsertSetlist(sl) }
         save()
-        return (incPockets.count, incPlaylists.count, addedSetlists)
+        // Report the number PROCESSED (added or merged) — every incoming item is restored either way.
+        return (incPockets.count, incPlaylists.count, incSetlists.count)
+    }
+
+    /// Union `incoming` into `base`, preserving order and appending only ids not already present.
+    private func unionIds(_ base: [String], _ incoming: [String]) -> [String] {
+        var seen = Set(base); var out = base
+        for id in incoming where seen.insert(id).inserted { out.append(id) }
+        return out
+    }
+
+    /// Content-identity of a LEAF node — for de-duping songs/albums/pockets/text within a chapter.
+    /// Sequence (chapter) nodes are matched by nodeId, so they return nil here.
+    private func nodeContentKey(_ n: PlaylistNode) -> String? {
+        switch n.kind {
+        case .song:     return n.songId.map { "s:\($0)" }
+        case .album:    return n.albumId.map { "a:\($0)" }
+        case .pocket:   return n.pocketId.map { "p:\($0)" }
+        case .text:     return n.text.map { "t:\($0)" }
+        case .sequence: return nil
+        }
+    }
+
+    /// Merge one imported chapter's leaves into an existing chapter: append imported leaves whose
+    /// CONTENT isn't already present (so a re-import is a no-op and a modified re-import adds only
+    /// new items, never duplicating a song).
+    private func mergeChapterChildren(into existing: PlaylistNode, from incoming: PlaylistNode) -> PlaylistNode {
+        var merged = existing
+        var kids = existing.children ?? []
+        var present = Set(kids.compactMap(nodeContentKey))
+        for child in incoming.children ?? [] {
+            guard let key = nodeContentKey(child) else { continue }  // never nest a chapter in a chapter
+            if present.insert(key).inserted { kids.append(child) }
+        }
+        merged.children = kids
+        return merged
+    }
+
+    /// Add or MERGE an imported pocket by id (idempotent).
+    @discardableResult
+    private func upsertPocket(_ inc: Pocket) -> Bool {
+        guard let i = pockets.firstIndex(where: { $0.id == inc.id }) else {
+            var p = inc
+            if p.createdAt == 0 { p.createdAt = now }
+            p.updatedAt = now
+            pockets.append(p)
+            return true
+        }
+        var p = pockets[i]
+        p.songIds = unionIds(p.songIds, inc.songIds)
+        p.albumIds = unionIds(p.albumIds, inc.albumIds)
+        p.childPocketIds = unionIds(p.childPocketIds, inc.childPocketIds)
+        let haveNote = Set(p.notes.map(\.id))
+        p.notes += inc.notes.filter { !haveNote.contains($0.id) }
+        for (k, v) in inc.songRepeats where p.songRepeats[k] == nil { p.songRepeats[k] = v }
+        p.updatedAt = now
+        pockets[i] = p
+        return false
+    }
+
+    /// Add or MERGE an imported playlist by id (idempotent). Chapters match by their sequence
+    /// nodeId; leaves within a matched chapter union by content; genuinely-new chapters append.
+    @discardableResult
+    private func upsertPlaylist(_ inc: Playlist) -> Bool {
+        guard let i = playlists.firstIndex(where: { $0.id == inc.id }) else {
+            var pl = inc
+            if pl.createdAt == 0 { pl.createdAt = now }
+            pl.updatedAt = now
+            playlists.append(pl)
+            return true
+        }
+        var pl = playlists[i]
+        var seqs = pl.sequences
+        var byNodeId = Dictionary(seqs.enumerated().map { ($1.nodeId, $0) }, uniquingKeysWith: { a, _ in a })
+        for incSeq in inc.sequences {
+            if let idx = byNodeId[incSeq.nodeId] {
+                seqs[idx] = mergeChapterChildren(into: seqs[idx], from: incSeq)
+            } else {
+                seqs.append(incSeq)
+                byNodeId[incSeq.nodeId] = seqs.count - 1
+            }
+        }
+        pl.sequences = seqs
+        pl.updatedAt = now
+        playlists[i] = pl
+        return false
+    }
+
+    /// Add an imported folder by id if not already present (idempotent; folders carry no members).
+    @discardableResult
+    private func upsertFolder(_ inc: PlaylistFolder) -> Bool {
+        guard !folders.contains(where: { $0.id == inc.id }) else { return false }
+        var f = inc
+        if f.createdAt == 0 { f.createdAt = now }
+        f.updatedAt = now
+        folders.append(f)
+        return true
+    }
+
+    /// Add an imported (frozen) setlist by id if not already present. Frozen snapshots aren't merged.
+    @discardableResult
+    private func upsertSetlist(_ inc: Setlist) -> Bool {
+        guard !setlists.contains(where: { $0.id == inc.id }) else { return false }
+        setlists.append(inc)
+        return true
     }
 
     /// The kind of an imported file, sniffed from its bytes (zip manifest `kind`, or a
@@ -1976,15 +2029,6 @@ final class CollectionsStore {
         }
     }
 
-    /// Deep-copy a node with a fresh nodeId, recursing into children; remap any
-    /// pocket ref to its imported counterpart when present.
-    private func remintNode(_ node: PlaylistNode, pocketIdMap: [String: String]) -> PlaylistNode {
-        var n = node
-        n.nodeId = CollectionsFactory.newNodeId()
-        if let pid = n.pocketId, let mapped = pocketIdMap[pid] { n.pocketId = mapped }
-        if let kids = n.children { n.children = kids.map { remintNode($0, pocketIdMap: pocketIdMap) } }
-        return n
-    }
 
     // MARK: Persistence
 
