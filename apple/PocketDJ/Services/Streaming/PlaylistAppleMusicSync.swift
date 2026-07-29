@@ -26,12 +26,25 @@ final class PlaylistAppleMusicSync {
 
     // MARK: Live progress
 
-    struct SyncStep: Identifiable, Equatable {
-        enum State: Equatable { case running, done, failed }
+    struct SyncStep: Identifiable, Equatable, Codable {
+        /// String-raw + Codable so the CURRENT RUN persists to disk: the step list must survive
+        /// an app kill mid-sync (Levi 2026-07-29 — "show progress if I go to another app").
+        /// `.interrupted` is what a persisted `.running` becomes on relaunch: the process died
+        /// with the step underway; the stored jobId means tapping Sync RESUMES it.
+        enum State: String, Equatable, Codable { case running, done, failed, interrupted }
         let id: Int
         var label: String
         var detail: String?
         var state: State
+    }
+
+    /// The persisted current/most-recent run: hydrated at launch so the last sync — finished,
+    /// failed, or interrupted mid-flight — is always inspectable from Settings ▸ Sync.
+    private struct RunSnapshot: Codable, Equatable {
+        var startedMs: Double
+        var updatedMs: Double
+        var steps: [SyncStep]
+        var completed: Bool
     }
 
     // MARK: Audit trail
@@ -59,9 +72,15 @@ final class PlaylistAppleMusicSync {
     private(set) var lastResult: String?
     /// Newest-first, capped at `auditCap`, persisted across launches.
     private(set) var auditTrail: [SyncReport] = []
+    /// When the current/most-recent run started (ms epoch) — nil until the first sync ever.
+    private(set) var currentRunStartedMs: Double?
+    /// False while a run is live AND when the app died mid-run (the "interrupted" state the UI
+    /// flags as resumable); true once a run ends — success or failure.
+    private(set) var currentRunCompleted = true
 
     private static let auditCap = 20
     private let auditURL: URL
+    private let runURL: URL
     private let client: AMPlaylistSyncClient
     /// On-device MusicKit transport for the destructive (remove + reorder) half of the hybrid —
     /// nil on macOS/Catalyst (library edits are unavailable there), where push stays create+append.
@@ -69,11 +88,27 @@ final class PlaylistAppleMusicSync {
 
     init(client: AMPlaylistSyncClient? = nil,
          transport: (any PlaylistWriteBackTransport)? = nil,
-         auditURL: URL? = nil) {
+         auditURL: URL? = nil,
+         runURL: URL? = nil) {
         self.client = client ?? AMPlaylistSyncClient()
         self.transport = transport ?? PlaylistWriteBack.makeDefaultTransport()
         self.auditURL = auditURL ?? Self.defaultAuditURL()
+        self.runURL = runURL ?? Self.defaultRunURL()
         auditTrail = Self.loadAudit(from: self.auditURL)
+        // Hydrate the persisted current run so the last sync is inspectable across launches. A
+        // snapshot that never completed means the process died mid-sync: mark its running steps
+        // interrupted — the stored jobId makes the next Sync tap RESUME server-side, so this is a
+        // "pick up where you left off", not a failure.
+        if let data = try? Data(contentsOf: self.runURL),
+           let snapshot = try? JSONDecoder().decode(RunSnapshot.self, from: data) {
+            currentRunStartedMs = snapshot.startedMs
+            currentRunCompleted = snapshot.completed
+            steps = snapshot.steps.map { step in
+                var s = step
+                if !snapshot.completed, s.state == .running { s.state = .interrupted }
+                return s
+            }
+        }
     }
 
     /// Whether the sync affordance should be offered (MusicKit enabled in this build).
@@ -151,6 +186,9 @@ final class PlaylistAppleMusicSync {
         isSyncing = true
         lastResult = nil
         steps = []
+        currentRunStartedMs = Date().timeIntervalSince1970 * 1000
+        currentRunCompleted = false
+        persistCurrentRun()
         defer { isSyncing = false }
 
         var changes: [SyncReport.Change] = []
@@ -232,12 +270,16 @@ final class PlaylistAppleMusicSync {
 
             let summary = reportSummary(changes: changes, errors: errors)
             lastResult = summary
+            currentRunCompleted = true
+            persistCurrentRun()
             appendAudit(.init(dateMs: Date().timeIntervalSince1970 * 1000,
                               changes: changes, errors: errors, summary: summary))
         } catch {
             failStep(error.localizedDescription)
             errors.append(error.localizedDescription)
             lastResult = error.localizedDescription
+            currentRunCompleted = true
+            persistCurrentRun()
             appendAudit(.init(dateMs: Date().timeIntervalSince1970 * 1000,
                               changes: changes, errors: errors,
                               summary: "Failed: \(error.localizedDescription)"))
@@ -246,22 +288,28 @@ final class PlaylistAppleMusicSync {
 
     // MARK: Step helpers
 
+    /// Every mutation persists the run snapshot: the step list must be re-readable after an app
+    /// kill mid-sync, so the disk copy tracks the live one (tiny JSON, atomic write, ≤1 per poll).
     private func beginStep(_ label: String) {
         steps.append(.init(id: steps.count, label: label, detail: nil, state: .running))
+        persistCurrentRun()
     }
     private func updateStep(_ detail: String) {
         guard let i = steps.lastIndex(where: { $0.state == .running }) else { return }
         steps[i].detail = detail
+        persistCurrentRun()
     }
     private func finishStep(_ detail: String? = nil) {
         guard let i = steps.lastIndex(where: { $0.state == .running }) else { return }
         steps[i].state = .done
         if let detail { steps[i].detail = detail }
+        persistCurrentRun()
     }
     private func failStep(_ detail: String) {
         guard let i = steps.lastIndex(where: { $0.state == .running }) else { return }
         steps[i].state = .failed
         steps[i].detail = detail
+        persistCurrentRun()
     }
 
     // MARK: Summaries (pure, testable)
@@ -303,6 +351,24 @@ final class PlaylistAppleMusicSync {
                                                 in: .userDomainMask, appropriateFor: nil, create: true))
             ?? FileManager.default.temporaryDirectory
         return dir.appendingPathComponent("pocketdj-am-sync-audit.json")
+    }
+
+    nonisolated static func defaultRunURL() -> URL {
+        let dir = (try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        return dir.appendingPathComponent("pocketdj-am-sync-current.json")
+    }
+
+    private func persistCurrentRun() {
+        guard let startedMs = currentRunStartedMs else { return }
+        let snapshot = RunSnapshot(startedMs: startedMs,
+                                   updatedMs: Date().timeIntervalSince1970 * 1000,
+                                   steps: steps,
+                                   completed: currentRunCompleted)
+        if let data = try? JSONEncoder().encode(snapshot) {
+            try? data.write(to: runURL, options: .atomic)
+        }
     }
 
     private static func loadAudit(from url: URL) -> [SyncReport] {

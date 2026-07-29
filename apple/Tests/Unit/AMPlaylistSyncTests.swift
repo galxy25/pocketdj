@@ -153,4 +153,46 @@ final class AMPlaylistSyncTests: XCTestCase {
         let back = try JSONDecoder().decode([PlaylistAppleMusicSync.SyncReport].self, from: data)
         XCTAssertEqual(back, [report])
     }
+
+    /// The persisted CURRENT RUN hydrates at init — and a snapshot that never completed (the app
+    /// died mid-sync) comes back with its running steps flagged interrupted, so the last sync is
+    /// always inspectable and shows as resumable rather than vanishing.
+    func testCurrentRunHydratesAndMarksInterrupted() throws {
+        let runURL = tempURL("run")
+        let snapshot: [String: Any] = [
+            "startedMs": 1_785_400_000_000.0,
+            "updatedMs": 1_785_400_120_000.0,
+            "completed": false,
+            "steps": [
+                ["id": 0, "label": "Preparing playlists", "detail": "12 playlists · 640 tracks", "state": "done"],
+                ["id": 1, "label": "Pushing to Apple Music", "detail": "Adding to “comfort zone” (300/1000)", "state": "running"],
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: snapshot).write(to: runURL)
+
+        let sync = PlaylistAppleMusicSync(transport: nil, auditURL: tempURL("audit"), runURL: runURL)
+        XCTAssertEqual(sync.currentRunStartedMs, 1_785_400_000_000.0)
+        XCTAssertFalse(sync.currentRunCompleted)
+        XCTAssertEqual(sync.steps.count, 2)
+        XCTAssertEqual(sync.steps[0].state, .done)                 // finished steps stay finished
+        XCTAssertEqual(sync.steps[1].state, .interrupted)          // dead-process running -> interrupted
+        XCTAssertEqual(sync.steps[1].detail, "Adding to “comfort zone” (300/1000)")
+    }
+
+    /// A COMPLETED snapshot hydrates verbatim (no interrupted remap) — the "always double-check
+    /// the last sync" case.
+    func testCompletedRunHydratesVerbatim() throws {
+        let runURL = tempURL("run2")
+        let snapshot: [String: Any] = [
+            "startedMs": 1_785_400_000_000.0,
+            "updatedMs": 1_785_400_500_000.0,
+            "completed": true,
+            "steps": [["id": 0, "label": "Importing new playlists", "detail": "2 imported", "state": "done"]],
+        ]
+        try JSONSerialization.data(withJSONObject: snapshot).write(to: runURL)
+
+        let sync = PlaylistAppleMusicSync(transport: nil, auditURL: tempURL("audit2"), runURL: runURL)
+        XCTAssertTrue(sync.currentRunCompleted)
+        XCTAssertEqual(sync.steps.first?.state, .done)
+    }
 }

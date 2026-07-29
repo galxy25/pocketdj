@@ -311,13 +311,28 @@ struct SyncSettingsView: View {
                 .disabled(playlistSync.isSyncing)
                 .accessibilityIdentifier("settings-am-playlist-sync")
 
-                // Live step-by-step progress (also the post-run recap until the next sync).
+                // Live step-by-step progress — persisted to app storage on every change, so this
+                // recap survives navigating away, backgrounding, and even an app kill mid-sync
+                // (an interrupted run hydrates back with ⏸ steps and the resume hint below).
+                if let startedMs = playlistSync.currentRunStartedMs, !playlistSync.steps.isEmpty {
+                    HStack {
+                        Text(playlistSync.isSyncing ? "Syncing now"
+                             : playlistSync.currentRunCompleted ? "Last sync" : "Interrupted sync")
+                            .font(.caption.bold())
+                        Spacer()
+                        Text(Date(timeIntervalSince1970: startedMs / 1000)
+                            .formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption).foregroundStyle(Theme.fgDim)
+                    }
+                    .accessibilityIdentifier("am-playlist-sync-run-header")
+                }
                 ForEach(playlistSync.steps) { step in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         switch step.state {
                         case .running: ProgressView().controlSize(.small)
                         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                         case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.danger)
+                        case .interrupted: Image(systemName: "pause.circle.fill").foregroundStyle(Theme.accent2)
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             Text(step.label).font(.callout)
@@ -327,6 +342,11 @@ struct SyncSettingsView: View {
                         }
                     }
                     .accessibilityIdentifier("am-playlist-sync-step")
+                }
+                if !playlistSync.isSyncing, !playlistSync.currentRunCompleted, !playlistSync.steps.isEmpty {
+                    Text("This sync was interrupted — tap Sync to resume where it left off.")
+                        .font(.caption).foregroundStyle(Theme.accent2)
+                        .accessibilityIdentifier("am-playlist-sync-resume-hint")
                 }
 
                 if !playlistSync.isSyncing, let r = playlistSync.lastResult, playlistSync.steps.isEmpty {
