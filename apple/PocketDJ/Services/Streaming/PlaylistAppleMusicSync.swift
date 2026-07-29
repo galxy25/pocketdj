@@ -21,7 +21,13 @@ final class PlaylistAppleMusicSync {
     private(set) var lastResult: String?
 
     private let client: AMPlaylistSyncClient
-    init(client: AMPlaylistSyncClient? = nil) { self.client = client ?? AMPlaylistSyncClient() }
+    /// On-device MusicKit transport for the destructive (remove + reorder) half of the hybrid —
+    /// nil on macOS/Catalyst (library edits are unavailable there), where push stays create+append.
+    private let transport: (any PlaylistWriteBackTransport)?
+    init(client: AMPlaylistSyncClient? = nil, transport: (any PlaylistWriteBackTransport)? = nil) {
+        self.client = client ?? AMPlaylistSyncClient()
+        self.transport = transport ?? PlaylistWriteBack.makeDefaultTransport()
+    }
 
     /// Whether the sync affordance should be offered (MusicKit enabled in this build).
     var isAvailable: Bool { AppleMusicCredentials.isEnabled }
@@ -45,7 +51,24 @@ final class PlaylistAppleMusicSync {
         defer { isSyncing = false }
         do {
             // ── PUSH: PocketDJ playlists -> Apple Music (create + append) ──────────────────────
-            let pushed = try await client.push(Self.resolveOutgoing(collections: collections, app: app))
+            let outgoing = Self.resolveOutgoing(collections: collections, app: app)
+            let pushed = try await client.push(outgoing)
+
+            // ── HYBRID DESTRUCTIVE HALF: reflect REMOVALS + REORDERS into existing app-created AM
+            // playlists via on-device MusicKit (the Web API is append-only, so this is the only way
+            // to remove or re-order). Best-effort + safe: reconcile skips playlists this app didn't
+            // create and never edits toward an empty/partial list (see transport.reconcile).
+            var reconciled = 0
+            if let transport, transport.canWrite {
+                for pl in outgoing {
+                    guard let amId = try? await transport.resolvePlaylistId(
+                        name: pl.name, expectedAppleMusicIds: pl.trackCatalogIds) else { continue }
+                    if case .edited = try? await transport.reconcile(
+                        playlistId: amId, orderedAppleMusicIds: pl.trackCatalogIds) {
+                        reconciled += 1
+                    }
+                }
+            }
 
             // ── PULL: Apple Music playlists -> PocketDJ (import the new ones) ───────────────────
             let remote = try await client.pull()
@@ -64,6 +87,7 @@ final class PlaylistAppleMusicSync {
             }
 
             var summary = "Pushed \(pushed.created.count) to Apple Music, imported \(imported)."
+            if reconciled > 0 { summary += " Reconciled \(reconciled)." }
             if !pushed.errors.isEmpty { summary += " \(pushed.errors.count) push error(s)." }
             lastResult = summary
         } catch {

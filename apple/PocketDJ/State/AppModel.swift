@@ -721,6 +721,36 @@ final class AppModel {
         }
     }
 
+    /// Build the Browse rows (+ parallel folded search keys) for an ORDERED list of song ids — a
+    /// collection's members — so a collection detail view can run the Browse sort/filter pipeline
+    /// (`BrowseState.filterSort`) on its own subset. Same construction as `songBrowseItems`.
+    /// Unresolved ids (studio/absent songs) are dropped.
+    func browseItems(forSongIds ids: [String]) -> (items: [BrowseItem], keys: [String]) {
+        var items: [BrowseItem] = []; var keys: [String] = []
+        items.reserveCapacity(ids.count); keys.reserveCapacity(ids.count)
+        for id in ids {
+            guard let song = songsById[id] else { continue }
+            let album = song.albumId.flatMap { albumsById[$0] }
+            items.append(.song(song, albumName: album?.name ?? "",
+                               source: songSourceById[id], genre: Genre.category(album?.genre)))
+            keys.append(Self.searchKey(song.name, song.artist, album?.name ?? ""))
+        }
+        return (items, keys)
+    }
+
+    /// A collection's songs (by ordered ids) after applying a `BrowseState`'s sort + filters — the
+    /// display list for a collection detail view with sort/filter enabled. At default state (no
+    /// clauses, no sort keys, no query, no active read-time filter) it returns the ids' songs in
+    /// their STORED order, so the collection's own order is preserved until the user sorts.
+    func sortedFilteredSongs(ids: [String], browse: BrowseState,
+                             collections: CollectionsStore?, favorites: FavoritesStore?) -> [IndexSong] {
+        let (items, keys) = browseItems(forSongIds: ids)
+        let filtered = BrowseState.filterSort(base: items, searchKeys: keys, query: browse.query,
+                                              clauses: browse.clauses, sortKeys: browse.sortKeys)
+        let visible = browse.applyReadTimeFilters(to: filtered, collections: collections, favorites: favorites)
+        return visible.compactMap { if case .song(let s, _, _, _, _) = $0 { return s } else { return nil } }
+    }
+
     /// Return the memoized browse results for `key`, computing + caching on a miss. The
     /// caller (BrowseState) owns the derivation; this only decides whether to reuse it.
     func cachedBrowseResults(_ key: String, compute: () -> [BrowseItem]) -> [BrowseItem] {

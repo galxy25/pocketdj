@@ -72,6 +72,43 @@ final class AppModelSourceTests: XCTestCase {
         XCTAssertEqual(ra?.sourceName, AppModel.recentlyAddedName)
     }
 
+    /// Per-collection sort/filter: `sortedFilteredSongs` sorts a collection's songs by a BrowseState
+    /// sort key (date added asc/desc) and preserves the stored order at default state.
+    func testCollectionSortedFilteredSongsByDateAdded() {
+        let app = AppModel()
+        app.injectDiscoverAdd(songWithDateAdded("s1", dateAdded: 1_000))
+        app.injectDiscoverAdd(songWithDateAdded("s2", dateAdded: 3_000))
+        app.injectDiscoverAdd(songWithDateAdded("s3", dateAdded: 2_000))
+        let browse = BrowseState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
+                                 persistenceKey: "pdj.collection.test")
+        browse.kind = .song
+
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .desc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id),
+                       ["s2", "s3", "s1"], "newest first")
+
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .asc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id),
+                       ["s1", "s3", "s2"], "oldest first")
+
+        // Default (no sort keys) preserves the collection's stored order.
+        browse.sortKeys = []
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s2", "s1", "s3"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id),
+                       ["s2", "s1", "s3"])
+
+        // A song with NO dateAdded sorts to the END regardless of direction ("add at the end").
+        app.injectDiscoverAdd(IndexSong.minimal(id: "s4", name: "s4", artist: "A"))
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .desc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3", "s4"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id).last, "s4")
+        browse.sortKeys = [SortKey(field: "dateAdded", dir: .asc)]
+        XCTAssertEqual(app.sortedFilteredSongs(ids: ["s1", "s2", "s3", "s4"], browse: browse,
+                                               collections: nil, favorites: nil).map(\.id).last, "s4")
+    }
+
     /// An empty library yields no synthetic playlist (the row hides), and an ejected song drops out.
     func testRecentlyAddedEmptyAndAfterEject() {
         let app = AppModel()

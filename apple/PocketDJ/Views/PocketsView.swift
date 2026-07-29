@@ -9,9 +9,20 @@ import UniformTypeIdentifiers
 struct PocketDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
+    @Environment(FavoritesStore.self) private var favorites
     @Environment(\.dismiss) private var dismiss
     let pocketId: String
     @Binding var path: NavigationPath
+    /// Per-collection sort/filter (keyed by pocket id → remembered per pocket, on-device).
+    @State private var browse: BrowseState
+    @State private var showSort = false
+    @State private var showFilter = false
+
+    init(pocketId: String, path: Binding<NavigationPath>) {
+        self.pocketId = pocketId
+        self._path = path
+        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(pocketId)"))
+    }
     @State private var renaming = false
     @State private var nameDraft = ""
     @State private var confirmingDelete = false
@@ -33,6 +44,28 @@ struct PocketDetailView: View {
     @State private var linkResult: String?
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
+
+    /// A catalog-song row in the pocket's Songs section (nav link + inline player + swipe-remove).
+    @ViewBuilder private func pocketSongRow(_ song: IndexSong) -> some View {
+        VStack(spacing: 0) {
+            NavigationLink(value: song) {
+                CollectionSongRow(song: song, syncsToSource: collections.pocket(pocketId)?.syncsWithSource ?? false)
+            }
+            .forceSyncContextMenu(song: song, kind: .pocket, collectionId: pocketId)
+            InlinePlayerSlot(songId: song.id)
+        }
+        .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(song.id, fromPocket: pocketId) } }
+    }
+
+    /// A studio (sample/loop/pattern/take) row — performance items ride songIds but aren't in the catalog.
+    @ViewBuilder private func pocketStudioRow(_ sid: String) -> some View {
+        StudioCollectionRow(
+            id: sid,
+            repeatCount: collections.repeatCount(forSong: sid, inPocket: pocketId),
+            onSetRepeat: { collections.setSongRepeat(sid, count: $0, inPocket: pocketId) },
+            onRemove: { collections.removeSong(sid, fromPocket: pocketId) })
+        .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
+    }
 
     /// Apple Music source playlists this unlinked pocket could be linked to (the only sources
     /// write-back can push to). Name-ordered.
@@ -87,30 +120,27 @@ struct PocketDetailView: View {
                     .onMove { from, to in collections.movePocketAlbums(inPocket: pocketId, from: from, to: to) }
                 }
                 Section("Songs (\(pocket.songIds.count))") {
-                    ForEach(pocket.songIds, id: \.self) { sid in
-                        if let song = app.songsById[sid] {
-                            // One List row = nav link + inline panel below, kept together in
-                            // a VStack so the panel's taps reach it (not the link) and the
-                            // 1:1 element↔row mapping `onMove` relies on is preserved.
-                            VStack(spacing: 0) {
-                                NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: pocket.syncsWithSource) }
-                                    .forceSyncContextMenu(song: song, kind: .pocket, collectionId: pocketId)
-                                InlinePlayerSlot(songId: song.id)
+                    // DEFAULT order (no sort/filter): the stored order as-is, with drag-reorder.
+                    // SORTED/FILTERED: catalog songs via the Browser pipeline (no-dateAdded songs sort
+                    // to the END), then studio items pinned at the very end (studio items carry no
+                    // song fields, so a FILTER hides them; a plain sort keeps them, last).
+                    if browse.sortKeys.isEmpty && browse.activeFilterCount == 0 {
+                        ForEach(pocket.songIds, id: \.self) { sid in
+                            if let song = app.songsById[sid] { pocketSongRow(song) }
+                            else if StudioFactory.isStudioId(sid) { pocketStudioRow(sid) }
+                        }
+                        .onMove { from, to in collections.movePocketSongs(inPocket: pocketId, from: from, to: to) }
+                    } else {
+                        ForEach(app.sortedFilteredSongs(ids: pocket.songIds, browse: browse,
+                                                        collections: collections, favorites: favorites)) { song in
+                            pocketSongRow(song)
+                        }
+                        if browse.activeFilterCount == 0 {
+                            ForEach(pocket.songIds.filter { StudioFactory.isStudioId($0) }, id: \.self) { sid in
+                                pocketStudioRow(sid)
                             }
-                            .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
-                        } else if StudioFactory.isStudioId(sid) {
-                            // Performance items (sample/loop/sequence/instrumental) ride songIds but
-                            // aren't in the catalog — render a studio-aware row with its repeat count
-                            // (previously rendered NOTHING, which also broke onMove's 1:1 mapping).
-                            StudioCollectionRow(
-                                id: sid,
-                                repeatCount: collections.repeatCount(forSong: sid, inPocket: pocketId),
-                                onSetRepeat: { collections.setSongRepeat(sid, count: $0, inPocket: pocketId) },
-                                onRemove: { collections.removeSong(sid, fromPocket: pocketId) })
-                            .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(sid, fromPocket: pocketId) } }
                         }
                     }
-                    .onMove { from, to in collections.movePocketSongs(inPocket: pocketId, from: from, to: to) }
                 }
                 if !pocket.notes.isEmpty {
                     Section("Notes (\(pocket.notes.count))") {
@@ -138,6 +168,8 @@ struct PocketDetailView: View {
 
     private var chromeApplied: some View {
         memberList
+        .collectionSortFilterSheets(browse: browse, showSort: $showSort, showFilter: $showFilter,
+                                    app: app, collections: collections)
         .navigationTitle(pocket?.name ?? "Pocket")
         .accessibilityIdentifier("pocket-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
@@ -161,6 +193,10 @@ struct PocketDetailView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    // Per-pocket sort + filter (folded into the ⋯ menu so the compact toolbar stays
+                    // at 4 items). Reuses the Browser's sort/filter machinery.
+                    CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
+                    Divider()
                     Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
                         .accessibilityIdentifier("add-pocket-note")
                     #if os(iOS)
