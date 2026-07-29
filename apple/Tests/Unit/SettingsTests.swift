@@ -15,6 +15,22 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(s.enabledSourceURLs.count, 1)
     }
 
+    func testDefaultRecentlyAddedDefaultsClampsAndPersists() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.defaultRecentlyAddedCount, SettingsStore.recentlyAddedDefaultCount)  // 3650
+        // Clamp below 1 → 1.
+        s.defaultRecentlyAddedCount = 0
+        XCTAssertEqual(s.defaultRecentlyAddedCount, 1)
+        // Clamp above the max.
+        s.defaultRecentlyAddedCount = SettingsStore.recentlyAddedMaxCount + 999
+        XCTAssertEqual(s.defaultRecentlyAddedCount, SettingsStore.recentlyAddedMaxCount)
+        // Round-trips.
+        s.defaultRecentlyAddedCount = 500
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).defaultRecentlyAddedCount, 500)
+    }
+
     func testPersistAndReload() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)

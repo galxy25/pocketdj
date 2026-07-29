@@ -254,7 +254,10 @@ struct PlaylistsView: View {
         } else {
             switch mode {
             case .user:
-                if collections.playlists.isEmpty && collections.pockets.isEmpty {
+                // Show the list when there are own collections OR any recently-added items (the
+                // virtual "Recently added" row lives at the top of the User tab).
+                if collections.playlists.isEmpty && collections.pockets.isEmpty
+                    && app.recentlyAddedPlaylist(limit: settings.defaultRecentlyAddedCount) == nil {
                     userEmptyState
                 } else {
                     List { userSections }
@@ -271,12 +274,32 @@ struct PlaylistsView: View {
 
     // MARK: - Sections
 
-    /// USER tab — your editable playlists + pockets + folders (no source rows).
+    /// USER tab — your editable playlists + pockets + folders (no source rows), with the virtual
+    /// "Recently added" row pinned at the top.
     @ViewBuilder private var userSections: some View {
+        recentlyAddedSection
         yourPlaylistsSection
         yourPocketsSection
         ForEach(collections.foldersOrdered()) { folder in
             folderSection(folder)
+        }
+    }
+
+    /// The synthetic "Recently added" row — the last N items the profile added to its library
+    /// (Apple Music adds + ＋Add + imports + custom audio), N from Settings ▸ Collections. Navigates
+    /// to the read-only source-playlist detail (Play / Shuffle / Duplicate / Convert / Rip-Burn).
+    @ViewBuilder private var recentlyAddedSection: some View {
+        if let ra = app.recentlyAddedPlaylist(limit: settings.defaultRecentlyAddedCount) {
+            Section {
+                NavigationLink(value: ra) {
+                    Label("\(ra.playlist.songIds.count) songs — newest first",
+                          systemImage: "clock.badge.checkmark")
+                        .foregroundStyle(Theme.fg)
+                }
+                .accessibilityIdentifier("recently-added-row")
+            } header: {
+                Text("Recently added")
+            }
         }
     }
 

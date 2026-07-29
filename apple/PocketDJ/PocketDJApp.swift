@@ -642,6 +642,12 @@ struct PocketDJApp: App {
         discoverAdds.onAlbumBatchAdded = { [weak app] songs, album in
             app?.injectDiscoverAlbumBatch(songs: songs, album: album)
         }
+        // Catalog-ADD History events for user ＋Add gestures (song or album), recorded straight into
+        // the collection-activity timeline. User-origin only (never cloud-pull) — see the store's
+        // `onUserCatalogAdd` doc — so a peer device's add isn't double-logged after the union sync.
+        discoverAdds.onUserCatalogAdd = { [weak collectionActivity] items in
+            for it in items { collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title) }
+        }
         app.discoverAdds = discoverAdds
         // A superseded provisional id must be rewritten EVERYWHERE it is referenced — the
         // collections AND the favorites — or a ♥ made on a Discover add silently detaches
@@ -649,6 +655,11 @@ struct PocketDJApp: App {
         app.onDiscoverSupersede = { [weak collections, weak favorites] pairs in
             collections?.remapSongIds(pairs)
             favorites?.remapSongIds(pairs)
+        }
+        // "Remove from Library" → a catalog-REMOVE History event (the eject itself is inline in
+        // AppModel.removeFromLibrary). User-origin by construction (only the row action calls it).
+        app.onCatalogRemove = { [weak collectionActivity] itemId, itemTitle in
+            collectionActivity?.record(kind: .catalogRemove, itemId: itemId, itemTitle: itemTitle)
         }
         rips.discoverAdds = discoverAdds
         _discoverAdds = State(initialValue: discoverAdds)
@@ -660,6 +671,9 @@ struct PocketDJApp: App {
         let importedSongs = ImportedSongsStore(fileURL: ImportedSongsStore.launchURL())
         importedSongs.onAdded = { [weak app] songs, albums in
             app?.injectImported(songs: songs, albums: albums)
+        }
+        importedSongs.onUserCatalogAdd = { [weak collectionActivity] items in
+            for it in items { collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title) }
         }
         app.importedSongs = importedSongs
         collections.importedSongs = importedSongs
@@ -677,6 +691,9 @@ struct PocketDJApp: App {
         let profileSource = ProfileSourceStore(fileURL: ProfileSourceStore.launchURL())
         profileSource.profileName = profile.name.isEmpty ? ProfileSourceStore.defaultName : profile.name
         profileSource.onAdded = { [weak app] songs, albums in app?.injectProfileItem(songs: songs, albums: albums) }
+        profileSource.onUserCatalogAdd = { [weak collectionActivity] items in
+            for it in items { collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title) }
+        }
         profileSource.onNameChanged = { [weak app] in Task { await app?.reload() } }
         app.profileSource = profileSource
         _profileSource = State(initialValue: profileSource)

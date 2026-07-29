@@ -258,6 +258,10 @@ async function main() {
       explicit: !!t['Explicit'],
       bpm: null, key: null, camelot: null,
       appleMusicId: catalogIds.get(sid) || undefined,
+      // epoch ms the track was added to the library (Apple Music "Date Added"),
+      // already parsed above as `added`. Powers the "Recently added" playlist's
+      // ranking of catalog songs. `0`/missing -> undefined so old rows stay clean.
+      dateAdded: added || undefined,
       length: t['Total Time'] || undefined,
       fileType,
       pointer: {

@@ -151,6 +151,13 @@ export interface IndexSong {
   fileType?: string;
   pointer?: IndexPointer;
   /**
+   * Epoch milliseconds the track was added to the source library (Apple Music
+   * "Date Added", emitted by scripts/index-apple-music.mjs). Ranks catalog songs in
+   * the "Recently added" view alongside the client-side in-app add stores. Absent on
+   * rows that predate this field.
+   */
+  dateAdded?: number;
+  /**
    * Apple Music catalog store id ("adam id"), resolved via the iTunes Search API
    * (scripts/resolve-apple-music-catalog.mjs). A bare numeric string; absent when unresolved.
    */

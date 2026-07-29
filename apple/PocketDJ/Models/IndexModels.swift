@@ -157,6 +157,14 @@ struct IndexSong: Decodable, Identifiable, Hashable {
     var spotifyUrl: String? = nil
     var youtubeUrl: String? = nil
 
+    /// Epoch milliseconds the track was added to the source library ("Date Added" in
+    /// the Apple Music library, emitted by `index-apple-music.mjs`). Powers the
+    /// "Recently added" virtual playlist's ranking of catalog (Apple-Music-library)
+    /// songs alongside the client-side in-app add stores. Optional with an inline
+    /// default so it stays decode-tolerant of the (many) index rows that predate it
+    /// and keeps the synthesized memberwise init source-compatible for `applying(_:)`.
+    var dateAdded: Double? = nil
+
     /// A minimal `IndexSong` carrying only the fields the playback engine needs (id +
     /// title + artist). `IndexSong` is Decodable-only (no memberwise init), so — like
     /// `AppleMusicCatalog.indexSong` — we build it by decoding a JSON object. Used when a

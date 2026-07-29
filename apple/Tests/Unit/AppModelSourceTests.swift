@@ -45,6 +45,48 @@ final class AppModelSourceTests: XCTestCase {
         XCTAssertEqual(app.source(ofSong: "sng_1"), "Test Crate")
         XCTAssertNil(app.source(ofAlbum: "nope"))
     }
+
+    // MARK: - Recently added (virtual playlist)
+
+    private func songWithDateAdded(_ id: String, dateAdded: Double) -> IndexSong {
+        try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization.data(
+            withJSONObject: ["id": id, "name": id, "artist": "A", "dateAdded": dateAdded]))
+    }
+
+    /// recentlyAddedSongIds unions add-times, ranks NEWEST FIRST, dedupes to resolvable catalog
+    /// songs, and honors the cap; recentlyAddedPlaylist wraps it as the reserved SourcePlaylist.
+    func testRecentlyAddedRanksNewestFirstAndCaps() {
+        let app = AppModel()
+        // Inject catalog songs carrying `dateAdded` (the Apple-Music-library-add ranking signal).
+        app.injectDiscoverAdd(songWithDateAdded("s1", dateAdded: 1_000))
+        app.injectDiscoverAdd(songWithDateAdded("s2", dateAdded: 3_000))
+        app.injectDiscoverAdd(songWithDateAdded("s3", dateAdded: 2_000))
+
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 10), ["s2", "s3", "s1"], "newest first")
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 2), ["s2", "s3"], "capped at N")
+        XCTAssertTrue(app.recentlyAddedSongIds(limit: 0).isEmpty, "zero limit → empty")
+
+        let ra = app.recentlyAddedPlaylist(limit: 10)
+        XCTAssertEqual(ra?.playlist.id, AppModel.recentlyAddedPlaylistId)
+        XCTAssertEqual(ra?.playlist.songIds, ["s2", "s3", "s1"])
+        XCTAssertEqual(ra?.sourceName, AppModel.recentlyAddedName)
+    }
+
+    /// An empty library yields no synthetic playlist (the row hides), and an ejected song drops out.
+    func testRecentlyAddedEmptyAndAfterEject() {
+        let app = AppModel()
+        XCTAssertNil(app.recentlyAddedPlaylist(limit: 10), "no adds → no row")
+
+        let discover = DiscoverAddsStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-ra-\(UUID().uuidString).json"))
+        app.discoverAdds = discover
+        discover.onAdded = { song in app.injectDiscoverAdd(song) }
+        discover.add(songId: "amrec_r", appleMusicId: "1", title: "R", artist: "A")
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 10), ["amrec_r"])
+
+        app.removeFromLibrary(songId: "amrec_r")
+        XCTAssertTrue(app.recentlyAddedSongIds(limit: 10).isEmpty, "ejected song drops out of Recently Added")
+    }
 }
 
 /// The explicit on-disk catalog cache (OFFLINE support): a successful `loadIndex` persists the

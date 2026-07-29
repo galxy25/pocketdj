@@ -49,6 +49,7 @@ struct SettingsView: View {
         Form {
             identitySection
             sourcesSection
+            collectionsSection
             streamingSection
             searchSection
             ripSection
@@ -414,6 +415,27 @@ struct SettingsView: View {
     /// Auto-Mix crossfade timing: when to start fading before a track ends, and how long the
     /// fade (volume sweep) lasts. Whole-second steppers — the engine reads these the moment an
     /// auto-mix starts. Persisted on change.
+    private var collectionsSection: some View {
+        Section {
+            HStack {
+                Text("Default recently added")
+                Spacer()
+                TextField("Count", value: $settings.defaultRecentlyAddedCount, format: .number)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 90)
+                    #if os(iOS)
+                    .keyboardType(.numberPad)
+                    #endif
+                    .accessibilityIdentifier("settings-default-recently-added")
+                    .onChange(of: settings.defaultRecentlyAddedCount) { settings.persist() }
+            }
+        } header: {
+            Text("Collections")
+        } footer: {
+            Text("How many items the “Recently added” playlist shows — the last N songs you added to your library (Apple Music adds, ＋Add, imports, and custom audio).")
+        }
+    }
+
     private var mixSection: some View {
         Section {
             Stepper(value: $settings.autoMixLeadSeconds, in: 3...60, step: 1) {

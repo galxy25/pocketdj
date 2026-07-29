@@ -166,6 +166,48 @@ final class CollectionActivityStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.events.map(\.itemId), ["sng_A", "sng_B"])
     }
 
+    /// The catalog add/remove kinds (2026-07, for the "Recently added" + Remove-from-Library work)
+    /// round-trip through record → persist → decode, and — like hearts — carry no collection scope.
+    func testRecordsCatalogAddAndRemove() {
+        let (store, url) = makeStore()
+        store.record(kind: .catalogAdd, itemId: "amrec_1", itemTitle: "New Jam", at: 1_000)
+        store.record(kind: .catalogRemove, itemId: "amrec_1", itemTitle: "New Jam", at: 2_000)
+        XCTAssertEqual(store.events.map(\.kind), [.catalogAdd, .catalogRemove])
+        XCTAssertNil(store.events[0].collectionId)     // catalog events are library-scoped, not collection-scoped
+        // The new raw values persist and decode back to the same cases.
+        let reloaded = CollectionActivityStore(fileURL: url)
+        XCTAssertEqual(reloaded.events.map(\.kind), [.catalogAdd, .catalogRemove])
+        XCTAssertEqual(reloaded.events[0].itemId, "amrec_1")
+    }
+
+    /// Forward-compat: a synced doc containing an event whose `kind` is UNKNOWN to this build (a
+    /// NEWER app version added an ActivityKind case) must decode to only the KNOWN events — never
+    /// reset the WHOLE log to [] (which would then re-push a truncated log and clobber peers' events
+    /// in the cloud). Exercises the per-event lenient decode.
+    func testUnknownEventKindIsSkippedNotWholeLogDropped() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-activity-fwd-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let json = """
+        {
+          "schemaVersion": 1,
+          "installId": "peer",
+          "events": [
+            { "id": "\(UUID().uuidString)", "at": 1000, "kind": "add", "itemId": "sng_1" },
+            { "id": "\(UUID().uuidString)", "at": 2000, "kind": "someFutureKind", "itemId": "sng_x" },
+            { "id": "\(UUID().uuidString)", "at": 3000, "kind": "catalogAdd", "itemId": "amrec_9" }
+          ]
+        }
+        """
+        try Data(json.utf8).write(to: url)
+        let store = CollectionActivityStore(fileURL: url)
+        // The unknown-kind event is dropped; the two events this build understands survive.
+        XCTAssertEqual(store.events.count, 2)
+        XCTAssertEqual(store.events.map(\.itemId), ["sng_1", "amrec_9"])
+        XCTAssertEqual(store.events.map(\.kind), [.add, .catalogAdd])
+        XCTAssertEqual(store.installId, "peer")
+    }
+
     /// FIX 3: clear() deletes the persisted file entirely (no residual empty JSON), matching the
     /// AccountDeletionService "each store removes its file" contract, and keeps the install id.
     func testClearRemovesPersistedFile() {

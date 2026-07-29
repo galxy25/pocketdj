@@ -81,6 +81,14 @@ final class DiscoverAddsStore {
     /// The per-row `onAdded`/`onAlbumAdded` arms are deliberately NOT fired on this path.
     /// `album` is nil when the album already existed but new tracks landed (idempotent).
     @ObservationIgnored var onAlbumBatchAdded: ((_ songs: [IndexSong], _ album: IndexAlbum?) -> Void)?
+    /// Fired ONLY from USER add gestures (a single ＋Add or an album add) — NEVER from
+    /// `reloadFromDisk` (cloud pull) — carrying the item(s) to log as `.catalogAdd` in the
+    /// History activity timeline. A single song for a track add, or the ALBUM itself (not each
+    /// of its tracks) for an album add, matching the user's actual gesture. Wired in PocketDJApp
+    /// to `CollectionActivityStore.record(kind: .catalogAdd)`. Kept separate from `onAdded`
+    /// (which also fires on cloud pull) so a peer device's add — already union-synced into the
+    /// activity log — is never re-logged here.
+    @ObservationIgnored var onUserCatalogAdd: (([(id: String, title: String)]) -> Void)?
 
     init(fileURL: URL = DiscoverAddsStore.defaultURL()) {
         self.fileURL = fileURL
@@ -124,6 +132,7 @@ final class DiscoverAddsStore {
         entries.append(entry)
         save()
         onAdded?(Self.indexSong(entry))
+        onUserCatalogAdd?([(entry.songId, entry.title)])
     }
 
     /// Record an album add (idempotent per albumId) and hand the injected catalog album to
@@ -138,6 +147,7 @@ final class DiscoverAddsStore {
         albums.append(entry)
         save()
         onAlbumAdded?(Self.indexAlbum(entry))
+        onUserCatalogAdd?([(entry.albumId, entry.title)])
     }
 
     /// Batched ALBUM add (the perf path for a fan-out album — mirrors `ImportedSongsStore.add`):
@@ -164,6 +174,9 @@ final class DiscoverAddsStore {
         }
         save()
         onAlbumBatchAdded?(freshSongs.map(Self.indexSong), albumEntry.map(Self.indexAlbum))
+        // One album-level catalog-add for the whole batch (the user's gesture was "add this
+        // album"), not one per fanned-out track. Only when the album is genuinely new.
+        if let a = albumEntry { onUserCatalogAdd?([(a.albumId, a.title)]) }
     }
 
     /// Drop superseded entries (their indexed replacements own the ids now).
@@ -172,6 +185,18 @@ final class DiscoverAddsStore {
         let gone = Set(ids)
         entries.removeAll { gone.contains($0.songId) }
         save()
+    }
+
+    /// USER "Remove from Library" for a provisional Discover SONG — DISTINCT from the supersede
+    /// `remove(ids:)` above (which yields the id to its real indexed replacement). Drops the entry
+    /// and returns its (id, title) so the app can eject it from the live catalog AND log a
+    /// `.catalogRemove` History event. Idempotent (nil if it wasn't present).
+    @discardableResult
+    func userRemove(songId: String) -> (id: String, title: String)? {
+        guard let e = entries.first(where: { $0.songId == songId }) else { return nil }
+        entries.removeAll { $0.songId == songId }
+        save()
+        return (e.songId, e.title)
     }
 
     /// Drop superseded ALBUM entries (the real indexed album owns the identity now).

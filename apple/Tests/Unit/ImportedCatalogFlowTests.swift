@@ -131,6 +131,49 @@ final class ImportedCatalogFlowTests: XCTestCase {
         XCTAssertEqual(synth.songs.map(\.id), ["sng_b"])
     }
 
+    // MARK: - Remove from Library (catalog eject)
+
+    /// "Remove from Library" for a user-added provisional item: it leaves the LIVE catalog, its
+    /// backing-store entry is dropped, a `.catalogRemove` History event is logged, and the now-empty
+    /// synthetic source is pruned from `availableSources`.
+    func testRemoveFromLibraryEjectsDiscoverAddAndLogsEvent() {
+        let app = AppModel()
+        let discover = DiscoverAddsStore(fileURL: tempURL("disc-rm"))
+        app.discoverAdds = discover
+        discover.onAdded = { song in app.injectDiscoverAdd(song) }
+        let activity = CollectionActivityStore(fileURL: tempURL("act-rm"))
+        app.onCatalogRemove = { id, title in
+            activity.record(kind: .catalogRemove, itemId: id, itemTitle: title)
+        }
+
+        discover.add(songId: "amrec_z", appleMusicId: "555", title: "Zed", artist: "A")
+        XCTAssertNotNil(app.songsById["amrec_z"])
+        XCTAssertTrue(app.isRemovableFromLibrary(songId: "amrec_z"))
+        XCTAssertTrue(app.availableSources.contains(DiscoverAddsStore.sourceName))
+
+        app.removeFromLibrary(songId: "amrec_z")
+        XCTAssertNil(app.songsById["amrec_z"], "ejected from the live catalog")
+        XCTAssertTrue(discover.entries.isEmpty, "dropped from the backing store")
+        XCTAssertFalse(app.availableSources.contains(DiscoverAddsStore.sourceName), "empty source pruned")
+        XCTAssertEqual(activity.events.map(\.kind), [.catalogRemove])
+        XCTAssertEqual(activity.events.first?.itemId, "amrec_z")
+        XCTAssertFalse(app.isRemovableFromLibrary(songId: "amrec_z"))
+    }
+
+    /// Removability is scoped to the provisional user-add sources only: an Imported item IS
+    /// removable; an unknown id and (by construction) real-source / profile items are NOT.
+    func testOnlyProvisionalUserAddsAreRemovable() {
+        let app = AppModel()
+        app.injectImported(songs: [indexSong("sng_imp", name: "Imp")], albums: [])
+        XCTAssertTrue(app.isRemovableFromLibrary(songId: "sng_imp"))
+        XCTAssertFalse(app.isRemovableFromLibrary(songId: "sng_unknown"))
+        // A no-op remove of an unknown id is safe (no crash, nothing logged).
+        var logged = 0
+        app.onCatalogRemove = { _, _ in logged += 1 }
+        app.removeFromLibrary(songId: "sng_unknown")
+        XCTAssertEqual(logged, 0)
+    }
+
     func testWithProvisionalSourcesStacksDiscoverThenImported() {
         let real = index(source: "My Vinyl", songs: [indexSong("sng_1")])
         let discover = [DiscoverAddsStore.Entry(songId: "amrec_d", appleMusicId: "999",
