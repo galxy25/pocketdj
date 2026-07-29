@@ -31,6 +31,28 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(defaults: defaults).defaultRecentlyAddedCount, 500)
     }
 
+    /// The Apple Music sync mode's default is CAPTURED ONCE at store construction (remote unless
+    /// an import server is configured), so later ripServerURL edits never silently flip a mode
+    /// the user has already seen; an explicit choice persists across reloads.
+    func testAppleMusicSyncModeCapturedAtInitAndPersists() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.appleMusicSyncMode, .remote)          // fresh install captures remote
+        s.ripServerURL = "http://imac.local:8787"
+        XCTAssertEqual(s.appleMusicSyncMode, .remote)          // captured — a later URL edit can't flip it
+        s.appleMusicSyncMode = .local                          // explicit choice
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).appleMusicSyncMode, .local)
+
+        // An existing iMac blob (server URL set, mode never chosen) captures .local at init.
+        let imacDefaults = freshDefaults()
+        let pre = SettingsStore(defaults: imacDefaults)
+        pre.ripServerURL = "http://imac.local:8787"
+        pre.appleMusicSyncModeRaw = nil                        // simulate a pre-feature blob
+        pre.persist()
+        XCTAssertEqual(SettingsStore(defaults: imacDefaults).appleMusicSyncMode, .local)
+    }
+
     func testPersistAndReload() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)

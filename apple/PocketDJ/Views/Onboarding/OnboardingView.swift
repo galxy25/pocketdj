@@ -289,7 +289,7 @@ private struct OnboardingAppleMusicStage: View {
                     Text("Apple Music isn't available on this device.")
                         .font(.caption).foregroundStyle(Theme.fgDim)
                 }
-                Text("Change this anytime in Settings ▸ Streaming accounts.")
+                Text("Change this anytime in Settings ▸ Apple Music.")
                     .font(.caption).foregroundStyle(Theme.fgDim)
             }
             OnboardingNavRow(continueLabel: signedIn ? "Continue" : "Not now") {

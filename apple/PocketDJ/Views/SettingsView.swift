@@ -13,8 +13,7 @@ struct SettingsView: View {
     // The nuclear reset ends the whole mix (ejects both decks), which also clears the durable
     // mix-deck session — a reset device must launch quiet, not rehydrate yesterday's decks.
     @Environment(MixEngine.self) private var mix
-    // Not private: read by the streamingSection in SettingsView+Streaming.swift.
-    @Environment(StreamingStore.self) var streaming
+    // (The Streaming-accounts section moved into the Apple Music pane — AppleMusicSettingsView.)
     @Environment(ProfileStore.self) private var profile
     @Environment(CloudSyncService.self) private var cloudSync
     // Account-deletion orchestrator (5.1.1(v)) — wired in PocketDJApp with every store it wipes.
@@ -51,7 +50,7 @@ struct SettingsView: View {
             identitySection
             sourcesSection
             collectionsSection
-            streamingSection
+            appleMusicSection
             searchSection
             ripSection
             jukeboxSection
@@ -110,7 +109,25 @@ struct SettingsView: View {
         } header: {
             Text("Sync")
         } footer: {
-            Text("Apple Music library re-index + keeping converted playlists & pockets in step with their source playlists.")
+            Text("Keeping converted playlists & pockets in step with their source playlists. Apple Music syncing has its own pane above.")
+        }
+    }
+
+    /// The single door into the consolidated Apple Music pane (Levi 2026-07-29): account link,
+    /// LOCAL/REMOTE sync-mode switch, playlist + favorites sync, write-back, and the server
+    /// credentials — everything Apple-Music-related in one place. See `AppleMusicSettingsView`.
+    private var appleMusicSection: some View {
+        Section {
+            NavigationLink {
+                AppleMusicSettingsView(settings: settings)
+            } label: {
+                Label("Apple Music", systemImage: "music.note")
+            }
+            .accessibilityIdentifier("settings-apple-music")
+        } header: {
+            Text("Apple Music")
+        } footer: {
+            Text("Account, syncing (local via your import server, or remote straight from this device), favorites, and playlist write-back.")
         }
     }
 
@@ -364,7 +381,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Streaming accounts (Apple Music) — defined in SettingsView+Streaming.swift
+    // MARK: Streaming accounts (Apple Music) — moved into AppleMusicSettingsView (Credentials tab)
 
     // MARK: Online search
 
@@ -697,7 +714,7 @@ struct SettingsView: View {
     /// catalog so newly-deployed tracks appear. Only meaningful once the AM source is loaded,
     /// and it leans on the SAME import server as the import features — so it lives right after
     /// that section and is gated on both `hasAppleMusic` (the source is present) and a server.
-    // (The Apple Music library sync UI moved to SyncSettingsView — Settings ▸ Sync.)
+    // (The Apple Music library sync UI moved to AppleMusicSettingsView — Settings ▸ Apple Music.)
 
     private func testRip() async {
         ripTesting = true; ripStatus = nil

@@ -105,7 +105,7 @@ final class PlaylistWriteBack {
         /// `schemaVersion` does NOT move (a bump would strand the user's queued writes).
         var musicKitPlaylistId: String?
         /// Human-readable note about HOW the playlist was resolved when the answer wasn't
-        /// obvious (several library playlists share the name). Surfaced in Settings ▸ Sync
+        /// obvious (several library playlists share the name). Surfaced in Settings ▸ Apple Music
         /// so a guess is visible rather than silent — the failure mode this whole change is
         /// about is a wrong-or-missing playlist join that nobody could see.
         var resolutionNote: String?
@@ -560,7 +560,7 @@ final class PlaylistWriteBack {
     /// there is no other copy to restore from. Any still-`.queued` write is abandoned; the
     /// local duplicate add it recorded stands, and the safety property holds (a dropped
     /// write-back only ever leaves a song local, never removes one). Resets the @Observable
-    /// state in-memory so Settings ▸ Sync empties immediately, then removes the file the same
+    /// state in-memory so Settings ▸ Apple Music empties immediately, then removes the file the same
     /// forgiving way `launchURL()` does — `try?` swallows a not-yet-written document.
     func clear() {
         jobs = []

@@ -39,7 +39,7 @@ final class PlaylistAppleMusicSync {
     }
 
     /// The persisted current/most-recent run: hydrated at launch so the last sync — finished,
-    /// failed, or interrupted mid-flight — is always inspectable from Settings ▸ Sync.
+    /// failed, or interrupted mid-flight — is always inspectable from Settings ▸ Apple Music.
     private struct RunSnapshot: Codable, Equatable {
         var startedMs: Double
         var updatedMs: Double

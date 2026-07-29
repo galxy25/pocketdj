@@ -494,7 +494,7 @@ struct HistoryView: View {
                 // Collection + Unified show your ADDs — offer to (re)send the recent ones to the
                 // Apple Music playlists they came from, for adds that never made it upstream (added
                 // before write-back shipped, or while offline / signed out). The look-back window
-                // is the one configured in Settings ▸ Sync (default 2 days).
+                // is the one configured in Settings ▸ Apple Music (default 2 days).
                 Button { runBackfill() } label: { Image(systemName: "arrow.up.circle") }
                     .accessibilityIdentifier("history-writeback-backfill")
             }

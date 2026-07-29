@@ -238,12 +238,26 @@ final class SettingsStore {
     /// service still degrades to a no-op without a signed-in iCloud account. The toggle
     /// lives in Settings ▸ Profile.
     var cloudSyncEnabled: Bool
+    /// Which backend Apple Music SYNCING uses (Settings ▸ Apple Music ▸ Syncing). The default is
+    /// CAPTURED ONCE at store construction (nil raw → `.remote` unless an import server is
+    /// configured — an existing iMac setup keeps its local path; a fresh install gets the
+    /// serverless one) so later `ripServerURL` edits — shared plumbing that changes for reasons
+    /// unrelated to Apple Music — can never silently flip a mode the user has already seen.
+    /// See `AppleMusicSyncMode`.
+    var appleMusicSyncModeRaw: String?
+    var appleMusicSyncMode: AppleMusicSyncMode {
+        get {
+            appleMusicSyncModeRaw.flatMap(AppleMusicSyncMode.init(rawValue:))
+                ?? (ripServerURL.isEmpty ? .remote : .local)
+        }
+        set { appleMusicSyncModeRaw = newValue.rawValue }
+    }
     /// How many days of collection ADD history the Apple Music write-back BACKFILL re-drives
-    /// (Settings ▸ Sync and History ▸ Collection). Default 2, clamped to 1…90 so a corrupt or
-    /// out-of-range value can never make the backfill scan nothing (or the whole log). The
-    /// didSet ONLY clamps — persistence rides `SyncSettingsView`'s `.onDisappear { persist() }`
-    /// like every other control there; a persisting didSet would re-write the blob during
-    /// `resetEverything`'s reload right after it cleared it. See
+    /// (Settings ▸ Apple Music ▸ Syncing, and History ▸ Collection). Default 2, clamped to 1…90
+    /// so a corrupt or out-of-range value can never make the backfill scan nothing (or the whole
+    /// log). The didSet ONLY clamps — persistence rides `AppleMusicSettingsView`'s
+    /// `.onDisappear { persist() }` like every other control in that pane; a persisting didSet
+    /// would re-write the blob during `resetEverything`'s reload right after it cleared it. See
     /// `CollectionsStore.backfillSourceWriteBacks`.
     var writeBackBackfillDays: Int {
         didSet {
@@ -323,6 +337,7 @@ final class SettingsStore {
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
         self.syncConvertedPockets = data.syncConvertedPockets ?? true
         self.cloudSyncEnabled = data.cloudSyncEnabled ?? true
+        self.appleMusicSyncModeRaw = data.appleMusicSyncMode
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                              1), CollectionsStore.writeBackBackfillMaxDays)
         self.defaultRecentlyAddedCount = min(max(data.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -334,6 +349,15 @@ final class SettingsStore {
         if let forced = ProcessInfo.processInfo.environment["PDJ_MIX_DECK_LAYOUT"],
            let layout = MixDeckLayout(rawValue: forced) {
             self.mixDeckLayout = layout
+        }
+
+        // CAPTURE the Apple Music sync-mode default now (after the PDJ_RIP_SERVER_URL seam so a
+        // seeded server derives .local): an unset mode must become a fixed install-time choice,
+        // not a live derivation that flips when ripServerURL is edited later. In-memory only —
+        // init must never persist (the OnboardingStore fresh-install invariant); the value rides
+        // the next natural persist().
+        if appleMusicSyncModeRaw == nil {
+            appleMusicSyncModeRaw = (ripServerURL.isEmpty ? AppleMusicSyncMode.remote : .local).rawValue
         }
     }
 
@@ -462,7 +486,8 @@ final class SettingsStore {
             syncConvertedPockets: syncConvertedPockets,
             cloudSyncEnabled: cloudSyncEnabled,
             writeBackBackfillDays: writeBackBackfillDays,
-            defaultRecentlyAddedCount: defaultRecentlyAddedCount)
+            defaultRecentlyAddedCount: defaultRecentlyAddedCount,
+            appleMusicSyncMode: appleMusicSyncModeRaw)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -515,6 +540,9 @@ final class SettingsStore {
         studioCountInEnabled = d.studioCountInEnabled ?? true
         syncConvertedPockets = d.syncConvertedPockets ?? true
         cloudSyncEnabled = d.cloudSyncEnabled ?? true
+        // Mirror init's capture (reset clears ripServerURL, so the derived default is remote) —
+        // leaving this nil would revive the live-derivation behavior until the next launch.
+        appleMusicSyncModeRaw = AppleMusicSyncMode.remote.rawValue
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                         1), CollectionsStore.writeBackBackfillMaxDays)
         defaultRecentlyAddedCount = min(max(d.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -612,6 +640,9 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced + clamped at the read sites, default 3650 —
     /// how many items the "Recently added" virtual playlist shows).
     var defaultRecentlyAddedCount: Int?
+    /// Optional so older blobs still decode (nil ⇒ the DERIVED default at the read site:
+    /// remote unless an import server is configured). Raw value of `AppleMusicSyncMode`.
+    var appleMusicSyncMode: String?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -655,5 +686,16 @@ struct SettingsData: Codable {
         syncConvertedPockets: nil,
         cloudSyncEnabled: nil,
         writeBackBackfillDays: nil,
-        defaultRecentlyAddedCount: nil)
+        defaultRecentlyAddedCount: nil,
+        appleMusicSyncMode: nil)
+}
+
+/// Which backend "Apple Music syncing" uses (Settings ▸ Apple Music ▸ Syncing).
+/// LOCAL  — the PocketDJ catalog + the iMac import server (Library.xml re-index → the
+///          "Apple Music (Local)" source; the 04:00 nightly's territory).
+/// REMOTE — the Apple Music Web API driven by a Music-User-Token minted on this device
+///          (playlist + favorites sync through the first-party endpoint; no iMac).
+enum AppleMusicSyncMode: String, CaseIterable {
+    case local
+    case remote
 }
