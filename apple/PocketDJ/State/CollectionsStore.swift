@@ -1748,7 +1748,26 @@ final class CollectionsStore {
         for f in doc.folders { upsertFolder(f) }
         for p in doc.pockets { upsertPocket(p) }
         for pl in doc.playlists { upsertPlaylist(pl) }
+        dropDanglingRefs()
         save()
+    }
+
+    /// Drop collection refs that resolve to NOTHING in the store — a folder or child-pocket id that
+    /// isn't present anywhere (in this import or already local). Run after an id-PRESERVING import so
+    /// a dangling ref never survives, while a ref to an item that DOES exist (the whole point of
+    /// match-by-id merge) is kept. Idempotent + safe on pre-existing collections (they already
+    /// resolve, so it's a no-op for them).
+    private func dropDanglingRefs() {
+        let folderIds = Set(folders.map(\.id))
+        let pocketIds = Set(pockets.map(\.id))
+        for i in pockets.indices {
+            if let f = pockets[i].folderId, !folderIds.contains(f) { pockets[i].folderId = nil }
+            let kept = pockets[i].childPocketIds.filter { pocketIds.contains($0) }
+            if kept != pockets[i].childPocketIds { pockets[i].childPocketIds = kept }
+        }
+        for i in playlists.indices {
+            if let f = playlists[i].folderId, !folderIds.contains(f) { playlists[i].folderId = nil }
+        }
     }
 
     // MARK: PWA .playlist.pocketdj.zip interop (single-playlist transfer)
@@ -1872,6 +1891,7 @@ final class CollectionsStore {
         // Setlists are frozen snapshots — keep one only when its parent playlist is present (drop
         // orphans, as before); upsert dedupes by setlist id so a re-import doesn't duplicate them.
         for sl in incSetlists where playlists.contains(where: { $0.id == sl.playlistId }) { upsertSetlist(sl) }
+        dropDanglingRefs()
         save()
         // Report the number PROCESSED (added or merged) — every incoming item is restored either way.
         return (incPockets.count, incPlaylists.count, incSetlists.count)

@@ -247,10 +247,10 @@ final class NowPlayingFoldersTests: XCTestCase {
         try s.importCollection(data: Data(doc.utf8))
         XCTAssertEqual(s.folders.count, 1)
         let f = s.folders.last!
-        XCTAssertNotEqual(f.id, "fld_a")                   // fresh folder id
+        XCTAssertEqual(f.id, "fld_a")                      // id PRESERVED (match-by-id merge)
         let pk = s.pockets.last!
-        XCTAssertNotEqual(pk.id, "pkt_a")                  // fresh pocket id
-        XCTAssertEqual(pk.folderId, f.id)                  // re-pointed to the reminted folder
+        XCTAssertEqual(pk.id, "pkt_a")                     // id preserved
+        XCTAssertEqual(pk.folderId, "fld_a")               // folder ref intact (present, not dangling)
     }
 
     // A pocket imported WITHOUT its folder drops the dangling ref (lands at top level).
@@ -278,10 +278,10 @@ final class NowPlayingFoldersTests: XCTestCase {
         try s.importCollection(data: Data(doc.utf8))
         XCTAssertEqual(s.folders.count, 1)
         let f = s.folders.last!
-        XCTAssertNotEqual(f.id, "fld_a")                       // fresh folder id
+        XCTAssertEqual(f.id, "fld_a")                          // id PRESERVED (match-by-id merge)
         let pl = s.playlists.last!
-        XCTAssertNotEqual(pl.id, "pls_a")                      // fresh playlist id
-        XCTAssertEqual(pl.folderId, f.id)                      // re-pointed to the reminted folder
+        XCTAssertEqual(pl.id, "pls_a")                         // id preserved
+        XCTAssertEqual(pl.folderId, "fld_a")                   // folder ref intact (present, not dangling)
     }
 
     // A playlist imported WITHOUT its folder (single-item export) drops the dangling ref

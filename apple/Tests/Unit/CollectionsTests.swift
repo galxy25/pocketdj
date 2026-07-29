@@ -454,32 +454,33 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(s.syncConvertedCollections(with: []), 0)         // source missing ⇒ untouched
     }
 
-    func testExportImportPlaylistMintsFreshIds() throws {
+    func testReimportMergesPlaylistByIdWithoutDuplicating() throws {
         let s = store()
         let pl = s.createPlaylist("Set", songIds: ["sng_1", "sng_2"])
         let data = try XCTUnwrap(s.exportPlaylist(pl.id))
-        try s.importCollection(data: data)   // import back into the SAME store
-        XCTAssertEqual(s.playlists.count, 2)
-        let imported = s.playlists.last!
-        XCTAssertNotEqual(imported.id, pl.id)                    // fresh playlist id
-        let origNodeIds = Set(pl.sequences.flatMap { $0.children ?? [] }.map(\.nodeId))
-        let newNodeIds = Set(imported.sequences.flatMap { $0.children ?? [] }.map(\.nodeId))
-        XCTAssertTrue(origNodeIds.isDisjoint(with: newNodeIds))  // fresh node ids
-        XCTAssertEqual(imported.sequences.first?.children?.compactMap(\.songId), ["sng_1", "sng_2"])
+        try s.importCollection(data: data)   // re-import into the SAME store
+        // Match-by-id merge: NO duplicate playlist, id preserved, songs deduped (not re-added).
+        XCTAssertEqual(s.playlists.count, 1)
+        let merged = s.playlists.first!
+        XCTAssertEqual(merged.id, pl.id)
+        XCTAssertEqual(merged.sequences.first?.children?.compactMap(\.songId), ["sng_1", "sng_2"])
     }
 
-    func testExportImportPocketRemapsChildRefs() throws {
+    func testImportDropsChildRefToPocketPresentNowhere() throws {
         let s = store()
         let a = s.createPocket("A"); let b = s.createPocket("B")
         s.addChildPocket(b.id, toPocket: a.id)
         s.addSong("sng_1", toPocket: a.id)
-        // Export the parent only → its child ref points outside the import, so it's dropped.
+        // Export the PARENT ONLY (its child ref points at B, absent from the export).
         let parentOnly = try XCTUnwrap(s.exportPocket(a.id))
-        try s.importCollection(data: parentOnly)
-        let importedA = s.pockets.last!
-        XCTAssertNotEqual(importedA.id, a.id)
-        XCTAssertEqual(importedA.songIds, ["sng_1"])
-        XCTAssertTrue(importedA.childPocketIds.isEmpty)          // ref to non-imported B dropped
+        // Import into a FRESH store where B does not exist → the dangling child ref is dropped, and
+        // the pocket's id is preserved (match-by-id).
+        let s2 = store()
+        try s2.importCollection(data: parentOnly)
+        let importedA = s2.pockets.first { $0.id == a.id }
+        XCTAssertNotNil(importedA, "id preserved on import")
+        XCTAssertEqual(importedA?.songIds, ["sng_1"])
+        XCTAssertEqual(importedA?.childPocketIds, [], "ref to a pocket present nowhere is dropped")
     }
 
     func testRealizeFromSongIdsBuildsSetlist() async {
@@ -527,11 +528,13 @@ final class CollectionsStoreTests: XCTestCase {
         // Reloads from disk with notes intact.
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.pocket(p.id)?.notes.first?.text, "A poem")
-        // Export → import (same store) keeps the notes on the reminted copy.
+        // Export → re-import (same store) MERGES by id (not a fresh copy) and keeps the notes.
         let data = try XCTUnwrap(s2.exportPocket(p.id))
         try s2.importCollection(data: data)
-        XCTAssertEqual(s2.pockets.last?.notes.first?.text, "A poem")
-        XCTAssertNotEqual(s2.pockets.last?.id, p.id)                    // fresh pocket id
+        XCTAssertEqual(s2.pockets.count, 1)                             // merged, not duplicated
+        XCTAssertEqual(s2.pocket(p.id)?.notes.first?.text, "A poem")
+        XCTAssertEqual(s2.pocket(p.id)?.notes.count, 1)                 // note not duplicated
+        XCTAssertEqual(s2.pockets.last?.id, p.id)                       // id preserved (match-by-id)
     }
 
     // MARK: Setlist track editing (remove / reorder / recompute totalMs) + add note
