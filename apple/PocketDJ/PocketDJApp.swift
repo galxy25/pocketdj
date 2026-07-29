@@ -29,7 +29,21 @@ struct PocketDJApp: App {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let beforePlaylists = Set(collections.playlists.map(\.id))
         let beforePockets = Set(collections.pockets.map(\.id))
-        try? collections.importAny(url: url)
+        // A full `.pocketdj.zip` backup carries sources + edits + FAVORITES alongside collections.
+        // `importAny` alone restores only the collections and silently drops the rest, so route a
+        // full backup through the SAME complete restore as Settings ▸ Import backup.
+        if let data = try? Data(contentsOf: url), CollectionsStore.detectKind(data: data) == .backup,
+           let (payload, _) = try? BackupZip.import(data: data) {
+            _ = collections.mergeBackupCollections(pockets: payload.pockets, playlists: payload.playlists,
+                                                   setlists: payload.setlists, folders: payload.folders)
+            let addedSources = settings.addSources(payload.sources)
+            if let ed = payload.editsData { try? edits.importData(ed) }
+            if let fd = payload.favoritesData { favorites.importMerging(data: fd) }
+            app.applyEdits()
+            if addedSources > 0 { Task { await app.reload() } }
+        } else {
+            try? collections.importAny(url: url)
+        }
         if let p = collections.playlists.first(where: { !beforePlaylists.contains($0.id) }) {
             intents.pendingRoute = .playlist(p.id)
         } else if let k = collections.pockets.first(where: { !beforePockets.contains($0.id) }) {

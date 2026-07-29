@@ -232,6 +232,37 @@ final class FavoritesStore {
         adopt(Document())
     }
 
+    // MARK: - File backup (export / restore)
+
+    /// Serialize the FULL favorites document — every entry (favorites AND un-favorited tombstones,
+    /// with `appleMusicId` + `atMs`) plus `seedVersion` — for a `.pocketdj.zip` backup. These are
+    /// the same bytes `reloadFromDisk` reads, so a restore recovers ♥ state losslessly.
+    func exportData() -> Data? {
+        let doc = Document(entries: byId.values.sorted { $0.songId < $1.songId },
+                           seedVersion: seedVersion == 0 ? nil : seedVersion)
+        return try? JSONEncoder().encode(doc)
+    }
+
+    /// Merge a backup favorites document into the current state: per song the entry with the NEWER
+    /// `atMs` wins (a restore recovers favorites AND tombstones without clobbering a newer local
+    /// edit). No `onChanged` — a restore is not a per-song user toggle, so it triggers no outbound
+    /// Apple Music writes (same discipline as `reloadFromDisk`/`applySeed`). Returns entries adopted.
+    @discardableResult
+    func importMerging(data: Data) -> Int {
+        guard let doc = try? JSONDecoder().decode(Document.self, from: data) else { return 0 }
+        var adopted = 0
+        withCoalescedSaves {
+            for e in doc.entries {
+                if let existing = byId[e.songId], existing.atMs > e.atMs { continue } // keep the newer local edit
+                apply(e)
+                adopted += 1
+            }
+            seedVersion = max(seedVersion, doc.seedVersion ?? 0)
+            save()
+        }
+        return adopted
+    }
+
     // MARK: - Internals
 
     private func apply(_ entry: Entry) {

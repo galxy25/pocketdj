@@ -77,6 +77,46 @@ final class BackupZipTests: XCTestCase {
         XCTAssertEqual(skipped.art, 0)
     }
 
+    // MARK: Favorites round-trip through the backup (♥ + un-favorite tombstones + appleMusicId)
+
+    @MainActor
+    func testFavoritesRoundTripThroughBackup() throws {
+        let favA = makeFavorites()
+        favA.set("sng_am", favorited: true, appleMusicId: "12345")   // Apple Music ♥ (keeps its id)
+        favA.set("sng_vinyl", favorited: true, appleMusicId: nil)    // vinyl ♥ (no AM id)
+        favA.set("sng_gone", favorited: false, appleMusicId: nil)    // deliberate un-favorite (tombstone)
+
+        // EXPORT a full backup carrying favorites, then IMPORT into a FRESH favorites store.
+        let zip = try BackupZip.export(sources: [], pockets: [], playlists: [], setlists: [],
+                                       editsData: Data("{}".utf8), favoritesData: favA.exportData())
+        XCTAssertNotNil(entry("favorites.json", in: zip), "favorites travel in the backup zip")
+        let (payload, _) = try BackupZip.import(data: zip)
+        let favB = makeFavorites()
+        let adopted = favB.importMerging(data: try XCTUnwrap(payload.favoritesData))
+
+        XCTAssertEqual(adopted, 3)
+        XCTAssertTrue(favB.isFavorite("sng_am"))
+        XCTAssertTrue(favB.isFavorite("sng_vinyl"))
+        XCTAssertFalse(favB.isFavorite("sng_gone"))
+        // The un-favorite TOMBSTONE survives (present but not favorited) — not merely absent.
+        XCTAssertNotNil(favB.entry("sng_gone"))
+        XCTAssertEqual(favB.entry("sng_gone")?.favorited, false)
+        // The Apple Music link is preserved (so a later outbound push can resolve it).
+        XCTAssertEqual(favB.entry("sng_am")?.appleMusicId, "12345")
+    }
+
+    /// Restore merges by song, NEWEST edit wins — an older backup ♥ never resurrects a song the
+    /// user has since un-favorited locally.
+    @MainActor
+    func testFavoritesRestoreDoesNotClobberNewerLocalEdit() throws {
+        // A backup that recorded sng_x as favorited at an OLD timestamp.
+        let olderBackup = Data(#"{"schemaVersion":1,"entries":[{"songId":"sng_x","favorited":true,"atMs":1000}]}"#.utf8)
+        let local = makeFavorites()
+        local.set("sng_x", favorited: false, appleMusicId: nil)   // local un-favorite, stamped "now" (>> 1000)
+        local.importMerging(data: olderBackup)
+        XCTAssertFalse(local.isFavorite("sng_x"), "the newer local un-favorite wins over the older backup ♥")
+    }
+
     // MARK: A backup omitting items/art still imports (and reports skips when present)
 
     func testImportToleratesMissingItemsAndArt() throws {
@@ -155,6 +195,11 @@ final class BackupZipTests: XCTestCase {
     @MainActor private func makeEdits() -> EditsStore {
         EditsStore(fileURL: FileManager.default.temporaryDirectory
             .appendingPathComponent("pdj-bk-edits-\(UUID().uuidString).json"))
+    }
+
+    @MainActor private func makeFavorites() -> FavoritesStore {
+        FavoritesStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-bk-fav-\(UUID().uuidString).json"))
     }
 
     private func makeZip(_ files: [String: Data]) throws -> Data {
