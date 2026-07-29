@@ -3,16 +3,18 @@ import SwiftUI
 /// Settings ▸ Apple Music — ALL Apple-Music-related settings, consolidated into one pane
 /// (Levi 2026-07-29) with two sub-tabs (segmented, the Browse discover-scope idiom):
 ///
-///   • SYNCING — a LOCAL / REMOTE mode switch and the sync surfaces for the chosen mode.
-///       LOCAL  = the PocketDJ catalog + the iMac import server: the Library.xml re-index
-///                (manual twin of the 04:00 nightly) publishing "Apple Music (Local)".
-///       REMOTE = the Apple Music Web API driven by a Music-User-Token minted ON THIS DEVICE
-///                (the AWS Lambda path): two-way playlist sync — no iMac, no Tailscale, no
-///                server of your own.
-///       Mode-independent surfaces (FAVORITES sync + the on-device MusicKit write-back queue +
-///       catch-up backfill) show in BOTH modes — they run on-device regardless of the mode
-///       (favorites is owner-gated, not mode-gated), so hiding their status/error surface in
-///       one mode would leave behavior running with no window into it.
+///   • SYNCING — ONE set of sync verbs, identical in both modes (Levi 2026-07-29: "conceptually
+///     it should be the same whether local or remote"); the LOCAL/REMOTE switch only picks the
+///     BACKEND that fulfills them:
+///       Collections ⇅/↑/↓ —
+///         LOCAL  = ↓ Get: the import-server Library.xml re-index (04:00 nightly's manual twin)
+///                  + converted-collections reconcile · ↑ Send: re-drive recent adds (write-back
+///                  backfill) · ⇅ both. The iMac/catalog path — Levi's setup.
+///         REMOTE = the WS2 Lambda playlist sync with the device Music-User-Token (↑ push-only,
+///                  ↓ pull-only, ⇅ both) — no server of your own; everyone else's default.
+///       Favorites ⇅ — the same on-device owner-gated service in both modes.
+///       The write-back queue (evidence, auto-hidden) and the automatic converted-collections
+///       toggle (moved from the retired Settings ▸ Sync panel) show in both modes.
 ///
 ///   • CREDENTIALS — the MusicKit account link (log in / log out + status), the import-server
 ///     URL/token (local mode's backend; the SAME settings the rip/import features use), a
@@ -47,8 +49,9 @@ struct AppleMusicSettingsView: View {
     // Remote endpoint health check (Credentials tab)
     @State private var remoteTesting = false
     @State private var remoteStatus: Status?
-    // Write-back backfill
-    @State private var backfillResult: String?
+    // Local-mode collections sync (Get = re-index + converted reconcile, Send = backfill)
+    @State private var localBusy = false
+    @State private var localStatus: [String] = []
     // Owner bootstrap (favorites)
     @State private var ownerHash: String?
     @State private var loadedHash = false
@@ -58,28 +61,16 @@ struct AppleMusicSettingsView: View {
 
     enum Status { case ok(String), bad(String) }
 
-    /// The subset of linked collections whose source is Apple Music — the only ones the
-    /// write-back backfill can push upstream (vinyl / My Digital have no Apple Music playlist).
-    private var appleMusicLinkedCount: Int {
-        collections.pockets.filter { $0.hasSource && PlaylistWriteBack.isAppleMusicSource($0.sourceName ?? "") }.count +
-        collections.playlists.filter { $0.hasSource && PlaylistWriteBack.isAppleMusicSource($0.sourceName ?? "") }.count
-    }
-
     var body: some View {
         Form {
             tabSection
             if tab == .syncing {
                 modeSection
-                if settings.appleMusicSyncMode == .local {
-                    localLibrarySection
-                } else {
-                    playlistSyncSection
-                }
-                // Mode-INDEPENDENT: favorites + write-back run on-device in both modes (favorites
-                // is owner-gated, not mode-gated) — their status/error surfaces must never hide
-                // while the behavior keeps running.
+                // ONE set of sync verbs, identical in both modes (Levi 2026-07-29): the mode
+                // switch only picks the BACKEND that fulfills them.
+                collectionsSection
                 favoritesSyncSection
-                backfillSection
+                convertedAutoSection
                 writeBackSection
             } else {
                 accountSection
@@ -135,11 +126,21 @@ struct AppleMusicSettingsView: View {
         }
     }
 
-    // MARK: LOCAL — Apple Music library re-index (import server)
+    // MARK: Collections — ONE set of sync verbs, both modes (the mode picks the backend)
 
-    @ViewBuilder private var localLibrarySection: some View {
+    /// Whether the collections buttons can run right now (per mode), and whether one is running.
+    private var collectionsBusy: Bool {
+        settings.appleMusicSyncMode == .local ? localBusy : (playlistSync?.isSyncing ?? false)
+    }
+    private var collectionsAvailable: Bool {
+        settings.appleMusicSyncMode == .local
+            ? settings.hasAppleMusic
+            : (playlistSync?.isAvailable ?? false)
+    }
+
+    @ViewBuilder private var collectionsSection: some View {
         Section {
-            if !settings.hasAppleMusic {
+            if settings.appleMusicSyncMode == .local, !settings.hasAppleMusic {
                 Button {
                     settings.loadAppleMusic()
                     Task { await app.reload() }
@@ -148,27 +149,101 @@ struct AppleMusicSettingsView: View {
                 }
                 .accessibilityIdentifier("am-load-local-source")
             }
-            HStack {
-                Button {
-                    Task { await syncAppleMusic() }
-                } label: {
-                    if syncing {
-                        ProgressView()
-                    } else {
-                        Label("Sync Apple Music library", systemImage: "arrow.triangle.2.circlepath")
-                    }
+
+            // The same three verbs in both modes: two-way, send-only, get-only.
+            Button { runCollections(.both) } label: {
+                if collectionsBusy {
+                    ProgressView()
+                } else {
+                    Label("Sync collections", systemImage: "arrow.triangle.2.circlepath.circle")
                 }
-                .disabled(syncing || !musicSync.hasServer || !settings.hasAppleMusic)
-                .accessibilityIdentifier("settings-am-sync")
+            }
+            .disabled(collectionsBusy || !collectionsAvailable)
+            .accessibilityIdentifier("am-collections-sync")
+
+            HStack {
+                Button { runCollections(.push) } label: {
+                    Label("Send to Apple Music", systemImage: "arrow.up.circle")
+                }
+                .accessibilityIdentifier("am-collections-send")
                 Spacer()
-                statusView(syncStatus, id: "settings-am-sync-status")
+                Button { runCollections(.pull) } label: {
+                    Label("Get from Apple Music", systemImage: "arrow.down.circle")
+                }
+                .accessibilityIdentifier("am-collections-get")
+            }
+            .buttonStyle(.borderless)
+            .font(.callout)
+            .disabled(collectionsBusy || !collectionsAvailable)
+
+            if settings.appleMusicSyncMode == .local {
+                // How far back "Send" re-drives queued adds from the collection history.
+                Stepper(value: $settings.writeBackBackfillDays,
+                        in: 1...CollectionsStore.writeBackBackfillMaxDays) {
+                    LabeledContent("Send look-back",
+                                   value: "\(settings.writeBackBackfillDays) day\(settings.writeBackBackfillDays == 1 ? "" : "s")")
+                }
+                .accessibilityIdentifier("writeback-backfill-days")
+                ForEach(Array(localStatus.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.caption).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("am-collections-local-status")
+                }
+            } else {
+                remoteProgressRows
             }
         } header: {
-            Text("Apple Music library")
+            Text("Collections")
         } footer: {
-            Text(musicSync.hasServer
-                ? "Checks the Apple Music library on the PocketDJ server for newly-added music. It's also checked automatically every day at 04:00. New songs appear in the “Apple Music (Local)” source after the next catalog publish — not instantly; use “Reload catalog” if one is still landing."
-                : "Requires the import server — set its URL in the Credentials tab. Once set, this checks the Apple Music library on the PocketDJ server for newly-added music; it's also checked automatically every day at 04:00.")
+            Text(settings.appleMusicSyncMode == .local
+                ? "“Get” checks the Apple Music library on your PocketDJ server (also nightly at 04:00) and updates converted collections from their sources; “Send” re-drives your recent adds to the real Apple Music playlists. “Sync collections” does both."
+                : "“Sync collections” pushes your playlists into Apple Music and imports Apple Music playlists back — a playlist is created only if it isn't there yet, and after that only its missing songs are added; an interrupted sync picks up where it left off. Runs on your device (requires an Apple Music subscription).")
+        }
+    }
+
+    /// Route a verb to the mode's backend — the whole point of the mode switch.
+    private func runCollections(_ direction: PlaylistAppleMusicSync.Direction) {
+        switch settings.appleMusicSyncMode {
+        case .remote:
+            guard let playlistSync else { return }
+            Task { await playlistSync.syncNow(collections: collections, app: app, direction: direction) }
+        case .local:
+            Task { await runLocalCollections(direction) }
+        }
+    }
+
+    /// LOCAL backend: "Get" = library re-index (import server) + converted-collections reconcile;
+    /// "Send" = re-drive queued adds (the write-back backfill). Results land as status lines in
+    /// the same section the buttons live in.
+    private func runLocalCollections(_ direction: PlaylistAppleMusicSync.Direction) async {
+        guard !localBusy else { return }
+        localBusy = true
+        localStatus = []
+        defer { localBusy = false }
+        if direction != .push {
+            if !musicSync.hasServer {
+                localStatus.append("Get: needs the import server — set its URL in the Credentials tab.")
+            } else {
+                await syncAppleMusic()
+                switch syncStatus {
+                case .ok(let msg): localStatus.append("Get: \(msg)")
+                case .bad(let msg): localStatus.append("Get failed: \(msg)")
+                case nil: break
+                }
+                let changed = collections.syncConvertedCollections(with: app.indexPlaylists)
+                localStatus.append(changed == 0 ? "Converted collections: all in sync"
+                    : "Converted collections: updated \(changed) item\(changed == 1 ? "" : "s")")
+            }
+        }
+        if direction != .pull {
+            if writeBack?.canWriteBack == true {
+                let n = collections.backfillSourceWriteBacks(from: activity.events,
+                                                             days: settings.writeBackBackfillDays,
+                                                             localInstallId: activity.installId)
+                localStatus.append(n == 0 ? "Send: nothing new to send"
+                    : "Send: sending \(n) song\(n == 1 ? "" : "s") to Apple Music")
+            } else {
+                localStatus.append("Send: unavailable on this device (Apple Music library writes need iPhone / Vision Pro).")
+            }
         }
     }
 
@@ -199,79 +274,63 @@ struct AppleMusicSettingsView: View {
         }
     }
 
-    // MARK: REMOTE — WS2 playlist sync (steps + audit trail)
+    // MARK: REMOTE progress rows (live steps + audit trail — see PlaylistAppleMusicSync)
 
-    /// Bidirectional PocketDJ ↔ Apple Music PLAYLIST sync through the first-party AWS endpoint.
-    /// Renders the live STEP LIST while running (server-published progress) and the persisted
-    /// AUDIT TRAIL afterwards — see `PlaylistAppleMusicSync` for the persistence story.
-    @ViewBuilder private var playlistSyncSection: some View {
-        if let playlistSync, playlistSync.isAvailable {
-            Section {
-                Button {
-                    Task { await playlistSync.syncNow(collections: collections, app: app) }
+    /// The remote backend's status rows, rendered inside the unified Collections section: the
+    /// live step list while running, the persisted current/last-run recap, and the audit history.
+    @ViewBuilder private var remoteProgressRows: some View {
+        if let playlistSync {
+            if let startedMs = playlistSync.currentRunStartedMs, !playlistSync.steps.isEmpty {
+                HStack {
+                    Text(playlistSync.isSyncing ? "Syncing now"
+                         : playlistSync.currentRunCompleted ? "Last sync" : "Interrupted sync")
+                        .font(.caption.bold())
+                    Spacer()
+                    Text(Date(timeIntervalSince1970: startedMs / 1000)
+                        .formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                }
+                .accessibilityIdentifier("am-playlist-sync-run-header")
+            }
+            ForEach(playlistSync.steps) { step in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    switch step.state {
+                    case .running: ProgressView().controlSize(.small)
+                    case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.danger)
+                    case .interrupted: Image(systemName: "pause.circle.fill").foregroundStyle(Theme.accent2)
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(step.label).font(.callout)
+                        if let detail = step.detail {
+                            Text(detail).font(.caption).foregroundStyle(Theme.fgDim)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("am-playlist-sync-step")
+            }
+            if !playlistSync.isSyncing, !playlistSync.currentRunCompleted, !playlistSync.steps.isEmpty {
+                Text("This sync was interrupted — tap Sync to resume where it left off.")
+                    .font(.caption).foregroundStyle(Theme.accent2)
+                    .accessibilityIdentifier("am-playlist-sync-resume-hint")
+            }
+
+            if !playlistSync.isSyncing, let r = playlistSync.lastResult, playlistSync.steps.isEmpty {
+                Text(r).font(.caption).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("settings-am-playlist-sync-status")
+            }
+
+            // Audit trail: what each sync actually did, per playlist, newest first.
+            if !playlistSync.auditTrail.isEmpty {
+                DisclosureGroup {
+                    ForEach(playlistSync.auditTrail) { report in
+                        auditReportRows(report)
+                    }
                 } label: {
-                    Label(playlistSync.isSyncing ? "Syncing…" : "Sync playlists with Apple Music",
-                          systemImage: "arrow.triangle.2.circlepath.circle")
+                    Label("Sync history", systemImage: "list.bullet.rectangle")
+                        .font(.callout)
                 }
-                .disabled(playlistSync.isSyncing)
-                .accessibilityIdentifier("settings-am-playlist-sync")
-
-                if let startedMs = playlistSync.currentRunStartedMs, !playlistSync.steps.isEmpty {
-                    HStack {
-                        Text(playlistSync.isSyncing ? "Syncing now"
-                             : playlistSync.currentRunCompleted ? "Last sync" : "Interrupted sync")
-                            .font(.caption.bold())
-                        Spacer()
-                        Text(Date(timeIntervalSince1970: startedMs / 1000)
-                            .formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption).foregroundStyle(Theme.fgDim)
-                    }
-                    .accessibilityIdentifier("am-playlist-sync-run-header")
-                }
-                ForEach(playlistSync.steps) { step in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        switch step.state {
-                        case .running: ProgressView().controlSize(.small)
-                        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.danger)
-                        case .interrupted: Image(systemName: "pause.circle.fill").foregroundStyle(Theme.accent2)
-                        }
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(step.label).font(.callout)
-                            if let detail = step.detail {
-                                Text(detail).font(.caption).foregroundStyle(Theme.fgDim)
-                            }
-                        }
-                    }
-                    .accessibilityIdentifier("am-playlist-sync-step")
-                }
-                if !playlistSync.isSyncing, !playlistSync.currentRunCompleted, !playlistSync.steps.isEmpty {
-                    Text("This sync was interrupted — tap Sync to resume where it left off.")
-                        .font(.caption).foregroundStyle(Theme.accent2)
-                        .accessibilityIdentifier("am-playlist-sync-resume-hint")
-                }
-
-                if !playlistSync.isSyncing, let r = playlistSync.lastResult, playlistSync.steps.isEmpty {
-                    Text(r).font(.caption).foregroundStyle(Theme.fgDim)
-                        .accessibilityIdentifier("settings-am-playlist-sync-status")
-                }
-
-                // Audit trail: what each sync actually did, per playlist, newest first.
-                if !playlistSync.auditTrail.isEmpty {
-                    DisclosureGroup {
-                        ForEach(playlistSync.auditTrail) { report in
-                            auditReportRows(report)
-                        }
-                    } label: {
-                        Label("Sync history", systemImage: "list.bullet.rectangle")
-                            .font(.callout)
-                    }
-                    .accessibilityIdentifier("am-playlist-sync-history")
-                }
-            } header: {
-                Text("Apple Music playlists")
-            } footer: {
-                Text("Two-way sync between your PocketDJ playlists and your Apple Music library — no import server needed. Runs on your device (requires an Apple Music subscription). A playlist is created in Apple Music only if it isn't there yet; after that, syncs only add its missing songs — an interrupted sync picks up where it left off.")
+                .accessibilityIdentifier("am-playlist-sync-history")
             }
         }
     }
@@ -326,7 +385,7 @@ struct AppleMusicSettingsView: View {
         return parts.isEmpty ? (change.detail ?? "") : parts.joined(separator: " ")
     }
 
-    // MARK: REMOTE — Favorites ⇄ Apple Music (sync actions; the owner bootstrap is in Credentials)
+    // MARK: Favorites ⇄ Apple Music — same verb both modes (owner bootstrap in Credentials)
 
     private var favoritesSyncSection: some View {
         Section {
@@ -380,53 +439,25 @@ struct AppleMusicSettingsView: View {
         return isOwner ? "On" : "Off — ♥ stays in this profile"
     }
 
-    // MARK: ALWAYS — Catch up Apple Music (write-back backfill)
+    // MARK: Automatic — converted collections follow their sources
 
-    /// Shown only where a write-back can actually happen (iOS/visionOS with an Apple Music
-    /// source linked); hidden on macOS — `MusicLibrary` writes don't exist there.
-    @ViewBuilder private var backfillSection: some View {
-        if writeBack?.canWriteBack == true, appleMusicLinkedCount > 0 {
-            Section {
-                Stepper(value: $settings.writeBackBackfillDays,
-                        in: 1...CollectionsStore.writeBackBackfillMaxDays) {
-                    LabeledContent("Look back",
-                                   value: "\(settings.writeBackBackfillDays) day\(settings.writeBackBackfillDays == 1 ? "" : "s")")
-                }
-                .accessibilityIdentifier("writeback-backfill-days")
-                HStack {
-                    Button { runBackfill() } label: {
-                        Label("Send my adds to Apple Music", systemImage: "arrow.up.circle")
-                    }
-                    .accessibilityIdentifier("writeback-backfill-run")
-                    Spacer()
-                    if let msg = backfillResult {
-                        Text(msg).font(.caption).foregroundStyle(Theme.fgDim)
-                            .accessibilityIdentifier("writeback-backfill-result")
-                    }
-                }
-            } header: {
-                Text("Catch up Apple Music")
-            } footer: {
-                Text("""
-                     Songs you add to a pocket or playlist that came from an Apple Music list are \
-                     also added to that Apple Music playlist. This re-sends any adds from the last \
-                     \(settings.writeBackBackfillDays) day\(settings.writeBackBackfillDays == 1 ? "" : "s") \
-                     that never made it — made before this was turned on, or while you were offline \
-                     or signed out. Songs already in Apple Music are skipped. You can look back up \
-                     to \(CollectionsStore.writeBackBackfillMaxDays) days.
-                     """)
-            }
+    /// Moved here from the (now-retired) Settings ▸ Sync panel: Apple Music is the only sync
+    /// provider, so its pane owns this. The manual pass rides the Collections "Get" verb.
+    private var convertedAutoSection: some View {
+        Section {
+            Toggle("Converted collections follow their sources", isOn: $settings.syncConvertedPockets)
+                .accessibilityIdentifier("collections-source-sync")
+        } header: {
+            Text("Automatic")
+        } footer: {
+            Text("\(linkedCount) linked item\(linkedCount == 1 ? "" : "s"). A pocket converted from — or a playlist duplicated from — a source playlist follows that playlist as the catalog updates: songs added there appear here, songs removed there are removed here; your own edits stay. Runs on every catalog refresh while on; “Get from Apple Music” runs a pass immediately. Freeze a single item from its detail-view ▸ menu.")
         }
     }
 
-    /// Re-drive the write-back for the chosen look-back window. Idempotent — the queue dedups —
-    /// so a repeat tap reports "Nothing new to send" once everything is queued.
-    private func runBackfill() {
-        let n = collections.backfillSourceWriteBacks(from: activity.events,
-                                                     days: settings.writeBackBackfillDays,
-                                                     localInstallId: activity.installId)
-        backfillResult = n == 0 ? "Nothing new to send"
-            : "Sending \(n) song\(n == 1 ? "" : "s") to Apple Music"
+    /// How many collections carry source provenance (the population the automatic sync watches).
+    private var linkedCount: Int {
+        collections.pockets.filter(\.hasSource).count +
+        collections.playlists.filter(\.hasSource).count
     }
 
     // MARK: ALWAYS — Apple Music playlist write-back queue

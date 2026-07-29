@@ -181,7 +181,13 @@ final class PlaylistAppleMusicSync {
 
     // MARK: Sync
 
-    func syncNow(collections: CollectionsStore, app: AppModel) async {
+    /// Which half of the two-way sync to run — the pane's "↑ Send to Apple Music" /
+    /// "↓ Get from Apple Music" buttons map straight onto these; the primary button is `.both`.
+    enum Direction {
+        case both, push, pull
+    }
+
+    func syncNow(collections: CollectionsStore, app: AppModel, direction: Direction = .both) async {
         guard !isSyncing else { return }
         isSyncing = true
         lastResult = nil
@@ -194,50 +200,62 @@ final class PlaylistAppleMusicSync {
         var changes: [SyncReport.Change] = []
         var errors: [String] = []
         do {
-            // ── 1. Resolve what we can push ─────────────────────────────────────────────────────
-            beginStep("Preparing playlists")
-            let outgoing = Self.resolveOutgoing(collections: collections, app: app)
-            let trackTotal = outgoing.reduce(0) { $0 + $1.trackCatalogIds.count }
-            finishStep("\(outgoing.count) playlist\(outgoing.count == 1 ? "" : "s") · \(trackTotal) tracks")
+            if direction != .pull {
+                // ── 1. Resolve what we can push ─────────────────────────────────────────────────
+                beginStep("Preparing playlists")
+                let outgoing = Self.resolveOutgoing(collections: collections, app: app)
+                let trackTotal = outgoing.reduce(0) { $0 + $1.trackCatalogIds.count }
+                finishStep("\(outgoing.count) playlist\(outgoing.count == 1 ? "" : "s") · \(trackTotal) tracks")
 
-            // ── 2. PUSH (idempotent: create-if-absent + append-only-missing) ────────────────────
-            beginStep("Pushing to Apple Music")
-            let pushed = try await client.push(outgoing) { [weak self] p in self?.updateStep(p.display) }
-            let createdRows = pushed.playlists.filter(\.created)
-            let updatedRows = pushed.playlists.filter { !$0.created && $0.added > 0 }
-            for row in pushed.playlists where row.created || row.added > 0 {
-                changes.append(.init(kind: row.created ? "created" : "updated",
-                                     name: row.name, added: row.added, removed: 0,
-                                     detail: row.total.map { "\(row.added) of \($0) tracks sent" }))
-            }
-            for failure in pushed.errors { errors.append("\(failure.name): \(failure.error)") }
-            let addedTotal = updatedRows.reduce(0) { $0 + $1.added }
-            finishStep(pushSummary(created: createdRows.count, updated: updatedRows.count,
-                                   addedTracks: addedTotal, unchanged: pushed.playlists.count - createdRows.count - updatedRows.count,
-                                   failed: pushed.errors.count))
-
-            // ── 3. RECONCILE (on-device removals + reorders; skips just-created playlists) ──────
-            if let transport, transport.canWrite {
-                beginStep("Reconciling removals & reorders")
-                var reconciled = 0
-                let justCreated = Set(createdRows.map { Self.normName($0.name) })
-                // Never reconcile the same REMOTE playlist twice in one pass — two outgoing lists
-                // resolving to one library playlist would replace-all it back and forth.
-                var reconciledIds = Set<String>()
-                for pl in outgoing where !justCreated.contains(Self.normName(pl.name)) {
-                    updateStep("Checking “\(pl.name)”")
-                    guard let amId = try? await transport.resolvePlaylistId(
-                        name: pl.name, expectedAppleMusicIds: pl.trackCatalogIds),
-                        reconciledIds.insert(amId).inserted else { continue }
-                    if case .edited(let count, let added, let removed) = try? await transport.reconcile(
-                        playlistId: amId, orderedAppleMusicIds: pl.trackCatalogIds) {
-                        reconciled += 1
-                        changes.append(.init(kind: "reconciled", name: pl.name,
-                                             added: added, removed: removed,
-                                             detail: "now \(count) tracks in PocketDJ order"))
-                    }
+                // ── 2. PUSH (idempotent: create-if-absent + append-only-missing) ────────────────
+                beginStep("Pushing to Apple Music")
+                let pushed = try await client.push(outgoing) { [weak self] p in self?.updateStep(p.display) }
+                let createdRows = pushed.playlists.filter(\.created)
+                let updatedRows = pushed.playlists.filter { !$0.created && $0.added > 0 }
+                for row in pushed.playlists where row.created || row.added > 0 {
+                    changes.append(.init(kind: row.created ? "created" : "updated",
+                                         name: row.name, added: row.added, removed: 0,
+                                         detail: row.total.map { "\(row.added) of \($0) tracks sent" }))
                 }
-                finishStep(reconciled == 0 ? "Nothing to fix" : "\(reconciled) playlist\(reconciled == 1 ? "" : "s") re-ordered/pruned")
+                for failure in pushed.errors { errors.append("\(failure.name): \(failure.error)") }
+                let addedTotal = updatedRows.reduce(0) { $0 + $1.added }
+                finishStep(pushSummary(created: createdRows.count, updated: updatedRows.count,
+                                       addedTracks: addedTotal, unchanged: pushed.playlists.count - createdRows.count - updatedRows.count,
+                                       failed: pushed.errors.count))
+
+                // ── 3. RECONCILE (on-device removals + reorders; skips just-created playlists) ──
+                if let transport, transport.canWrite {
+                    beginStep("Reconciling removals & reorders")
+                    var reconciled = 0
+                    let justCreated = Set(createdRows.map { Self.normName($0.name) })
+                    // Never reconcile the same REMOTE playlist twice in one pass — two outgoing
+                    // lists resolving to one library playlist would replace-all it back and forth.
+                    var reconciledIds = Set<String>()
+                    for pl in outgoing where !justCreated.contains(Self.normName(pl.name)) {
+                        updateStep("Checking “\(pl.name)”")
+                        guard let amId = try? await transport.resolvePlaylistId(
+                            name: pl.name, expectedAppleMusicIds: pl.trackCatalogIds),
+                            reconciledIds.insert(amId).inserted else { continue }
+                        if case .edited(let count, let added, let removed) = try? await transport.reconcile(
+                            playlistId: amId, orderedAppleMusicIds: pl.trackCatalogIds) {
+                            reconciled += 1
+                            changes.append(.init(kind: "reconciled", name: pl.name,
+                                                 added: added, removed: removed,
+                                                 detail: "now \(count) tracks in PocketDJ order"))
+                        }
+                    }
+                    finishStep(reconciled == 0 ? "Nothing to fix" : "\(reconciled) playlist\(reconciled == 1 ? "" : "s") re-ordered/pruned")
+                }
+            }
+
+            if direction == .push {
+                let summary = reportSummary(changes: changes, errors: errors)
+                lastResult = summary
+                currentRunCompleted = true
+                persistCurrentRun()
+                appendAudit(.init(dateMs: Date().timeIntervalSince1970 * 1000,
+                                  changes: changes, errors: errors, summary: summary))
+                return
             }
 
             // ── 4. PULL ─────────────────────────────────────────────────────────────────────────

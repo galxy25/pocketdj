@@ -55,7 +55,6 @@ struct SettingsView: View {
             ripSection
             jukeboxSection
             mixSection
-            syncSection
             storageSection
             editsSection
             backupSection
@@ -98,20 +97,8 @@ struct SettingsView: View {
     /// The single door into the storage manager: usage, the burnt-music + session-recording
     /// folder pickers (moved off this root screen), delete-by-artist/-collection/-all, the
     /// session-recordings delete, and the soft cap. See `StorageView`.
-    private var syncSection: some View {
-        Section {
-            NavigationLink {
-                SyncSettingsView(settings: settings)
-            } label: {
-                Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .accessibilityIdentifier("settings-sync")
-        } header: {
-            Text("Sync")
-        } footer: {
-            Text("Keeping converted playlists & pockets in step with their source playlists. Apple Music syncing has its own pane above.")
-        }
-    }
+    // (The Sync panel is retired — Apple Music is the only sync provider, so all syncing,
+    //  including converted-collections source sync, lives in the Apple Music pane below.)
 
     /// The single door into the consolidated Apple Music pane (Levi 2026-07-29): account link,
     /// LOCAL/REMOTE sync-mode switch, playlist + favorites sync, write-back, and the server

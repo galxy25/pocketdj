@@ -20,7 +20,7 @@ struct HistoryView: View {
     @Environment(CollectionActivityStore.self) private var activity
     @Environment(CollectionsStore.self) private var collections
     @Environment(SettingsStore.self) private var settings
-    /// Optional like `AddToCollectionView`/`SyncSettingsView`: always injected by the app, but a
+    /// Optional like `AddToCollectionView`/`AppleMusicSettingsView`: always injected by the app, but a
     /// preview/test host that renders History standalone should degrade to "no backfill", not trap.
     @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
     @Binding var path: NavigationPath
