@@ -31,26 +31,35 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(defaults: defaults).defaultRecentlyAddedCount, 500)
     }
 
-    /// The Apple Music sync mode's default is CAPTURED ONCE at store construction (remote unless
-    /// an import server is configured), so later ripServerURL edits never silently flip a mode
-    /// the user has already seen; an explicit choice persists across reloads.
-    func testAppleMusicSyncModeCapturedAtInitAndPersists() {
+    /// The Private-syncing default is CAPTURED ONCE at store construction (private iff an import
+    /// server is configured), so later ripServerURL edits never silently flip a state the user
+    /// has already seen; an explicit choice persists across reloads; and the legacy check-build
+    /// "local"/"remote" string migrates to the Bool.
+    func testAppleMusicPrivateSyncCapturedAtInitAndPersists() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)
-        XCTAssertEqual(s.appleMusicSyncMode, .remote)          // fresh install captures remote
+        XCTAssertFalse(s.appleMusicPrivateSync)                // fresh install captures public
         s.ripServerURL = "http://imac.local:8787"
-        XCTAssertEqual(s.appleMusicSyncMode, .remote)          // captured — a later URL edit can't flip it
-        s.appleMusicSyncMode = .local                          // explicit choice
+        XCTAssertFalse(s.appleMusicPrivateSync)                // captured — a later URL edit can't flip it
+        s.appleMusicPrivateSync = true                         // explicit choice
         s.persist()
-        XCTAssertEqual(SettingsStore(defaults: defaults).appleMusicSyncMode, .local)
+        XCTAssertTrue(SettingsStore(defaults: defaults).appleMusicPrivateSync)
 
-        // An existing iMac blob (server URL set, mode never chosen) captures .local at init.
+        // An existing iMac blob (server URL set, never chosen) captures PRIVATE at init.
         let imacDefaults = freshDefaults()
         let pre = SettingsStore(defaults: imacDefaults)
         pre.ripServerURL = "http://imac.local:8787"
-        pre.appleMusicSyncModeRaw = nil                        // simulate a pre-feature blob
+        pre.appleMusicPrivateSyncRaw = nil                     // simulate a pre-feature blob
         pre.persist()
-        XCTAssertEqual(SettingsStore(defaults: imacDefaults).appleMusicSyncMode, .local)
+        XCTAssertTrue(SettingsStore(defaults: imacDefaults).appleMusicPrivateSync)
+
+        // Legacy migration: a check-build blob that persisted appleMusicSyncMode = "local".
+        let legacyDefaults = freshDefaults()
+        var legacy = try! JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(SettingsData.default)) as! [String: Any]
+        legacy["appleMusicSyncMode"] = "local"
+        legacyDefaults.set(try! JSONSerialization.data(withJSONObject: legacy), forKey: "pdj.settings.v1")
+        XCTAssertTrue(SettingsStore(defaults: legacyDefaults).appleMusicPrivateSync)
     }
 
     func testPersistAndReload() {

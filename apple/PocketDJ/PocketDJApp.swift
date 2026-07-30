@@ -62,6 +62,10 @@ struct PocketDJApp: App {
     @MainActor private func syncFavoritesIfReady() {
         guard onboarding.isComplete, app.state == .loaded else { return }
         Task { await favoritesSync.run() }
+        // Same cadence for the on-device Apple Music library index (public-mode source):
+        // incremental after the first build (sorted-by-added, early-stop), so this is a
+        // handful of rows on a normal foreground. Gated inside the runner (public + authorized).
+        Task { await app.refreshAppleMusicLibrary?() }
     }
 
     @State private var settings: SettingsStore
@@ -181,6 +185,10 @@ struct PocketDJApp: App {
     @State private var playlistSync = PlaylistAppleMusicSync()
     /// Provisional Discover-add catalog entries (eventual consistency) — see DiscoverAddsStore.
     @State private var discoverAdds: DiscoverAddsStore
+    /// The user's OWN Apple Music library indexed ON DEVICE — the public-mode "Apple Music"
+    /// source (parity with the private catalog's "Apple Music (Local)"). See
+    /// AppleMusicLibraryStore/Indexer; refreshed at launch/foreground + by the pane's Get verb.
+    @State private var appleMusicLibrary: AppleMusicLibraryStore
     /// Provisional IMPORTED catalog entries (cross-user playlist/pocket transfers) — see
     /// ImportedSongsStore.
     @State private var importedSongs: ImportedSongsStore
@@ -698,6 +706,34 @@ struct PocketDJApp: App {
         collections.importedSongs = importedSongs
         _importedSongs = State(initialValue: importedSongs)
 
+        // ── The on-device "Apple Music" library source (public-mode parity) ────
+        // Levi 2026-07-29: "if you have enabled Apple Music and logged in then we should build
+        // and sync with your iCloud profile an index for that source." Built by
+        // AppleMusicLibraryIndexer (MusicKit reads, no server), folded in as a synthetic source
+        // (playlist mirrors included), superseded row-by-row if the private catalog lands the
+        // same track. Content changes are wholesale (playlists reorder) → full reload.
+        let appleMusicLibrary = AppleMusicLibraryStore(fileURL: AppleMusicLibraryStore.launchURL())
+        appleMusicLibrary.onChanged = { [weak app] in Task { await app?.reload() } }
+        app.appleMusicLibrary = appleMusicLibrary
+        // The refresh runner (also driven by the Apple Music pane's Get verb). Gated on the
+        // SAME conditions everywhere: feature on + authorized + PUBLIC syncing (a private
+        // user's library arrives via their own catalog — indexing it twice would only churn).
+        app.refreshAppleMusicLibrary = { [weak appleMusicLibrary, weak settings] in
+            guard let appleMusicLibrary, let settings,
+                  !settings.appleMusicPrivateSync,
+                  AppleMusicLibraryIndexer.isAvailable else { return }
+            let mark = appleMusicLibrary.lastAddedMs
+            guard let result = try? await AppleMusicLibraryIndexer.index(since: mark) else { return }
+            if mark == nil {
+                appleMusicLibrary.replaceAll(songs: result.songs, albums: result.albums,
+                                             playlists: result.playlists, lastAddedMs: result.maxAddedMs)
+            } else {
+                appleMusicLibrary.applyIncremental(songs: result.songs, albums: result.albums,
+                                                   playlists: result.playlists, lastAddedMs: result.maxAddedMs)
+            }
+        }
+        _appleMusicLibrary = State(initialValue: appleMusicLibrary)
+
         // ── User profile + iCloud session sync ─────────────────────────────────
         // The profile is the SYNCED identity (ProfileStore's NAME OWNERSHIP doctrine);
         // the sync service mirrors the session-data documents through the user's private
@@ -803,6 +839,9 @@ struct PocketDJApp: App {
         cloudSync.register("profile-source", fileURL: profileSource.syncFileURL) { [weak profileSource] in
             profileSource?.reloadFromDisk()  // pulled custom-audio metadata follows the Apple ID
         }
+        cloudSync.register("apple-music-library", fileURL: appleMusicLibrary.syncFileURL) { [weak appleMusicLibrary] in
+            appleMusicLibrary?.reloadFromDisk()  // a peer device's index follows the Apple ID (LWW)
+        }
         cloudSync.register("studio-cues", fileURL: studio.cueSyncFileURL) { [weak studio] in
             studio?.reloadCuesFromDisk()     // cue points follow the Apple ID (media-free; NOT the full studio doc)
         }
@@ -833,7 +872,8 @@ struct PocketDJApp: App {
             collections: collections, favorites: favorites, playStats: playStats,
             playHistory: playHistory, collectionActivity: collectionActivity,
             edits: edits, discoverAdds: discoverAdds,
-            importedSongs: importedSongs, profileSource: profileSource, playlistWriteBack: playlistWriteBack,
+            importedSongs: importedSongs, appleMusicLibrary: appleMusicLibrary,
+            profileSource: profileSource, playlistWriteBack: playlistWriteBack,
             mixSessions: mixSessions, playbackSession: playbackSession,
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
             streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)

@@ -101,8 +101,9 @@ struct SettingsView: View {
     //  including converted-collections source sync, lives in the Apple Music pane below.)
 
     /// The single door into the consolidated Apple Music pane (Levi 2026-07-29): account link,
-    /// LOCAL/REMOTE sync-mode switch, playlist + favorites sync, write-back, and the server
-    /// credentials — everything Apple-Music-related in one place. See `AppleMusicSettingsView`.
+    /// the collections + favorites sync verbs, the opt-in Private-syncing toggle (your own
+    /// server), and the write-back — everything Apple-Music-related in one place.
+    /// See `AppleMusicSettingsView`.
     private var appleMusicSection: some View {
         Section {
             NavigationLink {
@@ -114,7 +115,7 @@ struct SettingsView: View {
         } header: {
             Text("Apple Music")
         } footer: {
-            Text("Account, syncing (local via your import server, or remote straight from this device), favorites, and playlist write-back.")
+            Text("Account, collections + favorites syncing (straight from this device, or privately through your own server), and playlist write-back.")
         }
     }
 

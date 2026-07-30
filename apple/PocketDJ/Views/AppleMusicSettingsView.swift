@@ -3,22 +3,23 @@ import SwiftUI
 /// Settings ▸ Apple Music — ALL Apple-Music-related settings, consolidated into one pane
 /// (Levi 2026-07-29) with two sub-tabs (segmented, the Browse discover-scope idiom):
 ///
-///   • SYNCING — ONE set of sync verbs, identical in both modes (Levi 2026-07-29: "conceptually
-///     it should be the same whether local or remote"); the LOCAL/REMOTE switch only picks the
-///     BACKEND that fulfills them:
-///       Collections ⇅/↑/↓ —
-///         LOCAL  = ↓ Get: the import-server Library.xml re-index (04:00 nightly's manual twin)
-///                  + converted-collections reconcile · ↑ Send: re-drive recent adds (write-back
-///                  backfill) · ⇅ both. The iMac/catalog path — Levi's setup.
-///         REMOTE = the WS2 Lambda playlist sync with the device Music-User-Token (↑ push-only,
-///                  ↓ pull-only, ⇅ both) — no server of your own; everyone else's default.
-///       Favorites ⇅ — the same on-device owner-gated service in both modes.
-///       The write-back queue (evidence, auto-hidden) and the automatic converted-collections
-///       toggle (moved from the retired Settings ▸ Sync panel) show in both modes.
+///   • SYNCING — ONE set of sync controls, never duplicated (Levi: "the syncing of collections
+///     and favorites is not duplicated across a local and remote mode"). PUBLIC is the unlabeled
+///     default: syncing talks to Apple Music directly with a token minted on this device.
+///     PRIVATE is an opt-in TOGGLE at the bottom that reveals the server-credential fields and
+///     reroutes the same verbs through the user's own PocketDJ server + catalog (the iMac):
+///       Collections ⇅/↑/↓ — public ↓ = the WS2 pull/import · private ↓ = the import-server
+///         Library.xml re-index; public ↑ = the WS2 idempotent push · private ↑ = (nothing extra;
+///         the shared send below covers it). SHARED in both: ↓ also reconciles converted
+///         collections from their sources, ↑ also re-drives recent adds (the write-back backfill,
+///         its look-back stepper always visible — Levi follow-up).
+///       Favorites ⇅ — the same on-device owner-gated service either way.
+///       The automatic converted-collections toggle and the write-back queue (evidence,
+///       auto-hidden) show regardless of the toggle.
 ///
-///   • CREDENTIALS — the MusicKit account link (log in / log out + status), the import-server
-///     URL/token (local mode's backend; the SAME settings the rip/import features use), a
-///     remote-endpoint health check, and the owner-only favorites bootstrap (iCloud hash + seed).
+///   • CREDENTIALS — the MusicKit account link (log in / log out + status), a sync-service
+///     health check, and the owner-only favorites bootstrap (iCloud hash + seed). The PRIVATE
+///     server credentials live under the Private-syncing toggle in the Syncing tab.
 struct AppleMusicSettingsView: View {
     @Bindable var settings: SettingsStore
     @Environment(AppModel.self) private var app
@@ -40,18 +41,18 @@ struct AppleMusicSettingsView: View {
     }
     @State private var tab: Tab = .syncing
 
-    // Local library re-index (import server)
+    // Private library re-index (the user's own server)
     @State private var syncing = false
     @State private var syncStatus: Status?
-    // Import-server connection test (Credentials tab)
+    // Private-server connection test (under the Private-syncing toggle)
     @State private var ripTesting = false
     @State private var ripStatus: Status?
-    // Remote endpoint health check (Credentials tab)
+    // Sync-service health check (Credentials tab)
     @State private var remoteTesting = false
     @State private var remoteStatus: Status?
-    // Local-mode collections sync (Get = re-index + converted reconcile, Send = backfill)
-    @State private var localBusy = false
-    @State private var localStatus: [String] = []
+    // Collections run state (one runner for both backends + the shared halves)
+    @State private var collectionsRunning = false
+    @State private var collectionsStatus: [String] = []
     // Owner bootstrap (favorites)
     @State private var ownerHash: String?
     @State private var loadedHash = false
@@ -65,16 +66,15 @@ struct AppleMusicSettingsView: View {
         Form {
             tabSection
             if tab == .syncing {
-                modeSection
-                // ONE set of sync verbs, identical in both modes (Levi 2026-07-29): the mode
-                // switch only picks the BACKEND that fulfills them.
+                // ONE set of sync controls (never duplicated); the Private toggle at the
+                // bottom reroutes them through the user's own server instead of Apple's API.
                 collectionsSection
                 favoritesSyncSection
                 convertedAutoSection
+                privateSyncSection
                 writeBackSection
             } else {
                 accountSection
-                importServerSection
                 remoteServiceSection
                 ownerBootstrapSection
             }
@@ -106,41 +106,22 @@ struct AppleMusicSettingsView: View {
         }
     }
 
-    // MARK: Sync mode (Syncing tab)
+    // MARK: Collections — ONE set of sync verbs; the Private toggle only swaps the backend
 
-    private var modeSection: some View {
-        Section {
-            Picker("Sync mode", selection: $settings.appleMusicSyncMode) {
-                Text("Local").tag(AppleMusicSyncMode.local)
-                Text("Remote").tag(AppleMusicSyncMode.remote)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityIdentifier("am-sync-mode")
-        } header: {
-            Text("Sync mode")
-        } footer: {
-            Text(settings.appleMusicSyncMode == .local
-                ? "Local: syncs through your own PocketDJ catalog and import server (the iMac) — the library re-index that publishes the “Apple Music (Local)” source. Server setup lives in the Credentials tab."
-                : "Remote: talks to Apple Music directly with a token minted on this device — playlists and favorites sync with no server of your own. Requires an Apple Music subscription.")
-        }
-    }
-
-    // MARK: Collections — ONE set of sync verbs, both modes (the mode picks the backend)
-
-    /// Whether the collections buttons can run right now (per mode), and whether one is running.
+    /// FUNCTIONAL PARITY (Levi 2026-07-29): with the exception of the actual rip server, public
+    /// and private must not differ — same verbs, same shared halves (converted-collections
+    /// reconcile on Get, write-back backfill on Send), same knobs (the look-back stepper is
+    /// always visible).
     private var collectionsBusy: Bool {
-        settings.appleMusicSyncMode == .local ? localBusy : (playlistSync?.isSyncing ?? false)
+        collectionsRunning || (playlistSync?.isSyncing ?? false)
     }
     private var collectionsAvailable: Bool {
-        settings.appleMusicSyncMode == .local
-            ? settings.hasAppleMusic
-            : (playlistSync?.isAvailable ?? false)
+        settings.appleMusicPrivateSync || (playlistSync?.isAvailable ?? false)
     }
 
     @ViewBuilder private var collectionsSection: some View {
         Section {
-            if settings.appleMusicSyncMode == .local, !settings.hasAppleMusic {
+            if settings.appleMusicPrivateSync, !settings.hasAppleMusic {
                 Button {
                     settings.loadAppleMusic()
                     Task { await app.reload() }
@@ -150,7 +131,7 @@ struct AppleMusicSettingsView: View {
                 .accessibilityIdentifier("am-load-local-source")
             }
 
-            // The same three verbs in both modes: two-way, send-only, get-only.
+            // The same three verbs regardless of the Private toggle: two-way, send-only, get-only.
             Button { runCollections(.both) } label: {
                 if collectionsBusy {
                     ProgressView()
@@ -176,73 +157,91 @@ struct AppleMusicSettingsView: View {
             .font(.callout)
             .disabled(collectionsBusy || !collectionsAvailable)
 
-            if settings.appleMusicSyncMode == .local {
-                // How far back "Send" re-drives queued adds from the collection history.
-                Stepper(value: $settings.writeBackBackfillDays,
-                        in: 1...CollectionsStore.writeBackBackfillMaxDays) {
-                    LabeledContent("Send look-back",
-                                   value: "\(settings.writeBackBackfillDays) day\(settings.writeBackBackfillDays == 1 ? "" : "s")")
-                }
-                .accessibilityIdentifier("writeback-backfill-days")
-                ForEach(Array(localStatus.enumerated()), id: \.offset) { _, line in
-                    Text(line).font(.caption).foregroundStyle(Theme.fgDim)
-                        .accessibilityIdentifier("am-collections-local-status")
-                }
-            } else {
+            // Shared knob, BOTH modes (Levi follow-up): how far back "Send" re-drives queued
+            // adds from the collection history.
+            Stepper(value: $settings.writeBackBackfillDays,
+                    in: 1...CollectionsStore.writeBackBackfillMaxDays) {
+                LabeledContent("Send look-back",
+                               value: "\(settings.writeBackBackfillDays) day\(settings.writeBackBackfillDays == 1 ? "" : "s")")
+            }
+            .accessibilityIdentifier("writeback-backfill-days")
+
+            // Shared status lines (converted reconcile, backfill, private re-index) — both modes.
+            ForEach(Array(collectionsStatus.enumerated()), id: \.offset) { _, line in
+                Text(line).font(.caption).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("am-collections-status")
+            }
+            // The public backend's live steps + audit history (renders only when it has run).
+            if !settings.appleMusicPrivateSync {
                 remoteProgressRows
             }
         } header: {
             Text("Collections")
         } footer: {
-            Text(settings.appleMusicSyncMode == .local
-                ? "“Get” checks the Apple Music library on your PocketDJ server (also nightly at 04:00) and updates converted collections from their sources; “Send” re-drives your recent adds to the real Apple Music playlists. “Sync collections” does both."
-                : "“Sync collections” pushes your playlists into Apple Music and imports Apple Music playlists back — a playlist is created only if it isn't there yet, and after that only its missing songs are added; an interrupted sync picks up where it left off. Runs on your device (requires an Apple Music subscription).")
+            Text(settings.appleMusicPrivateSync
+                ? "“Get” re-indexes the Apple Music library on your own PocketDJ server (also nightly at 04:00) and updates converted collections from their sources; “Send” re-drives your recent adds to the real Apple Music playlists. “Sync collections” does both."
+                : "“Sync collections” pushes your playlists into Apple Music and imports Apple Music playlists back — a playlist is created only if it isn't there yet, and after that only its missing songs are added; an interrupted sync picks up where it left off. “Get” also updates converted collections; “Send” also re-drives recent adds. Runs on your device (requires an Apple Music subscription).")
         }
     }
 
-    /// Route a verb to the mode's backend — the whole point of the mode switch.
+    /// ONE runner for the verbs — the Private toggle swaps only the collections BACKEND
+    /// (public = the WS2 device-token sync; private = the user's own server re-index); the
+    /// SHARED halves (converted-collections reconcile on Get, write-back backfill on Send) run
+    /// identically in both modes.
     private func runCollections(_ direction: PlaylistAppleMusicSync.Direction) {
-        switch settings.appleMusicSyncMode {
-        case .remote:
-            guard let playlistSync else { return }
-            Task { await playlistSync.syncNow(collections: collections, app: app, direction: direction) }
-        case .local:
-            Task { await runLocalCollections(direction) }
-        }
+        Task { await runCollectionsNow(direction) }
     }
 
-    /// LOCAL backend: "Get" = library re-index (import server) + converted-collections reconcile;
-    /// "Send" = re-drive queued adds (the write-back backfill). Results land as status lines in
-    /// the same section the buttons live in.
-    private func runLocalCollections(_ direction: PlaylistAppleMusicSync.Direction) async {
-        guard !localBusy else { return }
-        localBusy = true
-        localStatus = []
-        defer { localBusy = false }
-        if direction != .push {
-            if !musicSync.hasServer {
-                localStatus.append("Get: needs the import server — set its URL in the Credentials tab.")
-            } else {
-                await syncAppleMusic()
-                switch syncStatus {
-                case .ok(let msg): localStatus.append("Get: \(msg)")
-                case .bad(let msg): localStatus.append("Get failed: \(msg)")
-                case nil: break
+    private func runCollectionsNow(_ direction: PlaylistAppleMusicSync.Direction) async {
+        guard !collectionsRunning else { return }
+        collectionsRunning = true
+        collectionsStatus = []
+        defer { collectionsRunning = false }
+
+        // Backend half.
+        if settings.appleMusicPrivateSync {
+            if direction != .push {
+                if !musicSync.hasServer {
+                    collectionsStatus.append("Get: needs your server — set its URL under Private syncing below.")
+                } else {
+                    await syncAppleMusic()
+                    switch syncStatus {
+                    case .ok(let msg): collectionsStatus.append("Get: \(msg)")
+                    case .bad(let msg): collectionsStatus.append("Get failed: \(msg)")
+                    case nil: break
+                    }
                 }
-                let changed = collections.syncConvertedCollections(with: app.indexPlaylists)
-                localStatus.append(changed == 0 ? "Converted collections: all in sync"
-                    : "Converted collections: updated \(changed) item\(changed == 1 ? "" : "s")")
             }
+            // (Private ↑ has no backend half of its own — the shared Send below delivers adds.)
+        } else if let playlistSync, playlistSync.isAvailable {
+            await playlistSync.syncNow(collections: collections, app: app, direction: direction)
+            // PUBLIC Get also refreshes the on-device "Apple Music" library source — the
+            // public-mode twin of the private catalog re-index (data-source parity).
+            if direction != .push {
+                let before = app.appleMusicLibrary?.songs.count ?? 0
+                await app.refreshAppleMusicLibrary?()
+                let after = app.appleMusicLibrary?.songs.count ?? 0
+                collectionsStatus.append(after > before
+                    ? "Library: indexed \(after - before) new song\(after - before == 1 ? "" : "s")"
+                    : "Library: index up to date")
+            }
+        }
+
+        // Shared halves — IDENTICAL in both modes.
+        if direction != .push {
+            let changed = collections.syncConvertedCollections(with: app.indexPlaylists)
+            collectionsStatus.append(changed == 0 ? "Converted collections: all in sync"
+                : "Converted collections: updated \(changed) item\(changed == 1 ? "" : "s")")
         }
         if direction != .pull {
             if writeBack?.canWriteBack == true {
                 let n = collections.backfillSourceWriteBacks(from: activity.events,
                                                              days: settings.writeBackBackfillDays,
                                                              localInstallId: activity.installId)
-                localStatus.append(n == 0 ? "Send: nothing new to send"
-                    : "Send: sending \(n) song\(n == 1 ? "" : "s") to Apple Music")
+                collectionsStatus.append(n == 0 ? "Adds: nothing new to send"
+                    : "Adds: sending \(n) song\(n == 1 ? "" : "s") to Apple Music")
             } else {
-                localStatus.append("Send: unavailable on this device (Apple Music library writes need iPhone / Vision Pro).")
+                collectionsStatus.append("Adds: unavailable on this device (Apple Music library writes need iPhone / Vision Pro).")
             }
         }
     }
@@ -433,8 +432,8 @@ struct AppleMusicSettingsView: View {
     private var gateLine: String {
         // Flattened deliberately: `favoritesSync?.isOwner` is a DOUBLE optional (no service
         // vs. gate unresolved), and both of those mean the same thing to the reader here.
-        // Values deliberately can't be misread as the pane's Local/Remote SYNC MODE (a
-        // review catch: "Local to this profile" under a mode picker read as a mode echo).
+        // Values deliberately can't be misread as the pane's Private-syncing toggle (a review
+        // catch: "Local to this profile" under a backend switch read as a mode echo).
         guard let isOwner = favoritesSync?.isOwner ?? nil else { return "Checking…" }
         return isOwner ? "On" : "Off — ♥ stays in this profile"
     }
@@ -532,50 +531,57 @@ struct AppleMusicSettingsView: View {
         } header: {
             Text("Account")
         } footer: {
-            Text("Linking authorizes PocketDJ to play from your Apple Music subscription and, in remote mode, to sync playlists and favorites with a token minted on this device — nothing is stored on a server.")
+            Text("Linking authorizes PocketDJ to play from your Apple Music subscription and to sync playlists and favorites with a token minted on this device — nothing is stored on a server.")
         }
     }
 
-    // MARK: CREDENTIALS — Import server (local mode's backend)
+    // MARK: Private syncing — the opt-in toggle + the server credentials it reveals
 
-    /// The SAME `ripServerURL`/`ripToken` the rip/import features use (Settings root ▸ Import
-    /// server) — surfaced here because local-mode syncing runs through it. Two views of one
-    /// setting, deliberately: change it in either place.
-    private var importServerSection: some View {
+    /// PRIVATE is a switch, not a mode picker (Levi 2026-07-29): toggled on, the same sync verbs
+    /// above reroute through the user's own PocketDJ server + catalog, and the credential fields
+    /// appear here. The URL/token are the SAME `ripServerURL`/`ripToken` the rip/import features
+    /// use (Settings root ▸ Import server) — two views of one setting, deliberately.
+    private var privateSyncSection: some View {
         Section {
-            TextField("Import server URL", text: $settings.ripServerURL)
-                .pocketField()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                #endif
-                .accessibilityIdentifier("am-import-server-url")
-            // Plain TextField ON PURPOSE, matching the root Import-server section (same binding —
-            // masking one view of a value readable one pane over buys nothing, and iOS secure
-            // fields clear on edit, making token tweaks destructive).
-            TextField("Token (optional)", text: $settings.ripToken)
-                .pocketField()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                #endif
-                .accessibilityIdentifier("am-import-server-token")
-            HStack {
-                Button {
-                    Task { await testImportServer() }
-                } label: {
-                    if ripTesting { ProgressView() } else { Label("Test connection", systemImage: "bolt.horizontal") }
+            Toggle("Private syncing", isOn: $settings.appleMusicPrivateSync)
+                .accessibilityIdentifier("am-private-sync")
+            if settings.appleMusicPrivateSync {
+                TextField("Server URL", text: $settings.ripServerURL)
+                    .pocketField()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    #endif
+                    .accessibilityIdentifier("am-import-server-url")
+                // Plain TextField ON PURPOSE, matching the root Import-server section (same
+                // binding — masking one view of a value readable one pane over buys nothing, and
+                // iOS secure fields clear on edit, making token tweaks destructive).
+                TextField("Token (optional)", text: $settings.ripToken)
+                    .pocketField()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    #endif
+                    .accessibilityIdentifier("am-import-server-token")
+                HStack {
+                    Button {
+                        Task { await testImportServer() }
+                    } label: {
+                        if ripTesting { ProgressView() } else { Label("Test connection", systemImage: "bolt.horizontal") }
+                    }
+                    .disabled(ripTesting || settings.ripServerURL.isEmpty)
+                    .accessibilityIdentifier("am-import-server-test")
+                    Spacer()
+                    statusView(ripStatus, id: "am-import-server-status")
                 }
-                .disabled(ripTesting || settings.ripServerURL.isEmpty)
-                .accessibilityIdentifier("am-import-server-test")
-                Spacer()
-                statusView(ripStatus, id: "am-import-server-status")
             }
         } header: {
-            Text("Import server (local mode)")
+            Text("Private syncing")
         } footer: {
-            Text("Local-mode syncing asks this server (your iMac) to re-index the Apple Music library. These are the same values as Settings ▸ Import server — changing them here changes them everywhere.")
+            Text(settings.appleMusicPrivateSync
+                ? "The sync controls above run through your own PocketDJ server and catalog (e.g. the iMac) instead of Apple's API. Same values as Settings ▸ Import server — changing them here changes them everywhere."
+                : "Off: syncing talks to Apple Music directly with a token minted on this device — no server of your own. Turn on to run syncing through your own PocketDJ server instead.")
         }
     }
 
@@ -596,7 +602,7 @@ struct AppleMusicSettingsView: View {
         ripTesting = false
     }
 
-    // MARK: CREDENTIALS — Remote sync service
+    // MARK: CREDENTIALS — Sync service (the public backend)
 
     private var remoteServiceSection: some View {
         Section {
@@ -606,7 +612,7 @@ struct AppleMusicSettingsView: View {
                 Button {
                     Task { await testRemoteService() }
                 } label: {
-                    if remoteTesting { ProgressView() } else { Label("Test remote service", systemImage: "bolt.horizontal.circle") }
+                    if remoteTesting { ProgressView() } else { Label("Test sync service", systemImage: "bolt.horizontal.circle") }
                 }
                 .disabled(remoteTesting)
                 .accessibilityIdentifier("am-remote-test")
@@ -614,9 +620,9 @@ struct AppleMusicSettingsView: View {
                 statusView(remoteStatus, id: "am-remote-status")
             }
         } header: {
-            Text("Remote sync service (remote mode)")
+            Text("Sync service")
         } footer: {
-            Text("The first-party PocketDJ sync service remote mode talks to. Built in — nothing to configure; this just checks it's reachable.")
+            Text("The first-party PocketDJ service public syncing talks to. Built in — nothing to configure; this just checks it's reachable.")
         }
     }
 
