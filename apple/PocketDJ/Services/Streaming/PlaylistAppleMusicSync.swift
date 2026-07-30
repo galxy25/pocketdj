@@ -127,35 +127,57 @@ final class PlaylistAppleMusicSync {
             .joined(separator: " ")
     }
 
-    /// PURE (testable): every PocketDJ playlist whose songs resolve to Apple Music catalog ids,
-    /// as an outgoing push payload. A playlist with no Apple-Music-hostable songs is dropped (only
-    /// songs carrying an `appleMusicId` can live in an Apple Music library playlist).
+    /// PURE (testable): every collection whose songs resolve to Apple Music catalog ids, as an
+    /// outgoing push payload — the user's PLAYLISTS plus every POCKET that CAME FROM an Apple
+    /// Music playlist (Levi 2026-07-29: the sync "is only syncing my playlists, not pockets that
+    /// came from playlists"). Hand-made pockets (no Apple Music provenance) stay local by design —
+    /// a DJ working set is not implicitly a public playlist; `linkPocketToSource` opts one in.
+    /// Songs without an `appleMusicId` are dropped (only catalog songs can live in an Apple Music
+    /// library playlist); a collection with none is dropped entirely.
     ///
-    /// Playlists whose names NORMALIZE EQUAL are merged into ONE outgoing list (ordered union) —
+    /// Collections whose names NORMALIZE EQUAL are merged into ONE outgoing list (ordered union) —
     /// the server targets one remote playlist per name, so two same-named locals pushed separately
     /// would fight over it (push re-appends what the other's reconcile just removed, forever).
+    /// This also makes a converted pocket and its remote twin CONVERGE rather than duplicate.
     /// Track ids are de-duplicated in order for the same reason: a duplicate id absent remotely
     /// would be appended twice by one push.
     static func resolveOutgoing(collections: CollectionsStore, app: AppModel) -> [AMPlaylistSyncClient.OutgoingPlaylist] {
         var indexByKey: [String: Int] = [:]
         var out: [AMPlaylistSyncClient.OutgoingPlaylist] = []
         var seenByKey: [String: Set<String>] = [:]
-        for pl in collections.playlists {
-            let catalogIds = collections.songIds(forPlaylist: pl.id)
-                .compactMap { app.songsById[$0]?.appleMusicId }
-            guard !catalogIds.isEmpty else { continue }
-            let key = normName(pl.name)
+        func fold(name: String, songIds: [String]) {
+            let catalogIds = songIds.compactMap { app.songsById[$0]?.appleMusicId }
+            guard !catalogIds.isEmpty else { return }
+            let key = normName(name)
             if indexByKey[key] == nil {
                 indexByKey[key] = out.count
                 seenByKey[key] = []
-                out.append(.init(name: pl.name, description: nil, trackCatalogIds: []))
+                out.append(.init(name: name, description: nil, trackCatalogIds: []))
             }
             let i = indexByKey[key]!
             for id in catalogIds where seenByKey[key]!.insert(id).inserted {
                 out[i].trackCatalogIds.append(id)
             }
         }
+        for pl in collections.playlists {
+            fold(name: pl.name, songIds: collections.songIds(forPlaylist: pl.id))
+        }
+        // Pockets converted from (or linked to) an Apple Music playlist sync two-way like the
+        // playlist they came from — either Apple Music source qualifies (the private catalog's
+        // mirrors or the public on-device library's).
+        for p in collections.pockets
+        where p.hasSource && PlaylistWriteBack.isAppleMusicSource(p.sourceName ?? "") {
+            fold(name: p.name, songIds: collections.songIds(forPocket: p.id))
+        }
         return out.filter { !$0.trackCatalogIds.isEmpty }
+    }
+
+    /// PURE (testable): every local collection name (normalized) the pull-import dedupes against —
+    /// PLAYLISTS and POCKETS both: a remote playlist whose local twin is a converted POCKET must
+    /// not re-import as a duplicate playlist beside it.
+    static func existingCollectionNames(collections: CollectionsStore) -> Set<String> {
+        Set(collections.playlists.map { normName($0.name) })
+            .union(collections.pockets.map { normName($0.name) })
     }
 
     /// PURE (testable): which pulled remote playlists should be imported locally. Skips any whose
@@ -274,7 +296,7 @@ final class PlaylistAppleMusicSync {
             // normName on BOTH sides (matching the server's push dedup) + same-name collapse in
             // `newImports` — otherwise the pull re-imports what the push just merged ("Sap " vs
             // "Sap") or imports k same-named remote dupes as k locals.
-            let existingNames = Set(collections.playlists.map { Self.normName($0.name) })
+            let existingNames = Self.existingCollectionNames(collections: collections)
             // Provenance stamp (parity review): when an Apple-Music SOURCE playlist mirror with
             // the same normalized name exists (the on-device library index or the private
             // catalog), the import arrives LINKED to it — so instant write-back, the Send

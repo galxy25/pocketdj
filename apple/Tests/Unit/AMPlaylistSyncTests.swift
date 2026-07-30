@@ -102,6 +102,82 @@ final class AMPlaylistSyncTests: XCTestCase {
                        "Everything in sync · 1 error")
     }
 
+    /// POCKETS THAT CAME FROM APPLE MUSIC PLAYLISTS sync two-way like the playlist they were
+    /// (Levi 2026-07-29: "only syncing my playlists, not pockets that came from playlists").
+    /// Either Apple Music source qualifies; hand-made pockets stay local.
+    func testResolveOutgoingIncludesAppleMusicSourcedPockets() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("s2", am: "222"))
+        app.injectDiscoverAdd(song("s3", am: "333"))
+        let collections = CollectionsStore(fileURL: tempURL("pockets"))
+        collections.app = app
+
+        // A pocket converted from a PRIVATE-catalog source playlist.
+        let privateSource = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_x", name: "comfort zone", songIds: ["s1", "s2"]),
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.convertToPocket(source: privateSource)
+        // A pocket linked to the PUBLIC on-device library source.
+        let publicSource = SourcePlaylist(
+            playlist: IndexPlaylist(id: "amlibpl_y", name: "road trip", songIds: ["s3"]),
+            sourceName: AppleMusicLibraryStore.sourceName)
+        _ = collections.convertToPocket(source: publicSource)
+        // A hand-made pocket — NO provenance — must stay local.
+        _ = collections.createPocket("secret weapons", songIds: ["s1", "s3"])
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        let names = Set(out.map(\.name))
+        XCTAssertTrue(names.contains("comfort zone"))
+        XCTAssertTrue(names.contains("road trip"))
+        XCTAssertFalse(names.contains("secret weapons"))
+        XCTAssertEqual(out.first(where: { $0.name == "comfort zone" })?.trackCatalogIds, ["111", "222"])
+        XCTAssertEqual(out.first(where: { $0.name == "road trip" })?.trackCatalogIds, ["333"])
+    }
+
+    /// A converted POCKET and a PLAYLIST that normName-collide merge into ONE outgoing list —
+    /// the pocket's remote twin converges instead of duplicating.
+    func testResolveOutgoingMergesPocketWithSameNamedPlaylist() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("s2", am: "222"))
+        let collections = CollectionsStore(fileURL: tempURL("pocketmerge"))
+        collections.app = app
+        _ = collections.createPlaylist("Mix", songIds: ["s1"])
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_m", name: "Mix ", songIds: ["s2"]),   // trailing space
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.convertToPocket(source: source)
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(Set(out.first?.trackCatalogIds ?? []), ["111", "222"])
+    }
+
+    /// The pull-import dedupe covers POCKET names too: a remote playlist whose local twin is a
+    /// converted pocket must not re-import as a duplicate playlist beside it.
+    func testImportDedupeSkipsConvertedPocketTwin() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("pocketdedupe"))
+        collections.app = app
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_c", name: "Comfort Zone", songIds: ["s1"]),
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.convertToPocket(source: source)
+
+        let existing = PlaylistAppleMusicSync.existingCollectionNames(collections: collections)
+        XCTAssertTrue(existing.contains("comfort zone"))
+        let remote: [AMPlaylistSyncClient.RemotePlaylist] = [
+            .init(id: "p.1", name: "comfort zone ", canEdit: true, description: nil,
+                  trackCatalogIds: ["111"], trackTitles: nil),
+            .init(id: "p.2", name: "Fresh", canEdit: true, description: nil,
+                  trackCatalogIds: ["9"], trackTitles: nil),
+        ]
+        let imports = PlaylistAppleMusicSync.newImports(remote: remote, existingNames: existing)
+        XCTAssertEqual(imports.map(\.name), ["Fresh"])   // the pocket's twin is NOT re-imported
+    }
+
     /// normName mirrors the server's rule (trim + lowercase + collapse whitespace) — client and
     /// server must agree on what "same name" means or the pull re-imports what the push merged.
     func testNormName() {
