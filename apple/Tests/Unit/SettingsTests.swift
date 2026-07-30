@@ -31,6 +31,37 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(defaults: defaults).defaultRecentlyAddedCount, 500)
     }
 
+    /// The Private-syncing default is CAPTURED ONCE at store construction (private iff an import
+    /// server is configured), so later ripServerURL edits never silently flip a state the user
+    /// has already seen; an explicit choice persists across reloads; and the legacy check-build
+    /// "local"/"remote" string migrates to the Bool.
+    func testAppleMusicPrivateSyncCapturedAtInitAndPersists() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertFalse(s.appleMusicPrivateSync)                // fresh install captures public
+        s.ripServerURL = "http://imac.local:8787"
+        XCTAssertFalse(s.appleMusicPrivateSync)                // captured — a later URL edit can't flip it
+        s.appleMusicPrivateSync = true                         // explicit choice
+        s.persist()
+        XCTAssertTrue(SettingsStore(defaults: defaults).appleMusicPrivateSync)
+
+        // An existing iMac blob (server URL set, never chosen) captures PRIVATE at init.
+        let imacDefaults = freshDefaults()
+        let pre = SettingsStore(defaults: imacDefaults)
+        pre.ripServerURL = "http://imac.local:8787"
+        pre.appleMusicPrivateSyncRaw = nil                     // simulate a pre-feature blob
+        pre.persist()
+        XCTAssertTrue(SettingsStore(defaults: imacDefaults).appleMusicPrivateSync)
+
+        // Legacy migration: a check-build blob that persisted appleMusicSyncMode = "local".
+        let legacyDefaults = freshDefaults()
+        var legacy = try! JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(SettingsData.default)) as! [String: Any]
+        legacy["appleMusicSyncMode"] = "local"
+        legacyDefaults.set(try! JSONSerialization.data(withJSONObject: legacy), forKey: "pdj.settings.v1")
+        XCTAssertTrue(SettingsStore(defaults: legacyDefaults).appleMusicPrivateSync)
+    }
+
     func testPersistAndReload() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)

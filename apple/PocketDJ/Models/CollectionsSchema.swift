@@ -94,6 +94,29 @@ struct PocketNote: Codable, Identifiable, Hashable, Sendable {
 
 /// A reusable, nestable grouping. Membership is type-agnostic (songs + albums +
 /// child pockets + free-text notes), forming a cycle-guarded DAG.
+/// Per-collection Apple Music sync DIRECTION (Levi 2026-07-29: "potential and comfort zone …
+/// are actually smart playlists so I don't want those to ever sync from PocketDJ to Apple Music
+/// but only from Apple Music to PocketDJ"). Smart playlists are invisible to the write API, so a
+/// push mints a regular-playlist duplicate — `pull` is the setting that prevents exactly that.
+/// Stored as an OPTIONAL raw string on the collection (nil ⇒ `.both`, the pre-feature behavior;
+/// additive, so older documents decode unchanged — the mix-deck-loop schema lesson).
+enum CollectionSyncDirection: String, Codable, CaseIterable, Sendable {
+    case both, push, pull, off
+    /// May this collection be PUSHED to Apple Music (WS2 create/top-up/reconcile + the instant
+    /// write-back + the Send backfill)?
+    var allowsPush: Bool { self == .both || self == .push }
+    /// May this collection be PULLED from Apple Music (the converted-collections source-follow)?
+    var allowsPull: Bool { self == .both || self == .pull }
+    var label: String {
+        switch self {
+        case .both: return "Two-way"
+        case .push: return "Send only"
+        case .pull: return "Get only"
+        case .off:  return "Off"
+        }
+    }
+}
+
 struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var id: String
     var name: String
@@ -119,6 +142,8 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var sourceSongIds: [String]?
     /// Per-pocket sync opt-out. nil ⇒ enabled (a converted pocket syncs unless turned off).
     var sourceSyncEnabled: Bool?
+    /// Per-pocket Apple Music sync direction (raw `CollectionSyncDirection`). nil ⇒ two-way.
+    var amSyncDirection: String?
     /// Epoch ms of the last sync that CHANGED the pocket (or refreshed the snapshot). nil = never.
     var sourceSyncedAt: Double?
     /// v7: epoch ms of the last time the user hit ▶ Play on this pocket — the "Recently played"
@@ -135,24 +160,29 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var hasSource: Bool { sourcePlaylistId != nil }
     /// Participates in AUTO sync: has a source and the per-pocket toggle isn't off.
     var syncsWithSource: Bool { hasSource && (sourceSyncEnabled ?? true) }
+    /// The effective Apple Music sync direction (nil/unknown raw ⇒ two-way).
+    var amSyncDir: CollectionSyncDirection {
+        amSyncDirection.flatMap(CollectionSyncDirection.init(rawValue:)) ?? .both
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats,
              sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, lastPlayedAt,
-             createdAt, updatedAt
+             amSyncDirection, createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
          notes: [PocketNote] = [], folderId: String? = nil, songRepeats: [String: Int] = [:],
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
          sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil, lastPlayedAt: Double? = nil,
-         createdAt: Double = 0, updatedAt: Double = 0) {
+         amSyncDirection: String? = nil, createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
         self.notes = notes; self.folderId = folderId; self.songRepeats = songRepeats
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
         self.sourceSyncedAt = sourceSyncedAt; self.lastPlayedAt = lastPlayedAt
+        self.amSyncDirection = amSyncDirection
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
@@ -173,6 +203,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         sourceSyncEnabled = try? c.decode(Bool.self, forKey: .sourceSyncEnabled)
         sourceSyncedAt = try? c.decode(Double.self, forKey: .sourceSyncedAt)
         lastPlayedAt = try? c.decode(Double.self, forKey: .lastPlayedAt)
+        amSyncDirection = try? c.decode(String.self, forKey: .amSyncDirection)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -332,6 +363,8 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var sourceSongIds: [String]?
     var sourceSyncEnabled: Bool?
     var sourceSyncedAt: Double?
+    /// Per-playlist Apple Music sync direction (raw `CollectionSyncDirection`). nil ⇒ two-way.
+    var amSyncDirection: String?
     /// v7: epoch ms of the last time the user hit ▶ Play on this playlist — the "Recently played"
     /// sort key. Stamped by `CollectionsStore.markPlayed(playlistId:)` (NOT via `mutatePlaylist`,
     /// so `updatedAt` stays a pure membership/rename signal). nil ⇒ never played ⇒ sorts last.
@@ -343,10 +376,15 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var hasSource: Bool { sourcePlaylistId != nil }
     /// Participates in AUTO sync: has a source and the per-playlist toggle isn't off.
     var syncsWithSource: Bool { hasSource && (sourceSyncEnabled ?? true) }
+    /// The effective Apple Music sync direction (nil/unknown raw ⇒ two-way).
+    var amSyncDir: CollectionSyncDirection {
+        amSyncDirection.flatMap(CollectionSyncDirection.init(rawValue:)) ?? .both
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, sequences, targetMs, folderId,
-             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, lastPlayedAt,
+             sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt,
+             amSyncDirection, lastPlayedAt,
              createdAt, updatedAt
     }
 
@@ -355,13 +393,15 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     init(id: String, name: String, description: String? = nil, sequences: [PlaylistNode],
          targetMs: Int? = nil, folderId: String? = nil,
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
-         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil, lastPlayedAt: Double? = nil,
+         sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
+         amSyncDirection: String? = nil, lastPlayedAt: Double? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.description = description
         self.sequences = sequences; self.targetMs = targetMs; self.folderId = folderId
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
-        self.sourceSyncedAt = sourceSyncedAt; self.lastPlayedAt = lastPlayedAt
+        self.sourceSyncedAt = sourceSyncedAt; self.amSyncDirection = amSyncDirection
+        self.lastPlayedAt = lastPlayedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
@@ -383,6 +423,7 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
         sourceSongIds = try c.decodeIfPresent([String].self, forKey: .sourceSongIds)
         sourceSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .sourceSyncEnabled)
         sourceSyncedAt = try c.decodeIfPresent(Double.self, forKey: .sourceSyncedAt)
+        amSyncDirection = try c.decodeIfPresent(String.self, forKey: .amSyncDirection)
         lastPlayedAt = try c.decodeIfPresent(Double.self, forKey: .lastPlayedAt)
         createdAt = try c.decode(Double.self, forKey: .createdAt)
         updatedAt = try c.decode(Double.self, forKey: .updatedAt)

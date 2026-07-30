@@ -105,7 +105,7 @@ final class PlaylistWriteBack {
         /// `schemaVersion` does NOT move (a bump would strand the user's queued writes).
         var musicKitPlaylistId: String?
         /// Human-readable note about HOW the playlist was resolved when the answer wasn't
-        /// obvious (several library playlists share the name). Surfaced in Settings ▸ Sync
+        /// obvious (several library playlists share the name). Surfaced in Settings ▸ Apple Music
         /// so a guess is visible rather than silent — the failure mode this whole change is
         /// about is a wrong-or-missing playlist join that nobody could see.
         var resolutionNote: String?
@@ -249,8 +249,12 @@ final class PlaylistWriteBack {
 
     /// Only Apple Music source playlists have a real upstream to write back to. A vinyl /
     /// "My Digital" / Imported source playlist duplicates and adds locally, full stop.
+    /// BOTH Apple Music sources qualify (the parity review's biggest catch): the private
+    /// catalog's "Apple Music (Local)" AND the public on-device "Apple Music" library index —
+    /// the write-back transport is on-device MusicKit either way, so a public user's mirror
+    /// playlists are exactly as writable as the private catalog's.
     nonisolated static func isAppleMusicSource(_ sourceName: String) -> Bool {
-        sourceName == Config.appleMusicSourceName
+        sourceName == Config.appleMusicSourceName || sourceName == AppleMusicLibraryStore.sourceName
     }
 
     // MARK: - Enqueue
@@ -276,7 +280,7 @@ final class PlaylistWriteBack {
         guard !amId.isEmpty || (!t.isEmpty && !ar.isEmpty) else { return nil }
         // A prior TERMINAL `.unresolvable` verdict for this (playlist, song): re-searching the
         // catalog can't conjure a match, so an identity-only re-enqueue (still no store id) is a
-        // no-op — this is what keeps a repeated "Send my adds" backfill from re-queueing and
+        // no-op — this is what keeps a repeated "Send to Apple Music" backfill from re-queueing and
         // re-searching un-matchable songs forever (and the persisted queue from growing unbounded).
         // BUT if we NOW carry a real catalog id (the nightly crawl resolved it since), supersede:
         // drop the stale verdict so the song can finally deliver and its "not backed up" badge clears.
@@ -560,7 +564,7 @@ final class PlaylistWriteBack {
     /// there is no other copy to restore from. Any still-`.queued` write is abandoned; the
     /// local duplicate add it recorded stands, and the safety property holds (a dropped
     /// write-back only ever leaves a song local, never removes one). Resets the @Observable
-    /// state in-memory so Settings ▸ Sync empties immediately, then removes the file the same
+    /// state in-memory so Settings ▸ Apple Music empties immediately, then removes the file the same
     /// forgiving way `launchURL()` does — `try?` swallows a not-yet-written document.
     func clear() {
         jobs = []

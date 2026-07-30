@@ -27,7 +27,7 @@ setup instead of a silent default catalog:
    device can overwrite them; a new iCloud user just types a DJ name. If iCloud can't
    be reached the flow says so and continues safely — it never mistakes a slow network
    for a brand-new account.
-2. **Stream with Apple Music** — the same sign-in as Settings ▸ Streaming accounts,
+2. **Stream with Apple Music** — the same sign-in as Settings ▸ Apple Music ▸ Credentials,
    offered up front so full songs stream instantly while rips are made. Skippable.
 3. **Import your music** — pick the global sources by their plain names: **Vinyl**,
    **Digital**, and **Streaming** (the Apple Music catalog index, with its ~33 MB
@@ -77,7 +77,7 @@ One tap answers both.
 
 ---
 
-## Settings ▸ Streaming accounts — link Apple Music
+## Settings ▸ Apple Music ▸ Credentials — link Apple Music
 
 A **"Streaming accounts"** section in native Settings sits beside your URL
 **Data sources**. It lists one row per provider — currently **Apple Music** — with a
@@ -153,9 +153,9 @@ have hearted, or deliberately un-hearted, is left exactly as you left it, and it
 once, not every launch. The owner's personal **vinyl** and **My Digital** hearts are never part
 of it — only Apple Music tracks travel.
 
-### Settings ▸ Sync ▸ Favorites — the bootstrap
+### Settings ▸ Apple Music ▸ Syncing ▸ Favorites — the bootstrap
 
-The panel that runs the whole thing lives in **Settings ▸ Sync**, under **Favorites** (it's a
+The panel that runs the whole thing lives in **Settings ▸ Apple Music ▸ Syncing**, under **Favorites** (it's a
 sync question, so it sits in the sync panel, not in Debug):
 
 - **Status** — a plain-language line: *"Two-way Apple Music sync on"* or *"Local to this
@@ -176,7 +176,7 @@ holding the phone sees it at the moment they'd care.
 **Affordances**
 - **♥ anywhere** — favorites the song; on the owner's install it also stars and loves it in
   Apple Music.
-- **Settings ▸ Sync ▸ Favorites** — read the sync status, run a pass now, copy this device's
+- **Settings ▸ Apple Music ▸ Syncing ▸ Favorites** — read the sync status, run a pass now, copy this device's
   hash, see the last error.
 - **Export favorites seed…** — owner-only; produces the testers' starting set.
 
@@ -427,7 +427,7 @@ itself runs normally underneath.
 
 ---
 
-## Settings ▸ Sync — one panel for staying current
+## Settings ▸ Apple Music ▸ Syncing — one panel for staying current
 
 Every kind of "keep me up to date" used to live in a different place; now Settings has a single
 **Sync** row (the Storage-panel pattern — a navigable page with a back button) gathering them
@@ -448,7 +448,7 @@ all:
   footer explains the one surprise: the song reaches your real Apple Music library in seconds,
   but PocketDJ's own view of that playlist only catches up at the next nightly library sync.
 - **Favorites** — the ♥ ⇄ Apple Music panel: sync status, **Sync favorites now**, and the
-  owner bootstrap ([Settings ▸ Sync ▸ Favorites — the bootstrap](#settings--sync--favorites--the-bootstrap)).
+  owner bootstrap ([Settings ▸ Apple Music ▸ Syncing ▸ Favorites — the bootstrap](#settings--sync--favorites--the-bootstrap)).
 
 **User story:** "When I wonder 'is the app caught up with my library?', I want one place to
 look — and one button to press."
@@ -522,7 +522,7 @@ keep me under it by tossing what I never play."
 Remote testing has a built-in feedback loop. **Settings ▸ Debug** (the last row) opens a small
 panel with two things on it: which **build** you're running, and one switch — **Capture debug
 log**. (The owner-identity rows that bootstrap the Apple Music favorites sync used to live
-here too; they've moved to **Settings ▸ Sync ▸ Favorites** —
+here too; they've moved to **Settings ▸ Apple Music ▸ Syncing ▸ Favorites** —
 [Favorites and Apple Music](#favorites-and-apple-music--the-two-way-sync).)
 
 The **build** row is now a proper row rather than a footer line: the version and build number as

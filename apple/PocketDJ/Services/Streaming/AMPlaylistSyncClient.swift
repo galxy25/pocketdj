@@ -34,6 +34,15 @@ final class AMPlaylistSyncClient {
         var name: String
         var description: String?
         var trackCatalogIds: [String]
+        /// Per-catalog-id song identity for the server's NAME+ARTIST duplicate gate — the same
+        /// recording can live under several catalog ids, so the server must be able to refuse an
+        /// append whose identity already exists remotely.
+        var trackMeta: [TrackMeta] = []
+        struct TrackMeta: Equatable {
+            var id: String
+            var n: String
+            var a: String
+        }
     }
     /// One per-playlist outcome from the idempotent push: `created` says whether the playlist was
     /// newly made in Apple Music (vs. matched to an existing one); `added` is how many tracks this
@@ -124,6 +133,9 @@ final class AMPlaylistSyncClient {
         let payload: [[String: Any]] = playlists.map { pl in
             var d: [String: Any] = ["name": pl.name, "trackCatalogIds": pl.trackCatalogIds]
             if let description = pl.description { d["description"] = description }
+            if !pl.trackMeta.isEmpty {
+                d["trackMeta"] = pl.trackMeta.map { ["id": $0.id, "n": $0.n, "a": $0.a] }
+            }
             return d
         }
         return try await runJob(op: "push", body: ["playlists": payload], onProgress: onProgress)

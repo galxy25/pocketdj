@@ -260,7 +260,7 @@ struct PocketDetailView: View {
             LinkSourceSheet(sources: linkableSources, pocketName: pocket?.name ?? "") { sp in
                 showLinkPicker = false
                 collections.linkPocketToSource(pocketId, source: sp)
-                linkResult = "“\(pocket?.name ?? "This pocket")” is now linked to “\(sp.name)”. Songs you add to it will be added to that Apple Music playlist too. To send ones you already added, use Settings ▸ Sync ▸ “Send my adds to Apple Music” (or the ↑ button on History ▸ Collection)."
+                linkResult = "“\(pocket?.name ?? "This pocket")” is now linked to “\(sp.name)”. Songs you add to it will be added to that Apple Music playlist too. To send ones you already added, use Settings ▸ Apple Music ▸ Syncing ▸ “Send to Apple Music” (or the ↑ button on History ▸ Collection)."
             }
         }
         .alert("Linked to Apple Music", isPresented: Binding(
@@ -304,8 +304,22 @@ struct PocketDetailView: View {
         let syncBinding = Binding<Bool>(
             get: { pocket?.syncsWithSource ?? false },
             set: { collections.setSourceSyncEnabled($0, forPocket: pocketId) })
+        // Per-pocket Apple Music sync DIRECTION (Levi 2026-07-29): "Get only" is the smart-
+        // playlist setting — the pocket keeps following its source but is never pushed (a push
+        // would mint a regular-playlist duplicate, since smart playlists are write-invisible).
+        let directionBinding = Binding<CollectionSyncDirection>(
+            get: { pocket?.amSyncDir ?? .both },
+            set: { collections.setAMSyncDirection($0, forPocket: pocketId) })
         Divider()
         Section(sourceLinkHeader) {
+            Picker(selection: directionBinding) {
+                ForEach(CollectionSyncDirection.allCases, id: \.self) { d in
+                    Text(d.label).tag(d)
+                }
+            } label: {
+                Label("Apple Music sync", systemImage: "arrow.up.arrow.down.circle")
+            }
+            .accessibilityIdentifier("pocket-am-sync-direction")
             Toggle(isOn: syncBinding) {
                 Label("Sync with source", systemImage: "arrow.triangle.2.circlepath")
             }
@@ -318,7 +332,7 @@ struct PocketDetailView: View {
             // WRONG playlist or carry a stale membership snapshot, so its adds silently read as
             // "already in the source" and never reach Apple Music. Re-linking re-snapshots the
             // chosen playlist's CURRENT membership, turning the pocket's extra songs back into
-            // write-back candidates (then Settings ▸ Sync ▸ "Send my adds" pushes them).
+            // write-back candidates (then Settings ▸ Apple Music ▸ "Send to Apple Music" pushes them).
             if !linkableSources.isEmpty {
                 Button { showLinkPicker = true } label: {
                     Label("Re-link to Apple Music playlist…", systemImage: "link")

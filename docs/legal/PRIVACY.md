@@ -132,7 +132,7 @@ your profile · collections (pockets, playlists, setlists) · your edits · favo
 
 Each synced record also carries **the name of the device that pushed it**, so the app can show you which device synced last. Your device name may identify you — many are of the form "*<your first name>*'s iPhone".
 
-This data sits in your Apple Account's private database, governed by [Apple's privacy policy](https://www.apple.com/legal/privacy/). **We cannot read it.** PocketDJ uses only CloudKit's private database — never a public or shared database, and never CloudKit sharing. Turn sync off in Settings ▸ Sync.
+This data sits in your Apple Account's private database, governed by [Apple's privacy policy](https://www.apple.com/legal/privacy/). **We cannot read it.** PocketDJ uses only CloudKit's private database — never a public or shared database, and never CloudKit sharing. Turn sync off in Settings ▸ Profile.
 
 *A note on how we classify this:* because a CloudKit private database is not readable by us, we take the position that it is **not "collected" by the developer** for App Store nutrition-label purposes. We are stating that position openly rather than leaving it implicit, so you can disagree with it if you want to.
 
@@ -277,7 +277,7 @@ A host can optionally let guests hear the current track on their own phones. It 
 
 **Controls built into the app**, wherever you live:
 
-- **Settings ▸ Sync** — turn iCloud sync off, or pull/push on demand.
+- **Settings ▸ Profile** — turn iCloud sync off, or pull/push on demand.
 - **Settings ▸ Storage** — delete downloaded audio and recordings by artist, by collection, or all of it; set a storage cap.
 - **Export** — take your collections, playlists, and library out as a file at any time. That is your data portability route and it does not require asking us.
 - **Microphone and Apple Music permissions** — revocable at any time in iOS/macOS Settings.

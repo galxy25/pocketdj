@@ -236,6 +236,15 @@ async function pullChunked({ jobId, job, hop, lease, devToken, userToken, timeLe
 // state = { phase:'remote-list'|'apply', listNext, remote:[{id,name}], i, sub, results:[], errors:[] }
 const PUSH_CHUNK = 100;
 const normName = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+// Song-identity key for the NAME+ARTIST duplicate gate (Levi 2026-07-29: "we shouldn't add a
+// new song to a collection on either side if there is already a song with that same name and
+// artist"). Diacritic-folded + quote-stripped + whitespace-collapsed; version markers KEPT
+// (different cuts stay distinct — the tight-matching doctrine).
+const trackKey = (name, artist) => {
+  const one = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/['’"“”\[\]{}]/g, '').replace(/\s+/g, ' ').trim();
+  return one(name) + '' + one(artist);
+};
 
 async function pushChunked({ jobId, job, hop, lease, devToken, userToken, timeLeft }) {
   const low = () => timeLeft() < LOW_TIME_MS;
@@ -263,11 +272,13 @@ async function pushChunked({ jobId, job, hop, lease, devToken, userToken, timeLe
     await checkpoint({ label: 'Checking existing Apple Music playlists', done: st.remote.length, total: null });
   }
 
-  // Read a remote playlist's full ordered catalog-id list (paged). Returns null when time runs
-  // low mid-read — a 5,000-track candidate is dozens of pages and must not ride the invocation
-  // into the 300s kill; the caller suspends and redoes the (read-only) matching next hop.
-  const remoteTrackIds = async (playlistId) => {
+  // Read a remote playlist's full track list (paged): catalog ids AND name+artist identity keys
+  // (the duplicate gate compares song identity, not just ids — the same recording can live under
+  // several catalog/library ids, which is exactly how the duplicate flood happened). Returns null
+  // when time runs low mid-read — the caller suspends and redoes the (read-only) matching next hop.
+  const remoteTracks = async (playlistId) => {
     const ids = [];
+    const keys = new Set();
     let next = `/v1/me/library/playlists/${encodeURIComponent(playlistId)}/tracks?limit=100`;
     while (next) {
       if (low()) return null;
@@ -275,18 +286,39 @@ async function pushChunked({ jobId, job, hop, lease, devToken, userToken, timeLe
       try { page = await am('GET', next, { devToken, userToken }); }
       catch (e) { if (e.status === 404) break; throw e; } // 404 = empty playlist
       for (const t of page?.data || []) {
-        const id = t.attributes?.playParams?.catalogId || t.attributes?.playParams?.id;
+        const a = t.attributes || {};
+        const id = a.playParams?.catalogId || a.playParams?.id;
         if (id) ids.push(String(id));
+        if (a.name) keys.add(trackKey(a.name, a.artistName));
       }
       next = page?.next ? `${page.next}${page.next.includes('?') ? '&' : '?'}limit=100` : null;
     }
-    return ids;
+    return { ids, keys };
+  };
+
+  // Per-catalog-id identity meta the client sends (id -> {n, a}); absent for old clients.
+  const metaFor = (pl) => {
+    const map = new Map();
+    for (const m of pl.trackMeta || []) if (m && m.id) map.set(String(m.id), m);
+    return map;
   };
 
   // Phase 2: apply each incoming playlist (create-if-absent, then append-missing in chunks).
   while (st.i < incoming.length) {
     const pl = incoming[st.i];
-    const ids = (pl.trackCatalogIds || []).filter(Boolean).map(String);
+    const meta = metaFor(pl);
+    // Within-batch NAME+ARTIST dedupe first: two local ids for the same recording must send one.
+    const seenKeys = new Set();
+    const ids = [];
+    for (const raw of (pl.trackCatalogIds || []).filter(Boolean).map(String)) {
+      const m = meta.get(raw);
+      if (m && m.n) {
+        const k = trackKey(m.n, m.a);
+        if (seenKeys.has(k)) continue;
+        seenKeys.add(k);
+      }
+      ids.push(raw);
+    }
     const progress = () => ({ label: `Syncing “${pl.name}”`, done: st.i, total: incoming.length });
     if (low()) return suspend(progress());
     try {
@@ -307,16 +339,24 @@ async function pushChunked({ jobId, job, hop, lease, devToken, userToken, timeLe
         } else {
           // MATCH: pick the candidate sharing the most tracks (dupes from the old bug may linger;
           // converge on the fullest copy and let the user delete the rest).
-          let best = null; let bestOverlap = -1; let bestSet = null;
+          let best = null; let bestOverlap = -1; let bestSet = null; let bestKeys = null;
           for (const c of candidates) {
             if (low()) return suspend(progress()); // reads only — safe to redo this playlist entirely
-            const fetched = await remoteTrackIds(c.id);
+            const fetched = await remoteTracks(c.id);
             if (fetched === null) return suspend(progress()); // ran out of time mid-read — same redo
-            const have = new Set(fetched);
+            const have = new Set(fetched.ids);
             const overlap = ids.reduce((n, id) => n + (have.has(id) ? 1 : 0), 0);
-            if (overlap > bestOverlap) { bestOverlap = overlap; best = c; bestSet = have; }
+            if (overlap > bestOverlap) { bestOverlap = overlap; best = c; bestSet = have; bestKeys = fetched.keys; }
           }
-          const missing = ids.filter((id) => !bestSet.has(id));
+          // MISSING = not present by CATALOG ID **and** not present by NAME+ARTIST identity —
+          // the second clause is the duplicate-flood killer: the same recording under a
+          // different id must never be appended again.
+          const missing = ids.filter((id) => {
+            if (bestSet.has(id)) return false;
+            const m = meta.get(id);
+            if (m && m.n && bestKeys.has(trackKey(m.n, m.a))) return false;
+            return true;
+          });
           st.sub = { targetId: best.id, created: false, missing, appendIdx: 0, added: 0 };
         }
         await checkpoint(progress());

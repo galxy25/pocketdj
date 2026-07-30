@@ -116,6 +116,11 @@ final class MusicSyncClient {
 
     // MARK: Sync
 
+    /// APP-SCOPED busy state (review catch): the pane's run guard is view-local `@State`, so a
+    /// re-entered pane mid-run needs this to keep the buttons honest; `sync()` single-flights on
+    /// it (the POST + up-to-600s poll must never overlap itself).
+    private(set) var isSyncing = false
+
     /// Kick a metadata-only library check on the import server and poll until it produces a result
     /// set. Returns the detected `added/changed/removed` counts + items. Nothing is captured or
     /// downloaded — this reads library metadata and diffs it. Throws `.unsupported` against an
@@ -123,6 +128,9 @@ final class MusicSyncClient {
     @discardableResult
     func sync() async throws -> SyncResult {
         guard hasServer else { throw SyncError.noServer }
+        guard !isSyncing else { throw SyncError.serverError("a library check is already running") }
+        isSyncing = true
+        defer { isSyncing = false }
         let base = serverUrl, tok = token
 
         // POST /am-sync → jobId (returns immediately; the check runs server-side).

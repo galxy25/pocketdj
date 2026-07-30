@@ -122,6 +122,11 @@ final class AppModel {
     /// merged as a synthetic source appended LAST (like Imported); its DISPLAY name is the profile
     /// name (set at launch, re-tagged on rename via a catalog rebuild). Present once it has ≥1 item.
     var profileSource: ProfileSourceStore?
+    /// The user's OWN Apple Music library, indexed ON DEVICE (public-mode parity for the private
+    /// catalog's "Apple Music (Local)" source) — merged as a synthetic source; its rows yield to
+    /// an indexed twin by `appleMusicId` (the Discover supersede doctrine), so flipping Private
+    /// syncing on re-homes the library instead of duplicating it (set by the app at launch).
+    var appleMusicLibrary: AppleMusicLibraryStore?
     /// Supersede hook: (provisional id → indexed id) pairs for the collections remap —
     /// Discover amrec_ supersedes AND imported amrec_ remaps ride the same seam
     /// (set by the app at launch).
@@ -192,19 +197,25 @@ final class AppModel {
         let importedA = importedSongs?.albums ?? []
         let profileSongs = profileSource?.songs ?? []
         let profileName = profileSource?.sourceName ?? ProfileSourceStore.defaultName
-        let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)])? in
+        let amLibSongs = appleMusicLibrary?.songs ?? []
+        let amLibAlbums = appleMusicLibrary?.albums ?? []
+        let amLibPlaylists = appleMusicLibrary?.playlists ?? []
+        let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)])? in
             let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
             guard !cached.isEmpty else { return nil }
-            let (indexes, discoverPairs, importedPairs, discoverAlbumPairs) = AppModel.withProvisionalSources(
+            let (indexes, discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs) = AppModel.withProvisionalSources(
                 discover: provisional, discoverAlbums: provisionalAlbums,
                 importedSongs: importedS, importedAlbums: importedA,
-                profileSongs: profileSongs, profileName: profileName, indexes: cached)
+                profileSongs: profileSongs, profileName: profileName,
+                amLibrarySongs: amLibSongs, amLibraryAlbums: amLibAlbums,
+                amLibraryPlaylists: amLibPlaylists, indexes: cached)
             return (AppModel.buildDerived(indexes: indexes, albumEdits: albumEdits, songEdits: songEdits),
-                    discoverPairs, importedPairs, discoverAlbumPairs)
+                    discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs)
         }.value
-        guard let (derived, discoverPairs, importedPairs, discoverAlbumPairs) = built else { return false }
+        guard let (derived, discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs) = built else { return false }
         assign(derived)
-        applySupersede(discover: discoverPairs, imported: importedPairs, discoverAlbums: discoverAlbumPairs)
+        applySupersede(discover: discoverPairs, imported: importedPairs,
+                       discoverAlbums: discoverAlbumPairs, amLibrary: amLibPairs)
         reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
         state = .loaded
         return true
@@ -222,6 +233,10 @@ final class AppModel {
         return (r.indexes, r.discoverSuperseded)
     }
 
+    /// Trigger seam for the on-device Apple Music library indexer (wired in PocketDJApp; also
+    /// driven by the pane's Get verb). Kept a closure so AppModel stays MusicKit-free.
+    @ObservationIgnored var refreshAppleMusicLibrary: (() async -> Void)?
+
     /// Fold BOTH provisional sources in — Discover adds, then imported entries — each as
     /// a synthetic source appended AFTER every real one (merge is first-wins, so a real
     /// source always shadows a provisional twin without deleting it). Discover entries
@@ -234,14 +249,19 @@ final class AppModel {
                                                    importedAlbums: [ImportedSongsStore.AlbumEntry],
                                                    profileSongs: [ProfileSourceStore.SongEntry] = [],
                                                    profileName: String = ProfileSourceStore.defaultName,
+                                                   amLibrarySongs: [AppleMusicLibraryStore.SongEntry] = [],
+                                                   amLibraryAlbums: [AppleMusicLibraryStore.AlbumEntry] = [],
+                                                   amLibraryPlaylists: [AppleMusicLibraryStore.PlaylistEntry] = [],
                                                    indexes: [IndexJSON])
         -> (indexes: [IndexJSON],
             discoverSuperseded: [(from: String, to: String)],
             importedSuperseded: [(from: String, to: String)],
-            discoverAlbumSuperseded: [(from: String, to: String)]) {
+            discoverAlbumSuperseded: [(from: String, to: String)],
+            amLibrarySuperseded: [(from: String, to: String)]) {
         guard !discover.isEmpty || !discoverAlbums.isEmpty
-                || !importedSongs.isEmpty || !importedAlbums.isEmpty || !profileSongs.isEmpty else {
-            return (indexes, [], [], [])
+                || !importedSongs.isEmpty || !importedAlbums.isEmpty || !profileSongs.isEmpty
+                || !amLibrarySongs.isEmpty || !amLibraryPlaylists.isEmpty else {
+            return (indexes, [], [], [], [])
         }
         var byAppleMusicId: [String: String] = [:]
         var albumByAppleMusicId: [String: String] = [:]
@@ -259,6 +279,9 @@ final class AppModel {
                                                               indexedByAppleMusicId: byAppleMusicId)
         let remapped = Set(importedPairs.map(\.from))
         let keptImported = importedSongs.filter { !remapped.contains($0.songId) }
+        // The on-device Apple Music library yields to indexed twins by catalog id (the private
+        // catalog's rows win) — same doctrine as Discover; superseded rows are pruned + remapped.
+        let amSplit = AppleMusicLibraryStore.split(amLibrarySongs, indexedByAppleMusicId: byAppleMusicId)
         var all = indexes
         if !split.keep.isEmpty || !albumSplit.keep.isEmpty {
             all.append(DiscoverAddsStore.syntheticIndex(split.keep, albums: albumSplit.keep))
@@ -271,7 +294,22 @@ final class AppModel {
         if !profileSongs.isEmpty {
             all.append(ProfileSourceStore.syntheticIndex(songs: profileSongs, profileName: profileName))
         }
-        return (all, split.superseded, importedPairs, albumSplit.superseded)
+        // The on-device "Apple Music" library source (public-mode parity). Appended after every
+        // real source (first-wins shadowing); its playlist mirrors ride `index.playlists` into
+        // `indexPlaylists` automatically. Playlist song ids that superseded remap onto their
+        // indexed twins so the mirrors stay playable either way.
+        if !amSplit.keep.isEmpty || !amLibraryPlaylists.isEmpty {
+            let remapPairs = Dictionary(uniqueKeysWithValues: amSplit.superseded.map { ($0.from, $0.to) })
+            let playlists = amLibraryPlaylists.map { pl in
+                var p = pl
+                p.songIds = pl.songIds.map { remapPairs[$0] ?? $0 }
+                return p
+            }
+            all.append(AppleMusicLibraryStore.syntheticIndex(songs: amSplit.keep,
+                                                             albums: amLibraryAlbums,
+                                                             playlists: playlists))
+        }
+        return (all, split.superseded, importedPairs, albumSplit.superseded, amSplit.superseded)
     }
 
     /// Land the supersedes: prune each provisional store (Discover entries whose indexed
@@ -281,11 +319,13 @@ final class AppModel {
     /// is nothing to remap for a superseded album.
     private func applySupersede(discover: [(from: String, to: String)],
                                 imported: [(from: String, to: String)] = [],
-                                discoverAlbums: [(from: String, to: String)] = []) {
+                                discoverAlbums: [(from: String, to: String)] = [],
+                                amLibrary: [(from: String, to: String)] = []) {
         if !discover.isEmpty { discoverAdds?.remove(ids: discover.map(\.from)) }
         if !imported.isEmpty { importedSongs?.remove(songIds: imported.map(\.from)) }
         if !discoverAlbums.isEmpty { discoverAdds?.remove(albumIds: discoverAlbums.map(\.from)) }
-        let all = discover + imported
+        if !amLibrary.isEmpty { appleMusicLibrary?.remove(ids: amLibrary.map(\.from)) }
+        let all = discover + imported + amLibrary
         guard !all.isEmpty else { return }
         onDiscoverSupersede?(all)
     }
@@ -505,18 +545,24 @@ final class AppModel {
             let importedA = importedSongs?.albums ?? []
             let profileSongs = profileSource?.songs ?? []
             let profileName = profileSource?.sourceName ?? ProfileSourceStore.defaultName
+            let amLibSongs = appleMusicLibrary?.songs ?? []
+            let amLibAlbums = appleMusicLibrary?.albums ?? []
+            let amLibPlaylists = appleMusicLibrary?.playlists ?? []
             // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
             // OFF the main actor; only the finished value is assigned back on `@MainActor`.
-            let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)]) in
-                let (all, discoverPairs, importedPairs, discoverAlbumPairs) = AppModel.withProvisionalSources(
+            let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)]) in
+                let (all, discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs) = AppModel.withProvisionalSources(
                     discover: provisional, discoverAlbums: provisionalAlbums,
                     importedSongs: importedS, importedAlbums: importedA,
-                    profileSongs: profileSongs, profileName: profileName, indexes: indexes)
+                    profileSongs: profileSongs, profileName: profileName,
+                    amLibrarySongs: amLibSongs, amLibraryAlbums: amLibAlbums,
+                    amLibraryPlaylists: amLibPlaylists, indexes: indexes)
                 return (AppModel.buildDerived(indexes: all, albumEdits: albumEdits, songEdits: songEdits),
-                        discoverPairs, importedPairs, discoverAlbumPairs)
+                        discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs)
             }.value
             assign(built.0)
-            applySupersede(discover: built.1, imported: built.2, discoverAlbums: built.3)
+            applySupersede(discover: built.1, imported: built.2,
+                           discoverAlbums: built.3, amLibrary: built.4)
             reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
             state = .loaded
         } catch {

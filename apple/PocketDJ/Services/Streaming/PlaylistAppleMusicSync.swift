@@ -39,7 +39,7 @@ final class PlaylistAppleMusicSync {
     }
 
     /// The persisted current/most-recent run: hydrated at launch so the last sync — finished,
-    /// failed, or interrupted mid-flight — is always inspectable from Settings ▸ Sync.
+    /// failed, or interrupted mid-flight — is always inspectable from Settings ▸ Apple Music.
     private struct RunSnapshot: Codable, Equatable {
         var startedMs: Double
         var updatedMs: Double
@@ -127,35 +127,67 @@ final class PlaylistAppleMusicSync {
             .joined(separator: " ")
     }
 
-    /// PURE (testable): every PocketDJ playlist whose songs resolve to Apple Music catalog ids,
-    /// as an outgoing push payload. A playlist with no Apple-Music-hostable songs is dropped (only
-    /// songs carrying an `appleMusicId` can live in an Apple Music library playlist).
+    /// PURE (testable): every collection whose songs resolve to Apple Music catalog ids, as an
+    /// outgoing push payload — the user's PLAYLISTS plus every POCKET that CAME FROM an Apple
+    /// Music playlist (Levi 2026-07-29: the sync "is only syncing my playlists, not pockets that
+    /// came from playlists"). Hand-made pockets (no Apple Music provenance) stay local by design —
+    /// a DJ working set is not implicitly a public playlist; `linkPocketToSource` opts one in.
+    /// Songs without an `appleMusicId` are dropped (only catalog songs can live in an Apple Music
+    /// library playlist); a collection with none is dropped entirely.
     ///
-    /// Playlists whose names NORMALIZE EQUAL are merged into ONE outgoing list (ordered union) —
+    /// Collections whose names NORMALIZE EQUAL are merged into ONE outgoing list (ordered union) —
     /// the server targets one remote playlist per name, so two same-named locals pushed separately
     /// would fight over it (push re-appends what the other's reconcile just removed, forever).
+    /// This also makes a converted pocket and its remote twin CONVERGE rather than duplicate.
     /// Track ids are de-duplicated in order for the same reason: a duplicate id absent remotely
     /// would be appended twice by one push.
     static func resolveOutgoing(collections: CollectionsStore, app: AppModel) -> [AMPlaylistSyncClient.OutgoingPlaylist] {
         var indexByKey: [String: Int] = [:]
         var out: [AMPlaylistSyncClient.OutgoingPlaylist] = []
         var seenByKey: [String: Set<String>] = [:]
-        for pl in collections.playlists {
-            let catalogIds = collections.songIds(forPlaylist: pl.id)
-                .compactMap { app.songsById[$0]?.appleMusicId }
-            guard !catalogIds.isEmpty else { continue }
-            let key = normName(pl.name)
+        var seenNameByKey: [String: Set<String>] = [:]
+        func fold(name: String, songIds: [String]) {
+            let key = normName(name)
             if indexByKey[key] == nil {
                 indexByKey[key] = out.count
                 seenByKey[key] = []
-                out.append(.init(name: pl.name, description: nil, trackCatalogIds: []))
+                seenNameByKey[key] = []
+                out.append(.init(name: name, description: nil, trackCatalogIds: []))
             }
             let i = indexByKey[key]!
-            for id in catalogIds where seenByKey[key]!.insert(id).inserted {
-                out[i].trackCatalogIds.append(id)
+            for songId in songIds {
+                guard let song = app.songsById[songId], let catalogId = song.appleMusicId else { continue }
+                guard seenByKey[key]!.insert(catalogId).inserted else { continue }
+                // NAME+ARTIST duplicate gate (Levi 2026-07-29): the same recording under two
+                // catalog ids must push once — the duplicate-flood killer, client half.
+                guard seenNameByKey[key]!.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted else { continue }
+                out[i].trackCatalogIds.append(catalogId)
+                out[i].trackMeta.append(.init(id: catalogId, n: song.name, a: song.artist))
             }
         }
+        // Per-collection DIRECTION gate (Levi 2026-07-29): "Get only"/"Off" collections never
+        // push — the smart-playlist case (invisible to the write API; a push would mint a
+        // regular-playlist duplicate forever).
+        for pl in collections.playlists where pl.amSyncDir.allowsPush {
+            fold(name: pl.name, songIds: collections.songIds(forPlaylist: pl.id))
+        }
+        // Pockets converted from (or linked to) an Apple Music playlist sync two-way like the
+        // playlist they came from — either Apple Music source qualifies (the private catalog's
+        // mirrors or the public on-device library's).
+        for p in collections.pockets
+        where p.hasSource && PlaylistWriteBack.isAppleMusicSource(p.sourceName ?? "")
+            && p.amSyncDir.allowsPush {
+            fold(name: p.name, songIds: collections.songIds(forPocket: p.id))
+        }
         return out.filter { !$0.trackCatalogIds.isEmpty }
+    }
+
+    /// PURE (testable): every local collection name (normalized) the pull-import dedupes against —
+    /// PLAYLISTS and POCKETS both: a remote playlist whose local twin is a converted POCKET must
+    /// not re-import as a duplicate playlist beside it.
+    static func existingCollectionNames(collections: CollectionsStore) -> Set<String> {
+        Set(collections.playlists.map { normName($0.name) })
+            .union(collections.pockets.map { normName($0.name) })
     }
 
     /// PURE (testable): which pulled remote playlists should be imported locally. Skips any whose
@@ -181,7 +213,23 @@ final class PlaylistAppleMusicSync {
 
     // MARK: Sync
 
-    func syncNow(collections: CollectionsStore, app: AppModel) async {
+    /// Which half of the two-way sync to run — the pane's "↑ Send to Apple Music" /
+    /// "↓ Get from Apple Music" buttons map straight onto these; the primary button is `.both`.
+    enum Direction {
+        case both, push, pull
+    }
+
+    /// AUTO-RESUME (Levi 2026-07-29: "async and auto resume"): if the last run never completed
+    /// (the persisted RunSnapshot hydrated with `completed == false` — the app was killed
+    /// mid-sync), silently pick it back up: the client re-attaches to the stored server job and
+    /// every half of the engine is idempotent, so re-running is safe. Called at launch/foreground
+    /// (PocketDJApp) — the user never has to babysit the sync screen.
+    func resumeIfInterrupted(collections: CollectionsStore, app: AppModel) async {
+        guard !isSyncing, !currentRunCompleted, currentRunStartedMs != nil else { return }
+        await syncNow(collections: collections, app: app, direction: .both)
+    }
+
+    func syncNow(collections: CollectionsStore, app: AppModel, direction: Direction = .both) async {
         guard !isSyncing else { return }
         isSyncing = true
         lastResult = nil
@@ -194,50 +242,62 @@ final class PlaylistAppleMusicSync {
         var changes: [SyncReport.Change] = []
         var errors: [String] = []
         do {
-            // ── 1. Resolve what we can push ─────────────────────────────────────────────────────
-            beginStep("Preparing playlists")
-            let outgoing = Self.resolveOutgoing(collections: collections, app: app)
-            let trackTotal = outgoing.reduce(0) { $0 + $1.trackCatalogIds.count }
-            finishStep("\(outgoing.count) playlist\(outgoing.count == 1 ? "" : "s") · \(trackTotal) tracks")
+            if direction != .pull {
+                // ── 1. Resolve what we can push ─────────────────────────────────────────────────
+                beginStep("Preparing playlists")
+                let outgoing = Self.resolveOutgoing(collections: collections, app: app)
+                let trackTotal = outgoing.reduce(0) { $0 + $1.trackCatalogIds.count }
+                finishStep("\(outgoing.count) playlist\(outgoing.count == 1 ? "" : "s") · \(trackTotal) tracks")
 
-            // ── 2. PUSH (idempotent: create-if-absent + append-only-missing) ────────────────────
-            beginStep("Pushing to Apple Music")
-            let pushed = try await client.push(outgoing) { [weak self] p in self?.updateStep(p.display) }
-            let createdRows = pushed.playlists.filter(\.created)
-            let updatedRows = pushed.playlists.filter { !$0.created && $0.added > 0 }
-            for row in pushed.playlists where row.created || row.added > 0 {
-                changes.append(.init(kind: row.created ? "created" : "updated",
-                                     name: row.name, added: row.added, removed: 0,
-                                     detail: row.total.map { "\(row.added) of \($0) tracks sent" }))
-            }
-            for failure in pushed.errors { errors.append("\(failure.name): \(failure.error)") }
-            let addedTotal = updatedRows.reduce(0) { $0 + $1.added }
-            finishStep(pushSummary(created: createdRows.count, updated: updatedRows.count,
-                                   addedTracks: addedTotal, unchanged: pushed.playlists.count - createdRows.count - updatedRows.count,
-                                   failed: pushed.errors.count))
-
-            // ── 3. RECONCILE (on-device removals + reorders; skips just-created playlists) ──────
-            if let transport, transport.canWrite {
-                beginStep("Reconciling removals & reorders")
-                var reconciled = 0
-                let justCreated = Set(createdRows.map { Self.normName($0.name) })
-                // Never reconcile the same REMOTE playlist twice in one pass — two outgoing lists
-                // resolving to one library playlist would replace-all it back and forth.
-                var reconciledIds = Set<String>()
-                for pl in outgoing where !justCreated.contains(Self.normName(pl.name)) {
-                    updateStep("Checking “\(pl.name)”")
-                    guard let amId = try? await transport.resolvePlaylistId(
-                        name: pl.name, expectedAppleMusicIds: pl.trackCatalogIds),
-                        reconciledIds.insert(amId).inserted else { continue }
-                    if case .edited(let count, let added, let removed) = try? await transport.reconcile(
-                        playlistId: amId, orderedAppleMusicIds: pl.trackCatalogIds) {
-                        reconciled += 1
-                        changes.append(.init(kind: "reconciled", name: pl.name,
-                                             added: added, removed: removed,
-                                             detail: "now \(count) tracks in PocketDJ order"))
-                    }
+                // ── 2. PUSH (idempotent: create-if-absent + append-only-missing) ────────────────
+                beginStep("Pushing to Apple Music")
+                let pushed = try await client.push(outgoing) { [weak self] p in self?.updateStep(p.display) }
+                let createdRows = pushed.playlists.filter(\.created)
+                let updatedRows = pushed.playlists.filter { !$0.created && $0.added > 0 }
+                for row in pushed.playlists where row.created || row.added > 0 {
+                    changes.append(.init(kind: row.created ? "created" : "updated",
+                                         name: row.name, added: row.added, removed: 0,
+                                         detail: row.total.map { "\(row.added) of \($0) tracks sent" }))
                 }
-                finishStep(reconciled == 0 ? "Nothing to fix" : "\(reconciled) playlist\(reconciled == 1 ? "" : "s") re-ordered/pruned")
+                for failure in pushed.errors { errors.append("\(failure.name): \(failure.error)") }
+                let addedTotal = updatedRows.reduce(0) { $0 + $1.added }
+                finishStep(pushSummary(created: createdRows.count, updated: updatedRows.count,
+                                       addedTracks: addedTotal, unchanged: pushed.playlists.count - createdRows.count - updatedRows.count,
+                                       failed: pushed.errors.count))
+
+                // ── 3. RECONCILE (on-device removals + reorders; skips just-created playlists) ──
+                if let transport, transport.canWrite {
+                    beginStep("Reconciling removals & reorders")
+                    var reconciled = 0
+                    let justCreated = Set(createdRows.map { Self.normName($0.name) })
+                    // Never reconcile the same REMOTE playlist twice in one pass — two outgoing
+                    // lists resolving to one library playlist would replace-all it back and forth.
+                    var reconciledIds = Set<String>()
+                    for pl in outgoing where !justCreated.contains(Self.normName(pl.name)) {
+                        updateStep("Checking “\(pl.name)”")
+                        guard let amId = try? await transport.resolvePlaylistId(
+                            name: pl.name, expectedAppleMusicIds: pl.trackCatalogIds),
+                            reconciledIds.insert(amId).inserted else { continue }
+                        if case .edited(let count, let added, let removed) = try? await transport.reconcile(
+                            playlistId: amId, orderedAppleMusicIds: pl.trackCatalogIds) {
+                            reconciled += 1
+                            changes.append(.init(kind: "reconciled", name: pl.name,
+                                                 added: added, removed: removed,
+                                                 detail: "now \(count) tracks in PocketDJ order"))
+                        }
+                    }
+                    finishStep(reconciled == 0 ? "Nothing to fix" : "\(reconciled) playlist\(reconciled == 1 ? "" : "s") re-ordered/pruned")
+                }
+            }
+
+            if direction == .push {
+                let summary = reportSummary(changes: changes, errors: errors)
+                lastResult = summary
+                currentRunCompleted = true
+                persistCurrentRun()
+                appendAudit(.init(dateMs: Date().timeIntervalSince1970 * 1000,
+                                  changes: changes, errors: errors, summary: summary))
+                return
             }
 
             // ── 4. PULL ─────────────────────────────────────────────────────────────────────────
@@ -256,11 +316,28 @@ final class PlaylistAppleMusicSync {
             // normName on BOTH sides (matching the server's push dedup) + same-name collapse in
             // `newImports` — otherwise the pull re-imports what the push just merged ("Sap " vs
             // "Sap") or imports k same-named remote dupes as k locals.
-            let existingNames = Set(collections.playlists.map { Self.normName($0.name) })
+            let existingNames = Self.existingCollectionNames(collections: collections)
+            // Provenance stamp (parity review): when an Apple-Music SOURCE playlist mirror with
+            // the same normalized name exists (the on-device library index or the private
+            // catalog), the import arrives LINKED to it — so instant write-back, the Send
+            // backfill, force-sync, and source-follow all work on it, exactly like a duplicate
+            // made from the mirror itself.
+            var mirrorByName: [String: SourcePlaylist] = [:]
+            for sp in app.indexPlaylists where PlaylistWriteBack.isAppleMusicSource(sp.sourceName) {
+                let key = Self.normName(sp.name)
+                if mirrorByName[key] == nil { mirrorByName[key] = sp }
+            }
             var imported = 0
             for r in Self.newImports(remote: remote, existingNames: existingNames) {
-                let localIds = r.trackCatalogIds.compactMap { localByAppleMusicId[$0] }
-                _ = collections.createPlaylist(r.name, songIds: localIds)
+                // NAME+ARTIST duplicate gate on the way IN too: two remote ids resolving to two
+                // local twins of the same recording import once.
+                var seenSongKeys = Set<String>()
+                let localIds = r.trackCatalogIds.compactMap { localByAppleMusicId[$0] }.filter { id in
+                    guard let song = app.songsById[id] else { return true }
+                    return seenSongKeys.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted
+                }
+                _ = collections.createPlaylist(r.name, songIds: localIds,
+                                               source: mirrorByName[Self.normName(r.name)])
                 changes.append(.init(kind: "imported", name: r.name,
                                      added: localIds.count, removed: 0,
                                      detail: "\(localIds.count) of \(r.trackCatalogIds.count) tracks matched locally"))

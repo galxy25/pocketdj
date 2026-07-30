@@ -102,6 +102,163 @@ final class AMPlaylistSyncTests: XCTestCase {
                        "Everything in sync · 1 error")
     }
 
+    /// POCKETS THAT CAME FROM APPLE MUSIC PLAYLISTS sync two-way like the playlist they were
+    /// (Levi 2026-07-29: "only syncing my playlists, not pockets that came from playlists").
+    /// Either Apple Music source qualifies; hand-made pockets stay local.
+    func testResolveOutgoingIncludesAppleMusicSourcedPockets() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("s2", am: "222"))
+        app.injectDiscoverAdd(song("s3", am: "333"))
+        let collections = CollectionsStore(fileURL: tempURL("pockets"))
+        collections.app = app
+
+        // A pocket converted from a PRIVATE-catalog source playlist.
+        let privateSource = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_x", name: "comfort zone", songIds: ["s1", "s2"]),
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.convertToPocket(source: privateSource)
+        // A pocket linked to the PUBLIC on-device library source.
+        let publicSource = SourcePlaylist(
+            playlist: IndexPlaylist(id: "amlibpl_y", name: "road trip", songIds: ["s3"]),
+            sourceName: AppleMusicLibraryStore.sourceName)
+        _ = collections.convertToPocket(source: publicSource)
+        // A hand-made pocket — NO provenance — must stay local.
+        _ = collections.createPocket("secret weapons", songIds: ["s1", "s3"])
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        let names = Set(out.map(\.name))
+        XCTAssertTrue(names.contains("comfort zone"))
+        XCTAssertTrue(names.contains("road trip"))
+        XCTAssertFalse(names.contains("secret weapons"))
+        XCTAssertEqual(out.first(where: { $0.name == "comfort zone" })?.trackCatalogIds, ["111", "222"])
+        XCTAssertEqual(out.first(where: { $0.name == "road trip" })?.trackCatalogIds, ["333"])
+    }
+
+    /// A converted POCKET and a PLAYLIST that normName-collide merge into ONE outgoing list —
+    /// the pocket's remote twin converges instead of duplicating.
+    func testResolveOutgoingMergesPocketWithSameNamedPlaylist() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("s2", am: "222"))
+        let collections = CollectionsStore(fileURL: tempURL("pocketmerge"))
+        collections.app = app
+        _ = collections.createPlaylist("Mix", songIds: ["s1"])
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_m", name: "Mix ", songIds: ["s2"]),   // trailing space
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.convertToPocket(source: source)
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(Set(out.first?.trackCatalogIds ?? []), ["111", "222"])
+    }
+
+    /// The pull-import dedupe covers POCKET names too: a remote playlist whose local twin is a
+    /// converted pocket must not re-import as a duplicate playlist beside it.
+    func testImportDedupeSkipsConvertedPocketTwin() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("pocketdedupe"))
+        collections.app = app
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_c", name: "Comfort Zone", songIds: ["s1"]),
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.convertToPocket(source: source)
+
+        let existing = PlaylistAppleMusicSync.existingCollectionNames(collections: collections)
+        XCTAssertTrue(existing.contains("comfort zone"))
+        let remote: [AMPlaylistSyncClient.RemotePlaylist] = [
+            .init(id: "p.1", name: "comfort zone ", canEdit: true, description: nil,
+                  trackCatalogIds: ["111"], trackTitles: nil),
+            .init(id: "p.2", name: "Fresh", canEdit: true, description: nil,
+                  trackCatalogIds: ["9"], trackTitles: nil),
+        ]
+        let imports = PlaylistAppleMusicSync.newImports(remote: remote, existingNames: existing)
+        XCTAssertEqual(imports.map(\.name), ["Fresh"])   // the pocket's twin is NOT re-imported
+    }
+
+    /// PER-COLLECTION SYNC DIRECTION (Levi 2026-07-29: smart-playlist mirrors must NEVER push):
+    /// "Get only"/"Off" collections are excluded from the push payload; "Send only" stays in.
+    func testResolveOutgoingHonorsDirection() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("s2", am: "222"))
+        let collections = CollectionsStore(fileURL: tempURL("direction"))
+        collections.app = app
+        let pullOnly = collections.createPlaylist("comfort zone", songIds: ["s1"])
+        collections.setAMSyncDirection(.pull, forPlaylist: pullOnly.id)
+        let off = collections.createPlaylist("archived", songIds: ["s1"])
+        collections.setAMSyncDirection(.off, forPlaylist: off.id)
+        let pushOnly = collections.createPlaylist("bangers", songIds: ["s2"])
+        collections.setAMSyncDirection(.push, forPlaylist: pushOnly.id)
+        _ = collections.createPlaylist("normal", songIds: ["s1"])   // nil direction = two-way
+
+        // A pull-only AM-sourced POCKET is excluded too (the smart-playlist pocket case).
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_p", name: "potential", songIds: ["s2"]),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+        collections.setAMSyncDirection(.pull, forPocket: pocket.id)
+
+        let names = Set(PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app).map(\.name))
+        XCTAssertEqual(names, ["bangers", "normal"])
+    }
+
+    /// The instant write-back respects the direction gate: a "Get only" collection reports
+    /// `.pushDisabled` — never enqueues an upstream write (force-sync included).
+    func testWriteBackRespectsDirection() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("wbdir"))
+        collections.app = app
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_c", name: "comfort zone", songIds: []),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+        collections.addSong("s1", toPocket: pocket.id)
+        collections.setAMSyncDirection(.pull, forPocket: pocket.id)
+        XCTAssertEqual(collections.forceWriteBackSong("s1", forTargetKind: .pocket,
+                                                      collectionId: pocket.id), .pushDisabled)
+        // Flip back to two-way: no longer direction-blocked (falls through to the normal path).
+        collections.setAMSyncDirection(.both, forPocket: pocket.id)
+        XCTAssertNotEqual(collections.forceWriteBackSong("s1", forTargetKind: .pocket,
+                                                         collectionId: pocket.id), .pushDisabled)
+    }
+
+    /// The source-follow PULL respects the direction gate: "Send only" stops following the
+    /// source; "Get only" keeps following it.
+    func testSourceFollowRespectsDirection() {
+        let collections = CollectionsStore(fileURL: tempURL("followdir"))
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_f", name: "flow", songIds: ["a"]),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+
+        // Source grows; a SEND-ONLY pocket must NOT pull the add.
+        collections.setAMSyncDirection(.push, forPocket: pocket.id)
+        let grown = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_f", name: "flow", songIds: ["a", "b"]),
+            sourceName: Config.appleMusicSourceName)
+        XCTAssertEqual(collections.syncConvertedCollections(with: [grown]), 0)
+        XCTAssertEqual(collections.pocket(pocket.id)?.songIds, ["a"])
+
+        // GET-ONLY pulls it.
+        collections.setAMSyncDirection(.pull, forPocket: pocket.id)
+        XCTAssertEqual(collections.syncConvertedCollections(with: [grown]), 1)
+        XCTAssertEqual(collections.pocket(pocket.id)?.songIds, ["a", "b"])
+    }
+
+    /// The direction survives a persist/reload round-trip (additive schema — no version bump).
+    func testDirectionPersists() {
+        let url = tempURL("dirpersist")
+        let collections = CollectionsStore(fileURL: url)
+        let pl = collections.createPlaylist("comfort zone", songIds: [])
+        collections.setAMSyncDirection(.pull, forPlaylist: pl.id)
+        let reloaded = CollectionsStore(fileURL: url)
+        XCTAssertEqual(reloaded.playlist(pl.id)?.amSyncDir, .pull)
+    }
+
     /// normName mirrors the server's rule (trim + lowercase + collapse whitespace) — client and
     /// server must agree on what "same name" means or the pull re-imports what the push merged.
     func testNormName() {
@@ -140,6 +297,94 @@ final class AMPlaylistSyncTests: XCTestCase {
         let existing = Set([PlaylistAppleMusicSync.normName("Sap ")])
         let imports = PlaylistAppleMusicSync.newImports(remote: remote, existingNames: existing)
         XCTAssertEqual(imports.map(\.id), ["p.3", "p.4"])   // fullest comfort-zone copy + Fresh
+    }
+
+    /// The NAME+ARTIST duplicate judge: tight by doctrine (version markers keep cuts distinct),
+    /// insensitive to case/diacritics/quotes, borderline = same title + different artist string.
+    func testDuplicateJudge() {
+        XCTAssertTrue(SongDuplicateJudge.isExactDuplicate(
+            name: "Praise The Lord (Da Shine) [feat. Skepta]", artist: "A$AP Rocky",
+            name: "praise the lord (da shine) feat. skepta", artist: "a$ap rocky"))
+        // Version markers must keep cuts distinct.
+        XCTAssertFalse(SongDuplicateJudge.isExactDuplicate(
+            name: "Sap (Live)", artist: "A", name: "Sap", artist: "A"))
+        // Same title, different artist string ⇒ borderline (LLM territory), NOT auto-dup.
+        XCTAssertTrue(SongDuplicateJudge.isBorderline(
+            name: "range brothers", artist: "Baby Keem & Kendrick Lamar",
+            name: "range brothers", artist: "Baby Keem feat. Kendrick Lamar"))
+        XCTAssertFalse(SongDuplicateJudge.isBorderline(
+            name: "A", artist: "X", name: "B", artist: "X"))
+    }
+
+    /// The push payload sends ONE entry per recording even when two catalog ids carry the same
+    /// name+artist (the duplicate-flood killer, client half) — and trackMeta rides along for the
+    /// server's remote-side gate.
+    func testResolveOutgoingDedupesByNameArtist() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        // A second id for the SAME recording (song(_:) names the song after its id, so give
+        // both explicit metadata via the JSON idiom).
+        let twin = try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization.data(
+            withJSONObject: ["id": "s2", "name": "s1", "artist": "A", "appleMusicId": "999"]))
+        app.injectDiscoverAdd(twin)
+        let collections = CollectionsStore(fileURL: tempURL("namededupe"))
+        collections.app = app
+        _ = collections.createPlaylist("Mix", songIds: ["s1", "s2"])
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertEqual(out.first?.trackCatalogIds, ["111"])          // twin under id 999 dropped
+        XCTAssertEqual(out.first?.trackMeta.map(\.id), ["111"])      // meta rides along
+        XCTAssertEqual(out.first?.trackMeta.first?.n, "s1")
+    }
+
+    /// The source-follow pull skips an add whose recording already sits in the pocket under a
+    /// DIFFERENT id — "we shouldn't add a new song … if there is already a song with that same
+    /// name and artist" (the collection-side gate).
+    func testSourceFollowSkipsNameArtistTwin() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("local1", am: "111"))
+        let remoteTwin = try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization.data(
+            withJSONObject: ["id": "amlib_x", "name": "local1", "artist": "A", "appleMusicId": "999"]))
+        app.injectDiscoverAdd(remoteTwin)
+        let collections = CollectionsStore(fileURL: tempURL("followtwin"))
+        collections.app = app
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_t", name: "twins", songIds: ["local1"]),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+
+        // The source gains amlib_x — the SAME recording as local1 under another id.
+        let grown = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_t", name: "twins", songIds: ["local1", "amlib_x"]),
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.syncConvertedCollections(with: [grown])
+        XCTAssertEqual(collections.pocket(pocket.id)?.songIds, ["local1"])   // twin NOT added
+    }
+
+    /// The daily auto-sync due-check: fires once per local day at the chosen minute, catches up
+    /// after a missed slot, and never double-fires.
+    func testAutoSyncIsDue() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        func ms(_ y: Int, _ mo: Int, _ d: Int, _ h: Int, _ mi: Int) -> Double {
+            var c = DateComponents(); c.year = y; c.month = mo; c.day = d; c.hour = h; c.minute = mi
+            return cal.date(from: c)!.timeIntervalSince1970 * 1000
+        }
+        let fire = AppleMusicAutoSync.defaultMinutes          // 16:20
+        // Before today's fire: not due.
+        XCTAssertFalse(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 12, 0), lastRunMs: nil,
+                                                minutesOfDay: fire, calendar: cal))
+        // After the fire, never ran: due.
+        XCTAssertTrue(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 16, 30), lastRunMs: nil,
+                                               minutesOfDay: fire, calendar: cal))
+        // Ran today after the fire: not due again.
+        XCTAssertFalse(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 18, 0),
+                                                lastRunMs: ms(2026, 7, 30, 16, 21),
+                                                minutesOfDay: fire, calendar: cal))
+        // Ran yesterday: due once today's fire passes (missed-slot catch-up included).
+        XCTAssertTrue(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 23, 0),
+                                               lastRunMs: ms(2026, 7, 29, 16, 25),
+                                               minutesOfDay: fire, calendar: cal))
     }
 
     /// A sync report round-trips through Codable (the persisted audit-trail format).

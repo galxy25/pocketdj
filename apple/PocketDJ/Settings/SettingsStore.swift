@@ -238,12 +238,45 @@ final class SettingsStore {
     /// service still degrades to a no-op without a signed-in iCloud account. The toggle
     /// lives in Settings ▸ Profile.
     var cloudSyncEnabled: Bool
+    /// PRIVATE Apple Music syncing (Settings ▸ Apple Music ▸ Syncing): OFF (public, the default
+    /// for everyone) = syncing talks to Apple Music directly with a token minted on this device;
+    /// ON (private — Levi's iMac setup) = syncing runs through the user's own PocketDJ server +
+    /// catalog, and the pane reveals the server-credential fields. ONE set of sync verbs either
+    /// way — this only picks the backend. The default is CAPTURED ONCE at store construction
+    /// (private iff an import server is configured) so later `ripServerURL` edits — shared
+    /// plumbing that changes for reasons unrelated to Apple Music — can never silently flip a
+    /// state the user has already seen.
+    var appleMusicPrivateSyncRaw: Bool?
+    var appleMusicPrivateSync: Bool {
+        get { appleMusicPrivateSyncRaw ?? !ripServerURL.isEmpty }
+        set { appleMusicPrivateSyncRaw = newValue }
+    }
+    /// TWO-WAY FAVORITES sync opt-in (Settings ▸ Apple Music ▸ Syncing ▸ Favorites): OFF by
+    /// default — ♥ stays in the PocketDJ profile. ON pushes/pulls the user's OWN hearts with
+    /// their OWN Music-User-Token (parity review: the old owner-allowlist gate made the verb a
+    /// permanent no-op for everyone but the library owner, who stays always-on regardless).
+    var favoritesTwoWaySync: Bool
+    /// DAILY AUTO-SYNC of Apple Music collections (Levi 2026-07-29): ON by default — the sync
+    /// must not require sitting on the Settings screen. Fires once per day at
+    /// `amAutoSyncMinutes` local time (launch/foreground/periodic catch-up; a missed slot runs
+    /// at the next opportunity).
+    var amAutoSyncEnabled: Bool
+    /// Minutes past local midnight for the daily auto-sync (default 4:20 PM = 980). Clamped.
+    var amAutoSyncMinutes: Int {
+        didSet {
+            let c = min(max(amAutoSyncMinutes, 0), 1439)
+            if c != amAutoSyncMinutes { amAutoSyncMinutes = c }
+        }
+    }
+    /// Epoch ms of the last auto-sync CLAIM (stamped before the pass runs — the single-flight
+    /// across triggers). nil = never.
+    var lastAMAutoSyncAtMs: Double?
     /// How many days of collection ADD history the Apple Music write-back BACKFILL re-drives
-    /// (Settings ▸ Sync and History ▸ Collection). Default 2, clamped to 1…90 so a corrupt or
-    /// out-of-range value can never make the backfill scan nothing (or the whole log). The
-    /// didSet ONLY clamps — persistence rides `SyncSettingsView`'s `.onDisappear { persist() }`
-    /// like every other control there; a persisting didSet would re-write the blob during
-    /// `resetEverything`'s reload right after it cleared it. See
+    /// (Settings ▸ Apple Music ▸ Syncing, and History ▸ Collection). Default 2, clamped to 1…90
+    /// so a corrupt or out-of-range value can never make the backfill scan nothing (or the whole
+    /// log). The didSet ONLY clamps — persistence rides `AppleMusicSettingsView`'s
+    /// `.onDisappear { persist() }` like every other control in that pane; a persisting didSet
+    /// would re-write the blob during `resetEverything`'s reload right after it cleared it. See
     /// `CollectionsStore.backfillSourceWriteBacks`.
     var writeBackBackfillDays: Int {
         didSet {
@@ -323,6 +356,13 @@ final class SettingsStore {
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
         self.syncConvertedPockets = data.syncConvertedPockets ?? true
         self.cloudSyncEnabled = data.cloudSyncEnabled ?? true
+        // Legacy migration: pre-rename check builds persisted "local"/"remote" — map to the Bool.
+        self.appleMusicPrivateSyncRaw = data.appleMusicPrivateSync
+            ?? data.appleMusicSyncMode.map { $0 == "local" }
+        self.favoritesTwoWaySync = data.favoritesTwoWaySync ?? false
+        self.amAutoSyncEnabled = data.amAutoSyncEnabled ?? true
+        self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
+        self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                              1), CollectionsStore.writeBackBackfillMaxDays)
         self.defaultRecentlyAddedCount = min(max(data.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -334,6 +374,15 @@ final class SettingsStore {
         if let forced = ProcessInfo.processInfo.environment["PDJ_MIX_DECK_LAYOUT"],
            let layout = MixDeckLayout(rawValue: forced) {
             self.mixDeckLayout = layout
+        }
+
+        // CAPTURE the private-sync default now (after the PDJ_RIP_SERVER_URL seam so a seeded
+        // server derives private): an unset value must become a fixed install-time choice, not a
+        // live derivation that flips when ripServerURL is edited later. In-memory only — init
+        // must never persist (the OnboardingStore fresh-install invariant); the value rides the
+        // next natural persist().
+        if appleMusicPrivateSyncRaw == nil {
+            appleMusicPrivateSyncRaw = !ripServerURL.isEmpty
         }
     }
 
@@ -462,7 +511,13 @@ final class SettingsStore {
             syncConvertedPockets: syncConvertedPockets,
             cloudSyncEnabled: cloudSyncEnabled,
             writeBackBackfillDays: writeBackBackfillDays,
-            defaultRecentlyAddedCount: defaultRecentlyAddedCount)
+            defaultRecentlyAddedCount: defaultRecentlyAddedCount,
+            appleMusicSyncMode: nil,   // legacy field — decode-only since the private-toggle rename
+            appleMusicPrivateSync: appleMusicPrivateSyncRaw,
+            favoritesTwoWaySync: favoritesTwoWaySync,
+            amAutoSyncEnabled: amAutoSyncEnabled,
+            amAutoSyncMinutes: amAutoSyncMinutes,
+            lastAMAutoSyncAtMs: lastAMAutoSyncAtMs)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -515,6 +570,13 @@ final class SettingsStore {
         studioCountInEnabled = d.studioCountInEnabled ?? true
         syncConvertedPockets = d.syncConvertedPockets ?? true
         cloudSyncEnabled = d.cloudSyncEnabled ?? true
+        // Mirror init's capture (reset clears ripServerURL, so the derived default is public) —
+        // leaving this nil would revive the live-derivation behavior until the next launch.
+        appleMusicPrivateSyncRaw = false
+        favoritesTwoWaySync = d.favoritesTwoWaySync ?? false
+        amAutoSyncEnabled = d.amAutoSyncEnabled ?? true
+        amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
+        lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                         1), CollectionsStore.writeBackBackfillMaxDays)
         defaultRecentlyAddedCount = min(max(d.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -612,6 +674,22 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced + clamped at the read sites, default 3650 —
     /// how many items the "Recently added" virtual playlist shows).
     var defaultRecentlyAddedCount: Int?
+    /// LEGACY (pre-rename check builds persisted "local"/"remote") — decode-only; new blobs
+    /// write `appleMusicPrivateSync` and nil here.
+    var appleMusicSyncMode: String?
+    /// Optional so older blobs still decode (nil ⇒ captured at init: private iff an import
+    /// server is configured). The Private-syncing toggle.
+    var appleMusicPrivateSync: Bool?
+    /// Optional so older blobs still decode (coalesced to FALSE — two-way favorites sync is a
+    /// deliberate opt-in).
+    var favoritesTwoWaySync: Bool?
+    /// Optional so older blobs still decode (coalesced to TRUE — daily auto-sync is on unless
+    /// turned off).
+    var amAutoSyncEnabled: Bool?
+    /// Optional so older blobs still decode (coalesced to 980 = 4:20 PM local).
+    var amAutoSyncMinutes: Int?
+    /// Optional — epoch ms of the last auto-sync claim.
+    var lastAMAutoSyncAtMs: Double?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -655,5 +733,11 @@ struct SettingsData: Codable {
         syncConvertedPockets: nil,
         cloudSyncEnabled: nil,
         writeBackBackfillDays: nil,
-        defaultRecentlyAddedCount: nil)
+        defaultRecentlyAddedCount: nil,
+        appleMusicSyncMode: nil,
+        appleMusicPrivateSync: nil,
+        favoritesTwoWaySync: nil,
+        amAutoSyncEnabled: nil,
+        amAutoSyncMinutes: nil,
+        lastAMAutoSyncAtMs: nil)
 }
