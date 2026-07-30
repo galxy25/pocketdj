@@ -58,9 +58,11 @@ final class FavoritesSyncServiceTests: XCTestCase {
     private func makeService(owner: Bool,
                              favorites: FavoritesStore,
                              transport: RecordingTransport?,
-                             seed: FavoritesSyncService.Seed? = nil) -> FavoritesSyncService {
+                             seed: FavoritesSyncService.Seed? = nil,
+                             seedOptIn: Bool = true) -> FavoritesSyncService {
         let svc = FavoritesSyncService(favorites: favorites, transport: transport)
         svc.ownerCheck = { owner }
+        svc.seedOptIn = { seedOptIn }
         svc.fetchSeed = {
             guard let seed else { throw URLError(.fileDoesNotExist) }
             return try JSONEncoder().encode(seed)
@@ -84,18 +86,35 @@ final class FavoritesSyncServiceTests: XCTestCase {
         XCTAssertEqual(svc.isOwner, false)
         XCTAssertNil(svc.lastError)
         XCTAssertTrue(favs.isFavorite("sng_a"))
-        XCTAssertTrue(favs.isFavorite("sng_b"), "a seeded song with no catalog id still seeds locally")
-        XCTAssertEqual(favs.seedVersion, 4)
-        XCTAssertTrue(t.requests.isEmpty,
-                      "a tester's install NEVER touches Apple Music — not even to READ")
-        XCTAssertTrue(favs.pendingPushes.isEmpty,
-                      "and the seed queues nothing that could leak upstream later")
+        XCTAssertTrue(favs.isFavorite("sng_b"), "a seeded song with no catalog id still seeds locally (opt-in on)")
+    }
 
-        // A later un-♥ plus another pass: still no traffic, and no reseed over the tombstone.
+    /// Integrity fix: a non-owner who has NOT opted in gets NO seed — their favorites are never
+    /// silently populated with the curator's picks, and still zero Apple Music traffic.
+    func testNonOwnerWithoutSeedOptInAppliesNothing() async {
+        let favs = makeFavorites()
+        let t = RecordingTransport()
+        let svc = makeService(owner: false, favorites: favs, transport: t,
+                              seed: FavoritesSyncService.Seed(version: 4,
+                                                              songIds: ["sng_a", "sng_b"],
+                                                              appleMusicIds: ["sng_a": "1"]),
+                              seedOptIn: false)
+        await svc.run()
+
+        XCTAssertFalse(favs.isFavorite("sng_a"), "no seed adoption without opt-in")
+        XCTAssertFalse(favs.isFavorite("sng_b"))
+        XCTAssertEqual(favs.seedVersion, 0, "the seed is never applied, so its version is never recorded")
+        XCTAssertTrue(t.requests.isEmpty,
+                      "a non-owner without opt-in NEVER touches Apple Music — not even to READ")
+        XCTAssertTrue(favs.pendingPushes.isEmpty,
+                      "and nothing is queued that could leak upstream later")
+
+        // A manual ♥ by this non-owner is kept LOCALLY (their own choice is respected) but —
+        // with two-way sync off — is NEVER pushed to Apple Music: still zero traffic.
         favs.toggle("sng_a", appleMusicId: "1")
         await svc.run()
-        XCTAssertFalse(favs.isFavorite("sng_a"))
-        XCTAssertTrue(t.requests.isEmpty)
+        XCTAssertTrue(favs.isFavorite("sng_a"), "their own manual ♥ stays, on this device")
+        XCTAssertTrue(t.requests.isEmpty, "two-way sync is off, so nothing leaves the device")
     }
 
     // MARK: - Outbound

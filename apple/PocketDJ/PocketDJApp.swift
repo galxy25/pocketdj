@@ -604,6 +604,12 @@ struct PocketDJApp: App {
         // to the requesting user's own account with their own Music-User-Token. Owner stays
         // always-on via the allowlist; everyone else flips the pane's Favorites toggle.
         favoritesSync.userOptIn = { [weak settings] in settings?.favoritesTwoWaySync ?? false }
+        // Owner-seed adoption is a deliberate opt-in — never seed a public user's ♥ silently.
+        favoritesSync.seedOptIn = { [weak settings] in settings?.applyOwnerFavoritesSeed ?? false }
+        // Owner gate for the passive rip fan-out (integrity audit): only the catalog owner may
+        // auto-enqueue captures on the shared server. Reuses the favorites owner check. Wired
+        // HERE (not at the coordinator block above) so `favoritesSync` is already constructed.
+        coordinator.isCatalogOwner = { [weak favoritesSync] in favoritesSync?.isOwner == true }
         // The catalog seams (kept out of the service so it stays free of the data layer):
         // the id space the inbound pull asks about, and the reverse resolution of a loved
         // catalog id back to a PocketDJ song id.

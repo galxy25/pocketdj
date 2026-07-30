@@ -256,6 +256,9 @@ final class SettingsStore {
     /// their OWN Music-User-Token (parity review: the old owner-allowlist gate made the verb a
     /// permanent no-op for everyone but the library owner, who stays always-on regardless).
     var favoritesTwoWaySync: Bool
+    /// Adopt the library owner's shipped ♥ SEED onto this install (integrity audit): OFF by
+    /// default so a public user's favorites are never silently seeded with someone else's picks.
+    var applyOwnerFavoritesSeed: Bool
     /// DAILY AUTO-SYNC of Apple Music collections (Levi 2026-07-29): ON by default — the sync
     /// must not require sitting on the Settings screen. Fires once per day at
     /// `amAutoSyncMinutes` local time (launch/foreground/periodic catch-up; a missed slot runs
@@ -360,6 +363,7 @@ final class SettingsStore {
         self.appleMusicPrivateSyncRaw = data.appleMusicPrivateSync
             ?? data.appleMusicSyncMode.map { $0 == "local" }
         self.favoritesTwoWaySync = data.favoritesTwoWaySync ?? false
+        self.applyOwnerFavoritesSeed = data.applyOwnerFavoritesSeed ?? false
         self.amAutoSyncEnabled = data.amAutoSyncEnabled ?? true
         self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
         self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
@@ -518,6 +522,7 @@ final class SettingsStore {
             appleMusicSyncMode: nil,   // legacy field — decode-only since the private-toggle rename
             appleMusicPrivateSync: appleMusicPrivateSyncRaw,
             favoritesTwoWaySync: favoritesTwoWaySync,
+            applyOwnerFavoritesSeed: applyOwnerFavoritesSeed,
             amAutoSyncEnabled: amAutoSyncEnabled,
             amAutoSyncMinutes: amAutoSyncMinutes,
             lastAMAutoSyncAtMs: lastAMAutoSyncAtMs)
@@ -577,6 +582,7 @@ final class SettingsStore {
         // leaving this nil would revive the live-derivation behavior until the next launch.
         appleMusicPrivateSyncRaw = false
         favoritesTwoWaySync = d.favoritesTwoWaySync ?? false
+        applyOwnerFavoritesSeed = d.applyOwnerFavoritesSeed ?? false
         amAutoSyncEnabled = d.amAutoSyncEnabled ?? true
         amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
         lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
@@ -686,6 +692,8 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced to FALSE — two-way favorites sync is a
     /// deliberate opt-in).
     var favoritesTwoWaySync: Bool?
+    /// Optional so older blobs still decode (coalesced to FALSE — owner-seed adoption is opt-in).
+    var applyOwnerFavoritesSeed: Bool?
     /// Optional so older blobs still decode (coalesced to TRUE — daily auto-sync is on unless
     /// turned off).
     var amAutoSyncEnabled: Bool?
@@ -740,6 +748,7 @@ struct SettingsData: Codable {
         appleMusicSyncMode: nil,
         appleMusicPrivateSync: nil,
         favoritesTwoWaySync: nil,
+        applyOwnerFavoritesSeed: nil,
         amAutoSyncEnabled: nil,
         amAutoSyncMinutes: nil,
         lastAMAutoSyncAtMs: nil)

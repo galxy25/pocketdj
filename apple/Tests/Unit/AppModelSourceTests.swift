@@ -72,6 +72,28 @@ final class AppModelSourceTests: XCTestCase {
         XCTAssertEqual(ra?.sourceName, AppModel.recentlyAddedName)
     }
 
+    /// Integrity audit: a NON-OWNER's "Recently added" must exclude `dateAdded` rows sourced from a
+    /// shared URL catalog — those are the CURATOR's library-add history, not this user's — so the
+    /// curator's recently-added songs never bleed into a hybrid user's list. The OWNER keeps them
+    /// (the shared catalog IS their own library history). Gated on `resolvedIsOwner`, NOT on
+    /// `appleMusicPrivateSync` (which defaults TRUE for a hybrid user and used to leak these rows).
+    func testRecentlyAddedFiltersSharedCatalogForNonOwner() {
+        let app = AppModel()
+        // A non-nil settings host engages the filter (a nil-settings fixture never filters — see
+        // the ranks test above). The injected row is Discover-sourced (≠ the own "Apple Music"
+        // library source), standing in for a shared-catalog `dateAdded` row.
+        app.settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        app.injectDiscoverAdd(songWithDateAdded("shared1", dateAdded: 1_000))
+
+        app.resolvedIsOwner = false
+        XCTAssertTrue(app.recentlyAddedSongIds(limit: 10).isEmpty,
+                      "non-owner: a shared-catalog dateAdded row is excluded from Recently added")
+
+        app.resolvedIsOwner = true
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 10), ["shared1"],
+                       "owner: the shared catalog IS their library history, so it is kept")
+    }
+
     /// Per-collection sort/filter: `sortedFilteredSongs` sorts a collection's songs by a BrowseState
     /// sort key (date added asc/desc) and preserves the stored order at default state.
     func testCollectionSortedFilteredSongsByDateAdded() {
