@@ -304,8 +304,22 @@ struct PocketDetailView: View {
         let syncBinding = Binding<Bool>(
             get: { pocket?.syncsWithSource ?? false },
             set: { collections.setSourceSyncEnabled($0, forPocket: pocketId) })
+        // Per-pocket Apple Music sync DIRECTION (Levi 2026-07-29): "Get only" is the smart-
+        // playlist setting — the pocket keeps following its source but is never pushed (a push
+        // would mint a regular-playlist duplicate, since smart playlists are write-invisible).
+        let directionBinding = Binding<CollectionSyncDirection>(
+            get: { pocket?.amSyncDir ?? .both },
+            set: { collections.setAMSyncDirection($0, forPocket: pocketId) })
         Divider()
         Section(sourceLinkHeader) {
+            Picker(selection: directionBinding) {
+                ForEach(CollectionSyncDirection.allCases, id: \.self) { d in
+                    Text(d.label).tag(d)
+                }
+            } label: {
+                Label("Apple Music sync", systemImage: "arrow.up.arrow.down.circle")
+            }
+            .accessibilityIdentifier("pocket-am-sync-direction")
             Toggle(isOn: syncBinding) {
                 Label("Sync with source", systemImage: "arrow.triangle.2.circlepath")
             }

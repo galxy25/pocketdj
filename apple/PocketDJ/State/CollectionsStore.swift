@@ -764,6 +764,15 @@ final class CollectionsStore {
     }
 
     /// Per-item sync opt-out (the ⋯ menu toggles). nil-provenance items are ignored.
+    /// Set a collection's per-item Apple Music sync DIRECTION (nil-safe on a missing id).
+    /// Rides `mutatePocket`/`mutatePlaylist` so it persists + cloud-syncs like every edit.
+    func setAMSyncDirection(_ direction: CollectionSyncDirection, forPocket id: String) {
+        mutatePocket(id) { $0.amSyncDirection = direction.rawValue }
+    }
+    func setAMSyncDirection(_ direction: CollectionSyncDirection, forPlaylist id: String) {
+        mutatePlaylist(id) { $0.amSyncDirection = direction.rawValue }
+    }
+
     func setSourceSyncEnabled(_ enabled: Bool, forPocket id: String) {
         guard pocket(id)?.hasSource == true else { return }
         mutatePocket(id) { $0.sourceSyncEnabled = enabled }
@@ -788,11 +797,13 @@ final class CollectionsStore {
             return (byId[plId] ?? []).first { sourceName == nil || $0.sourceName == sourceName }
         }
         var changed = 0
-        for p in pockets where p.syncsWithSource {
+        // `amSyncDir.allowsPull` gates the PULL half per collection (Levi 2026-07-29): a
+        // "Send only"/"Off" item stops following its source without touching the freeze toggle.
+        for p in pockets where p.syncsWithSource && p.amSyncDir.allowsPull {
             guard let sp = match(p.sourcePlaylistId, p.sourceName) else { continue }
             if reconcilePocket(p.id, from: sp) { changed += 1 }
         }
-        for pl in playlists where pl.syncsWithSource {
+        for pl in playlists where pl.syncsWithSource && pl.amSyncDir.allowsPull {
             guard let sp = match(pl.sourcePlaylistId, pl.sourceName) else { continue }
             if reconcilePlaylist(pl.id, from: sp) { changed += 1 }
         }
@@ -1032,6 +1043,9 @@ final class CollectionsStore {
         /// This collection has no Apple Music source playlist to write to (a plain pocket, or a
         /// vinyl / My Digital / Imported source).
         case notLinked
+        /// The collection's per-item sync direction is "Get only"/"Off" — writes upstream are
+        /// deliberately disabled (e.g. a smart-playlist mirror the write API can't target).
+        case pushDisabled
         /// A Studio/performance item (sample/loop/sequence/instrumental) — not an Apple Music
         /// catalog song, so there's nothing to add to a catalog playlist.
         case notCatalogSong
@@ -1051,11 +1065,15 @@ final class CollectionsStore {
         switch kind {
         case .pocket:
             guard let p = pocket(collectionId) else { return .notLinked }
+            // Direction gate (Levi 2026-07-29): a "Get only"/"Off" collection never writes
+            // upstream — the exact protection a smart-playlist mirror needs.
+            guard p.amSyncDir.allowsPush else { return .pushDisabled }
             return writeBackAddedSong(songId, sourcePlaylistId: p.sourcePlaylistId,
                                       sourceName: p.sourceName, sourceSnapshot: p.sourceSongIds,
                                       collectionName: p.name, force: force)
         case .playlist:
             guard let pl = playlist(collectionId) else { return .notLinked }
+            guard pl.amSyncDir.allowsPush else { return .pushDisabled }
             return writeBackAddedSong(songId, sourcePlaylistId: pl.sourcePlaylistId,
                                       sourceName: pl.sourceName, sourceSnapshot: pl.sourceSongIds,
                                       collectionName: pl.name, force: force)

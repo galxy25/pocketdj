@@ -159,14 +159,18 @@ final class PlaylistAppleMusicSync {
                 out[i].trackCatalogIds.append(id)
             }
         }
-        for pl in collections.playlists {
+        // Per-collection DIRECTION gate (Levi 2026-07-29): "Get only"/"Off" collections never
+        // push — the smart-playlist case (invisible to the write API; a push would mint a
+        // regular-playlist duplicate forever).
+        for pl in collections.playlists where pl.amSyncDir.allowsPush {
             fold(name: pl.name, songIds: collections.songIds(forPlaylist: pl.id))
         }
         // Pockets converted from (or linked to) an Apple Music playlist sync two-way like the
         // playlist they came from — either Apple Music source qualifies (the private catalog's
         // mirrors or the public on-device library's).
         for p in collections.pockets
-        where p.hasSource && PlaylistWriteBack.isAppleMusicSource(p.sourceName ?? "") {
+        where p.hasSource && PlaylistWriteBack.isAppleMusicSource(p.sourceName ?? "")
+            && p.amSyncDir.allowsPush {
             fold(name: p.name, songIds: collections.songIds(forPocket: p.id))
         }
         return out.filter { !$0.trackCatalogIds.isEmpty }

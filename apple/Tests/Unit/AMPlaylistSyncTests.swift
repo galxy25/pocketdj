@@ -178,6 +178,87 @@ final class AMPlaylistSyncTests: XCTestCase {
         XCTAssertEqual(imports.map(\.name), ["Fresh"])   // the pocket's twin is NOT re-imported
     }
 
+    /// PER-COLLECTION SYNC DIRECTION (Levi 2026-07-29: smart-playlist mirrors must NEVER push):
+    /// "Get only"/"Off" collections are excluded from the push payload; "Send only" stays in.
+    func testResolveOutgoingHonorsDirection() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("s2", am: "222"))
+        let collections = CollectionsStore(fileURL: tempURL("direction"))
+        collections.app = app
+        let pullOnly = collections.createPlaylist("comfort zone", songIds: ["s1"])
+        collections.setAMSyncDirection(.pull, forPlaylist: pullOnly.id)
+        let off = collections.createPlaylist("archived", songIds: ["s1"])
+        collections.setAMSyncDirection(.off, forPlaylist: off.id)
+        let pushOnly = collections.createPlaylist("bangers", songIds: ["s2"])
+        collections.setAMSyncDirection(.push, forPlaylist: pushOnly.id)
+        _ = collections.createPlaylist("normal", songIds: ["s1"])   // nil direction = two-way
+
+        // A pull-only AM-sourced POCKET is excluded too (the smart-playlist pocket case).
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_p", name: "potential", songIds: ["s2"]),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+        collections.setAMSyncDirection(.pull, forPocket: pocket.id)
+
+        let names = Set(PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app).map(\.name))
+        XCTAssertEqual(names, ["bangers", "normal"])
+    }
+
+    /// The instant write-back respects the direction gate: a "Get only" collection reports
+    /// `.pushDisabled` — never enqueues an upstream write (force-sync included).
+    func testWriteBackRespectsDirection() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("wbdir"))
+        collections.app = app
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_c", name: "comfort zone", songIds: []),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+        collections.addSong("s1", toPocket: pocket.id)
+        collections.setAMSyncDirection(.pull, forPocket: pocket.id)
+        XCTAssertEqual(collections.forceWriteBackSong("s1", forTargetKind: .pocket,
+                                                      collectionId: pocket.id), .pushDisabled)
+        // Flip back to two-way: no longer direction-blocked (falls through to the normal path).
+        collections.setAMSyncDirection(.both, forPocket: pocket.id)
+        XCTAssertNotEqual(collections.forceWriteBackSong("s1", forTargetKind: .pocket,
+                                                         collectionId: pocket.id), .pushDisabled)
+    }
+
+    /// The source-follow PULL respects the direction gate: "Send only" stops following the
+    /// source; "Get only" keeps following it.
+    func testSourceFollowRespectsDirection() {
+        let collections = CollectionsStore(fileURL: tempURL("followdir"))
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_f", name: "flow", songIds: ["a"]),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+
+        // Source grows; a SEND-ONLY pocket must NOT pull the add.
+        collections.setAMSyncDirection(.push, forPocket: pocket.id)
+        let grown = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_f", name: "flow", songIds: ["a", "b"]),
+            sourceName: Config.appleMusicSourceName)
+        XCTAssertEqual(collections.syncConvertedCollections(with: [grown]), 0)
+        XCTAssertEqual(collections.pocket(pocket.id)?.songIds, ["a"])
+
+        // GET-ONLY pulls it.
+        collections.setAMSyncDirection(.pull, forPocket: pocket.id)
+        XCTAssertEqual(collections.syncConvertedCollections(with: [grown]), 1)
+        XCTAssertEqual(collections.pocket(pocket.id)?.songIds, ["a", "b"])
+    }
+
+    /// The direction survives a persist/reload round-trip (additive schema — no version bump).
+    func testDirectionPersists() {
+        let url = tempURL("dirpersist")
+        let collections = CollectionsStore(fileURL: url)
+        let pl = collections.createPlaylist("comfort zone", songIds: [])
+        collections.setAMSyncDirection(.pull, forPlaylist: pl.id)
+        let reloaded = CollectionsStore(fileURL: url)
+        XCTAssertEqual(reloaded.playlist(pl.id)?.amSyncDir, .pull)
+    }
+
     /// normName mirrors the server's rule (trim + lowercase + collapse whitespace) — client and
     /// server must agree on what "same name" means or the pull re-imports what the push merged.
     func testNormName() {

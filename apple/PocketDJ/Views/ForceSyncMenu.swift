@@ -81,6 +81,8 @@ enum CollectionForceSync {
         switch collections.forceWriteBackSong(song.id, forTargetKind: kind, collectionId: collectionId) {
         case .notLinked:
             return "This collection isn’t linked to an Apple Music playlist, so there’s no playlist to add it to. Link it from the ⋯ menu to sync adds."
+        case .pushDisabled:
+            return "Sending to Apple Music is turned off for this collection (its sync is Get only / Off). Change “Apple Music sync” in the ⋯ menu to send adds."
         case .notCatalogSong:
             return "This item isn’t an Apple Music catalog track, so it can’t be added to a playlist."
         case .noIdentity:

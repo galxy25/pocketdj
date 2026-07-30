@@ -932,6 +932,10 @@ struct PlaylistDetailView: View {
                         .disabled(itemCount == 0)
                         .accessibilityIdentifier("convert-to-pocket")
                     if playlist?.hasSource == true { sourceSyncMenuItems }
+                    // ALL playlists can push to Apple Music (create-if-absent), so the DIRECTION
+                    // control shows unconditionally (Levi 2026-07-29): "Get only" = never push —
+                    // the smart-playlist setting; "Off" = never sync either way.
+                    amSyncDirectionMenuItem
                     Divider()
                     CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPlaylist: playlistId) }, noun: "playlist")
                     Divider()
@@ -997,6 +1001,24 @@ struct PlaylistDetailView: View {
     /// PocketDetailView type-checker note; same medicine here).
     private var syncResultShowing: Binding<Bool> {
         Binding(get: { syncResult != nil }, set: { if !$0 { syncResult = nil } })
+    }
+
+    /// Per-playlist Apple Music sync DIRECTION (Levi 2026-07-29) — a Picker rendering as a
+    /// submenu. "Get only" is the smart-playlist setting: the playlist keeps following its
+    /// source (when linked) but is never pushed, so the write API can't mint duplicates of a
+    /// smart playlist it can't see.
+    @ViewBuilder private var amSyncDirectionMenuItem: some View {
+        let directionBinding = Binding<CollectionSyncDirection>(
+            get: { playlist?.amSyncDir ?? .both },
+            set: { collections.setAMSyncDirection($0, forPlaylist: playlistId) })
+        Picker(selection: directionBinding) {
+            ForEach(CollectionSyncDirection.allCases, id: \.self) { d in
+                Text(d.label).tag(d)
+            }
+        } label: {
+            Label("Apple Music sync", systemImage: "arrow.up.arrow.down.circle")
+        }
+        .accessibilityIdentifier("playlist-am-sync-direction")
     }
 
     /// Source-sync ⋯-menu items — shown only for a playlist duplicated from a source
