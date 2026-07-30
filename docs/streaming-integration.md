@@ -42,7 +42,7 @@ each one on.
 - `apple/PocketDJ/Playback/` — `TrackPlaybackProvider` + `PlaybackCoordinator`: orders
   **Apple Music first** (for Apple-Music-source songs, when ready) then the **rip server**
   (terminal fallback). `PlaybackBackend` is `ripServer` / `appleMusic`.
-- `apple/PocketDJ/Views/SettingsView+Streaming.swift` — the **"Streaming accounts"**
+- `apple/PocketDJ/Views/AppleMusicSettingsView.swift` — the **Apple Music pane (Credentials tab)**
   Settings section: one row per provider with a **Log in / Log out** button, or a
   "Not available" note when its SDK/creds are absent.
 - `apple/PocketDJ/PocketDJ.entitlements` — **intentionally empty** (`<dict></dict>`).

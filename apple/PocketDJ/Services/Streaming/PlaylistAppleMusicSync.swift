@@ -275,10 +275,21 @@ final class PlaylistAppleMusicSync {
             // `newImports` — otherwise the pull re-imports what the push just merged ("Sap " vs
             // "Sap") or imports k same-named remote dupes as k locals.
             let existingNames = Set(collections.playlists.map { Self.normName($0.name) })
+            // Provenance stamp (parity review): when an Apple-Music SOURCE playlist mirror with
+            // the same normalized name exists (the on-device library index or the private
+            // catalog), the import arrives LINKED to it — so instant write-back, the Send
+            // backfill, force-sync, and source-follow all work on it, exactly like a duplicate
+            // made from the mirror itself.
+            var mirrorByName: [String: SourcePlaylist] = [:]
+            for sp in app.indexPlaylists where PlaylistWriteBack.isAppleMusicSource(sp.sourceName) {
+                let key = Self.normName(sp.name)
+                if mirrorByName[key] == nil { mirrorByName[key] = sp }
+            }
             var imported = 0
             for r in Self.newImports(remote: remote, existingNames: existingNames) {
                 let localIds = r.trackCatalogIds.compactMap { localByAppleMusicId[$0] }
-                _ = collections.createPlaylist(r.name, songIds: localIds)
+                _ = collections.createPlaylist(r.name, songIds: localIds,
+                                               source: mirrorByName[Self.normName(r.name)])
                 changes.append(.init(kind: "imported", name: r.name,
                                      added: localIds.count, removed: 0,
                                      detail: "\(localIds.count) of \(r.trackCatalogIds.count) tracks matched locally"))

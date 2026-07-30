@@ -72,7 +72,7 @@ struct PocketDJApp: App {
     @State private var edits: EditsStore
     @State private var collections: CollectionsStore
     @State private var rips: RipsStore
-    /// Apple Music (Local) sync client (Settings ▸ "Sync Apple Music library"). Talks to the
+    /// Apple Music (Local) sync client — the PRIVATE-mode backend of Settings ▸ Apple Music ▸ Syncing ("↓ Get" when Private syncing is on). Talks to the
     /// SAME rip server (URL + token from settings) to detect newly-added library tracks.
     @State private var musicSync: MusicSyncClient
     @State private var player: PlayerEngine
@@ -578,6 +578,10 @@ struct PocketDJApp: App {
         let favoritesTransport: (any AppleMusicFavoritesTransport)? = nil
         #endif
         let favoritesSync = FavoritesSyncService(favorites: favorites, transport: favoritesTransport)
+        // Two-way favorites is a per-install USER opt-in (parity fix): the push/pull writes only
+        // to the requesting user's own account with their own Music-User-Token. Owner stays
+        // always-on via the allowlist; everyone else flips the pane's Favorites toggle.
+        favoritesSync.userOptIn = { [weak settings] in settings?.favoritesTwoWaySync ?? false }
         // The catalog seams (kept out of the service so it stays free of the data layer):
         // the id space the inbound pull asks about, and the reverse resolution of a loved
         // catalog id back to a PocketDJ song id.

@@ -45,6 +45,14 @@ final class FavoritesSyncService {
     @ObservationIgnored var catalogAppleMusicIds: (() -> [(songId: String, appleMusicId: String)])?
     /// Overridable gate, so tests can drive both branches without CloudKit.
     @ObservationIgnored var ownerCheck: () async -> Bool = { await OwnerIdentity.isOwner() }
+    /// Per-install USER OPT-IN for two-way sync (Settings ▸ Apple Music ▸ Favorites toggle) —
+    /// the parity fix: the write path uses the user's OWN Music-User-Token against their OWN
+    /// account, so anyone may enable it; the owner allowlist stays only as an always-on grant
+    /// (and the seed-export gate). Wired in PocketDJApp to `settings.favoritesTwoWaySync`.
+    @ObservationIgnored var userOptIn: () -> Bool = { false }
+
+    /// Whether two-way sync is EFFECTIVELY on for this install (owner grant or user opt-in).
+    var isTwoWayEnabled: Bool { isOwner == true || userOptIn() }
     /// Seed fetcher — overridable in tests. Returns the raw seed document bytes.
     @ObservationIgnored var fetchSeed: () async throws -> Data = {
         try await URLSession.shared.data(from: Config.favoritesSeedURL).0
@@ -77,7 +85,9 @@ final class FavoritesSyncService {
         if isOwner == nil { isOwner = await ownerCheck() }
 
         do {
-            if isOwner == true {
+            if isTwoWayEnabled {
+                // Owner grant OR the user's own opt-in — either way the push/pull writes only
+                // to the REQUESTING user's account with their own Music-User-Token.
                 try await push()
                 try await pull()
                 lastSyncedAtMs = Date().timeIntervalSince1970 * 1000
@@ -95,7 +105,7 @@ final class FavoritesSyncService {
     /// with no Apple Music identity (vinyl / My Digital / Studio), or when the account
     /// isn't currently writable — the entry simply stays pending.
     func pushNow(_ entry: FavoritesStore.Entry) async {
-        guard isOwner == true, entry.appleMusicId != nil else { return }
+        guard isTwoWayEnabled, entry.appleMusicId != nil else { return }
         do { try await push(only: entry) } catch { lastError = String(describing: error) }
     }
 

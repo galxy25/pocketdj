@@ -184,7 +184,7 @@ final class PlaylistWriteBackTests: XCTestCase {
     }
 
     /// A guess the transport had to make is recorded on the job AND surfaced on the queue, so
-    /// Settings ▸ Sync can show it. An invisible guess is how a song ends up in the wrong place.
+    /// Settings ▸ Apple Music can show it. An invisible guess is how a song ends up in the wrong place.
     func testResolutionNoteIsRecorded() async {
         let transport = StubTransport()
         transport.resolutions["Sap"] = "p.LIVE"
@@ -563,7 +563,7 @@ final class PlaylistWriteBackTests: XCTestCase {
         XCTAssertEqual(transport.writes.map(\.playlistId), ["p.FIRST"])
         XCTAssertEqual(queue.jobs.first?.resolutionNote?.contains("2"), true)
         XCTAssertEqual(queue.resolutionWarning, queue.jobs.first?.resolutionNote,
-                       "and it reaches the queue's durable warning so Settings ▸ Sync can show it")
+                       "and it reaches the queue's durable warning so Settings ▸ Apple Music can show it")
         XCTAssertNil(queue.lastError,
                      "a guess is not a failure — the write succeeded, so lastError stays clear")
     }

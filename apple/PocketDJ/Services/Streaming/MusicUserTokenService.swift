@@ -22,7 +22,7 @@ final class MusicUserTokenService {
         var errorDescription: String? {
             switch self {
             case .notEnabled:                return "Apple Music isn’t enabled in this build."
-            case .notAuthorized:             return "Grant Apple Music access first (Settings ▸ Streaming)."
+            case .notAuthorized:             return "Grant Apple Music access first (Settings ▸ Apple Music ▸ Credentials)."
             case .developerTokenFailed:      return "Couldn’t reach the Apple Music sync service."
             case .userTokenUnavailable(let m): return "Couldn’t get an Apple Music token: \(m)"
             }

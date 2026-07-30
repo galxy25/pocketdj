@@ -386,7 +386,7 @@ cues, albums, nested pockets untouched); everything else — the user's own adds
 reorders, extra chapters — lives outside both sets and **survives**. The snapshot then
 advances, and a no-change refresh persists nothing (no `save()`/`updatedAt` churn). Gates: the
 **global** `SettingsStore.syncConvertedPockets` toggle (default ON, checked at the wiring
-site; surfaced in **Settings ▸ Sync**, `SyncSettingsView`, alongside the Apple Music library
+site; surfaced in **Settings ▸ Apple Music ▸ Syncing**, `AppleMusicSettingsView`, alongside the Apple Music library
 re-index and a manual "Sync from sources now" pass), the **per-item** `sourceSyncEnabled` (the
 ⋯ menus' "Sync with source"), and the manual "Sync from source now" menu actions
 (`syncPocketFromSourceNow` / `syncPlaylistFromSourceNow`) which ignore both. An item whose

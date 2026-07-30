@@ -87,7 +87,7 @@ the same rip-on-demand transport the PWA mini-player uses, but the player itself
 
 **Play.** Tap **▶**. **Apple Music (Local) songs now stream straight from Apple
 Music** — when the app can find the track in the Apple Music catalog (and you've
-linked Apple Music in Settings, [Settings ▸ Streaming accounts — link Apple Music](native-and-system-integration.md#settings--streaming-accounts--link-apple-music)), tapping ▶ plays it instantly from your
+linked Apple Music in Settings, [Settings ▸ Apple Music ▸ Credentials — link Apple Music](native-and-system-integration.md#settings--streaming-accounts--link-apple-music)), tapping ▶ plays it instantly from your
 subscription via MusicKit, no ripping involved (the player shows a *"via Apple
 Music"* backend). Only when there's no catalog match (an obscure pressing, a
 region-gated or removed track) does it **degrade to ripping** — so a song *always*

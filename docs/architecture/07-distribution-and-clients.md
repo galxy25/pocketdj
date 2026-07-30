@@ -484,7 +484,7 @@ platform simply not being macOS.
 (`StreamingProvider.swift`, `AppleMusicProvider.swift`, plus the `SongRecognizer` /
 `StreamingSearch` seams),
 [`apple/PocketDJ/State/StreamingStore.swift`](../../apple/PocketDJ/State/StreamingStore.swift),
-[`apple/PocketDJ/Views/SettingsView+Streaming.swift`](../../apple/PocketDJ/Views/SettingsView+Streaming.swift),
+[`apple/PocketDJ/Views/AppleMusicSettingsView.swift`](../../apple/PocketDJ/Views/AppleMusicSettingsView.swift),
 and the OAuth/scene wiring in
 [`apple/PocketDJ/PocketDJApp.swift`](../../apple/PocketDJ/PocketDJApp.swift).
 
@@ -514,7 +514,7 @@ injected into the SwiftUI environment in `PocketDJApp` alongside the other store
    └──────┬────────┘
           │   real impl behind #if canImport(MusicKit), no-op #else stub
           ▼
- Settings ▸ "Streaming accounts"  (SettingsView+Streaming.swift)
+ Settings ▸ "Streaming accounts"  (AppleMusicSettingsView.swift)
    one StreamingAccountRow per provider:
      state.isLinked? → "Log out"   ·  available? → "Log in"   ·  else → "Not available"
 ```
@@ -535,7 +535,7 @@ until provisioned. Gating:
   provider chain in [Ch. 5 §8](./05-playback-and-rip-on-demand.md#8-stream-first-rip-last--the-native-provider-chain-playbackcoordinator)
   (it verifies the index's `appleMusicId`, Ch. 3 §1.1, then degrades to the rip server).
 
-The **Settings UI** (`SettingsView+Streaming.streamingSection`, header literal
+The **Settings UI** (`AppleMusicSettingsView.accountSection`, header literal
 **"Streaming accounts"**) renders one `StreamingAccountRow` per provider — **Log in** /
 **Log out** by `state`, or **"Not available"** with a developer note — sitting *beside*
 the URL-catalog "Data sources." A linked streaming account is thus an additional source

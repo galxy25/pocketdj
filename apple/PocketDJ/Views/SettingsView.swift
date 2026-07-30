@@ -702,7 +702,7 @@ struct SettingsView: View {
     /// catalog so newly-deployed tracks appear. Only meaningful once the AM source is loaded,
     /// and it leans on the SAME import server as the import features — so it lives right after
     /// that section and is gated on both `hasAppleMusic` (the source is present) and a server.
-    // (The Apple Music library sync UI moved to AppleMusicSettingsView — Settings ▸ Apple Music.)
+    // (The Apple Music library re-index is the private-mode "Get" verb in AppleMusicSettingsView.)
 
     private func testRip() async {
         ripTesting = true; ripStatus = nil

@@ -251,6 +251,11 @@ final class SettingsStore {
         get { appleMusicPrivateSyncRaw ?? !ripServerURL.isEmpty }
         set { appleMusicPrivateSyncRaw = newValue }
     }
+    /// TWO-WAY FAVORITES sync opt-in (Settings ▸ Apple Music ▸ Syncing ▸ Favorites): OFF by
+    /// default — ♥ stays in the PocketDJ profile. ON pushes/pulls the user's OWN hearts with
+    /// their OWN Music-User-Token (parity review: the old owner-allowlist gate made the verb a
+    /// permanent no-op for everyone but the library owner, who stays always-on regardless).
+    var favoritesTwoWaySync: Bool
     /// How many days of collection ADD history the Apple Music write-back BACKFILL re-drives
     /// (Settings ▸ Apple Music ▸ Syncing, and History ▸ Collection). Default 2, clamped to 1…90
     /// so a corrupt or out-of-range value can never make the backfill scan nothing (or the whole
@@ -339,6 +344,7 @@ final class SettingsStore {
         // Legacy migration: pre-rename check builds persisted "local"/"remote" — map to the Bool.
         self.appleMusicPrivateSyncRaw = data.appleMusicPrivateSync
             ?? data.appleMusicSyncMode.map { $0 == "local" }
+        self.favoritesTwoWaySync = data.favoritesTwoWaySync ?? false
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                              1), CollectionsStore.writeBackBackfillMaxDays)
         self.defaultRecentlyAddedCount = min(max(data.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -489,7 +495,8 @@ final class SettingsStore {
             writeBackBackfillDays: writeBackBackfillDays,
             defaultRecentlyAddedCount: defaultRecentlyAddedCount,
             appleMusicSyncMode: nil,   // legacy field — decode-only since the private-toggle rename
-            appleMusicPrivateSync: appleMusicPrivateSyncRaw)
+            appleMusicPrivateSync: appleMusicPrivateSyncRaw,
+            favoritesTwoWaySync: favoritesTwoWaySync)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -545,6 +552,7 @@ final class SettingsStore {
         // Mirror init's capture (reset clears ripServerURL, so the derived default is public) —
         // leaving this nil would revive the live-derivation behavior until the next launch.
         appleMusicPrivateSyncRaw = false
+        favoritesTwoWaySync = d.favoritesTwoWaySync ?? false
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                         1), CollectionsStore.writeBackBackfillMaxDays)
         defaultRecentlyAddedCount = min(max(d.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -648,6 +656,9 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (nil ⇒ captured at init: private iff an import
     /// server is configured). The Private-syncing toggle.
     var appleMusicPrivateSync: Bool?
+    /// Optional so older blobs still decode (coalesced to FALSE — two-way favorites sync is a
+    /// deliberate opt-in).
+    var favoritesTwoWaySync: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -693,5 +704,6 @@ struct SettingsData: Codable {
         writeBackBackfillDays: nil,
         defaultRecentlyAddedCount: nil,
         appleMusicSyncMode: nil,
-        appleMusicPrivateSync: nil)
+        appleMusicPrivateSync: nil,
+        favoritesTwoWaySync: nil)
 }

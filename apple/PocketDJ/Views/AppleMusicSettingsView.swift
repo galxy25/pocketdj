@@ -91,6 +91,13 @@ struct AppleMusicSettingsView: View {
             loadedHash = true
         }
         .onDisappear { settings.persist() }
+        // Backend-specific status lines must not outlive a Private-toggle flip (review catch:
+        // "Get: needs your server…" lingering under the public footer).
+        .onChange(of: settings.appleMusicPrivateSync) { _, _ in
+            collectionsStatus = []
+            syncStatus = nil
+            ripStatus = nil
+        }
     }
 
     // MARK: Sub-tabs
@@ -113,7 +120,9 @@ struct AppleMusicSettingsView: View {
     /// reconcile on Get, write-back backfill on Send), same knobs (the look-back stepper is
     /// always visible).
     private var collectionsBusy: Bool {
-        collectionsRunning || (playlistSync?.isSyncing ?? false)
+        // All three run states are APP-SCOPED (review catch: the view-local flag alone let a
+        // re-entered pane start an overlapping private Get mid-run).
+        collectionsRunning || (playlistSync?.isSyncing ?? false) || musicSync.isSyncing
     }
     private var collectionsAvailable: Bool {
         settings.appleMusicPrivateSync || (playlistSync?.isAvailable ?? false)
@@ -171,15 +180,14 @@ struct AppleMusicSettingsView: View {
                 Text(line).font(.caption).foregroundStyle(Theme.fgDim)
                     .accessibilityIdentifier("am-collections-status")
             }
-            // The public backend's live steps + audit history (renders only when it has run).
-            if !settings.appleMusicPrivateSync {
-                remoteProgressRows
-            }
+            // The device-token sync's live steps + audit history — BOTH modes (the push runs in
+            // private too, and running work must never be invisible).
+            remoteProgressRows
         } header: {
             Text("Collections")
         } footer: {
             Text(settings.appleMusicPrivateSync
-                ? "“Get” re-indexes the Apple Music library on your own PocketDJ server (also nightly at 04:00) and updates converted collections from their sources; “Send” re-drives your recent adds to the real Apple Music playlists. “Sync collections” does both."
+                ? "“Send” pushes your playlists into Apple Music with a token minted on this device (created only if missing; then only missing songs are added) and re-drives your recent adds. “Get” re-indexes the Apple Music library on your own PocketDJ server (also nightly at 04:00) and updates converted collections. “Sync collections” does both."
                 : "“Sync collections” pushes your playlists into Apple Music and imports Apple Music playlists back — a playlist is created only if it isn't there yet, and after that only its missing songs are added; an interrupted sync picks up where it left off. “Get” also updates converted collections; “Send” also re-drives recent adds. Runs on your device (requires an Apple Music subscription).")
         }
     }
@@ -198,7 +206,11 @@ struct AppleMusicSettingsView: View {
         collectionsStatus = []
         defer { collectionsRunning = false }
 
-        // Backend half.
+        // Backend halves. Only GET differs by the toggle (which library index refreshes:
+        // your server's Library.xml re-index vs the on-device MusicKit walk + WS2 pull).
+        // The device-token PUSH + reconcile runs in BOTH modes (parity review catch: it
+        // never needed a server, and without it a private user could never create a new
+        // Apple Music playlist or propagate removals/reorders).
         if settings.appleMusicPrivateSync {
             if direction != .push {
                 if !musicSync.hasServer {
@@ -212,7 +224,9 @@ struct AppleMusicSettingsView: View {
                     }
                 }
             }
-            // (Private ↑ has no backend half of its own — the shared Send below delivers adds.)
+            if direction != .pull, let playlistSync, playlistSync.isAvailable {
+                await playlistSync.syncNow(collections: collections, app: app, direction: .push)
+            }
         } else if let playlistSync, playlistSync.isAvailable {
             await playlistSync.syncNow(collections: collections, app: app, direction: direction)
             // PUBLIC Get also refreshes the on-device "Apple Music" library source — the
@@ -384,12 +398,20 @@ struct AppleMusicSettingsView: View {
         return parts.isEmpty ? (change.detail ?? "") : parts.joined(separator: " ")
     }
 
-    // MARK: Favorites ⇄ Apple Music — same verb both modes (owner bootstrap in Credentials)
+    // MARK: Favorites ⇄ Apple Music — one verb, opt-in toggle (owner bootstrap in Credentials)
 
     private var favoritesSyncSection: some View {
         Section {
-            LabeledContent("Two-way favorites sync", value: gateLine)
-                .accessibilityIdentifier("favorites-sync-gate")
+            // OWNER installs are always-on (the allowlist grant); everyone else gets a real
+            // opt-in TOGGLE (parity review: the old read-only gate line made "Sync favorites
+            // now" a permanently-enabled no-op for every non-owner).
+            if favoritesSync?.isOwner == true {
+                LabeledContent("Two-way favorites sync", value: "On (library owner)")
+                    .accessibilityIdentifier("favorites-sync-gate")
+            } else {
+                Toggle("Two-way favorites sync", isOn: $settings.favoritesTwoWaySync)
+                    .accessibilityIdentifier("favorites-sync-gate")
+            }
             if let error = favoritesSync?.lastError {
                 LabeledContent("Last error", value: error)
                     .font(.caption).foregroundStyle(Theme.danger)
@@ -409,17 +431,20 @@ struct AppleMusicSettingsView: View {
                     Label("Sync favorites now", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
-            .disabled(favoritesSync == nil || favoritesSync?.isSyncing == true)
+            // Never an enabled no-op: off (and non-owner) means there is nothing the button
+            // would sync, so it disables until the toggle is on.
+            .disabled(favoritesSync == nil || favoritesSync?.isSyncing == true
+                      || !(favoritesSync?.isOwner == true || settings.favoritesTwoWaySync))
             .accessibilityIdentifier("favorites-sync-now")
         } header: {
             Text("Favorites")
         } footer: {
             Text("""
-                 ♥ lives in your PocketDJ profile, in your own iCloud account. When two-way \
-                 favorites sync is ON for this install, ♥ on an Apple Music song also loves it \
-                 in Apple Music — that runs on this device in both sync modes. Vinyl, My \
-                 Digital, and Studio favorites have no Apple Music identity, so they never \
-                 leave this device's iCloud account.
+                 ♥ lives in your PocketDJ profile, in your own iCloud account. With two-way \
+                 favorites sync ON, ♥ on an Apple Music song also loves it in Apple Music — \
+                 using a token minted on this device against your own account, whether Private \
+                 syncing is on or off. Vinyl, My Digital, and Studio favorites have no Apple \
+                 Music identity, so they never leave this device's iCloud account.
 
                  UN-FAVORITING IS LOSSY ON APPLE MUSIC. Apple ships no delete counterpart to \
                  `POST /v1/me/favorites`, so removing a ♥ here deletes the love RATING (which is \
@@ -427,15 +452,6 @@ struct AppleMusicSettingsView: View {
                  stays in Apple Music's "Favorite Songs" until you remove it there yourself.
                  """)
         }
-    }
-
-    private var gateLine: String {
-        // Flattened deliberately: `favoritesSync?.isOwner` is a DOUBLE optional (no service
-        // vs. gate unresolved), and both of those mean the same thing to the reader here.
-        // Values deliberately can't be misread as the pane's Private-syncing toggle (a review
-        // catch: "Local to this profile" under a backend switch read as a mode echo).
-        guard let isOwner = favoritesSync?.isOwner ?? nil else { return "Checking…" }
-        return isOwner ? "On" : "Off — ♥ stays in this profile"
     }
 
     // MARK: Automatic — converted collections follow their sources

@@ -249,8 +249,12 @@ final class PlaylistWriteBack {
 
     /// Only Apple Music source playlists have a real upstream to write back to. A vinyl /
     /// "My Digital" / Imported source playlist duplicates and adds locally, full stop.
+    /// BOTH Apple Music sources qualify (the parity review's biggest catch): the private
+    /// catalog's "Apple Music (Local)" AND the public on-device "Apple Music" library index —
+    /// the write-back transport is on-device MusicKit either way, so a public user's mirror
+    /// playlists are exactly as writable as the private catalog's.
     nonisolated static func isAppleMusicSource(_ sourceName: String) -> Bool {
-        sourceName == Config.appleMusicSourceName
+        sourceName == Config.appleMusicSourceName || sourceName == AppleMusicLibraryStore.sourceName
     }
 
     // MARK: - Enqueue
@@ -276,7 +280,7 @@ final class PlaylistWriteBack {
         guard !amId.isEmpty || (!t.isEmpty && !ar.isEmpty) else { return nil }
         // A prior TERMINAL `.unresolvable` verdict for this (playlist, song): re-searching the
         // catalog can't conjure a match, so an identity-only re-enqueue (still no store id) is a
-        // no-op — this is what keeps a repeated "Send my adds" backfill from re-queueing and
+        // no-op — this is what keeps a repeated "Send to Apple Music" backfill from re-queueing and
         // re-searching un-matchable songs forever (and the persisted queue from growing unbounded).
         // BUT if we NOW carry a real catalog id (the nightly crawl resolved it since), supersede:
         // drop the stale verdict so the song can finally deliver and its "not backed up" badge clears.

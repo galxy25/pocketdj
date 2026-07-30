@@ -9,7 +9,7 @@ import SwiftUI
 /// entry; unreachable → continue safely with sync enabled but nothing written). The
 /// LWW-clobber hazards here are the R1–R5 review notes — every path either restores
 /// BEFORE any store writes, or writes nothing identity-shaped at all.
-/// Stage 2 — Apple Music sign-in (the Settings ▸ Streaming login action, invited).
+/// Stage 2 — Apple Music sign-in (the Settings ▸ Apple Music ▸ Credentials login action, invited).
 /// Stage 3 — global sources with user-visible names: Vinyl / Digital / Streaming.
 struct OnboardingView: View {
     @Environment(OnboardingStore.self) private var onboarding
