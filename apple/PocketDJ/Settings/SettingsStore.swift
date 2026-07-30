@@ -256,6 +256,21 @@ final class SettingsStore {
     /// their OWN Music-User-Token (parity review: the old owner-allowlist gate made the verb a
     /// permanent no-op for everyone but the library owner, who stays always-on regardless).
     var favoritesTwoWaySync: Bool
+    /// DAILY AUTO-SYNC of Apple Music collections (Levi 2026-07-29): ON by default — the sync
+    /// must not require sitting on the Settings screen. Fires once per day at
+    /// `amAutoSyncMinutes` local time (launch/foreground/periodic catch-up; a missed slot runs
+    /// at the next opportunity).
+    var amAutoSyncEnabled: Bool
+    /// Minutes past local midnight for the daily auto-sync (default 4:20 PM = 980). Clamped.
+    var amAutoSyncMinutes: Int {
+        didSet {
+            let c = min(max(amAutoSyncMinutes, 0), 1439)
+            if c != amAutoSyncMinutes { amAutoSyncMinutes = c }
+        }
+    }
+    /// Epoch ms of the last auto-sync CLAIM (stamped before the pass runs — the single-flight
+    /// across triggers). nil = never.
+    var lastAMAutoSyncAtMs: Double?
     /// How many days of collection ADD history the Apple Music write-back BACKFILL re-drives
     /// (Settings ▸ Apple Music ▸ Syncing, and History ▸ Collection). Default 2, clamped to 1…90
     /// so a corrupt or out-of-range value can never make the backfill scan nothing (or the whole
@@ -345,6 +360,9 @@ final class SettingsStore {
         self.appleMusicPrivateSyncRaw = data.appleMusicPrivateSync
             ?? data.appleMusicSyncMode.map { $0 == "local" }
         self.favoritesTwoWaySync = data.favoritesTwoWaySync ?? false
+        self.amAutoSyncEnabled = data.amAutoSyncEnabled ?? true
+        self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
+        self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                              1), CollectionsStore.writeBackBackfillMaxDays)
         self.defaultRecentlyAddedCount = min(max(data.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -496,7 +514,10 @@ final class SettingsStore {
             defaultRecentlyAddedCount: defaultRecentlyAddedCount,
             appleMusicSyncMode: nil,   // legacy field — decode-only since the private-toggle rename
             appleMusicPrivateSync: appleMusicPrivateSyncRaw,
-            favoritesTwoWaySync: favoritesTwoWaySync)
+            favoritesTwoWaySync: favoritesTwoWaySync,
+            amAutoSyncEnabled: amAutoSyncEnabled,
+            amAutoSyncMinutes: amAutoSyncMinutes,
+            lastAMAutoSyncAtMs: lastAMAutoSyncAtMs)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -553,6 +574,9 @@ final class SettingsStore {
         // leaving this nil would revive the live-derivation behavior until the next launch.
         appleMusicPrivateSyncRaw = false
         favoritesTwoWaySync = d.favoritesTwoWaySync ?? false
+        amAutoSyncEnabled = d.amAutoSyncEnabled ?? true
+        amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
+        lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
                                         1), CollectionsStore.writeBackBackfillMaxDays)
         defaultRecentlyAddedCount = min(max(d.defaultRecentlyAddedCount ?? Self.recentlyAddedDefaultCount,
@@ -659,6 +683,13 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced to FALSE — two-way favorites sync is a
     /// deliberate opt-in).
     var favoritesTwoWaySync: Bool?
+    /// Optional so older blobs still decode (coalesced to TRUE — daily auto-sync is on unless
+    /// turned off).
+    var amAutoSyncEnabled: Bool?
+    /// Optional so older blobs still decode (coalesced to 980 = 4:20 PM local).
+    var amAutoSyncMinutes: Int?
+    /// Optional — epoch ms of the last auto-sync claim.
+    var lastAMAutoSyncAtMs: Double?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -705,5 +736,8 @@ struct SettingsData: Codable {
         defaultRecentlyAddedCount: nil,
         appleMusicSyncMode: nil,
         appleMusicPrivateSync: nil,
-        favoritesTwoWaySync: nil)
+        favoritesTwoWaySync: nil,
+        amAutoSyncEnabled: nil,
+        amAutoSyncMinutes: nil,
+        lastAMAutoSyncAtMs: nil)
 }

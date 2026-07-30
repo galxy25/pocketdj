@@ -66,6 +66,27 @@ struct PocketDJApp: App {
         // incremental after the first build (sorted-by-added, early-stop), so this is a
         // handful of rows on a normal foreground. Gated inside the runner (public + authorized).
         Task { await app.refreshAppleMusicLibrary?() }
+        // AUTO-RESUME an interrupted collections sync + the daily scheduled pass — the sync
+        // must never require sitting on the Settings screen (Levi 2026-07-29).
+        Task { await autoSyncIfDue() }
+    }
+
+    /// Resume an interrupted sync, then run the DAILY auto-sync if its local fire time has
+    /// passed and today's pass hasn't run. The claim (lastAMAutoSyncAtMs) is stamped BEFORE the
+    /// pass so concurrent triggers (launch + foreground + periodic tick) single-flight.
+    @MainActor private func autoSyncIfDue() async {
+        guard onboarding.isComplete, app.state == .loaded else { return }
+        await playlistSync.resumeIfInterrupted(collections: collections, app: app)
+        guard settings.amAutoSyncEnabled,
+              AppleMusicAutoSync.isDue(nowMs: Date().timeIntervalSince1970 * 1000,
+                                       lastRunMs: settings.lastAMAutoSyncAtMs,
+                                       minutesOfDay: settings.amAutoSyncMinutes) else { return }
+        settings.lastAMAutoSyncAtMs = Date().timeIntervalSince1970 * 1000
+        settings.persist()
+        await AppleMusicAutoSync.runFullPass(settings: settings, collections: collections,
+                                             activity: collectionActivity, app: app,
+                                             musicSync: musicSync, writeBack: playlistWriteBack,
+                                             playlistSync: playlistSync)
     }
 
     @State private var settings: SettingsStore
@@ -992,6 +1013,15 @@ struct PocketDJApp: App {
                 // catalog ids against the catalog — running it earlier would ask about an
                 // empty id space and pull nothing.
                 .onChange(of: app.state) { _, _ in syncFavoritesIfReady() }
+                // Periodic while-active tick for the DAILY auto-sync: an app left open across
+                // its fire time (default 4:20 PM) still runs the pass — launch/foreground alone
+                // would miss it. 15-min cadence; every check is cheap and single-flighted.
+                .task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 900 * 1_000_000_000)
+                        await autoSyncIfDue()
+                    }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .active:

@@ -460,13 +460,45 @@ struct AppleMusicSettingsView: View {
     /// provider, so its pane owns this. The manual pass rides the Collections "Get" verb.
     private var convertedAutoSection: some View {
         Section {
+            // DAILY AUTO-SYNC (Levi 2026-07-29: "it's ridiculous to think a user will just sit
+            // on the sync screen every day") — the full ⇅ pass runs unattended once a day at the
+            // chosen local time (launch/foreground/periodic catch-up; interrupted runs
+            // auto-resume independently).
+            Toggle("Sync daily", isOn: $settings.amAutoSyncEnabled)
+                .accessibilityIdentifier("am-auto-sync-enabled")
+            if settings.amAutoSyncEnabled {
+                DatePicker("At", selection: autoSyncTimeBinding, displayedComponents: .hourAndMinute)
+                    .accessibilityIdentifier("am-auto-sync-time")
+                if let last = settings.lastAMAutoSyncAtMs {
+                    LabeledContent("Last auto-sync", value: Date(timeIntervalSince1970: last / 1000)
+                        .formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .accessibilityIdentifier("am-auto-sync-last")
+                }
+            }
             Toggle("Converted collections follow their sources", isOn: $settings.syncConvertedPockets)
                 .accessibilityIdentifier("collections-source-sync")
         } header: {
             Text("Automatic")
         } footer: {
-            Text("\(linkedCount) linked item\(linkedCount == 1 ? "" : "s"). A pocket converted from — or a playlist duplicated from — a source playlist follows that playlist as the catalog updates: songs added there appear here, songs removed there are removed here; your own edits stay. Runs on every catalog refresh while on; “Get from Apple Music” runs a pass immediately. Freeze a single item from its detail-view ▸ menu.")
+            Text("Daily sync runs the full “Sync collections” pass at the chosen time — when PocketDJ is open, or the next time you return after it. \(linkedCount) linked item\(linkedCount == 1 ? "" : "s") also follow their source playlists on every catalog refresh while the toggle is on; “Get from Apple Music” runs a pass immediately. Freeze a single item from its detail-view ▸ menu.")
         }
+    }
+
+    /// Minutes-past-midnight ⇄ Date bridge for the hour-and-minute picker.
+    private var autoSyncTimeBinding: Binding<Date> {
+        Binding<Date>(
+            get: {
+                let cal = Calendar.current
+                var comps = cal.dateComponents([.year, .month, .day], from: Date())
+                comps.hour = settings.amAutoSyncMinutes / 60
+                comps.minute = settings.amAutoSyncMinutes % 60
+                return cal.date(from: comps) ?? Date()
+            },
+            set: { date in
+                let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+                settings.amAutoSyncMinutes = (comps.hour ?? 16) * 60 + (comps.minute ?? 20)
+            })
     }
 
     /// How many collections carry source provenance (the population the automatic sync watches).

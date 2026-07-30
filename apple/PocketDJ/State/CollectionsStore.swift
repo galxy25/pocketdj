@@ -843,8 +843,20 @@ final class CollectionsStore {
         let snapSet = Set(snapshot)
         let removals = snapSet.subtracting(srcIds)
         let current = Set(p.songIds)
-        let additions = srcIds.filter { !snapSet.contains($0) && !current.contains($0) }
-        var newSongIds = p.songIds.filter { !removals.contains($0) }
+        // NAME+ARTIST duplicate gate (Levi 2026-07-29): a source add whose recording already
+        // sits in the pocket under a DIFFERENT id (indexed twin, amlib twin, rip) is skipped —
+        // "we shouldn't add a new song to a collection … if there is already a song with that
+        // same name and artist".
+        let keptAfterRemovals = p.songIds.filter { !removals.contains($0) }
+        var presentKeys = Set(keptAfterRemovals.compactMap { sid in
+            app?.songsById[sid].map { SongDuplicateJudge.key(name: $0.name, artist: $0.artist) }
+        })
+        let additions = srcIds.filter { sid in
+            guard !snapSet.contains(sid), !current.contains(sid) else { return false }
+            guard let song = app?.songsById[sid] else { return true }
+            return presentKeys.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted
+        }
+        var newSongIds = keptAfterRemovals
         newSongIds.append(contentsOf: additions)
         guard newSongIds != p.songIds || srcIds != snapshot else { return false }
         mutatePocket(id) {
@@ -877,7 +889,18 @@ final class CollectionsStore {
             }
         }
         collect(pl.sequences)
-        let additions = srcIds.filter { !Set(snapshot).contains($0) && !currentSongIds.contains($0) }
+        // NAME+ARTIST duplicate gate — the playlist twin of reconcilePocket's (a source add whose
+        // recording already sits here under a different id is skipped; removals are pruned from a
+        // separate pass below, and a removed id's key no longer guards once pruned next sync).
+        let snapSetPl = Set(snapshot)
+        var presentKeysPl = Set(currentSongIds.subtracting(removals).compactMap { sid in
+            app?.songsById[sid].map { SongDuplicateJudge.key(name: $0.name, artist: $0.artist) }
+        })
+        let additions = srcIds.filter { sid in
+            guard !snapSetPl.contains(sid), !currentSongIds.contains(sid) else { return false }
+            guard let song = app?.songsById[sid] else { return true }
+            return presentKeysPl.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted
+        }
 
         var removedCount = 0
         func prune(_ nodes: [PlaylistNode]) -> [PlaylistNode] {

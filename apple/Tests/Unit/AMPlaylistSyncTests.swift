@@ -299,6 +299,94 @@ final class AMPlaylistSyncTests: XCTestCase {
         XCTAssertEqual(imports.map(\.id), ["p.3", "p.4"])   // fullest comfort-zone copy + Fresh
     }
 
+    /// The NAME+ARTIST duplicate judge: tight by doctrine (version markers keep cuts distinct),
+    /// insensitive to case/diacritics/quotes, borderline = same title + different artist string.
+    func testDuplicateJudge() {
+        XCTAssertTrue(SongDuplicateJudge.isExactDuplicate(
+            name: "Praise The Lord (Da Shine) [feat. Skepta]", artist: "A$AP Rocky",
+            name: "praise the lord (da shine) feat. skepta", artist: "a$ap rocky"))
+        // Version markers must keep cuts distinct.
+        XCTAssertFalse(SongDuplicateJudge.isExactDuplicate(
+            name: "Sap (Live)", artist: "A", name: "Sap", artist: "A"))
+        // Same title, different artist string ⇒ borderline (LLM territory), NOT auto-dup.
+        XCTAssertTrue(SongDuplicateJudge.isBorderline(
+            name: "range brothers", artist: "Baby Keem & Kendrick Lamar",
+            name: "range brothers", artist: "Baby Keem feat. Kendrick Lamar"))
+        XCTAssertFalse(SongDuplicateJudge.isBorderline(
+            name: "A", artist: "X", name: "B", artist: "X"))
+    }
+
+    /// The push payload sends ONE entry per recording even when two catalog ids carry the same
+    /// name+artist (the duplicate-flood killer, client half) — and trackMeta rides along for the
+    /// server's remote-side gate.
+    func testResolveOutgoingDedupesByNameArtist() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        // A second id for the SAME recording (song(_:) names the song after its id, so give
+        // both explicit metadata via the JSON idiom).
+        let twin = try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization.data(
+            withJSONObject: ["id": "s2", "name": "s1", "artist": "A", "appleMusicId": "999"]))
+        app.injectDiscoverAdd(twin)
+        let collections = CollectionsStore(fileURL: tempURL("namededupe"))
+        collections.app = app
+        _ = collections.createPlaylist("Mix", songIds: ["s1", "s2"])
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertEqual(out.first?.trackCatalogIds, ["111"])          // twin under id 999 dropped
+        XCTAssertEqual(out.first?.trackMeta.map(\.id), ["111"])      // meta rides along
+        XCTAssertEqual(out.first?.trackMeta.first?.n, "s1")
+    }
+
+    /// The source-follow pull skips an add whose recording already sits in the pocket under a
+    /// DIFFERENT id — "we shouldn't add a new song … if there is already a song with that same
+    /// name and artist" (the collection-side gate).
+    func testSourceFollowSkipsNameArtistTwin() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("local1", am: "111"))
+        let remoteTwin = try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization.data(
+            withJSONObject: ["id": "amlib_x", "name": "local1", "artist": "A", "appleMusicId": "999"]))
+        app.injectDiscoverAdd(remoteTwin)
+        let collections = CollectionsStore(fileURL: tempURL("followtwin"))
+        collections.app = app
+        let source = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_t", name: "twins", songIds: ["local1"]),
+            sourceName: Config.appleMusicSourceName)
+        let pocket = collections.convertToPocket(source: source)
+
+        // The source gains amlib_x — the SAME recording as local1 under another id.
+        let grown = SourcePlaylist(
+            playlist: IndexPlaylist(id: "pl_t", name: "twins", songIds: ["local1", "amlib_x"]),
+            sourceName: Config.appleMusicSourceName)
+        _ = collections.syncConvertedCollections(with: [grown])
+        XCTAssertEqual(collections.pocket(pocket.id)?.songIds, ["local1"])   // twin NOT added
+    }
+
+    /// The daily auto-sync due-check: fires once per local day at the chosen minute, catches up
+    /// after a missed slot, and never double-fires.
+    func testAutoSyncIsDue() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        func ms(_ y: Int, _ mo: Int, _ d: Int, _ h: Int, _ mi: Int) -> Double {
+            var c = DateComponents(); c.year = y; c.month = mo; c.day = d; c.hour = h; c.minute = mi
+            return cal.date(from: c)!.timeIntervalSince1970 * 1000
+        }
+        let fire = AppleMusicAutoSync.defaultMinutes          // 16:20
+        // Before today's fire: not due.
+        XCTAssertFalse(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 12, 0), lastRunMs: nil,
+                                                minutesOfDay: fire, calendar: cal))
+        // After the fire, never ran: due.
+        XCTAssertTrue(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 16, 30), lastRunMs: nil,
+                                               minutesOfDay: fire, calendar: cal))
+        // Ran today after the fire: not due again.
+        XCTAssertFalse(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 18, 0),
+                                                lastRunMs: ms(2026, 7, 30, 16, 21),
+                                                minutesOfDay: fire, calendar: cal))
+        // Ran yesterday: due once today's fire passes (missed-slot catch-up included).
+        XCTAssertTrue(AppleMusicAutoSync.isDue(nowMs: ms(2026, 7, 30, 23, 0),
+                                               lastRunMs: ms(2026, 7, 29, 16, 25),
+                                               minutesOfDay: fire, calendar: cal))
+    }
+
     /// A sync report round-trips through Codable (the persisted audit-trail format).
     func testSyncReportCodableRoundTrip() throws {
         let report = PlaylistAppleMusicSync.SyncReport(

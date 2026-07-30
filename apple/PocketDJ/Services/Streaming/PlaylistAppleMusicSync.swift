@@ -145,18 +145,24 @@ final class PlaylistAppleMusicSync {
         var indexByKey: [String: Int] = [:]
         var out: [AMPlaylistSyncClient.OutgoingPlaylist] = []
         var seenByKey: [String: Set<String>] = [:]
+        var seenNameByKey: [String: Set<String>] = [:]
         func fold(name: String, songIds: [String]) {
-            let catalogIds = songIds.compactMap { app.songsById[$0]?.appleMusicId }
-            guard !catalogIds.isEmpty else { return }
             let key = normName(name)
             if indexByKey[key] == nil {
                 indexByKey[key] = out.count
                 seenByKey[key] = []
+                seenNameByKey[key] = []
                 out.append(.init(name: name, description: nil, trackCatalogIds: []))
             }
             let i = indexByKey[key]!
-            for id in catalogIds where seenByKey[key]!.insert(id).inserted {
-                out[i].trackCatalogIds.append(id)
+            for songId in songIds {
+                guard let song = app.songsById[songId], let catalogId = song.appleMusicId else { continue }
+                guard seenByKey[key]!.insert(catalogId).inserted else { continue }
+                // NAME+ARTIST duplicate gate (Levi 2026-07-29): the same recording under two
+                // catalog ids must push once — the duplicate-flood killer, client half.
+                guard seenNameByKey[key]!.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted else { continue }
+                out[i].trackCatalogIds.append(catalogId)
+                out[i].trackMeta.append(.init(id: catalogId, n: song.name, a: song.artist))
             }
         }
         // Per-collection DIRECTION gate (Levi 2026-07-29): "Get only"/"Off" collections never
@@ -211,6 +217,16 @@ final class PlaylistAppleMusicSync {
     /// "↓ Get from Apple Music" buttons map straight onto these; the primary button is `.both`.
     enum Direction {
         case both, push, pull
+    }
+
+    /// AUTO-RESUME (Levi 2026-07-29: "async and auto resume"): if the last run never completed
+    /// (the persisted RunSnapshot hydrated with `completed == false` — the app was killed
+    /// mid-sync), silently pick it back up: the client re-attaches to the stored server job and
+    /// every half of the engine is idempotent, so re-running is safe. Called at launch/foreground
+    /// (PocketDJApp) — the user never has to babysit the sync screen.
+    func resumeIfInterrupted(collections: CollectionsStore, app: AppModel) async {
+        guard !isSyncing, !currentRunCompleted, currentRunStartedMs != nil else { return }
+        await syncNow(collections: collections, app: app, direction: .both)
     }
 
     func syncNow(collections: CollectionsStore, app: AppModel, direction: Direction = .both) async {
@@ -313,7 +329,13 @@ final class PlaylistAppleMusicSync {
             }
             var imported = 0
             for r in Self.newImports(remote: remote, existingNames: existingNames) {
-                let localIds = r.trackCatalogIds.compactMap { localByAppleMusicId[$0] }
+                // NAME+ARTIST duplicate gate on the way IN too: two remote ids resolving to two
+                // local twins of the same recording import once.
+                var seenSongKeys = Set<String>()
+                let localIds = r.trackCatalogIds.compactMap { localByAppleMusicId[$0] }.filter { id in
+                    guard let song = app.songsById[id] else { return true }
+                    return seenSongKeys.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted
+                }
                 _ = collections.createPlaylist(r.name, songIds: localIds,
                                                source: mirrorByName[Self.normName(r.name)])
                 changes.append(.init(kind: "imported", name: r.name,
