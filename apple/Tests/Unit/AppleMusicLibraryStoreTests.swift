@@ -106,8 +106,12 @@ final class AppleMusicLibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.songs.count, 2)                    // entry 1 deduped
         XCTAssertEqual(store.lastAddedMs, 2000)
 
-        store.remove(ids: ["amlib_i.s1"])
+        // supersede drops the row AND carries its add-time forward keyed by the surviving twin.
+        store.supersede(pairs: [(from: "amlib_i.s1", to: "sng_indexed")])
         XCTAssertEqual(store.songs.map(\.songId), ["amlib_i.s2"])
         XCTAssertTrue(store.albums.isEmpty)                     // emptied album dropped
+        XCTAssertEqual(store.supersededAddedAt["sng_indexed"], 1000)  // user's add-time preserved
+        // Survives reload (persisted in the Document).
+        XCTAssertEqual(AppleMusicLibraryStore(fileURL: url).supersededAddedAt["sng_indexed"], 1000)
     }
 }

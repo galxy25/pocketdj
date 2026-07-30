@@ -537,11 +537,19 @@ struct BrowseView: View {
                 // ForEach stays small no matter how large the catalog is.
                 let items = browse.visibleResults(collections, favorites: favorites, profileLocal: profileLocal)
                 let page = BrowsePaging.page(items, visible: liveVisible)
-                resultsHeader(items.count)
-                switch browse.kind {
-                case .album:  albumResults(page, fullCount: items.count)
-                case .song:   songResults(page, fullCount: items.count)
-                case .artist: artistResults(page, fullCount: items.count)
+                // Zero-source, nothing-injected boot (the zero-pick / not-yet-signed-in public
+                // install) lands here with an EMPTY catalog and .loaded — give it a call to
+                // action instead of a bare "0 albums" (review catch; replaces the old .failed
+                // screen this configuration used to hit).
+                if app.albums.isEmpty && app.songs.isEmpty && browse.query.isEmpty {
+                    emptyCatalogGuidance
+                } else {
+                    resultsHeader(items.count)
+                    switch browse.kind {
+                    case .album:  albumResults(page, fullCount: items.count)
+                    case .song:   songResults(page, fullCount: items.count)
+                    case .artist: artistResults(page, fullCount: items.count)
+                    }
                 }
             }
         }
@@ -749,6 +757,27 @@ struct BrowseView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
+    }
+
+    /// The zero-source empty catalog: point the user at their two ways to fill it — sign into
+    /// Apple Music (their own library indexes automatically) or add shared catalogs in Settings.
+    private var emptyCatalogGuidance: some View {
+        ContentUnavailableView {
+            Label("Your catalog is empty", systemImage: "music.note.list")
+        } description: {
+            Text(streaming.appleMusicProvider?.state.isLinked == true
+                 ? "Your Apple Music library is still indexing, or you have no catalogs enabled. Add shared catalogs in Settings ▸ Sources."
+                 : "Sign into Apple Music to browse your own library, or add shared catalogs in Settings ▸ Sources.")
+        } actions: {
+            if streaming.appleMusicProvider?.state.isLinked != true {
+                Button("Sign into Apple Music") { streaming.appleMusicProvider?.login() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("empty-catalog-signin")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
+        .accessibilityIdentifier("empty-catalog-guidance")
     }
 }
 

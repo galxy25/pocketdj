@@ -445,10 +445,13 @@ final class SettingsStore {
     /// Vinyl must REMOVE it — one-tap loaders alone can't express that. Built-ins are
     /// matched by name OR index URL (the `hasMyDigital` doctrine); any custom source the
     /// user somehow already has is left untouched. At least one must be chosen — with
-    /// zero enabled sources the catalog load hard-fails (AppModel.fetchIndexes throws) —
-    /// enforced here as a last line behind the UI's disabled Continue.
+    /// Zero picks are legitimate since the zero-source boot fix: AppModel.fetchIndexes returns []
+    /// with no enabled sources and the catalog builds from injection sources alone (the user's own
+    /// Apple Music library, Discover adds, imports) — the own-library-only public configuration.
     func applyOnboardingSources(vinyl: Bool, digital: Bool, streaming: Bool) {
-        guard vinyl || digital || streaming else { return }
+        // ZERO picks are legitimate since the zero-source catalog boot fix: the catalog builds
+        // from injection sources alone (the user's own on-device Apple Music library, Discover
+        // adds, imports) — an own-library-only install is exactly the public-user configuration.
         let builtins: [(want: Bool, name: String, url: String)] = [
             (vinyl, "My Vinyl", Config.indexURL.absoluteString),
             (digital, Config.digitalSourceName, Config.digitalIndexURL.absoluteString),

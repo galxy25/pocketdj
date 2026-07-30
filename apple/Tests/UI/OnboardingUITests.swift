@@ -42,18 +42,21 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.el("onboarding-continue").waitForExistence(timeout: 5))
         app.el("onboarding-continue").tap()      // skip Apple Music
 
-        // Stage 3 — all three sources preselected; untick all ⇒ Continue disabled.
+        // Stage 3 — all three shared catalogs preselected; unticking ALL is now allowed (the
+        // own-library-only public configuration) and the note explains what a zero-pick means.
         let vinyl = app.switches["onboarding-source-vinyl"].firstMatch
         XCTAssertTrue(vinyl.waitForExistence(timeout: 5), "stage 3 should show source cards")
         let digital = app.switches["onboarding-source-digital"].firstMatch
         let streaming = app.switches["onboarding-source-streaming"].firstMatch
         vinyl.tap(); digital.tap(); streaming.tap()
-        XCTAssertTrue(app.any("onboarding-zero-sources").waitForExistence(timeout: 5),
-                      "zero sources should warn")
-        XCTAssertFalse(app.el("onboarding-continue").isEnabled,
-                       "Continue must be disabled with no sources")
+        let note = app.any("onboarding-own-library-note")
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        XCTAssertTrue(note.label.contains("No shared catalogs"),
+                      "zero picks should explain the own-library-only mode")
+        XCTAssertTrue(app.el("onboarding-continue").isEnabled,
+                      "Continue stays enabled with zero shared catalogs")
 
-        // Re-tick vinyl and finish.
+        // Re-tick vinyl and finish (the fixture flow still exercises a catalog source).
         vinyl.tap()
         XCTAssertTrue(app.el("onboarding-continue").isEnabled)
         app.el("onboarding-continue").tap()

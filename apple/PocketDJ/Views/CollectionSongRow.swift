@@ -378,6 +378,9 @@ struct RowTransport: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(BurnStore.self) private var burns
     @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
+    /// For the streamability check only (the row carries a lean id/title/artist tuple —
+    /// `appleMusicId` lives on the catalog row).
+    @Environment(AppModel.self) private var app
     let song: (id: String, title: String, artist: String)
     var startMs: Int?
     /// SongDetail-only: when set AND this song is already stemmed, tapping the stem glyph runs
@@ -426,8 +429,15 @@ struct RowTransport: View {
     /// A burned local file exists for this song (device-mode playable with no server).
     private var hasBurnedFile: Bool { burns.localURL(forSong: song.id) != nil }
     /// Actionable when already ripped, there's a (configured) server to rip it, or a burned
-    /// local file is present (so device mode can play it even with no rip server).
+    /// local file is present (so device mode can play it even with no rip server). Gates the
+    /// DOWNLOAD/stemify halves — streaming can't satisfy those.
     private var canAct: Bool { cached || rips.hasServer || hasBurnedFile }
+    /// The ▶ additionally enables for a STREAMABLE row (catalog id + Apple Music ready) — the
+    /// public-user audit fix: a user's own "Apple Music" library rows play via their
+    /// subscription with no rip server at all (doPlay already routes through the coordinator).
+    private var canPlay: Bool {
+        canAct || (app.songsById[song.id]?.appleMusicId != nil && coordinator.canStreamAppleMusic)
+    }
 
     /// True when THIS row's song is the live now-playing one — on EITHER backend: the rip
     /// path (keyed off `RipsStore.nowPlaying`, unchanged) OR Apple Music streaming (keyed
@@ -454,8 +464,8 @@ struct RowTransport: View {
                         Image(systemName: rowPlayIcon).font(.caption)
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle((canAct || isNowPlaying) ? Theme.accent : Theme.fgDim)
-                    .disabled((!canAct && !isNowPlaying) || busy != nil)
+                    .foregroundStyle((canPlay || isNowPlaying) ? Theme.accent : Theme.fgDim)
+                    .disabled((!canPlay && !isNowPlaying) || busy != nil)
                     .accessibilityIdentifier("row-play-\(song.id)")
 
                     Button { doDownload() } label: {

@@ -202,7 +202,14 @@ final class AppModel {
         let amLibPlaylists = appleMusicLibrary?.playlists ?? []
         let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)])? in
             let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
-            guard !cached.isEmpty else { return nil }
+            // Seed when ANY content exists: cached URL catalogs OR the injection sources — a
+            // public user with zero URL sources still gets their own library/adds/imports on
+            // screen instantly (the audit's confirmed-critical fix; injections must never go
+            // dark because no catalog URL is configured or cached).
+            let hasSynthetic = !provisional.isEmpty || !provisionalAlbums.isEmpty
+                || !importedS.isEmpty || !importedA.isEmpty || !profileSongs.isEmpty
+                || !amLibSongs.isEmpty || !amLibPlaylists.isEmpty
+            guard !cached.isEmpty || hasSynthetic else { return nil }
             let (indexes, discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs) = AppModel.withProvisionalSources(
                 discover: provisional, discoverAlbums: provisionalAlbums,
                 importedSongs: importedS, importedAlbums: importedA,
@@ -324,7 +331,7 @@ final class AppModel {
         if !discover.isEmpty { discoverAdds?.remove(ids: discover.map(\.from)) }
         if !imported.isEmpty { importedSongs?.remove(songIds: imported.map(\.from)) }
         if !discoverAlbums.isEmpty { discoverAdds?.remove(albumIds: discoverAlbums.map(\.from)) }
-        if !amLibrary.isEmpty { appleMusicLibrary?.remove(ids: amLibrary.map(\.from)) }
+        if !amLibrary.isEmpty { appleMusicLibrary?.supersede(pairs: amLibrary) }
         let all = discover + imported + amLibrary
         guard !all.isEmpty else { return }
         onDiscoverSupersede?(all)
@@ -496,8 +503,21 @@ final class AppModel {
     func recentlyAddedSongIds(limit: Int) -> [String] {
         guard limit > 0 else { return [] }
         var addedAt: [String: Double] = [:]
+        // PUBLIC-mode scope (audit fix): catalog `dateAdded` rows from shared URL catalogs are
+        // the CATALOG OWNER's library history, not this user's — count only rows from the user's
+        // own on-device "Apple Music" source there. Private mode (the owner) keeps everything;
+        // so does a nil-settings host (tests/fixtures — mode unknown ⇒ don't filter).
+        let filterToOwnLibrary = settings?.appleMusicPrivateSync == false
         for (id, song) in songsById {
-            if let d = song.dateAdded, d > 0, d > (addedAt[id] ?? 0) { addedAt[id] = d }
+            guard let d = song.dateAdded, d > 0, d > (addedAt[id] ?? 0) else { continue }
+            if filterToOwnLibrary, songSourceById[id] != AppleMusicLibraryStore.sourceName { continue }
+            addedAt[id] = d
+        }
+        // The user's OWN add-times for library songs that SUPERSEDED onto a shared-catalog twin
+        // (review catch): keyed to the surviving twin id, they intentionally bypass the source
+        // filter above — it IS the user's own add, just re-homed onto the indexed row.
+        for (id, ms) in appleMusicLibrary?.supersededAddedAt ?? [:] where ms > (addedAt[id] ?? 0) {
+            addedAt[id] = ms
         }
         for e in discoverAdds?.entries ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
         for e in importedSongs?.songs ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
@@ -861,7 +881,15 @@ final class AppModel {
                 firstError = firstError ?? error
             }
         }
-        guard !indexes.isEmpty else { throw firstError ?? URLError(.cannotLoadFromNetwork) }
+        // ZERO CONFIGURED SOURCES is a legitimate public-user configuration (their own on-device
+        // "Apple Music" library + Discover adds + imports are injection sources that merge in
+        // withProvisionalSources) — return [] so the build proceeds on injections alone. Throwing
+        // is reserved for "sources configured but EVERY one failed", which must not blank an
+        // already-working catalog. (The public-user audit's confirmed-critical fix.)
+        guard !indexes.isEmpty else {
+            if urls.isEmpty { return [] }
+            throw firstError ?? URLError(.cannotLoadFromNetwork)
+        }
         return indexes
     }
 

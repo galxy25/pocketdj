@@ -52,6 +52,11 @@ enum PlaylistSources {
     static func loadExpanded(from defaults: UserDefaults = .standard) -> Set<String> {
         Set(defaults.stringArray(forKey: expandedKey) ?? [])
     }
+    /// Whether the expanded-set key has EVER been written — the one-time-seed marker (both the
+    /// seed and any explicit toggle write it, so an empty persisted array ≠ never-touched).
+    static func hasPersistedExpansion(from defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: expandedKey) != nil
+    }
     static func persistExpanded(_ names: Set<String>, to defaults: UserDefaults = .standard) {
         defaults.set(Array(names), forKey: expandedKey)
     }
@@ -431,11 +436,32 @@ struct PlaylistsView: View {
         } footer: {
             Text("Read-only playlists from your enabled sources. Play one, or duplicate it into an editable playlist.")
         }
+        .onAppear { seedDefaultSourceExpansion() }
     }
 
     /// Source playlists grouped by source, ordered for display (see `PlaylistSources.grouped`).
+    /// PUBLIC mode (audit fix): the user's OWN on-device "Apple Music" library group leads —
+    /// the shared-catalog groups (the catalog owner's playlists) follow. Private (the owner)
+    /// keeps first-seen order.
     private var groupedSources: [(source: String, playlists: [SourcePlaylist])] {
-        PlaylistSources.grouped(indexPlaylists, availableSources: app.availableSources)
+        let groups = PlaylistSources.grouped(indexPlaylists, availableSources: app.availableSources)
+        guard !settings.appleMusicPrivateSync else { return groups }
+        let own = groups.filter { $0.source == AppleMusicLibraryStore.sourceName }
+        return own + groups.filter { $0.source != AppleMusicLibraryStore.sourceName }
+    }
+
+    /// PUBLIC-mode default expansion (audit fix — "the mirrors exist but take two navigations
+    /// to see"): a user who has never touched the Shared tab's disclosure state gets their OWN
+    /// library group open. One-time seed; explicit collapses persist as usual afterwards.
+    private func seedDefaultSourceExpansion() {
+        // Once-only via KEY PRESENCE (review catch: `isEmpty` re-fired the seed after the user
+        // explicitly collapsed everything). An unwritten key + amlib-not-yet-loaded correctly
+        // defers the seed to a later visit.
+        guard !settings.appleMusicPrivateSync, !PlaylistSources.hasPersistedExpansion(),
+              indexPlaylists.contains(where: { $0.sourceName == AppleMusicLibraryStore.sourceName })
+        else { return }
+        expandedSources.insert(AppleMusicLibraryStore.sourceName)
+        PlaylistSources.persistExpanded(expandedSources)
     }
 
     /// One read-only source-playlist row (shared by the sources section and search results).

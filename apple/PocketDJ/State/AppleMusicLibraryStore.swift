@@ -76,12 +76,19 @@ final class AppleMusicLibraryStore {
         /// High-water mark: the max `addedAtMs` the indexer has seen — the next incremental run
         /// only walks songs added after this.
         var lastAddedMs: Double? = nil
+        /// The user's OWN add-time for a song that SUPERSEDED onto a shared-catalog twin, keyed
+        /// by the surviving (indexed) id. Recently-added reads this so a public user's library
+        /// add still ranks even after its amlib row yields to the catalog owner's indexed row
+        /// (review catch: the add-time was being discarded with the removed entry).
+        var supersededAddedAt: [String: Double]? = nil
     }
 
     private(set) var songs: [SongEntry] = []
     private(set) var albums: [AlbumEntry] = []
     private(set) var playlists: [PlaylistEntry] = []
     private(set) var lastAddedMs: Double?
+    /// Surviving-twin id → the user's own add-time, carried across a supersede (see Document).
+    private(set) var supersededAddedAt: [String: Double] = [:]
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (same-URL doctrine as the other stores).
     var syncFileURL: URL { fileURL }
@@ -98,6 +105,7 @@ final class AppleMusicLibraryStore {
         albums = doc.albums ?? []
         playlists = doc.playlists ?? []
         lastAddedMs = doc.lastAddedMs
+        supersededAddedAt = doc.supersededAddedAt ?? [:]
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -164,10 +172,17 @@ final class AppleMusicLibraryStore {
     }
 
     /// Drop superseded entries (their indexed replacements own the ids now — the private
-    /// catalog landed the same `appleMusicId`).
-    func remove(ids: [String]) {
-        guard !ids.isEmpty else { return }
-        let gone = Set(ids)
+    /// catalog landed the same `appleMusicId`), CARRYING each dropped row's add-time forward
+    /// keyed by its surviving twin id so Recently-added still ranks the user's own library add.
+    func supersede(pairs: [(from: String, to: String)]) {
+        guard !pairs.isEmpty else { return }
+        let addedById = Dictionary(songs.map { ($0.songId, $0.addedAtMs) }, uniquingKeysWith: max)
+        for p in pairs {
+            if let ms = addedById[p.from], ms > (supersededAddedAt[p.to] ?? 0) {
+                supersededAddedAt[p.to] = ms
+            }
+        }
+        let gone = Set(pairs.map(\.from))
         songs.removeAll { gone.contains($0.songId) }
         for i in albums.indices { albums[i].trackIds.removeAll { gone.contains($0) } }
         albums.removeAll { $0.trackIds.isEmpty }
@@ -180,6 +195,7 @@ final class AppleMusicLibraryStore {
         albums = []
         playlists = []
         lastAddedMs = nil
+        supersededAddedAt = [:]
         try? FileManager.default.removeItem(at: fileURL)
         onChanged?()
     }
@@ -253,7 +269,8 @@ final class AppleMusicLibraryStore {
         let doc = Document(songs: songs,
                            albums: albums.isEmpty ? nil : albums,
                            playlists: playlists.isEmpty ? nil : playlists,
-                           lastAddedMs: lastAddedMs)
+                           lastAddedMs: lastAddedMs,
+                           supersededAddedAt: supersededAddedAt.isEmpty ? nil : supersededAddedAt)
         if let data = try? JSONEncoder().encode(doc) {
             try? data.write(to: fileURL, options: .atomic)
         }
