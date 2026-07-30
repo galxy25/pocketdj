@@ -436,6 +436,16 @@ struct AppleMusicSettingsView: View {
             .disabled(favoritesSync == nil || favoritesSync?.isSyncing == true
                       || !(favoritesSync?.isOwner == true || settings.favoritesTwoWaySync))
             .accessibilityIdentifier("favorites-sync-now")
+
+            // Owner-seed adoption is a deliberate opt-in (integrity audit): only shown to a
+            // non-owner (the owner has their own ♥). Off by default — a public user's favorites
+            // are never silently seeded with someone else's picks. Hidden while two-way sync is ON:
+            // the seed is the ALTERNATIVE to syncing your own account (run() does one OR the other,
+            // never both), so showing it there would be a silent no-op.
+            if favoritesSync?.isOwner == false && !settings.favoritesTwoWaySync {
+                Toggle("Start with the curator's picks", isOn: $settings.applyOwnerFavoritesSeed)
+                    .accessibilityIdentifier("favorites-seed-optin")
+            }
         } header: {
             Text("Favorites")
         } footer: {

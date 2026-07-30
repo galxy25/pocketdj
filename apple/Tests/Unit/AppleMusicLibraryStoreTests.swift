@@ -61,6 +61,8 @@ final class AppleMusicLibraryStoreTests: XCTestCase {
 
     /// withProvisionalSources folds the source in AFTER real sources, prunes superseded rows,
     /// and REMAPS playlist-mirror song ids onto the indexed twins so mirrors stay playable.
+    /// `amLibrarySupersedes: true` = the OWNER path (in production only `OwnerIdentity.isOwner()`
+    /// sets it; the default is `false` so a hybrid user never supersedes — see the two tests below).
     func testProvisionalMergeRemapsPlaylistMirrors() throws {
         let indexed = try JSONDecoder().decode(IndexJSON.self, from: Data("""
         {"manifest":{"source":"am-local","sourceName":"Apple Music (Local)"},
@@ -72,12 +74,51 @@ final class AppleMusicLibraryStoreTests: XCTestCase {
             discover: [], importedSongs: [], importedAlbums: [],
             amLibrarySongs: entries, amLibraryAlbums: [],
             amLibraryPlaylists: [.init(id: "amlibpl_p1", name: "Mix", songIds: ["amlib_i.s1", "amlib_i.s2"])],
-            indexes: [indexed])
+            amLibrarySupersedes: true, indexes: [indexed])
         XCTAssertEqual(result.amLibrarySuperseded.count, 1)
         let synthetic = result.indexes.last
         XCTAssertEqual(synthetic?.manifest.sourceName, "Apple Music")
         XCTAssertEqual(synthetic?.songs.map(\.id), ["amlib_i.s1"])           // superseded row pruned
         XCTAssertEqual(synthetic?.playlists?.first?.songIds, ["amlib_i.s1", "sng_abc"])  // mirror remapped
+    }
+
+    /// HYBRID user (integrity audit): a non-owner passes `amLibrarySupersedes: false` (only
+    /// `OwnerIdentity.isOwner()` sets it true), so the library NEVER supersedes onto an indexed
+    /// twin — a song the user owns that the curator's shared catalog also carries keeps its OWN
+    /// row + id + dateAdded. The shared twin here is deliberately named "Apple Music (Local)" —
+    /// the SAME sourceName the owner's own index uses — to prove the sourceName scope alone can't
+    /// distinguish "mine" from "the curator's": it is the owner GATE (this flag), not the name,
+    /// that protects the hybrid user's data.
+    func testPublicModeNeverSupersedes() throws {
+        let sharedAM = try JSONDecoder().decode(IndexJSON.self, from: Data("""
+        {"manifest":{"source":"am-local","sourceName":"Apple Music (Local)"},
+         "albums":[],"songs":[{"id":"sng_abc","name":"S","artist":"A","appleMusicId":"222"}]}
+        """.utf8))
+        let entries = [entry(1, am: "111"), entry(2, am: "222")]
+        let result = AppModel.withProvisionalSources(
+            discover: [], importedSongs: [], importedAlbums: [],
+            amLibrarySongs: entries, amLibraryAlbums: [],
+            amLibrarySupersedes: false, indexes: [sharedAM])   // public/hybrid
+        XCTAssertTrue(result.amLibrarySuperseded.isEmpty, "no supersede in public mode")
+        XCTAssertEqual(result.indexes.last?.songs.map(\.id), ["amlib_i.s1", "amlib_i.s2"],
+                       "the user's own row survives even though a shared catalog shares its id")
+    }
+
+    /// Even in PRIVATE mode the supersede is scoped to the user's own "Apple Music (Local)"
+    /// catalog — a shared "My Vinyl" row carrying the same backfilled appleMusicId must NOT eat
+    /// the user's library row (the exact hybrid data-loss case).
+    func testSupersedeScopedToOwnAppleMusicSourceOnly() throws {
+        let vinyl = try JSONDecoder().decode(IndexJSON.self, from: Data("""
+        {"manifest":{"source":"vinyl","sourceName":"My Vinyl"},
+         "albums":[],"songs":[{"id":"sng_v","name":"S","artist":"A","appleMusicId":"222"}]}
+        """.utf8))
+        let entries = [entry(2, am: "222")]
+        let result = AppModel.withProvisionalSources(
+            discover: [], importedSongs: [], importedAlbums: [],
+            amLibrarySongs: entries, amLibraryAlbums: [],
+            amLibrarySupersedes: true, indexes: [vinyl])   // private, but twin is a shared vinyl row
+        XCTAssertTrue(result.amLibrarySuperseded.isEmpty, "vinyl is not the user's own AM library")
+        XCTAssertEqual(result.indexes.last?.songs.map(\.id), ["amlib_i.s2"])
     }
 
     /// Album grouping: deterministic ids, tracks ordered by trackNumber, art/year adopted.

@@ -55,6 +55,10 @@ final class PlaybackCoordinator {
     /// engine can order providers by source. Injected (the app passes `AppModel`'s map) to
     /// keep the coordinator decoupled + unit-testable. Returns nil when unknown.
     var sourceOfSong: (String) -> String? = { _ in nil }
+    /// Is THIS install the catalog owner (Levi)? Gates the passive rip fan-out so a hybrid
+    /// user's streaming never enqueues captures on the shared server. Wired in PocketDJApp to
+    /// `OwnerIdentity`; defaults false (safe — a non-owner never fans out).
+    var isCatalogOwner: () -> Bool = { false }
     /// Catalog id lookup for an id-only play() call — so the AM streaming provider can enter the
     /// chain for a row the coordinator only knows by id (review catch: `IndexSong.minimal` drops
     /// `appleMusicId`, so a serverless streamable row's ▶ enabled but always fell through to the
@@ -166,7 +170,12 @@ final class PlaybackCoordinator {
                 // guideline 5.2.3 describes regardless of what the server does. Re-gate on
                 // "user has unprocessed uploaded media for this song" once that signal
                 // exists client-side.
-                if provider.backend == .appleMusic,
+                // OWNER-ONLY (integrity audit): the passive rip fan-out only fires for the
+                // CATALOG OWNER. A hybrid user streaming from their subscription must never
+                // silently enqueue a capture on the shared server keyed by a shared id — that
+                // both mutates the owner's public bucket and runs work on their machine. When
+                // per-user server auth lands, this widens back with the server enforcing scope.
+                if isCatalogOwner(), provider.backend == .appleMusic,
                    AppleMusicCatalog.storeID(fromSongID: song.id) == nil {
                     Task { await self.ripProvider.requestAsyncRip(song.id) }
                 }

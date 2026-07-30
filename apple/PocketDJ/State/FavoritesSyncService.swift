@@ -50,6 +50,11 @@ final class FavoritesSyncService {
     /// account, so anyone may enable it; the owner allowlist stays only as an always-on grant
     /// (and the seed-export gate). Wired in PocketDJApp to `settings.favoritesTwoWaySync`.
     @ObservationIgnored var userOptIn: () -> Bool = { false }
+    /// Whether to adopt the OWNER's shipped ♥ seed onto THIS install's favorites. Default OFF
+    /// (integrity audit): silently seeding a public user's favorites with someone else's picks
+    /// is cross-contamination — and opting into two-way sync would then tombstone-erase them.
+    /// Wired to `settings.applyOwnerFavoritesSeed` (a one-time onboarding/Settings choice).
+    @ObservationIgnored var seedOptIn: () -> Bool = { false }
 
     /// Whether two-way sync is EFFECTIVELY on for this install (owner grant or user opt-in).
     var isTwoWayEnabled: Bool { isOwner == true || userOptIn() }
@@ -187,6 +192,8 @@ final class FavoritesSyncService {
     // MARK: - Seeding (non-owner)
 
     private func applySeedIfNeeded() async {
+        // CONSENT GATE (integrity audit): never adopt the owner's ♥ without an explicit opt-in.
+        guard seedOptIn() else { return }
         guard let data = try? await fetchSeed(),
               let seed = try? JSONDecoder().decode(Seed.self, from: data),
               seed.version > favorites.seedVersion else { return }

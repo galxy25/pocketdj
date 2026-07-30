@@ -105,6 +105,17 @@ final class AppModel {
     /// the state check and building the catalog twice / firing duplicate network refreshes.
     @ObservationIgnored private var loadInFlight = false
 
+    /// This install's resolved catalog-owner identity (`OwnerIdentity.isOwner()`), cached here so
+    /// SYNCHRONOUS read paths (e.g. `recentlyAddedSongIds`) can gate on it without a CloudKit await.
+    /// Resolved in `performRefresh` (off the launch critical path) and FAILS CLOSED to `false` — a
+    /// hybrid/public user is never mistaken for the owner, so the curator's library-add history and
+    /// catalog rows never bleed into the user's own surfaces. Same discriminator as the owner-gated
+    /// supersede (both replace the earlier, wrong `appleMusicPrivateSync` proxy: private-mode
+    /// defaults to TRUE for a hybrid user, who has the curator's rip-server URL). Internal setter
+    /// (not `private(set)`) so `@testable` tests can drive the owner/non-owner branch; production
+    /// writes it only from `performRefresh`.
+    var resolvedIsOwner = false
+
     /// Optional fixed loader (tests / fixtures). When nil, sources come from `settings`.
     private let loader: CatalogLoading?
     /// Settings drive the live multi-source catalog (set by the app at launch).
@@ -200,6 +211,12 @@ final class AppModel {
         let amLibSongs = appleMusicLibrary?.songs ?? []
         let amLibAlbums = appleMusicLibrary?.albums ?? []
         let amLibPlaylists = appleMusicLibrary?.playlists ?? []
+        // The cold-launch cache path NEVER supersedes. The supersede is owner-gated, and proving
+        // owner identity needs a CloudKit round-trip (`OwnerIdentity.isOwner()`) that must not
+        // block the first frame — the whole point of this instant offline-first seed. Fail closed
+        // (preserve every on-device library row); the `performRefresh` that always follows this
+        // seed resolves the real owner and applies the dedup for the owner moments later.
+        let amLibSupersedes = false
         let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)])? in
             let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
             // Seed when ANY content exists: cached URL catalogs OR the injection sources — a
@@ -215,7 +232,7 @@ final class AppModel {
                 importedSongs: importedS, importedAlbums: importedA,
                 profileSongs: profileSongs, profileName: profileName,
                 amLibrarySongs: amLibSongs, amLibraryAlbums: amLibAlbums,
-                amLibraryPlaylists: amLibPlaylists, indexes: cached)
+                amLibraryPlaylists: amLibPlaylists, amLibrarySupersedes: amLibSupersedes, indexes: cached)
             return (AppModel.buildDerived(indexes: indexes, albumEdits: albumEdits, songEdits: songEdits),
                     discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs)
         }.value
@@ -259,6 +276,7 @@ final class AppModel {
                                                    amLibrarySongs: [AppleMusicLibraryStore.SongEntry] = [],
                                                    amLibraryAlbums: [AppleMusicLibraryStore.AlbumEntry] = [],
                                                    amLibraryPlaylists: [AppleMusicLibraryStore.PlaylistEntry] = [],
+                                                   amLibrarySupersedes: Bool = false,
                                                    indexes: [IndexJSON])
         -> (indexes: [IndexJSON],
             discoverSuperseded: [(from: String, to: String)],
@@ -286,9 +304,32 @@ final class AppModel {
                                                               indexedByAppleMusicId: byAppleMusicId)
         let remapped = Set(importedPairs.map(\.from))
         let keptImported = importedSongs.filter { !remapped.contains($0.songId) }
-        // The on-device Apple Music library yields to indexed twins by catalog id (the private
-        // catalog's rows win) — same doctrine as Discover; superseded rows are pruned + remapped.
-        let amSplit = AppleMusicLibraryStore.split(amLibrarySongs, indexedByAppleMusicId: byAppleMusicId)
+        // The on-device Apple Music library yields to an indexed "Apple Music (Local)" twin ONLY
+        // when `amLibrarySupersedes` is true — and the CALLER sets that solely for the CATALOG
+        // OWNER (see performRefresh: `await OwnerIdentity.isOwner()`). Owner identity is the only
+        // signal that proves the indexed "Apple Music (Local)" catalog and this install's
+        // on-device MusicKit library belong to the SAME person, so deduping them is correct.
+        //
+        // WHY NOT sourceName / private-mode. A HYBRID user loads the curator's shared catalog,
+        // whose AM index is ALSO named "Apple Music (Local)" (the manifest carries no owner
+        // field) — so the name alone cannot tell "mine" from "the curator's". And private-mode
+        // (`appleMusicPrivateSync`) DEFAULTS TO TRUE for a hybrid user (they have the curator's
+        // rip-server URL), so gating on it left the guard OFF for exactly the user it protects.
+        // Non-owner ⇒ false ⇒ this map is empty ⇒ their library NEVER supersedes onto the
+        // stranger's rows (which would permanently delete their data + flip its provenance — the
+        // audit's top finding). The sourceName scope below is defense-in-depth on top of that
+        // owner gate (a "My Vinyl" twin never eats a library row even if the flag were mis-set).
+        let ownAMByAppleMusicId: [String: String] = {
+            guard amLibrarySupersedes else { return [:] }
+            var map: [String: String] = [:]
+            for index in indexes where index.manifest.sourceName == Config.appleMusicSourceName {
+                for s in index.songs where s.appleMusicId != nil {
+                    if map[s.appleMusicId!] == nil { map[s.appleMusicId!] = s.id }
+                }
+            }
+            return map
+        }()
+        let amSplit = AppleMusicLibraryStore.split(amLibrarySongs, indexedByAppleMusicId: ownAMByAppleMusicId)
         var all = indexes
         if !split.keep.isEmpty || !albumSplit.keep.isEmpty {
             all.append(DiscoverAddsStore.syntheticIndex(split.keep, albums: albumSplit.keep))
@@ -503,11 +544,14 @@ final class AppModel {
     func recentlyAddedSongIds(limit: Int) -> [String] {
         guard limit > 0 else { return [] }
         var addedAt: [String: Double] = [:]
-        // PUBLIC-mode scope (audit fix): catalog `dateAdded` rows from shared URL catalogs are
-        // the CATALOG OWNER's library history, not this user's — count only rows from the user's
-        // own on-device "Apple Music" source there. Private mode (the owner) keeps everything;
-        // so does a nil-settings host (tests/fixtures — mode unknown ⇒ don't filter).
-        let filterToOwnLibrary = settings?.appleMusicPrivateSync == false
+        // NON-OWNER scope (integrity audit): catalog `dateAdded` rows from shared URL catalogs are
+        // the CATALOG OWNER's library history, not this user's — for a non-owner count only rows
+        // from their own on-device "Apple Music" source. The OWNER (resolvedIsOwner) keeps
+        // everything (the shared catalog IS their library history); a nil-settings host
+        // (tests/fixtures — identity unknown) doesn't filter. Gated on resolved owner identity, NOT
+        // `appleMusicPrivateSync`: that flag defaults TRUE for a hybrid user (curator's rip-server
+        // URL), which used to leak the curator's recently-added songs into the user's own list.
+        let filterToOwnLibrary = settings != nil && !resolvedIsOwner
         for (id, song) in songsById {
             guard let d = song.dateAdded, d > 0, d > (addedAt[id] ?? 0) else { continue }
             if filterToOwnLibrary, songSourceById[id] != AppleMusicLibraryStore.sourceName { continue }
@@ -568,6 +612,15 @@ final class AppModel {
             let amLibSongs = appleMusicLibrary?.songs ?? []
             let amLibAlbums = appleMusicLibrary?.albums ?? []
             let amLibPlaylists = appleMusicLibrary?.playlists ?? []
+            // OWNER-GATED supersede (integrity audit). Only the catalog owner's on-device MusicKit
+            // library and their server-generated "Apple Music (Local)" index are the same person's
+            // library, so only the owner dedups the two. `OwnerIdentity.isOwner()` is cached after
+            // the first success and FAILS CLOSED (no iCloud / offline / not-allowlisted ⇒ false ⇒
+            // no supersede), so a hybrid/public user NEVER loses their own library to the curator's
+            // shared "Apple Music (Local)" rows. Awaited here (off the launch critical path) — not
+            // in `seedFromCache` — so the CloudKit round-trip never blocks the first frame.
+            let amLibSupersedes = await OwnerIdentity.isOwner()
+            resolvedIsOwner = amLibSupersedes    // cache for synchronous owner-gated read paths
             // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
             // OFF the main actor; only the finished value is assigned back on `@MainActor`.
             let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)]) in
@@ -576,7 +629,7 @@ final class AppModel {
                     importedSongs: importedS, importedAlbums: importedA,
                     profileSongs: profileSongs, profileName: profileName,
                     amLibrarySongs: amLibSongs, amLibraryAlbums: amLibAlbums,
-                    amLibraryPlaylists: amLibPlaylists, indexes: indexes)
+                    amLibraryPlaylists: amLibPlaylists, amLibrarySupersedes: amLibSupersedes, indexes: indexes)
                 return (AppModel.buildDerived(indexes: all, albumEdits: albumEdits, songEdits: songEdits),
                         discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs)
             }.value
