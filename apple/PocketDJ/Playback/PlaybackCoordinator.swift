@@ -55,6 +55,11 @@ final class PlaybackCoordinator {
     /// engine can order providers by source. Injected (the app passes `AppModel`'s map) to
     /// keep the coordinator decoupled + unit-testable. Returns nil when unknown.
     var sourceOfSong: (String) -> String? = { _ in nil }
+    /// Catalog id lookup for an id-only play() call — so the AM streaming provider can enter the
+    /// chain for a row the coordinator only knows by id (review catch: `IndexSong.minimal` drops
+    /// `appleMusicId`, so a serverless streamable row's ▶ enabled but always fell through to the
+    /// rip provider's error). Injected in PocketDJApp, mirroring `sourceOfSong`.
+    var appleMusicIdOfSong: (String) -> String? = { _ in nil }
 
     /// Which backend last won the cycle (nil = nothing playing). Drives the inline player's
     /// branch (rip waveform vs. Apple Music position scrubber) + the "via …" badge.
@@ -92,12 +97,29 @@ final class PlaybackCoordinator {
         // Music catalog — no indexed source) resolves directly via MusicKit, so it gets
         // the Apple Music provider on the same terms as an Apple Music (Local) song.
         let amNamespaced = AppleMusicCatalog.storeID(fromSongID: song.id) != nil
-        if sourceOfSong(song.id) == Config.appleMusicSourceName || amNamespaced, appleMusic.isReady {
+        // BOTH Apple Music sources stream FIRST (public-user audit fix): the private catalog's
+        // "Apple Music (Local)" AND the on-device "Apple Music" library.
+        let source = sourceOfSong(song.id)
+        let appleMusicSourced = source == Config.appleMusicSourceName
+            || source == AppleMusicLibraryStore.sourceName
+        if appleMusicSourced || amNamespaced, appleMusic.isReady {
             ordered.append(appleMusic)
         }
-        ordered.append(ripProvider)   // terminal fallback
+        ordered.append(ripProvider)
+        // STREAMING FALLBACK for every OTHER row carrying a catalog id (Discover adds,
+        // imports, vinyl/digital with a matched id): AFTER the rip provider on purpose — a
+        // rip is the user's OWN recording and must always win when it exists (the
+        // prefer-the-user's-cut doctrine); streaming only rescues the row when the rip path
+        // can't deliver at all (the public no-server case).
+        if !(appleMusicSourced || amNamespaced), song.appleMusicId != nil, appleMusic.isReady {
+            ordered.append(appleMusic)
+        }
         return ordered
     }
+
+    /// Can the Apple Music streaming backend play RIGHT NOW (enabled + authorized)? The
+    /// row-transport reads this so a streamable-only song's ▶ enables with no rip server.
+    var canStreamAppleMusic: Bool { appleMusic.isReady }
 
     /// Run the matching engine: try each provider for `song` in order; the first that
     /// returns true wins (record it as `activeBackend`); if none does, surface the rip
@@ -164,7 +186,10 @@ final class PlaybackCoordinator {
     /// source map keyed by id, so a minimal projection is sufficient.) `atMs` = optional
     /// cue offset, threaded through exactly like `play(_:atMs:)`.
     func play(id: String, title: String, artist: String, atMs: Int? = nil) async {
-        await play(IndexSong.minimal(id: id, name: title, artist: artist), atMs: atMs)
+        // Carry the catalog id (looked up) so the AM streaming provider is eligible — the
+        // provider chain reads `appleMusicId` for a source-less streamable row.
+        await play(IndexSong.minimal(id: id, name: title, artist: artist,
+                                     appleMusicId: appleMusicIdOfSong(id)), atMs: atMs)
     }
 
     /// Whether a cue offset passed to `play(_:atMs:)` would actually be APPLIED for
@@ -181,7 +206,14 @@ final class PlaybackCoordinator {
     /// CuesView plays those via `playLocalFile(..., startMs: cue + BurnStore.startMs(forSong:))`,
     /// which always seeks exactly; check `BurnStore.localURLForPlayback` FIRST, then this.
     func cueSeekSupported(for song: IndexSong) -> Bool {
-        if sourceOfSong(song.id) == Config.appleMusicSourceName, appleMusic.isReady { return true }
+        // Mirror providers()'s AM-first predicate (review catch: was checking only the private
+        // "Apple Music (Local)" source, so cues were disabled on the on-device "Apple Music"
+        // library + namespaced rows that stream-and-seek fine).
+        let source = sourceOfSong(song.id)
+        if (source == Config.appleMusicSourceName
+            || source == AppleMusicLibraryStore.sourceName
+            || AppleMusicCatalog.storeID(fromSongID: song.id) != nil),
+           appleMusic.isReady { return true }
         return ripProvider.canCueSeek(song.id)
     }
 

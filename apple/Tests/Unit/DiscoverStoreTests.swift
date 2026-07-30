@@ -80,11 +80,14 @@ final class DiscoverStoreTests: XCTestCase {
                       "401 must mention the rip-server token: \(rips.discoverError ?? "nil")")
     }
 
-    func testDiscoverSearchNoServerNoNetwork() async {
+    /// Serverless proxy search is a BENIGN SKIP (public-user audit fix): MusicKit covers Discover
+    /// metadata search, so a missing rip server is NOT an error — it must not fire a /search
+    /// request nor set discoverError (which would mask a genuine "No matches").
+    func testDiscoverSearchNoServerIsBenignSkip() async {
         let rips = makeStore(serverURL: "")
         let hits = await rips.discoverSearch("abba")
         XCTAssertTrue(hits.isEmpty)
-        XCTAssertNotNil(rips.discoverError)
+        XCTAssertNil(rips.discoverError, "serverless proxy search is not an error")
         XCTAssertEqual(DiscoverURLProtocol.count(path: "/search"), 0)
     }
 
@@ -382,10 +385,11 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertEqual(adds.entries.map(\.songId).sorted(), ["amrec_1", "amrec_2", "amrec_3"])
     }
 
-    /// FIX 2 (correctness): an album add where EVERY track rip comes back `.noServer` must
-    /// record NOTHING — no dead album row, no dead song rows (the tracks expand via a library
-    /// contributor, but with no rip server every `requestRip` is a miss).
-    func testDiscoverAddAlbumAllNoServerRecordsNothing() async {
+    /// SERVERLESS album add (public-user audit fix): with NO rip server every track comes back
+    /// `.noServer` — the album + tracks are STILL recorded as streamable catalog rows (they
+    /// carry Apple Music catalog ids and play via the user's subscription; only the rip isn't
+    /// owed), in ONE batched inject, with no error surfaced.
+    func testDiscoverAddAlbumNoServerRecordsStreamableRows() async {
         let rips = makeStore(serverURL: "")   // no rip server → every requestRip → .noServer
         let addsURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("pdj-dadds-\(UUID().uuidString).json")
@@ -401,10 +405,11 @@ final class DiscoverStoreTests: XCTestCase {
                                              title: "RAM", artist: "Daft Punk")
         await rips.discoverAddAlbum(hit, library: lib)
 
-        XCTAssertTrue(adds.entries.isEmpty, "no dead song rows on an all-miss add")
-        XCTAssertTrue(adds.albums.isEmpty, "no dead album row on an all-miss add")
-        XCTAssertEqual(batchInjects, 0, "nothing accepted ⇒ no inject")
-        XCTAssertNotNil(rips.discoverError, "the miss is surfaced")
+        XCTAssertEqual(adds.entries.map(\.songId).sorted(), ["amrec_10", "amrec_11"],
+                       "serverless tracks are recorded — they stream via their catalog ids")
+        XCTAssertEqual(adds.albums.first?.albumId, "amrec_album_111")
+        XCTAssertEqual(batchInjects, 1, "one batched inject for the whole album")
+        XCTAssertNil(rips.discoverError, "a serverless add is not an error")
     }
 
     /// FIX 4 (UX): an album settles when every track is TERMINAL (ready OR errored) — a

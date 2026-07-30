@@ -170,8 +170,9 @@ struct IndexSong: Decodable, Identifiable, Hashable {
     /// `AppleMusicCatalog.indexSong` — we build it by decoding a JSON object. Used when a
     /// caller (the row ▶) has only `(id, title, artist)` and must hand a song to the
     /// coordinator; the coordinator's provider chain + source map key off the id alone.
-    static func minimal(id: String, name: String, artist: String) -> IndexSong {
-        let obj: [String: Any] = ["id": id, "name": name, "artist": artist]
+    static func minimal(id: String, name: String, artist: String, appleMusicId: String? = nil) -> IndexSong {
+        var obj: [String: Any] = ["id": id, "name": name, "artist": artist]
+        if let appleMusicId { obj["appleMusicId"] = appleMusicId }
         // Force-unwrap is safe: these three scalar fields always encode + decode (the rest
         // of IndexSong's fields are all optional). A failure would be a programmer error.
         let data = try! JSONSerialization.data(withJSONObject: obj)

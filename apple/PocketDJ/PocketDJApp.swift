@@ -418,6 +418,7 @@ struct PocketDJApp: App {
         // catalog's per-id source map so an Apple Music (Local) track tries Apple Music
         // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
         coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
+        coordinator.appleMusicIdOfSong = { [weak app] id in app?.songsById[id]?.appleMusicId }
         // Play-tracking hooks — every surface that starts a song notes it to BOTH the aggregate
         // playStats (for the storage prune) AND the append-only playHistory timeline (History
         // mode). Both stores share a 30 s re-count window that absorbs the burned-play overlap

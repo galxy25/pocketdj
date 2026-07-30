@@ -169,9 +169,10 @@ final class OnboardingStoreTests: XCTestCase {
         XCTAssertEqual(Set(settings.sources.map(\.name)),
                        ["My Vinyl", Config.digitalSourceName])
 
-        // Zero chosen is refused (AppModel.fetchIndexes throws on no sources).
+        // Zero chosen is a LEGITIMATE public-user configuration since the zero-source catalog
+        // boot fix: every shared catalog is removed and the catalog builds from injection
+        // sources alone (the user's own on-device Apple Music library, adds, imports).
         settings.applyOnboardingSources(vinyl: false, digital: false, streaming: false)
-        XCTAssertEqual(Set(settings.sources.map(\.name)),
-                       ["My Vinyl", Config.digitalSourceName], "no-op on zero sources")
+        XCTAssertTrue(settings.sources.isEmpty, "zero picks removes every shared catalog")
     }
 }

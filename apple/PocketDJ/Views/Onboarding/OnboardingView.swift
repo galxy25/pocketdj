@@ -341,38 +341,28 @@ private struct OnboardingSourcesStage: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            // #TOUPDATE: "the records you've imported" — the Vinyl source must stop subscribing to
-            // the PocketDJ-published catalog index that is seeded into every new install
-            // (Config.indexURL, wired at SettingsStore.applyOnboardingSources:295). Until each
-            // install starts empty and fills only from that user's own imports, this card calls
-            // someone else's records the user's.
-            sourceCard(icon: "opticaldisc", title: "Vinyl", on: $vinyl,
-                       detail: "Your vinyl, digitized — the records you've imported, analyzed for tempo, key, and mood.",
+            // HONEST COPY (public-user audit fix): these three are the SHARED PocketDJ catalogs
+            // (the catalog owner's libraries), not the installing user's own music — say so.
+            // The user's own Apple Music library needs no card: it indexes automatically after
+            // sign-in (the on-device "Apple Music" source), and since the zero-source catalog
+            // boot fix, keeping ONLY that is a legitimate choice — zero picks are allowed.
+            sourceCard(icon: "opticaldisc", title: "Shared vinyl catalog", on: $vinyl,
+                       detail: "The PocketDJ vinyl collection — digitized records, analyzed for tempo, key, and mood. Streams and downloads for every install.",
                        a11y: "onboarding-source-vinyl")
-            // #TOUPDATE: "Your digital files" / "your own copy" — today "My Digital" subscribes to
-            // the published digital-index.json (Config.digitalIndexURL) and its rows resolve to a
-            // FLAT, public-read rips/<songId>.mp3 namespace shared across every install. Needs a
-            // per-user index, a per-user key prefix, and an authenticated request on the server
-            // before any install has a copy that is its own.
-            sourceCard(icon: "externaldrive", title: "Digital", on: $digital,
-                       detail: "Your digital files — your own copy, prepared ahead of time, so it plays and downloads with no extra step.",
+            sourceCard(icon: "externaldrive", title: "Shared digital catalog", on: $digital,
+                       detail: "The PocketDJ digital collection — pre-prepared files that play and download with no extra step.",
                        a11y: "onboarding-source-digital")
-            // #TOUPDATE: "Your Apple Music library" / "nothing is captured from it" — the shipped
-            // apple-music-index.json is one published library indexed from a single Library.xml,
-            // not the installing user's; and rip-server.mjs:798 still routes every non-analog song
-            // to Apple Music capture unconditionally (analog on an exact library match, :549).
-            // The index must become per-user AND both capture paths must fail closed on
-            // Apple-Music-sourced ids before this card is honest.
-            sourceCard(icon: "antenna.radiowaves.left.and.right", title: "Streaming", on: $streaming,
-                       detail: "Your Apple Music library — metadata only, about a 33 MB download. These songs play through Apple Music; nothing is captured from it.",
+            sourceCard(icon: "antenna.radiowaves.left.and.right", title: "Shared Apple Music catalog", on: $streaming,
+                       detail: "The PocketDJ Apple Music catalog — metadata only, about a 33 MB download. Songs play through your own Apple Music subscription.",
                        a11y: "onboarding-source-streaming")
-            if !(vinyl || digital || streaming) {
-                Text("Pick at least one source — the browser needs a catalog to show.")
-                    .font(.caption).foregroundStyle(.red)
-                    .accessibilityIdentifier("onboarding-zero-sources")
-            }
+            Text(vinyl || digital || streaming
+                 ? "Signed in to Apple Music? Your own library and playlists are added automatically."
+                 : "No shared catalogs — the browser will show just your own Apple Music library (added automatically after sign-in).")
+                .font(.caption).foregroundStyle(Theme.fgDim)
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("onboarding-own-library-note")
             OnboardingNavRow(continueLabel: "Start DJing",
-                             continueEnabled: vinyl || digital || streaming) {
+                             continueEnabled: true) {
                 settings.applyOnboardingSources(vinyl: vinyl, digital: digital, streaming: streaming)
                 onboarding.complete()
             }

@@ -135,12 +135,15 @@ struct DiscoverResultsList: View {
                 switch model.state {
                 case .idle, .loading: loading
                 case .loaded:
-                    if let message = rips.discoverError {
-                        failure(message)
-                    } else if model.hits.isEmpty {
-                        noMatches
-                    } else {
+                    // MusicKit hits render even when the rip-server half errored (public-user
+                    // audit fix: "No import server configured" was MASKING working results —
+                    // Discover search + AM-library add are serverless; only rip capture isn't).
+                    if !model.hits.isEmpty {
                         list
+                    } else if let message = rips.discoverError {
+                        failure(message)
+                    } else {
+                        noMatches
                     }
                 }
             }
@@ -245,6 +248,8 @@ private struct DiscoverRow: View {
     /// (the add-completion `refreshManifest` is what moves a row here live).
     private var ripped: Bool { hit.ripped == true || rips.manifest[hit.songId] != nil }
     private var phase: RipsStore.Phase? { rips.jobs[hit.songId]?.phase }
+    /// Recorded as a (serverless-streamable) catalog entry — drives the "Added" state.
+    private var added: Bool { rips.discoverAdds?.entries.contains { $0.songId == hit.songId } ?? false }
 
     /// Whether this device can write the user's Apple Music library — false on macOS (and on
     /// any device with no authorized Apple Music contributor). Drives the ＋ help wording.
@@ -344,6 +349,13 @@ private struct DiscoverRow: View {
                 Text(Self.phaseLabel(phase)).font(.caption).foregroundStyle(Theme.fgDim)
             }
             .accessibilityIdentifier("discover-progress-\(index)")
+        } else if added {
+            // Serverless add feedback (review catch): with no rip server the add creates no job
+            // and no manifest entry, so the row would sit on "＋ Add" forever. The recorded
+            // streamable entry re-renders this (DiscoverAddsStore is @Observable).
+            Label("Added", systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.green)
+                .accessibilityIdentifier("discover-added-\(index)")
         } else {
             Button {
                 // Pass a library contributor when this device can write the user's Apple
@@ -491,12 +503,15 @@ struct DiscoverAlbumResultsList: View {
                 switch model.state {
                 case .idle, .loading: loading
                 case .loaded:
-                    if let message = rips.discoverError {
-                        failure(message)
-                    } else if model.hits.isEmpty {
-                        noMatches
-                    } else {
+                    // MusicKit hits render even when the rip-server half errored (public-user
+                    // audit fix: "No import server configured" was MASKING working results —
+                    // Discover search + AM-library add are serverless; only rip capture isn't).
+                    if !model.hits.isEmpty {
                         list
+                    } else if let message = rips.discoverError {
+                        failure(message)
+                    } else {
+                        noMatches
                     }
                 }
             }

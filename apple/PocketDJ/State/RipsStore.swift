@@ -796,7 +796,10 @@ final class RipsStore {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { discoverError = nil; return [] }
         guard hasServer else {
-            discoverError = "No import server configured (Settings ▸ Import server)."
+            // Serverless is a benign skip for the metadata search — MusicKit covers Discover
+            // search + AM-library add (public-user audit fix). Clear the error so a genuine
+            // zero-hit result reads "No matches", not "No import server".
+            discoverError = nil
             return []
         }
         guard var comps = URLComponents(string: "\(serverUrl)/search") else {
@@ -876,11 +879,13 @@ final class RipsStore {
         // Eventual consistency: once the server has ACCEPTED the request (or already holds
         // the media), the song is a catalog citizen — collections/burn/stem key off the
         // amrec_ id and retry safely against the queued job.
-        if let job = jobs[hit.songId], job.phase != .error {
-            discoverAdds?.add(songId: hit.songId, appleMusicId: hit.appleMusicId,
-                              title: hit.title, artist: hit.artist, album: hit.album,
-                              artworkUrl: hit.artworkUrl, durationMs: hit.durationMs)
-        } else if manifest[hit.songId] != nil {
+        // SERVERLESS (public-user audit fix): with NO import server configured the add is
+        // STILL a catalog citizen — the entry carries its Apple Music catalog id, so it
+        // streams via the user's subscription (and was just added to their AM library);
+        // only the rip capture isn't owed. Previously the entry was silently dropped.
+        if (jobs[hit.songId].map { $0.phase != .error } ?? false)
+            || manifest[hit.songId] != nil
+            || !hasServer {
             discoverAdds?.add(songId: hit.songId, appleMusicId: hit.appleMusicId,
                               title: hit.title, artist: hit.artist, album: hit.album,
                               artworkUrl: hit.artworkUrl, durationMs: hit.durationMs)
@@ -898,7 +903,9 @@ final class RipsStore {
         case .queued, .inflight:
             if let jobId = jobs[hit.songId]?.jobId { pollToReady(songId: hit.songId, jobId: jobId) }
         case .noServer:
-            discoverError = "No import server configured (Settings ▸ Import server)."
+            // NOT an error anymore (public-user audit fix): a serverless add is legitimate —
+            // the caller records the streamable catalog entry; there is simply no rip to queue.
+            break
         case .unknown, .failed:
             discoverError = "Add failed — the import server didn’t accept the request."
         }
@@ -945,7 +952,10 @@ final class RipsStore {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { discoverError = nil; return [] }
         guard hasServer else {
-            discoverError = "No import server configured (Settings ▸ Import server)."
+            // Serverless is a benign skip for the metadata search — MusicKit covers Discover
+            // search + AM-library add (public-user audit fix). Clear the error so a genuine
+            // zero-hit result reads "No matches", not "No import server".
+            discoverError = nil
             return []
         }
         guard var comps = URLComponents(string: "\(serverUrl)/search") else {
@@ -1055,8 +1065,9 @@ final class RipsStore {
             case .queued, .inflight:
                 if let jobId = jobs[d.songId]?.jobId { pollToReady(songId: d.songId, jobId: jobId) }
             case .noServer:
-                discoverError = "No import server configured (Settings ▸ Import server)."
-                continue   // not accepted — no dead row
+                // SERVERLESS (public-user audit fix): with no import server the track is STILL
+                // recorded — it streams via its Apple Music catalog id; only the rip isn't owed.
+                break
             case .unknown, .failed:
                 continue   // a per-track miss records nothing — no dead row
             }
