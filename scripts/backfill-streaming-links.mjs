@@ -24,7 +24,11 @@
 //     [--miss-backoff 0.6] [--cooldown-ms 300000] [--max-stalls 6]
 //     [--services spotify,youtube] [--min-score 60]
 //     [--status ~/.pocketdj/streaming-links/status.json] [--log ~/.pocketdj/streaming-links/backfill.log]
-//     [--nav-timeout-ms 30000]
+//     [--nav-timeout-ms 30000] [--retry-misses]
+//
+// --retry-misses re-attempts songs the first crawl cached as null (a miss). Without it the
+// resolver skips anything already cached, hit OR miss, so a second supervised pass would
+// find nothing to do. Point it at a fresh --status/--log so the completed run stays intact.
 
 import { spawn } from 'node:child_process';
 import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
@@ -49,6 +53,7 @@ function parseArgs(argv) {
     services: 'spotify,youtube',
     minScore: 60,
     navTimeoutMs: 30000,
+    retryMisses: false,
     status: '~/.pocketdj/streaming-links/status.json',
     log: '~/.pocketdj/streaming-links/backfill.log',
   };
@@ -66,6 +71,7 @@ function parseArgs(argv) {
     else if (k === '--services') a.services = next();
     else if (k === '--min-score') a.minScore = parseInt(next(), 10);
     else if (k === '--nav-timeout-ms') a.navTimeoutMs = parseInt(next(), 10);
+    else if (k === '--retry-misses') a.retryMisses = true;
     else if (k === '--status') a.status = next();
     else if (k === '--log') a.log = next();
   }
@@ -90,6 +96,7 @@ function runChunk(args, delayMs, index) {
       '--services', args.services,
       '--nav-timeout-ms', String(args.navTimeoutMs),
     ];
+    if (args.retryMisses) cliArgs.push('--retry-misses');
     const child = spawn(process.execPath, cliArgs, { cwd: REPO });
     let err = '';
     child.stderr.on('data', (d) => { err += d.toString(); });
