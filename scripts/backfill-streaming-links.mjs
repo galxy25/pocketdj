@@ -31,13 +31,53 @@
 // find nothing to do. Point it at a fresh --status/--log so the completed run stays intact.
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const expand = (p) => (p && p.startsWith('~') ? p.replace(/^~/, homedir()) : p);
+
+// ---- interlock with streaming-links-nightly.sh -------------------------------------
+// Both this supervisor and the 06:00 nightly drive headless-Chromium resolvers against the
+// SAME services and the SAME cache. Run them at once and each looks like a bot-wall to the
+// other — the very signal the miss-rate backoff exists to detect. The nightly already takes
+// `<cacheDir>/.sync.lock` (mkdir is atomic; macOS has no flock); this honours the same lock
+// so the two can never crawl concurrently.
+//
+// Held PER CHUNK, not for the whole run. A multi-day manual crawl that grabbed the lock up
+// front would starve the nightly every night — the same failure mode the am-sync clone was
+// built to avoid. Chunk-scoped means the nightly waits at most one chunk (~9 min) for its
+// turn, and the manual run waits out the nightly instead of fighting it.
+function lockDirFor(cachePath) { return join(dirname(expand(cachePath)), '.sync.lock'); }
+
+function tryAcquire(lockDir) {
+  try {
+    mkdirSync(lockDir);                       // atomic: succeeds only if we created it
+    writeFileSync(join(lockDir, 'pid'), String(process.pid));
+    return true;
+  } catch {
+    let pid = null;
+    try { pid = parseInt(readFileSync(join(lockDir, 'pid'), 'utf8').trim(), 10); } catch { /* no pid file */ }
+    if (pid === process.pid) return true;     // already ours
+    if (pid) {
+      // Probe the holder. Only ESRCH ("no such process") proves it is gone: EPERM means the
+      // process is ALIVE and merely owned by another user, and treating that as stale would
+      // steal a live lock — the exact bug this probe exists to prevent.
+      try { process.kill(pid, 0); return false; } catch (e) { if (e.code !== 'ESRCH') return false; }
+    }
+    try { rmSync(lockDir, { recursive: true, force: true }); } catch { return false; }
+    return tryAcquire(lockDir);
+  }
+}
+
+function release(lockDir) {
+  try {
+    if (parseInt(readFileSync(join(lockDir, 'pid'), 'utf8').trim(), 10) !== process.pid) return;
+  } catch { return; }
+  try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
 
 function parseArgs(argv) {
   const a = {
@@ -54,6 +94,7 @@ function parseArgs(argv) {
     minScore: 60,
     navTimeoutMs: 30000,
     retryMisses: false,
+    ignoreLock: false,
     status: '~/.pocketdj/streaming-links/status.json',
     log: '~/.pocketdj/streaming-links/backfill.log',
   };
@@ -72,6 +113,7 @@ function parseArgs(argv) {
     else if (k === '--min-score') a.minScore = parseInt(next(), 10);
     else if (k === '--nav-timeout-ms') a.navTimeoutMs = parseInt(next(), 10);
     else if (k === '--retry-misses') a.retryMisses = true;
+    else if (k === '--ignore-lock') a.ignoreLock = true;
     else if (k === '--status') a.status = next();
     else if (k === '--log') a.log = next();
   }
@@ -133,6 +175,14 @@ async function main() {
       services: args.services, cache: expand(args.cache),
     },
   };
+  const lockDir = lockDirFor(args.cache);
+  // A killed run must not leave the lock behind and mute the nightly forever. (A stale lock
+  // is also reclaimed by pid probe, but only once someone next tries to take it.)
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => { release(lockDir); process.exit(130); });
+  }
+  process.on('exit', () => release(lockDir));
+
   const flush = () => { state.updatedAt = iso(); writeFileSync(statusPath, JSON.stringify(state, null, 2)); };
   const log = (line) => { const s = `[${iso()}] ${line}`; appendFileSync(logPath, s + '\n'); process.stdout.write(s + '\n'); };
 
@@ -146,7 +196,17 @@ async function main() {
     state.currentIndex = index; state.stalls = 0; flush();
     log(`── index ${index} ──`);
     for (;;) {
-      const c = await runChunk(args, delay, index);
+      // Wait out the nightly rather than crawling alongside it (see lock doctrine above).
+      let waited = false;
+      while (!args.ignoreLock && !tryAcquire(lockDir)) {
+        if (!waited) { log(`  ⏸  streaming-links lock held (nightly running?) — waiting`); waited = true; }
+        state.phase = 'waiting-for-lock'; flush();
+        await sleep(30_000);
+      }
+      if (waited) { log(`  ▶️  lock acquired — resuming`); state.phase = 'running'; flush(); }
+      let c;
+      try { c = await runChunk(args, delay, index); }
+      finally { if (!args.ignoreLock) release(lockDir); }
       state.chunks++;
       if (c.nothing || c.done === 0) { log(`  ${index}: complete (all cached)`); break; }
       const total = c.hits + c.miss;
