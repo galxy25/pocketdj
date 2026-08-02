@@ -4,6 +4,7 @@ import SwiftUI
 /// DJ-relevant columns (BPM, key, Camelot) for beat- and key-matching.
 struct AlbumDetailView: View {
     @Environment(AppModel.self) private var app
+    @Environment(SetlistPlayer.self) private var sequencer
     @Environment(CollectionsStore.self) private var collections
     @Environment(RipsStore.self) private var rips
     let album: IndexAlbum
@@ -130,6 +131,16 @@ struct AlbumDetailView: View {
                 Text("\(tracks.count) tracks")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.fgDim)
+                // Whole-album queueing sits beside the track count, not in the toolbar — that
+                // already carries five primaryAction items and overflows on iPhone.
+                if sequencer.isRunning {
+                    Menu {
+                        QueueMenuItems(songs: tracks, noun: "Album")
+                    } label: {
+                        Image(systemName: "text.append").font(.caption)
+                    }
+                    .accessibilityIdentifier("album-queue-menu")
+                }
                 Spacer(minLength: 0)
             }
             Spacer(minLength: 0)
@@ -148,6 +159,7 @@ struct AlbumDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("track-\(song.id)")
+                    .contextMenu { QueueMenuItems(songs: [song]) }
                     // Inline slide-out player below this track when it's the one playing.
                     InlinePlayerSlot(songId: song.id)
                 }

@@ -496,7 +496,40 @@ final class SetlistPlayer {
         Task { await playCurrent() }
     }
 
-    /// Shift playback BACK onto a played row (by identity) — the history list's "Play now".
+    /// "PLAY NOW" — start `item` immediately, interrupting whatever is playing, and let the queue
+    /// carry on from where it was afterwards.
+    ///
+    /// Deliberately DISTINCT from `jumpToPlayed` (which is "Rewind to here"). Play-now does not move
+    /// the needle backwards: it splices a FRESH copy of the track in right after the current row and
+    /// steps onto it, so the interrupted track stays in the played region and the tail that was
+    /// coming up is untouched. Rewinding, by contrast, replays everything from the chosen point
+    /// forward. Both are offered on a played row because they answer different questions — "play
+    /// that again right now" vs "take me back to there".
+    ///
+    /// The caller passes a fresh `Item` (a new uid): reusing the tapped row's would put a duplicate
+    /// per-instance identity in the queue, which the uid-keyed live-queue edits rely on being unique.
+    func playNow(_ item: Item) {
+        guard isRunning else { return }
+        exitHoldIfNeeded()
+        waitingForLive = false
+        let at = min(index + 1, queue.count)
+        queue.insert(item, at: at)
+        index = at
+        persistSession(positionMs: 0)
+        // `fresh: true` (the default) is LOAD-BEARING here, not incidental: the index moved to a
+        // different track, and `fresh` is what tears down an F4 Now Playing mix engagement. Passing
+        // false left the DSP rendering the INTERRUPTED track while the AVPlayer started this one —
+        // two songs at once, breaking the one-audio-owner rule — and left `dsp.onReachedEnd` armed,
+        // so the old track's end fired an advance that skipped the very track the user asked to
+        // play now. `adoptNowPlayingIfJumped`'s double-audio guard can't rescue it either: it
+        // early-returns because the index already points at the row now-playing publishes.
+        // (The other `fresh: false` callers all stay on the SAME row, which is why they're safe.)
+        // fresh also arms the repeat counter from `queue[index]` — which IS this item, so nothing
+        // needs arming by hand.
+        Task { await playCurrent() }
+    }
+
+    /// Shift playback BACK onto a played row (by identity) — "Rewind to here".
     /// `jumpToUpcoming` mirrored at the head: the needle lands exactly on the tapped row and
     /// the rows between it and the old current return to the upcoming tail (the same region a
     /// repeated ⏮ walks, one tap). Unknown/current/upcoming uids are a safe no-op — the tap

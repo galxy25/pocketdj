@@ -836,6 +836,9 @@ struct SongRow: View {
         SongRowView(data: SongRowData(song: song, album: album))
             .padding(.horizontal, 2)
             .contextMenu {
+                // Folded INTO the existing menu, never nested as a submenu: a row that already
+                // owns a `.contextMenu` and then adds another loses one of them.
+                QueueMenuItems(songs: [song])
                 ShareLink(item: ShareText.forSong(song),
                           subject: Text("\(song.name) — \(song.artist)")) {
                     Label("Share", systemImage: "square.and.arrow.up")

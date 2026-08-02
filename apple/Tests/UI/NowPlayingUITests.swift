@@ -261,6 +261,60 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
+    /// "Play now" and "Rewind to here" are two DIFFERENT actions on a previously-played row, and
+    /// this drives the distinction on a real deck. The seeded session is [Neon, Pulse, Drift] with
+    /// the cursor on Pulse, so Neon is the one played row.
+    ///
+    /// Rewinding to Neon must put the needle back on Neon AND return Pulse — the track that was
+    /// playing — to the upcoming queue, so everything from the rewind point onward plays through
+    /// again in order. That last part is the behaviour Levi asked for and the reason a rewind is
+    /// not the same as re-queueing the song.
+    func testRewindToHereReplaysFromThatPointOnward() throws {
+        #if os(macOS)
+        throw XCTSkip("context-menu long-press exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launchEnvironment["PDJ_HOLD_PLAYBACK"] = "1"   // assert queue shape, don't start audio
+        app.launch()
+        let panel = app.revealNowPlayingHome()
+        XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
+
+        let history = app.el("np-history")
+        XCTAssertTrue(history.waitForExistence(timeout: 8))
+        if !app.any("np-played-0").exists { history.tap() }
+        let played = app.any("np-played-0")
+        XCTAssertTrue(played.waitForExistence(timeout: 8), "Neon is the played row")
+
+        played.press(forDuration: 0.9)
+        // BOTH actions are offered, and they are distinct.
+        XCTAssertTrue(app.buttons["Play now"].firstMatch.waitForExistence(timeout: 5),
+                      "a played row still offers Play now")
+        let rewind = app.buttons["Rewind to here"].firstMatch
+        XCTAssertTrue(rewind.exists, "…and now also offers Rewind to here")
+        attach("played-row-menu")
+        rewind.tap()
+
+        // Assert on ROW IDENTITY, not on visible text: the deck is a lazy List and on iPhone the
+        // rows below the fold are never instantiated, so `staticTexts["Pulse"].exists` would be
+        // false even when the queue is correct.
+        //
+        // Neon was the ONLY played row, so after rewinding onto it the played section must be
+        // empty — and Pulse, the track that was playing, must be back in the upcoming queue. That
+        // pair is the rewind semantic: the needle moved back, and everything from there forward
+        // (including what was playing) is queued to play again in order.
+        XCTAssertFalse(app.any("np-played-0").waitForExistence(timeout: 5),
+                       "the rewound-onto row is no longer 'previously played' — it IS the needle")
+        attach("after-rewind")
+        // Collapse the played section again (also the @AppStorage default this test must leave
+        // behind). With it closed, Up Next is above the fold and its rows are instantiated.
+        history.tap()
+        XCTAssertTrue(app.any("np-queue-0").waitForExistence(timeout: 8),
+                      "the track that was playing returns to the queue and plays again in order")
+        XCTAssertTrue(app.staticTexts["Pulse"].exists,
+                      "…and it is Pulse, the row the needle was on before the rewind")
+        #endif
+    }
+
     /// Close the song-detail sheet (iPhone Back / iPad+macOS ✕ overlay — the panel's per-platform close).
     private func dismissSongDetail() {
         let back = app.el("np-detail-back")
