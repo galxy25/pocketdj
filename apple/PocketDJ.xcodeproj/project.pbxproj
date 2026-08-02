@@ -184,6 +184,7 @@
 		6F6AD2DAD4148D3D128BFF24 /* Harmonics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AB79A4DB9740AAA2864661F /* Harmonics.swift */; };
 		70D24458E304CCBFEC625245 /* PlayHistoryContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D589B67B24BB608496DCA73 /* PlayHistoryContextTests.swift */; };
 		722350CBC3513EFA0C7A7617 /* ProfileSourceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7F41C172125992A11EBB32D /* ProfileSourceStoreTests.swift */; };
+		72D697FBCE26315EE6560F6A /* WebAPIPlaylistWriteBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E95C368442B922AB9E69F7C3 /* WebAPIPlaylistWriteBackTests.swift */; };
 		72FF7AE28DE015E234CD53AD /* MelodyTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9E0ECB5A0E7FAEB4C1A48B9 /* MelodyTrackerTests.swift */; };
 		740A91784FC16249388983AE /* BackupZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = A963FCF5CBA64C18F7B02061 /* BackupZip.swift */; };
 		740C0D0570C4757D57C11815 /* AlbumArtworkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E57D669298B63F0D5DC1DC7 /* AlbumArtworkStore.swift */; };
@@ -287,6 +288,7 @@
 		B515E59C01A08813F89D549A /* RipServerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53BDC217143D9D7C42ABB34C /* RipServerService.swift */; };
 		B5ED0F5C9AC3B15F06E14F35 /* BrowseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B5EC722B1324CED81EF2E8E /* BrowseView.swift */; };
 		B63A48DA031BA4A2940BDA13 /* LivOnboardingWalkUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D70A1AAA0A02B65C93193E6D /* LivOnboardingWalkUITests.swift */; };
+		B6F4937A1A400E00F25B3B94 /* WebAPIPlaylistWriteBack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8373D704FD549915D5EBFC /* WebAPIPlaylistWriteBack.swift */; };
 		B722AEC5C71C2971227C4277 /* NowPlayingQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D8C95F97FEDC55C7D0636C /* NowPlayingQueueTests.swift */; };
 		B73CA670DDA981455A455D8D /* JukeboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7266D9DD5E60E6B11B393E85 /* JukeboxView.swift */; };
 		B7AE54E9AD196FF61C5040E7 /* StudioStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B63459D37D4840D3D9176324 /* StudioStoreTests.swift */; };
@@ -476,6 +478,7 @@
 		1A7A20693A735D78FD673A44 /* SongDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongDetailView.swift; sourceTree = "<group>"; };
 		1AB79A4DB9740AAA2864661F /* Harmonics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Harmonics.swift; sourceTree = "<group>"; };
 		1B719954C73F95F9F2329F05 /* CollectionRipBurn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionRipBurn.swift; sourceTree = "<group>"; };
+		1B8373D704FD549915D5EBFC /* WebAPIPlaylistWriteBack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebAPIPlaylistWriteBack.swift; sourceTree = "<group>"; };
 		1C17166D49C05392DF713E26 /* PlayHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayHistoryStore.swift; sourceTree = "<group>"; };
 		1C656CD5A37A796925FF3B54 /* PocketBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketBuilder.swift; sourceTree = "<group>"; };
 		1C6B56C4FD9BBA755A7A33A0 /* StudioCuesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioCuesView.swift; sourceTree = "<group>"; };
@@ -782,6 +785,7 @@
 		E77A950E97B04B29A81DD77C /* StudioLoopsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioLoopsView.swift; sourceTree = "<group>"; };
 		E88C0F36DDCC615207DFA199 /* PocketDJ.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PocketDJ.entitlements; sourceTree = "<group>"; };
 		E8F8A39E852CE145BFCB5433 /* ScoreEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreEditorView.swift; sourceTree = "<group>"; };
+		E95C368442B922AB9E69F7C3 /* WebAPIPlaylistWriteBackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebAPIPlaylistWriteBackTests.swift; sourceTree = "<group>"; };
 		E9E0ECB5A0E7FAEB4C1A48B9 /* MelodyTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MelodyTrackerTests.swift; sourceTree = "<group>"; };
 		EA52B9933F53726523EEB561 /* BrowseLargeCatalogPerfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseLargeCatalogPerfTests.swift; sourceTree = "<group>"; };
 		EC42A99E0389034982894E21 /* BurnStoreBackgroundTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BurnStoreBackgroundTests.swift; sourceTree = "<group>"; };
@@ -855,6 +859,7 @@
 				2481DFB7CA65986DA54909CD /* StreamingProvider.swift */,
 				724E20A01740CD3684F83596 /* StreamingService.swift */,
 				7E8C2DD561AF74400DBCC31D /* StreamingTokenStore.swift */,
+				1B8373D704FD549915D5EBFC /* WebAPIPlaylistWriteBack.swift */,
 			);
 			path = Streaming;
 			sourceTree = "<group>";
@@ -1005,6 +1010,7 @@
 				1F9E044812623719A5FB6245 /* TracklistCSVTests.swift */,
 				AEEFD87FD22C4BE97452EE05 /* TransferCoordinatorTests.swift */,
 				E3B5DACCD80CB039B9425523 /* UpNextOriginTests.swift */,
+				E95C368442B922AB9E69F7C3 /* WebAPIPlaylistWriteBackTests.swift */,
 				B4978B8669DF99AC562256F3 /* WidgetNowPlayingTests.swift */,
 			);
 			path = Unit;
@@ -1813,6 +1819,7 @@
 				35129DB5F936353D812CC147 /* TracklistCSVTests.swift in Sources */,
 				578DA43BA82165532AAC14F8 /* TransferCoordinatorTests.swift in Sources */,
 				2B194C7299D3C3AEE619A2D3 /* UpNextOriginTests.swift in Sources */,
+				72D697FBCE26315EE6560F6A /* WebAPIPlaylistWriteBackTests.swift in Sources */,
 				4D2B471E5A6C13F4BA25A961 /* WidgetNowPlayingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2050,6 +2057,7 @@
 				FC5D735E2FD2A1BBB46D1131 /* TracksIcon.swift in Sources */,
 				0DE9F1A723C7143F0C22E92D /* TracksView.swift in Sources */,
 				E03D08E277CFBDABBB24EC25 /* TransferCoordinator.swift in Sources */,
+				B6F4937A1A400E00F25B3B94 /* WebAPIPlaylistWriteBack.swift in Sources */,
 				9A30AE2F0625AC128AB06595 /* WidgetSync.swift in Sources */,
 				294DF726DF4BB94FF0571AD2 /* WidgetTransport.swift in Sources */,
 			);
