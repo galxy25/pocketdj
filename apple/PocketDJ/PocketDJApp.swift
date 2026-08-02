@@ -874,14 +874,13 @@ struct PocketDJApp: App {
         cloudSync.register("play-history", fileURL: playHistory.syncFileURL) { [weak playHistory] in playHistory?.reloadFromDisk() }
         cloudSync.register("collection-activity", fileURL: collectionActivity.syncFileURL) { [weak collectionActivity] in collectionActivity?.reloadFromDisk() }
         cloudSync.register("mix-sessions", fileURL: mixSessions.syncFileURL) { [weak mixSessions] in mixSessions?.reloadFromDisk() }
-        // pushEligible: only a device that is actually DRIVING a session may publish one. Without
-        // this, opening the app on a phone untouched for a week could put its week-old set over the
-        // one you are listening to right now — the file is on disk either way, so its mtime cannot
-        // distinguish "I played here" from "I launched here". `mix-decks` needs no such veto: its
-        // restore parks the snapshot without ever establishing a current session, so its writers
-        // already no-op (verified — adding one there would break MixDeckSessionStore's tests).
-        cloudSync.register("playback-session", fileURL: playbackSession.syncFileURL,
-                           pushEligible: { [weak playbackSession] in playbackSession?.hasLiveSession ?? false })
+        // No push veto on the session doc. One was tried and removed: gating the push on "this
+        // process is driving a session" stranded a set played offline or in the background whose
+        // process was killed before it pushed — on the next launch the freshest played session
+        // could never reach the cloud. What actually orders these documents is the file mtime,
+        // which now means "last actually played here" (a restore no longer writes), plus the
+        // cloud comparison in pushDirty.
+        cloudSync.register("playback-session", fileURL: playbackSession.syncFileURL)
         cloudSync.register("mix-decks", fileURL: mixDeckSession.syncFileURL)
         cloudSync.register("discover-adds", fileURL: discoverAdds.syncFileURL) { [weak discoverAdds] in
             discoverAdds?.reloadFromDisk()   // new pulled entries flow through onAdded → live catalog

@@ -166,12 +166,6 @@ final class PlaybackSessionStore {
 
     // MARK: - Read
 
-    /// True when this device has a session it is actually driving — i.e. playback has started
-    /// here (`save`/`resumeFromHold` establish it), not merely a snapshot file left on disk by a
-    /// previous run. CloudSync uses this to veto PUSHING the session document: a device that only
-    /// opened the app has nothing to publish, and the file's mtime alone can't tell the difference.
-    var hasLiveSession: Bool { current != nil }
-
     /// The persisted snapshot, or nil. LENIENT: any read/decode failure, a schema-version
     /// mismatch, or an empty queue → nil — never throws, never blocks launch on repair.
     func load() -> Snapshot? {

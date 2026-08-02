@@ -40,11 +40,6 @@ final class CloudSyncService {
         /// Re-decode the (just-overwritten) file into the live store. nil ⇒ file-only
         /// (the restore-later stores, whose files are read after `syncAtLaunch`).
         var reload: (() -> Void)?
-        /// Veto: when this returns false the document is never PUSHED from this device (pulls
-        /// still apply normally). For documents whose file can be newer than the user's actual
-        /// activity — the playback session, whose file simply exists on disk from the last run —
-        /// mtime alone is not evidence this device has anything worth publishing.
-        var pushEligible: (() -> Bool)?
     }
 
     /// Clock/mtime slack under which two copies count as "the same write".
@@ -98,12 +93,8 @@ final class CloudSyncService {
         return dir.appendingPathComponent("pocketdj-cloudsync-state.json")
     }
 
-    /// `pushEligible` is declared BEFORE `reload` deliberately: a single trailing closure binds to
-    /// the LAST function-typed parameter, so putting it after would silently re-bind every existing
-    /// `register(...) { store.reloadFromDisk() }` call site to the veto instead of the reload.
-    func register(_ key: String, fileURL: URL, pushEligible: (() -> Bool)? = nil,
-                  reload: (() -> Void)? = nil) {
-        entries.append(Entry(key: key, fileURL: fileURL, reload: reload, pushEligible: pushEligible))
+    func register(_ key: String, fileURL: URL, reload: (() -> Void)? = nil) {
+        entries.append(Entry(key: key, fileURL: fileURL, reload: reload))
     }
 
     /// True when a pass may run at all (account availability is checked async per pass).
@@ -265,7 +256,6 @@ final class CloudSyncService {
                 } else if let localMs,
                           localMs > (cloudMs ?? 0) + Self.skewMs,
                           localMs > (pushedMtimeMs[entry.key] ?? 0) + 1,
-                          entry.pushEligible?() ?? true,
                           pushAllowed?() ?? true {
                     try await push(entry, mtimeMs: localMs)
                     pushed.append(entry.key)
@@ -292,29 +282,24 @@ final class CloudSyncService {
         guard pushAllowed?() ?? true else { return }
         guard await database.accountAvailable() else { return }
         let candidates = entries.filter { entry in
-            guard let localMs = fileMtimeMs(entry.fileURL),
-                  localMs > (pushedMtimeMs[entry.key] ?? 0) + 1 else { return false }
-            return entry.pushEligible?() ?? true
+            guard let localMs = fileMtimeMs(entry.fileURL) else { return false }
+            return localMs > (pushedMtimeMs[entry.key] ?? 0) + 1
         }
         guard !candidates.isEmpty else { return }
 
-        // A probe FAILURE (offline on the way to the background is the common case) must not lose
-        // the user's work, so fall back to the old blind push — but only for documents that have
-        // no `pushEligible` veto. A vetoed document is one where a wrong push is worse than a
-        // missed one, and it will ride the next full pass, which compares properly.
+        // A probe FAILURE — offline on the way to the background is the common case — falls back to
+        // the old blind push. Losing a set the user just played offline is worse than the narrow
+        // risk of overwriting: the local file is only a candidate here because it advanced past
+        // this device's own last push, i.e. the user really did something on this device.
         var cloud: [String: Double] = [:]
-        var probed = true
         do { cloud = try await database.fetchMeta(keys: candidates.map(\.key)) }
-        catch { probed = false }
+        catch { cloud = [:] }
 
         var pushed = false
         for entry in candidates {
             guard let localMs = fileMtimeMs(entry.fileURL) else { continue }
-            if probed {
-                if let cloudMs = cloud[entry.key], cloudMs > localMs + Self.skewMs { continue }
-            } else if entry.pushEligible != nil {
-                continue
-            }
+            // Absent from the probe ⇒ never uploaded ⇒ push. Only a strictly newer cloud copy skips.
+            if let cloudMs = cloud[entry.key], cloudMs > localMs + Self.skewMs { continue }
             if (try? await push(entry, mtimeMs: localMs)) != nil { pushed = true }
         }
         if pushed { saveState() }
@@ -341,7 +326,19 @@ final class CloudSyncService {
         // legitimately leaves the file dirty, so it rides the next push exactly as it should.
         let pulledMtime = fileMtimeMs(entry.fileURL) ?? doc.modifiedAtMs
         entry.reload?()
-        pushedMtimeMs[entry.key] = pulledMtime
+        if let afterReload = fileMtimeMs(entry.fileURL), afterReload != pulledMtime {
+            // The reload MERGED and re-saved: this file is now a superset of what the cloud holds,
+            // and it must go back up. Clear the watermark outright rather than recording the
+            // pre-reload mtime — the push gate is `localMs > watermark + 1`, and a merge-save lands
+            // well under a millisecond after the pull for a small log (measured: ~0.35 ms at 10
+            // events), so an mtime-based watermark would silently fail to clear that epsilon and
+            // the superset would never publish. A cleared watermark doesn't depend on timing at all.
+            pushedMtimeMs[entry.key] = nil
+        } else {
+            // Nothing changed on reload — watermark the bytes we just pulled so the next pass
+            // doesn't bounce them straight back up.
+            pushedMtimeMs[entry.key] = pulledMtime
+        }
     }
 
     @discardableResult
