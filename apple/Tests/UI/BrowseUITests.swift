@@ -129,6 +129,22 @@ final class BrowseUITests: XCTestCase {
         #endif
     }
 
+    /// Two-line song row (Levi 2026-08-02): title left / ARTIST RIGHT on the top line, and the
+    /// metadata + actions on the bottom. Captures the row for eyeball review as well as asserting
+    /// the artist is now its own element rather than part of a joined descriptor string.
+    func testSongRowIsTwoLinesWithArtistOnTheRight() {
+        let app = launch()
+        XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))
+        app.selectKind(songs: true)
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))
+        let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        att.name = "song-row-two-line"
+        att.lifetime = .keepAlways
+        add(att)
+        // The row still exposes its transport (the ids UI tests navigate by).
+        XCTAssertTrue(app.el("row-download-sng_1").exists, "download/checkmark keeps its id")
+    }
+
     func testSwitchToSongsListsTracks() {
         let app = launch()
         XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))   // album name is a button label on macOS

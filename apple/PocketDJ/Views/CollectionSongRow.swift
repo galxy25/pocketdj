@@ -43,14 +43,13 @@ struct SongRowView: View {
     private var effKey: String? { ripped?.musicalKey ?? data.key }
     private var effCamelot: String? { ripped?.camelot ?? data.camelot }
 
-    /// Secondary descriptor — "artist · year · genre"; year/genre size-gated.
-    private var descriptor: String {
+    /// The bottom line's text half — "year · genre", size-gated. The ARTIST is no longer here:
+    /// it moved to the top line, right-aligned opposite the title.
+    private var secondary: String {
+        guard showsExtra else { return "" }
         var parts: [String] = []
-        if !data.artist.isEmpty { parts.append(data.artist) }
-        if showsExtra {
-            if let y = data.year { parts.append(String(y)) }
-            if let g = data.genre, !g.isEmpty { parts.append(g) }
-        }
+        if let y = data.year { parts.append(String(y)) }
+        if let g = data.genre, !g.isEmpty { parts.append(g) }
         return parts.joined(separator: " · ")
     }
 
@@ -58,6 +57,11 @@ struct SongRowView: View {
         HStack(spacing: 10) {
             SongThumbnail(album: data.album, studioId: data.songId).frame(width: 42, height: 42)
 
+            // TWO LINES, each with its own left/right pairing (Levi 2026-08-02):
+            //   top    — what it IS: title on the left, artist hard right
+            //   bottom — what it's LIKE + what you can DO: metadata left, actions hard right
+            // The old layout ran everything across one line, which pushed the music cluster and
+            // the transport into a fight for width on iPhone and truncated the title first.
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(data.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
@@ -68,41 +72,47 @@ struct SongRowView: View {
                             .foregroundStyle(Theme.fg)
                             .accessibilityIdentifier("explicit-badge")
                     }
+                    Spacer(minLength: 8)
+                    // Artist RIGHT. Given lower layout priority than the title so a long artist
+                    // truncates before the song name does — the title is the identity of the row.
+                    Text(data.artist)
+                        .font(.caption).foregroundStyle(Theme.fgDim)
+                        .lineLimit(1).layoutPriority(-1)
+                        .accessibilityIdentifier("row-artist-\(data.songId)")
                 }
-                Text(descriptor.isEmpty ? "—" : descriptor)
-                    .font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
+
+                HStack(spacing: 8) {
+                    // Everything else about the song: year · genre (size-gated) then the music
+                    // analysis — BPM tiers · Camelot key · length.
+                    if !secondary.isEmpty {
+                        Text(secondary).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
+                    }
+                    BPMTier(bpm: effBpm)
+                    KeyChip(key: effKey, camelot: effCamelot)
+                    Text(Fmt.duration(data.lengthMs))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+
+                    Spacer(minLength: 8)
+
+                    if let trailing { trailing }
+
+                    // "Not backed up to Apple Music" — no confident catalog match, so a linked
+                    // collection can't push it to the real Apple Music playlist (it stays local).
+                    if data.unsyncable {
+                        Image(systemName: "xmark.icloud")
+                            .font(.caption)
+                            .foregroundStyle(Theme.fgDim)
+                            .help("Not on Apple Music — stays in your local copy; it won’t be added to the linked playlist.")
+                            .accessibilityLabel("Not backed up to Apple Music")
+                            .accessibilityIdentifier("unsyncable-badge-\(data.songId)")
+                    }
+
+                    FavoriteToggle(songId: data.songId, appleMusicId: data.appleMusicId)
+
+                    RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
+                                 startMs: data.startMs)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Middle music cluster: BPM tiers · KeyChip · length. The prominent
-            // "what does this sound like" block, right-aligned ahead of transport.
-            HStack(spacing: 8) {
-                BPMTier(bpm: effBpm)
-                KeyChip(key: effKey, camelot: effCamelot)
-                Text(Fmt.duration(data.lengthMs))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
-            }
-
-            if let trailing { trailing }
-
-            // "Not backed up to Apple Music" — this song has no confident catalog match, so a
-            // linked collection can't push it to the real Apple Music playlist (it stays local).
-            // Only ever set in a source-linked collection row (see `CollectionSongRow`).
-            if data.unsyncable {
-                Image(systemName: "xmark.icloud")
-                    .font(.caption)
-                    .foregroundStyle(Theme.fgDim)
-                    .help("Not on Apple Music — stays in your local copy; it won’t be added to the linked playlist.")
-                    .accessibilityLabel("Not backed up to Apple Music")
-                    .accessibilityIdentifier("unsyncable-badge-\(data.songId)")
-            }
-
-            // ♥ sits INSIDE the row's own layout (not the `trailing` slot — callers already
-            // spend that on setlist source/sequence badges), immediately left of transport.
-            FavoriteToggle(songId: data.songId, appleMusicId: data.appleMusicId)
-
-            RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
-                         startMs: data.startMs)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
@@ -366,9 +376,9 @@ struct FavoriteToggle: View {
 
 /// ▶ / ⤓ — the real rip-on-demand transport (replaces the old placeholders). ▶ rips
 /// (or plays the cached mp3), loads the `PlayerEngine`, and reveals the inline player
-/// for this row; ⤓ resolves the durable mp3 (ripping on demand if needed) and then opens
-/// a native SAVE-LOCATION picker (`.fileExporter` → NSSavePanel on macOS, the document
-/// picker in export mode on iOS/iPadOS) so the user CHOOSES where the file goes. The
+/// for this row; ⤓ SAVES the durable mp3 (ripping on demand if needed) straight into the
+/// burnt-music folder from Settings — or the app-managed burns directory when none is set —
+/// and the glyph then becomes a ✓ whose menu deletes the file or reveals it. The
 /// button area shows the live rip phase (Searching… / Ripping mm:ss / ● Streaming live /
 /// Uploading…, ⚠ on error), matching the PWA's `RipButtons`.
 struct RowTransport: View {
@@ -390,9 +400,6 @@ struct RowTransport: View {
 
     @State private var busy: Busy?
     @State private var alertMessage: String?
-    /// The resolved mp3 bytes, wrapped for `.fileExporter`. Set (non-nil) once the
-    /// download/rip completes → presents the save-location picker.
-    @State private var exportDoc: RippedAudioFile?
 
     enum Busy { case play, download }
 
@@ -468,13 +475,42 @@ struct RowTransport: View {
                     .disabled((!canPlay && !isNowPlaying) || busy != nil)
                     .accessibilityIdentifier("row-play-\(song.id)")
 
-                    Button { doDownload() } label: {
-                        Image(systemName: busy == .download ? "ellipsis" : "arrow.down.circle").font(.caption)
+                    // DOWNLOAD → ✓. A download now SAVES (into the burn folder from Settings, or
+                    // the app-managed folder when none is set) instead of opening a save panel per
+                    // track, and the glyph becomes a checkmark once the file is on disk. Tapping
+                    // the checkmark is how you manage that file — delete it, or go look at it.
+                    if hasBurnedFile, busy == nil {
+                        Menu {
+                            Button(role: .destructive) { burns.removeBurns(songIds: [song.id]) } label: {
+                                Label("Delete download", systemImage: "trash")
+                            }
+                            if let url = burns.localURL(forSong: song.id) {
+                                #if os(macOS)
+                                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
+                                    Label("Show in Finder", systemImage: "folder")
+                                }
+                                #else
+                                // iOS/visionOS have no "reveal"; the share sheet is the honest
+                                // equivalent — it carries "Save to Files" and a Files preview.
+                                ShareLink(item: url) { Label("Show in Files", systemImage: "folder") }
+                                #endif
+                            }
+                        } label: {
+                            Image(systemName: "checkmark.circle.fill").font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(Theme.accent)
+                        .accessibilityLabel("Downloaded")
+                        .accessibilityIdentifier("row-download-\(song.id)")
+                    } else {
+                        Button { doDownload() } label: {
+                            Image(systemName: busy == .download ? "ellipsis" : "arrow.down.circle").font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(canAct ? Theme.fgDim : Theme.fgDim.opacity(0.4))
+                        .disabled(!canAct || busy != nil)
+                        .accessibilityIdentifier("row-download-\(song.id)")
                     }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(canAct ? Theme.fgDim : Theme.fgDim.opacity(0.4))
-                    .disabled(!canAct || busy != nil)
-                    .accessibilityIdentifier("row-download-\(song.id)")
 
                     // Stemify (line.3.horizontal): separate this song into stems on the server.
                     // A busy stem job shows a distinct ProgressView + phase label (Ripping first…/
@@ -503,20 +539,6 @@ struct RowTransport: View {
         .alert("Couldn’t play", isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })) {
             Button("OK", role: .cancel) { alertMessage = nil }
         } message: { Text(alertMessage ?? "") }
-        // The native save-location picker. Presents once `exportDoc` is non-nil (the rip
-        // resolved its bytes); on success the OS has written the mp3 to the chosen spot.
-        // Cancel + error both just clear state. The picker's content type appends `.mp3`,
-        // so `defaultFilename` is the bare "Artist - Title" base name.
-        .fileExporter(isPresented: Binding(get: { exportDoc != nil },
-                                           set: { if !$0 { exportDoc = nil } }),
-                      document: exportDoc,
-                      contentType: RippedAudioFile.mp3Type,
-                      defaultFilename: RipsStore.downloadBaseName(artist: song.artist, title: song.title)) { result in
-            exportDoc = nil
-            if case .failure(let error) = result {
-                alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
     }
 
     /// Pure phase → label mapping (mirrors the PWA's `RipButtons` switch).
@@ -586,21 +608,26 @@ struct RowTransport: View {
         }
     }
 
-    /// Resolve the durable mp3 (ripping on demand if needed — the row shows the live
-    /// rip phase off `activeJob` meanwhile), then arm the save-location picker by setting
-    /// `exportDoc`; the `.fileExporter` presents and the user chooses where it lands.
-    ///
-    /// DELIBERATELY foreground (NOT routed through the background `TransferCoordinator`): the
-    /// `.fileExporter` is an inherently-foreground interaction — it needs the bytes in-hand AND
-    /// the user present to pick a save location, so a backgrounded transfer can't complete this
-    /// flow anyway. The user's "survive suspend" goal is served by the multi-song Burn (now
-    /// background) + playback + rip-in; this single-song export stays on the in-memory path
-    /// (and so the existing foreground `downloadData` tests are unchanged).
+    /// SAVE, don't prompt. This used to resolve the bytes and then present `.fileExporter`, so
+    /// every single track download meant a save panel and a decision about where to put it.
+    /// `BurnStore.burn` already resolves the destination the way the rest of the app does — the
+    /// folder from Settings when one is set, the app-managed burns directory when not — so a
+    /// download now just lands there and the row flips to a checkmark.
     private func doDownload() {
         busy = .download
         Task {
-            do { exportDoc = RippedAudioFile(data: try await rips.downloadData(song)) }
-            catch { alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
+            let r = await burns.burn([(id: song.id, title: song.title, artist: song.artist)])
+            // Report the reasons that are actionable; a plain success says nothing (the row's
+            // checkmark IS the confirmation).
+            if r.outOfSpace {
+                alertMessage = "There isn’t enough space to save “\(song.title)”."
+            } else if r.folderUnavailable {
+                alertMessage = "Your burnt-music folder couldn’t be written to. Check it in Settings — the download wasn’t saved."
+            } else if r.notRipped > 0 {
+                alertMessage = "“\(song.title)” hasn’t been ripped yet, so there’s nothing to save."
+            } else if r.failed > 0 {
+                alertMessage = "“\(song.title)” couldn’t be saved."
+            }
             busy = nil
         }
     }
