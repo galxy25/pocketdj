@@ -804,6 +804,62 @@ final class CollectionsStoreTests: XCTestCase {
         XCTAssertEqual(events.first?.collectionKind, "playlist")
     }
 
+    // MARK: R3 — "From your sources" adds were never logged (data loss)
+
+    /// The R3 fix: adding a song to a read-only SOURCE playlist (an Apple Music playlist in "From
+    /// your sources") must log exactly ONE add, naming the on-device DUPLICATE it landed in.
+    /// Before the fix this path composed two low-level primitives and emitted nothing at all.
+    func testSourceAddFiresOneAddActivityNamingTheDuplicate() {
+        let s = store()
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        // The source does NOT already contain the song, so the add is real.
+        let src = sourcePL("ipl_1", "AM Mix", ["sng_other"])
+        let result = s.addSong("sng_new", toIndexPlaylist: src, appleMusicId: nil)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .add)
+        XCTAssertEqual(events.first?.itemId, "sng_new")
+        // The DUPLICATE, not the read-only source — this is what the write-back backfill resolves.
+        XCTAssertEqual(events.first?.collectionId, result.playlist.id)
+        XCTAssertEqual(events.first?.collectionKind, "playlist")
+        XCTAssertEqual(events.first?.collectionName, "AM Mix")
+    }
+
+    /// The gate that keeps the fix honest. `duplicateForSource` seeds the new duplicate with EVERY
+    /// id in the source, so the first tap on a song the Apple Music playlist ALREADY contains
+    /// appends nothing. An unconditional emit would log an add that never happened — and the
+    /// write-back backfill would then re-drive it upstream.
+    func testSourceAddOfAlreadyPresentSongFiresNoActivity() {
+        let s = store()
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        let src = sourcePL("ipl_1", "AM Mix", ["sng_dup"])       // source already has it
+        let first = s.addSong("sng_dup", toIndexPlaylist: src, appleMusicId: nil)
+        XCTAssertTrue(first.alreadyPresent)
+        XCTAssertTrue(events.isEmpty, "seeded-duplicate add must not fabricate an activity row")
+        // And a genuine re-tap on the now-existing duplicate stays silent too.
+        _ = s.addSong("sng_dup", toIndexPlaylist: src, appleMusicId: nil)
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    /// Nesting a pocket in a playlist emitted nothing while its inverse (`removeNode`) DID — the
+    /// timeline showed a removal it never showed an add for. The row is named by the POCKET, whose
+    /// id resolves to no catalog song.
+    func testAddPocketRefFiresOneAddActivityNamedByThePocket() {
+        let s = store()
+        let pl = s.createPlaylist("Set")
+        let child = s.createPocket("Deep Cuts")
+        var events: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { events.append($0) }
+        s.addPocketRef(child.id, toPlaylist: pl.id)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.kind, .add)
+        XCTAssertEqual(events.first?.itemId, child.id)
+        XCTAssertEqual(events.first?.itemTitle, "Deep Cuts")
+        XCTAssertEqual(events.first?.collectionId, pl.id)
+        XCTAssertEqual(events.first?.collectionKind, "playlist")
+    }
+
     /// A source-sync RECONCILE mutates the arrays directly (not via removeSong/removeNode), so it
     /// must fire NO activity — a catalog refresh can't spam the history.
     func testReconcileFiresNoActivity() {
@@ -1090,6 +1146,30 @@ final class WriteBackSourceSyncTests: XCTestCase {
     }
 
     // MARK: Backfill
+
+    /// R3 end to end: the activity row a source add now emits must be RICH ENOUGH to drive the
+    /// Apple Music write-back backfill. This is the whole point of logging the DUPLICATE's id — a
+    /// row naming the read-only source would resolve to no collection and recover nothing.
+    @MainActor
+    func testSourceAddActivityCanDriveTheWriteBackBackfill() async {
+        let (s, cap) = await wired()
+        var hooks: [CollectionsStore.ActivityHook] = []
+        s.onActivity = { hooks.append($0) }
+        let src = amSource("ipl_am", "AM Mix", ["sng_am1"])
+        _ = s.addSong("sng_am2", toIndexPlaylist: src, appleMusicId: nil)
+        XCTAssertEqual(hooks.count, 1)
+        XCTAssertTrue(cap.calls.isEmpty, "the add path itself doesn't enqueue — the caller does")
+
+        // Replay the hook exactly as the app wiring records it, then backfill from it.
+        let now = 1_000_000_000_000.0
+        let h = hooks[0]
+        let ev = CollectionActivityStore.ActivityEvent(
+            id: UUID(), at: now - 3_600_000, kind: .add, itemId: h.itemId, itemTitle: h.itemTitle,
+            itemArtist: h.itemArtist, collectionId: h.collectionId, collectionKind: h.collectionKind,
+            collectionName: h.collectionName, originInstallId: "A")
+        XCTAssertEqual(s.backfillSourceWriteBacks(from: [ev], days: 2, localInstallId: "A", nowMs: now), 1)
+        XCTAssertEqual(cap.calls.first?.sid, "sng_am2")
+    }
 
     @MainActor
     func testBackfillReDrivesRecentAddsAndIsIdempotent() async {

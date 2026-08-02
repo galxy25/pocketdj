@@ -59,6 +59,42 @@ final class HistoryUITests: XCTestCase {
         XCTAssertFalse(app.el("history-tab-playback").exists)
     }
 
+    // MARK: R3 — activity rows survive an item this device's catalog can't resolve
+
+    /// The R3 rendering, driven for real. `PDJ_SEED_ACTIVITY` seeds one row per resolution state;
+    /// the Collection tab must render all three usefully:
+    ///  • resolvable → named from the live catalog,
+    ///  • DENORMALIZED (the R3 case — an Apple Music song never indexed on this device) → still
+    ///    named, from the record-time title/artist snapshots,
+    ///  • bare legacy row → "an unknown item" PLUS the raw id, so it is never a blank row.
+    /// Before the fix the first case was the only one that could exist, because the add that
+    /// produces the second was never recorded at all.
+    @MainActor
+    func testCollectionActivityRendersUnresolvableItems() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_SEED_ACTIVITY"] = "1"
+        app.launchEnvironment["PDJ_START_SECTION"] = "History"
+        app.launch()
+
+        XCTAssertTrue(app.el("history-tab-collection").waitForExistence(timeout: 20))
+        app.el("history-tab-collection").tap()
+
+        // (2) The R3 row: its id resolves to NOTHING in this catalog, but the snapshots name it.
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Running It Up"))
+                        .firstMatch.waitForExistence(timeout: 10),
+                      "an add of a song this device never indexed must still name the song")
+        XCTAssertTrue(app.staticTexts["Aria"].firstMatch.exists,
+                      "the denormalized artist should render beneath the headline")
+
+        // (3) The bare legacy row: no title anywhere → an honest placeholder AND the raw id.
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "an unknown item"))
+                        .firstMatch.exists,
+                      "a row with no resolvable item should say so rather than show a bare id as its title")
+        XCTAssertTrue(app.staticTexts["sng_ghost_legacy"].firstMatch.exists,
+                      "the raw id should still be shown (dimmed) so the row stays traceable")
+    }
+
     /// The Timeline/By-song mode picker was REMOVED (2026-07-18) — no such control exists.
     @MainActor
     func testNoLegacyModePicker() {

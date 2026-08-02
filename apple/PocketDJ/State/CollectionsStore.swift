@@ -68,6 +68,9 @@ final class CollectionsStore {
         var kind: Kind
         var itemId: String
         var itemTitle: String?
+        /// Artist snapshot, so a row for an item the LOCAL catalog can't resolve still reads as a
+        /// song rather than a bare id (R3). Nil when nothing resolves / not a song.
+        var itemArtist: String?
         var collectionId: String?
         var collectionKind: String?    // AddTarget.Kind raw ("pocket" / "playlist")
         var collectionName: String?
@@ -321,6 +324,12 @@ final class CollectionsStore {
     }
     func addPocketRef(_ pocketId: String, toPlaylist id: String, sequenceId: String? = nil) {
         addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .pocket, pocketId: pocketId), toPlaylist: id, sequenceId: sequenceId)
+        // R3 (second instance of the same asymmetry): nesting a pocket in a playlist emitted
+        // nothing, while its inverse `removeNode` DOES emit — so the timeline showed the removal of
+        // a pocket it never showed being added. `itemTitle` is passed explicitly because a POCKET
+        // id resolves to no catalog song/album, so `activityTitle` would return nil.
+        emitAddActivity(itemId: pocketId, target: AddTarget(kind: .playlist, id: id),
+                        itemTitle: pocket(pocketId)?.name)
     }
     func addText(_ text: String, toPlaylist id: String, sequenceId: String? = nil) {
         addNode(PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .text, text: text), toPlaylist: id, sequenceId: sequenceId)
@@ -379,6 +388,7 @@ final class CollectionsStore {
                                     itemTitle: String? = nil) {
         onActivity?(ActivityHook(kind: .remove, itemId: itemId,
                                  itemTitle: itemTitle ?? activityTitle(itemId),
+                                 itemArtist: activityArtist(itemId),
                                  collectionId: collectionId, collectionKind: kind.rawValue,
                                  collectionName: name))
     }
@@ -526,6 +536,22 @@ final class CollectionsStore {
         let present = songIdsInNodes(pl.sequences).contains(songId)
         if !present {
             addSong(songId, toPlaylist: pl.id, sequenceId: pl.sequences.first?.nodeId)
+            // R3 — LOG THE ADD. This path composes the two LOW-LEVEL primitives
+            // (`duplicateForSource` + `addSong(_:toPlaylist:)`), neither of which emits, so an add
+            // made from a "From your sources" row produced ZERO history rows: the user's add to an
+            // Apple Music playlist was silently unrecorded. The emit belongs here, at the composed
+            // choke point, not in the primitives (which reconcile/import also drive).
+            //
+            // GATED ON `!present` — LOAD-BEARING, not an optimization. `duplicateForSource` mints
+            // the duplicate already seeded with EVERY id in `source.songIds`, so the very first tap
+            // on a song the Apple Music playlist already contains finds `present == true` and
+            // appends nothing. An unconditional emit would log "Added X" for an add that never
+            // happened, and `backfillSourceWriteBacks` would then re-drive it upstream.
+            //
+            // `collectionId`/`collectionKind` name the on-device DUPLICATE (not the read-only
+            // source): that is what `backfillSourceWriteBacks` resolves via `playlist(cid,
+            // contains:)` when it re-drives missed write-backs.
+            emitAddActivity(itemId: songId, target: AddTarget(kind: .playlist, id: pl.id))
         }
 
         let song = app?.songsById[songId]
@@ -1005,11 +1031,20 @@ final class CollectionsStore {
 
     /// A display title snapshot for an added/removed item id — catalog song, catalog album, or a
     /// Studio item (`smp_`/`lp_`/`ptn_`/`tk_`) via the studio seam. nil when nothing resolves
-    /// (the activity row then falls back to the id), so this is always safe to call.
+    /// (the activity row then reads "an unknown item" and shows the raw id beneath it — see
+    /// `HistoryView.isUnresolved`), so this is always safe to call.
     private func activityTitle(_ id: String) -> String? {
         if let s = app?.songsById[id] { return s.name }
         if let a = app?.albumsById[id] { return a.name }
         if StudioFactory.isStudioId(id), let info = studioLookup?(id) { return info.title }
+        return nil
+    }
+
+    /// The artist snapshot for an added/removed item id (song or album). nil when nothing
+    /// resolves — same always-safe contract as `activityTitle`.
+    private func activityArtist(_ id: String) -> String? {
+        if let s = app?.songsById[id] { return s.artist }
+        if let a = app?.albumsById[id] { return a.artist }
         return nil
     }
 
@@ -1226,8 +1261,13 @@ final class CollectionsStore {
     /// collection name from the live target so the row reads standalone even after a rename/delete.
     /// Uses the PLAIN collection name (not `lastTargetLabel`'s "› Chapter" form) so an ADD and a
     /// REMOVE of the same list read consistently ("Added X to Set" / "Removed X from Set").
-    private func emitAddActivity(itemId: String, target: AddTarget) {
-        onActivity?(ActivityHook(kind: .add, itemId: itemId, itemTitle: activityTitle(itemId),
+    /// `itemTitle` overrides the catalog snapshot for items the catalog can't name (mirrors
+    /// `emitRemoveActivity`) — a child POCKET id resolves to no catalog song, so the pocket's own
+    /// name is passed in.
+    private func emitAddActivity(itemId: String, target: AddTarget, itemTitle: String? = nil) {
+        onActivity?(ActivityHook(kind: .add, itemId: itemId,
+                                 itemTitle: itemTitle ?? activityTitle(itemId),
+                                 itemArtist: activityArtist(itemId),
                                  collectionId: target.id, collectionKind: target.kind.rawValue,
                                  collectionName: plainCollectionName(target)))
     }

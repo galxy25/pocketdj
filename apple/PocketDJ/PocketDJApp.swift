@@ -361,6 +361,7 @@ struct PocketDJApp: App {
         collections.onActivity = { [weak collectionActivity] hook in
             collectionActivity?.record(kind: hook.kind == .add ? .add : .remove,
                                        itemId: hook.itemId, itemTitle: hook.itemTitle,
+                                       itemArtist: hook.itemArtist,
                                        collectionId: hook.collectionId, collectionKind: hook.collectionKind,
                                        collectionName: hook.collectionName)
         }
