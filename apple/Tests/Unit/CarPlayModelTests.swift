@@ -38,6 +38,94 @@ final class CarPlayModelTests: XCTestCase {
         return (CarPlayModel(services: services), services, collections)
     }
 
+    /// Like `makeModel`, but with a REAL `PlaybackSessionStore` wired to the sequencer and a
+    /// snapshot already on disk. Without the store, `restorePersistedSessionIfIdle` returns on its
+    /// `guard let sessionStore` and every restore assertion below would pass for the wrong reason.
+    private func makeModelWithSession(seed: Bool = true) async
+        -> (CarPlayModel, IntentServices, SetlistPlayer, PlaybackSessionStore) {
+        let (model, services, _) = await makeModel()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-cp-session-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let store = PlaybackSessionStore(fileURL: url)
+        let seq = services.setlistPlayer
+        seq.sessionStore = store
+        if seed {
+            store.save(PlaybackSessionStore.Snapshot(
+                sessionId: "pses_car",
+                source: .init(kind: "playlist", id: "pls_car", name: "Roadtrip"),
+                queue: [.init(songId: "s_1", title: "One", artist: "Aria", lengthMs: 200_000, repeatCount: nil),
+                        .init(songId: "s_2", title: "Two", artist: "Aria", lengthMs: 180_000, repeatCount: nil)],
+                index: 1, positionMs: 42_000, isPlaying: true, updatedAt: 0), now: 1_000)
+            store.flush(now: 1_000)
+        }
+        return (model, services, seq, store)
+    }
+
+    // MARK: Durable session on a CarPlay connect (R2)
+
+    /// The bug: plugging into the car after a force-quit came up with an EMPTY deck. The CarPlay
+    /// scene is its own `UIScene`, so it never runs RootView's launch task — the only caller of
+    /// `restorePersistedSessionIfIdle`. `ensureReady()` now performs the restore itself.
+    func testEnsureReadyRestoresThePersistedSession() async {
+        let (model, _, seq, _) = await makeModelWithSession()
+        XCTAssertFalse(seq.isRunning, "nothing restored before the scene connects")
+
+        await model.ensureReady()
+
+        XCTAssertTrue(seq.isRunning, "connecting to CarPlay rehydrates the set that was playing")
+        XCTAssertTrue(seq.isHeldForResume, "…HELD — connecting must never start audio on its own")
+        XCTAssertEqual(seq.index, 1)
+        XCTAssertEqual(seq.currentSongId, "s_2")
+        seq.stop()
+    }
+
+    /// Idempotent: `ensureReady()` runs on every scene connect, so it must never disturb a set that
+    /// is already running (e.g. the phone was playing when the driver plugged in).
+    func testEnsureReadyDoesNotClobberARunningSet() async {
+        let (model, _, seq, store) = await makeModelWithSession()
+        seq.restore(from: store.load()!)
+        seq.resumeFromHold()
+        XCTAssertFalse(seq.isHeldForResume, "the set is LIVE, not held")
+        let liveIndex = seq.index
+        let liveQueue = seq.queue.map(\.id)
+
+        await model.ensureReady()
+
+        XCTAssertEqual(seq.index, liveIndex, "a live run is never replaced by the stored one")
+        XCTAssertEqual(seq.queue.map(\.id), liveQueue)
+        XCTAssertFalse(seq.isHeldForResume,
+                       "a clobbering restore would re-park the deck as held — it must not")
+        seq.stop()
+    }
+
+    /// Same veto every mutating intent honors: a device that hasn't finished the zero-to-hero flow
+    /// must not materialize synced documents from a CarPlay connect.
+    func testEnsureReadyRestoreIsVetoedDuringOnboarding() async {
+        let (model, services, seq, _) = await makeModelWithSession()
+        services.onboardingIncomplete = { true }
+
+        await model.ensureReady()
+
+        XCTAssertFalse(seq.isRunning, "onboarding incomplete ⇒ no restore")
+    }
+
+    /// The affordance that makes the restore reachable without touching the phone.
+    func testResumableSessionRowAppearsOnlyWhileHeld() async {
+        let (model, _, seq, _) = await makeModelWithSession()
+        XCTAssertNil(model.resumableSession(), "nothing held yet")
+
+        await model.ensureReady()
+        let row = model.resumableSession()
+        XCTAssertEqual(row?.title, "Two", "the row names the track the set is parked on")
+        XCTAssertEqual(row?.subtitle, "Aria · Continue")
+
+        model.resumeHeldSession()
+        XCTAssertFalse(seq.isHeldForResume)
+        XCTAssertNil(model.resumableSession(), "once resumed there is nothing to continue")
+        seq.stop()
+    }
+
     // MARK: Browse
 
     func testAlbumsListCatalogAlbums() async {

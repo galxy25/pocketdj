@@ -64,7 +64,19 @@ final class CarPlayController {
         await model.ensureReady()
 
         let playlists = listTemplate(title: "Playlists", tabImageName: "music.note.list",
-                                     rows: model.playlists()) { [weak self] row in
+                                     rows: model.playlists(),
+                                     // The set that was playing when the phone was last used, held
+                                     // by `ensureReady`'s restore. Built ONCE here rather than via a
+                                     // stored template + refresh: a rebuild would re-walk the whole
+                                     // catalog on the main actor, and a fifth tab would risk
+                                     // CPTabBarTemplate.maximumTabCount.
+                                     leadingSection: model.resumableSession().map { row in
+                                         (header: "Continue", row: row, action: { [weak self] in
+                                             model.resumeHeldSession()
+                                             self?.interfaceController.pushTemplate(
+                                                 CPNowPlayingTemplate.shared, animated: true, completion: nil)
+                                         })
+                                     }) { [weak self] row in
             self?.pushSongs(title: row.title, rows: model.songs(inPlaylist: row.id),
                             playAll: { await model.playPlaylist(id: row.id) },
                             shuffleAll: { await model.playPlaylist(id: row.id, shuffle: true) })
@@ -154,10 +166,21 @@ final class CarPlayController {
     /// Build a browsable list template from rows; `onSelect` handles a row tap (drill-in).
     /// Tabs always use an SF Symbol `tabImage` (+ `tabTitle`) — NOT `tabSystemItem`, whose fixed
     /// system icon/label would override them (e.g. a `.more` item renders a misleading "•••").
+    /// `leadingSection` pins a single-row section above the list (the "Continue" resume row). Its
+    /// action fires directly — no disclosure, no drill-in — because the driver's intent is "keep
+    /// playing what I was playing", not "browse into something".
     private func listTemplate(title: String, tabImageName: String, rows: [CarPlayModel.Row],
+                              leadingSection: (header: String, row: CarPlayModel.Row,
+                                               action: () -> Void)? = nil,
                               onSelect: @escaping (CarPlayModel.Row) -> Void) -> CPListTemplate {
         let items = rows.map { row -> CPListItem in listItem(row, showsDisclosure: true) { onSelect(row) } }
-        let template = CPListTemplate(title: title, sections: [CPListSection(items: items)])
+        var sections: [CPListSection] = []
+        if let lead = leadingSection {
+            let item = listItem(lead.row, showsDisclosure: false) { lead.action() }
+            sections.append(CPListSection(items: [item], header: lead.header, sectionIndexTitle: nil))
+        }
+        sections.append(CPListSection(items: items))
+        let template = CPListTemplate(title: title, sections: sections)
         template.tabImage = UIImage(systemName: tabImageName)
         template.tabTitle = title
         return template

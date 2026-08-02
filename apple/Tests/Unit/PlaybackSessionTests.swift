@@ -482,6 +482,91 @@ final class SetlistPlayerSessionTests: XCTestCase {
         cleanBurnedFiles(["ps_r1.mp3", "ps_r1.txt"])
     }
 
+    // MARK: A RESTORE IS NOT A WRITE (R2 / R6)
+
+    /// THE RULE, and the whole fix for two user-visible bugs: rehydrating the deck must leave the
+    /// session FILE byte-for-byte untouched. That file's mtime is the only key ordering the session
+    /// across devices, so a restore-write meant (a) a CarPlay scene — which never runs the launch
+    /// pull — could push a stale local session over a newer cloud one, and (b) merely OPENING the
+    /// app on a device untouched for days stamped it "now" and stole the session.
+    func testRestoreDoesNotTouchTheSessionFile() async {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-psession-notouch-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+
+        // Seed the file DIRECTLY rather than through a store: a store's `save` schedules an async
+        // actor write that would land during this test and re-stamp the mtime by itself, which
+        // would make the assertion below fail for a reason that has nothing to do with restoring.
+        let seeded = PlaybackSessionStore.Snapshot(
+            sessionId: "pses_cold", source: .init(kind: "playlist", id: "pls_1", name: "Roadtrip"),
+            queue: [.init(songId: "s_1", title: "One", artist: "X", lengthMs: 200_000, repeatCount: nil),
+                    .init(songId: "s_2", title: "Two", artist: "X", lengthMs: 180_000, repeatCount: nil)],
+            index: 1, positionMs: 42_000, isPlaying: true, updatedAt: 1_000_000)
+        try? JSONEncoder().encode(seeded).write(to: url, options: .atomic)
+        let before = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let beforeDate = before?[.modificationDate] as? Date
+        let beforeBytes = try? Data(contentsOf: url)
+        XCTAssertNotNil(beforeDate)
+
+        // A cold launch: fresh store on the same file, restore through the real entry point.
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let store = PlaybackSessionStore(fileURL: url)
+        let (seq, _) = makeSequencer(rips: rips, burns: burns, player: player, store: store)
+        seq.restorePersistedSessionIfIdle()
+
+        XCTAssertTrue(seq.isRunning, "the deck DID restore — this test must not pass by not restoring")
+        XCTAssertTrue(seq.isHeldForResume)
+        XCTAssertEqual(seq.index, 1)
+
+        // Give any stray async write a chance to land, so this fails loudly rather than racing.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let afterDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        XCTAssertEqual(beforeDate, afterDate, "a restore must not re-stamp the session file's mtime")
+        XCTAssertEqual(beforeBytes, try? Data(contentsOf: url), "…nor rewrite its contents")
+
+        seq.stop()
+    }
+
+    /// The other half of the rule: once the user actually presses ▶, the session IS live on this
+    /// device and must be adopted — otherwise `updatePosition` (which no-ops while no session is
+    /// current) would never persist the resumed set's position at all.
+    func testResumeFromHoldAdoptsTheSessionAndPersists() async {
+        cleanBurnedFiles(["ps_adopt.mp3", "ps_adopt.txt"])
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-psession-adopt-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let store = PlaybackSessionStore(fileURL: url)
+        let (seq, _) = makeSequencer(rips: rips, burns: burns, player: player, store: store)
+        await burn(rips, burns, songId: "ps_adopt")
+
+        seq.restore(from: PlaybackSessionStore.Snapshot(
+            sessionId: "pses_adopt", source: .init(kind: "setlist", id: "set_a", name: "Set A"),
+            queue: [.init(songId: "ps_adopt", title: "Adopt", artist: "X", lengthMs: 200_000, repeatCount: nil)],
+            index: 0, positionMs: 42_000, isPlaying: true, updatedAt: 0))
+        XCTAssertNil(store.load(), "nothing on disk yet — the restore wrote nothing")
+
+        seq.resumeFromHold()
+        // `resumeFromHold` adopts SYNCHRONOUSLY (the actual playback is a detached Task, so it
+        // cannot interleave before the next line). Flushing here therefore lands exactly the
+        // snapshot the adoption established — deterministic, unlike polling for the async write,
+        // which the position ticker would have already overwritten with the live clock.
+        store.flush(now: 2_000)
+        XCTAssertEqual(store.load()?.sessionId, "pses_adopt",
+                       "the resumed session is adopted — without this, updatePosition no-ops forever")
+        XCTAssertEqual(store.load()?.positionMs, 42_000,
+                       "adopted AT the resume offset — a kill right after ▶ resumes where the user was")
+
+        // And it keeps tracking: once playback is really going, the live position takes over.
+        await waitUntil("playback started from the resume offset") { rips.nowPlaying?.songId == "ps_adopt" }
+        XCTAssertEqual(rips.nowPlaying?.seekMs, 42_000)
+
+        seq.stop()
+        cleanBurnedFiles(["ps_adopt.mp3", "ps_adopt.txt"])
+    }
+
     // MARK: first ▶ resumes at the saved position
 
     func testResumeFromHoldStartsCurrentTrackAtSavedPosition() async {

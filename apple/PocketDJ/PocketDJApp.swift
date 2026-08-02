@@ -526,9 +526,18 @@ struct PocketDJApp: App {
         // is what makes the filing DURABLE: addRecording persists via an async actor write that
         // loses the race with `.terminateNow`/exit().
         RecordingExitBridge.shared.finalize = { [weak mixRecorder, weak mixSessions,
-                                                 weak studioMic, weak instrumentEngine, weak studio] in
+                                                 weak studioMic, weak instrumentEngine, weak studio,
+                                                 weak playbackSession] in
             mixRecorder?.stop()
             mixSessions?.flush()
+            // The playback session rides the same bridge, for a reason specific to CarPlay: the
+            // scenePhase `.background` flush lives on the SwiftUI window scene, so unplugging from
+            // the head unit — which tears down the CarPlay scene, and on a phone that never had its
+            // window scene foregrounded may end the process outright — could drop up to ~5 s of
+            // position (the throttle window). This bridge is scene-independent. No-op unless a
+            // session is actually live: `flush()` guards on `current`, which a mere restore no
+            // longer establishes.
+            playbackSession?.flush()
             // Studio's quit paths ride the same bridge: the mic recorder files + flushes its
             // own in-flight sample take; an in-flight INSTRUMENT take is stopped and filed
             // here (stopTake during the count-in is a cancel → nil, nothing to file), then the
