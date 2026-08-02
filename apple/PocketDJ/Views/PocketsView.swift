@@ -331,7 +331,10 @@ struct PocketDetailView: View {
                     Task { await playlistSync.syncCollection(pocketId: pocketId,
                                                              collections: collections, app: app) }
                 } label: {
-                    Label("Sync with Apple Music", systemImage: "arrow.up.circle")
+                    // Say WHY it's unavailable — see the note on the playlist twin.
+                    Label(playlistSync.isSyncing ? "Syncing… (Apple Music sync running)"
+                                                 : "Sync with Apple Music",
+                          systemImage: playlistSync.isSyncing ? "arrow.triangle.2.circlepath" : "arrow.up.circle")
                 }
                 .disabled(playlistSync.isSyncing)
                 .accessibilityIdentifier("pocket-am-sync-now")
