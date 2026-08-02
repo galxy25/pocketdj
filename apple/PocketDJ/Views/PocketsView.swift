@@ -10,6 +10,9 @@ struct PocketDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(FavoritesStore.self) private var favorites
+    /// Optional like the other app-scoped services: always injected, but a preview/test host
+    /// rendering this standalone should degrade rather than trap.
+    @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
     @Environment(\.dismiss) private var dismiss
     let pocketId: String
     @Binding var path: NavigationPath
@@ -320,6 +323,19 @@ struct PocketDetailView: View {
                 Label("Apple Music sync", systemImage: "arrow.up.arrow.down.circle")
             }
             .accessibilityIdentifier("pocket-am-sync-direction")
+            // Send THIS pocket now, without waiting for a whole-library pass. Writes a normal sync
+            // report, so it lands in Settings ▸ Apple Music's sync history like any other run.
+            // Hidden when the direction gate would refuse the push anyway.
+            if let playlistSync, (pocket?.amSyncDir ?? .both).allowsPush {
+                Button {
+                    Task { await playlistSync.syncCollection(pocketId: pocketId,
+                                                             collections: collections, app: app) }
+                } label: {
+                    Label("Sync with Apple Music", systemImage: "arrow.up.circle")
+                }
+                .disabled(playlistSync.isSyncing)
+                .accessibilityIdentifier("pocket-am-sync-now")
+            }
             Toggle(isOn: syncBinding) {
                 Label("Sync with source", systemImage: "arrow.triangle.2.circlepath")
             }

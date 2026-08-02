@@ -842,6 +842,9 @@ struct PlaylistDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(FavoritesStore.self) private var favorites
+    /// Optional like the other app-scoped services here: always injected by the app, but a preview
+    /// or test host rendering this view standalone should degrade rather than trap.
+    @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
     let playlistId: String
     @Binding var path: NavigationPath
     /// Per-collection sort/filter (keyed by playlist id → remembered per playlist, on-device). Applies
@@ -962,6 +965,7 @@ struct PlaylistDetailView: View {
                     // control shows unconditionally (Levi 2026-07-29): "Get only" = never push —
                     // the smart-playlist setting; "Off" = never sync either way.
                     amSyncDirectionMenuItem
+                    amSyncNowMenuItem
                     Divider()
                     CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPlaylist: playlistId) }, noun: "playlist")
                     Divider()
@@ -1045,6 +1049,23 @@ struct PlaylistDetailView: View {
             Label("Apple Music sync", systemImage: "arrow.up.arrow.down.circle")
         }
         .accessibilityIdentifier("playlist-am-sync-direction")
+    }
+
+    /// Send THIS playlist to Apple Music now, without waiting for (or sitting through) a whole-
+    /// library pass. Writes a normal sync report, so it appears in Settings ▸ Apple Music's sync
+    /// history like any other run. Hidden when the playlist is set never to push — offering an
+    /// action the direction gate would refuse is just a lie with a spinner.
+    @ViewBuilder private var amSyncNowMenuItem: some View {
+        if let playlistSync, (playlist?.amSyncDir ?? .both).allowsPush {
+            Button {
+                Task { await playlistSync.syncCollection(playlistId: playlistId,
+                                                         collections: collections, app: app) }
+            } label: {
+                Label("Sync with Apple Music", systemImage: "arrow.up.circle")
+            }
+            .disabled(playlistSync.isSyncing)
+            .accessibilityIdentifier("playlist-am-sync-now")
+        }
     }
 
     /// Source-sync ⋯-menu items — shown only for a playlist duplicated from a source
