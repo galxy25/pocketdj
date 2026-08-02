@@ -835,10 +835,14 @@ struct PocketDJApp: App {
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
-        let fixtureRun = ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil
+        // PDJ_DISABLE_CLOUD_SYNC keeps CloudKit untouched on real-network runs too —
+        // an unsigned (CODE_SIGNING_ALLOWED=NO) build traps in CKContainer(identifier:),
+        // see the doctrine on OwnerIdentity.cloudKitIsSafeToTouch.
+        let env = ProcessInfo.processInfo.environment
+        let cloudKitOff = env["PDJ_USE_FIXTURE"] != nil || env["PDJ_DISABLE_CLOUD_SYNC"] == "1"
         let cloudSync = CloudSyncService(database: CKCloudDocDatabase(),
                                          enabled: { [weak settings] in
-                                             !fixtureRun && (settings?.cloudSyncEnabled ?? true)
+                                             !cloudKitOff && (settings?.cloudSyncEnabled ?? true)
                                          })
         // The synced-document registry: each entry is (record key, the SAME file URL the
         // store was constructed with, post-pull reload). playback-session/mix-decks are
@@ -900,7 +904,7 @@ struct PocketDJApp: App {
             jukebox: jukebox, setlistPlayer: setlistPlayer, mix: mix,
             cancelTransfers: { TransferCoordinator.shared.cancelAll() },
             cloudDatabase: CKCloudDocDatabase(),
-            cloudDeleteEnabled: { !fixtureRun },
+            cloudDeleteEnabled: { !cloudKitOff },
             collections: collections, favorites: favorites, playStats: playStats,
             playHistory: playHistory, collectionActivity: collectionActivity,
             edits: edits, discoverAdds: discoverAdds,

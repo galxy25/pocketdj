@@ -67,7 +67,8 @@ enum OwnerIdentity {
     /// (`CloudSyncService`'s `enabled` closure is `!fixtureRun && …`, and `CKCloudDocDatabase`
     /// builds its container lazily inside those gated calls). This mirrors that doctrine.
     private static var cloudKitIsSafeToTouch: Bool {
-        ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil
+        let env = ProcessInfo.processInfo.environment
+        return env["PDJ_USE_FIXTURE"] == nil && env["PDJ_DISABLE_CLOUD_SYNC"] != "1"
     }
 
     static func currentHash() async -> String? {

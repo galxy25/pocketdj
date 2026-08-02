@@ -89,6 +89,13 @@ bash scripts/test-macos.sh
     UserDefaults (settings *and* browse prefs reset each launch).
   - `PDJ_START_SECTION=<Browser|Settings|…>` → land on a section.
   - `PDJ_OPEN_FIRST_ALBUM=1` → deep-link into an album's track table.
+  - `PDJ_DISABLE_CLOUD_SYNC=1` → keep CloudKit untouched on a **real-network**
+    (non-fixture) run. `PDJ_USE_FIXTURE` already implies this; the separate seam
+    exists because `PDJ_INTEGRATION_PLAYBACK=1` runs against the live catalog, and an
+    unsigned build (`CODE_SIGNING_ALLOWED=NO` strips entitlements) **traps** inside
+    `CKContainer(identifier:)` — a crash no `do/catch` can catch. Gates
+    `CloudSyncService`, the account-deletion cloud wipe, and
+    `OwnerIdentity.cloudKitIsSafeToTouch`.
 - **`app.el("id")`** (Tests/UI/XCUIHelpers.swift) matches a control by identifier
   *or* label across element types, so toolbar buttons + the segmented picker
   resolve on macOS (where they're `.toolbars`/`.radioButtons`, not `.buttons`).
