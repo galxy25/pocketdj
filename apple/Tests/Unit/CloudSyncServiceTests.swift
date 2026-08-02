@@ -349,3 +349,58 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(mirrored, ["Cloud Name"])
     }
 }
+
+// MARK: - While-active tick (the merged history's delivery mechanism)
+
+@MainActor
+final class CloudSyncTickTests: XCTestCase {
+
+    private var dir: URL!
+    override func setUp() async throws {
+        dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-tick-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: dir) }
+
+    /// A device that stays FOREGROUNDED and playing never changes scene phase, so before the tick
+    /// it never pushed at all — which is why plays on the Mac never reached the phone. The tick is
+    /// what publishes them.
+    func testTickPushesWithoutAnySceneTransition() async throws {
+        let db = CloudSyncServiceTests.MemoryCloudDB()
+        let svc = CloudSyncService(database: db, enabled: { true },
+                                   stateURL: dir.appendingPathComponent("state.json"))
+        let url = dir.appendingPathComponent("history.json")
+        try Data(#"{"events":["played-on-the-mac"]}"#.utf8).write(to: url, options: .atomic)
+        svc.register("play-history", fileURL: url)
+
+        svc.syncTick()
+        // The tick spawns the pass; give it a moment to land.
+        for _ in 0..<200 where await db.docs["play-history"] == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let doc = await db.docs["play-history"]
+        XCTAssertEqual(doc?.payload, #"{"events":["played-on-the-mac"]}"#.data(using: .utf8)!,
+                       "an open, playing app publishes without waiting to be backgrounded")
+    }
+
+    /// …but it is throttled, so an open app doesn't hammer CloudKit.
+    func testTickIsThrottled() async throws {
+        let db = CloudSyncServiceTests.MemoryCloudDB()
+        let svc = CloudSyncService(database: db, enabled: { true },
+                                   stateURL: dir.appendingPathComponent("state2.json"))
+        let url = dir.appendingPathComponent("doc.json")
+        try Data(#"{"v":1}"#.utf8).write(to: url, options: .atomic)
+        svc.register("doc", fileURL: url)
+
+        svc.syncTick()
+        for _ in 0..<200 where await db.docs["doc"] == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let after = await db.saveCount
+        svc.syncTick()   // immediately again — inside the 20 s window
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let again = await db.saveCount
+        XCTAssertEqual(again, after, "a second tick inside the window does nothing")
+    }
+}

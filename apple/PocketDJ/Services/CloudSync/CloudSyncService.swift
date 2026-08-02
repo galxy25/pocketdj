@@ -126,6 +126,28 @@ final class CloudSyncService {
         Task { await runPass(manual: false) }
     }
 
+    /// WHILE-ACTIVE freshness tick — what makes a merged history actually arrive.
+    ///
+    /// The trigger set was launch, a 5-minute-throttled foreground transition, and backgrounding.
+    /// For the case this exists for — playing on the Mac while carrying the phone around — NONE of
+    /// them fire: the Mac stays foregrounded and playing, so it never transitions, so it never
+    /// pushes, so the plays never propagate AT ALL. Not "slowly": never, until the app is
+    /// backgrounded or quit.
+    ///
+    /// A pass while active closes that on both ends at once — the Mac publishes what it's playing,
+    /// and the phone picks it up. Deliberately cheap: a pass opens with ONE `fetchMeta` over the
+    /// registered keys (modification times, no asset payloads) and does nothing further unless a
+    /// document actually differs, so a quiet minute costs three metadata reads and no transfers.
+    /// Foreground only — `scenePhase == .active` gates the caller, so a backgrounded or suspended
+    /// app never ticks.
+    nonisolated static let activeTickGapMs: Double = 20_000
+
+    func syncTick() {
+        let now = Date().timeIntervalSince1970 * 1000
+        guard now - lastPassAt > Self.activeTickGapMs else { return }
+        Task { await runPass(manual: false) }
+    }
+
     /// Settings ▸ Profile "Sync Now".
     func syncNow() async { await runPass(manual: true) }
 
