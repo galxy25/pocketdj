@@ -138,11 +138,25 @@ final class BrowseUITests: XCTestCase {
         app.selectKind(songs: true)
         XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))
         let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        att.name = "song-row-two-line"
+        att.name = "song-row-portrait"
         att.lifetime = .keepAlways
         add(att)
-        // The row still exposes its transport (the ids UI tests navigate by).
         XCTAssertTrue(app.el("row-download-sng_1").exists, "download/checkmark keeps its id")
+
+        // LANDSCAPE: the artist moves up beside the title. iOS only — `XCUIDevice.orientation`
+        // lives behind `#if TARGET_OS_IPHONE`, and this target also builds for macOS, so an
+        // unguarded call breaks the macOS test bundle's COMPILE (not just its run). Same guard
+        // every other rotation in this suite uses.
+        #if !os(macOS)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))
+        let land = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        land.name = "song-row-landscape"
+        land.lifetime = .keepAlways
+        add(land)
+        XCTAssertTrue(app.el("row-download-sng_1").exists, "…and the row still works rotated")
+        #endif
     }
 
     func testSwitchToSongsListsTracks() {

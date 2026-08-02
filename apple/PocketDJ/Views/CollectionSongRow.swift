@@ -23,9 +23,19 @@ import SwiftUI
 ///
 /// Presentation only — wrap in a `NavigationLink` for tap-through and attach
 /// swipe / move / delete / notes / context-menus on the enclosing row.
+/// Measures the row's own width so the artist can be capped at a share of it. SwiftUI has no
+/// "half the parent" frame, and `GeometryReader` in the layout path would fight the List's row
+/// sizing — reading the width through a preference off a background is the non-invasive way.
+private struct RowWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct SongRowView: View {
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
     @Environment(RipsStore.self) private var rips
+    @State private var rowWidth: CGFloat = 0
     let data: SongRowData
     /// Optional trailing accessory (e.g. a setlist source/sequence badge column) shown
     /// to the left of the play/download buttons.
@@ -33,6 +43,33 @@ struct SongRowView: View {
 
     /// Show year/genre only when there's room: regular width (iPad) or macOS (nil).
     private var showsExtra: Bool { hSize != .compact }
+
+    /// Is the row WIDE enough to sit the artist beside the title rather than under it?
+    ///
+    /// Landscape on iPhone reports `hSize == .compact` — the horizontal class alone can't tell
+    /// portrait from landscape there — so the vertical class is what distinguishes them: it goes
+    /// `.compact` exactly when the device is on its side. macOS/visionOS report nil for both and
+    /// fall through to wide, which is right.
+    private var isWide: Bool { hSize != .compact || vSize == .compact }
+
+    /// The TITLE's floor — how the artist's "up to half" ceiling is actually enforced.
+    ///
+    /// The obvious spelling, `.frame(maxWidth: half)` on the artist, does NOT work: a maxWidth
+    /// frame is a RESERVATION, not a ceiling. Measured, it occupies the full cap whether the artist
+    /// is "ABBA" (27pt of text) or a 63-character name — so the title was squeezed to half the row
+    /// even when the artist needed almost none of it, which is the opposite of the intent.
+    ///
+    /// Constraining the OTHER side gets it right. The artist is left unconstrained with
+    /// `layoutPriority(1)`, so it takes exactly the width it needs and is FULLY SHOWN; the title
+    /// carries a minimum width, which SwiftUI must honour, so a very long artist can never squeeze
+    /// the song name past the halfway mark and truncates itself instead.
+    ///
+    /// Measured against the TEXT column, not the whole row: `rowWidth` includes the 42pt thumbnail
+    /// and the 10pt gap beside it, so using it raw would hand the artist ~53% rather than half.
+    private var titleMinWidth: CGFloat {
+        let inner = rowWidth - 52          // thumbnail (42) + HStack spacing (10)
+        return inner > 0 ? max(96, inner * 0.5) : 120
+    }
 
     // Rip-analyzed bpm/key/camelot (computed from the actual ripped audio, kept in the rips
     // manifest) overlays the catalog index values — so once a song is ripped the row shows
@@ -53,6 +90,14 @@ struct SongRowView: View {
         return parts.joined(separator: " · ")
     }
 
+    /// The artist label, identical in both arrangements — only WHERE it sits changes.
+    private var artistText: some View {
+        Text(data.artist)
+            .font(.caption).foregroundStyle(Theme.fgDim)
+            .lineLimit(1).truncationMode(.tail)
+            .accessibilityIdentifier("row-artist-\(data.songId)")
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             SongThumbnail(album: data.album, studioId: data.songId).frame(width: 42, height: 42)
@@ -65,6 +110,7 @@ struct SongRowView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(data.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                        .frame(minWidth: isWide ? titleMinWidth : nil, alignment: .leading)
                     if data.explicit {
                         Text("E").font(.system(size: 9, weight: .bold))
                             .padding(.horizontal, 3).padding(.vertical, 1)
@@ -72,14 +118,19 @@ struct SongRowView: View {
                             .foregroundStyle(Theme.fg)
                             .accessibilityIdentifier("explicit-badge")
                     }
-                    Spacer(minLength: 8)
-                    // Artist RIGHT. Given lower layout priority than the title so a long artist
-                    // truncates before the song name does — the title is the identity of the row.
-                    Text(data.artist)
-                        .font(.caption).foregroundStyle(Theme.fgDim)
-                        .lineLimit(1).layoutPriority(-1)
-                        .accessibilityIdentifier("row-artist-\(data.songId)")
+                    // WIDE (landscape, iPad, Mac): the artist sits opposite the title, taking the
+                    // width it needs — fully shown — and the title's floor (see `titleMinWidth`) is
+                    // what stops it past half. `layoutPriority(1)` is what makes "fully shown" real:
+                    // without it the artist is the first thing SwiftUI truncates.
+                    if isWide {
+                        Spacer(minLength: 8)
+                        artistText.layoutPriority(1)
+                    }
                 }
+                // PORTRAIT: there isn't room to put a full artist name beside the title, so it
+                // goes on its own line underneath — where it has the whole row to itself and
+                // never competes with the title for space.
+                if !isWide { artistText }
 
                 HStack(spacing: 8) {
                     // Everything else about the song: year · genre (size-gated) then the music
@@ -116,6 +167,13 @@ struct SongRowView: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .background(GeometryReader { g in
+            Color.clear.preference(key: RowWidthKey.self, value: g.size.width)
+        })
+        .onPreferenceChange(RowWidthKey.self) { w in
+            // Only react to real changes — a rotation or a window resize, not every re-layout.
+            if abs(w - rowWidth) > 1 { rowWidth = w }
+        }
     }
 }
 
