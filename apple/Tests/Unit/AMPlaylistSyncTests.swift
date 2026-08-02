@@ -507,3 +507,102 @@ final class AMPlaylistSyncTests: XCTestCase {
         XCTAssertEqual(sync.steps.first?.state, .done)
     }
 }
+
+// MARK: - Never drop a collection silently; resolve ids on device
+
+@MainActor
+final class AMPushCoverageTests: XCTestCase {
+
+    private func tempURL(_ tag: String) -> URL {
+        let u = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-\(tag)-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: u) }
+        return u
+    }
+    private func song(_ id: String, am: String?) -> IndexSong {
+        var o: [String: Any] = ["id": id, "name": "N-\(id)", "artist": "A-\(id)"]
+        if let am { o["appleMusicId"] = am }
+        return try! JSONDecoder().decode(IndexSong.self,
+                                         from: try! JSONSerialization.data(withJSONObject: o))
+    }
+
+    /// THE REPORTED BUG: a playlist built in PocketDJ from songs with no Apple Music store id
+    /// resolved to an EMPTY payload and was dropped from the push entirely — no playlist created,
+    /// nothing said anywhere. It must now be reported as skipped, with the reason.
+    func testCollectionWithNoHostableSongsIsReportedNotSilentlyDropped() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("rip1", am: nil))
+        app.injectDiscoverAdd(song("rip2", am: nil))
+        let collections = CollectionsStore(fileURL: tempURL("skip"))
+        collections.app = app
+        _ = collections.createPlaylist("Vinyl Favourites", songIds: ["rip1", "rip2"])
+
+        let r = PlaylistAppleMusicSync.resolveOutgoingDetailed(collections: collections, app: app)
+
+        XCTAssertTrue(r.playlists.isEmpty, "nothing hostable ⇒ nothing to send")
+        XCTAssertEqual(r.skipped.map(\.name), ["Vinyl Favourites"],
+                       "…but the caller must be able to SAY so")
+        XCTAssertEqual(r.skipped.first?.songCount, 2)
+    }
+
+    /// With ids resolved on device, that same playlist pushes. This is the fix for a
+    /// PocketDJ-built playlist whose songs exist on Apple Music but were never indexed with a
+    /// store id.
+    func testResolvedCatalogIdsRescueAnOtherwiseDroppedCollection() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("rip1", am: nil))
+        let collections = CollectionsStore(fileURL: tempURL("rescue"))
+        collections.app = app
+        _ = collections.createPlaylist("Vinyl Favourites", songIds: ["rip1"])
+
+        let r = PlaylistAppleMusicSync.resolveOutgoingDetailed(
+            collections: collections, app: app, resolvedCatalogIds: ["rip1": "999"])
+
+        XCTAssertEqual(r.playlists.map(\.name), ["Vinyl Favourites"])
+        XCTAssertEqual(r.playlists.first?.trackCatalogIds, ["999"])
+        XCTAssertTrue(r.skipped.isEmpty, "it is no longer skipped")
+    }
+
+    /// The lookup list is exactly the songs the push would otherwise drop — and only from
+    /// collections that are actually allowed to push.
+    func testSongsNeedingCatalogIdSkipsNonPushableCollections() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("rip1", am: nil))
+        app.injectDiscoverAdd(song("has", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("needing"))
+        collections.app = app
+        let pushable = collections.createPlaylist("Send Me", songIds: ["rip1", "has"])
+        let off = collections.createPlaylist("Leave Me", songIds: ["rip1"])
+        collections.setAMSyncDirection(.off, forPlaylist: off.id)
+
+        let needing = PlaylistAppleMusicSync.songsNeedingCatalogId(collections: collections, app: app)
+
+        XCTAssertEqual(needing.map(\.songId), ["rip1"],
+                       "only the id-less song, and only because a PUSHABLE playlist holds it")
+        XCTAssertEqual(needing.first?.song.title, "N-rip1")
+        _ = pushable
+    }
+
+    /// "Send only" must not be what's blocking a push — it allows it, by definition.
+    func testSendOnlyStillPushes() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("sendonly"))
+        collections.app = app
+        let pl = collections.createPlaylist("Send Only", songIds: ["s1"])
+        collections.setAMSyncDirection(.push, forPlaylist: pl.id)
+
+        let r = PlaylistAppleMusicSync.resolveOutgoingDetailed(collections: collections, app: app)
+        XCTAssertEqual(r.playlists.map(\.name), ["Send Only"])
+    }
+
+    /// The single-collection payload applies the same dedup gates as the full push: one entry per
+    /// catalog id, and one per name+artist identity.
+    func testSingleCollectionPayloadDedupes() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("a", am: "111"))
+        app.injectDiscoverAdd(song("b", am: "111"))   // same catalog id
+        let ids = PlaylistAppleMusicSync.catalogIds(for: ["a", "b"], app: app, resolved: [:])
+        XCTAssertEqual(ids.map(\.id), ["111"], "one entry per catalog id")
+    }
+}
