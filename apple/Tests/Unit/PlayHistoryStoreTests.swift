@@ -253,3 +253,88 @@ final class PlayHistoryMergeTests: XCTestCase {
         _ = url
     }
 }
+
+// MARK: - Peer plays drive the storage prune (Levi's Q2)
+
+@MainActor
+final class PeerPlayPruneTests: XCTestCase {
+
+    private func stores(_ tag: String) -> (PlayStatsStore, PlayHistoryStore) {
+        let s = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-stats-\(tag)-\(UUID().uuidString).json")
+        let h = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-hist-\(tag)-\(UUID().uuidString).json")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: s); try? FileManager.default.removeItem(at: h)
+        }
+        let stats = PlayStatsStore(fileURL: s)
+        let history = PlayHistoryStore(fileURL: h)
+        stats.peerLastPlayedAt = { [weak history] in history?.lastPlayedAtAnyDevice($0) }
+        return (stats, history)
+    }
+
+    /// The prune evicts least-recently-PLAYED downloads. A track played constantly on the Mac must
+    /// not be first out of the phone's cache just because the phone wasn't the one playing it.
+    func testAPeerPlayCountsAsRecentForThePrune() throws {
+        let (stats, history) = stores("peer")
+        // Never played on THIS device.
+        XCTAssertNil(stats.lastPlayedAtLocally("s_mac"))
+
+        // A play arrives from another device via the merged history.
+        let peer = PlayHistoryStore.PlayEvent(
+            id: UUID(), songId: "s_mac", playedAt: 9_000, source: .browser,
+            contextId: nil, contextName: nil, title: nil, artist: nil, originInstallId: "peer")
+        let doc = PlayHistoryStore.Document(installId: "peer", events: [peer])
+        try JSONEncoder().encode(doc).write(to: history.syncFileURL, options: .atomic)
+        history.reloadFromDisk()
+
+        XCTAssertEqual(stats.lastPlayedAt("s_mac"), 9_000,
+                       "a play on another device protects this device's download")
+        XCTAssertNil(stats.lastPlayedAtLocally("s_mac"),
+                     "…without pretending this device played it")
+    }
+
+    /// The later of the two wins — a local play still counts when it is the more recent one.
+    func testTheMostRecentPlayWinsWhicheverDeviceItWasOn() throws {
+        let (stats, history) = stores("recent")
+        stats.notePlayed("s_x", at: 20_000)
+
+        let peer = PlayHistoryStore.PlayEvent(
+            id: UUID(), songId: "s_x", playedAt: 9_000, source: .browser,
+            contextId: nil, contextName: nil, title: nil, artist: nil, originInstallId: "peer")
+        let doc = PlayHistoryStore.Document(installId: "peer", events: [peer])
+        try JSONEncoder().encode(doc).write(to: history.syncFileURL, options: .atomic)
+        history.reloadFromDisk()
+
+        XCTAssertEqual(stats.lastPlayedAt("s_x"), 20_000, "the local play is newer, so it wins")
+    }
+
+    /// THE REASON THIS IS DERIVED RATHER THAN ACCUMULATED: merging the same log twice — a re-pull,
+    /// a device restore, a backup import — must not move the eviction order at all.
+    func testRepeatedMergesDoNotDriftTheEvictionOrder() throws {
+        let (stats, history) = stores("idem")
+        let peer = PlayHistoryStore.PlayEvent(
+            id: UUID(), songId: "s_y", playedAt: 5_000, source: .browser,
+            contextId: nil, contextName: nil, title: nil, artist: nil, originInstallId: "peer")
+        let doc = PlayHistoryStore.Document(installId: "peer", events: [peer])
+        try JSONEncoder().encode(doc).write(to: history.syncFileURL, options: .atomic)
+
+        history.reloadFromDisk()
+        let once = stats.lastPlayedAt("s_y")
+        history.reloadFromDisk()
+        history.reloadFromDisk()
+        XCTAssertEqual(stats.lastPlayedAt("s_y"), once, "replaying the log changes nothing")
+        XCTAssertEqual(history.events.count, 1)
+    }
+
+    /// With no seam wired (tests, older builds) behaviour is exactly as before.
+    func testWithoutTheSeamOnlyLocalPlaysCount() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-stats-solo-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let stats = PlayStatsStore(fileURL: url)
+        stats.notePlayed("s_z", at: 1_000)
+        XCTAssertEqual(stats.lastPlayedAt("s_z"), 1_000)
+        XCTAssertNil(stats.lastPlayedAt("never"))
+    }
+}

@@ -354,6 +354,13 @@ struct PocketDJApp: App {
         // Append-only play TIMELINE (History mode) — distinct from the aggregate playStats above.
         let playHistory = PlayHistoryStore(fileURL: PlayHistoryStore.launchURL())
         _playHistory = State(initialValue: playHistory)
+        // Peer plays count toward the storage prune (Levi's call): the merged history answers
+        // "when was this last played ANYWHERE", so a track played constantly on the Mac isn't first
+        // out of the phone's download cache. Read at query time rather than folded into the
+        // counter — a re-merge or a device restore would otherwise inflate it.
+        playStats.peerLastPlayedAt = { [weak playHistory] songId in
+            playHistory?.lastPlayedAtAnyDevice(songId)
+        }
         let collectionActivity = CollectionActivityStore(fileURL: CollectionActivityStore.launchURL())
         _collectionActivity = State(initialValue: collectionActivity)
         // ADD / REMOVE activity: the collections store fires `onActivity` from its user-facing
