@@ -21,6 +21,9 @@ struct PlayRef: Hashable {
     var contextName: String?
     /// Number of plays this row represents (1 in timeline mode; N in group-by-song mode).
     var count: Int = 1
+    /// True when this play came from ANOTHER device (the merged history). Drives the "on another
+    /// device" hint, so a row you don't remember playing here is explained rather than confusing.
+    var fromAnotherDevice: Bool = false
 }
 
 enum BrowseItem: Identifiable, Hashable {
