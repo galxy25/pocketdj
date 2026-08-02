@@ -1006,9 +1006,23 @@ final class SetlistPlayer {
         waitingForLive = false
         isHeldForResume = true
         isRunning = true
-        // Re-adopt the snapshot as the store's current session (the held branch of
-        // `sessionPositionMs` preserves the saved position; `isPlaying` persists false).
-        persistSession()
+        // A RESTORE IS NOT A WRITE. This used to end in `persistSession()`, which re-adopted the
+        // snapshot as the store's current session — and in doing so rewrote the session FILE.
+        // That one line caused two user-visible bugs, because the file's mtime is the ONLY key
+        // ordering the session document across devices (CloudSyncService compares mtimes; the
+        // payload's own `updatedAt` is written but never read):
+        //
+        //  • CARPLAY WIPED A GOOD SESSION. A CarPlay scene restores without ever having pulled
+        //    from iCloud first (the launch pull lives in RootView's task, which a template scene
+        //    never runs), so the restore-write pushed the local copy over a newer cloud one.
+        //  • A DEVICE UNTOUCHED FOR DAYS STOLE THE SESSION. Merely OPENING the app stamped the
+        //    file to "now", so the stale device won the next sync and the real session was lost.
+        //
+        // Leaving `current` nil is what makes this safe rather than merely quieter: `flush()` and
+        // `updatePosition()` both guard on `current`, so the file is untouched until playback
+        // actually starts (`resumeFromHold`, or any skip/jump through the normal persist paths).
+        // The mtime therefore now means "last actually played here", which is exactly the
+        // liveness ordering the sync needs — no extra timestamp field required.
         NPLog.trace("setlist RESTORE held session=\(sessionId) index=\(index)/\(queue.count) resumeMs=\(pendingResumeMs ?? 0)")
     }
 
@@ -1023,6 +1037,12 @@ final class SetlistPlayer {
         startPositionTicker()
         let at = pendingResumeMs
         pendingResumeMs = nil
+        // NOW the session is live on this device, so adopt it into the store — this is the write
+        // `restore(from:)` deliberately no longer makes. It must happen here and not be left to
+        // the position ticker: `updatePosition` no-ops while `current` is nil, so without this the
+        // resumed set would never persist its position at all. Passing the resume offset keeps a
+        // kill immediately after ▶ resuming where the user actually was, not at 0:00.
+        persistSession(positionMs: at)
         // fresh: false — restore() already armed the current row's repeat counter.
         Task { await playCurrent(fresh: false, resumeAtMs: at) }
     }

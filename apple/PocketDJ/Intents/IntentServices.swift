@@ -110,6 +110,25 @@ final class IntentServices {
         await app.loadIfNeeded()
     }
 
+    /// Rehydrate the durable playback session on a scene that never runs `RootView` — in practice
+    /// the CarPlay scene, which is its own `UIScene` and so never reaches the launch task where
+    /// `restorePersistedSessionIfIdle()` normally lives (RootView).
+    ///
+    /// THE BUG THIS FIXES: plug the phone into the car after a force-quit and PocketDJ came up
+    /// with an EMPTY deck — the set was still on disk, nothing had read it. Worse, before the
+    /// companion fix in `SetlistPlayer.restore(from:)`, the CarPlay restore also WROTE the session
+    /// file from a scene that had never pulled from iCloud, so connecting to the car could push a
+    /// stale local session over a newer one from another device.
+    ///
+    /// Held, never auto-playing (the underlying restore's contract), so connecting to CarPlay
+    /// never starts sound on its own — the driver taps ▶. Idempotent: no-op once a set is running,
+    /// so it can be called on every scene connect. Vetoed during onboarding for the same reason
+    /// every mutating intent is: a pre-setup device must not materialize synced documents.
+    func restorePlaybackSessionIfIdle() {
+        guard onboardingIncomplete?() != true else { return }
+        setlistPlayer.restorePersistedSessionIfIdle()
+    }
+
     // MARK: - Play playlist / pocket
 
     /// ▶/🔀 a playlist: snapshot into the reserved Now Playing setlist and start the

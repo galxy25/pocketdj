@@ -30,7 +30,35 @@ final class CarPlayModel {
     init(services: IntentServices) { self.services = services }
 
     /// Make the catalog usable before building lists (the scene can connect before it's warm).
-    func ensureReady() async { await services.ensureReady() }
+    ///
+    /// Restores the durable session FIRST, and deliberately before the catalog await: the restore
+    /// is self-contained (title/artist ride the snapshot) so it does not need a warm catalog, and
+    /// doing it first means the root template is built with the resumable set already known — no
+    /// second template pass, no O(catalog) rebuild on the main actor.
+    func ensureReady() async {
+        services.restorePlaybackSessionIfIdle()
+        await services.ensureReady()
+    }
+
+    /// A restored-but-not-yet-playing set the driver can resume, or nil. Drives the one-shot
+    /// "Continue" row at the top of the CarPlay root — the affordance that makes the restore
+    /// reachable without the phone.
+    func resumableSession() -> Row? {
+        let p = services.setlistPlayer
+        guard p.isRunning, p.isHeldForResume, p.queue.indices.contains(p.index) else { return nil }
+        let item = p.queue[p.index]
+        let artist = item.artist.trimmingCharacters(in: .whitespaces)
+        return Row(id: "resume:\(item.uid)", title: item.title,
+                   subtitle: artist.isEmpty ? "Continue" : "\(artist) · Continue",
+                   artworkAlbumId: firstAlbumId([item.id]), isSong: true)
+    }
+
+    /// Resume the held set (the "Continue" row's action). No-op when nothing is held.
+    func resumeHeldSession() {
+        let p = services.setlistPlayer
+        guard p.isRunning, p.isHeldForResume else { return }
+        p.resumeFromHold()
+    }
 
     // MARK: - Browse lists
 
