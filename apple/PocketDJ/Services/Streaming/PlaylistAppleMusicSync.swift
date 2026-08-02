@@ -95,6 +95,10 @@ final class PlaylistAppleMusicSync {
         self.auditURL = auditURL ?? Self.defaultAuditURL()
         self.runURL = runURL ?? Self.defaultRunURL()
         auditTrail = Self.loadAudit(from: self.auditURL)
+        if let data = try? Data(contentsOf: Self.catalogLookupsURL()),
+           let m = try? JSONDecoder().decode([String: CatalogLookup].self, from: data) {
+            catalogLookups = m
+        }
         // Hydrate the persisted current run so the last sync is inspectable across launches. A
         // snapshot that never completed means the process died mid-sync: mark its running steps
         // interrupted — the stored jobId makes the next Sync tap RESUME server-side, so this is a
@@ -249,7 +253,15 @@ final class PlaylistAppleMusicSync {
     /// ids for Apple Music library tracks, but a playlist of rips / digital files has none, so the
     /// payload came out empty and the playlist was dropped. The write-back path already resolves
     /// ids on device; the playlist push simply never used that machinery.
-    static func songsNeedingCatalogId(collections: CollectionsStore, app: AppModel) -> [(songId: String, song: WriteBackSong)] {
+    ///
+    /// SCOPED to `onlyCollectionsNamed` — the collections a dry run says would be DROPPED. Looking
+    /// up every id-less song in every pushable collection instead meant hundreds of network round
+    /// trips at the front of EVERY sync (including the nightly one), for songs whose collections
+    /// were pushing perfectly well without them. A healthy library now pays nothing at all: the set
+    /// is empty, so this returns immediately and no lookup happens.
+    static func songsNeedingCatalogId(collections: CollectionsStore, app: AppModel,
+                                      onlyCollectionsNamed: Set<String>) -> [(songId: String, song: WriteBackSong)] {
+        guard !onlyCollectionsNamed.isEmpty else { return [] }
         var seen = Set<String>()
         var out: [(songId: String, song: WriteBackSong)] = []
         func consider(_ songIds: [String]) {
@@ -262,19 +274,82 @@ final class PlaylistAppleMusicSync {
                                               album: nil, durationMs: s.length)))
             }
         }
-        for pl in collections.playlists where pl.amSyncDir.allowsPush {
+        for pl in collections.playlists
+        where pl.amSyncDir.allowsPush && onlyCollectionsNamed.contains(normName(pl.name)) {
             consider(collections.songIds(forPlaylist: pl.id))
         }
         for p in collections.pockets
-        where p.hasSource && PlaylistWriteBack.isAppleMusicSource(p.sourceName ?? "") && p.amSyncDir.allowsPush {
+        where p.hasSource && PlaylistWriteBack.isAppleMusicSource(p.sourceName ?? "")
+            && p.amSyncDir.allowsPush && onlyCollectionsNamed.contains(normName(p.name)) {
             consider(collections.songIds(forPocket: p.id))
         }
         return out
     }
 
-    /// Cap on on-device catalog lookups per pass — each is a network round trip, and a large
-    /// unresolved library would otherwise turn one sync into thousands of searches.
+    /// Per-pass cap on on-device catalog lookups. NOT a ceiling on what can ever sync: results are
+    /// PERSISTED (`resolvedCatalogIds`), so each pass skips what it already knows and works on the
+    /// next batch. A 1,000-song playlist finishes over five passes rather than stalling at 200.
+    /// (Before persistence this was a true hard cap — every pass re-resolved the same first 200 and
+    /// song 201 was never reached. That is exactly why the results are on disk.)
     static let catalogResolveCap = 200
+
+    /// How long a MISS is trusted before we ask Apple again. Without this, a song Apple Music
+    /// genuinely doesn't have would burn a lookup slot on every single sync, forever, crowding out
+    /// songs that could actually resolve. With it, a track that later appears in the catalog is
+    /// still picked up eventually.
+    static let missRetryAfterMs: Double = 30 * 24 * 60 * 60 * 1000
+
+    /// songId → what an on-device catalog lookup found. A hit carries the store id; a miss carries
+    /// only the timestamp, so it can be retried after `missRetryAfterMs`.
+    struct CatalogLookup: Codable, Equatable {
+        var catalogId: String?
+        var checkedAtMs: Double
+    }
+
+    /// Persisted lookup results. Device-local by design: it is a cache of what Apple answered, not
+    /// user data, and each device can rebuild it for free.
+    private(set) var catalogLookups: [String: CatalogLookup] = [:]
+
+    /// The hits only, in the shape the payload builder wants.
+    var resolvedCatalogIds: [String: String] {
+        catalogLookups.compactMapValues(\.catalogId)
+    }
+
+    private func recordLookup(songId: String, catalogId: String?, nowMs: Double = Date().timeIntervalSince1970 * 1000) {
+        catalogLookups[songId] = CatalogLookup(catalogId: catalogId, checkedAtMs: nowMs)
+    }
+
+    /// Flush the cache to disk every `catalogSaveEvery` lookups, not just at the end of the batch.
+    /// Leaving the app mid-sync is normal — the run comes back as `.interrupted` and resumes — and
+    /// an end-of-batch-only save meant every lookup done before the interruption was thrown away
+    /// and re-asked on resume. Small JSON, atomic write; flushing costs far less than re-asking.
+    static let catalogSaveEvery = 25
+
+    private func saveCatalogLookups() {
+        if let data = try? JSONEncoder().encode(catalogLookups) {
+            try? data.write(to: Self.catalogLookupsURL(), options: .atomic)
+        }
+    }
+
+    nonisolated static func catalogLookupsURL() -> URL {
+        let dir = (try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        return dir.appendingPathComponent("pocketdj-am-catalog-ids.json")
+    }
+
+    /// Which of `needing` still deserves a network call: never looked up, or a miss old enough to
+    /// be worth re-asking. PURE so the chunking is testable without a network.
+    static func pendingLookups(_ needing: [(songId: String, song: WriteBackSong)],
+                               known: [String: CatalogLookup],
+                               nowMs: Double = Date().timeIntervalSince1970 * 1000)
+        -> [(songId: String, song: WriteBackSong)] {
+        needing.filter { entry in
+            guard let seen = known[entry.songId] else { return true }
+            if seen.catalogId != nil { return false }                       // already resolved
+            return nowMs - seen.checkedAtMs > missRetryAfterMs              // stale miss ⇒ re-ask
+        }
+    }
 
     /// PURE (testable): every local collection name (normalized) the pull-import dedupes against —
     /// PLAYLISTS and POCKETS both: a remote playlist whose local twin is a converted POCKET must
@@ -359,21 +434,34 @@ final class PlaylistAppleMusicSync {
         do {
             // 1. Resolve store ids for this collection's songs that the indexer never matched.
             var resolvedIds: [String: String] = [:]
-            let needing = songIds.compactMap { id -> (String, WriteBackSong)? in
+            let needing: [(songId: String, song: WriteBackSong)] = songIds.compactMap { id in
                 guard let s = app.songsById[id], s.appleMusicId == nil else { return nil }
                 let t = s.name.trimmingCharacters(in: .whitespaces)
                 let a = s.artist.trimmingCharacters(in: .whitespaces)
                 guard !t.isEmpty, !a.isEmpty else { return nil }
                 return (id, WriteBackSong(appleMusicId: "", title: t, artist: a, album: nil, durationMs: s.length))
             }
-            if let transport, transport.canWrite, !needing.isEmpty {
+            // Only pay for lookups when this collection would otherwise send NOTHING. If it
+            // already has hostable tracks, the push works today and the round trips buy nothing.
+            let alreadyHostable = !Self.catalogIds(for: songIds, app: app, resolved: [:]).isEmpty
+            resolvedIds = resolvedCatalogIds
+            let pending = Self.pendingLookups(needing, known: catalogLookups)
+            if let transport, transport.canWrite, !pending.isEmpty, !alreadyHostable {
                 beginStep("Matching songs to Apple Music")
-                for (songId, song) in needing.prefix(Self.catalogResolveCap) {
+                var matched = 0, looked = 0
+                for (songId, song) in pending.prefix(Self.catalogResolveCap) {
                     if Task.isCancelled { break }
+                    looked += 1
                     updateStep("Looking up “\(song.title)”")
-                    if let id = try? await transport.resolveCatalogId(for: song) { resolvedIds[songId] = id }
+                    let id = try? await transport.resolveCatalogId(for: song)
+                    recordLookup(songId: songId, catalogId: id)
+                    if let id { resolvedIds[songId] = id; matched += 1 }
+                    if looked % Self.catalogSaveEvery == 0 { saveCatalogLookups() }
                 }
-                finishStep("\(resolvedIds.count) of \(needing.count) matched")
+                saveCatalogLookups()
+                let remaining = max(0, pending.count - looked)
+                finishStep("\(matched) of \(looked) matched"
+                           + (remaining > 0 ? " · \(remaining) to go, sync again to continue" : ""))
             }
 
             // 2. Build the payload for THIS collection only.
@@ -466,20 +554,35 @@ final class PlaylistAppleMusicSync {
                 // files resolved to an EMPTY payload and was dropped without a word. The write-back
                 // transport can look a song up by title+artist against the user's own catalog —
                 // this is the same machinery, applied to the playlist push.
+                // A DRY RUN FIRST: only the collections that would actually be dropped are worth
+                // paying network lookups for. Everything already pushing is left alone, so a
+                // healthy library adds zero round trips to its sync.
                 var resolvedIds: [String: String] = [:]
-                let needing = Self.songsNeedingCatalogId(collections: collections, app: app)
-                if let transport, transport.canWrite, !needing.isEmpty {
+                let dryRun = Self.resolveOutgoingDetailed(collections: collections, app: app)
+                resolvedIds = resolvedCatalogIds   // everything earlier passes already resolved
+                let needing = Self.songsNeedingCatalogId(
+                    collections: collections, app: app,
+                    onlyCollectionsNamed: Set(dryRun.skipped.map { Self.normName($0.name) }))
+                let pending = Self.pendingLookups(needing, known: catalogLookups)
+                if let transport, transport.canWrite, !pending.isEmpty {
                     beginStep("Matching songs to Apple Music")
-                    var looked = 0
-                    for (songId, song) in needing.prefix(Self.catalogResolveCap) {
+                    var matched = 0, looked = 0
+                    for (songId, song) in pending.prefix(Self.catalogResolveCap) {
                         if Task.isCancelled { break }
                         looked += 1
                         updateStep("Looking up “\(song.title)”")
-                        if let id = try? await transport.resolveCatalogId(for: song) { resolvedIds[songId] = id }
+                        let id = try? await transport.resolveCatalogId(for: song)
+                        recordLookup(songId: songId, catalogId: id)
+                        if let id { resolvedIds[songId] = id; matched += 1 }
+                        // Checkpoint, so backgrounding the app mid-batch keeps this progress.
+                        if looked % Self.catalogSaveEvery == 0 { saveCatalogLookups() }
                     }
-                    let overflow = max(0, needing.count - Self.catalogResolveCap)
-                    finishStep("\(resolvedIds.count) of \(looked) matched"
-                               + (overflow > 0 ? " · \(overflow) left for the next sync" : ""))
+                    saveCatalogLookups()
+                    // Say what is LEFT rather than silently stopping — the remainder is picked up
+                    // by the next pass, because the results above are on disk.
+                    let remaining = max(0, pending.count - looked)
+                    finishStep("\(matched) of \(looked) matched"
+                               + (remaining > 0 ? " · \(remaining) to go, continuing next sync" : ""))
                 }
                 let resolution = Self.resolveOutgoingDetailed(collections: collections, app: app,
                                                               resolvedCatalogIds: resolvedIds)

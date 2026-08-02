@@ -575,12 +575,34 @@ final class AMPushCoverageTests: XCTestCase {
         let off = collections.createPlaylist("Leave Me", songIds: ["rip1"])
         collections.setAMSyncDirection(.off, forPlaylist: off.id)
 
-        let needing = PlaylistAppleMusicSync.songsNeedingCatalogId(collections: collections, app: app)
+        let needing = PlaylistAppleMusicSync.songsNeedingCatalogId(
+            collections: collections, app: app, onlyCollectionsNamed: ["send me"])
 
         XCTAssertEqual(needing.map(\.songId), ["rip1"],
                        "only the id-less song, and only because a PUSHABLE playlist holds it")
         XCTAssertEqual(needing.first?.song.title, "N-rip1")
         _ = pushable
+    }
+
+    /// A HEALTHY library must pay nothing: with no collection being dropped, there is no scope to
+    /// look anything up in, so the sync adds zero network round trips. (The unscoped version put
+    /// hundreds at the front of every pass — including the nightly one — which is what kept the
+    /// per-collection "Sync with Apple Music" button disabled for so long.)
+    func testNothingDroppedMeansNoLookupsAtAll() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        app.injectDiscoverAdd(song("rip", am: nil))
+        let collections = CollectionsStore(fileURL: tempURL("healthy"))
+        collections.app = app
+        // The playlist pushes fine; its id-less song is simply skipped, as always.
+        _ = collections.createPlaylist("Healthy", songIds: ["s1", "rip"])
+
+        let r = PlaylistAppleMusicSync.resolveOutgoingDetailed(collections: collections, app: app)
+        XCTAssertTrue(r.skipped.isEmpty, "nothing is being dropped")
+        let needing = PlaylistAppleMusicSync.songsNeedingCatalogId(
+            collections: collections, app: app,
+            onlyCollectionsNamed: Set(r.skipped.map { PlaylistAppleMusicSync.normName($0.name) }))
+        XCTAssertTrue(needing.isEmpty, "so there is nothing to look up — no round trips")
     }
 
     /// "Send only" must not be what's blocking a push — it allows it, by definition.
@@ -604,5 +626,65 @@ final class AMPushCoverageTests: XCTestCase {
         app.injectDiscoverAdd(song("b", am: "111"))   // same catalog id
         let ids = PlaylistAppleMusicSync.catalogIds(for: ["a", "b"], app: app, resolved: [:])
         XCTAssertEqual(ids.map(\.id), ["111"], "one entry per catalog id")
+    }
+}
+
+// MARK: - The 200 cap is a CHUNK, not a ceiling
+
+@MainActor
+final class AMCatalogLookupChunkingTests: XCTestCase {
+
+    private func need(_ n: Int) -> [(songId: String, song: WriteBackSong)] {
+        (0..<n).map { i in
+            ("s\(i)", WriteBackSong(appleMusicId: "", title: "T\(i)", artist: "A", album: nil, durationMs: nil))
+        }
+    }
+    private typealias Lookup = PlaylistAppleMusicSync.CatalogLookup
+
+    /// A 1000-song playlist must FINISH over several passes, not stall at 200 forever. Each pass
+    /// skips what's already resolved and takes the next batch.
+    func testAlreadyResolvedSongsAreNotLookedUpAgain() {
+        let all = need(1000)
+        // Pass 1 resolved the first 200.
+        var known: [String: Lookup] = [:]
+        for i in 0..<200 { known["s\(i)"] = Lookup(catalogId: "cat\(i)", checkedAtMs: 1_000) }
+
+        let pending = PlaylistAppleMusicSync.pendingLookups(all, known: known, nowMs: 2_000)
+
+        XCTAssertEqual(pending.count, 800, "pass 2 starts where pass 1 stopped")
+        XCTAssertEqual(pending.first?.songId, "s200", "…at exactly the next song")
+    }
+
+    /// Five passes of 200 clear a 1000-song playlist.
+    func testRepeatedPassesConverge() {
+        let all = need(1000)
+        var known: [String: Lookup] = [:]
+        var passes = 0
+        while !PlaylistAppleMusicSync.pendingLookups(all, known: known, nowMs: 2_000).isEmpty {
+            passes += 1
+            XCTAssertLessThan(passes, 10, "must converge, not loop")
+            let batch = PlaylistAppleMusicSync.pendingLookups(all, known: known, nowMs: 2_000)
+                .prefix(PlaylistAppleMusicSync.catalogResolveCap)
+            for (songId, _) in batch { known[songId] = Lookup(catalogId: "x", checkedAtMs: 2_000) }
+        }
+        XCTAssertEqual(passes, 5, "1000 songs / 200 per pass")
+    }
+
+    /// A MISS is remembered, so a song Apple Music doesn't have stops burning a lookup slot on
+    /// every sync — otherwise it would crowd out songs that CAN resolve.
+    func testRecentMissesAreNotRetried() {
+        let all = need(3)
+        let known: [String: Lookup] = ["s0": Lookup(catalogId: nil, checkedAtMs: 1_000)]
+        let pending = PlaylistAppleMusicSync.pendingLookups(all, known: known, nowMs: 2_000)
+        XCTAssertEqual(pending.map(\.songId), ["s1", "s2"], "a fresh miss is not re-asked")
+    }
+
+    /// …but not forever: a track that later appears in Apple Music is picked up eventually.
+    func testStaleMissesAreRetried() {
+        let all = need(1)
+        let known: [String: Lookup] = ["s0": Lookup(catalogId: nil, checkedAtMs: 0)]
+        let later = PlaylistAppleMusicSync.missRetryAfterMs + 1
+        XCTAssertEqual(PlaylistAppleMusicSync.pendingLookups(all, known: known, nowMs: later).count, 1,
+                       "an old miss is worth re-asking")
     }
 }

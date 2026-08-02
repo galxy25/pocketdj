@@ -1061,7 +1061,12 @@ struct PlaylistDetailView: View {
                 Task { await playlistSync.syncCollection(playlistId: playlistId,
                                                          collections: collections, app: app) }
             } label: {
-                Label("Sync with Apple Music", systemImage: "arrow.up.circle")
+                // SAY WHY when it can't run. The sync engine is single-flight app-scoped, so a
+                // full pass already in progress disables this — and a greyed control with no
+                // explanation reads as broken. The label carries the reason instead.
+                Label(playlistSync.isSyncing ? "Syncing… (Apple Music sync running)"
+                                             : "Sync with Apple Music",
+                      systemImage: playlistSync.isSyncing ? "arrow.triangle.2.circlepath" : "arrow.up.circle")
             }
             .disabled(playlistSync.isSyncing)
             .accessibilityIdentifier("playlist-am-sync-now")
