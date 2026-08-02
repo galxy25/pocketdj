@@ -220,6 +220,73 @@ same `match === 'exact'` gate is the cloud-eligibility probe in
 the full product rationale lives in
 [`docs/design-rip-from-cloud.md`](../design-rip-from-cloud.md).
 
+### 1.4 The STREAMING-LINKS stage — `spotifyUrl` / `youtubeUrl` for sharing
+
+**Why a field, and why a browser.** Sharing a song is only useful if the person
+receiving it can actually play it, which means the catalog has to carry a canonical
+link per service, not just PocketDJ's own ids. Apple Music links come **free** —
+they're derived from `appleMusicId` (§1.1) by
+[`scripts/fold-apple-music-links.mjs`](../../scripts/fold-apple-music-links.mjs), no
+network at all. Spotify and YouTube expose no usable API here (no credentials; the
+YouTube Data API is quota-blocked), so the only route is a **headless Chromium**
+(Playwright) driven against each service's public search deep-link, reading the
+canonical URL off the best-matching result.
+
+```
+ resolve-streaming-links.mjs                 fold-streaming-links.mjs
+   per-song headless search                    non-null-only stamp into public/*.json
+   spotify: /search/<q>  → /track/<id>         → spotifyUrl / youtubeUrl per song
+   youtube: /search?q=   → /watch?v=<id>       (a null NEVER erases an existing link)
+   → links-cache.ndjson  ──────────────────▶
+   {id, spotifyUrl|null, youtubeUrl|null,
+    spotifyMatch{title,artist,score}, …}       backfill-streaming-links.mjs
+   (resumable; hits AND misses cached)           supervises BULK crawls of the above
+```
+
+**Matching is deliberately strict.** The resolver reuses the same
+`normalize()`/`coreTitle()`/`versionTags()` discipline as the Apple Music crawl (§1.3):
+a remix/live/sped-up row is never matched to a library track that lacks the marker.
+Below `--min-score` it records a **per-service null** rather than a guess — a wrong
+"Share on Spotify" link is worse than no link. The cache
+(`~/.pocketdj/streaming-links/links-cache.ndjson`) is keyed by song id and records
+**hits and misses**, so a re-run skips anything already decided; `--retry-misses`
+re-attempts the nulls (e.g. after a bot-wall spell).
+
+**The cache is append-only, so `wc -l` is not progress.** Re-resolving a song appends a
+fresh record rather than rewriting the old line — the last line for an id wins. Counting
+lines therefore overstates coverage (once by ~3,900 lines during the first full crawl);
+count **distinct ids** instead.
+
+**Two drivers, one cache.** The nightly
+([`scripts/streaming-links-nightly.sh`](../../scripts/streaming-links-nightly.sh),
+launchd `com.pocketdj.streaming-links-nightly` at **06:00**, one hour after the digital
+sync and two after the Apple Music sync so they never contend for the clone lock)
+resolves a bounded batch (`POCKETDJ_LINK_BATCH`, default 800/night ≈ 1h), folds, then
+commits **GitHub-before-S3** and publishes each changed index to its home bucket. Because
+the resolver skips already-cached songs, the nightly naturally picks up whatever the
+04:00 Apple Music sync just added. For bulk work there is
+[`scripts/backfill-streaming-links.mjs`](../../scripts/backfill-streaming-links.mjs) — a
+supervisor that runs the resolver in chunks with an adaptive delay, backing off and
+cooling down when a chunk's miss rate crosses `--miss-backoff` (a bot-wall signal) and
+aborting after `--max-stalls` consecutive stalls.
+
+**The two drivers interlock.** Both drive Chromium against the same services and the
+same cache, so running them concurrently makes each look like the other's bot-wall. The
+supervisor honours the nightly's `<cacheDir>/.sync.lock`, taken **per chunk** rather than
+per run: a multi-day manual crawl holding it up front would starve the nightly every
+night (the failure mode the am-sync clone was built to avoid), so instead the nightly
+waits at most one chunk (~9 min) and the manual run reports `waiting-for-lock`.
+`--ignore-lock` opts out. Stale locks are reclaimed by pid probe, where **only `ESRCH`
+counts as dead** — `EPERM` means the holder is alive under another uid, and treating it
+as stale steals a live lock.
+
+**A miss is usually permanent, and that shapes the retry economics.** Measured over the
+first full crawl: songs resolved on the first attempt yield links at ~70–85%, but
+re-attempting prior misses yields **~0.2%** (7 links per 3,840 vinyl songs) — the misses
+are overwhelmingly records that genuinely aren't on Spotify or YouTube, not transient
+blocks. Retrying the full miss set is therefore rarely worth its multi-day cost; crawling
+*newly added* songs is (1,764 links from 1,334 songs).
+
 ---
 
 ## 2. Internal model — what the index becomes on-device
