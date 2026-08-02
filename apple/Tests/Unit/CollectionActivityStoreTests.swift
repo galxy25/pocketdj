@@ -83,6 +83,36 @@ final class CollectionActivityStoreTests: XCTestCase {
         XCTAssertFalse(store.installId.isEmpty)
     }
 
+    /// R3: the artist snapshot survives a persist/decode round trip — it is what keeps a row for an
+    /// item this device's catalog can't resolve identifiable instead of a bare id.
+    func testItemArtistRoundTrips() {
+        let (store, url) = makeStore()
+        store.record(kind: .add, itemId: "sng_1", itemTitle: "Running It Up", itemArtist: "Aria",
+                     collectionName: "AM Mix", at: 1_000)
+        let reloaded = CollectionActivityStore(fileURL: url)
+        XCTAssertEqual(reloaded.events.first?.itemTitle, "Running It Up")
+        XCTAssertEqual(reloaded.events.first?.itemArtist, "Aria")
+    }
+
+    /// A LEGACY document written before `itemArtist` existed must still decode every event — the
+    /// field is additive-optional, so its absence is nil, never a dropped event or a reset log.
+    func testLegacyDocumentWithoutItemArtistDecodes() throws {
+        let json = """
+        { "schemaVersion": 1, "installId": "abc", "events": [
+            { "id": "\(UUID().uuidString)", "at": 1000, "kind": "add", "itemId": "sng_1",
+              "itemTitle": "Old Row", "collectionName": "Soul" }
+        ] }
+        """
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-activity-legacy-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        try Data(json.utf8).write(to: url)
+        let store = CollectionActivityStore(fileURL: url)
+        XCTAssertEqual(store.events.count, 1)
+        XCTAssertEqual(store.events.first?.itemTitle, "Old Row")
+        XCTAssertNil(store.events.first?.itemArtist)
+    }
+
     /// A document with unknown extra keys / missing events list still decodes (lenient Codable).
     func testDocumentWithUnknownKeysDecodes() throws {
         let json = """

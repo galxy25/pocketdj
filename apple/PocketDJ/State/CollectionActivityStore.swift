@@ -48,7 +48,8 @@ final class CollectionActivityStore {
     /// stays readable after the item leaves the catalog or the collection is renamed/deleted.
     /// `collectionId`/`collectionKind`/`collectionName` are nil for HEART events (a ♥ isn't scoped
     /// to a collection). Studio items (`smp_`/`lp_`/`ptn_`/`tk_`) have no catalog song, so their
-    /// title is snapshotted here (or nil ⇒ the row falls back to the id).
+    /// title is snapshotted here (or nil ⇒ the row reads "an unknown item" and shows the raw id
+    /// beneath it).
     struct ActivityEvent: Codable, Identifiable, Equatable, Hashable {
         var id: UUID
         /// Epoch ms of the event.
@@ -56,6 +57,12 @@ final class CollectionActivityStore {
         var kind: ActivityKind
         var itemId: String
         var itemTitle: String?
+        /// Artist snapshot at record time. ADDITIVE-OPTIONAL (older/peer events have none → nil).
+        /// Why it exists: a row whose `itemId` no longer resolves in the LOCAL catalog — the song
+        /// came from an Apple Music source playlist and was never indexed on this device, or its
+        /// source was toggled off — used to degrade to a bare namespaced id. Title alone is often
+        /// ambiguous, so the artist is what makes such a row still identifiable (R3).
+        var itemArtist: String?
         var collectionId: String?
         var collectionKind: String?    // AddTarget.Kind raw ("pocket" / "playlist"); nil for heart
         var collectionName: String?
@@ -154,11 +161,12 @@ final class CollectionActivityStore {
     /// Record an activity event. `at` is injectable for tests; callers use the default (now).
     /// Returns the appended event (empty `itemId` is ignored → nil).
     @discardableResult
-    func record(kind: ActivityKind, itemId: String, itemTitle: String? = nil,
+    func record(kind: ActivityKind, itemId: String, itemTitle: String? = nil, itemArtist: String? = nil,
                 collectionId: String? = nil, collectionKind: String? = nil, collectionName: String? = nil,
                 at nowMs: Double = Date().timeIntervalSince1970 * 1000) -> ActivityEvent? {
         guard !itemId.isEmpty else { return nil }
         let event = ActivityEvent(id: UUID(), at: nowMs, kind: kind, itemId: itemId, itemTitle: itemTitle,
+                                  itemArtist: itemArtist,
                                   collectionId: collectionId, collectionKind: collectionKind,
                                   collectionName: collectionName, originInstallId: installId)
         events.append(event)
@@ -166,6 +174,30 @@ final class CollectionActivityStore {
         revision &+= 1
         save()
         return event
+    }
+
+    /// UI-test seam (`PDJ_SEED_ACTIVITY`): seed three rows that exercise the THREE resolution
+    /// states an activity row can be in, so a UI test can prove the R3 rendering on a real device
+    /// rather than in a unit test. No-op outside the seam and once the log is non-empty.
+    ///
+    ///  1. RESOLVABLE — the item is in this device's catalog; the row names it from the LIVE catalog.
+    ///  2. DENORMALIZED — the item is NOT in this catalog (the R3 case: an Apple Music song added
+    ///     from a source playlist that was never indexed here), but the record-time title/artist
+    ///     snapshots make it identifiable anyway.
+    ///  3. BARE — neither catalog nor snapshot knows it (a legacy row recorded before the snapshots
+    ///     existed); it reads "an unknown item" and shows the raw id beneath.
+    func seedFixtureIfRequested() {
+        guard ProcessInfo.processInfo.environment["PDJ_SEED_ACTIVITY"] != nil, events.isEmpty else { return }
+        let now = Date().timeIntervalSince1970 * 1000
+        record(kind: .add, itemId: "sng_1", itemTitle: "Neon", itemArtist: "Aria",
+               collectionId: "pls_seed", collectionKind: "playlist", collectionName: "Warmup",
+               at: now - 60_000)
+        record(kind: .add, itemId: "am_9876543210", itemTitle: "Running It Up", itemArtist: "Aria",
+               collectionId: "pls_seed_am", collectionKind: "playlist", collectionName: "AM Mix",
+               at: now - 120_000)
+        record(kind: .add, itemId: "sng_ghost_legacy", itemTitle: nil, itemArtist: nil,
+               collectionId: "pls_seed_am", collectionKind: "playlist", collectionName: "AM Mix",
+               at: now - 180_000)
     }
 
     /// Test/merge seam: replace the whole log (persists).

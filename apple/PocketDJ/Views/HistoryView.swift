@@ -230,7 +230,7 @@ struct HistoryView: View {
         case .activity(let e):
             activityRow(e)
                 .contentShape(Rectangle())
-                .onTapGesture { if let song = app.songsById[e.itemId] { path.append(song) } }
+                .onTapGesture { openActivityItem(e) }
         }
     }
 
@@ -293,7 +293,7 @@ struct HistoryView: View {
                 ForEach(events) { event in
                     activityRow(event)
                         .contentShape(Rectangle())
-                        .onTapGesture { if let song = app.songsById[event.itemId] { path.append(song) } }
+                        .onTapGesture { openActivityItem(event) }
                 }
             }
             .listStyle(.plain)
@@ -309,7 +309,20 @@ struct HistoryView: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(activityHeadline(e)).font(.callout).foregroundStyle(Theme.fg).lineLimit(2)
-                Text(Self.relative(e.at)).font(.caption2).foregroundStyle(Theme.fgDim)
+                if let artist = displayArtist(e) {
+                    Text(artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                }
+                HStack(spacing: 6) {
+                    Text(Self.relative(e.at)).font(.caption2).foregroundStyle(Theme.fgDim)
+                    // Nothing names this item — show the raw id so the row stays traceable
+                    // (and searchable) instead of reading as an anonymous "unknown item".
+                    if isUnresolved(e) {
+                        Text(e.itemId)
+                            .font(.caption2.monospaced()).foregroundStyle(Theme.fgDim)
+                            .lineLimit(1).truncationMode(.middle)
+                            .accessibilityIdentifier("activity-row-id")
+                    }
+                }
             }
             Spacer()
         }
@@ -318,7 +331,8 @@ struct HistoryView: View {
     }
 
     /// "Added <item> to <collection>" / "Hearted <item>" / "Removed heart from <item>" /
-    /// "Removed <item> from <collection>", from the event's snapshots (falls back to the id).
+    /// "Removed <item> from <collection>", from the event's snapshots. An item nothing can name
+    /// reads "an unknown item"; the raw id is shown beneath the row instead (see `isUnresolved`).
     private func activityHeadline(_ e: CollectionActivityStore.ActivityEvent) -> String {
         let item = displayTitle(e)
         let coll = e.collectionName ?? "a collection"
@@ -332,17 +346,55 @@ struct HistoryView: View {
         }
     }
 
+    /// Search key. Includes the ARTIST, and the raw ITEM ID **only for unresolved rows**: the id
+    /// used to be the visible title of such a row, so searching by it kept working by accident.
+    /// Now that those rows read "an unknown item", the id has to be carried explicitly or id search
+    /// silently breaks — but carrying it for EVERY row would let a namespace prefix ("sng", "am"
+    /// on the way to "Amy") match the whole log, and Unified filters plays on title/artist/album
+    /// only, so such a query would return every activity row and zero plays.
     private func activitySearchKey(_ e: CollectionActivityStore.ActivityEvent) -> String {
-        (displayTitle(e) + "\n" + (e.collectionName ?? ""))
+        [displayTitle(e), displayArtist(e) ?? "", e.collectionName ?? "",
+         isUnresolved(e) ? e.itemId : ""]
+            .joined(separator: "\n")
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 
-    /// Prefer the LIVE catalog title (fresh renames), fall back to the event's snapshot, then the id.
+    /// Prefer the LIVE catalog title (fresh renames), fall back to the event's record-time snapshot.
+    /// A row with NEITHER is one whose item this device's catalog can't resolve — an Apple Music
+    /// song that was never indexed here, or one whose source was toggled off. It reads as an unknown
+    /// item and the row shows the raw id beneath (see `isUnresolved`) rather than AS the title.
     private func displayTitle(_ e: CollectionActivityStore.ActivityEvent) -> String {
         if let s = app.songsById[e.itemId] { return "“\(s.name)”" }
         if let a = app.albumsById[e.itemId] { return "“\(a.name)”" }
         if let t = e.itemTitle, !t.isEmpty { return "“\(t)”" }
-        return e.itemId
+        return "an unknown item"
+    }
+
+    /// The artist line — live catalog first, then the record-time snapshot. nil for rows that have
+    /// no artist by nature (a nested pocket, a studio item) or legacy rows recorded before the
+    /// snapshot existed.
+    private func displayArtist(_ e: CollectionActivityStore.ActivityEvent) -> String? {
+        if let s = app.songsById[e.itemId] { return s.artist }
+        if let a = app.albumsById[e.itemId] { return a.artist }
+        if let a = e.itemArtist, !a.isEmpty { return a }
+        return nil
+    }
+
+    /// Nothing but the raw id identifies this row (no live catalog item, no title snapshot).
+    private func isUnresolved(_ e: CollectionActivityStore.ActivityEvent) -> Bool {
+        app.songsById[e.itemId] == nil && app.albumsById[e.itemId] == nil
+            && (e.itemTitle?.isEmpty ?? true)
+    }
+
+    /// Open what an activity row points at. Songs and albums both have destinations, and a nested
+    /// POCKET row (from `addPocketRef`) resolves to its pocket. Anything else — a studio item, an
+    /// id this catalog can't resolve — stays inert rather than pushing a synthesized stub: a
+    /// SongDetailView built from a bare id fires a live MusicKit catalog search off an empty
+    /// name/artist.
+    private func openActivityItem(_ e: CollectionActivityStore.ActivityEvent) {
+        if let song = app.songsById[e.itemId] { path.append(song); return }
+        if let album = app.albumsById[e.itemId] { path.append(album); return }
+        if let pocket = collections.pocket(e.itemId) { path.append(pocket) }
     }
 
     private var activityEmptyState: some View {

@@ -15,6 +15,7 @@ struct RootView: View {
     @Environment(StudioStore.self) private var studio
     @Environment(StudioMicRecorder.self) private var studioMic
     @Environment(PlayHistoryStore.self) private var playHistory
+    @Environment(CollectionActivityStore.self) private var collectionActivity
     @Environment(IntentServices.self) private var intents
     @Environment(CloudSyncService.self) private var cloudSync
     @Environment(OnboardingStore.self) private var onboarding
@@ -219,6 +220,8 @@ struct RootView: View {
             studioMic.recoverOrphans()
             // History demo seed (PDJ_SEED_HISTORY) — populate the timeline for UI tests / demos.
             playHistory.seedDemoIfRequested()
+            // Collection-activity seed (PDJ_SEED_ACTIVITY) — the three row-resolution states.
+            collectionActivity.seedFixtureIfRequested()
             // iCloud session sync: pull any NEWER cloud session documents BEFORE the two
             // durable-session restores below read their files — a fresh device (a beta
             // tester's second install) restores the cloud session, not an empty one.
