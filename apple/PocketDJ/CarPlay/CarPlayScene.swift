@@ -41,6 +41,10 @@ final class CarPlayController {
     private var artCache: [String: UIImage] = [:]
     /// The currently-pushed Up Next list, kept so an edit can refresh it in place.
     private var upNextTemplate: CPListTemplate?
+    /// The Playlists tab + its (expensive, catalog-walked) row section, kept so the one-row
+    /// "Continue" section above them can be added/removed without rebuilding the rows.
+    private var playlistsTemplate: CPListTemplate?
+    private var playlistsRowSection: CPListSection?
     private lazy var nowPlayingObserver = CarPlayNowPlayingObserver(controller: self)
 
     init(interfaceController: CPInterfaceController) {
@@ -64,23 +68,18 @@ final class CarPlayController {
         await model.ensureReady()
 
         let playlists = listTemplate(title: "Playlists", tabImageName: "music.note.list",
-                                     rows: model.playlists(),
-                                     // The set that was playing when the phone was last used, held
-                                     // by `ensureReady`'s restore. Built ONCE here rather than via a
-                                     // stored template + refresh: a rebuild would re-walk the whole
-                                     // catalog on the main actor, and a fifth tab would risk
-                                     // CPTabBarTemplate.maximumTabCount.
-                                     leadingSection: model.resumableSession().map { row in
-                                         (header: "Continue", row: row, action: { [weak self] in
-                                             model.resumeHeldSession()
-                                             self?.interfaceController.pushTemplate(
-                                                 CPNowPlayingTemplate.shared, animated: true, completion: nil)
-                                         })
-                                     }) { [weak self] row in
+                                     rows: model.playlists()) { [weak self] row in
             self?.pushSongs(title: row.title, rows: model.songs(inPlaylist: row.id),
                             playAll: { await model.playPlaylist(id: row.id) },
                             shuffleAll: { await model.playPlaylist(id: row.id, shuffle: true) })
         }
+        // Keep the tab + its CATALOG-WALKED row section so the one-row "Continue" header above them
+        // can be added and removed in place. Walking the playlists is the expensive part and happens
+        // exactly once; the resume row is cheap and must stay TRUE, so it is rebuilt on every track
+        // change rather than advertising a finished track for the rest of the drive.
+        playlistsTemplate = playlists
+        playlistsRowSection = playlists.sections.first
+        refreshResumeRow()
         let pockets = listTemplate(title: "Pockets", tabImageName: "square.stack.fill",
                                    rows: model.pockets()) { [weak self] row in
             self?.pushSongs(title: row.title, rows: model.songs(inPocket: row.id),
@@ -97,6 +96,34 @@ final class CarPlayController {
         let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums, artists])
         interfaceController.setRootTemplate(tabBar, animated: true, completion: nil)
         configureNowPlaying()
+    }
+
+    /// The one-row "Continue" section, or nil when there is nothing held to resume.
+    private func resumeSection(_ model: CarPlayModel)
+        -> (header: String, row: CarPlayModel.Row, action: () -> Void)? {
+        model.resumableSession().map { row in
+            (header: "Continue", row: row, action: { [weak self] in
+                model.resumeHeldSession()
+                self?.refreshResumeRow()          // it just stopped being resumable
+                self?.showNowPlaying()
+            })
+        }
+    }
+
+    /// Add or drop the "Continue" row in place. Called after the row is tapped and from the
+    /// track-change fan-out, so a set that was resumed from the phone (or skipped past) stops
+    /// advertising a track that already finished. Only the one-row section is rebuilt — the
+    /// catalog-walked playlist rows are reused, so this is cheap enough for a track-change hook.
+    func refreshResumeRow() {
+        guard let template = playlistsTemplate, let rows = playlistsRowSection,
+              let model else { return }
+        var sections: [CPListSection] = []
+        if let lead = resumeSection(model) {
+            sections.append(CPListSection(items: [listItem(lead.row, showsDisclosure: false) { lead.action() }],
+                                          header: lead.header, sectionIndexTitle: nil))
+        }
+        sections.append(rows)
+        template.updateSections(sections)
     }
 
     /// The shared Now Playing template is reachable via the system Now Playing button once audio is
@@ -159,6 +186,9 @@ final class CarPlayController {
         }
         buttons.append(heartButton())
         CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons)
+        // Same fan-out point covers the resume row: a set resumed/skipped from the phone stops
+        // being "held", so the Continue row must stop offering it.
+        refreshResumeRow()
     }
 
     // MARK: - List templates
@@ -166,21 +196,10 @@ final class CarPlayController {
     /// Build a browsable list template from rows; `onSelect` handles a row tap (drill-in).
     /// Tabs always use an SF Symbol `tabImage` (+ `tabTitle`) — NOT `tabSystemItem`, whose fixed
     /// system icon/label would override them (e.g. a `.more` item renders a misleading "•••").
-    /// `leadingSection` pins a single-row section above the list (the "Continue" resume row). Its
-    /// action fires directly — no disclosure, no drill-in — because the driver's intent is "keep
-    /// playing what I was playing", not "browse into something".
     private func listTemplate(title: String, tabImageName: String, rows: [CarPlayModel.Row],
-                              leadingSection: (header: String, row: CarPlayModel.Row,
-                                               action: () -> Void)? = nil,
                               onSelect: @escaping (CarPlayModel.Row) -> Void) -> CPListTemplate {
         let items = rows.map { row -> CPListItem in listItem(row, showsDisclosure: true) { onSelect(row) } }
-        var sections: [CPListSection] = []
-        if let lead = leadingSection {
-            let item = listItem(lead.row, showsDisclosure: false) { lead.action() }
-            sections.append(CPListSection(items: [item], header: lead.header, sectionIndexTitle: nil))
-        }
-        sections.append(CPListSection(items: items))
-        let template = CPListTemplate(title: title, sections: sections)
+        let template = CPListTemplate(title: title, sections: [CPListSection(items: items)])
         template.tabImage = UIImage(systemName: tabImageName)
         template.tabTitle = title
         return template
