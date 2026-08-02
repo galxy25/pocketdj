@@ -75,3 +75,50 @@ final class HistoryEngineTests: XCTestCase {
         XCTAssertTrue(a.id.hasPrefix("evt:"))
     }
 }
+
+// MARK: - Rewind slice (R5b): reconstructing a past run from the log
+
+@MainActor
+final class HistoryRewindSliceTests: XCTestCase {
+
+    private func ev(_ song: String, at ms: Double, context: String?) -> PlayHistoryStore.PlayEvent {
+        PlayHistoryStore.PlayEvent(id: UUID(), songId: song, playedAt: ms, source: .playlist,
+                                   contextId: context, contextName: context,
+                                   title: song, artist: "A", originInstallId: nil)
+    }
+
+    /// The slice is the tapped play AND everything that followed it IN THE SAME SET — which is
+    /// exactly the "and every song afterwards plays in order" semantic, reconstructed from the log
+    /// when the run is no longer live.
+    func testSliceRunsFromTheTappedPlayToTheEndOfThatRun() {
+        let a = ev("s1", at: 1_000, context: "set_A")
+        let b = ev("s2", at: 2_000, context: "set_A")
+        let c = ev("s3", at: 3_000, context: "set_A")
+        let slice = HistoryView.rewindSlice(from: b.id, in: [a, b, c])
+        XCTAssertEqual(slice.map(\.songId), ["s2", "s3"], "starts AT the tap, runs to the end")
+    }
+
+    /// It STOPS at a different set. Rewinding into yesterday's playlist must not drag in whatever
+    /// was played afterwards from somewhere else — that was never part of this run.
+    func testSliceStopsAtADifferentContext() {
+        let a = ev("s1", at: 1_000, context: "set_A")
+        let b = ev("s2", at: 2_000, context: "set_A")
+        let other = ev("s9", at: 2_500, context: "set_B")
+        let backAgain = ev("s3", at: 3_000, context: "set_A")
+        let slice = HistoryView.rewindSlice(from: a.id, in: [a, b, other, backAgain])
+        XCTAssertEqual(slice.map(\.songId), ["s1", "s2"],
+                       "a play from another set ends the run — later set_A plays are a DIFFERENT run")
+    }
+
+    /// Browser singles have no context id; they group together rather than each being their own run.
+    func testBrowserSinglesShareTheNilContext() {
+        let a = ev("s1", at: 1_000, context: nil)
+        let b = ev("s2", at: 2_000, context: nil)
+        XCTAssertEqual(HistoryView.rewindSlice(from: a.id, in: [a, b]).map(\.songId), ["s1", "s2"])
+    }
+
+    func testUnknownEventYieldsNothing() {
+        let a = ev("s1", at: 1_000, context: "set_A")
+        XCTAssertTrue(HistoryView.rewindSlice(from: UUID(), in: [a]).isEmpty)
+    }
+}

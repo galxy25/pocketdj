@@ -20,6 +20,8 @@ struct HistoryView: View {
     @Environment(CollectionActivityStore.self) private var activity
     @Environment(CollectionsStore.self) private var collections
     @Environment(SettingsStore.self) private var settings
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(IntentServices.self) private var intents
     /// Optional like `AddToCollectionView`/`AppleMusicSettingsView`: always injected by the app, but a
     /// preview/test host that renders History standalone should degrade to "no backfill", not trap.
     @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
@@ -36,6 +38,8 @@ struct HistoryView: View {
         }
     }
     @State private var tab: HistoryTab = .unified
+    /// The History row a rewind is pending on — nil unless the confirmation is up.
+    @State private var rewindTarget: PlayHistoryStore.PlayEvent?
 
     /// History's own filter/sort state — distinct persistence key so it never clobbers the
     /// Browser's, defaulting to most-recently-played first.
@@ -119,6 +123,20 @@ struct HistoryView: View {
                 get: { backfillMessage != nil }, set: { if !$0 { backfillMessage = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(backfillMessage ?? "") }
+            .confirmationDialog("Rewind playback?", isPresented: Binding(
+                get: { rewindTarget != nil }, set: { if !$0 { rewindTarget = nil } }),
+                presenting: rewindTarget) { target in
+                Button("Rewind to here") {
+                    let t = target
+                    rewindTarget = nil
+                    performRewind(t)
+                }
+                Button("Cancel", role: .cancel) { rewindTarget = nil }
+            } message: { _ in
+                Text(rewindReplacesLiveSet
+                     ? "This replaces what’s playing now and starts the set again from that song."
+                     : "This starts the set again from that song.")
+            }
             .background { shortcuts }
             .onChange(of: browse.query) { browse.persist() }
             .onChange(of: browse.clauses) { browse.persist() }
@@ -223,10 +241,11 @@ struct HistoryView: View {
 
     @ViewBuilder private func unifiedRow(_ entry: HistoryEntry) -> some View {
         switch entry {
-        case .play(_, let song, let play):
+        case .play(let eventId, let song, let play):
             row(song: song, play: play)
                 .contentShape(Rectangle())
                 .onTapGesture { path.append(song) }
+                .contextMenu { rewindMenuItem(eventId: eventId) }
         case .activity(let e):
             activityRow(e)
                 .contentShape(Rectangle())
@@ -492,6 +511,75 @@ struct HistoryView: View {
             .padding(.leading, 52)   // align under the row's text, past the thumbnail
         }
         .padding(.vertical, 2)
+    }
+
+    // MARK: - Rewind playback to a point in History (R5b)
+
+    /// "Rewind to here" on a History row: pick the set back up from that play and run forward
+    /// through everything that followed it, in order.
+    ///
+    /// Two cases, and the difference matters. If the tapped play is still in the RUNNING queue,
+    /// this is the same cursor move the Now Playing deck offers — no rebuild, the live set keeps
+    /// its identity and its edits. If it's from a past run, there is no queue to move a cursor in,
+    /// so the run is reconstructed from the log: the contiguous slice of plays that shared this
+    /// one's context, starting at it. That slice IS the tail of the old set as it actually played.
+    @ViewBuilder private func rewindMenuItem(eventId: UUID) -> some View {
+        if let e = history.events.first(where: { $0.id == eventId }) {
+            Button {
+                rewindTarget = e
+            } label: {
+                Label("Rewind to here", systemImage: "backward.end.fill")
+            }
+        }
+    }
+
+    /// The slice a past-run rewind plays: this event and every later play that shared its context,
+    /// in order, stopping at the first play from a DIFFERENT context (that's a different set).
+    /// Pure + testable — no view state, no player.
+    static func rewindSlice(from eventId: UUID,
+                            in events: [PlayHistoryStore.PlayEvent]) -> [PlayHistoryStore.PlayEvent] {
+        guard let start = events.firstIndex(where: { $0.id == eventId }) else { return [] }
+        let context = events[start].contextId
+        var out: [PlayHistoryStore.PlayEvent] = []
+        for e in events[start...] {
+            guard e.contextId == context else { break }
+            out.append(e)
+        }
+        return out
+    }
+
+    /// A rewind ALWAYS confirms — it is never silent.
+    ///
+    /// The obvious gate would be `sequencer.isRunning`, and it is wrong. History is the default
+    /// landing tab and is interactive during the launch sync window, BEFORE the durable-session
+    /// restore runs; `isRunning` is false there, so an isRunning-gated confirmation would vanish
+    /// exactly when a restored set is most at risk of being replaced before it has even been
+    /// rehydrated. (`PlaybackSessionStore` isn't `@Observable`, so a view can't cheaply ask whether
+    /// a snapshot exists either.) Always asking costs one tap and closes the hole.
+    private var rewindReplacesLiveSet: Bool { sequencer.isRunning }
+
+    /// Execute a rewind. Re-reads the event by id at execute time rather than trusting the value
+    /// captured when the menu was built — a cloud pull can merge new rows in underneath an open
+    /// menu, and the confirmation dialog gives it a whole extra window to happen.
+    private func performRewind(_ target: PlayHistoryStore.PlayEvent) {
+        guard let e = history.events.first(where: { $0.id == target.id }) else { return }
+        // SAME RUN: a pure cursor move, so the live set keeps its identity, its edits, and its
+        // origin. Matching on the LAST played row with this song id — a song can repeat in a set,
+        // and the most recent occurrence is the one the user is looking at.
+        if sequencer.isRunning, let uid = sequencer.played.last(where: { $0.id == e.songId })?.uid {
+            sequencer.jumpToPlayed(uid: uid)
+            return
+        }
+        // PAST RUN: rebuild from the log. `playSongIds` is the right door — it already does the
+        // onboarding veto and awaits `ensureReady()`, so a rewind can't fire against an empty
+        // catalog and mint a corrupt Now Playing setlist. The slice starts AT the tapped event, so
+        // playback begins there with no start-index parameter needed.
+        let slice = Self.rewindSlice(from: e.id, in: history.events)
+        guard !slice.isEmpty else { return }
+        let name = e.contextName ?? "History"
+        Task {
+            try? await intents.playSongIds(slice.map(\.songId), name: name, source: e.source)
+        }
     }
 
     private func contextLabel(_ play: PlayRef) -> String {
