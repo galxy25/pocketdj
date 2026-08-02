@@ -83,6 +83,43 @@ final class CollectionActivityStoreTests: XCTestCase {
         XCTAssertFalse(store.installId.isEmpty)
     }
 
+    // MARK: reloadFromDisk — union merge, but only SAVE when we actually hold something extra
+
+    /// A merge that adds nothing must not rewrite the file. `save()` re-stamps this install's id, so
+    /// its bytes always differ from the pulled payload; an unconditional save left the document
+    /// dirty after every pull, and because CloudSync compares mtimes rather than content, two
+    /// devices would push the whole log back and forth forever.
+    func testReloadWithNothingNewDoesNotRewriteTheFile() throws {
+        let (store, url) = makeStore()
+        store.record(kind: .add, itemId: "sng_1", at: 1_000)
+        let before = try Data(contentsOf: url)
+        let beforeMtime = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+
+        XCTAssertFalse(store.reloadFromDisk(), "the disk doc holds exactly what we hold ⇒ no superset")
+        XCTAssertEqual(try Data(contentsOf: url), before, "a no-op merge must leave the file byte-identical")
+        XCTAssertEqual((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+                       beforeMtime, "…and must not re-stamp its mtime")
+    }
+
+    /// The converse: when THIS device holds rows the pulled document lacks, the union is a genuine
+    /// superset and must be saved so it rides the next push up to the peers.
+    func testReloadSavesWhenWeHoldRowsTheDiskDocLacks() throws {
+        let (store, url) = makeStore()
+        store.record(kind: .add, itemId: "sng_local", at: 2_000)
+        // Simulate the pull: the cloud document has only the PEER's event.
+        let peer = CollectionActivityStore.ActivityEvent(
+            id: UUID(), at: 1_000, kind: .add, itemId: "sng_peer", itemTitle: "Peer", itemArtist: nil,
+            collectionId: nil, collectionKind: nil, collectionName: nil, originInstallId: "peer")
+        let doc = CollectionActivityStore.Document(installId: "peer", events: [peer])
+        try JSONEncoder().encode(doc).write(to: url, options: .atomic)
+
+        XCTAssertTrue(store.reloadFromDisk(), "we hold a row the pulled doc lacks ⇒ superset ⇒ save")
+        XCTAssertEqual(Set(store.events.map(\.itemId)), ["sng_local", "sng_peer"], "union, not replace")
+        let reloaded = CollectionActivityStore(fileURL: url)
+        XCTAssertEqual(Set(reloaded.events.map(\.itemId)), ["sng_local", "sng_peer"],
+                       "the superset is on disk, so it can ride the next push")
+    }
+
     /// R3: the artist snapshot survives a persist/decode round trip — it is what keeps a row for an
     /// item this device's catalog can't resolve identifiable instead of a bare id.
     func testItemArtistRoundTrips() {

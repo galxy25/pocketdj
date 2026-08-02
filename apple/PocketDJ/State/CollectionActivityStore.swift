@@ -255,15 +255,31 @@ final class CollectionActivityStore {
     /// and we `save()` so the merged log is durable and rides the next push back up (the LWW
     /// reload can skip the save because it only re-reads what's already on disk; the union produces
     /// a superset that isn't yet persisted).
-    func reloadFromDisk() {
+    ///
+    /// THE SAVE IS CONDITIONAL, and that is load-bearing for sync, not an optimization. `save()`
+    /// re-encodes with THIS install's id, so its bytes always differ from the pulled payload — an
+    /// unconditional save left the file dirty after EVERY pull, including one that merged nothing.
+    /// Since the sync compares mtimes and never content, that produced an endless ping-pong: A
+    /// pulls → A re-saves → A pushes → B pulls → B re-saves → B pushes → …, a full-document upload
+    /// AND download of the whole log on every pass on every device, forever. Saving only when the
+    /// union actually contributed rows makes a no-op merge leave the file clean, which terminates
+    /// the loop while a genuine superset still rides the next push.
+    @discardableResult
+    func reloadFromDisk() -> Bool {
         guard let data = try? Data(contentsOf: fileURL),
-              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
+              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return false }
         var byId = Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        for e in doc.events where byId[e.id] == nil { byId[e.id] = e }
+        var addedFromDisk = 0
+        for e in doc.events where byId[e.id] == nil { byId[e.id] = e; addedFromDisk += 1 }
+        // A superset exists only if WE hold rows the pulled document lacks — that is what has to be
+        // published. (Rows we took FROM the document are already up there.)
+        let weHoldRowsTheDocLacks = byId.count > doc.events.count
         events = byId.values.sorted { $0.at < $1.at }
         if events.count > Self.maxEvents { trimToCap() }
-        revision &+= 1
+        if addedFromDisk > 0 || weHoldRowsTheDocLacks { revision &+= 1 }
+        guard weHoldRowsTheDocLacks else { return false }
         save()
+        return true
     }
 }
 

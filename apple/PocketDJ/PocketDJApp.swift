@@ -874,6 +874,12 @@ struct PocketDJApp: App {
         cloudSync.register("play-history", fileURL: playHistory.syncFileURL) { [weak playHistory] in playHistory?.reloadFromDisk() }
         cloudSync.register("collection-activity", fileURL: collectionActivity.syncFileURL) { [weak collectionActivity] in collectionActivity?.reloadFromDisk() }
         cloudSync.register("mix-sessions", fileURL: mixSessions.syncFileURL) { [weak mixSessions] in mixSessions?.reloadFromDisk() }
+        // No push veto on the session doc. One was tried and removed: gating the push on "this
+        // process is driving a session" stranded a set played offline or in the background whose
+        // process was killed before it pushed — on the next launch the freshest played session
+        // could never reach the cloud. What actually orders these documents is the file mtime,
+        // which now means "last actually played here" (a restore no longer writes), plus the
+        // cloud comparison in pushDirty.
         cloudSync.register("playback-session", fileURL: playbackSession.syncFileURL)
         cloudSync.register("mix-decks", fileURL: mixDeckSession.syncFileURL)
         cloudSync.register("discover-adds", fileURL: discoverAdds.syncFileURL) { [weak discoverAdds] in
