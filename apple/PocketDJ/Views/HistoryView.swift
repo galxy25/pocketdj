@@ -495,8 +495,12 @@ struct HistoryView: View {
     }
 
     private func contextLabel(_ play: PlayRef) -> String {
-        if let name = play.contextName, !name.isEmpty { return "\(play.source.label) · \(name)" }
-        return play.source.label
+        var label = play.source.label
+        if let name = play.contextName, !name.isEmpty { label += " · \(name)" }
+        // History is merged across devices now, so a row can be something you played elsewhere.
+        // Saying so is the difference between "useful" and "why is that there?".
+        if play.fromAnotherDevice { label += " · on another device" }
+        return label
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
@@ -665,7 +669,8 @@ struct HistoryView: View {
         let album = app.album(forSongId: e.songId)
         let albumName = album?.name ?? ""
         let play = PlayRef(eventId: e.id, playedAt: e.playedAt, source: e.source,
-                           contextName: e.contextName, count: count)
+                           contextName: e.contextName, count: count,
+                           fromAnotherDevice: history.isFromAnotherDevice(e))
         let item = BrowseItem.song(song, albumName: albumName, source: app.source(ofSong: e.songId),
                                    genre: Genre.category(album?.genre), play: play)
         let key = (song.name + "\n" + song.artist + "\n" + albumName)

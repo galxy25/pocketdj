@@ -71,6 +71,13 @@ final class PlayHistoryStore {
         var contextName: String?
         var title: String?
         var artist: String?
+        /// The `installId` of the device that ORIGINATED this play, stamped at record time.
+        /// ADDITIVE-OPTIONAL (older/peer events have none → nil, read as "this device").
+        ///
+        /// Load-bearing for two things once the log is UNIONed across devices: History can say
+        /// where a play happened, and `rebuildIndexes` can keep the 30-second re-count window
+        /// LOCAL — a play that arrived from another device must never suppress a genuine play here.
+        var originInstallId: String?
     }
 
     /// The persisted, versioned document.
@@ -79,6 +86,31 @@ final class PlayHistoryStore {
         /// Stable identity of THIS install — the merge attribution key (see class doc).
         var installId: String
         var events: [PlayEvent] = []
+
+        init(schemaVersion: Int = playHistorySchemaVersion, installId: String, events: [PlayEvent] = []) {
+            self.schemaVersion = schemaVersion; self.installId = installId; self.events = events
+        }
+
+        enum CodingKeys: String, CodingKey { case schemaVersion, installId, events }
+
+        /// LENIENT per-element decode, copied from `CollectionActivityStore`. Without it a single
+        /// event carrying an unknown `PlaySource` raw value — written by a NEWER build and synced
+        /// down to an older one — throws, the caller's `try?` yields nil, the log reads as EMPTY,
+        /// and the next `record()` SAVES and PUSHES that empty log, destroying the real history on
+        /// every device. Dropping the one unreadable event keeps everything this build understands.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? playHistorySchemaVersion
+            installId = (try? c.decode(String.self, forKey: .installId)) ?? UUID().uuidString
+            events = ((try? c.decode([LenientEvent].self, forKey: .events)) ?? []).compactMap(\.event)
+        }
+    }
+
+    /// Per-element tolerant wrapper: yields nil instead of throwing, so one bad row can't take the
+    /// whole log with it.
+    private struct LenientEvent: Decodable {
+        let event: PlayEvent?
+        init(from decoder: Decoder) throws { event = try? PlayEvent(from: decoder) }
     }
 
     /// The append-only log, oldest → newest (insertion order == chronological for live plays).
@@ -163,7 +195,8 @@ final class PlayHistoryStore {
         }
         let event = PlayEvent(id: UUID(), songId: songId, playedAt: nowMs,
                               source: context.source, contextId: context.contextId,
-                              contextName: context.contextName, title: title, artist: artist)
+                              contextName: context.contextName, title: title, artist: artist,
+                              originInstallId: installId)
         events.append(event)
         lastPlayedIndex[songId] = max(lastPlayedIndex[songId] ?? 0, nowMs)
         countIndex[songId, default: 0] += 1
@@ -244,12 +277,25 @@ final class PlayHistoryStore {
         }
     }
 
+    /// Did this play happen on a DIFFERENT device? A nil origin is a legacy event from before
+    /// attribution existed — this device's own, so it reads as local.
+    func isFromAnotherDevice(_ e: PlayEvent) -> Bool {
+        guard let origin = e.originInstallId else { return false }
+        return origin != installId
+    }
+
     private func rebuildIndexes() {
         var last: [String: Double] = [:]
         var counts: [String: Int] = [:]
         for e in events {
-            last[e.songId] = max(last[e.songId] ?? 0, e.playedAt)
+            // COUNTS span every device — that is the point of a merged history.
             counts[e.songId, default: 0] += 1
+            // The RE-COUNT WINDOW does not. `lastPlayedIndex` exists solely to collapse this
+            // device's double-hook/seek re-notes within 30 s; folding a peer's play into it would
+            // let a play on the Mac silently swallow a real play here seconds later. A nil origin
+            // is a legacy event from before attribution — this device's own, so it counts.
+            guard e.originInstallId == nil || e.originInstallId == installId else { continue }
+            last[e.songId] = max(last[e.songId] ?? 0, e.playedAt)
         }
         lastPlayedIndex = last
         countIndex = counts
@@ -260,16 +306,38 @@ final class PlayHistoryStore {
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }
     }
 
-    /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
-    /// (whole-document LWW). Adopts the cloud doc's installId too — post-pull, this
-    /// device continues the pulled timeline.
-    func reloadFromDisk() {
+    /// UNION the on-disk document into the live log after CloudSyncService pulled a peer's copy.
+    ///
+    /// THIS USED TO BE A WHOLESALE REPLACE, and that is why history never worked across devices:
+    /// the sync is whole-document last-writer-wins, so plays made on the Mac simply OVERWROTE the
+    /// plays made on the phone. Union-by-event-id keeps both (idempotent — the same document
+    /// applied twice changes nothing), which is exactly what `CollectionActivityStore` already
+    /// does for the activity log.
+    ///
+    /// It also no longer adopts the pulled document's `installId`: this install continues to exist
+    /// and is now merging peers IN, so its own identity must survive — otherwise its future plays
+    /// would be attributed to whichever device it last pulled from.
+    ///
+    /// THE SAVE IS CONDITIONAL, for the reason Stage 3 established the hard way: `save()`
+    /// re-encodes with THIS install's id, so its bytes always differ from the pulled payload. An
+    /// unconditional save would leave the file dirty after EVERY pull, and since the sync compares
+    /// mtimes and never content, two devices would push the whole log back and forth forever.
+    @discardableResult
+    func reloadFromDisk() -> Bool {
         guard let data = try? Data(contentsOf: fileURL),
-              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
-        events = doc.events
-        installId = doc.installId
+              let doc = try? JSONDecoder().decode(Document.self, from: data) else { return false }
+        var byId = Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var addedFromDisk = 0
+        for e in doc.events where byId[e.id] == nil { byId[e.id] = e; addedFromDisk += 1 }
+        // A superset worth publishing exists only if WE hold rows the pulled document lacks.
+        let weHoldRowsTheDocLacks = byId.count > doc.events.count
+        events = byId.values.sorted { $0.playedAt < $1.playedAt }
+        if events.count > Self.maxEvents { trimToCap() }
         rebuildIndexes()
-        revision &+= 1
+        if addedFromDisk > 0 || weHoldRowsTheDocLacks { revision &+= 1 }
+        guard weHoldRowsTheDocLacks else { return false }
+        save()
+        return true
     }
 }
 
