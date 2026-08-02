@@ -148,6 +148,32 @@ process_one() {
     return 0
   fi
 
+  # SHRINK GUARD. A rebuild from one snapshot can only ever see what Music.app's XML export
+  # contains, so it silently omits subscription-only rows, video rows and every folded
+  # share-link column that the committed index accumulated from other pipelines. Since the next
+  # two lines cp → commit → push → deploy to S3, one stale-snapshot run would wipe that from
+  # GitHub and production simultaneously. Refuse to publish an index that LOSES songs, and
+  # refuse to drop rows the union stamped as subscription-only.
+  if [ -e "$PUBLIC_INDEX" ] && [ "$DRY_RUN" != 1 ]; then
+    if ! "$NODE" -e '
+      const fs=require("fs");
+      const cur=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+      const next=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));
+      const nextIds=new Set((next.songs||[]).map(s=>s.id));
+      const lostSub=(cur.songs||[]).filter(s=>s.librarySource==="subscription"&&!nextIds.has(s.id)).length;
+      const d=(cur.songs||[]).length-(next.songs||[]).length;
+      if(d>0||lostSub>0){
+        console.error(`✗ rebuild SHRINKS the catalog (${(cur.songs||[]).length} → ${(next.songs||[]).length}`+
+          `, subscription rows lost: ${lostSub}) — refusing to publish. The snapshot is probably stale;`+
+          ` re-export the library, or reconcile with scripts/union-am-index.mjs.`);
+        process.exit(1);
+      }' "$PUBLIC_INDEX" "$FINAL"; then
+      log "SHRINK GUARD tripped for $base — leaving changeset unconsumed for a human"
+      rm -rf "$SCRATCH"
+      return 1
+    fi
+  fi
+
   # publish: cp is the FIRST tracked-tree write (skipped under --dry-run).
   run cp "$FINAL" "$PUBLIC_INDEX"
   # (2) COMMIT
