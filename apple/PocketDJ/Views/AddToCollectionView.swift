@@ -16,6 +16,9 @@ struct AddToCollectionView: View {
     /// is also driven by previews/tests that don't build the whole graph. nil ⇒ the Apple
     /// Music half is simply unavailable and the sheet says the add stays on this device.
     @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
+    /// Optional for the same reason `writeBack` is: always injected by the app, but a preview or a
+    /// test host that renders the picker standalone should degrade, not trap.
+    @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
     @Environment(\.dismiss) private var dismiss
     let item: Item
 
@@ -179,11 +182,8 @@ struct AddToCollectionView: View {
             .frame(minWidth: 420, minHeight: 520)
             #endif
             .alert(sourceResult?.title ?? "", isPresented: sourceResultShowing,
-                   presenting: sourceResult) { _ in
-                // Acknowledge the "made a local copy" notice but STAY on the picker (don't dismiss
-                // back to song detail) — the source playlist is now in your collections, so you can
-                // keep adding elsewhere; the toolbar "Done" closes the picker when you're finished.
-                Button("Done") { sourceResult = nil }
+                   presenting: sourceResult) { result in
+                sourceAlertActions(result)
             } message: { result in
                 Text(result.message)
             }
@@ -246,7 +246,12 @@ struct AddToCollectionView: View {
             // local when it isn't (so no promise is made that an off-catalog track will sync).
             return base + " For Apple Music lists, if the song is on Apple Music it’s also added to the real playlist in your Apple Music library."
         }
-        return base + " Apple Music playlists can’t be edited from this device, so the add stays on this device."
+        // This device can't write to Apple Music DIRECTLY (macOS: MusicLibrary's write methods are
+        // @available(macOS, unavailable)) — but the add does NOT stay here. The Apple Music sync's
+        // push step has no platform gate, so the local copy goes up at the next sync, which the
+        // daily automatic pass runs on this device too. Saying "stays on this device" was simply
+        // false, and it is the kind of false that makes someone add the song twice.
+        return base + " This device can’t send it to Apple Music the moment you tap, but it goes up at the next Apple Music sync — or use Sync now."
     }
 
     /// Already a member of the source list itself, or of the on-device duplicate.
@@ -260,6 +265,9 @@ struct AddToCollectionView: View {
     /// Perform the two-way add and compose the result the alert reports.
     private func addToSource(_ source: SourcePlaylist) {
         guard let sid = songId else { return }
+        // True when the add is real but this device can't deliver it instantly — the alert then
+        // offers to run the sync on the spot instead of leaving the user to wait for the daily pass.
+        var queuedForSync = false
         let amId = app.songsById[sid]?.appleMusicId
         let result = collections.addSong(sid, toIndexPlaylist: source, appleMusicId: amId)
 
@@ -291,7 +299,8 @@ struct AddToCollectionView: View {
                 }
                 writeBack.runSoon()
             } else {
-                lines.append("Apple Music playlists can’t be edited from this device, so this add stays on this device.")
+                lines.append("This device can’t add to Apple Music instantly, so it’s queued for the next Apple Music sync.")
+                queuedForSync = true
             }
         } else if PlaylistWriteBack.isAppleMusicSource(source.sourceName) {
             // Apple Music list, but the song has no Apple Music identity at all (no store id and no
@@ -300,7 +309,28 @@ struct AddToCollectionView: View {
         }
 
         sourceResult = SourceAddResult(title: result.alreadyPresent ? "Already there" : "Added",
-                                       message: lines.joined(separator: "\n\n"))
+                                       message: lines.joined(separator: "\n\n"),
+                                       queuedForSync: queuedForSync)
+    }
+
+    /// Extracted from the `.alert` closure: inlined, it pushed that view body past the Swift
+    /// type-checker's budget ("unable to type-check this expression in reasonable time").
+    @ViewBuilder
+    private func sourceAlertActions(_ result: SourceAddResult) -> some View {
+        // Acknowledge the "made a local copy" notice but STAY on the picker (don't dismiss back to
+        // song detail) — the source playlist is now in your collections, so you can keep adding
+        // elsewhere; the toolbar "Done" closes the picker when you're finished.
+        Button("Done") { sourceResult = nil }
+        // On a device that can't deliver the add itself, don't make the user hunt for the sync in
+        // Settings — offer it right where the wait is announced.
+        if result.queuedForSync, let playlistSync, !playlistSync.isSyncing {
+            Button("Sync now") {
+                sourceResult = nil
+                // PUSH only: the user is waiting on THIS add reaching Apple Music, and a full
+                // two-way pass would also pull the whole library — minutes, for no benefit here.
+                Task { await playlistSync.syncNow(collections: collections, app: app, direction: .push) }
+            }
+        }
     }
 
     private var sourceResultShowing: Binding<Bool> {
@@ -312,6 +342,8 @@ struct AddToCollectionView: View {
         let id = UUID()
         let title: String
         let message: String
+        /// The add is waiting on an Apple Music sync ⇒ the alert offers to run one now.
+        var queuedForSync = false
     }
 
     /// Adds the item and records the target (incl. chapter) as "last used".
