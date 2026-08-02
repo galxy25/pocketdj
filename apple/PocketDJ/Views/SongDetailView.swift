@@ -4,6 +4,7 @@ import SwiftUI
 /// an album's track table. Links back to its album, and supports editing.
 struct SongDetailView: View {
     @Environment(AppModel.self) private var app
+    @Environment(SetlistPlayer.self) private var sequencer
     @Environment(LyricsStore.self) private var lyricsStore: LyricsStore?
     @Environment(RipsStore.self) private var rips
     @Environment(StreamingStore.self) private var streaming
@@ -266,6 +267,18 @@ struct SongDetailView: View {
                 // iPhone the toolbar's primaryAction group overflows into a nested "More"
                 // menu, which would bury a one-tap primary action two taps deep.
                 FavoriteToggle(songId: current.id, appleMusicId: current.appleMusicId, font: .title3)
+                // Queue actions live in the in-content cluster for the same reason ♥ does: on
+                // iPhone the toolbar's primaryAction group overflows into a nested "More".
+                // Rendered only while a set is running (QueueMenuItems is empty otherwise), so
+                // the menu button itself is conditional — an empty Menu is an inert glyph.
+                if sequencer.isRunning {
+                    Menu {
+                        QueueMenuItems(songs: [current])
+                    } label: {
+                        Image(systemName: "text.append").font(.title3)
+                    }
+                    .accessibilityIdentifier("song-queue-menu")
+                }
                 RowTransport(song: (id: current.id, title: current.name, artist: current.artist),
                              startMs: nil,
                              // SongDetail ONLY: a stemmed song's glyph slides out the audition

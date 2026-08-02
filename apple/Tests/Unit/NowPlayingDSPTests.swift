@@ -247,6 +247,39 @@ final class NowPlayingDSPTests: XCTestCase {
         XCTAssertFalse(seq.mixAvailable(mixActive: true), "a running Mix session hides the panel")
     }
 
+    /// "Play now" moves the needle to a DIFFERENT track, so it must tear down any Now Playing mix
+    /// engagement — exactly as a skip or a rewind does.
+    ///
+    /// The regression this guards: `playNow` initially started the spliced track with
+    /// `playCurrent(fresh: false)`, and `fresh` is what gates `endMixEngagement()`. The DSP kept
+    /// rendering the INTERRUPTED track while the AVPlayer started the new one (two songs at once,
+    /// against the one-audio-owner rule), and `dsp.onReachedEnd` stayed armed so the old track's
+    /// end fired an advance that skipped the very track the user asked to play now. Every other
+    /// `fresh: false` caller stays on the same row, which is why only this one was wrong.
+    func testPlayNowTearsDownAMixEngagement() async {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.dsp = makeDSP()
+        addTeardownBlock { @MainActor in seq.stop() }
+        await burn(rips, burns, songId: "np_mix1")
+
+        seq.play([.init(id: "np_mix1", title: "One", artist: "A"),
+                  .init(id: "np_mix2", title: "Two", artist: "A")])
+        await waitUntil("burnt file becomes now-playing") { rips.nowPlaying?.songId == "np_mix1" }
+        seq.engageMix()
+        XCTAssertTrue(seq.mixEngaged, "precondition: the Now Playing mix panel owns the audio")
+
+        seq.playNow(.init(id: "np_mix1", title: "One", artist: "A"))
+
+        // The tear-down runs inside `playCurrent`, which `playNow` starts as a Task — so this is a
+        // wait, not a synchronous assertion. (Same shape as every other transport action here.)
+        await waitUntil("the mix engagement is handed back on the track change") { !seq.mixEngaged }
+        XCTAssertFalse(seq.mixEngaged,
+                       "a track change must hand the audio back — otherwise two songs sound at once")
+    }
+
     func testMixUnavailableWhenAppleMusicIsActive() async {
         let rips = makeRips(); let burns = makeBurns(rips)
         let player = PlayerEngine()

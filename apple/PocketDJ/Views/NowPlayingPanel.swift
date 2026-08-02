@@ -490,8 +490,10 @@ struct NowPlayingPanel: View {
     /// The played head of the queue, NEWEST first (the most recently finished track sits
     /// next to the deck). Same snapshot/uid doctrine as Up Next: rows are identified by
     /// `Item.uid`; the a11y ids stay positional for tests. Rows are read-only — the context
-    /// menu jumps back onto the row ("Play now", a whole ⏮-walk in one tap) or re-queues a
-    /// FRESH copy (reusing the row would duplicate its per-instance uid).
+    /// menu offers "Play now" (interrupt and play that track immediately, queue unchanged
+    /// behind it), "Rewind to here" (move the needle back so that row and everything after it
+    /// replays in order), or a re-queue of a FRESH copy (reusing the row would duplicate its
+    /// per-instance uid).
     @ViewBuilder private var playedSection: some View {
         let played = Array(sequencer.played.reversed())
         Section {
@@ -510,9 +512,18 @@ struct NowPlayingPanel: View {
                 }
                 .contentShape(Rectangle())
                 .contextMenu {
-                    Button { sequencer.jumpToPlayed(uid: item.uid) } label: {
+                    // "Play now" and "Rewind to here" are DIFFERENT, and both belong here.
+                    // Play now interrupts: that track starts immediately and the queue then
+                    // carries on exactly where it was. Rewind moves the needle back to that
+                    // point, so it and everything after it — including the tracks between it
+                    // and what was playing — play through again in order.
+                    Button { sequencer.playNow(replay(item)) } label: {
                         Label("Play now", systemImage: "play.fill")
                     }
+                    Button { sequencer.jumpToPlayed(uid: item.uid) } label: {
+                        Label("Rewind to here", systemImage: "backward.end.fill")
+                    }
+                    Divider()
                     Button { sequencer.insertNextInQueue([replay(item)]) } label: {
                         Label("Play again next", systemImage: "arrow.up.to.line")
                     }

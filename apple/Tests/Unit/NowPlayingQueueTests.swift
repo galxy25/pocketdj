@@ -164,9 +164,71 @@ final class NowPlayingQueueTests: XCTestCase {
         XCTAssertTrue(seq.played.isEmpty)
     }
 
-    /// History "Play now": the needle lands on exactly the tapped played row, the rows
-    /// between it and the old current return to the upcoming tail; upcoming/unknown uids
-    /// are safe no-ops (the tap races playback by design).
+    /// "PLAY NOW" is NOT a rewind, and the difference is the whole point of having both. It splices
+    /// a fresh copy in right after the current row and steps onto it: the interrupted track stays
+    /// PLAYED, the upcoming tail is untouched, and nothing between here and there is replayed.
+    func testPlayNowInterruptsAndLeavesTheTailIntact() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
+        seq.skipNext(); seq.skipNext()                            // current = "c", played = [a, b]
+
+        seq.playNow(item("a"))                                    // a FRESH copy of "a"
+
+        XCTAssertEqual(seq.queue[seq.index].id, "a", "that track is playing now")
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "c", "a", "d"],
+                       "spliced in right after the interrupted row — the tail is not rebuilt")
+        XCTAssertEqual(seq.played.map(\.id), ["a", "b", "c"],
+                       "the interrupted track stays played; nothing is rewound")
+        XCTAssertEqual(seq.upcoming.map(\.id), ["d"],
+                       "the queue carries on exactly where it was")
+        seq.stop()
+    }
+
+    /// The contrast, side by side on the same starting queue: rewind REPLAYS the in-between rows,
+    /// play-now does not. This is the distinction Levi asked for explicitly.
+    func testPlayNowAndRewindDifferOnTheInBetweenRows() {
+        let rewind = makeSequencer()
+        rewind.play([item("a"), item("b"), item("c")], sourceSetlistId: "set_1")
+        rewind.skipNext(); rewind.skipNext()                      // current = "c"
+        rewind.jumpToPlayed(uid: rewind.played[0].uid)            // back to "a"
+        XCTAssertEqual(rewind.upcoming.map(\.id), ["b", "c"],
+                       "rewind: everything between the point and the current track plays again")
+        rewind.stop()
+
+        let now = makeSequencer()
+        now.play([item("a"), item("b"), item("c")], sourceSetlistId: "set_1")
+        now.skipNext(); now.skipNext()                            // current = "c"
+        now.playNow(item("a"))
+        XCTAssertEqual(now.upcoming.map(\.id), [],
+                       "play-now: nothing in between is replayed — the set resumes where it was")
+        now.stop()
+    }
+
+    /// A fresh copy means a fresh uid: two queued instances of one song must stay independently
+    /// addressable, because every live-queue edit keys on uid.
+    func testPlayNowMintsADistinctRowIdentity() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b")], sourceSetlistId: "set_1")
+        seq.skipNext()                                            // current = "b"
+        let originalA = seq.played[0].uid
+        seq.playNow(item("a"))
+        XCTAssertNotEqual(seq.queue[seq.index].uid, originalA,
+                          "the queued copy is its own row, not an alias of the played one")
+        seq.stop()
+    }
+
+    /// Idle deck: nothing to interrupt, so this is a no-op rather than a way to start a session.
+    func testPlayNowOnAnIdleDeckIsANoOp() {
+        let seq = makeSequencer()
+        seq.playNow(item("a"))
+        XCTAssertFalse(seq.isRunning)
+        XCTAssertTrue(seq.queue.isEmpty)
+    }
+
+    /// "REWIND TO HERE": the needle lands on exactly the tapped played row, and the rows between
+    /// it and the old current return to the upcoming tail — so that track AND everything after it,
+    /// including what played in between, runs through again in order. Upcoming/unknown uids are
+    /// safe no-ops (the tap races playback by design).
     func testJumpToPlayedRewindsOntoExactlyThatRow() {
         let seq = makeSequencer()
         seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
