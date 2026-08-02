@@ -129,6 +129,10 @@ final class PlayHistoryStore {
     @ObservationIgnored private var lastPlayedIndex: [String: Double] = [:]
     /// songId → number of events (History's group-by-song count). Rebuilt from `events`.
     @ObservationIgnored private var countIndex: [String: Int] = [:]
+    /// songId → most-recent `playedAt` ACROSS EVERY DEVICE. Distinct from `lastPlayedIndex`, which
+    /// is deliberately local-only (it drives the 30 s re-count window). This one answers "when was
+    /// this song last listened to, anywhere", which is what the storage prune wants.
+    @ObservationIgnored private var lastPlayedAnyDeviceIndex: [String: Double] = [:]
 
     /// Repeated plays of the SAME song inside this window collapse to one event (a seek /
     /// restart, or the burned-play double-hook where rips + coordinator both fire, isn't a
@@ -287,9 +291,11 @@ final class PlayHistoryStore {
     private func rebuildIndexes() {
         var last: [String: Double] = [:]
         var counts: [String: Int] = [:]
+        var lastAnywhere: [String: Double] = [:]
         for e in events {
             // COUNTS span every device — that is the point of a merged history.
             counts[e.songId, default: 0] += 1
+            lastAnywhere[e.songId] = max(lastAnywhere[e.songId] ?? 0, e.playedAt)
             // The RE-COUNT WINDOW does not. `lastPlayedIndex` exists solely to collapse this
             // device's double-hook/seek re-notes within 30 s; folding a peer's play into it would
             // let a play on the Mac silently swallow a real play here seconds later. A nil origin
@@ -299,7 +305,15 @@ final class PlayHistoryStore {
         }
         lastPlayedIndex = last
         countIndex = counts
+        lastPlayedAnyDeviceIndex = lastAnywhere
     }
+
+    /// When this song was last played on ANY device, or nil if never. O(1).
+    ///
+    /// The storage prune evicts least-recently-PLAYED downloads, and Levi's call is that a play on
+    /// another device counts: a track you listen to constantly on the Mac should not be first out
+    /// of the phone's cache just because the phone wasn't the one playing it.
+    func lastPlayedAtAnyDevice(_ songId: String) -> Double? { lastPlayedAnyDeviceIndex[songId] }
 
     private func save() {
         let doc = Document(installId: installId, events: events)

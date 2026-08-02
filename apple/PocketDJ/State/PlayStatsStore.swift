@@ -78,8 +78,28 @@ final class PlayStatsStore {
         save()
     }
 
-    /// Epoch ms of the last play, or nil if never played (⇒ pruned first).
-    func lastPlayedAt(_ songId: String) -> Double? { stats[songId]?.lastPlayedAt }
+    /// PEER-PLAY SEAM: when this song was last played on ANOTHER device. Wired at app init to
+    /// `PlayHistoryStore.lastPlayedAtAnyDevice` once history merges across devices; nil in tests.
+    ///
+    /// DERIVED, NOT ACCUMULATED — deliberately. The obvious implementation is to feed merged peer
+    /// events into `notePlayed`, but that mutates a running counter from a log that can be
+    /// re-merged (a re-pull, a device restore, a backup import), and every replay would inflate the
+    /// count and drag the eviction order with it. Reading the merged log at query time cannot
+    /// double-count by construction, no bookkeeping required.
+    @ObservationIgnored var peerLastPlayedAt: ((String) -> Double?)?
+
+    /// Epoch ms of the last play ON ANY DEVICE, or nil if never played (⇒ pruned first).
+    /// This is the storage prune's LRP key, so a play on the Mac protects the phone's copy too.
+    func lastPlayedAt(_ songId: String) -> Double? {
+        let local = stats[songId]?.lastPlayedAt
+        guard let peer = peerLastPlayedAt?(songId) else { return local }
+        guard let local else { return peer }
+        return max(local, peer)
+    }
+
+    /// This device's own last play, ignoring peers — for anything that must reason about local
+    /// behaviour specifically rather than "was this listened to anywhere".
+    func lastPlayedAtLocally(_ songId: String) -> Double? { stats[songId]?.lastPlayedAt }
     func playCount(_ songId: String) -> Int { stats[songId]?.playCount ?? 0 }
 
     /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
