@@ -152,8 +152,17 @@ export function deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSong
   const mergedById = new Map(merged.map((p) => [p.id, p]));
   const oldById = new Map(old.map((p) => [p.id, p]));
 
+  // SUBSCRIPTION PLAYLISTS ARE NEVER IN THE DUMP. Apple editorial playlists saved from the
+  // catalog don't appear in Music.app's playlist dump, so they look "deleted" every single run.
+  // They are stamped `librarySource:"subscription"` by scripts/union-am-index.mjs and exempted
+  // here. NOTE the asymmetry that makes this subtle: songs default to KEEP, playlists default to
+  // DROP — `out` below starts as dump-only and reinserts solely from `plDeferred`. So merely
+  // filtering these out of `missingPl` would delete them on the FIRST run, faster than doing
+  // nothing; they must also be explicitly reinserted (see the exempt loop below).
+  const exemptPl = new Set(old.filter((p) => p.librarySource === 'subscription').map((p) => p.id));
+
   // Playlist-level: absent from the merge output = deleted in Music this run.
-  const missingPl = old.filter((p) => !mergedById.has(p.id)).map((p) => p.id);
+  const missingPl = old.filter((p) => !mergedById.has(p.id) && !exemptPl.has(p.id)).map((p) => p.id);
   const { confirmed: plConfirmed, deferred: plDeferred } =
     reconcileRemovals({ pending: pending.playlists, missing: missingPl, nowIso, confirmStrikes });
 
@@ -185,7 +194,12 @@ export function deferPlaylistRemovals({ merged, oldPlaylists, pending, finalSong
   });
   // …then reinsert deletion-deferred playlists at their committed index.
   for (const [i, p] of old.entries()) {
-    if (plDeferred.has(p.id)) {
+    if (exemptPl.has(p.id) && !mergedById.has(p.id)) {
+      // Subscription playlist: not in the dump by nature, so carry it forward verbatim
+      // (membership pruned to live songs) rather than letting the default-DROP path eat it.
+      out.splice(Math.min(i, out.length), 0,
+        { ...p, songIds: (p.songIds || []).filter((sidX) => finalSongIds.has(sidX)) });
+    } else if (plDeferred.has(p.id)) {
       log(`  ⏳ playlist "${p.name}" missing from dump — deletion pending confirmation (${confirmStrikes} distinct days), retained`);
       out.splice(Math.min(i, out.length), 0, { ...p, songIds: (p.songIds || []).filter((sidX) => finalSongIds.has(sidX)) });
     } else if (plConfirmed.has(p.id)) {

@@ -93,7 +93,23 @@ const existing = new Set(oldById.keys());
 const ignoredPids = loadIgnoredPids();
 const { newPositions, newPids, removed, ignoredSeen } =
   diffLibrary({ allPids, existingIds: existing, ns, ignoredPids: effectiveIgnoredPids(ignoredPids) });
+
+// SUBSCRIPTION ROWS ARE NOT REMOVALS. Music.app's `every track of library playlist 1` snapshot
+// omits subscription-only tracks (catalog rows saved to a playlist but never added to the
+// library), so a plain diff reads every one of them as deleted. They are stamped
+// `librarySource:"subscription"` by scripts/union-am-index.mjs; without this filter their count
+// alone trips the mass-removal guard below and the sync exits 2 EVERY night — which also skips
+// the S3 + OpenSearch ship, so devices silently stay on a stale catalog forever.
+//
+// Filter `removed`, NOT `existingIds`: a subscription id missing from `existingIds` would be
+// re-detected as NEW, and `finalSongs = oldSongs.filter(...).concat(partial.songs)` would then
+// emit that id TWICE.
+const exemptIds = new Set(oldSongs.filter((s) => s.librarySource === 'subscription').map((s) => s.id));
+let exemptSkipped = 0;
+for (const id of exemptIds) if (removed.delete(id)) exemptSkipped++;
+
 log(`  new tracks: ${newPositions.length} | removed: ${removed.size}` +
+  (exemptSkipped ? ` | subscription-exempt: ${exemptSkipped}` : '') +
   (ignoredSeen ? ` | ignored (ghost/non-music): ${ignoredSeen}` : ''));
 
 // Circuit breaker: an empty/truncated `every track` snapshot that exits 0 must never
