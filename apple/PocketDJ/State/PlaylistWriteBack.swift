@@ -627,7 +627,16 @@ final class PlaylistWriteBack {
     /// app init; kept here so exactly one place knows the platform answer.
     static func makeDefaultTransport() -> (any PlaylistWriteBackTransport)? {
         #if canImport(MusicKit) && !os(macOS) && !targetEnvironment(macCatalyst)
+        // MusicKit path: full capability, including remove/reorder via MusicLibrary.edit.
         if #available(iOS 16.0, visionOS 1.0, *) { return MusicKitPlaylistWriteBackTransport() }
+        return nil
+        #elseif canImport(MusicKit)
+        // macOS / Catalyst: MusicLibrary's write methods are @available(macOS, unavailable), but the
+        // WEB API has no such restriction and MusicDataRequest works here. So the Mac now delivers
+        // adds ON DEVICE too, instead of waiting up to a day for the server sync's push — and it
+        // resolves a catalog id itself, covering songs the indexer never resolved one for (which
+        // the server push silently drops). Append-only: `reconcile` reports `.unsupported`.
+        if #available(macOS 14.0, *) { return WebAPIPlaylistWriteBackTransport(sender: MusicDataRequestSender()) }
         return nil
         #else
         return nil
