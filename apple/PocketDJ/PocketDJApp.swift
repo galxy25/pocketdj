@@ -1056,6 +1056,18 @@ struct PocketDJApp: App {
                         await autoSyncIfDue()
                     }
                 }
+                // Cross-device freshness while the app is OPEN. Without this, a Mac that stays
+                // foregrounded and playing never transitions scene phase, so it never pushes and
+                // its plays never reach the phone at all. Gated on `.active`, single-flighted and
+                // throttled inside (20 s), and held during onboarding like every other pass.
+                .task(id: scenePhase) {
+                    guard scenePhase == .active else { return }
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)
+                        guard !Task.isCancelled, onboarding.isComplete else { continue }
+                        cloudSync.syncTick()
+                    }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .active:
