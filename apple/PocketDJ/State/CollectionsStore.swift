@@ -2019,6 +2019,12 @@ final class CollectionsStore {
             var p = inc
             if p.createdAt == 0 { p.createdAt = now }
             p.updatedAt = now
+            // Strip the Apple Music link on INSERT. A restored/imported collection is not
+            // necessarily this user's own — a shared backup would otherwise carry a handle into
+            // the sharer's library and push the importer's edits there. Costless to drop: the
+            // next push re-establishes the link by name, which is what happened before links
+            // existed at all.
+            p.amPlaylistId = nil
             pockets.append(p)
             return true
         }
@@ -2042,6 +2048,7 @@ final class CollectionsStore {
             var pl = inc
             if pl.createdAt == 0 { pl.createdAt = now }
             pl.updatedAt = now
+            pl.amPlaylistId = nil   // see the pocket note in upsertPocket
             playlists.append(pl)
             return true
         }
@@ -2160,6 +2167,23 @@ final class CollectionsStore {
         guard let i = pockets.firstIndex(where: { $0.id == id }) else { return }
         pockets[i].lastPlayedAt = now; save()
     }
+    /// Bind a collection to the Apple Music library playlist the sync just pushed it to.
+    ///
+    /// A DIRECT write, deliberately not through `mutatePlaylist`/`mutatePocket`: stamping a link is
+    /// bookkeeping about a sync that already happened, not a user edit, and bumping `updatedAt`
+    /// would make every sync look like a fresh local change to the NEXT sync (and to CloudKit).
+    /// Same reasoning as `markPlayed`. Idempotent — re-stamping the same id writes nothing.
+    func linkToAppleMusic(playlistId id: String, amPlaylistId: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == id }),
+              playlists[i].amPlaylistId != amPlaylistId else { return }
+        playlists[i].amPlaylistId = amPlaylistId; save()
+    }
+    func linkToAppleMusic(pocketId id: String, amPlaylistId: String) {
+        guard let i = pockets.firstIndex(where: { $0.id == id }),
+              pockets[i].amPlaylistId != amPlaylistId else { return }
+        pockets[i].amPlaylistId = amPlaylistId; save()
+    }
+
     private func save() {
         let doc = CollectionsDocument(schemaVersion: collectionsSchemaVersion, pockets: pockets,
                                       playlists: playlists, setlists: setlists,

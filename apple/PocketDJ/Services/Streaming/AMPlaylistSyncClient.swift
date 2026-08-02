@@ -38,6 +38,11 @@ final class AMPlaylistSyncClient {
         /// recording can live under several catalog ids, so the server must be able to refuse an
         /// append whose identity already exists remotely.
         var trackMeta: [TrackMeta] = []
+        /// The LOCAL collections that folded into this entry — so the push result's Apple Music
+        /// playlist id can be stamped back onto each of them as a durable link. Not sent to the
+        /// server; purely a round-trip handle.
+        var localPlaylistIds: [String] = []
+        var localPocketIds: [String] = []
         struct TrackMeta: Equatable {
             var id: String
             var n: String

@@ -240,6 +240,9 @@ enum PlaylistZip {
             p.id = pocketIdMap[p.id] ?? CollectionsFactory.newPocketId()
             p.childPocketIds = p.childPocketIds.map { pocketIdMap[$0] ?? $0 }
             p.createdAt = now; p.updatedAt = now
+            // NEVER carry the sharer's Apple Music playlist link into an imported copy — it is a
+            // handle into THEIR library, and a synced copy would push the importer's edits there.
+            p.amPlaylistId = nil
             newPockets.append(p)
         }
 
@@ -247,6 +250,7 @@ enum PlaylistZip {
         pl.id = CollectionsFactory.newPlaylistId()
         pl.sequences = pl.sequences.map { remintNode($0, pocketIdMap: pocketIdMap) }
         pl.createdAt = now; pl.updatedAt = now
+        pl.amPlaylistId = nil   // see the pocket note above
 
         return (pl, newPockets)
     }

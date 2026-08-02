@@ -42,6 +42,72 @@ final class AMPlaylistSyncTests: XCTestCase {
         XCTAssertEqual(out.first?.trackCatalogIds, ["111", "222"])
     }
 
+    // MARK: The durable Apple Music link (R1)
+
+    /// The outgoing entry must carry the LOCAL collections that folded into it, so the push
+    /// result's Apple Music playlist id can be stamped back onto each of them. Plural by
+    /// necessity: name-colliding collections merge into one entry, and stamping only one of them
+    /// would leave the other matching by name — minting a duplicate on the next pass.
+    func testOutgoingCarriesEveryLocalCollectionThatFoldedIn() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("col-link"))
+        collections.app = app
+        let pl = collections.createPlaylist("Mix", songIds: ["s1"])
+        let pk = collections.convertToPocket(
+            source: SourcePlaylist(playlist: IndexPlaylist(id: "ip", name: "Mix ", songIds: ["s1"]),
+                                   sourceName: Config.appleMusicSourceName))
+
+        let out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertEqual(out.count, 1, "\"Mix\" and \"Mix \" fold into one outgoing entry")
+        XCTAssertEqual(out[0].localPlaylistIds, [pl.id])
+        XCTAssertEqual(out[0].localPocketIds, [pk.id])
+    }
+
+    /// Once stamped, the link is what the reconcile step targets — NOT the name. Reconcile is a
+    /// replace-all, so aiming it by a name the user has since changed would overwrite the wrong
+    /// Apple Music playlist.
+    func testLinkedIdIsPreferredOverTheName() {
+        let app = AppModel()
+        app.injectDiscoverAdd(song("s1", am: "111"))
+        let collections = CollectionsStore(fileURL: tempURL("col-link2"))
+        collections.app = app
+        let pl = collections.createPlaylist("Mix", songIds: ["s1"])
+
+        var out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertNil(PlaylistAppleMusicSync.linkedAMPlaylistId(for: out[0], collections: collections),
+                     "never pushed ⇒ no link ⇒ resolve by name")
+
+        collections.linkToAppleMusic(playlistId: pl.id, amPlaylistId: "p.library.42")
+        // A rename in PocketDJ must NOT lose the binding — that is the whole point of the link.
+        collections.renamePlaylist(pl.id, "Mix (2026)")
+        out = PlaylistAppleMusicSync.resolveOutgoing(collections: collections, app: app)
+        XCTAssertEqual(PlaylistAppleMusicSync.linkedAMPlaylistId(for: out[0], collections: collections),
+                       "p.library.42", "the link survives a rename; the name would not have")
+    }
+
+    /// Stamping a link is bookkeeping about a sync that already happened, not a user edit — so it
+    /// must not bump `updatedAt` (which would make the next sync see a phantom local change).
+    func testLinkingDoesNotBumpUpdatedAt() {
+        let collections = CollectionsStore(fileURL: tempURL("col-link3"))
+        let pl = collections.createPlaylist("Mix")
+        let before = collections.playlist(pl.id)?.updatedAt
+
+        collections.linkToAppleMusic(playlistId: pl.id, amPlaylistId: "p.library.7")
+
+        XCTAssertEqual(collections.playlist(pl.id)?.amPlaylistId, "p.library.7")
+        XCTAssertEqual(collections.playlist(pl.id)?.updatedAt, before, "a link stamp is not an edit")
+    }
+
+    /// PRIVACY: an imported collection must never carry a handle into the SHARER's Apple Music
+    /// library — a synced copy would push the importer's edits into someone else's playlist.
+    func testImportStripsTheAppleMusicLink() {
+        var shared = CollectionsFactory.makePlaylist("Shared", now: 1_000)
+        shared.amPlaylistId = "p.library.someone-else"
+        let (reminted, _) = PlaylistZip.remintBundle(playlist: shared, pockets: [])
+        XCTAssertNil(reminted.amPlaylistId, "an imported copy is not bound to the sharer's playlist")
+    }
+
     /// A remote playlist row from the Lambda's /pull decodes (optional fields tolerated).
     func testRemotePlaylistDecodes() throws {
         let pl = try JSONDecoder().decode(AMPlaylistSyncClient.RemotePlaylist.self, from: Data("""
