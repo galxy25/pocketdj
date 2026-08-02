@@ -144,6 +144,17 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var sourceSyncEnabled: Bool?
     /// Per-pocket Apple Music sync direction (raw `CollectionSyncDirection`). nil ⇒ two-way.
     var amSyncDirection: String?
+    /// The APPLE MUSIC library playlist this collection is bound to, captured from the sync's push
+    /// result. ADDITIVE-OPTIONAL (nil = never pushed, or pushed before this field existed), so no
+    /// schema bump — a version bump discards existing documents.
+    ///
+    /// WHY A DURABLE LINK. Without it the push matches by NAME on every pass, so renaming a
+    /// playlist in PocketDJ makes the next sync fail to find its counterpart and CREATE A SECOND
+    /// one in Apple Music. The id is stable across renames on both sides; the name never was.
+    ///
+    /// PRIVACY: this is a handle into the user's own Apple Music library, so every import path
+    /// STRIPS it. A shared collection must never carry a link to the sharer's library.
+    var amPlaylistId: String?
     /// Epoch ms of the last sync that CHANGED the pocket (or refreshed the snapshot). nil = never.
     var sourceSyncedAt: Double?
     /// v7: epoch ms of the last time the user hit ▶ Play on this pocket — the "Recently played"
@@ -365,6 +376,17 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var sourceSyncedAt: Double?
     /// Per-playlist Apple Music sync direction (raw `CollectionSyncDirection`). nil ⇒ two-way.
     var amSyncDirection: String?
+    /// The APPLE MUSIC library playlist this collection is bound to, captured from the sync's push
+    /// result. ADDITIVE-OPTIONAL (nil = never pushed, or pushed before this field existed), so no
+    /// schema bump — a version bump discards existing documents.
+    ///
+    /// WHY A DURABLE LINK. Without it the push matches by NAME on every pass, so renaming a
+    /// playlist in PocketDJ makes the next sync fail to find its counterpart and CREATE A SECOND
+    /// one in Apple Music. The id is stable across renames on both sides; the name never was.
+    ///
+    /// PRIVACY: this is a handle into the user's own Apple Music library, so every import path
+    /// STRIPS it. A shared collection must never carry a link to the sharer's library.
+    var amPlaylistId: String?
     /// v7: epoch ms of the last time the user hit ▶ Play on this playlist — the "Recently played"
     /// sort key. Stamped by `CollectionsStore.markPlayed(playlistId:)` (NOT via `mutatePlaylist`,
     /// so `updatedAt` stays a pure membership/rename signal). nil ⇒ never played ⇒ sorts last.

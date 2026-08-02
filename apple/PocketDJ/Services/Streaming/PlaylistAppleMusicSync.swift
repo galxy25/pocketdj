@@ -141,12 +141,30 @@ final class PlaylistAppleMusicSync {
     /// This also makes a converted pocket and its remote twin CONVERGE rather than duplicate.
     /// Track ids are de-duplicated in order for the same reason: a duplicate id absent remotely
     /// would be appended twice by one push.
+    /// The Apple Music playlist id this outgoing entry is already bound to, if any. An entry can
+    /// fold several local collections together; they should all carry the same link, so the first
+    /// one found answers. nil ⇒ never pushed (or pushed before links existed) — resolve by name.
+    static func linkedAMPlaylistId(for entry: AMPlaylistSyncClient.OutgoingPlaylist,
+                                   collections: CollectionsStore) -> String? {
+        for id in entry.localPlaylistIds {
+            if let amId = collections.playlist(id)?.amPlaylistId, !amId.isEmpty { return amId }
+        }
+        for id in entry.localPocketIds {
+            if let amId = collections.pocket(id)?.amPlaylistId, !amId.isEmpty { return amId }
+        }
+        return nil
+    }
+
     static func resolveOutgoing(collections: CollectionsStore, app: AppModel) -> [AMPlaylistSyncClient.OutgoingPlaylist] {
         var indexByKey: [String: Int] = [:]
         var out: [AMPlaylistSyncClient.OutgoingPlaylist] = []
         var seenByKey: [String: Set<String>] = [:]
         var seenNameByKey: [String: Set<String>] = [:]
-        func fold(name: String, songIds: [String]) {
+        // PLURAL by necessity: resolveOutgoing merges name-colliding collections (a playlist
+        // "Mix" and a pocket "Mix ") into ONE outgoing entry, so the push result's single id must
+        // be stamped onto EVERY local collection that folded into it — otherwise the unstamped one
+        // keeps matching by name and mints a duplicate on the next pass.
+        func fold(name: String, songIds: [String], localId: String? = nil, isPocket: Bool = false) {
             let key = normName(name)
             if indexByKey[key] == nil {
                 indexByKey[key] = out.count
@@ -164,12 +182,16 @@ final class PlaylistAppleMusicSync {
                 out[i].trackCatalogIds.append(catalogId)
                 out[i].trackMeta.append(.init(id: catalogId, n: song.name, a: song.artist))
             }
+            if let localId {
+                if isPocket { out[i].localPocketIds.append(localId) }
+                else { out[i].localPlaylistIds.append(localId) }
+            }
         }
         // Per-collection DIRECTION gate (Levi 2026-07-29): "Get only"/"Off" collections never
         // push — the smart-playlist case (invisible to the write API; a push would mint a
         // regular-playlist duplicate forever).
         for pl in collections.playlists where pl.amSyncDir.allowsPush {
-            fold(name: pl.name, songIds: collections.songIds(forPlaylist: pl.id))
+            fold(name: pl.name, songIds: collections.songIds(forPlaylist: pl.id), localId: pl.id)
         }
         // Pockets converted from (or linked to) an Apple Music playlist sync two-way like the
         // playlist they came from — either Apple Music source qualifies (the private catalog's
@@ -177,7 +199,8 @@ final class PlaylistAppleMusicSync {
         for p in collections.pockets
         where p.hasSource && PlaylistWriteBack.isAppleMusicSource(p.sourceName ?? "")
             && p.amSyncDir.allowsPush {
-            fold(name: p.name, songIds: collections.songIds(forPocket: p.id))
+            fold(name: p.name, songIds: collections.songIds(forPocket: p.id),
+                 localId: p.id, isPocket: true)
         }
         return out.filter { !$0.trackCatalogIds.isEmpty }
     }
@@ -252,6 +275,22 @@ final class PlaylistAppleMusicSync {
                 // ── 2. PUSH (idempotent: create-if-absent + append-only-missing) ────────────────
                 beginStep("Pushing to Apple Music")
                 let pushed = try await client.push(outgoing) { [weak self] p in self?.updateStep(p.display) }
+                // STAMP THE DURABLE LINK. The server already returns the Apple Music playlist id
+                // for every row and the client already decodes it — it was simply discarded, which
+                // is why a rename in PocketDJ made the next pass create a SECOND playlist instead
+                // of updating the first. Match rows back to the outgoing entries by the same
+                // normalized name the fold used, then stamp EVERY local collection that folded in.
+                let outgoingByKey = Dictionary(outgoing.map { (Self.normName($0.name), $0) },
+                                               uniquingKeysWith: { a, _ in a })
+                for row in pushed.playlists {
+                    guard let amId = row.id, let entry = outgoingByKey[Self.normName(row.name)] else { continue }
+                    for pid in entry.localPlaylistIds {
+                        collections.linkToAppleMusic(playlistId: pid, amPlaylistId: amId)
+                    }
+                    for pid in entry.localPocketIds {
+                        collections.linkToAppleMusic(pocketId: pid, amPlaylistId: amId)
+                    }
+                }
                 let createdRows = pushed.playlists.filter(\.created)
                 let updatedRows = pushed.playlists.filter { !$0.created && $0.added > 0 }
                 for row in pushed.playlists where row.created || row.added > 0 {
@@ -275,9 +314,21 @@ final class PlaylistAppleMusicSync {
                     var reconciledIds = Set<String>()
                     for pl in outgoing where !justCreated.contains(Self.normName(pl.name)) {
                         updateStep("Checking “\(pl.name)”")
-                        guard let amId = try? await transport.resolvePlaylistId(
-                            name: pl.name, expectedAppleMusicIds: pl.trackCatalogIds),
-                            reconciledIds.insert(amId).inserted else { continue }
+                        // PREFER THE DURABLE LINK. Resolving by name here would target the wrong
+                        // playlist the moment the user renames one in PocketDJ — and reconcile is a
+                        // REPLACE-ALL, so aiming it at the wrong list would overwrite that list's
+                        // contents. The stored id came from the push result and survives renames on
+                        // both sides. Fall back to the name only when there is no link yet.
+                        // (`??` can't take an async right-hand side, so this is spelled out.)
+                        let resolved: String?
+                        if let linked = Self.linkedAMPlaylistId(for: pl, collections: collections) {
+                            resolved = linked
+                        } else {
+                            resolved = try? await transport.resolvePlaylistId(
+                                name: pl.name, expectedAppleMusicIds: pl.trackCatalogIds)
+                        }
+                        guard let amId = resolved,
+                              reconciledIds.insert(amId).inserted else { continue }
                         if case .edited(let count, let added, let removed) = try? await transport.reconcile(
                             playlistId: amId, orderedAppleMusicIds: pl.trackCatalogIds) {
                             reconciled += 1
