@@ -14,7 +14,8 @@ final class CloudSyncServiceTests: XCTestCase {
         var saveCount = 0
         func accountAvailable() async -> Bool { available }
         func fetchMeta(keys: [String]) async throws -> [String: Double] {
-            Dictionary(uniqueKeysWithValues: keys.compactMap { k in docs[k].map { (k, $0.modifiedAtMs) } })
+            if metaFails { throw URLError(.notConnectedToInternet) }
+            return Dictionary(uniqueKeysWithValues: keys.compactMap { k in docs[k].map { (k, $0.modifiedAtMs) } })
         }
         func fetch(_ key: String) async throws -> CloudDoc? { docs[key] }
         func save(_ doc: CloudDoc) async throws { docs[doc.key] = doc; saveCount += 1 }
@@ -24,6 +25,9 @@ final class CloudSyncServiceTests: XCTestCase {
             docs[key] = CloudDoc(key: key, payload: payload, modifiedAtMs: modifiedAtMs, deviceName: "seed")
         }
         func setAvailable(_ v: Bool) { available = v }
+        /// Simulate an offline/failed metadata probe (the common case on the way to background).
+        var metaFails = false
+        func setMetaFails(_ v: Bool) { metaFails = v }
     }
 
     private var tempDir: URL!
@@ -50,6 +54,117 @@ final class CloudSyncServiceTests: XCTestCase {
                 [.modificationDate: Date(timeIntervalSince1970: mtimeMs / 1000)], ofItemAtPath: url.path)
         }
         return url
+    }
+
+    // MARK: Transport correctness (Stage 3 — what actually closes the stale-device clobber)
+
+    /// A store whose `reload` MERGES rather than replaces (the collection-activity / play-history
+    /// union) ends the pull with a file that is strictly newer than the cloud's — it now holds
+    /// BOTH devices' rows. Watermarking the post-reload mtime told the next pass "already pushed",
+    /// so that superset was never published and each device kept its union privately forever.
+    /// This is a live bug on main, not a hypothetical: it is why a merged log never propagates.
+    func testMergeOnReloadStaysDirtyAndPushesTheSupersetBack() async throws {
+        let db = MemoryCloudDB()
+        let svc = makeService(db: db)
+        let url = writeLocal("merge.json", #"{"events":["local"]}"#, mtimeMs: 1_000_000)
+        await db.seed("merge", payload: #"{"events":["peer"]}"#.data(using: .utf8)!, modifiedAtMs: 9_000_000)
+
+        // The union merge: reload rewrites the file with BOTH sides, stamped later than the pull.
+        svc.register("merge", fileURL: url) {
+            try? #"{"events":["local","peer"]}"#.data(using: .utf8)!.write(to: url, options: .atomic)
+            // The merge's save lands just AFTER the pulled bytes; stamp it a couple of seconds on
+            // so the assertion can't hinge on sub-millisecond filesystem timing.
+            try? FileManager.default.setAttributes(
+                [.modificationDate: Date().addingTimeInterval(2)], ofItemAtPath: url.path)
+        }
+
+        await svc.syncNow()   // pulls the peer doc, reload merges
+        XCTAssertEqual(try Data(contentsOf: url), #"{"events":["local","peer"]}"#.data(using: .utf8)!)
+
+        await svc.syncNow()   // the merged superset must now go UP
+        let pushed = await db.docs["merge"]
+        XCTAssertEqual(pushed?.payload, #"{"events":["local","peer"]}"#.data(using: .utf8)!,
+                       "a merge-on-reload leaves the file legitimately dirty and must ride the next push")
+    }
+
+    /// The remaining half of the stale-device clobber: backgrounding used to push BLIND, comparing
+    /// only against this device's own last-push watermark — which says what I sent, never what
+    /// someone else has since sent.
+    func testBackgroundPushSkipsADocumentTheCloudBeats() async throws {
+        let db = MemoryCloudDB()
+        let svc = makeService(db: db)
+        let url = writeLocal("stale.json", #"{"v":"mine"}"#, mtimeMs: 1_000_000)
+        await db.seed("stale", payload: #"{"v":"theirs"}"#.data(using: .utf8)!, modifiedAtMs: 9_000_000)
+        svc.register("stale", fileURL: url)
+
+        await svc.pushDirty()
+
+        let doc = await db.docs["stale"]
+        XCTAssertEqual(doc?.payload, #"{"v":"theirs"}"#.data(using: .utf8)!,
+                       "a strictly newer cloud document must survive this device backgrounding")
+        let saves = await db.saveCount
+        XCTAssertEqual(saves, 0)
+    }
+
+    /// A document with no veto still pushes on a background probe failure — losing the user's work
+    /// offline would be worse than an occasional blind push.
+    func testBackgroundPushFallsBackToBlindWhenTheProbeFails() async throws {
+        let db = MemoryCloudDB()
+        let svc = makeService(db: db)
+        let url = writeLocal("plain.json", #"{"v":"mine"}"#, mtimeMs: 9_000_000)
+        svc.register("plain", fileURL: url)
+        await db.setMetaFails(true)
+
+        await svc.pushDirty()
+
+        let doc = await db.docs["plain"]
+        XCTAssertEqual(doc?.payload, #"{"v":"mine"}"#.data(using: .utf8)!)
+    }
+
+    /// …but a VETOED document does not take that fallback: a wrong push of the playback session is
+    /// worse than a missed one, and it rides the next full pass, which compares properly.
+    func testVetoedDocumentDoesNotBlindPushWhenTheProbeFails() async throws {
+        let db = MemoryCloudDB()
+        let svc = makeService(db: db)
+        let url = writeLocal("session.json", #"{"v":"mine"}"#, mtimeMs: 9_000_000)
+        svc.register("session", fileURL: url, pushEligible: { true })
+        await db.setMetaFails(true)
+
+        await svc.pushDirty()
+
+        let doc = await db.docs["session"]
+        XCTAssertNil(doc, "no cloud comparison available ⇒ a vetoable document waits for a real pass")
+    }
+
+    /// The veto itself: a device that only OPENED the app has a session file on disk but is not
+    /// driving a session, so it must publish nothing — on either path.
+    func testPushEligibleFalseSuppressesBothSyncAndBackgroundPush() async throws {
+        let db = MemoryCloudDB()
+        let svc = makeService(db: db)
+        let url = writeLocal("session.json", #"{"v":"stale"}"#, mtimeMs: 9_000_000)
+        svc.register("session", fileURL: url, pushEligible: { false })
+
+        await svc.syncNow()
+        await svc.pushDirty()
+
+        let doc = await db.docs["session"]
+        XCTAssertNil(doc, "an ineligible device never publishes its session")
+        let saves = await db.saveCount
+        XCTAssertEqual(saves, 0)
+    }
+
+    /// The veto must not block PULLS — the stale device still learns the real session.
+    func testPushEligibleFalseStillPulls() async throws {
+        let db = MemoryCloudDB()
+        let svc = makeService(db: db)
+        let url = writeLocal("session.json", #"{"v":"stale"}"#, mtimeMs: 1_000_000)
+        await db.seed("session", payload: #"{"v":"live"}"#.data(using: .utf8)!, modifiedAtMs: 9_000_000)
+        svc.register("session", fileURL: url, pushEligible: { false })
+
+        await svc.syncNow()
+
+        XCTAssertEqual(try Data(contentsOf: url), #"{"v":"live"}"#.data(using: .utf8)!,
+                       "the veto is push-only — a stale device still receives the live session")
     }
 
     func testPushesLocalDocWhenCloudEmpty() async throws {

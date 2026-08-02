@@ -40,6 +40,11 @@ final class CloudSyncService {
         /// Re-decode the (just-overwritten) file into the live store. nil ⇒ file-only
         /// (the restore-later stores, whose files are read after `syncAtLaunch`).
         var reload: (() -> Void)?
+        /// Veto: when this returns false the document is never PUSHED from this device (pulls
+        /// still apply normally). For documents whose file can be newer than the user's actual
+        /// activity — the playback session, whose file simply exists on disk from the last run —
+        /// mtime alone is not evidence this device has anything worth publishing.
+        var pushEligible: (() -> Bool)?
     }
 
     /// Clock/mtime slack under which two copies count as "the same write".
@@ -93,8 +98,12 @@ final class CloudSyncService {
         return dir.appendingPathComponent("pocketdj-cloudsync-state.json")
     }
 
-    func register(_ key: String, fileURL: URL, reload: (() -> Void)? = nil) {
-        entries.append(Entry(key: key, fileURL: fileURL, reload: reload))
+    /// `pushEligible` is declared BEFORE `reload` deliberately: a single trailing closure binds to
+    /// the LAST function-typed parameter, so putting it after would silently re-bind every existing
+    /// `register(...) { store.reloadFromDisk() }` call site to the veto instead of the reload.
+    func register(_ key: String, fileURL: URL, pushEligible: (() -> Bool)? = nil,
+                  reload: (() -> Void)? = nil) {
+        entries.append(Entry(key: key, fileURL: fileURL, reload: reload, pushEligible: pushEligible))
     }
 
     /// True when a pass may run at all (account availability is checked async per pass).
@@ -256,6 +265,7 @@ final class CloudSyncService {
                 } else if let localMs,
                           localMs > (cloudMs ?? 0) + Self.skewMs,
                           localMs > (pushedMtimeMs[entry.key] ?? 0) + 1,
+                          entry.pushEligible?() ?? true,
                           pushAllowed?() ?? true {
                     try await push(entry, mtimeMs: localMs)
                     pushed.append(entry.key)
@@ -269,13 +279,42 @@ final class CloudSyncService {
         }
     }
 
-    private func pushDirty() async {
+    /// The backgrounding push. This used to upload BLIND — any file newer than this device's own
+    /// last-push watermark went up, with no idea what was already in the cloud. That is how a
+    /// device could publish a stale document over a strictly newer one from another device: the
+    /// watermark only says "what I last sent", never "what someone else has since sent".
+    ///
+    /// One `fetchMeta` probe fixes it. It fetches modification times only — no asset payloads —
+    /// so this stays a cheap, single round trip on the way to the background.
+    /// Internal (not private) so tests can await the push directly — `pushOnBackground` is
+    /// deliberately fire-and-forget and gives them nothing to synchronize on.
+    func pushDirty() async {
         guard pushAllowed?() ?? true else { return }
         guard await database.accountAvailable() else { return }
-        var pushed = false
-        for entry in entries {
+        let candidates = entries.filter { entry in
             guard let localMs = fileMtimeMs(entry.fileURL),
-                  localMs > (pushedMtimeMs[entry.key] ?? 0) + 1 else { continue }
+                  localMs > (pushedMtimeMs[entry.key] ?? 0) + 1 else { return false }
+            return entry.pushEligible?() ?? true
+        }
+        guard !candidates.isEmpty else { return }
+
+        // A probe FAILURE (offline on the way to the background is the common case) must not lose
+        // the user's work, so fall back to the old blind push — but only for documents that have
+        // no `pushEligible` veto. A vetoed document is one where a wrong push is worse than a
+        // missed one, and it will ride the next full pass, which compares properly.
+        var cloud: [String: Double] = [:]
+        var probed = true
+        do { cloud = try await database.fetchMeta(keys: candidates.map(\.key)) }
+        catch { probed = false }
+
+        var pushed = false
+        for entry in candidates {
+            guard let localMs = fileMtimeMs(entry.fileURL) else { continue }
+            if probed {
+                if let cloudMs = cloud[entry.key], cloudMs > localMs + Self.skewMs { continue }
+            } else if entry.pushEligible != nil {
+                continue
+            }
             if (try? await push(entry, mtimeMs: localMs)) != nil { pushed = true }
         }
         if pushed { saveState() }
@@ -290,10 +329,19 @@ final class CloudSyncService {
             try? fm.copyItem(at: entry.fileURL, to: backup)
         }
         try doc.payload.write(to: entry.fileURL, options: .atomic)
+        // Watermark the mtime of the bytes we JUST PULLED, and do it BEFORE `reload()`.
+        //
+        // The watermark's job is "don't bounce the identical bytes straight back up". Reading the
+        // mtime AFTER reload broke that for any store whose reload MERGES rather than replaces:
+        // `CollectionActivityStore.reloadFromDisk` unions the peer's events with this device's and
+        // SAVES the superset, so the post-reload mtime belongs to a file that is strictly newer
+        // than what the cloud has. Watermarking that value told the next pass "already pushed",
+        // and the merged superset was never published — each device kept its own union privately
+        // and the peers never learned the other's rows. Capturing it here means a merge-on-reload
+        // legitimately leaves the file dirty, so it rides the next push exactly as it should.
+        let pulledMtime = fileMtimeMs(entry.fileURL) ?? doc.modifiedAtMs
         entry.reload?()
-        // The fresh file's mtime is "now" (> cloud's modifiedAtMs) — watermark it so the
-        // next pass doesn't bounce the identical bytes straight back up.
-        pushedMtimeMs[entry.key] = fileMtimeMs(entry.fileURL) ?? doc.modifiedAtMs
+        pushedMtimeMs[entry.key] = pulledMtime
     }
 
     @discardableResult
