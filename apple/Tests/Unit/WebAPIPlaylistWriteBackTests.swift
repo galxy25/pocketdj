@@ -97,6 +97,101 @@ final class WebAPIPlaylistWriteBackTests: XCTestCase {
         XCTAssertEqual(post.value(forHTTPHeaderField: "Content-Type"), "application/json")
     }
 
+    // MARK: Paging — a short read here means a DUPLICATE in the user's real playlist
+
+    /// The membership scan must page on the ROW count, not on the deduped id set. A full page whose
+    /// rows contain one repeated track yields 99 distinct ids; terminating on that stopped the walk
+    /// with tracks unread, and `addSong` then appended a second copy of a song that WAS already
+    /// there — which macOS cannot remove, because the Web API has no remove route.
+    func testFullPageWithADuplicateRowStillPagesOn() async throws {
+        let (t, s) = make()
+        // Page 1: 100 rows, but only 99 distinct ids (one track appears twice).
+        var firstPageIds = (1...99).map(String.init)
+        firstPageIds.append("1")
+        XCTAssertEqual(firstPageIds.count, 100)
+        XCTAssertEqual(Set(firstPageIds).count, 99, "precondition: the page is full but dedupes to 99")
+
+        var callCount = 0
+        final class Paging: AppleMusicWebSender {
+            var canSend = true
+            var bodies: [Data] = []
+            var calls = 0
+            var posts: [URLRequest] = []
+            func send(_ request: URLRequest) async throws -> (data: Data, status: Int) {
+                if request.httpMethod == "POST" { posts.append(request); return (Data(), 200) }
+                defer { calls += 1 }
+                return (calls < bodies.count ? bodies[calls] : Data(#"{"data":[]}"#.utf8), 200)
+            }
+        }
+        let pager = Paging()
+        func rows(_ ids: [String]) -> Data {
+            try! JSONSerialization.data(withJSONObject:
+                ["data": ids.map { ["attributes": ["playParams": ["catalogId": $0]]] }])
+        }
+        // Page 1 (100 rows / 99 ids), page 2 contains the song we're about to add.
+        pager.bodies = [rows(firstPageIds), rows(["target"])]
+        let transport = WebAPIPlaylistWriteBackTransport(sender: pager)
+
+        try await transport.addSong(appleMusicId: "target", toPlaylistId: "p.1")
+
+        callCount = pager.calls
+        XCTAssertGreaterThanOrEqual(callCount, 2, "the walk must not stop on a deduped page")
+        XCTAssertTrue(pager.posts.isEmpty,
+                      "the song was already in the playlist on page 2 — appending it would duplicate it")
+    }
+
+    /// The API's own `next` cursor also keeps the walk going, even when a page looks short.
+    func testNextCursorKeepsPagingEvenOnAShortPage() {
+        let withNext = try! JSONSerialization.data(withJSONObject: [
+            "data": [["attributes": ["playParams": ["catalogId": "1"]]]],
+            "next": "/v1/me/library/playlists/p.1/tracks?offset=100",
+        ])
+        let page = AppleMusicWebAPI.parseTrackPage(withNext)
+        XCTAssertTrue(page.hasNext)
+        XCTAssertEqual(page.rowCount, 1)
+        XCTAssertEqual(page.catalogIds, ["1"])
+    }
+
+    /// A row with no `playParams` must still count toward paging, or the same truncation returns.
+    func testRowWithoutPlayParamsStillCountsAsARow() {
+        let mixed = try! JSONSerialization.data(withJSONObject: ["data": [
+            ["attributes": ["playParams": ["catalogId": "1"]]],
+            ["attributes": [:]],
+        ]])
+        let page = AppleMusicWebAPI.parseTrackPage(mixed)
+        XCTAssertEqual(page.rowCount, 2, "row count is rows, not resolvable ids")
+        XCTAssertEqual(page.catalogIds, ["1"])
+    }
+
+    // MARK: A transient failure must never become "this song isn't on Apple Music"
+
+    /// `resolveCatalogId` returning nil is TERMINAL: the queue settles the job `.unresolvable` with
+    /// "this song isn't on Apple Music", and `retry` won't re-arm that state. So a momentarily
+    /// expired token must THROW (retryable), never answer nil.
+    func testStorefrontAuthFailureThrowsRatherThanReportingNoMatch() async {
+        let (t, s) = make()
+        s.replies["GET /v1/me/storefront"] = (403, Data())
+        do {
+            _ = try await t.resolveCatalogId(
+                for: WriteBackSong(appleMusicId: "", title: "Neon", artist: "Aria",
+                                   album: nil, durationMs: nil))
+            XCTFail("expected a throw — nil would permanently mark the song as not on Apple Music")
+        } catch let e as PlaylistWriteBackError {
+            guard case .notAuthorized = e else { return XCTFail("expected notAuthorized, got \(e)") }
+        } catch { XCTFail("expected notAuthorized, got \(error)") }
+    }
+
+    func testStorefrontServerErrorThrowsRatherThanReportingNoMatch() async {
+        let (t, s) = make()
+        s.replies["GET /v1/me/storefront"] = (503, Data())
+        do {
+            _ = try await t.resolveCatalogId(
+                for: WriteBackSong(appleMusicId: "", title: "Neon", artist: "Aria",
+                                   album: nil, durationMs: nil))
+            XCTFail("expected a throw on a 5xx")
+        } catch { /* any throw is correct — the queue retries */ }
+    }
+
     // MARK: Trap 2 — an absent `canEdit` means EDITABLE
 
     /// `attributes.canEdit` is optional in the API. Defaulting a missing value to false would

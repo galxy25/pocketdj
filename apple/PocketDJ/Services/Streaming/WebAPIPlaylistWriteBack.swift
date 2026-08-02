@@ -116,11 +116,26 @@ enum AppleMusicWebAPI {
         }
     }
 
+    /// A page of playlist tracks: the catalog ids found, AND the raw row count.
+    ///
+    /// The row count is not bookkeeping — it is the ONLY correct paging terminator. The id set is
+    /// deduped and skips rows without `playParams`, so its size can be smaller than the page even
+    /// when the page was full. Terminating on the SET size stopped the walk early, and a truncated
+    /// membership read is what makes the add path append a duplicate to a real playlist.
+    struct TrackPage: Sendable, Equatable {
+        var catalogIds: Set<String>
+        var rowCount: Int
+        /// The API's own "there is more" cursor. Present ⇒ keep going regardless of counts.
+        var hasNext: Bool
+    }
+
     /// The CATALOG ids of a library playlist's tracks — the identity the add path dedups on.
     /// A library track carries its catalog id in `attributes.playParams.catalogId`.
-    static func parseTrackCatalogIds(_ data: Data) -> Set<String> {
+    static func parseTrackPage(_ data: Data) -> TrackPage {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = root["data"] as? [[String: Any]] else { return [] }
+              let rows = root["data"] as? [[String: Any]] else {
+            return TrackPage(catalogIds: [], rowCount: 0, hasNext: false)
+        }
         var out: Set<String> = []
         for row in rows {
             let attrs = row["attributes"] as? [String: Any] ?? [:]
@@ -129,8 +144,11 @@ enum AppleMusicWebAPI {
                 else if let pid = pp["id"] as? String { out.insert(pid) }
             }
         }
-        return out
+        return TrackPage(catalogIds: out, rowCount: rows.count, hasNext: root["next"] != nil)
     }
+
+    /// Convenience for callers that only want the ids (tests, and the tie-break).
+    static func parseTrackCatalogIds(_ data: Data) -> Set<String> { parseTrackPage(data).catalogIds }
 
     static func parseStorefront(_ data: Data) -> String? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -256,7 +274,7 @@ final class WebAPIPlaylistWriteBackTransport: PlaylistWriteBackTransport {
     func resolveCatalogId(for song: WriteBackSong) async throws -> String? {
         guard canWrite else { throw PlaylistWriteBackError.notAuthorized }
         guard !song.title.isEmpty, !song.artist.isEmpty else { return nil }
-        guard let sf = try await currentStorefront() else { return nil }
+        let sf = try await currentStorefront()
 
         let term = "\(song.title) \(song.artist)"
         let (data, status) = try await sender.send(
@@ -294,12 +312,17 @@ final class WebAPIPlaylistWriteBackTransport: PlaylistWriteBackTransport {
         return out
     }
 
+    /// Every catalog id in the playlist. COMPLETENESS IS THE POINT: this is the membership read
+    /// `addSong` dedups on, and a short read means a duplicate track in the user's real Apple Music
+    /// playlist — which macOS then has no route to remove.
     private func trackCatalogIds(playlistId: String) async throws -> Set<String> {
         var out: Set<String> = []
         var offset = 0
-        while offset < 10_000 {
+        let pageSize = 100
+        while offset < Self.maxTracksScanned {
             let (data, status) = try await sender.send(
-                AppleMusicWebAPI.playlistTracksRequest(playlistId: playlistId, offset: offset))
+                AppleMusicWebAPI.playlistTracksRequest(playlistId: playlistId,
+                                                       offset: offset, limit: pageSize))
             switch status {
             case 200...299: break
             // A 404 HERE MEANS THE PLAYLIST IS EMPTY, NOT MISSING. Apple returns it for a playlist
@@ -310,20 +333,45 @@ final class WebAPIPlaylistWriteBackTransport: PlaylistWriteBackTransport {
             case 401, 403: throw PlaylistWriteBackError.notAuthorized
             default: throw StreamingError.http(status)
             }
-            let page = await parse(data, AppleMusicWebAPI.parseTrackCatalogIds)
-            out.formUnion(page)
-            if page.count < 100 { break }
-            offset += 100
+            let page = await parse(data, AppleMusicWebAPI.parseTrackPage)
+            out.formUnion(page.catalogIds)
+            // Terminate on the ROW count (or the API's own `next` cursor) — never on the id set,
+            // which is deduped and drops rows without playParams, so a full page of 100 rows can
+            // yield 99 ids and would have ended the walk with tracks unread.
+            if !page.hasNext, page.rowCount < pageSize { break }
+            offset += page.rowCount
+            // A page that returned rows we couldn't advance past would spin forever.
+            if page.rowCount == 0 { break }
         }
         return out
     }
 
-    private func currentStorefront() async throws -> String? {
+    /// Runaway bound on the membership scan — a backstop against a pathological response, not a
+    /// policy. It sits above Apple's own library-playlist size limit, so a real playlist reaches
+    /// the `next`/short-page terminator long before this. If a playlist ever DID exceed it the scan
+    /// would be short and the add could duplicate, which is why the terminator above is the row
+    /// count and not this.
+    static let maxTracksScanned = 10_000
+
+    /// THROWS on failure rather than returning nil. The distinction matters enormously: the queue
+    /// reads a nil from `resolveCatalogId` as the TERMINAL verdict "this song isn't on Apple Music"
+    /// and settles the job `.unresolvable` — a state `retry` won't re-arm, so the user has no way
+    /// back. Returning nil here for a momentarily expired token or a 5xx would permanently mark a
+    /// song that IS on Apple Music as absent. nil is reserved for "we searched and found nothing".
+    private func currentStorefront() async throws -> String {
         if let storefront { return storefront }
         let (data, status) = try await sender.send(AppleMusicWebAPI.storefrontRequest())
-        guard (200...299).contains(status) else { return nil }
-        storefront = AppleMusicWebAPI.parseStorefront(data)
-        return storefront
+        switch status {
+        case 200...299: break
+        case 401, 403: throw PlaylistWriteBackError.notAuthorized
+        default: throw StreamingError.http(status)
+        }
+        guard let sf = AppleMusicWebAPI.parseStorefront(data) else {
+            // A 200 we can't read is a transport problem, not an answer about the song.
+            throw StreamingError.decoding
+        }
+        storefront = sf
+        return sf
     }
 
     /// Run a parser OFF the main actor. This type is `@MainActor` (the write-back queue is), and
