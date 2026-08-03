@@ -37,6 +37,10 @@ final class CollectionsStore {
     /// re-opens. nil for browser singles / direct songIds plays with no origin threaded.
     private(set) var nowPlayingOriginId: String?
     private let fileURL: URL
+    /// Last-known "N songs · runtime" per collection, so the list never regresses to "0 songs"
+    /// while the catalog is still decoding. @ObservationIgnored: recording into it happens while
+    /// a view body READS the stats, and invalidating that body from inside itself would loop.
+    @ObservationIgnored private let statsCache = CollectionStatsCache()
     /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
     /// store was constructed with — never re-derives it, so fixture seams stay intact).
     var syncFileURL: URL { fileURL }
@@ -1303,35 +1307,79 @@ final class CollectionsStore {
     /// STUDIO-AWARE: it carries title+length for every studio id referenced by these
     /// collections (spec §8 — counts/runtime INCLUDE studio items with real lengths),
     /// which is why `songIds(...)` below must strip them back out for rip/burn/CSV.
+    /// CHEAP: O(pockets), not O(every member id in the document). It used to eagerly build a
+    /// studio lookup TABLE by walking every pocket's members and every playlist's whole node
+    /// tree — and this method is called from inside row builders, so the Collections list paid
+    /// the cost of the entire collections document once per rendered row. `CollectionCatalog`
+    /// now takes the `studioLookup` SEAM itself and consults it only for an id that misses the
+    /// catalog and looks like a studio id, which is strictly less work with no cache to
+    /// invalidate. Same referenced-only property as before: the catalog still never enumerates
+    /// the studio library, it only answers questions about ids the collections already carry.
     func catalog() -> CollectionCatalog {
         let pocketsById = Dictionary(pockets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return CollectionCatalog(songsById: app?.songsById ?? [:],
                                  albumsById: app?.albumsById ?? [:],
                                  pocketsById: pocketsById,
-                                 studio: studioEntries())
+                                 studioLookup: studioLookup)
     }
 
-    /// Title + real length for every studio id referenced ANYWHERE in these pockets /
-    /// playlists, resolved through `studioLookup` (empty when the seam isn't wired).
-    /// REFERENCED-ONLY on purpose: this is a lookup table for ids the collections
-    /// already carry, never an enumeration of the whole studio library — the catalog
-    /// must not become a discovery surface for studio content.
-    private func studioEntries() -> [String: (title: String, lengthMs: Int)] {
-        guard let lookup = studioLookup else { return [:] }
-        var out: [String: (title: String, lengthMs: Int)] = [:]
-        func add(_ id: String) {
-            guard StudioFactory.isStudioId(id), out[id] == nil, let info = lookup(id) else { return }
-            out[id] = (title: info.title, lengthMs: info.lengthMs)
+    // MARK: Subtitle stats (catalog-backed, cache-fronted)
+    //
+    // Use THESE, not `catalog().stats(…)`, from any view that shows a collection's
+    // "N songs · runtime". Collections decode from disk synchronously and are on screen at once,
+    // but the catalog they resolve against is a ~50 MB decode — so a raw resolve reads
+    // "0 songs · 0m" on every cold launch until it lands. These remember the last real answer
+    // and show that in the meantime. See `CollectionStatsCache` for why that can only ever
+    // delay bad news, not invent good news.
+
+    /// The catalog has actually loaded — the discriminator between "this collection resolved to
+    /// nothing" and "there is nothing to resolve against yet".
+    private var catalogReady: Bool { !(app?.songsById.isEmpty ?? true) }
+
+    func stats(forPlaylist playlist: Playlist) -> CollectionCatalog.Stats {
+        resolvedStats(id: playlist.id, stamp: playlist.updatedAt) { $0.stats(forPlaylist: playlist) }
+    }
+
+    func stats(forPocket id: String) -> CollectionCatalog.Stats {
+        resolvedStats(id: id, stamp: pocket(id)?.updatedAt ?? 0) { $0.stats(forPocket: id) }
+    }
+
+    /// Chapters are keyed by their node id, which is unique across the document. A chapter has no
+    /// `updatedAt` of its own, so it rides its owning playlist's — every chapter edit goes through
+    /// `mutatePlaylist`, which stamps it.
+    func stats(forChapter chapter: PlaylistNode) -> CollectionCatalog.Stats {
+        let stamp = playlists.first { $0.sequences.contains { $0.nodeId == chapter.nodeId } }?.updatedAt ?? 0
+        return resolvedStats(id: chapter.nodeId, stamp: stamp) { $0.stats(forChapter: chapter) }
+    }
+
+    /// In-memory memo so re-rendering a list doesn't re-resolve every row. `stamp` is the
+    /// collection's `updatedAt` (bumped by `mutatePlaylist`/`mutatePocket` on every membership
+    /// or name change) and `catalogRevision` covers the catalog side, so between them any input
+    /// that could change the answer changes the key. @ObservationIgnored: this is filled while a
+    /// view body READS it, and invalidating that body from inside itself would loop.
+    @ObservationIgnored private var statsMemo: [String: (key: String, stats: CollectionCatalog.Stats)] = [:]
+
+    private func resolvedStats(id: String, stamp: Double,
+                               _ derive: (CollectionCatalog) -> CollectionCatalog.Stats) -> CollectionCatalog.Stats {
+        guard catalogReady else { return statsCache.stats(for: id) ?? CollectionCatalog.Stats() }
+        let key = "\(app?.catalogRevision ?? 0)|\(stamp)"
+        if let memo = statsMemo[id], memo.key == key { return memo.stats }
+        let stats = derive(catalog())
+        statsMemo[id] = (key, stats)
+        statsCache.record(stats, for: id, catalogReady: true)
+        return stats
+    }
+
+    /// Persist the subtitle cache and drop entries for deleted collections. Called from the
+    /// app's background/inactive hook — not per row — so a list render never touches the disk.
+    func flushStatsCache() {
+        var live = Set(playlists.map(\.id))
+        live.formUnion(pockets.map(\.id))
+        for pl in playlists {
+            for seq in pl.sequences { live.insert(seq.nodeId) }
         }
-        for p in pockets { p.songIds.forEach(add) }
-        func walk(_ nodes: [PlaylistNode]) {
-            for n in nodes {
-                if n.kind == .song, let id = n.songId { add(id) }
-                if let kids = n.children { walk(kids) }
-            }
-        }
-        for pl in playlists { walk(pl.sequences) }
-        return out
+        statsCache.prune(keeping: live)
+        statsCache.flushIfNeeded()
     }
 
     // MARK: Collection → songIds (for batch RIP / BURN — Feature 2)

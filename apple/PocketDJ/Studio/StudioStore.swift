@@ -39,6 +39,44 @@ final class StudioStore {
     // The document lists, observed (the sub-tab lists render straight off these).
     private(set) var samples: [StudioSample] = []
     private(set) var loops: [StudioLoop] = []
+
+    // MARK: Name-sorted library (shared, memoized)
+    //
+    // The sequencer's per-lane "retarget" menu offers the whole sample/loop library sorted by
+    // name. SwiftUI builds `Menu` content eagerly, so every lane of every pattern was sorting
+    // BOTH libraries — with ICU's `localizedCaseInsensitiveCompare` — on every body evaluation,
+    // i.e. once per lane per step toggle. The order is identical for every lane, so it is
+    // computed once here and shared. Keyed by count + ids so any add / delete / rename that
+    // replaces the array re-sorts; @ObservationIgnored because filling the memo from inside a
+    // view body must not invalidate that body.
+    @ObservationIgnored private var sortedSamplesMemo: (key: Int, value: [StudioSample])?
+    @ObservationIgnored private var sortedLoopsMemo: (key: Int, value: [StudioLoop])?
+
+    private static func byName<T>(_ xs: [T], _ name: (T) -> String) -> [T] {
+        xs.sorted { name($0).localizedCaseInsensitiveCompare(name($1)) == .orderedAscending }
+    }
+
+    /// Every sample, name-sorted. Use this instead of sorting `samples` at each call site.
+    var samplesByName: [StudioSample] {
+        var h = Hasher()
+        for s in samples { h.combine(s.id); h.combine(s.name) }
+        let key = h.finalize()
+        if let memo = sortedSamplesMemo, memo.key == key { return memo.value }
+        let value = Self.byName(samples, \.name)
+        sortedSamplesMemo = (key, value)
+        return value
+    }
+
+    /// Every loop, name-sorted. See `samplesByName`.
+    var loopsByName: [StudioLoop] {
+        var h = Hasher()
+        for l in loops { h.combine(l.id); h.combine(l.name) }
+        let key = h.finalize()
+        if let memo = sortedLoopsMemo, memo.key == key { return memo.value }
+        let value = Self.byName(loops, \.name)
+        sortedLoopsMemo = (key, value)
+        return value
+    }
     private(set) var patterns: [StudioPattern] = []
     private(set) var takes: [StudioTake] = []
     private(set) var cues: [StudioCue] = []

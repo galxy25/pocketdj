@@ -521,15 +521,19 @@ private struct SequencerEditor: View {
                     if pattern.rows.count > 1 || pattern.stepCount > 16 { lanesControlRow(pattern) }
                     if !pattern.hasSoundingSteps { emptyNotice }
                     if let notice { noticeLine(notice) }
-                    ForEach(pattern.rows.indices, id: \.self) { i in
-                        PatternRowCard(patternId: patternId, rowIndex: i, row: pattern.rows[i],
-                                       compact: compact, playingThis: isPlayingThis,
-                                       collapsed: collapsedRows.contains(i), barsPerLine: barsPerLine,
-                                       cursorStep: startStep, loopEnabled: loopEnabled, loopBars: loopBars,
-                                       onSolo: { toggleSolo(row: $0) },
-                                       onToggleCollapse: { toggleCollapse(i) },
-                                       onRename: { beginRowRename(i, pattern) },
-                                       onTouchStep: { touchStep($0) })
+                    // Lanes below the fold cost nothing until scrolled to. (Each lane windows its
+                    // own bars too — see `PatternRowCard.shownLines`.)
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(pattern.rows.indices, id: \.self) { i in
+                            PatternRowCard(patternId: patternId, rowIndex: i, row: pattern.rows[i],
+                                           compact: compact, playingThis: isPlayingThis,
+                                           collapsed: collapsedRows.contains(i), barsPerLine: barsPerLine,
+                                           cursorStep: startStep, loopEnabled: loopEnabled, loopBars: loopBars,
+                                           onSolo: { toggleSolo(row: $0) },
+                                           onToggleCollapse: { toggleCollapse(i) },
+                                           onRename: { beginRowRename(i, pattern) },
+                                           onTouchStep: { touchStep($0) })
+                        }
                     }
                     addRowControl(pattern)
                     bounceStatus(pattern)
@@ -758,8 +762,8 @@ private struct SequencerEditor: View {
 
     private func addRowControl(_ pattern: StudioPattern) -> some View {
         let full = pattern.rows.count >= StudioEngine.maxPatternRows
-        let samples = studio.samples.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        let loops = studio.loops.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let samples = studio.samplesByName   // shared memo — see StudioStore
+        let loops = studio.loopsByName
         let noTargets = samples.isEmpty && loops.isEmpty
         return VStack(alignment: .leading, spacing: 4) {
             Menu {
@@ -1081,6 +1085,15 @@ private struct PatternRowCard: View {
     /// SEQ3: reveal this row's per-track mixer deck (collapsed by default so a long pattern's
     /// rows stay compact).
     @State private var deckExpanded = false
+    /// How many grid LINES (bars) this lane currently renders. A 75-bar pattern is 75 lines on
+    /// regular width and 150 on compact iPhone, and every line carries 16 step Buttons, a marker
+    /// overlay AND its own `TimelineView` — so building them all in the open transaction is what
+    /// froze the editor for seconds. The window opens at roughly a screenful and grows a chunk
+    /// per frame, so the pattern is on screen and playable immediately and the remaining bars
+    /// fill in behind. Deliberately per-lane `@State`: lanes fill independently and a collapsed
+    /// lane never spends anything.
+    @State private var shownLines = PatternRowCard.linesPerChunk
+    fileprivate static let linesPerChunk = 8
 
     /// The engine is currently soloing THIS row (its header shows a Stop glyph).
     private var soloingThis: Bool {
@@ -1252,8 +1265,10 @@ private struct PatternRowCard: View {
     /// Re-point this row at a different sample/loop, keeping its steps/modes/gain — the "morph"
     /// move: an extracted drum pattern's kick lane re-triggers a hit cut from another song.
     private var retargetMenu: some View {
-        let samples = studio.samples.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        let loops = studio.loops.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        // Shared + memoized on the store: `Menu` content is built eagerly, so sorting here
+        // meant one ICU sort of the whole library PER LANE PER body evaluation.
+        let samples = studio.samplesByName
+        let loops = studio.loopsByName
         return Menu {
             if !samples.isEmpty {
                 Section("Samples") {
@@ -1304,11 +1319,41 @@ private struct PatternRowCard: View {
             let perLine = (compact ? 8 : 16) * max(1, barsPerLine)
             let n = row.steps.count
             let lines = max(1, (n + perLine - 1) / perLine)
-            ForEach(0..<lines, id: \.self) { line in
+            // PROGRESSIVE: only `shownLines` bars are built now, the rest stream in a chunk per
+            // frame (see `shownLines`). Hoisted here — NOT read inside `stepCell` — because
+            // `spanCoverage` allocates and scans a full step-count array on every read, and
+            // reading it per cell made grid construction quadratic in pattern length.
+            let coverage = spanCoverage
+            ForEach(0..<min(shownLines, lines), id: \.self) { line in
                 let lo = line * perLine
-                stepLine(lo..<min(lo + perLine, n))
+                stepLine(lo..<min(lo + perLine, n), coverage: coverage)
+            }
+            if shownLines < lines {
+                pendingBars(lines - shownLines)
+                    // Self-driving: each chunk lands, the view re-renders, this task re-fires
+                    // and schedules the next. The sleep is one frame, so every batch of bars
+                    // paints — and stays tappable — while the remainder is still arriving.
+                    // Ends when the window covers `lines` and this branch disappears.
+                    .task(id: shownLines) {
+                        try? await Task.sleep(for: .milliseconds(16))
+                        guard !Task.isCancelled else { return }
+                        shownLines = min(shownLines + Self.linesPerChunk, lines)
+                    }
             }
         }
+    }
+
+    /// Placeholder for the bars that haven't been built yet — the visible half of "slide into
+    /// the sequence and watch it fill in" rather than staring at a frozen screen.
+    private func pendingBars(_ remaining: Int) -> some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text("\(remaining) more bar\(remaining == 1 ? "" : "s")…")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+            Spacer()
+        }
+        .frame(height: Self.cellHeight)
+        .accessibilityIdentifier("seq-pending-bars-\(rowIndex)")
     }
 
     /// One rendered line of the grid: the tappable toggles plus, OVERLAID, the playing-step
@@ -1316,12 +1361,12 @@ private struct PatternRowCard: View {
     /// nested group structure so it aligns) instead of inside the buttons: the clock is sampled
     /// ~30×/s, and redrawing ONLY passive rectangles keeps the fast clock from re-creating the
     /// buttons mid-tap (the StudioPatternClock / dead-play-button doctrine).
-    private func stepLine(_ cols: Range<Int>) -> some View {
+    private func stepLine(_ cols: Range<Int>, coverage: [Bool]) -> some View {
         let groups = beatGroups(cols)
         return HStack(spacing: Self.groupSpacing) {
             ForEach(groups, id: \.lowerBound) { group in
                 HStack(spacing: Self.cellSpacing) {
-                    ForEach(group, id: \.self) { col in stepCell(col) }
+                    ForEach(group, id: \.self) { col in stepCell(col, coverage: coverage) }
                 }
             }
         }
@@ -1418,11 +1463,15 @@ private struct PatternRowCard: View {
         return cov
     }
 
-    private func stepCell(_ col: Int) -> some View {
+    /// `coverage` is `spanCoverage` computed ONCE by the caller. It used to be read (twice) as a
+    /// computed property right here, which rebuilt and rescanned a full step-count array for
+    /// every off-cell in the grid — O(steps²) per lane, the term that made long patterns fall
+    /// off a cliff rather than merely get slower.
+    private func stepCell(_ col: Int, coverage: [Bool]) -> some View {
         let on = row.steps.indices.contains(col) && row.steps[col]
         let loops = on && row.loopSteps.indices.contains(col) && row.loopSteps[col]
         let span = on && row.stepSpans.indices.contains(col) ? row.stepSpans[col] : 0
-        let covered = !on && spanCoverage.indices.contains(col) && spanCoverage[col]
+        let covered = !on && coverage.indices.contains(col) && coverage[col]
         return Button {
             studio.setPatternStep(patternId, row: rowIndex, col: col, on: !on)
             if sequencerLive, playingThis { engine.updateLiveStep(row: rowIndex, col: col, on: !on) }

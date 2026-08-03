@@ -261,8 +261,11 @@ struct PlaylistsView: View {
             case .user:
                 // Show the list when there are own collections OR any recently-added items (the
                 // virtual "Recently added" row lives at the top of the User tab).
+                // `hasRecentlyAddedItems` (not `recentlyAddedPlaylist`): this gate needs a
+                // yes/no, and building the 3,650-id playlist to answer it was the single
+                // most expensive thing in the tab's body.
                 if collections.playlists.isEmpty && collections.pockets.isEmpty
-                    && app.recentlyAddedPlaylist(limit: settings.defaultRecentlyAddedCount) == nil {
+                    && !app.hasRecentlyAddedItems(limit: settings.defaultRecentlyAddedCount) {
                     userEmptyState
                 } else {
                     List { userSections }
@@ -526,7 +529,7 @@ struct PlaylistsView: View {
                 Image(systemName: "music.note.list").foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(pl.name).foregroundStyle(Theme.fg)
-                    let stats = collections.catalog().stats(forPlaylist: pl)
+                    let stats = collections.stats(forPlaylist: pl)
                     Text("\(pl.sequences.count) chapter\(pl.sequences.count == 1 ? "" : "s") · \(stats.summary)")
                         .font(.caption).foregroundStyle(Theme.fgDim)
                 }
@@ -568,7 +571,7 @@ struct PlaylistsView: View {
                 Image(systemName: "rectangle.stack").foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(pocket.name).foregroundStyle(Theme.fg)
-                    let stats = collections.catalog().stats(forPocket: pocket.id)
+                    let stats = collections.stats(forPocket: pocket.id)
                     Text("\(pocket.memberCount) item\(pocket.memberCount == 1 ? "" : "s") · \(stats.summary)")
                         .font(.caption).foregroundStyle(Theme.fgDim)
                 }
@@ -752,6 +755,17 @@ struct IndexPlaylistDetailView: View {
     @State private var browse: BrowseState
     @State private var showSort = false
     @State private var showFilter = false
+    /// The resolved rows, held as STATE rather than recomputed in `body`. `songs` used to be a
+    /// computed property running the whole Browser pipeline over every member id, and `body`
+    /// read it four times (both `.disabled`s, the footer count, the `ForEach`) — with the
+    /// second body pass `.onAppear` forces, that was eight full resolves of a 3,650-id
+    /// collection before the view settled. Now it resolves once per input change, in a `.task`
+    /// that runs AFTER the first frame, so navigating in is immediate.
+    @State private var resolved: [IndexSong] = []
+    /// Nothing has resolved yet — the window is showing stored-order placeholders (or nothing).
+    @State private var isResolving = true
+    /// How many rows are currently rendered. See `RowWindow`.
+    @State private var shown = RowWindow.page
 
     init(source: SourcePlaylist, path: Binding<NavigationPath>) {
         self.source = source
@@ -759,21 +773,37 @@ struct IndexPlaylistDetailView: View {
         self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(source.id)"))
     }
 
-    /// The songs AFTER the per-collection sort + filters (stored order until the user sorts).
+    /// The rows to render right now. Once `.task` has resolved, that is the answer. Before then
+    /// — and ONLY when the sort/filter state can't reorder or drop anything — the collection's
+    /// stored ids already ARE the display order, so the first page is painted straight from the
+    /// catalog and the list is never blank. With a query, filter or sort active there is no
+    /// honest placeholder, so it shows nothing until the real answer lands.
     private var songs: [IndexSong] {
-        app.sortedFilteredSongs(ids: source.songIds, browse: browse, collections: collections, favorites: favorites)
+        if !isResolving { return resolved }
+        guard browse.isStoredOrder else { return [] }
+        return source.songIds.prefix(shown).compactMap { app.songsById[$0] }
     }
+
+    /// Re-resolve whenever the membership, the catalog, or the sort/filter state changes.
+    private var resolveKey: String {
+        "\(source.id)|\(source.songIds.count)|\(app.catalogRevision)|\(browse.resultsKey(app))"
+            + "|\(browse.membershipActive)|\(browse.favoriteActive)"
+    }
+
     /// An on-device duplicate of THIS source already exists (see `duplicate()`).
     private var hasDuplicate: Bool { collections.existingDuplicate(forSource: source) != nil }
 
     var body: some View {
         List {
             Section {
+                // `source.songIds.isEmpty`, not `songs.isEmpty`: an empty SOURCE is the real
+                // "nothing to play" condition, and it is known without resolving anything —
+                // so Play/Shuffle are never spuriously disabled during the resolve.
                 Button { play() } label: { Label("Play", systemImage: "play.fill") }
-                    .disabled(songs.isEmpty)
+                    .disabled(source.songIds.isEmpty)
                     .accessibilityIdentifier("indexplaylist-play")
                 Button { shufflePlay() } label: { Label("Shuffle", systemImage: "shuffle") }
-                    .disabled(songs.isEmpty)
+                    .disabled(source.songIds.isEmpty)
                     .accessibilityIdentifier("indexplaylist-shuffle")
                 // One duplicate per source, always: when a copy already exists (made here or
                 // automatically by an "Add to…" into this playlist) this OPENS it rather
@@ -788,16 +818,22 @@ struct IndexPlaylistDetailView: View {
                     .accessibilityIdentifier("indexplaylist-convert")
                 CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSource: source) }, noun: "playlist")
             } footer: {
-                Text("\(songs.count) of \(source.songIds.count) song\(source.songIds.count == 1 ? "" : "s") resolved from \(source.sourceName).")
+                if isResolving {
+                    Text("Resolving \(source.songIds.count) song\(source.songIds.count == 1 ? "" : "s") from \(source.sourceName)…")
+                } else {
+                    Text("\(resolved.count) of \(source.songIds.count) song\(source.songIds.count == 1 ? "" : "s") resolved from \(source.sourceName).")
+                }
             }
 
             Section("Songs") {
-                ForEach(songs) { song in
+                let rows = songs
+                ForEach(rows.prefix(shown)) { song in
                     VStack(spacing: 0) {
                         NavigationLink(value: song) { CollectionSongRow(song: song) }
                         InlinePlayerSlot(songId: song.id)
                     }
                 }
+                RowWindowSentinel(total: rows.count, shown: $shown)
             }
         }
         .navigationTitle(source.name)
@@ -806,6 +842,15 @@ struct IndexPlaylistDetailView: View {
         .collectionRipBurn(ripBurn)
         .collectionSortFilterToolbar(browse: browse, showSort: $showSort, showFilter: $showFilter,
                                      app: app, collections: collections)
+        // Resolves AFTER the first frame, so the push animation is never blocked. `.task(id:)`
+        // also auto-cancels a stale run when the sort/filter changes mid-resolve.
+        .task(id: resolveKey) {
+            let full = app.sortedFilteredSongs(ids: source.songIds, browse: browse,
+                                               collections: collections, favorites: favorites)
+            guard !Task.isCancelled else { return }
+            resolved = full
+            isResolving = false
+        }
     }
 
     private func play() {
@@ -892,7 +937,7 @@ struct PlaylistDetailView: View {
         List {
             if let playlist {
                 Section {
-                    let stats = collections.catalog().stats(forPlaylist: playlist)
+                    let stats = collections.stats(forPlaylist: playlist)
                     HStack(spacing: 6) {
                         Image(systemName: "music.note.list").foregroundStyle(Theme.accent)
                         Text(stats.summary).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
@@ -1225,7 +1270,7 @@ struct PlaylistDetailView: View {
             HStack {
                 Text(seq.name ?? "Chapter")
                 Spacer()
-                Text(collections.catalog().stats(forChapter: seq).summary)
+                Text(collections.stats(forChapter: seq).summary)
                     .foregroundStyle(Theme.fgDim)
             }
             .accessibilityIdentifier("chapter-stats-\(seq.nodeId)")
