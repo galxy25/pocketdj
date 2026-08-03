@@ -47,13 +47,16 @@ struct NowPlayingPanel: View {
     @State private var results: SearchResults = .empty
     #if os(iOS)
     @State private var editMode: EditMode = .inactive
+    #endif
     /// Windowed Up Next (see `RowWindow`). Shuffling a large collection queues thousands of
     /// rows, and this panel appears as a direct result — so an unwindowed Up Next made the
     /// whole panel construct a row (each with an eagerly-built 4-item context menu) per queued
     /// track before the tap finished. That, not the queue build itself, was the multi-second
     /// wait after Shuffle.
+    ///
+    /// OUTSIDE the `os(iOS)` fence above — `upNextSection` is shared by every platform, so
+    /// gating this on iOS built there and broke the macOS/visionOS archives.
     @State private var upNextShown = RowWindow.page
-    #endif
 
     struct SearchResults: Equatable {
         var albums: [IndexAlbum] = []
