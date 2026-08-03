@@ -71,10 +71,26 @@ struct PocketDJApp: App {
         Task { await autoSyncIfDue() }
     }
 
+    /// Wire the sync's settings-backed seams. Done HERE rather than in `init` because
+    /// `playlistSync` is `@State` — touching it during init is "used before being initialized".
+    /// Idempotent, so every entry point can call it.
+    @MainActor private func wireSyncSeams() {
+        // Only import Apple Music playlists the user opted into copying. Default OFF: the pull
+        // otherwise clones their entire Apple Music library onto the device as PocketDJ playlists.
+        playlistSync.importNewPlaylistsEnabled = { [weak settings] in
+            settings?.amImportNewPlaylists ?? false
+        }
+    }
+
     /// Resume an interrupted sync, then run the DAILY auto-sync if its local fire time has
     /// passed and today's pass hasn't run. The claim (lastAMAutoSyncAtMs) is stamped BEFORE the
     /// pass so concurrent triggers (launch + foreground + periodic tick) single-flight.
     @MainActor private func autoSyncIfDue() async {
+        // BEFORE the guard: the seams must be live even on the early launches that bail out here,
+        // or a manual "Sync collections" from Settings could run against an unwired seam.
+        // (Unwired still means "don't import" — the default is the safe one — but the toggle
+        // would appear not to work.)
+        wireSyncSeams()
         guard onboarding.isComplete, app.state == .loaded else { return }
         await playlistSync.resumeIfInterrupted(collections: collections, app: app)
         guard settings.amAutoSyncEnabled,

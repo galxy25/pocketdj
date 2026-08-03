@@ -688,3 +688,64 @@ final class AMCatalogLookupChunkingTests: XCTestCase {
                        "an old miss is worth re-asking")
     }
 }
+
+// MARK: - The pull must not clone the user's Apple Music library (Levi 2026-08-02)
+
+@MainActor
+final class AMPullImportGateTests: XCTestCase {
+
+    private func remote(_ id: String, _ name: String) -> AMPlaylistSyncClient.RemotePlaylist {
+        .init(id: id, name: name, canEdit: true, description: nil,
+              trackCatalogIds: ["1"], trackTitles: nil)
+    }
+    private func tempURL(_ tag: String) -> URL {
+        let u = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-\(tag)-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: u) }
+        return u
+    }
+
+    /// A copy the user RENAMED locally must not be re-imported. Name-only matching is what made
+    /// the sync "duplicate" playlists that had already been copied from Apple Music: the local
+    /// "Roadtrip 2026" no longer matched the remote "Roadtrip", so a second copy appeared.
+    func testALinkedButRenamedCopyIsNotReimported() {
+        let r = [remote("p.1", "Roadtrip")]
+        // Name index reflects the RENAMED local copy, so it cannot match.
+        let byNameOnly = PlaylistAppleMusicSync.newImports(remote: r, existingNames: ["roadtrip 2026"])
+        XCTAssertEqual(byNameOnly.count, 1, "precondition: by name alone this looks like a new playlist")
+
+        let byIdentity = PlaylistAppleMusicSync.newImports(
+            remote: r, existingNames: ["roadtrip 2026"], linkedRemoteIds: ["p.1"])
+        XCTAssertTrue(byIdentity.isEmpty, "the link says it is already ours — an id can't drift")
+    }
+
+    /// The link set is drawn from BOTH the durable push link and converted/duplicated provenance.
+    func testLinkedRemoteIdsCoversLinkAndProvenance() {
+        let collections = CollectionsStore(fileURL: tempURL("linked"))
+        let pl = collections.createPlaylist("Pushed")
+        collections.linkToAppleMusic(playlistId: pl.id, amPlaylistId: "p.pushed")
+        _ = collections.convertToPocket(
+            source: SourcePlaylist(playlist: IndexPlaylist(id: "p.source", name: "Converted", songIds: []),
+                                   sourceName: Config.appleMusicSourceName))
+
+        let ids = PlaylistAppleMusicSync.linkedRemoteIds(collections: collections)
+        XCTAssertTrue(ids.contains("p.pushed"), "the durable link counts")
+        XCTAssertTrue(ids.contains("p.source"), "so does converted-from provenance")
+    }
+
+    /// THE DEFAULT IS THE WHOLE POINT: a fresh install must not copy the user's Apple Music
+    /// library onto the device. Off unless they ask for it.
+    func testImportIsOffByDefault() {
+        let s = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        XCTAssertFalse(s.amImportNewPlaylists,
+                       "sync must touch only collections the user converted or duplicated")
+    }
+
+    /// An unrelated Apple Music playlist is still a candidate — the GATE decides whether it is
+    /// actually imported, not this function.
+    func testAnUnlinkedRemotePlaylistIsStillACandidate() {
+        let out = PlaylistAppleMusicSync.newImports(
+            remote: [remote("p.9", "Someone Else's Mix")], existingNames: [], linkedRemoteIds: ["p.1"])
+        XCTAssertEqual(out.map(\.name), ["Someone Else's Mix"])
+    }
+}

@@ -86,6 +86,13 @@ final class PlaylistAppleMusicSync {
     /// nil on macOS/Catalyst (library edits are unavailable there), where push stays create+append.
     private let transport: (any PlaylistWriteBackTransport)?
 
+    /// Should the pull IMPORT Apple Music playlists with no local counterpart? A seam rather than a
+    /// parameter, matching `pushAllowed`/`onboardingIncomplete`: every caller of `syncNow` would
+    /// otherwise have to thread settings through. Wired at app init to
+    /// `settings.amImportNewPlaylists`. **nil ⇒ FALSE** — the safe default is to import nothing,
+    /// because the failure mode is copying someone's entire Apple Music library onto their device.
+    @ObservationIgnored var importNewPlaylistsEnabled: (() -> Bool)?
+
     init(client: AMPlaylistSyncClient? = nil,
          transport: (any PlaylistWriteBackTransport)? = nil,
          auditURL: URL? = nil,
@@ -363,12 +370,32 @@ final class PlaylistAppleMusicSync {
     /// normalized name already exists locally, and collapses same-named remote copies (e.g. the
     /// duplicates an older buggy push created) to the FULLEST one — k copies import once, not k
     /// times. `existingNames` must already be normName-normalized.
+    /// Every Apple Music playlist id a local collection is already bound to — by the durable link
+    /// stamped at push time, or by the provenance a converted/duplicated collection carries.
+    static func linkedRemoteIds(collections: CollectionsStore) -> Set<String> {
+        var out = Set<String>()
+        for pl in collections.playlists {
+            if let id = pl.amPlaylistId, !id.isEmpty { out.insert(id) }
+            if let id = pl.sourcePlaylistId, !id.isEmpty { out.insert(id) }
+        }
+        for p in collections.pockets {
+            if let id = p.amPlaylistId, !id.isEmpty { out.insert(id) }
+            if let id = p.sourcePlaylistId, !id.isEmpty { out.insert(id) }
+        }
+        return out
+    }
+
     static func newImports(remote: [AMPlaylistSyncClient.RemotePlaylist],
-                           existingNames: Set<String>) -> [AMPlaylistSyncClient.RemotePlaylist] {
+                           existingNames: Set<String>,
+                           linkedRemoteIds: Set<String> = []) -> [AMPlaylistSyncClient.RemotePlaylist] {
         var bestByKey: [String: AMPlaylistSyncClient.RemotePlaylist] = [:]
         var order: [String] = []
         for r in remote {
             let key = normName(r.name)
+            // ALREADY OURS, BY IDENTITY. Matching on name alone re-imported a copy the user had
+            // renamed locally: the local "Roadtrip 2026" no longer matched the remote "Roadtrip",
+            // so the sync helpfully made a second one. An id can't drift the way a name does.
+            if linkedRemoteIds.contains(r.id) { continue }
             guard !existingNames.contains(key) else { continue }
             if let current = bestByKey[key] {
                 if r.trackCatalogIds.count > current.trackCatalogIds.count { bestByKey[key] = r }
@@ -705,7 +732,22 @@ final class PlaylistAppleMusicSync {
                 if mirrorByName[key] == nil { mirrorByName[key] = sp }
             }
             var imported = 0
-            for r in Self.newImports(remote: remote, existingNames: existingNames) {
+            // IMPORT IS OPT-IN. This step used to copy EVERY Apple Music library playlist that had
+            // no local counterpart onto the device — so an automatic pass could clone the user's
+            // whole Apple Music library into PocketDJ. Off by default now: sync touches only the
+            // collections the user explicitly converted or duplicated. Reported rather than
+            // silently skipped, so "nothing appeared" is never a mystery.
+            let unmatched = Self.newImports(remote: remote, existingNames: existingNames,
+                                            linkedRemoteIds: Self.linkedRemoteIds(collections: collections))
+            let mayImport = importNewPlaylistsEnabled?() ?? false
+            if !mayImport, !unmatched.isEmpty {
+                changes.append(.init(
+                    kind: "not imported",
+                    name: "\(unmatched.count) Apple Music playlist\(unmatched.count == 1 ? "" : "s")",
+                    added: 0, removed: 0,
+                    detail: "left in Apple Music — turn on “Import new Apple Music playlists” to copy them here"))
+            }
+            for r in (mayImport ? unmatched : []) {
                 // NAME+ARTIST duplicate gate on the way IN too: two remote ids resolving to two
                 // local twins of the same recording import once.
                 var seenSongKeys = Set<String>()
