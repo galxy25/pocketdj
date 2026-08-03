@@ -74,25 +74,40 @@ if [ -d "$DL/pocketdj-am-processed" ]; then
   run rmdir "$DL/pocketdj-am-processed"
 fi
 
-# --- Repoint the change-sets at the moved snapshot --------------------------------------------
+# --- Repoint the ACTIVE change-sets at the moved snapshot -------------------------------------
 # Each change-set pins `librarySnapshot` as an ABSOLUTE path and a consumer hard-fails on a
-# missing one. After the move those paths are stale, so rewrite them to the retained snapshot.
+# missing one, so the pointers must be updated after the move.
+#
+# ONLY the active ones, and ONLY when their target is really gone. An earlier version rewrote
+# every change-set including the archived ones, which did two bad things: it made the June
+# archive claim an August export it was never generated against, and — because the retention
+# pin is "a snapshot some change-set still names" — it un-pinned the June snapshots and let the
+# next sweep delete them. Archived change-sets whose snapshot is missing are marked as such
+# rather than pointed somewhere false: a wrong pointer is worse than an absent one.
 if [ "$APPLY" = 1 ] && [ "${#SNAPFILES[@]}" -gt 0 ]; then
   KEPT="$SNAPS/$(basename "${SNAPFILES[-1]}")"
   node -e '
     const {readdirSync,readFileSync,writeFileSync,existsSync}=require("fs"),{join}=require("path");
-    const [root,kept]=process.argv.slice(1); let n=0;
-    for (const dir of [root, join(root,"processed")]) {
-      if (!existsSync(dir)) continue;
-      for (const f of readdirSync(dir)) {
-        if (!/^pocketdj-am-changeset-\d+\.json$/.test(f)) continue;
-        const p=join(dir,f); const d=JSON.parse(readFileSync(p,"utf8"));
-        if (d.librarySnapshot && d.librarySnapshot !== kept) {
-          d.librarySnapshot = kept; writeFileSync(p, JSON.stringify(d,null,2)); n++;
-        }
+    const [root,kept]=process.argv.slice(1); let n=0, m=0;
+    // ACTIVE: these correspond to the retained (newest) snapshot — repoint them.
+    for (const f of readdirSync(root)) {
+      if (!/^pocketdj-am-changeset-\d+\.json$/.test(f)) continue;
+      const p=join(root,f); const d=JSON.parse(readFileSync(p,"utf8"));
+      if (d.librarySnapshot && d.librarySnapshot !== kept && !existsSync(d.librarySnapshot)) {
+        d.librarySnapshot = kept; writeFileSync(p, JSON.stringify(d,null,2)); n++;
       }
     }
-    console.log(`  repointed ${n} change-set(s) at ${kept}`);
+    // ARCHIVED: leave the pointer alone if the snapshot survived the move; otherwise say so.
+    const pd = join(root,"processed");
+    if (existsSync(pd)) for (const f of readdirSync(pd)) {
+      if (!/^pocketdj-am-changeset-\d+\.json$/.test(f)) continue;
+      const p=join(pd,f); const d=JSON.parse(readFileSync(p,"utf8"));
+      if (d.librarySnapshot && !existsSync(d.librarySnapshot)) {
+        d.librarySnapshotMissing = d.librarySnapshot; d.librarySnapshot = null;
+        writeFileSync(p, JSON.stringify(d,null,2)); m++;
+      }
+    }
+    console.log(`  repointed ${n} active change-set(s) at ${kept}; flagged ${m} archived as snapshot-missing`);
   ' "$ROOT" "$KEPT"
 fi
 
