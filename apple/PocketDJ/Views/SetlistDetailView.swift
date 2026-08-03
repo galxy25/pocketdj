@@ -40,6 +40,10 @@ struct SetlistDetailView: View {
     @State private var ripBurn = CollectionRipBurnController()
     @State private var showCSVExporter = false
     @State private var csvDoc = CSVFile(data: Data())
+    /// Windowed track rows (see `RowWindow`). This is the view Shuffle PUSHES TO, so shuffling a
+    /// 3,650-item collection landed here with every row built up front — each carrying a
+    /// context menu — on top of the Now Playing panel's queue. Windowed, the push is immediate.
+    @State private var shown = RowWindow.page
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
 
@@ -108,7 +112,9 @@ struct SetlistDetailView: View {
                     }
 
                     Section {
-                        ForEach(Array(setlist.tracks.enumerated()), id: \.offset) { idx, track in
+                        // `prefix` keeps `idx` identical to the full-track index, so the
+                        // positional delete/move below and the a11y ids stay correct.
+                        ForEach(Array(setlist.tracks.prefix(shown).enumerated()), id: \.offset) { idx, track in
                             trackRow(track, index: idx)
                                 .contextMenu {   // right-click on macOS, tap-and-hold on iOS
                                     Button(role: .destructive) {
@@ -129,6 +135,7 @@ struct SetlistDetailView: View {
                             // Remove highest-index first so earlier offsets stay valid.
                             offsets.sorted(by: >).forEach { collections.removeSetlistTrack(setlistId: setlistId, at: $0) }
                         }
+                        RowWindowSentinel(total: setlist.tracks.count, shown: $shown)
                     } header: {
                         chapterLegend(setlist.tracks)
                     }

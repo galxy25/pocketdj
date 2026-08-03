@@ -224,6 +224,12 @@ struct RootView: View {
             Task { await burns.drainPendingAfterRip() }
             // Collection-activity seed (PDJ_SEED_ACTIVITY) — the three row-resolution states.
             collectionActivity.seedFixtureIfRequested()
+            // MUST precede the catalog load kicked off below: it can call
+            // `settings.loadAppleMusic()`, and the load reads `settings.enabledSourceURLs` to
+            // decide WHICH sources to fetch. Synchronous and env-only, so hoisting it here costs
+            // nothing and removes the race. (Was after the CloudKit pass, which was fine only
+            // because the catalog load used to be the very last thing in this task.)
+            applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             // Start the catalog load NOW rather than at the end of this task. It is what fills
             // `songsById` / `indexPlaylists`, i.e. the ONLY thing that lets a collection show a
             // real song count or a source playlist appear at all — and it was queued behind the
@@ -251,7 +257,6 @@ struct RootView: View {
             // session and a mix snapshot may restore held side by side — whichever the user
             // plays first becomes the audio owner through the normal arbiter paths.
             mix.restorePersistedMixIfIdle()
-            applyTestLaunchConfig()   // test seam: load sources / set search creds from env
             Task { await rips.refreshManifest() }   // learn what's already ripped (public S3)
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
             // Accepts either the pinned token ("Performance") or the visible title ("Producer").
