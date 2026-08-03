@@ -27,6 +27,8 @@ import { analyzeAudio, ANALYSIS_VERSION } from './lib/audio-analyze.mjs';
 import { separateStems, STEMS_VERSION, STEMS_MODEL, STEM_NAMES } from './lib/audio-stem.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
+import { artifactRoot as amArtifactRoot, snapshotDir as amSnapshotDir,
+         ensureDirs as ensureArtifactDirs, pruneArtifacts } from './lib/am-artifacts.mjs';
 const LYRICS_VERSION = 1;   // timed-lyrics sidecar version; keep in sync with LYRICS_VERSION in scripts/stem-worker.mjs
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -88,6 +90,11 @@ const CFG = {
   // in the repo — the cron-agent owns a SEPARATE ship cursor in index-out/apple-music/state.json).
   amLibraryXml: (process.env.POCKETDJ_AM_LIBRARY_XML
     || join(homedir(), 'Music', 'Music', 'Library.xml')).replace(/^~/, homedir()),
+  // LEGACY — no longer written to. The sync's snapshots and change-sets now live under
+  // ~/Documents/PocketDJ (see scripts/lib/am-artifacts.mjs); this stays only so an installed
+  // plist that still sets POCKETDJ_DOWNLOADS_DIR doesn't fail to parse. Note that
+  // ~/Downloads/Library.xml is a DIFFERENT thing — the user's manual export, still read via
+  // CFG.libraryXml / POCKETDJ_LIBRARY_XML above.
   downloadsDir: (process.env.POCKETDJ_DOWNLOADS_DIR
     || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
   amSyncStateDir: (process.env.POCKETDJ_AM_STATE_DIR
@@ -355,6 +362,30 @@ function spawnNode(args, opts = {}) {
 // Build the ~/Downloads change-set record (schema pocketdj-am-changeset/1). Self-sufficient:
 // carries the EXACT library snapshot path + its sha256 so the cron-agent's full rebuild is
 // deterministic + decoupled from Music's live state at cron time. Written only when added>0.
+/**
+ * The snapshot path for this run: an EXISTING snapshot whose content hash matches, or a fresh
+ * copy when none does. Returns an absolute path (change-sets pin it absolutely, and consumers
+ * hard-fail on a missing one). The `.sha256` sidecar makes the match an O(1) read instead of
+ * re-hashing 157 MB per candidate.
+ */
+function reuseOrCopySnapshot(xml, digest, ms) {
+  const dir = amSnapshotDir();
+  for (const name of (existsSync(dir) ? readdirSync(dir) : [])) {
+    if (!/^pocketdj-am-library-\d+\.xml$/.test(name)) continue;
+    const candidate = join(dir, name);
+    try {
+      if (readFileSync(`${candidate}.sha256`, 'utf8').trim() === digest) {
+        console.error(`  am-sync: snapshot unchanged — reusing ${name} (saved ${(statSync(candidate).size / 1e6).toFixed(0)} MB)`);
+        return candidate;
+      }
+    } catch { /* no sidecar: fall through and treat as non-matching */ }
+  }
+  const snap = join(dir, `pocketdj-am-library-${ms}.xml`);
+  copyFileSync(xml, snap);
+  writeFileSync(`${snap}.sha256`, `${digest}\n`);
+  return snap;
+}
+
 function buildChangeset(ms, snapshotPath, delta, added, counts, since) {
   let snapSha = null;
   try { snapSha = createHash('sha256').update(readFileSync(snapshotPath)).digest('hex'); } catch { /* best-effort */ }
@@ -410,7 +441,7 @@ async function runAmCheck(job) {
     if (!haveShared) console.error(`  am-sync: ${CFG.amLibraryXml} not found — falling back to ${CFG.libraryXml} (stale; nightly job is authoritative)`);
     if (!existsSync(xml)) throw new Error(`no Library.xml to read (looked at ${CFG.amLibraryXml} and ${CFG.libraryXml})`);
     mkdirSync(CFG.amSyncStateDir, { recursive: true });
-    mkdirSync(CFG.downloadsDir, { recursive: true });
+    ensureArtifactDirs();   // ~/Documents/PocketDJ — see scripts/lib/am-artifacts.mjs
     const stateFile = join(CFG.amSyncStateDir, 'state.json');
     const tmpState = join(CFG.amSyncStateDir, `state.next-${Date.now()}.json`);
     const firstRun = !existsSync(stateFile);
@@ -447,14 +478,24 @@ async function runAmCheck(job) {
     const added = (delta.songs || []).map((s) => ({
       songId: s.id, albumId: s.albumId, title: s.name, artist: s.artist, change: 'added',
     }));
+    // Retention runs BEFORE the write guard below, so the pile shrinks on every sync — including
+    // the no-change runs, which are most of them.
+    pruneArtifacts();
+
     const counts = { added: added.length, changed: 0, removed: 0 };
 
     let changeSetPath = null;
     if (added.length > 0) {
       const ms = Date.now();
-      const snap = join(CFG.downloadsDir, `pocketdj-am-library-${ms}.xml`);
-      copyFileSync(xml, snap); // the EXACT snapshot the cron-agent rebuilds from
-      changeSetPath = join(CFG.downloadsDir, `pocketdj-am-changeset-${ms}.json`);
+      ensureArtifactDirs();
+      // REUSE an identical snapshot instead of copying 157 MB again. Every sync used to copy
+      // the whole export unconditionally, and the export only changes when the user re-runs
+      // Music's Export Library — so this machine accumulated 17 snapshots that were all
+      // byte-identical to each other AND to the export (2.6 GB for one file's worth of data).
+      // Content-hash, not mtime: a re-export of unchanged content should still reuse.
+      const digest = createHash('sha256').update(readFileSync(xml)).digest('hex');
+      const snap = reuseOrCopySnapshot(xml, digest, ms);
+      changeSetPath = join(amArtifactRoot(), `pocketdj-am-changeset-${ms}.json`);
       const cs = buildChangeset(ms, snap, delta, added, counts, sinceIso);
       writeFileSync(changeSetPath, JSON.stringify(cs, null, 2));
       console.error(`  am-sync: ${added.length} added → ${changeSetPath}`);
@@ -2519,6 +2560,11 @@ function sweepScratch() {
 }
 sweepScratch();                                        // reclaim leftovers from the previous run at startup
 setInterval(sweepScratch, 30 * 60_000).unref();        // + steady-state sweep every 30 min (unref: never blocks exit)
+// Same cadence for the Apple Music audit artifacts (snapshots + change-sets). Riding the
+// existing sweep rather than adding a launchd job keeps the writer and the pruner in ONE
+// process, so they can never disagree about which directory they are talking about.
+pruneArtifacts();
+setInterval(() => pruneArtifacts(), 30 * 60_000).unref();
 
 // ---------------- daily 04:00 AM-sync scheduler (self-rearming setTimeout) ----------------
 // The server is always up (Tailscale-exposed, externally supervised), so an in-process timer
