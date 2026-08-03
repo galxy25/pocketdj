@@ -187,6 +187,11 @@ final class RipsStore {
     /// `PlayStatsStore.notePlayed` (the storage manager's LRP prune signal); nil in tests.
     @ObservationIgnored var onPlay: ((String) -> Void)?
 
+    /// A rip reached READY and its file is now in the manifest. Wired at app init to
+    /// `BurnStore.drainPendingAfterRip` so a download the user asked for BEFORE the song existed
+    /// finishes by itself, without them coming back to tap anything.
+    @ObservationIgnored var onRipReady: ((String) -> Void)?
+
     /// Synchronous in-flight guard for the fire-and-forget async rip (Feature 1).
     /// Held from BEFORE the `await` until the POST resolves so back-to-back calls for
     /// the same song (popular-song spam, rapid double-taps) fire at most one POST per
@@ -513,7 +518,11 @@ final class RipsStore {
                 guard let self else { return }
                 guard let v = try? await self.fetchJob(jobId, base: base, token: tok) else { continue }
                 self.jobs[songId] = v
-                if v.phase == .ready, v.url != nil { await self.refreshManifest(); return }
+                if v.phase == .ready, v.url != nil {
+                    await self.refreshManifest()
+                    self.onRipReady?(songId)
+                    return
+                }
                 // Do NOT stop on .error: the server's auto-heal re-queues failed
                 // jobs (retry N/6 with backoff), flipping error → queued — a poll
                 // that bailed here left the row stuck on ＋ Add while the server was

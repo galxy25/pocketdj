@@ -88,6 +88,7 @@
 		314718AA1FBB6415E3446D7C /* CollectionsStudioTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFA30071B2A9D9DFF643E98A /* CollectionsStudioTests.swift */; };
 		31485AF8B4B1C0AF021F5425 /* OwnerIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6DFF21AD3893E62CBD4E481 /* OwnerIdentityTests.swift */; };
 		31FEAC32FE9923342D5613A2 /* SetlistDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF5B463C3ECC8EAA0675A0FC /* SetlistDetailView.swift */; };
+		32F043584B9B88D3DD9C0F04 /* PendingBurnTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB3C34CABB16F7A2270A664 /* PendingBurnTests.swift */; };
 		33D1E3D451C696C3BCD7503B /* ProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CBB5530D61B41C0DA9FA74 /* ProfileStore.swift */; };
 		3427D78C81D4586764ED8C28 /* ProfileAudioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 977C2FDDAAD91A8564115D46 /* ProfileAudioStore.swift */; };
 		346413F3F2C99B2F0AABCF1F /* QueueMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2A5070F14FEFEA61F438E8 /* QueueMenu.swift */; };
@@ -636,6 +637,7 @@
 		7C814FEF25275F5A6AE683C1 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		7D5980E93946D7C929149EE0 /* PlayStatsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayStatsStoreTests.swift; sourceTree = "<group>"; };
 		7DA8497796A5259F2A4F3EFF /* EditAlbumView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditAlbumView.swift; sourceTree = "<group>"; };
+		7DB3C34CABB16F7A2270A664 /* PendingBurnTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingBurnTests.swift; sourceTree = "<group>"; };
 		7E8C2DD561AF74400DBCC31D /* StreamingTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingTokenStore.swift; sourceTree = "<group>"; };
 		807AF80CB4565AC9344452B5 /* AccountDeletionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeletionService.swift; sourceTree = "<group>"; };
 		80BBD7B6AE2FDC4748D9EB44 /* DiscoverStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverStoreTests.swift; sourceTree = "<group>"; };
@@ -967,6 +969,7 @@
 				C1CFF8AEA6487C5EF9A258BC /* OnboardingStoreTests.swift */,
 				44184ACAC7222E4C700046EE /* OnlineSearchPagingTests.swift */,
 				D6DFF21AD3893E62CBD4E481 /* OwnerIdentityTests.swift */,
+				7DB3C34CABB16F7A2270A664 /* PendingBurnTests.swift */,
 				FE1DEE769A0521556C1C3AA9 /* PlatterDetailLibraryTests.swift */,
 				25807BB1133FC7FA2B220B5D /* PlaybackCoordinatorTests.swift */,
 				A44274EC530895D9DCA349DF /* PlaybackModeTests.swift */,
@@ -1776,6 +1779,7 @@
 				8635DA3BB908925B738B0A1E /* OnboardingStoreTests.swift in Sources */,
 				79FF6F486727A52BA47C6E59 /* OnlineSearchPagingTests.swift in Sources */,
 				31485AF8B4B1C0AF021F5425 /* OwnerIdentityTests.swift in Sources */,
+				32F043584B9B88D3DD9C0F04 /* PendingBurnTests.swift in Sources */,
 				309D213A005FCFDCB87ABB83 /* PlatterDetailLibraryTests.swift in Sources */,
 				70D24458E304CCBFEC625245 /* PlayHistoryContextTests.swift in Sources */,
 				1001E3736B229C3407049396 /* PlayHistoryStoreTests.swift in Sources */,
