@@ -150,6 +150,29 @@ final class AppModel {
     /// writes it only from `performRefresh`.
     var resolvedIsOwner = false
 
+    /// The last owner answer this install actually RESOLVED, remembered across launches.
+    ///
+    /// The offline-first seed cannot ask CloudKit — that round trip is exactly what it exists to
+    /// avoid — so it used to hard-code "not the owner". For a real owner that guarantees the
+    /// seed's merge differs from the refresh's, which forces the ~1.6-2.3 s rebuild on every
+    /// single launch. Remembering the answer lets the seed assume it and the refresh confirm it.
+    ///
+    /// SAFE BECAUSE IT IS ONLY EVER AN ASSUMPTION. It is written only from a genuine resolution
+    /// (never from a `nil`/undetermined one, so a non-owner can never acquire a `true`), the live
+    /// gate still runs every launch, and any disagreement forces the full rebuild. It changes
+    /// which catalog the seed shows for a few hundred milliseconds, never the final one.
+    private static let ownerMemoKey = "pdj.catalog.lastKnownIsOwner"
+    private var lastKnownIsOwner: Bool {
+        get { defaults.bool(forKey: Self.ownerMemoKey) }
+        set { defaults.set(newValue, forKey: Self.ownerMemoKey) }
+    }
+    /// Test seam: a private suite keeps a unit test from reading/writing the real preference.
+    @ObservationIgnored var defaults: UserDefaults = .standard
+    /// Test seam for the owner gate (CloudKit is untouchable under a fixture run).
+    @ObservationIgnored var ownerResolver: () async -> Bool? = { await OwnerIdentity.resolveIsOwner() }
+    /// What the seed ASSUMED, so the refresh can tell whether its real answer agrees.
+    @ObservationIgnored private var seededSupersede: Bool?
+
     /// Optional fixed loader (tests / fixtures). When nil, sources come from `settings`.
     private let loader: CatalogLoading?
     /// Settings drive the live multi-source catalog (set by the app at launch).
@@ -267,12 +290,12 @@ final class AppModel {
         let amLibSongs = appleMusicLibrary?.songs ?? []
         let amLibAlbums = appleMusicLibrary?.albums ?? []
         let amLibPlaylists = appleMusicLibrary?.playlists ?? []
-        // The cold-launch cache path NEVER supersedes. The supersede is owner-gated, and proving
-        // owner identity needs a CloudKit round-trip (`OwnerIdentity.isOwner()`) that must not
-        // block the first frame — the whole point of this instant offline-first seed. Fail closed
-        // (preserve every on-device library row); the `performRefresh` that always follows this
-        // seed resolves the real owner and applies the dedup for the owner moments later.
-        let amLibSupersedes = false
+        // The seed cannot prove owner identity — that needs a CloudKit round trip, and not
+        // blocking the first frame on it is the whole point of this path. So it ASSUMES the last
+        // answer this install resolved (see `lastKnownIsOwner`), which is `false` until one is
+        // resolved, i.e. the old fail-closed behaviour on a fresh install. The `performRefresh`
+        // that always follows resolves the real answer and rebuilds if it disagrees.
+        let amLibSupersedes = lastKnownIsOwner
         // Decode the caches ONCE and hand the decoded values to the refresh that follows — see
         // `seededIndexes`. Keyed by URL so a per-source 304 can reuse just that source.
         let decodedByURL: [String: IndexJSON] = await Task.detached(priority: .userInitiated) {
@@ -306,6 +329,7 @@ final class AppModel {
         // inputs this seed used (so the refresh can prove a rebuild would change nothing).
         seededIndexes = decodedByURL
         seededProvisionalSignature = provisionalSignature()
+        seededSupersede = amLibSupersedes
         assign(derived)
         applySupersede(discover: discoverPairs, imported: importedPairs,
                        discoverAlbums: discoverAlbumPairs, amLibrary: amLibPairs)
@@ -762,8 +786,10 @@ final class AppModel {
             // Consume the seed hand-off: whatever happens below, these must not outlive this
             // refresh (they are ~109k rows).
             let seedSignature = seededProvisionalSignature
+            let seedSupersede = seededSupersede
             seededIndexes = [:]
             seededProvisionalSignature = nil
+            seededSupersede = nil
             let albumEdits = edits?.doc.albums ?? [:]
             let songEdits = edits?.doc.songs ?? [:]
             let provisional = discoverAdds?.entries ?? []
@@ -782,7 +808,13 @@ final class AppModel {
             // no supersede), so a hybrid/public user NEVER loses their own library to the curator's
             // shared "Apple Music (Local)" rows. Awaited here (off the launch critical path) — not
             // in `seedFromCache` — so the CloudKit round-trip never blocks the first frame.
-            let amLibSupersedes = await OwnerIdentity.isOwner()
+            // Tri-state on purpose (see `OwnerIdentity.resolveIsOwner`). A `nil` means CloudKit
+            // could not be reached — holding the last KNOWN answer through that is what stops an
+            // offline launch from un-deduping a catalog the previous launch deduped. Only a real
+            // resolution is remembered, so a non-owner can never acquire a `true`.
+            let resolvedOwner = await ownerResolver()
+            let amLibSupersedes = resolvedOwner ?? lastKnownIsOwner
+            if let resolvedOwner { lastKnownIsOwner = resolvedOwner }
             resolvedIsOwner = amLibSupersedes    // cache for synchronous owner-gated read paths
             // SKIP THE SECOND BUILD. On the normal launch the seed has already merged, overlaid
             // and derived exactly this catalog from exactly these bytes — rebuilding it costs a
@@ -791,9 +823,11 @@ final class AppModel {
             //   • no source body changed (304 / offline fallback everywhere), AND
             //   • the seed's provisional sources (adds / imports / profile / AM library / edits)
             //     are unchanged, AND
-            //   • the owner gate agrees with the `false` the seed hard-coded — an OWNER really
-            //     does get a different merge (the supersede), so they still pay for one rebuild.
-            if hadData, !anyChanged, !amLibSupersedes,
+            //   • the owner answer the seed ASSUMED matches the one just resolved. Comparing the
+            //     two (rather than requiring `false`) is what lets the OWNER skip too: their seed
+            //     now assumes `true` from the remembered answer, so it already built the
+            //     superseded merge. A disagreement in EITHER direction still forces the rebuild.
+            if hadData, !anyChanged, seedSupersede == amLibSupersedes,
                let seedSignature, seedSignature == provisionalSignature() {
                 state = .loaded
                 return
