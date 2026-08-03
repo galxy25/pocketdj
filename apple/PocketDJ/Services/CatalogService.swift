@@ -23,6 +23,20 @@ struct CatalogService: Sendable {
     /// network/server failure we return the last-good disk cache instead of throwing — the caller
     /// (AppModel) renders from the disk cache instantly anyway, so a refresh can never blank it.
     func loadIndex() async throws -> IndexJSON {
+        try await load().index
+    }
+
+    /// The conditional refresh, reporting whether the body actually CHANGED — and able to skip
+    /// re-decoding when it didn't.
+    ///
+    /// On a 304 the bytes on disk are, by definition, the same bytes the offline-first seed
+    /// decoded moments earlier. Re-decoding them to produce an equal value costs ~640 ms for
+    /// this user's 49.9 MB Apple Music index alone, on every single launch, for nothing. Pass
+    /// the seed's already-decoded value as `reusing` and it is handed straight back.
+    ///
+    /// `changed == false` also lets the caller skip the whole derived rebuild — see
+    /// `AppModel.performRefresh`.
+    func load(reusing decoded: IndexJSON? = nil) async throws -> (index: IndexJSON, changed: Bool) {
         do {
             var request = URLRequest(url: url)
             // Drive caching ourselves (conditional GET) rather than leaning on URLCache, whose
@@ -40,8 +54,9 @@ struct CatalogService: Sendable {
             }
             // 304 Not Modified → the cache is current; serve it (must exist, since we only sent a
             // validator we stored next to a cached body).
-            if http.statusCode == 304, let cached = Self.loadCachedIndex(for: url) {
-                return cached
+            if http.statusCode == 304 {
+                if let decoded { return (decoded, false) }              // no re-decode
+                if let cached = Self.loadCachedIndex(for: url) { return (cached, false) }
             }
             guard (200..<300).contains(http.statusCode) else {
                 throw URLError(.init(rawValue: http.statusCode == 404 ? URLError.fileDoesNotExist.rawValue
@@ -53,11 +68,13 @@ struct CatalogService: Sendable {
             Self.writeCache(data, for: url,
                             validator: Validator(lastModified: http.value(forHTTPHeaderField: "Last-Modified"),
                                                  etag: http.value(forHTTPHeaderField: "ETag")))
-            return index
+            return (index, true)
         } catch {
             // OFFLINE / server-down FALLBACK: serve the last good index for this source from
             // disk so the catalog still opens with no network. Re-throw only if there's no cache.
-            if let cached = Self.loadCachedIndex(for: url) { return cached }
+            // `changed: false` — an offline fallback is the same catalog the seed already has.
+            if let decoded { return (decoded, false) }
+            if let cached = Self.loadCachedIndex(for: url) { return (cached, false) }
             throw error
         }
     }

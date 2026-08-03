@@ -1121,6 +1121,9 @@ struct PocketDJApp: App {
                         // Last-known collection subtitles, so the next cold launch shows real
                         // counts instead of "0 songs" while the ~50 MB catalog decodes.
                         collections.flushStatsCache()
+                        // …and the Shared tab's rows, so it shows the user's source playlists
+                        // rather than "No source playlists" for that same window.
+                        app.sourcePlaylistsCache.flushIfNeeded()
                         // Playback session: land the freshest position synchronously before a
                         // possible suspension→kill (the same race the two flushes above close).
                         playbackSession.flush()
