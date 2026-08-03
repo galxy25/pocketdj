@@ -220,6 +220,8 @@ struct RootView: View {
             studioMic.recoverOrphans()
             // History demo seed (PDJ_SEED_HISTORY) — populate the timeline for UI tests / demos.
             playHistory.seedDemoIfRequested()
+            // Finish any download the user asked for whose rip landed while the app was closed.
+            Task { await burns.drainPendingAfterRip() }
             // Collection-activity seed (PDJ_SEED_ACTIVITY) — the three row-resolution states.
             collectionActivity.seedFixtureIfRequested()
             // iCloud session sync: pull any NEWER cloud session documents BEFORE the two

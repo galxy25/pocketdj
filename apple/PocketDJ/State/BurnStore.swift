@@ -74,6 +74,20 @@ final class BurnStore {
     struct Document: Codable {
         var schemaVersion: Int = burnSchemaVersion
         var items: [BurnItem] = []
+        /// Songs the user asked to download that weren't ripped yet — the rip was started and the
+        /// burn owes them. ADDITIVE-OPTIONAL so an older document decodes unchanged.
+        var pendingAfterRip: [PendingBurn]? = nil
+    }
+
+    /// A download the user asked for before the song existed as a file. Persisted, because the rip
+    /// can take minutes and the user will leave the screen — and the app — while it runs. Carrying
+    /// title/artist means the burn needs no catalog lookup when it finally fires.
+    struct PendingBurn: Codable, Equatable, Identifiable {
+        var id: String { songId }
+        var songId: String
+        var title: String
+        var artist: String
+        var requestedAtMs: Double
     }
 
     /// Bulk progress for the collection UI ({done,total,label}); nil when idle.
@@ -144,6 +158,8 @@ final class BurnStore {
         if let data = try? Data(contentsOf: fileURL),
            let doc = try? JSONDecoder().decode(Document.self, from: data) {
             items = Dictionary(doc.items.map { ($0.songId, $0) }, uniquingKeysWith: { first, _ in first })
+            pendingAfterRip = Dictionary((doc.pendingAfterRip ?? []).map { ($0.songId, $0) },
+                                         uniquingKeysWith: { first, _ in first })
         }
         // Wire the coordinator's finalize hooks back to this store (the delegate calls these on
         // the main actor when a background download finishes / fails). `wireTransfers()` also
@@ -1457,8 +1473,54 @@ final class BurnStore {
         return out
     }
 
+    /// Downloads waiting on a rip, keyed by songId. Drives the row's "Ripping…/Waiting" state and
+    /// survives a force-quit.
+    private(set) var pendingAfterRip: [String: PendingBurn] = [:]
+
+    /// The user tapped ⤓ on a song that has no file yet. Remember the intent durably, then let the
+    /// rip run; `drainPendingAfterRip` finishes the job whenever the file appears — this pass, or
+    /// three launches from now.
+    func burnWhenRipped(songId: String, title: String, artist: String,
+                        nowMs: Double = Date().timeIntervalSince1970 * 1000) {
+        guard pendingAfterRip[songId] == nil else { return }
+        pendingAfterRip[songId] = PendingBurn(songId: songId, title: title, artist: artist,
+                                              requestedAtMs: nowMs)
+        save()
+    }
+
+    func cancelPendingBurn(songId: String) {
+        guard pendingAfterRip.removeValue(forKey: songId) != nil else { return }
+        save()
+    }
+
+    /// Is this song waiting on (or in the middle of) a requested download?
+    func isAwaitingBurn(_ songId: String) -> Bool { pendingAfterRip[songId] != nil }
+
+    /// Burn every pending song whose rip has since landed. Safe to call often — the ones that
+    /// aren't ready yet simply stay pending. Called when a rip reports ready and at launch, so a
+    /// rip that completed while the app was closed still gets its download.
+    @discardableResult
+    func drainPendingAfterRip() async -> Int {
+        let ready = pendingAfterRip.values.filter { rips.cachedURL($0.songId) != nil }
+        guard !ready.isEmpty else { return 0 }
+        var burned = 0
+        for p in ready {
+            let r = await burn([(id: p.songId, title: p.title, artist: p.artist)])
+            // Only clear the intent when the file really landed. A transient failure (offline,
+            // folder briefly unavailable) keeps it queued for the next drain rather than silently
+            // dropping a download the user asked for.
+            if r.burned > 0 {
+                pendingAfterRip.removeValue(forKey: p.songId)
+                burned += 1
+            }
+        }
+        save()
+        return burned
+    }
+
     private func save() {
-        let doc = Document(items: items.values.sorted { $0.downloadedAt < $1.downloadedAt })
+        let doc = Document(items: items.values.sorted { $0.downloadedAt < $1.downloadedAt },
+                           pendingAfterRip: pendingAfterRip.values.sorted { $0.requestedAtMs < $1.requestedAtMs })
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }
     }
 

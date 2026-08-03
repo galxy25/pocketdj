@@ -493,6 +493,9 @@ struct RowTransport: View {
     }
     /// A burned local file exists for this song (device-mode playable with no server).
     private var hasBurnedFile: Bool { burns.localURL(forSong: song.id) != nil }
+    /// The user asked for this download and it hasn't landed yet — persisted in `BurnStore`, so the
+    /// row shows the same truth after a relaunch as it did the moment they tapped.
+    private var awaitingBurn: Bool { burns.isAwaitingBurn(song.id) }
     /// Actionable when already ripped, there's a (configured) server to rip it, or a burned
     /// local file is present (so device mode can play it even with no rip server). Gates the
     /// DOWNLOAD/stemify halves — streaming can't satisfy those.
@@ -519,10 +522,22 @@ struct RowTransport: View {
             if let job = activeJob {
                 HStack(spacing: 4) {
                     ProgressView().controlSize(.mini)
-                    Text(RowTransport.phaseLabel(job))
+                    // While a download is waiting on this rip, say what it's FOR — "Ripping…" alone
+                    // doesn't tell the user their ⤓ was heard.
+                    Text(awaitingBurn ? "\(RowTransport.phaseLabel(job)) → download"
+                                      : RowTransport.phaseLabel(job))
                         .font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
                 }
                 .accessibilityIdentifier("rip-status-\(song.id)")
+            } else if awaitingBurn {
+                // Rip finished (or hasn't reported a phase yet) and the burn is the outstanding
+                // half. Durable: this state comes from the STORE, not view state, so it survives
+                // scrolling the row away, leaving the screen, and relaunching the app.
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.mini)
+                    Text("Downloading…").font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                }
+                .accessibilityIdentifier("burn-status-\(song.id)")
             } else {
                 HStack(spacing: 2) {
                     Button { doPlay() } label: {
@@ -672,6 +687,22 @@ struct RowTransport: View {
     /// folder from Settings when one is set, the app-managed burns directory when not — so a
     /// download now just lands there and the row flips to a checkmark.
     private func doDownload() {
+        // NOTHING TO BURN YET ⇒ RIP IT, don't refuse. Tapping ⤓ on a track that hasn't been ripped
+        // used to answer "there's nothing to save", which is a chore disguised as an error: the
+        // user asked for the song, so get the song. The intent is recorded durably and the rip's
+        // own phases render in this row; the burn finishes on its own whenever the file lands,
+        // even if the app was closed in between.
+        if !cached, burns.localURL(forSong: song.id) == nil {
+            burns.burnWhenRipped(songId: song.id, title: song.title, artist: song.artist)
+            Task {
+                _ = await rips.requestRip(songId: song.id, title: song.title, artist: song.artist,
+                                          appleMusicId: app.songsById[song.id]?.appleMusicId,
+                                          lengthMs: app.songsById[song.id]?.length)
+                // Already cached (a rip that finished elsewhere) ⇒ burn immediately.
+                await burns.drainPendingAfterRip()
+            }
+            return
+        }
         busy = .download
         Task {
             let r = await burns.burn([(id: song.id, title: song.title, artist: song.artist)])
@@ -681,8 +712,6 @@ struct RowTransport: View {
                 alertMessage = "There isn’t enough space to save “\(song.title)”."
             } else if r.folderUnavailable {
                 alertMessage = "Your burnt-music folder couldn’t be written to. Check it in Settings — the download wasn’t saved."
-            } else if r.notRipped > 0 {
-                alertMessage = "“\(song.title)” hasn’t been ripped yet, so there’s nothing to save."
             } else if r.failed > 0 {
                 alertMessage = "“\(song.title)” couldn’t be saved."
             }

@@ -473,6 +473,10 @@ struct PocketDJApp: App {
             playHistory.record(songId: songId, title: title, artist: artist, context: context)
         }
         rips.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
+        // A download asked for before the song had a file: the rip has now landed, so finish the
+        // burn. Fires without the user returning to the row — that is what makes ⤓ on an unripped
+        // track a real request rather than an error message.
+        rips.onRipReady = { [weak burns] _ in Task { await burns?.drainPendingAfterRip() } }
         coordinator.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
         mix.onSongPlayed = { [weak playStats, weak playHistory, weak mix, weak mixSessions, weak app] songId in
             playStats?.notePlayed(songId)
