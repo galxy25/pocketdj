@@ -264,6 +264,18 @@ final class SettingsStore {
     /// `amAutoSyncMinutes` local time (launch/foreground/periodic catch-up; a missed slot runs
     /// at the next opportunity).
     var amAutoSyncEnabled: Bool
+    /// Should a sync IMPORT Apple Music playlists that have no local counterpart?
+    ///
+    /// OFF by default, and deliberately so. The pull used to import EVERY Apple Music library
+    /// playlist that wasn't already present locally, which meant an automatic 4:20 pass could copy
+    /// the user's whole Apple Music library onto the device as PocketDJ playlists — including ones
+    /// they never asked for. Levi 2026-08-02: "I only wanted to sync a playlist that I've added and
+    /// that [is] sourced from an Apple Music playlist. I don't want it to automatically sync over
+    /// every playlist in Apple Music."
+    ///
+    /// With this off, sync only touches collections the user EXPLICITLY linked — converted pockets
+    /// and duplicated playlists. Turning it on restores the import-everything behaviour.
+    var amImportNewPlaylists: Bool
     /// Minutes past local midnight for the daily auto-sync (default 4:20 PM = 980). Clamped.
     var amAutoSyncMinutes: Int {
         didSet {
@@ -365,6 +377,7 @@ final class SettingsStore {
         self.favoritesTwoWaySync = data.favoritesTwoWaySync ?? false
         self.applyOwnerFavoritesSeed = data.applyOwnerFavoritesSeed ?? false
         self.amAutoSyncEnabled = data.amAutoSyncEnabled ?? true
+        self.amImportNewPlaylists = data.amImportNewPlaylists ?? false
         self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
         self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -524,6 +537,7 @@ final class SettingsStore {
             favoritesTwoWaySync: favoritesTwoWaySync,
             applyOwnerFavoritesSeed: applyOwnerFavoritesSeed,
             amAutoSyncEnabled: amAutoSyncEnabled,
+            amImportNewPlaylists: amImportNewPlaylists,
             amAutoSyncMinutes: amAutoSyncMinutes,
             lastAMAutoSyncAtMs: lastAMAutoSyncAtMs)
         if let encoded = try? JSONEncoder().encode(snapshot) {
@@ -584,6 +598,7 @@ final class SettingsStore {
         favoritesTwoWaySync = d.favoritesTwoWaySync ?? false
         applyOwnerFavoritesSeed = d.applyOwnerFavoritesSeed ?? false
         amAutoSyncEnabled = d.amAutoSyncEnabled ?? true
+        amImportNewPlaylists = d.amImportNewPlaylists ?? false
         amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
         lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -697,6 +712,7 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (coalesced to TRUE — daily auto-sync is on unless
     /// turned off).
     var amAutoSyncEnabled: Bool?
+    var amImportNewPlaylists: Bool?
     /// Optional so older blobs still decode (coalesced to 980 = 4:20 PM local).
     var amAutoSyncMinutes: Int?
     /// Optional — epoch ms of the last auto-sync claim.
@@ -750,6 +766,7 @@ struct SettingsData: Codable {
         favoritesTwoWaySync: nil,
         applyOwnerFavoritesSeed: nil,
         amAutoSyncEnabled: nil,
+        amImportNewPlaylists: nil,
         amAutoSyncMinutes: nil,
         lastAMAutoSyncAtMs: nil)
 }

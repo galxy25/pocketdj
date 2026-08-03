@@ -488,10 +488,12 @@ struct AppleMusicSettingsView: View {
             }
             Toggle("Converted collections follow their sources", isOn: $settings.syncConvertedPockets)
                 .accessibilityIdentifier("collections-source-sync")
+            Toggle("Import new Apple Music playlists", isOn: $settings.amImportNewPlaylists)
+                .accessibilityIdentifier("am-import-new-playlists")
         } header: {
             Text("Automatic")
         } footer: {
-            Text("Daily sync runs the full “Sync collections” pass at the chosen time — when PocketDJ is open, or the next time you return after it. \(linkedCount) linked item\(linkedCount == 1 ? "" : "s") also follow their source playlists on every catalog refresh while the toggle is on; “Get from Apple Music” runs a pass immediately. Freeze a single item from its detail-view ▸ menu.")
+            Text("Daily sync runs the full “Sync collections” pass at the chosen time — when PocketDJ is open, or the next time you return after it. \(linkedCount) linked item\(linkedCount == 1 ? "" : "s") also follow their source playlists on every catalog refresh while the toggle is on; “Get from Apple Music” runs a pass immediately. Freeze a single item from its detail-view ▸ menu.\n\nOff, sync only touches collections you converted or duplicated yourself — a playlist that lives only in Apple Music is left there. On, every Apple Music playlist without a copy here is imported as a PocketDJ playlist.")
         }
     }
 
