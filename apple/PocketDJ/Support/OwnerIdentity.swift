@@ -86,7 +86,24 @@ enum OwnerIdentity {
     /// True only when this install's hash is in the shipped allowlist. Every failure mode
     /// — unknown hash, empty allowlist, CloudKit unavailable — returns false.
     static func isOwner() async -> Bool {
-        guard !Config.ownerICloudHashes.isEmpty, let h = await currentHash() else { return false }
+        await resolveIsOwner() ?? false
+    }
+
+    /// The same gate, but able to say **"I don't know"**.
+    ///
+    /// `isOwner()` collapses "this is definitely not the owner" and "I couldn't reach CloudKit"
+    /// into the same `false`, which is right for the favorites gate — the dangerous direction
+    /// there is a stranger being mistaken for the owner. It is NOT right for the catalog merge,
+    /// where the same collapse means an OFFLINE launch decides "not the owner" and un-dedupes a
+    /// catalog the previous launch had deduped, making rows visibly appear.
+    ///
+    /// So: `false` = determined (empty allowlist, or a hash that isn't on it), `nil` = could not
+    /// determine (no iCloud account, offline, CloudKit error, fixture run). A caller that has a
+    /// last-known answer can hold it through a `nil`; one that doesn't still falls closed.
+    /// `isOwner()` above is exactly `?? false`, so the favorites gate is byte-for-byte unchanged.
+    static func resolveIsOwner() async -> Bool? {
+        guard !Config.ownerICloudHashes.isEmpty else { return false }   // nobody is the owner
+        guard let h = await currentHash() else { return nil }           // undetermined
         return Config.ownerICloudHashes.contains(h)
     }
 
