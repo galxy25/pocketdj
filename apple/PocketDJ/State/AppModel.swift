@@ -111,6 +111,28 @@ final class AppModel {
     /// a view's body must not invalidate that body.
     @ObservationIgnored private var recentlyAddedMemo: (key: String, ids: [String])?
 
+    /// The indexes the offline-first seed decoded, keyed by source URL, kept so the conditional
+    /// refresh that always follows can REUSE them on a 304 instead of decoding the same ~61 MB
+    /// of JSON a second time. Cleared once consumed — this is a launch-window hand-off, not a
+    /// cache (holding ~109k rows alive for the process lifetime would be a real memory cost).
+    @ObservationIgnored private var seededIndexes: [String: IndexJSON] = [:]
+
+    /// A cheap signature of everything the seed merged BESIDES the URL catalogs. If this is
+    /// unchanged at refresh time, and no source changed, and the owner gate agrees with the
+    /// seed's `false`, then the refresh would rebuild a byte-identical catalog — so it doesn't.
+    @ObservationIgnored private var seededProvisionalSignature: String?
+
+    private func provisionalSignature() -> String {
+        [
+            "\(discoverAdds?.entries.count ?? 0)", "\(discoverAdds?.albums.count ?? 0)",
+            "\(importedSongs?.songs.count ?? 0)", "\(importedSongs?.albums.count ?? 0)",
+            "\(profileSource?.songs.count ?? 0)", profileSource?.sourceName ?? "",
+            "\(appleMusicLibrary?.songs.count ?? 0)", "\(appleMusicLibrary?.albums.count ?? 0)",
+            "\(appleMusicLibrary?.playlists.count ?? 0)",
+            "\(edits?.doc.albums.count ?? 0)", "\(edits?.doc.songs.count ?? 0)",
+        ].joined(separator: "|")
+    }
+
     /// Single-flight guard for `loadIfNeeded`. The seed/refresh now suspend (off-main build), so
     /// `state` is no longer claimed synchronously before the first `await` — this flag stops two
     /// concurrent callers (a multi-window RootView `.task` + an App-Intent launch) from both passing
@@ -158,7 +180,26 @@ final class AppModel {
     /// launch to log a `.catalogRemove` History event. The catalog eject itself is handled inline.
     var onCatalogRemove: ((_ itemId: String, _ itemTitle: String) -> Void)?
 
-    init(loader: CatalogLoading? = nil) {
+    /// Last-known "From your sources" rows, so the Shared tab paints its real contents before
+    /// the ~61 MB catalog has decoded instead of showing "No source playlists". @ObservationIgnored:
+    /// recording into it happens inside `assign`, which is already publishing.
+    @ObservationIgnored let sourcePlaylistsCache: SourcePlaylistsCache
+
+    /// `sourcePlaylistsCache` defaults to nil and is built INSIDE the init rather than as a
+    /// default argument: default arguments are evaluated in a nonisolated context, and the cache
+    /// is `@MainActor`.
+    ///
+    /// `seedFromCache` is an explicit seam, not an inference. It defaults to "only a real,
+    /// loader-less model paints remembered rows" — a fixture-backed model must start clean, or
+    /// every test would inherit whatever the developer's app last cached into Application
+    /// Support. It is a parameter rather than a hard-coded `loader == nil` check because the
+    /// test scheme sets PDJ_USE_FIXTURE for the whole target, which would otherwise leave the
+    /// production branch permanently unreachable from tests.
+    init(loader: CatalogLoading? = nil,
+         sourcePlaylistsCache: SourcePlaylistsCache? = nil,
+         seedFromCache: Bool? = nil) {
+        let cache = sourcePlaylistsCache ?? SourcePlaylistsCache()
+        self.sourcePlaylistsCache = cache
         if let loader {
             self.loader = loader
         } else if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
@@ -166,6 +207,9 @@ final class AppModel {
         } else {
             self.loader = nil
         }
+        // Paint the remembered rows immediately. A real catalog assign replaces them wholesale;
+        // until then this is the difference between the user's source playlists and an empty state.
+        if seedFromCache ?? (self.loader == nil) { indexPlaylists = cache.snapshot() }
     }
 
     var sourceName: String { manifest?.sourceName ?? "Collection" }
@@ -229,8 +273,17 @@ final class AppModel {
         // (preserve every on-device library row); the `performRefresh` that always follows this
         // seed resolves the real owner and applies the dedup for the owner moments later.
         let amLibSupersedes = false
+        // Decode the caches ONCE and hand the decoded values to the refresh that follows — see
+        // `seededIndexes`. Keyed by URL so a per-source 304 can reuse just that source.
+        let decodedByURL: [String: IndexJSON] = await Task.detached(priority: .userInitiated) {
+            var out: [String: IndexJSON] = [:]
+            for url in urls {
+                if let idx = CatalogService.loadCachedIndex(for: url) { out[url.absoluteString] = idx }
+            }
+            return out
+        }.value
         let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)])? in
-            let cached = urls.compactMap { CatalogService.loadCachedIndex(for: $0) }
+            let cached = urls.compactMap { decodedByURL[$0.absoluteString] }
             // Seed when ANY content exists: cached URL catalogs OR the injection sources — a
             // public user with zero URL sources still gets their own library/adds/imports on
             // screen instantly (the audit's confirmed-critical fix; injections must never go
@@ -249,6 +302,10 @@ final class AppModel {
                     discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs)
         }.value
         guard let (derived, discoverPairs, importedPairs, discoverAlbumPairs, amLibPairs) = built else { return false }
+        // Hand off to the refresh: the decoded indexes (so a 304 skips re-decoding) and the
+        // inputs this seed used (so the refresh can prove a rebuild would change nothing).
+        seededIndexes = decodedByURL
+        seededProvisionalSignature = provisionalSignature()
         assign(derived)
         applySupersede(discover: discoverPairs, imported: importedPairs,
                        discoverAlbums: discoverAlbumPairs, amLibrary: amLibPairs)
@@ -701,7 +758,12 @@ final class AppModel {
     /// is never dropped, and we only surface `.failed` when there was nothing to show.
     private func performRefresh(hadData: Bool) async {
         do {
-            let indexes = try await fetchIndexes()
+            let (indexes, anyChanged) = try await fetchIndexes()
+            // Consume the seed hand-off: whatever happens below, these must not outlive this
+            // refresh (they are ~109k rows).
+            let seedSignature = seededProvisionalSignature
+            seededIndexes = [:]
+            seededProvisionalSignature = nil
             let albumEdits = edits?.doc.albums ?? [:]
             let songEdits = edits?.doc.songs ?? [:]
             let provisional = discoverAdds?.entries ?? []
@@ -722,6 +784,20 @@ final class AppModel {
             // in `seedFromCache` — so the CloudKit round-trip never blocks the first frame.
             let amLibSupersedes = await OwnerIdentity.isOwner()
             resolvedIsOwner = amLibSupersedes    // cache for synchronous owner-gated read paths
+            // SKIP THE SECOND BUILD. On the normal launch the seed has already merged, overlaid
+            // and derived exactly this catalog from exactly these bytes — rebuilding it costs a
+            // ~1.6-2.3 s detached pass and produces an equal value. It is only skippable when
+            // every input matches what the seed used:
+            //   • no source body changed (304 / offline fallback everywhere), AND
+            //   • the seed's provisional sources (adds / imports / profile / AM library / edits)
+            //     are unchanged, AND
+            //   • the owner gate agrees with the `false` the seed hard-coded — an OWNER really
+            //     does get a different merge (the supersede), so they still pay for one rebuild.
+            if hadData, !anyChanged, !amLibSupersedes,
+               let seedSignature, seedSignature == provisionalSignature() {
+                state = .loaded
+                return
+            }
             // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
             // OFF the main actor; only the finished value is assigned back on `@MainActor`.
             let built = await Task.detached(priority: .userInitiated) { () -> (Derived, [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)], [(from: String, to: String)]) in
@@ -883,6 +959,9 @@ final class AppModel {
     private func assign(_ d: Derived) {
         manifest = d.manifest
         indexPlaylists = d.indexPlaylists
+        // Remember them for the next cold launch. `record` ignores an empty set, so a build that
+        // legitimately produced no source playlists never erases the last good snapshot.
+        sourcePlaylistsCache.record(d.indexPlaylists)
         albumSourceById = d.albumSourceById
         songSourceById = d.songSourceById
         availableSources = d.availableSources
@@ -1017,16 +1096,24 @@ final class AppModel {
     /// distinct source names (first-seen order).
     typealias SourceTags = (albums: [String: String], songs: [String: String], names: [String])
 
-    private func fetchIndexes() async throws -> [IndexJSON] {
-        if let loader { return [try await loader.loadIndex()] }
+    /// Returns the merged source indexes plus whether ANY of them actually changed. A refresh in
+    /// which nothing changed can reuse the seed's work wholesale — see `performRefresh`.
+    private func fetchIndexes() async throws -> (indexes: [IndexJSON], anyChanged: Bool) {
+        if let loader { return ([try await loader.loadIndex()], true) }
         let urls = settings?.enabledSourceURLs ?? [Config.indexURL]
         var indexes: [IndexJSON] = []
+        var anyChanged = false
         var firstError: Error?
         for url in urls {
             do {
                 // CatalogService does a CONDITIONAL GET and falls back to ITS OWN per-URL disk
                 // cache when offline/unchanged — so a previously-loaded source never throws here.
-                indexes.append(try await CatalogService(url: url).loadIndex())
+                // Handing it the seed's decoded value means a 304 costs a round trip, not a
+                // ~640 ms re-decode of the same bytes.
+                let loaded = try await CatalogService(url: url)
+                    .load(reusing: seededIndexes[url.absoluteString])
+                indexes.append(loaded.index)
+                if loaded.changed { anyChanged = true }
             } catch {
                 // OFFLINE GRACEFUL DEGRADATION: a source with no cache (never loaded online) +
                 // no network is SKIPPED so the OTHER sources' cached catalogs still open. We
@@ -1041,10 +1128,13 @@ final class AppModel {
         // is reserved for "sources configured but EVERY one failed", which must not blank an
         // already-working catalog. (The public-user audit's confirmed-critical fix.)
         guard !indexes.isEmpty else {
-            if urls.isEmpty { return [] }
+            if urls.isEmpty { return ([], false) }
             throw firstError ?? URLError(.cannotLoadFromNetwork)
         }
-        return indexes
+        // A source that FAILED (and so contributed nothing) must not read as "unchanged" —
+        // the set of indexes differs from the seed's, so the rebuild has to run.
+        if indexes.count != urls.count { anyChanged = true }
+        return (indexes, anyChanged)
     }
 
     /// Tag each album/song id with the name of the FIRST source that carries it —
