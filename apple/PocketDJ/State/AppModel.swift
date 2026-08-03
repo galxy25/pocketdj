@@ -99,6 +99,18 @@ final class AppModel {
     @ObservationIgnored private var browseResultsOrder: [String] = []
     private static let browseResultsCacheCap = 6
 
+    /// Memo for `recentlyAddedSongIds` — the single most expensive thing the Collections tab
+    /// does. Deriving it walks the WHOLE catalog (~96k songs, ~93k of them carrying
+    /// `dateAdded`) and then selects the newest `limit`; `PlaylistsView` asks for it TWICE per
+    /// body evaluation (the empty-state gate, then the row), and SwiftUI evaluates that body
+    /// several times per navigation. Measured on an M-series simulator at real scale: 175 ms a
+    /// call, so ~350 ms per body pass — multiple seconds across a navigation on an iPhone.
+    /// Keyed by `recentlyAddedKey(limit:)`, which folds in `catalogRevision` plus a cheap
+    /// signature of the four add-stores, so any real add/remove still re-derives.
+    /// @ObservationIgnored for the same reason as `browseResultsCache`: filling it from inside
+    /// a view's body must not invalidate that body.
+    @ObservationIgnored private var recentlyAddedMemo: (key: String, ids: [String])?
+
     /// Single-flight guard for `loadIfNeeded`. The seed/refresh now suspend (off-main build), so
     /// `state` is no longer claimed synchronously before the first `await` — this flag stops two
     /// concurrent callers (a multi-window RootView `.task` + an App-Intent launch) from both passing
@@ -539,10 +551,80 @@ final class AppModel {
     /// `addedAtMs` (Discover ＋Add / imports / custom audio), deduped by id (newest add-time wins)
     /// and filtered to songs still resolvable in the live catalog (removed items are already ejected,
     /// so they drop out here automatically). Drives the "Recently added" virtual playlist; `limit`
-    /// comes from Settings ▸ Collections (`SettingsStore.defaultRecentlyAddedCount`). Recomputed on
-    /// read so an @Observable view re-derives it as adds/removes land.
+    /// comes from Settings ▸ Collections (`SettingsStore.defaultRecentlyAddedCount`).
+    ///
+    /// MEMOIZED (was: "recomputed on read"). Deriving this walks the whole catalog and selects
+    /// the newest `limit` of ~93k dated rows — 175 ms at real scale on an M-series simulator,
+    /// several times that on an iPhone. `PlaylistsView` reads it twice per body evaluation and
+    /// SwiftUI evaluates that body repeatedly across a navigation, which is what made the
+    /// Collections tab feel like it hung. The memo key folds in `catalogRevision` and a
+    /// signature of the four add-stores, so a real add/remove still re-derives; only redundant
+    /// re-reads of an unchanged input are served from cache.
     func recentlyAddedSongIds(limit: Int) -> [String] {
         guard limit > 0 else { return [] }
+        let key = recentlyAddedKey(limit: limit)
+        if let memo = recentlyAddedMemo, memo.key == key { return memo.ids }
+        let ids = computeRecentlyAddedSongIds(limit: limit)
+        recentlyAddedMemo = (key, ids)
+        return ids
+    }
+
+    /// Cheap change-signature for the memo above. `catalogRevision` covers `songsById` /
+    /// `songSourceById` wholesale (it is bumped by every `assign`), and each add-store
+    /// contributes count + newest timestamp — an add or a remove moves one or both. Add-times
+    /// are stamped once at add time and never edited in place, so this cannot go stale in
+    /// practice; all four stores are small (user ＋Adds / imports / recordings), so building
+    /// the signature is negligible next to the 93k-row derivation it guards.
+    private func recentlyAddedKey(limit: Int) -> String {
+        func sig<S: Sequence>(_ xs: S, _ at: (S.Element) -> Double) -> String {
+            var n = 0, newest = 0.0
+            for x in xs { n += 1; newest = max(newest, at(x)) }
+            return "\(n):\(newest)"
+        }
+        let filterToOwnLibrary = settings != nil && !resolvedIsOwner
+        return [
+            "\(catalogRevision)", "\(limit)", "\(filterToOwnLibrary)",
+            sig(appleMusicLibrary?.supersededAddedAt ?? [:]) { $0.value },
+            sig(discoverAdds?.entries ?? []) { $0.addedAtMs },
+            sig(importedSongs?.songs ?? []) { $0.addedAtMs },
+            sig(profileSource?.songs ?? []) { $0.addedAtMs },
+        ].joined(separator: "|")
+    }
+
+    /// Newest-first selection of the top `limit` add-times WITHOUT sorting the whole set.
+    /// `.sorted()` over ~93k entries is ~1.5M comparisons to keep 3,650 of them; this keeps a
+    /// buffer of at most 2·limit, sorting and trimming only when it fills, so the work is O(n)
+    /// amortized plus a handful of O(limit log limit) trims. Ties break on id (descending) so
+    /// the row order is DETERMINISTIC — the old full sort inherited Swift's unstable sort over
+    /// a dictionary's arbitrary iteration order, which let equal-timestamp rows shuffle between
+    /// reads.
+    private static func newestFirst(_ addedAt: [String: Double], limit: Int,
+                                    isResolvable: (String) -> Bool) -> [String] {
+        // Strictly-newer comparison, id-tiebroken.
+        func newer(_ a: (id: String, at: Double), _ b: (id: String, at: Double)) -> Bool {
+            a.at != b.at ? a.at > b.at : a.id > b.id
+        }
+        var buf: [(id: String, at: Double)] = []
+        buf.reserveCapacity(limit * 2)
+        var cutoff: (id: String, at: Double)?     // weakest entry currently kept (nil until full)
+
+        for (id, at) in addedAt {
+            let cand = (id: id, at: at)
+            if let cutoff, !newer(cand, cutoff) { continue }   // can't displace anything
+            guard isResolvable(id) else { continue }
+            buf.append(cand)
+            if buf.count >= limit * 2 {
+                buf.sort(by: newer)
+                buf.removeLast(buf.count - limit)
+                cutoff = buf[limit - 1]
+            }
+        }
+        buf.sort(by: newer)
+        if buf.count > limit { buf.removeLast(buf.count - limit) }
+        return buf.map(\.id)
+    }
+
+    private func computeRecentlyAddedSongIds(limit: Int) -> [String] {
         var addedAt: [String: Double] = [:]
         // NON-OWNER scope (integrity audit): catalog `dateAdded` rows from shared URL catalogs are
         // the CATALOG OWNER's library history, not this user's — for a non-owner count only rows
@@ -566,11 +648,30 @@ final class AppModel {
         for e in discoverAdds?.entries ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
         for e in importedSongs?.songs ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
         for e in profileSource?.songs ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
-        return addedAt
-            .filter { songsById[$0.key] != nil }
-            .sorted { $0.value > $1.value }
-            .prefix(limit)
-            .map(\.key)
+        return Self.newestFirst(addedAt, limit: limit) { songsById[$0] != nil }
+    }
+
+    /// Is there ANYTHING in the "Recently added" list? The Collections tab's empty-state gate
+    /// asks only this, and used to answer it by building the whole 3,650-id playlist. Short-
+    /// circuits on the first dated row (so it is O(1) for any real library) and never touches
+    /// the memo. Mirrors `computeRecentlyAddedSongIds`'s sources and owner scoping exactly — if
+    /// that gains a source, this must too.
+    func hasRecentlyAddedItems(limit: Int) -> Bool {
+        guard limit > 0 else { return false }
+        if let memo = recentlyAddedMemo, memo.key == recentlyAddedKey(limit: limit) {
+            return !memo.ids.isEmpty
+        }
+        let filterToOwnLibrary = settings != nil && !resolvedIsOwner
+        for (id, song) in songsById {
+            guard let d = song.dateAdded, d > 0 else { continue }
+            if filterToOwnLibrary, songSourceById[id] != AppleMusicLibraryStore.sourceName { continue }
+            return true
+        }
+        if (appleMusicLibrary?.supersededAddedAt ?? [:]).contains(where: { songsById[$0.key] != nil }) { return true }
+        if (discoverAdds?.entries ?? []).contains(where: { songsById[$0.songId] != nil }) { return true }
+        if (importedSongs?.songs ?? []).contains(where: { songsById[$0.songId] != nil }) { return true }
+        if (profileSource?.songs ?? []).contains(where: { songsById[$0.songId] != nil }) { return true }
+        return false
     }
 
     /// The synthetic "Recently added" `SourcePlaylist` (nil when there are no adds) — a read-only

@@ -47,6 +47,12 @@ struct NowPlayingPanel: View {
     @State private var results: SearchResults = .empty
     #if os(iOS)
     @State private var editMode: EditMode = .inactive
+    /// Windowed Up Next (see `RowWindow`). Shuffling a large collection queues thousands of
+    /// rows, and this panel appears as a direct result — so an unwindowed Up Next made the
+    /// whole panel construct a row (each with an eagerly-built 4-item context menu) per queued
+    /// track before the tap finished. That, not the queue build itself, was the multi-second
+    /// wait after Shuffle.
+    @State private var upNextShown = RowWindow.page
     #endif
 
     struct SearchResults: Equatable {
@@ -559,7 +565,9 @@ struct NowPlayingPanel: View {
         // uid-verified in SetlistPlayer; the a11y ids stay positional for tests.
         let upcoming = sequencer.upcoming
         Section {
-            ForEach(Array(upcoming.enumerated()), id: \.element.uid) { offset, item in
+            // WINDOWED: `prefix` keeps offsets identical to the full queue's, so the
+            // positional `onMove`/`onDelete` below (and the positional a11y ids) stay correct.
+            ForEach(Array(upcoming.prefix(upNextShown).enumerated()), id: \.element.uid) { offset, item in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(item.title).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
@@ -605,6 +613,8 @@ struct NowPlayingPanel: View {
                     upcoming.indices.contains($0) ? upcoming[$0].uid : nil
                 }))
             }
+            RowWindowSentinel(total: upcoming.count, shown: $upNextShown)
+                .listRowBackground(Theme.bg)
         } header: {
             HStack {
                 Text("Up next (\(sequencer.upcoming.count))")

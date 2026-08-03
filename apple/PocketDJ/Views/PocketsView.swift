@@ -90,7 +90,7 @@ struct PocketDetailView: View {
         List {
             if let pocket {
                 Section {
-                    let stats = collections.catalog().stats(forPocket: pocketId)
+                    let stats = collections.stats(forPocket: pocketId)
                     HStack(spacing: 6) {
                         Image(systemName: "rectangle.stack").foregroundStyle(Theme.accent)
                         Text(stats.summary).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)

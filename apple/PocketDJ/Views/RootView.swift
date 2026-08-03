@@ -224,6 +224,14 @@ struct RootView: View {
             Task { await burns.drainPendingAfterRip() }
             // Collection-activity seed (PDJ_SEED_ACTIVITY) — the three row-resolution states.
             collectionActivity.seedFixtureIfRequested()
+            // Start the catalog load NOW rather than at the end of this task. It is what fills
+            // `songsById` / `indexPlaylists`, i.e. the ONLY thing that lets a collection show a
+            // real song count or a source playlist appear at all — and it was queued behind the
+            // 8-second-deadline CloudKit pass below, so a cold launch on a slow network showed
+            // collections reading "0 songs" for that whole window. It is awaited at its original
+            // position below, so anything that relied on "the catalog is loaded by then" still
+            // does; the two waits now just overlap instead of serializing.
+            let catalogLoad = Task { await app.loadIfNeeded() }
             // iCloud session sync: pull any NEWER cloud session documents BEFORE the two
             // durable-session restores below read their files — a fresh device (a beta
             // tester's second install) restores the cloud session, not an empty one.
@@ -267,7 +275,7 @@ struct RootView: View {
                 }
                 #endif
             }
-            await app.loadIfNeeded()
+            await catalogLoad.value      // kicked off above, alongside the CloudKit pass
             // Testing seam: `PDJ_OPEN_FIRST_ALBUM=1` deep-links into an album so the
             // track table can be screenshotted headlessly. No-op in normal use.
             if ProcessInfo.processInfo.environment["PDJ_OPEN_FIRST_ALBUM"] != nil,

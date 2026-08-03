@@ -633,7 +633,13 @@ enum CollectionsCodec {
         return doc.schemaVersion < collectionsSchemaVersion ? CollectionsMigration.migrate(doc) : doc
     }
     static func encode(_ doc: CollectionsDocument) throws -> Data {
-        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // COMPACT, not pretty-printed. This document is re-encoded and rewritten in full on
+        // every collection mutation, and on a real library it is big: measured 6.97 MB
+        // pretty-printed vs 4.02 MB compact — 42% of every write was indentation whitespace,
+        // and all of it had to be re-parsed on the next launch too. `.sortedKeys` STAYS: the
+        // cloud sync is whole-document last-writer-wins and compares serialized bytes, so a
+        // stable key order is load-bearing; indentation never was.
+        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
         return try e.encode(doc)
     }
 }
