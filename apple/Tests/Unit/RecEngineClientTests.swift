@@ -1,0 +1,108 @@
+import XCTest
+@testable import PocketDJ
+
+/// `RecEngineClient` request construction + error mapping, driven through the injectable
+/// transport closure (no network). The captured `URLRequest` IS the contract: bearer key +
+/// identity headers on every call, the documented paths/methods, 403 → `.keyMismatch`.
+final class RecEngineClientTests: XCTestCase {
+
+    /// Thread-safe request recorder for the nonisolated transport closure.
+    private final class Spy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _requests: [URLRequest] = []
+        var status = 200
+        var body = Data("{}".utf8)
+
+        var requests: [URLRequest] {
+            lock.lock(); defer { lock.unlock() }
+            return _requests
+        }
+        func record(_ req: URLRequest) -> (Data, URLResponse) {
+            lock.lock(); _requests.append(req); lock.unlock()
+            let resp = HTTPURLResponse(url: req.url!, statusCode: status,
+                                       httpVersion: nil, headerFields: nil)!
+            return (body, resp)
+        }
+    }
+
+    private func makeClient(_ spy: Spy) -> RecEngineClient {
+        RecEngineClient(base: URL(string: "https://rec.test")!,
+                        transport: { spy.record($0) })
+    }
+
+    func testPostEventsBuildsAuthAndIdentityHeaders() async throws {
+        let spy = Spy()
+        spy.body = Data(#"{"ok":true}"#.utf8)
+        let client = makeClient(spy)
+        let batch = RecUploadBatch(deviceId: "dev", sentAtMs: 1,
+                                   plays: [RecPlayEventWire(id: "e", songId: "s", atMs: 1, source: nil)])
+        _ = try await client.postEvents(batch, key: "sekrit", profileId: "profile-abc-123")
+        let req = try XCTUnwrap(spy.requests.first)
+        XCTAssertEqual(req.httpMethod, "POST")
+        XCTAssertEqual(req.url?.path, "/events")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer sekrit")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "X-PocketDJ-Profile"), "profile-abc-123")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "X-PocketDJ-Device"), DeviceIdentity.current)
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let sent = try XCTUnwrap(req.httpBody)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: sent) as? [String: Any])
+        XCTAssertEqual((obj["plays"] as? [[String: Any]])?.count, 1)
+    }
+
+    func testForYouPathAndLimitQuery() async throws {
+        let spy = Spy()
+        spy.body = Data(#"{"songs":[]}"#.utf8)
+        let client = makeClient(spy)
+        _ = try await client.forYou(limit: 50, key: "k", profileId: "profile-abc-123")
+        let req = try XCTUnwrap(spy.requests.first)
+        XCTAssertEqual(req.httpMethod, "GET")
+        XCTAssertEqual(req.url?.path, "/recs/songs")
+        XCTAssertEqual(req.url?.query, "limit=50")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer k")
+    }
+
+    func testCollectionSuggestionsPathAndQuery() async throws {
+        let spy = Spy()
+        spy.body = Data(#"{"suggestions":[]}"#.utf8)
+        let client = makeClient(spy)
+        _ = try await client.collectionSuggestions(songId: "sng_9", key: "k", profileId: "p")
+        let req = try XCTUnwrap(spy.requests.first)
+        XCTAssertEqual(req.url?.path, "/recs/collections")
+        XCTAssertEqual(req.url?.query, "songId=sng_9")
+    }
+
+    func test403MapsToKeyMismatch() async {
+        let spy = Spy()
+        spy.status = 403
+        let client = makeClient(spy)
+        do {
+            _ = try await client.forYou(limit: 50, key: "wrong", profileId: "p")
+            XCTFail("a 403 must throw")
+        } catch let e as RecEngineClient.ClientError {
+            XCTAssertEqual(e, .keyMismatch)
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+
+        // A generic failure maps to .http(code), not keyMismatch.
+        spy.status = 500
+        do {
+            _ = try await client.forYou(limit: 50, key: "k", profileId: "p")
+            XCTFail("a 500 must throw")
+        } catch let e as RecEngineClient.ClientError {
+            XCTAssertEqual(e, .http(500))
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
+
+    func testDeleteStateUsesDELETE() async throws {
+        let spy = Spy()
+        spy.body = Data(#"{"deleted":true}"#.utf8)
+        let client = makeClient(spy)
+        try await client.deleteState(key: "k", profileId: "p")
+        let req = try XCTUnwrap(spy.requests.first)
+        XCTAssertEqual(req.httpMethod, "DELETE")
+        XCTAssertEqual(req.url?.path, "/state")
+    }
+}

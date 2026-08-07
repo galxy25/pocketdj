@@ -42,7 +42,16 @@ final class AccountDeletionService {
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
         "collection-activity", "mix-sessions", "playback-session", "mix-decks",
         "discover-adds", "imported-songs", "profile-source", "apple-music-library", "studio-cues",
+        "rec-key",
     ]
+
+    /// Recommendation-engine wipe seams (WS-E), wired in PocketDJApp. Optional so tests that
+    /// construct the service without the rec engine degrade to a no-op:
+    ///  • `recDeleteCloudData` — best-effort DELETE of the profile's server-side rec state
+    ///    (needs the live key, so it runs BEFORE the local wipe removes it);
+    ///  • `recClearLocal` — removes the key + cursor documents (the per-store clear contract).
+    var recDeleteCloudData: (() async -> Void)?
+    var recClearLocal: (() -> Void)?
 
     private static let log = Logger(subsystem: "com.levi.pocketdj", category: "account-deletion")
 
@@ -176,6 +185,9 @@ final class AccountDeletionService {
         } else {
             Self.log.notice("CloudKit deletion skipped (disabled / test run)")
         }
+        // Recommendation-engine server state (best-effort, same doctrine as the CloudKit
+        // deletes above): must run while the bearer key still exists locally.
+        await recDeleteCloudData?()
 
         // ── 3) CLEAR EVERY LOCAL STORE ───────────────────────────────────────
         // All non-throwing by contract, so one can never skip the next; each resets its
@@ -200,6 +212,7 @@ final class AccountDeletionService {
         burns.removeAllBurns()
         for family in StudioFamily.allCases { studio.deleteAll(family: family) }
         studio.clearCues()   // the synced "studio-cues" doc — deleting the cloud copy must wipe local too
+        recClearLocal?()     // rec-engine key + cursor docs (cloud state already deleted above)
 
         // ── 4) CLEAR THE KEYCHAIN (streaming account links) ──────────────────
         // Each provider's `logout()` severs the link and forgets its stored token — for a

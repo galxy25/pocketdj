@@ -28,6 +28,11 @@ enum Config {
     /// per-user Music-User-Token is minted on-device and sent per call (never stored server-side).
     static let amPlaylistSyncBase = URL(string: "https://ynwdaa8vh2.execute-api.us-west-2.amazonaws.com")!
 
+    /// First-party PocketDJ RECOMMENDATION-ENGINE endpoint — API Gateway HTTP API in front of the
+    /// `pocketdj-rec-engine` Lambda (scripts/lambda/rec-engine). Only used while the Settings toggle
+    /// "Use PocketDJ Recommendation Engine" is ON (default OFF); nothing is sent otherwise.
+    static let recEngineBase = URL(string: "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com")!
+
     // Rip server (rip-on-demand + live HLS + Discover search) and Jukebox Hero session
     // broker: there is intentionally NO shipped default base URL for either. The app seeds
     // BOTH `SettingsData.default.ripServerURL` and `.jukeboxServerURL` blank, so `hasServer`
