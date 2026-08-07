@@ -8,7 +8,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { generateKeyPairSync, createSign, verify as cryptoVerify } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -45,6 +45,29 @@ function spawnServer(extraEnv = {}) {
     },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
+}
+
+/// Run `fn(port)` against a THROWAWAY server with extra env (its own port + home), so a
+/// test can shrink a limit the shared server keeps at its default. Always reaped.
+async function withServer(env, fn) {
+  const home = mkdtempSync(join(tmpdir(), 'mwf-alt-'));
+  const port = await freePort();
+  const c = spawn(process.execPath, [SERVER], {
+    env: {
+      ...process.env,
+      JUKEBOX_PORT: String(port), JUKEBOX_HOME: home, JUKEBOX_TOKEN: TOKEN, JUKEBOX_DRY_RUN: '1',
+      JUKEBOX_MWF_MIN_TURN_S: '1', JUKEBOX_MWF_SUGGEST_GAP_MS: '0',
+      APNS_KEY_FILE: '', APNS_KEY_ID: '', APNS_TEAM_ID: '',
+      ...env,
+    },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  try {
+    await waitHealthyAt(port);
+    await fn(port, home);
+  } finally {
+    c.kill('SIGKILL');
+  }
 }
 
 async function waitHealthyAt(port, timeoutMs = 5000) {
@@ -165,15 +188,169 @@ test('create clamps the theme to 144 and mints leader member #1; joins rotate in
   assert.equal(stL.json.you.memberId, s.memberId);
 });
 
-test('join is idempotent by clientId — no double turn slot', async () => {
+test('join is idempotent by joinSecret — no double turn slot', async () => {
   const s = await createSession();
-  const first = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth', clientId: 'same-client' } });
-  const second = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth again', clientId: 'same-client' } });
+  const first = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth', joinSecret: 'beth-secret' } });
+  const second = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth again', joinSecret: 'beth-secret' } });
   assert.equal(second.status, 200);
   assert.equal(second.json.memberId, first.json.memberId, 'same member returned');
   assert.equal(second.json.memberKey, first.json.memberKey);
   const st = await req('GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey });
   assert.equal(st.json.members.length, 2, 'no duplicate member row');
+  // The secret itself is never stored in the clear (only its sha256) — a leaked
+  // session.json must not hand anybody a re-join credential.
+  const persisted = readFileSync(join(HOME, 'mwf', s.sessionId, 'session.json'), 'utf8');
+  assert.ok(!persisted.includes('beth-secret'), 'the join secret is hashed at rest');
+});
+
+test('a bare clientId is NOT a credential: join never hands back an existing memberKey', async () => {
+  const s = await createSession({ clientId: 'leader-device-uuid' });
+  const first = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth', clientId: 'beth-device-uuid', joinSecret: 'beth-s' } });
+  assert.equal(first.status, 200);
+  // An attacker who read the X-PocketDJ-Device UUID off any first-party log replays it…
+  const replay = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Mallory', clientId: 'beth-device-uuid' } });
+  assert.equal(replay.status, 200);
+  assert.notEqual(replay.json.memberId, first.json.memberId, 'a clientId never resolves an existing member');
+  assert.notEqual(replay.json.memberKey, first.json.memberKey, 'and never yields their memberKey');
+  // …the leader's device id likewise buys nothing.
+  const replayLeader = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Mallory2', clientId: 'leader-device-uuid' } });
+  assert.notEqual(replayLeader.json.memberKey, s.memberKey, "the leader's key is not reachable by clientId");
+
+  // Re-join by KEY POSSESSION works (bearer or body); a wrong key is 401, never a new member.
+  const rejoinBearer = await req('POST', `/mwf/${s.sessionId}/join`, { bearer: first.json.memberKey, body: { name: 'Beth' } });
+  assert.equal(rejoinBearer.status, 200);
+  assert.equal(rejoinBearer.json.memberId, first.json.memberId);
+  const rejoinBody = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth', memberKey: first.json.memberKey } });
+  assert.equal(rejoinBody.json.memberId, first.json.memberId);
+  const before = (await req('GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey })).json.members.length;
+  const wrong = await req('POST', `/mwf/${s.sessionId}/join`, { bearer: 'f'.repeat(32), body: { name: 'Mallory3' } });
+  assert.equal(wrong.status, 401, 'a presented-but-unknown key is unauthorized, not a silent new member');
+  const after = (await req('GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey })).json.members.length;
+  assert.equal(after, before, 'the failed re-join added nobody');
+});
+
+// ---------------- join abuse: member cap + per-IP window ----------------
+
+test('join enforces the member cap (env-tunable) with 429 "session is full"', async () => {
+  await withServer({ JUKEBOX_MWF_MAX_MEMBERS: '3' }, async (port) => {
+    const created = await reqAt(port, 'POST', '/mwf', {
+      token: TOKEN, body: { theme: 'Capped', leaderName: 'Ada', settings: { turnSeconds: 60 } },
+    });
+    const s = created.json;
+    for (const n of ['one', 'two']) {
+      const r = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: n, joinSecret: `s-${n}` } });
+      assert.equal(r.status, 200, `join ${n} accepted below the cap`);
+    }
+    const full = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'three', joinSecret: 's-three' } });
+    assert.equal(full.status, 429, 'the 4th member (cap 3) is refused');
+    assert.equal(full.json.error, 'session is full');
+    const st = await reqAt(port, 'GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey });
+    assert.equal(st.json.members.length, 3, 'no ghost turn slots were appended');
+    // An EXISTING member can always rebind, even at the cap.
+    const rebind = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'one', joinSecret: 's-one' } });
+    assert.equal(rebind.status, 200, 'a full session still lets its own members re-join');
+  });
+});
+
+test('join pays the same per-IP sliding window as the guest-request path', async () => {
+  await withServer({ JUKEBOX_IP_WINDOW_MAX: '2', JUKEBOX_IP_WINDOW_MS: '60000' }, async (port) => {
+    const created = await reqAt(port, 'POST', '/mwf', {
+      token: TOKEN, body: { theme: 'Flooded', leaderName: 'Ada', settings: { turnSeconds: 60 } },
+    });
+    const s = created.json;
+    const a = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'a', joinSecret: 'ja' } });
+    const b = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'b', joinSecret: 'jb' } });
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+    const c = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'c', joinSecret: 'jc' } });
+    assert.equal(c.status, 429, 'the window caps a join flood from one IP');
+    assert.match(c.json.error, /too many joins/);
+    // Re-joins are not new members, so the window never locks an existing player out.
+    const rejoin = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'a', joinSecret: 'ja' } });
+    assert.equal(rejoin.status, 200);
+    assert.equal(rejoin.json.memberId, a.json.memberId);
+  });
+});
+
+// ---------------- XSS: hostile text never reaches the landing page live ----------------
+
+/// The landing page's own escaper, lifted out of the shipped template so the test asserts
+/// the REAL function rather than a copy of it.
+function templateEsc() {
+  const src = readFileSync(join(__dirname, 'jukebox-site', 'mwf-template.html'), 'utf8');
+  const m = src.match(/const esc = ([\s\S]*?);\n/);
+  assert.ok(m, 'mwf-template.html still defines an esc()');
+  return new Function(`return (${m[1]});`)();
+}
+
+test('the landing page esc() actually escapes (no innerHTML sink can execute)', () => {
+  const esc = templateEsc();
+  assert.equal(esc('<img src=x onerror=alert(1)>'),
+    '&lt;img src=x onerror=alert(1)&gt;');
+  assert.equal(esc('a & b'), 'a &amp; b');
+  assert.equal(esc(`"'`), '&quot;&#39;');
+  assert.equal(esc(null), '');
+});
+
+test('a hostile member name round-trips ESCAPED into the rendered landing page', async () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+  const s = await createSession({ name: `Party ${hostile}`, theme: `Theme ${hostile}` });
+  const joined = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: hostile, joinSecret: 'xss-1' } });
+  assert.equal(joined.status, 200);
+  const sug = await req('POST', `/mwf/${s.sessionId}/suggest`, { bearer: s.memberKey, body: { title: hostile, artist: hostile } });
+  await req('POST', `/mwf/${s.sessionId}/suggestions/${sug.json.suggestionId}/decision`, {
+    bearer: s.leaderKey, body: { action: 'accepted' },
+  });
+
+  // 1. Nothing executable reaches the rendered page (the server neutralizes on the way in).
+  const page = readFileSync(join(HOME, 'dry-run', 'jukebox', 'mwf', s.sessionId, 'index.html'), 'utf8');
+  assert.ok(!page.includes('<img src=x'), 'no raw tag in the rendered page');
+  assert.ok(page.includes('Party img src=x onerror=alert(1)'), 'the name still renders, minus the brackets');
+
+  // 2. The POLLED payload is neutralized server-side, so no consumer sees a live tag.
+  await wait(1300); // the join/suggest publish is debounced 1 s
+  const pub = readMwfPublicState(s.sessionId);
+  const pubRaw = JSON.stringify(pub);
+  assert.ok(!pubRaw.includes('<') && !pubRaw.includes('>'), 'state.json carries no angle brackets at all');
+  const victim = pub.members.find((m) => m.name.includes('img src=x'));
+  assert.ok(victim, 'the member name still round-trips (minus the brackets)');
+  assert.equal(pub.collection[0].title, 'img src=x onerror=alert(1)');
+
+  // 3. …and the page's renderer escapes what it does receive: the exact leaderboard/
+  //    collection concatenation cannot produce an executable tag.
+  const esc = templateEsc();
+  const row = '<span class="grow t">' + esc(victim.name) + '</span>' +
+              '<span class="t">' + esc(pub.collection[0].title) + '</span>';
+  assert.ok(!/<(img|svg|script|iframe)/i.test(row), `rendered row stays inert: ${row}`);
+});
+
+test('a session PERSISTED with hostile text (pre-fix bytes) still renders ESCAPED', async () => {
+  // loadMwfSessions trusts what is on disk, and the boot sweep re-puts index.html — so the
+  // renderer itself, not just the input filter, has to hold. This is the pre-fix session.json
+  // an upgraded broker would inherit.
+  const home = mkdtempSync(join(tmpdir(), 'mwf-legacy-'));
+  const id = 'legacyaa';
+  const hostile = '<img src=x onerror=alert(1)>';
+  const dir = join(home, 'mwf', id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'session.json'), JSON.stringify({
+    id, name: `Party ${hostile}`, theme: `Theme ${hostile}`, leaderKey: 'ab'.repeat(16),
+    createdAt: Date.now(), expiresAt: Date.now() + 3600_000, ended: false,
+    settings: { turnSeconds: 60, acceptOutsideTurn: false, turnEndsOnFirstSuggestion: true },
+    members: [{ memberId: 'mb_legacy', memberKey: 'cd'.repeat(16), name: `Ada ${hostile}`,
+                clientId: null, joinedAt: Date.now(), deviceToken: null, devicePlatform: null }],
+    turn: { index: 0, deadline: Date.now() + 60_000 }, seqCounter: 0,
+  }));
+  await withServer({ JUKEBOX_HOME: home }, async (port) => {
+    const st = await reqAt(port, 'GET', `/mwf/${id}/state`, { bearer: 'cd'.repeat(16) });
+    assert.equal(st.status, 200, 'the legacy session reloaded');
+    const page = readFileSync(join(home, 'dry-run', 'jukebox', 'mwf', id, 'index.html'), 'utf8');
+    assert.ok(!page.includes('<img src=x'), 'the boot re-put escapes the persisted name/theme');
+    assert.ok(page.includes('&lt;img src=x onerror=alert(1)&gt;'), '…as HTML entities');
+    // And the page's own renderer neutralizes the persisted MEMBER name it polls.
+    const esc = templateEsc();
+    assert.equal(esc(st.json.members[0].name), 'Ada &lt;img src=x onerror=alert(1)&gt;');
+  });
 });
 
 test('funnel-prefixed /jukebox/mwf paths dispatch identically', async () => {

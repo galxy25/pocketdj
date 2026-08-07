@@ -68,7 +68,13 @@
 <script>
 (() => {
   const STATE_URL = "__STATE_URL__";
-  const esc = (s) => String(s == null ? '' : s);
+  // Everything polled out of state.json is UNTRUSTED (member names arrive from the public
+  // /join route): entity-escape before any innerHTML concatenation below. Mirrors the
+  // server's own esc() in jukebox-server.mjs — attribute-safe too, so a later interpolation
+  // into an attribute stays inert.
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const $ = (id) => document.getElementById(id);
 
   function render(st) {
