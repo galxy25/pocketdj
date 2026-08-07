@@ -33,15 +33,31 @@ final class MultiSelectUITests: XCTestCase {
         XCTAssertTrue(app.any("song-sng_1").waitForExistence(timeout: 10))
     }
 
+    /// Long-press `rowId` until its context menu shows `buttonId`. The row is ALSO a drag
+    /// source (`.draggable`), and the drag lift shares the long-press interaction with the
+    /// context menu — a single synthesized press occasionally starts a lift instead of
+    /// opening the menu (the design's documented iOS risk), so retry a few times.
+    private func rowMenuButton(_ app: XCUIApplication, rowId: String,
+                               buttonId: String,
+                               file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        let row = app.any(rowId)
+        XCTAssertTrue(row.waitForExistence(timeout: 10), file: file, line: line)
+        let button = app.buttons[buttonId]
+        for attempt in 0..<4 {
+            row.press(forDuration: attempt == 0 ? 1.2 : 0.8)
+            if button.waitForExistence(timeout: 4) { return button }
+            usleep(500_000)   // let a latched drag lift settle before re-pressing
+        }
+        XCTFail("context-menu button \(buttonId) never appeared for \(rowId)", file: file, line: line)
+        return button
+    }
+
     /// Long-press a Browse song row → context-menu "Select" — arms Select mode with the row.
-    private func enterSelectMode(_ app: XCUIApplication, songId: String) {
-        let row = app.any("song-\(songId)")
-        XCTAssertTrue(row.waitForExistence(timeout: 10))
-        row.press(forDuration: 1.2)
-        let select = app.buttons["select-song-\(songId)"]
-        XCTAssertTrue(select.waitForExistence(timeout: 5))
-        select.tap()
-        XCTAssertTrue(app.any("selection-bar").waitForExistence(timeout: 5))
+    private func enterSelectMode(_ app: XCUIApplication, songId: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        rowMenuButton(app, rowId: "song-\(songId)", buttonId: "select-song-\(songId)",
+                      file: file, line: line).tap()
+        XCTAssertTrue(app.any("selection-bar").waitForExistence(timeout: 5), file: file, line: line)
     }
 
     /// Poll the selection-count readout until it shows `expected`.
@@ -180,12 +196,7 @@ final class MultiSelectUITests: XCTestCase {
     func testBrowseRowAddToPlaylistSheet() {
         let app = launch(seedCollections: true)
         showSongs(app)
-        let row = app.any("song-sng_2")
-        XCTAssertTrue(row.waitForExistence(timeout: 10))
-        row.press(forDuration: 1.2)
-        let addTo = app.buttons["add-to-song-sng_2"]
-        XCTAssertTrue(addTo.waitForExistence(timeout: 5))
-        addTo.tap()
+        rowMenuButton(app, rowId: "song-sng_2", buttonId: "add-to-song-sng_2").tap()
         // The shared sheet: toggle the seeded playlist row, then Done.
         let target = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'add-playlist-pls_'")).firstMatch
