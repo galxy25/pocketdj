@@ -1150,7 +1150,40 @@ struct PocketDJApp: App {
         // ⌘N → New Window. Lets the user run e.g. a Performance surface in one window and the Mix
         // surface in another without switching tabs. Applies on every platform, but the command
         // registers only where a second window can actually show (macOS + iPadOS; NOT iPhone).
-        .commands { NewWindowCommands() }
+        .commands { NewWindowCommands(); SongEditCommands() }
+    }
+}
+
+/// Edit ▸ Copy Songs (⌘C) / Paste Songs (⌘V) — macOS only (other platforms use RootView's
+/// per-window shadow buttons; registering BOTH would double-bind the keys). Reads the focused
+/// window's selection through FocusedValues, the one channel a Commands struct has (it does
+/// NOT inherit the WindowGroup environment — see NewWindowCommands). The key equivalents are
+/// attached ONLY while actionable, so the Collections ⌘C tab-jump shadow (conditionally
+/// hidden then — RootView) never coexists with a live Copy binding. AppKit resolves the
+/// remaining overlap with the SYSTEM Copy/Paste items by menu order: a focused text field
+/// enables system Copy first, which is the precedence we want.
+private struct SongEditCommands: Commands {
+    @FocusedValue(\.songSelectionActions) private var actions
+
+    var body: some Commands {
+        #if os(macOS)
+        CommandGroup(after: .pasteboard) {
+            if let actions, actions.canCopy {
+                Button("Copy Songs") { actions.copy() }
+                    .keyboardShortcut("c", modifiers: .command)
+            } else {
+                Button("Copy Songs") {}.disabled(true)
+            }
+            if let actions, actions.canPaste {
+                Button("Paste Songs") { actions.paste() }
+                    .keyboardShortcut("v", modifiers: .command)
+            } else {
+                Button("Paste Songs") {}.disabled(true)
+            }
+        }
+        #else
+        EmptyCommands()
+        #endif
     }
 }
 

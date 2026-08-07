@@ -8,7 +8,10 @@ struct AddToCollectionView: View {
     /// `.studio` carries the item's TITLE alongside its `smp_`/`lp_`/`ptn_` id because
     /// this sheet is presented from Studio list rows with no detail screen behind it
     /// (unlike songs/albums) — the header below names what's being added.
-    enum Item: Hashable { case song(String), album(String), studio(id: String, title: String) }
+    /// `.songs` is the multi-select batch (a Browse row's "Add to Playlist…" invoked on a
+    /// selected row): pocket/playlist taps batch-add via `CollectionsStore.addSongs` (one
+    /// document write, deduped); the song-only source-playlist section hides for it.
+    enum Item: Hashable { case song(String), songs([String]), album(String), studio(id: String, title: String) }
 
     @Environment(CollectionsStore.self) private var collections
     @Environment(AppModel.self) private var app
@@ -69,6 +72,19 @@ struct AddToCollectionView: View {
                 // sequence row has no backing detail screen naming it behind this
                 // sheet, so the sheet itself says so. Songs/albums keep the sheet
                 // exactly as it was (their detail screen is right behind it).
+                // Multi-select batch: name the count (there's no single detail screen behind
+                // the sheet naming what's being added — the studio header's reasoning).
+                if case .songs(let ids) = item {
+                    Section("Adding") {
+                        HStack(spacing: 8) {
+                            Image(systemName: "music.note").foregroundStyle(Theme.accent2)
+                            Text("\(ids.count) song\(ids.count == 1 ? "" : "s")")
+                                .foregroundStyle(Theme.fg)
+                        }
+                        .accessibilityIdentifier("add-songs-count")
+                    }
+                }
+
                 if case .studio(_, let title) = item {
                     Section {
                         HStack(spacing: 8) {
@@ -350,6 +366,8 @@ struct AddToCollectionView: View {
     private func addTo(_ target: AddTarget) {
         switch item {
         case .song(let s): collections.addSong(s, to: target)
+        // The batch choke point: ONE document write, deduped against current membership.
+        case .songs(let ids): collections.addSongs(ids, to: target)
         case .album(let a): collections.addAlbum(a, to: target)
         // Studio ids ride the SAME string-id plumbing as songs (spec §8's namespaced-id
         // mechanism): pockets keep them in `songIds`, playlists as `.song` nodes; every
@@ -361,6 +379,7 @@ struct AddToCollectionView: View {
     private func inPocket(_ p: Pocket) -> Bool {
         switch item {
         case .song(let s): return p.songIds.contains(s)
+        case .songs(let ids): return !ids.isEmpty && ids.allSatisfy { p.songIds.contains($0) }
         case .album(let a): return p.albumIds.contains(a)
         case .studio(let id, _): return p.songIds.contains(id)   // rides songIds (see addTo)
         }
@@ -369,14 +388,24 @@ struct AddToCollectionView: View {
     // MARK: - Multi-select toggle (add ⇄ remove across many collections, without dismissing)
 
     /// The song/studio id being toggled (studio ids ride the song plumbing — see `addTo`); nil
-    /// for an album item.
+    /// for an album / multi-song item.
     private var toggleSongId: String? {
-        switch item { case .song(let s): return s; case .studio(let id, _): return id; case .album: return nil }
+        switch item {
+        case .song(let s): return s
+        case .studio(let id, _): return id
+        case .album, .songs: return nil
+        }
     }
     private var toggleAlbumId: String? { if case .album(let a) = item { return a }; return nil }
+    /// The multi-select batch's ids; nil for every other item kind.
+    private var multiSongIds: [String]? { if case .songs(let ids) = item { return ids }; return nil }
 
-    /// Whole-playlist membership of the current item (present in ANY chapter).
+    /// Whole-playlist membership of the current item (present in ANY chapter). A multi-song
+    /// batch is a member only when EVERY id is (mirrors `inPocket`).
     private func inPlaylist(_ pl: Playlist) -> Bool {
+        if let ids = multiSongIds {
+            return !ids.isEmpty && ids.allSatisfy { collections.playlist(pl.id, contains: $0) }
+        }
         if let s = toggleSongId { return collections.playlist(pl.id, contains: s) }
         if let a = toggleAlbumId { return collections.playlist(pl.id, containsAlbum: a) }
         return false
@@ -393,11 +422,13 @@ struct AddToCollectionView: View {
         else { addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences.first?.nodeId)) }
     }
     private func removeFromPocket(_ id: String) {
-        if let s = toggleSongId { collections.removeSong(s, fromPocket: id) }
+        if let ids = multiSongIds { ids.forEach { collections.removeSong($0, fromPocket: id) } }
+        else if let s = toggleSongId { collections.removeSong(s, fromPocket: id) }
         else if let a = toggleAlbumId { collections.removeAlbum(a, fromPocket: id) }
     }
     private func removeFromPlaylist(_ id: String) {
-        if let s = toggleSongId { collections.removeSong(s, fromPlaylist: id) }
+        if let ids = multiSongIds { ids.forEach { collections.removeSong($0, fromPlaylist: id) } }
+        else if let s = toggleSongId { collections.removeSong(s, fromPlaylist: id) }
         else if let a = toggleAlbumId { collections.removeAlbum(a, fromPlaylist: id) }
     }
 
