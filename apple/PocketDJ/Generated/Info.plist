@@ -106,6 +106,17 @@
 				</array>
 			</dict>
 		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>PocketDJ Song List</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.pocketdj.songlist</string>
+		</dict>
 	</array>
 </dict>
 </plist>
