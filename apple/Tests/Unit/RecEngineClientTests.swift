@@ -105,4 +105,37 @@ final class RecEngineClientTests: XCTestCase {
         XCTAssertEqual(req.httpMethod, "DELETE")
         XCTAssertEqual(req.url?.path, "/state")
     }
+
+    /// The enrollment secret is what stops ANY bearer from minting a fresh profile server-side.
+    /// It rides the two routes that CREATE or DESTROY state — and only those.
+    func testEnrollmentSecretRidesOnlyTheStateMutatingRoutes() async throws {
+        let spy = Spy()
+        spy.body = Data(#"{"ok":true}"#.utf8)
+        var client = makeClient(spy)
+        client.enrollSecret = "enroll-me"
+        let header = RecEngineClient.enrollHeader
+
+        _ = try await client.postEvents(RecUploadBatch(deviceId: "d", sentAtMs: 1),
+                                        key: "k", profileId: "profile-abc-123")
+        XCTAssertEqual(spy.requests[0].value(forHTTPHeaderField: header), "enroll-me",
+                       "the FIRST upload is what creates server state — it must enroll")
+
+        spy.body = Data(#"{"deleted":true}"#.utf8)
+        try await client.deleteState(key: "k", profileId: "profile-abc-123")
+        XCTAssertEqual(spy.requests[1].value(forHTTPHeaderField: header), "enroll-me",
+                       "delete must work even when this device's key no longer matches")
+
+        spy.body = Data(#"{"songs":[]}"#.utf8)
+        _ = try await client.forYou(limit: 5, key: "k", profileId: "profile-abc-123")
+        XCTAssertNil(spy.requests[2].value(forHTTPHeaderField: header),
+                     "read routes authenticate with the bearer key alone")
+
+        // A build with no secret configured simply omits the header (the server then refuses
+        // enrollment) — it never sends an empty one.
+        var bare = makeClient(spy)
+        bare.enrollSecret = ""
+        spy.body = Data(#"{"ok":true}"#.utf8)
+        _ = try await bare.postEvents(RecUploadBatch(deviceId: "d", sentAtMs: 1), key: "k", profileId: "p")
+        XCTAssertNil(spy.requests[3].value(forHTTPHeaderField: header))
+    }
 }

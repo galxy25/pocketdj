@@ -33,6 +33,21 @@ enum Config {
     /// "Use PocketDJ Recommendation Engine" is ON (default OFF); nothing is sent otherwise.
     static let recEngineBase = URL(string: "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com")!
 
+    /// ENROLLMENT SECRET for the recommendation engine (`REC_ENROLL_SECRET` on the Lambda,
+    /// sent as `X-PocketDJ-Enroll`). The server requires it to CREATE a profile's state object
+    /// and accepts it in place of a mismatched key on `DELETE /state`; an already-enrolled
+    /// profile uploads with its own bearer key alone.
+    ///
+    /// **This is a capability token, not a per-user credential.** It ships inside the binary,
+    /// so anyone who extracts it can enroll profiles — a deliberate single-user tradeoff that
+    /// closes the previous hole (ANY bearer + ANY profile header could mint a fresh state
+    /// object in a bucket with no lifecycle expiry, i.e. an unbounded open write endpoint).
+    /// #TOUPDATE when PocketDJ stops being a one-user service: replace this with a real
+    /// per-user identity (Sign in with Apple / CloudKit-verified user record) minting a
+    /// per-profile token server-side, and drop the header. Rotating it = redeploy the Lambda
+    /// with a new `REC_ENROLL_SECRET` and ship a build with the new constant here.
+    static let recEngineEnrollSecret = "108fe53e75eb4bcf5a6c1390ee756ea100d3fa4ae7d3194d"
+
     // Rip server (rip-on-demand + live HLS + Discover search) and Jukebox Hero session
     // broker: there is intentionally NO shipped default base URL for either. The app seeds
     // BOTH `SettingsData.default.ripServerURL` and `.jukeboxServerURL` blank, so `hasServer`

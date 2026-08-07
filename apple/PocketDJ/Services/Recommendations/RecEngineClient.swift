@@ -11,9 +11,16 @@ import Foundation
 /// server's TOFU-bound key hash doesn't match this key → `.keyMismatch`.
 struct RecEngineClient {
     var base: URL = Config.recEngineBase
+    /// The shared enrollment secret (`Config.recEngineEnrollSecret`) — see its doc: the server
+    /// requires it to CREATE a profile's state and accepts it in place of a mismatched key on
+    /// DELETE. Rides only the two routes that can create or destroy state; the read routes
+    /// authenticate with the bearer key alone.
+    var enrollSecret: String = Config.recEngineEnrollSecret
     var transport: (URLRequest) async throws -> (Data, URLResponse) = {
         try await URLSession.shared.data(for: $0)
     }
+
+    static let enrollHeader = "X-PocketDJ-Enroll"
 
     enum ClientError: Error, Equatable {
         case http(Int)
@@ -23,7 +30,7 @@ struct RecEngineClient {
 
     private func request(_ path: String, method: String, key: String, profileId: String,
                          query: [URLQueryItem] = [], body: Data? = nil,
-                         timeout: TimeInterval = 20) throws -> URLRequest {
+                         timeout: TimeInterval = 20, enroll: Bool = false) throws -> URLRequest {
         guard var comps = URLComponents(url: base.appendingPathComponent(path),
                                         resolvingAgainstBaseURL: false) else {
             throw ClientError.badResponse
@@ -33,6 +40,9 @@ struct RecEngineClient {
         var req = URLRequest(url: url, timeoutInterval: timeout)
         req.httpMethod = method
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if enroll, !enrollSecret.isEmpty {
+            req.setValue(enrollSecret, forHTTPHeaderField: Self.enrollHeader)
+        }
         PDJIdentityHeaders.apply(to: &req, profileId: profileId)
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -53,12 +63,13 @@ struct RecEngineClient {
     }
 
     /// `POST /events` — upload a delta batch. Longer timeout: a first-enable drain can carry
-    /// a full 2000-event batch.
+    /// a full 2000-event batch. Carries the enrollment secret: the FIRST upload of a profile
+    /// is what creates its server-side state, and the server refuses that without it.
     func postEvents(_ batch: RecUploadBatch, key: String, profileId: String) async throws -> RecUploadResponse {
         let body = try JSONEncoder().encode(batch)
         return try await run(
             try request("events", method: "POST", key: key, profileId: profileId,
-                        body: body, timeout: 30),
+                        body: body, timeout: 30, enroll: true),
             as: RecUploadResponse.self)
     }
 
@@ -79,10 +90,12 @@ struct RecEngineClient {
     }
 
     /// `DELETE /state` — remove the profile's server-side state ("Delete cloud data").
+    /// Carries the enrollment secret so a device whose key no longer matches the server's TOFU
+    /// binding can still erase — that is the ONLY in-app recovery from a wedged key.
     func deleteState(key: String, profileId: String) async throws {
         struct Ack: Decodable { let deleted: Bool? }
         _ = try await run(
-            try request("state", method: "DELETE", key: key, profileId: profileId),
+            try request("state", method: "DELETE", key: key, profileId: profileId, enroll: true),
             as: Ack.self)
     }
 
