@@ -250,6 +250,12 @@ final class WidgetSync {
     }
 
     private func refreshCover(for songId: String?) {
+        // Fixture/test runs must never touch the SHARED App Group cover file — it is
+        // system state outside the test sandbox (the CollectionsSpotlight doctrine).
+        // Also load-bearing for headless macOS test bootstrap: a wedged filesystem op
+        // on that shared path (observed: a kernel-stalled unlink) would otherwise hang
+        // the test host's launch inside PocketDJApp.init.
+        guard ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil else { return }
         coverToken += 1
         let token = coverToken
         guard let url = NowPlayingShared.coverURL else {

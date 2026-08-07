@@ -401,7 +401,12 @@ final class PerfBenchmarkTests: XCTestCase {
     /// `catalog()` used to walk every node of every collection (to prebuild a studio lookup
     /// table) and is called once per row, so it had to become independent of document size.
     func testCatalogBuildIsIndependentOfDocumentSize() async throws {
-        let (app, small) = try await wiredReal()
+        // SYNTHETIC on purpose (same 96k scale): the 26,774 node ids below are the
+        // synthetic "sng_<n>" space and must RESOLVE for the stats assertions. Under
+        // wiredReal() an unsandboxed host (macOS, with ~/.pocketdj/am-sync-clone
+        // present) loaded the REAL index, none of the synthetic ids resolved, and the
+        // count asserted 0 — a machine-state failure, not a perf regression.
+        let (app, small) = try await wired()
         small.studioLookup = { _ in nil }        // WIRED — the expensive branch, pre-fix
         let emptyDoc = time("catalog() with an empty document") { _ = small.catalog() }
 
