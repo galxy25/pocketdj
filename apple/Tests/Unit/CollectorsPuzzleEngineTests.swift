@@ -83,6 +83,8 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertEqual(s.engine.phase, .idle)
         await s.engine.startRound()
         XCTAssertEqual(s.engine.phase, .running)
+        XCTAssertEqual(s.sequencer.sourceSetlistId, "puzzle_\(s.engine.roundId.uuidString)",
+                       "the run is TAGGED so the engine can tell whether it still owns the sequencer")
         XCTAssertEqual(s.engine.queue.count, 7, "the whole 7-song fixture pool samples in")
         XCTAssertEqual(s.engine.score, 0)
         XCTAssertTrue(s.sequencer.isRunning, "audio rides the app-scoped sequencer")
@@ -211,6 +213,68 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertTrue(s.engine.poolExhausted)
         XCTAssertEqual(s.engine.queue.count, 7, "nothing appended")
         XCTAssertEqual(s.engine.phase, .running, "the round continues with remaining time")
+    }
+
+    // MARK: - Sequencer ownership (the shared SetlistPlayer is app-scoped)
+
+    /// A foreign `play()` mid-round: the user popped to Browse and started a playlist.
+    /// The engine must NOT read that queue's index as its own (phantom "expired" rows in
+    /// the decision log — a recommendation training signal), must not skip it, and must
+    /// not stop it.
+    func testForeignPlayMidRoundEndsTheRoundWithoutCorruptingTheDecisionLog() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        s.engine.assign(toTargetIndex: 0)
+        let rowsBefore = s.decisions.decisions.count
+        XCTAssertEqual(s.engine.queueIndex, 1)
+
+        let foreign = (0..<20).map {
+            SetlistPlayer.Item(id: "other_\($0)", title: "Track \($0)", artist: "Someone")
+        }
+        s.sequencer.play(foreign, sourceSetlistId: "set_other")
+        s.sequencer.skipNext(); s.sequencer.skipNext(); s.sequencer.skipNext()
+        XCTAssertGreaterThan(s.sequencer.index, s.engine.queueIndex,
+                             "the foreign queue's index climbed past the engine's position")
+
+        s.engine.tickOnce()
+        XCTAssertEqual(s.engine.phase, .finished, "ownership loss ends the round cleanly")
+        XCTAssertEqual(s.decisions.decisions.count, rowsBefore,
+                       "no 'expired' rows are invented off a queue the round doesn't own")
+        XCTAssertTrue(s.sequencer.isRunning, "the user's playlist keeps playing")
+        XCTAssertEqual(s.sequencer.sourceSetlistId, "set_other")
+        XCTAssertEqual(s.sequencer.index, 3, "…and the puzzle never skipped or stopped it")
+        XCTAssertEqual(s.sequencer.queue.count, 20, "…nor topped it up")
+        XCTAssertEqual(s.scoreboard.recentRuns(.collectorsPuzzle, limit: 5).count, 1,
+                       "the interrupted run still records its real score")
+        XCTAssertEqual(s.engine.lastRunRecord?.score, 1)
+    }
+
+    func testAssignAndSkipAfterTakeoverNeverTouchTheForeignRun() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let foreign = [SetlistPlayer.Item(id: "other_1", title: "Theirs", artist: "Someone"),
+                       SetlistPlayer.Item(id: "other_2", title: "Theirs 2", artist: "Someone")]
+        s.sequencer.play(foreign, sourceSetlistId: "set_other")
+
+        s.engine.assign(toTargetIndex: 0)
+        XCTAssertEqual(s.engine.phase, .finished, "an assign against a lost sequencer ends the round")
+        XCTAssertEqual(s.engine.score, 0, "no point for a card the round no longer owns")
+        XCTAssertEqual(s.sequencer.index, 0, "the foreign track was NOT skipped")
+        XCTAssertTrue(s.sequencer.isRunning)
+        s.engine.skip()   // and a late skip is inert
+        XCTAssertEqual(s.sequencer.index, 0)
+        XCTAssertEqual(s.sequencer.sourceSetlistId, "set_other")
+    }
+
+    func testEndRoundStopsOnlyItsOwnRun() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        s.sequencer.play([SetlistPlayer.Item(id: "other_1", title: "Theirs", artist: "Someone")],
+                         sourceSetlistId: "set_other")
+        s.engine.endRound()   // the End button, after someone else took the sequencer
+        XCTAssertEqual(s.engine.phase, .finished)
+        XCTAssertTrue(s.sequencer.isRunning, "End must never stop unrelated playback")
+        XCTAssertEqual(s.sequencer.sourceSetlistId, "set_other")
     }
 
     func testDecisionsCarryRoundSettings() async {

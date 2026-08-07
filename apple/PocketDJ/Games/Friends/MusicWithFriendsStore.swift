@@ -19,7 +19,13 @@ final class MusicWithFriendsStore {
     var pendingJoin: MwFLink?
     private(set) var creating = false
     private(set) var joining = false
+    /// The last LEADER-VERB error (approve/reject/+1/config/end) — the session screen's
+    /// shared banner. `create`/`join` deliberately do NOT write here: they RETURN their
+    /// error so a sheet renders its OWN message, and the 4 s poll (which runs in every
+    /// open window) can neither clear a sheet's error nor be mistaken for one.
     private(set) var lastError: String?
+    /// The 4 s poll's own error, kept apart from every user-initiated verb's surface.
+    private(set) var pollError: String?
     /// Last-known state per session (the session screen's render source + the
     /// final-score fallback when the ended state is never observed).
     private(set) var lastState: [String: MwFState] = [:]
@@ -50,8 +56,11 @@ final class MusicWithFriendsStore {
     @ObservationIgnored var collectionsStore: CollectionsStore?
     @ObservationIgnored var appModel: AppModel?
     @ObservationIgnored var sequencer: SetlistPlayer?
-    /// Stable per-install client id (join idempotence + server pacing).
+    /// Stable per-install client id (server-side pacing + correlation only — the broker
+    /// refuses it as proof of identity, see `MwFJoinSecret`).
     @ObservationIgnored var deviceClientId: () -> String = { DeviceIdentity.current }
+    /// Per-install RE-JOIN credential (never broadcast on any other call).
+    @ObservationIgnored var joinSecret: () -> String = { MwFJoinSecret.current }
 
     private let defaults: UserDefaults
     private static let sessionsKey = "pdj.mwf.sessions.v1"
@@ -95,17 +104,19 @@ final class MusicWithFriendsStore {
 
     // MARK: - Create / join / open
 
-    func create(name: String, theme: String, displayName: String, settings s: MwFSettings) async {
-        guard !creating else { return }
+    /// Create a session. Returns the error to show (nil = success) — the CALLER owns the
+    /// message, so a concurrent poll in another window can never clear or forge it.
+    @discardableResult
+    func create(name: String, theme: String, displayName: String, settings s: MwFSettings) async -> String? {
+        guard !creating else { return "A session is already being created." }
         creating = true
         defer { creating = false }
-        lastError = nil
         do {
             let r = try await client.create(name: name, theme: theme, leaderName: displayName,
-                                            clientId: deviceClientId(), settings: s)
+                                            clientId: deviceClientId(), joinSecret: joinSecret(),
+                                            settings: s)
             guard let sid = r.sessionId, let mid = r.memberId, let mk = r.memberKey else {
-                lastError = "The server's create reply was incomplete."
-                return
+                return "The server's create reply was incomplete."
             }
             let entry = MwFSessionEntry(id: sid, memberId: mid, memberKey: mk,
                                         leaderKey: r.leaderKey, name: r.name ?? name,
@@ -117,29 +128,34 @@ final class MusicWithFriendsStore {
             persistSessions()
             pendingOpenId = sid
             await registerPushIfPossible(for: entry)
+            return nil
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     /// A tapped `/mwf/` link: a known session opens; an unknown one drives the Join sheet.
+    /// BOTH branches raise `pendingOpenId` — that is the only signal RootView watches, and
+    /// the Join sheet lives on GamesView, which is in the hierarchy ONLY while the Games
+    /// tab is showing. Without it, a link tapped from History (the default launch tab) set
+    /// `pendingJoin` and nothing happened until the user wandered into Games. RootView's
+    /// consume lands on the Games tab and skips the session push when there is no entry,
+    /// which is exactly the unknown-session case.
     func handleOpenedLink(_ link: MwFLink) {
-        if sessions.contains(where: { $0.id == link.sessionId }) {
-            pendingOpenId = link.sessionId
-        } else {
-            pendingJoin = link
-        }
+        if !sessions.contains(where: { $0.id == link.sessionId }) { pendingJoin = link }
+        pendingOpenId = link.sessionId
     }
 
-    func join(link: MwFLink, name: String) async {
-        guard !joining else { return }
+    /// Join a session. Returns the error to show (nil = success), like `create`.
+    @discardableResult
+    func join(link: MwFLink, name: String) async -> String? {
+        guard !joining else { return "A join is already in flight." }
         joining = true
         defer { joining = false }
-        lastError = nil
         if sessions.contains(where: { $0.id == link.sessionId }) {
             pendingJoin = nil
             pendingOpenId = link.sessionId
-            return
+            return nil
         }
         // The public state.json carries the broker's apiBase + the theme — the same
         // no-preconfig join the jukebox guest flow uses. Best-effort: a miss falls
@@ -154,10 +170,11 @@ final class MusicWithFriendsStore {
         }
         do {
             let r = try await client.join(apiBase: apiBase, sessionId: link.sessionId,
-                                          name: name, clientId: deviceClientId())
+                                          name: name, clientId: deviceClientId(),
+                                          joinSecret: joinSecret(),
+                                          memberKey: entry(link.sessionId)?.memberKey)
             guard let mid = r.memberId, let mk = r.memberKey else {
-                lastError = "The server's join reply was incomplete."
-                return
+                return "The server's join reply was incomplete."
             }
             let base = link.guestBase?.absoluteString ?? "https://\(MwFLink.universalHost)"
             let entry = MwFSessionEntry(id: link.sessionId, memberId: mid, memberKey: mk,
@@ -171,8 +188,9 @@ final class MusicWithFriendsStore {
             pendingJoin = nil
             pendingOpenId = link.sessionId
             await registerPushIfPossible(for: entry)
+            return nil
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -195,7 +213,7 @@ final class MusicWithFriendsStore {
                 if changed { sessions[i] = e; persistSessions() }
             }
             if st.ended == true { recordFinalScoreIfNeeded(id) }
-            lastError = nil
+            pollError = nil
             return st
         } catch JukeboxClient.ClientError.http(let code) where code == 404 || code == 410 {
             if lastState[id] != nil {
@@ -209,7 +227,7 @@ final class MusicWithFriendsStore {
             recordFinalScoreIfNeeded(id)
             return lastState[id]
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            pollError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return lastState[id]
         }
     }
@@ -224,6 +242,7 @@ final class MusicWithFriendsStore {
 
     func plusOne(_ id: String, suggestionId: String) async {
         guard let entry = entry(id) else { return }
+        lastError = nil
         do {
             try await client.plusOne(entry, suggestionId: suggestionId)
             _ = await refresh(id)
@@ -238,6 +257,7 @@ final class MusicWithFriendsStore {
     /// playable match (catalog id → appleMusicId → title/artist-only), then decide.
     func approve(_ id: String, suggestion: MwFSuggestion) async {
         guard let entry = entry(id), entry.isLeader, let sgId = suggestion.id else { return }
+        lastError = nil
         let title = suggestion.title ?? ""
         let artist = suggestion.artist ?? ""
         var match = MwFMatch(songId: nil, appleMusicId: nil, title: title, artist: artist, lengthMs: nil)
@@ -264,6 +284,7 @@ final class MusicWithFriendsStore {
 
     func reject(_ id: String, suggestion: MwFSuggestion) async {
         guard let entry = entry(id), entry.isLeader, let sgId = suggestion.id else { return }
+        lastError = nil
         do {
             try await client.decide(entry, suggestionId: sgId, action: "rejected", match: nil)
             _ = await refresh(id)
@@ -274,6 +295,7 @@ final class MusicWithFriendsStore {
 
     func updateSettings(_ id: String, _ s: MwFSettings) async {
         guard let entry = entry(id), entry.isLeader else { return }
+        lastError = nil
         do {
             let confirmed = try await client.configure(entry, settings: s)
             if lastState[id] != nil { lastState[id]?.settings = confirmed }
@@ -284,6 +306,7 @@ final class MusicWithFriendsStore {
 
     func endSession(_ id: String) async {
         guard let entry = entry(id), entry.isLeader else { return }
+        lastError = nil
         do { try await client.end(entry) } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -354,7 +377,9 @@ final class MusicWithFriendsStore {
 
     // MARK: - Queue-accepted (leader nicety — global playback session reuse)
 
-    private func queueMatchIfPlayable(_ match: MwFMatch) {
+    /// Internal (not private) so a test can drive it synchronously — the sequencer tears a
+    /// non-playable queue down on its next runloop turn, which an `await` would allow.
+    func queueMatchIfPlayable(_ match: MwFMatch) {
         guard let sequencer else { return }
         let item: SetlistPlayer.Item
         if let songId = match.songId {
@@ -366,6 +391,10 @@ final class MusicWithFriendsStore {
         } else {
             return
         }
+        // NEVER append into a live Collectors Puzzle round: the engine maps its queue
+        // index onto the sequencer's, so a foreign append desynchronizes the decision log
+        // (the round is a scored, timed run — the accept simply doesn't auto-queue).
+        if sequencer.sourceSetlistId?.hasPrefix(CollectorsPuzzleEngine.runTagPrefix) == true { return }
         if sequencer.isRunning {
             sequencer.appendToQueue([item])
         } else {

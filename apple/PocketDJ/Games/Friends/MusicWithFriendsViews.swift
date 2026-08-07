@@ -23,6 +23,9 @@ struct MwFCreateSheet: View {
     @State private var acceptOutsideTurn = false
     @State private var turnEndsOnFirstSuggestion = true
     @State private var seeded = false
+    /// THIS sheet's error (never the store's shared field — a poll in another window
+    /// must not clear or forge the message the user is reading).
+    @State private var createError: String?
 
     private static let themeMax = 144
 
@@ -64,18 +67,18 @@ struct MwFCreateSheet: View {
                             .font(.footnote).foregroundStyle(Theme.danger)
                     }
                 }
-                if let err = friends.lastError {
+                if let err = createError {
                     Section { Text(err).font(.footnote).foregroundStyle(Theme.danger) }
                 }
                 Section {
                     Button(friends.creating ? "Creating…" : "Create") {
                         Task {
-                            await friends.create(
+                            createError = await friends.create(
                                 name: sessionName, theme: theme, displayName: displayName,
                                 settings: MwFSettings(turnSeconds: turnSeconds,
                                                       acceptOutsideTurn: acceptOutsideTurn,
                                                       turnEndsOnFirstSuggestion: turnEndsOnFirstSuggestion))
-                            if friends.lastError == nil { dismiss() }
+                            if createError == nil { dismiss() }
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -116,6 +119,12 @@ struct MwFJoinSheet: View {
     @State private var displayName = ""
     @State private var themePreview: String?
     @State private var seeded = false
+    /// THIS sheet's error (see MwFCreateSheet.createError).
+    @State private var joinError: String?
+    /// The in-flight preview fetch — cancelled + debounced on every edit, so a slow
+    /// response for an OLD link can never overwrite a newer one's theme
+    /// (the CollectorsPuzzleView.recount() pattern).
+    @State private var previewTask: Task<Void, Never>?
 
     private var parsedLink: MwFLink? {
         if let link { return link }
@@ -143,15 +152,15 @@ struct MwFJoinSheet: View {
                     TextField("Display name", text: $displayName)
                         .accessibilityIdentifier("mwf-join-name")
                 }
-                if let err = friends.lastError {
+                if let err = joinError {
                     Section { Text(err).font(.footnote).foregroundStyle(Theme.danger) }
                 }
                 Section {
                     Button(friends.joining ? "Joining…" : "Join") {
                         guard let target = parsedLink else { return }
                         Task {
-                            await friends.join(link: target, name: displayName)
-                            if friends.lastError == nil { dismiss() }
+                            joinError = await friends.join(link: target, name: displayName)
+                            if joinError == nil { dismiss() }
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -176,15 +185,25 @@ struct MwFJoinSheet: View {
             displayName = name.isEmpty ? "Player" : name
             await loadPreview()
         }
-        .onChange(of: pastedLink) { _, _ in Task { await loadPreview() } }
+        .onChange(of: pastedLink) { _, _ in
+            previewTask?.cancel()
+            previewTask = Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                await loadPreview()
+            }
+        }
+        .onDisappear { previewTask?.cancel() }
     }
 
     private func loadPreview() async {
         guard let target = parsedLink, let stateURL = target.stateURL else { return }
         let client = MwFClient(baseURL: "", token: "")
-        if let pub = try? await client.publicState(url: stateURL) {
-            themePreview = pub.theme
-        }
+        guard let pub = try? await client.publicState(url: stateURL) else { return }
+        // The field may have moved on while this 12 s fetch was in flight — a late
+        // response for an older link must never render over the current one.
+        guard !Task.isCancelled, target == parsedLink else { return }
+        themePreview = pub.theme
     }
 }
 
@@ -221,6 +240,16 @@ struct MusicWithFriendsSessionView: View {
                     turnBanner
                 }
                 shareSection(entry)
+                // Leader-verb failures (approve/reject/+1/settings/end) surface HERE, where
+                // they happen — the create/join sheets keep their own local messages, and
+                // the 4 s poll reports on `pollError`, so these three never overwrite each
+                // other across windows.
+                if let err = friends.lastError {
+                    Section {
+                        Text(err).font(.footnote).foregroundStyle(Theme.danger)
+                            .accessibilityIdentifier("mwf-session-error")
+                    }
+                }
                 leaderboard
                 if !ended {
                     suggestComposer

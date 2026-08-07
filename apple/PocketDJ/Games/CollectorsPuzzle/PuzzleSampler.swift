@@ -5,6 +5,22 @@ import Foundation
 /// sampling in a detached task (the Browse off-main doctrine; the pool can be ~100k songs).
 enum PuzzleSampler {
 
+    /// What the MAIN ACTOR is allowed to hand over: raw COW containers only, no derived
+    /// work. `Inputs(raw:)` builds the ~96k-entry genre map and the membership Sets from
+    /// it OFF the main actor — the caller pays only retain/release here, so a debounced
+    /// settings keystroke (and the ticker's mid-round top-up) never walks the catalog on
+    /// the main thread.
+    struct RawInputs {
+        var songs: [IndexSong]
+        var albumsById: [String: IndexAlbum]
+        var favoriteIds: Set<String>
+        var playCounts: [String: Int]
+        /// Member ids of each `settings.membershipCollectionIds` collection…
+        var membershipCollections: [[String]]
+        /// …and of each `settings.targetCollectionIds` collection.
+        var targetCollections: [[String]]
+    }
+
     struct Inputs {
         /// `AppModel.songs` snapshot.
         var songs: [IndexSong]
@@ -19,6 +35,38 @@ enum PuzzleSampler {
         /// Existing membership of EACH target collection — a song already in ALL of
         /// them has nothing left to assign and never samples.
         var perTargetMembership: [Set<String>]
+
+        init(songs: [IndexSong], genreBySongId: [String: String], favoriteIds: Set<String>,
+             playCounts: [String: Int], membershipUnion: Set<String>,
+             perTargetMembership: [Set<String>]) {
+            self.songs = songs
+            self.genreBySongId = genreBySongId
+            self.favoriteIds = favoriteIds
+            self.playCounts = playCounts
+            self.membershipUnion = membershipUnion
+            self.perTargetMembership = perTargetMembership
+        }
+
+        /// Build the derived structures from a main-actor `RawInputs` snapshot. CALL THIS
+        /// OFF THE MAIN ACTOR — it walks every song in the catalog (~96k).
+        init(raw: RawInputs) {
+            var genreBySongId: [String: String] = [:]
+            genreBySongId.reserveCapacity(raw.songs.count)
+            // Genre lives on the ALBUM; category once per album, then fan out.
+            var categoryByAlbum: [String: String] = [:]
+            for song in raw.songs {
+                guard let albumId = song.albumId else { continue }
+                let cat = categoryByAlbum[albumId] ?? Genre.category(raw.albumsById[albumId]?.genre)
+                categoryByAlbum[albumId] = cat
+                genreBySongId[song.id] = cat
+            }
+            var membershipUnion = Set<String>()
+            for ids in raw.membershipCollections { membershipUnion.formUnion(ids) }
+            self.init(songs: raw.songs, genreBySongId: genreBySongId,
+                      favoriteIds: raw.favoriteIds, playCounts: raw.playCounts,
+                      membershipUnion: membershipUnion,
+                      perTargetMembership: raw.targetCollections.map(Set.init))
+        }
     }
 
     /// The filtered pool with per-song weights (hard filters applied; soft biases as

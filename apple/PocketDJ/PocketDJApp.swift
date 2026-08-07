@@ -1187,6 +1187,7 @@ struct PocketDJApp: App {
                         streaming.onScenePhaseBackground()
                         mixSessions.flush()    // persist the latest session state before suspension
                         studio.flush()         // studio document too — same suspension-race doctrine
+                        puzzleDecisions.flush() // …and any coalesced gameplay decisions
                         // Last-known collection subtitles, so the next cold launch shows real
                         // counts instead of "0 songs" while the ~50 MB catalog decodes.
                         collections.flushStatsCache()

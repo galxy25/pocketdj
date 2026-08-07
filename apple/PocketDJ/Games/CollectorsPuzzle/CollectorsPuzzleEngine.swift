@@ -86,29 +86,40 @@ final class CollectorsPuzzleEngine {
         if let data = try? JSONEncoder().encode(s) { defaults.set(data, forKey: Self.settingsKey) }
     }
 
-    /// Snapshot the sampler inputs on the main actor (cheap: COW arrays + sets).
-    private func snapshotInputs() -> PuzzleSampler.Inputs {
-        let albumsById = app.albumsById
-        var genreBySongId: [String: String] = [:]
-        genreBySongId.reserveCapacity(app.songs.count)
-        // Genre lives on the ALBUM; category once per album, then fan out.
-        var categoryByAlbum: [String: String] = [:]
-        for song in app.songs {
-            guard let albumId = song.albumId else { continue }
-            let cat = categoryByAlbum[albumId] ?? Genre.category(albumsById[albumId]?.genre)
-            categoryByAlbum[albumId] = cat
-            genreBySongId[song.id] = cat
-        }
-        var membershipUnion = Set<String>()
-        for cid in settings.membershipCollectionIds {
-            membershipUnion.formUnion(memberIds(of: cid))
-        }
-        let perTarget = settings.targetCollectionIds.map { Set(memberIds(of: $0)) }
-        return PuzzleSampler.Inputs(songs: app.songs, genreBySongId: genreBySongId,
-                                    favoriteIds: favorites.favoriteIds,
-                                    playCounts: playStats.playCountsSnapshot(),
-                                    membershipUnion: membershipUnion,
-                                    perTargetMembership: perTarget)
+    /// Snapshot the sampler inputs on the main actor — RAW COW containers ONLY. The
+    /// derived structures (the ~96k-entry genre map, the membership Sets) are built
+    /// OFF the main actor by `PuzzleSampler.Inputs(raw:)`: this runs on every debounced
+    /// settings keystroke AND from the 0.25 s ticker's mid-round top-up, where a
+    /// full-catalog walk on the main thread is a visible runloop stall (the Browse
+    /// off-main doctrine).
+    private func snapshotRawInputs() -> PuzzleSampler.RawInputs {
+        PuzzleSampler.RawInputs(
+            songs: app.songs,
+            albumsById: app.albumsById,
+            favoriteIds: favorites.favoriteIds,
+            playCounts: playStats.playCountsSnapshot(),
+            membershipCollections: settings.membershipCollectionIds.map { memberIds(of: $0) },
+            targetCollections: settings.targetCollectionIds.map { memberIds(of: $0) })
+    }
+
+    // MARK: - Sequencer ownership
+
+    /// Prefix of the `sourceSetlistId` a puzzle run tags the shared sequencer with.
+    static let runTagPrefix = "puzzle_"
+    /// THIS round's sequencer tag.
+    private var runTag: String { "\(Self.runTagPrefix)\(roundId.uuidString)" }
+    /// True while the shared `SetlistPlayer` is still running the queue THIS round handed
+    /// it. The sequencer is app-scoped: any other surface (Browse, a setlist detail, an
+    /// MwF accept) may `play()` over it mid-round, which resets `index` to 0 against a
+    /// foreign queue — so every read of `sequencer.index` and every skip/stop is gated.
+    private var ownsSequencer: Bool {
+        sequencer.isRunning && sequencer.sourceSetlistId == runTag
+    }
+    /// Someone ELSE is playing: the round can no longer trust the audio position, and must
+    /// never skip or stop that run. (Distinct from "nothing is playing", which is just the
+    /// queue running out.)
+    private var sequencerTakenOver: Bool {
+        sequencer.isRunning && sequencer.sourceSetlistId != runTag
     }
 
     private func memberIds(of collectionId: String) -> [String] {
@@ -119,10 +130,10 @@ final class CollectorsPuzzleEngine {
 
     /// How many songs match the current settings ("N songs match" in setup).
     func poolCount() async -> Int {
-        let inputs = snapshotInputs()
+        let raw = snapshotRawInputs()
         let settings = settings
         return await Task.detached(priority: .userInitiated) {
-            PuzzleSampler.poolCount(settings: settings, inputs: inputs)
+            PuzzleSampler.poolCount(settings: settings, inputs: PuzzleSampler.Inputs(raw: raw))
         }.value
     }
 
@@ -136,13 +147,13 @@ final class CollectorsPuzzleEngine {
         lastError = nil
         poolExhausted = false
         phase = .sampling
-        let inputs = snapshotInputs()
+        let raw = snapshotRawInputs()
         let settings = settings
         let rng = rng
         // Nobody can clear more than ~1 song/sec — sample enough to never starve.
         let n = max(60, settings.roundSeconds)
         let sampled = await Task.detached(priority: .userInitiated) {
-            PuzzleSampler.sample(n, settings: settings, inputs: inputs, rng: rng)
+            PuzzleSampler.sample(n, settings: settings, inputs: PuzzleSampler.Inputs(raw: raw), rng: rng)
         }.value
         guard !sampled.isEmpty else {
             lastError = "No songs match these settings."
@@ -165,7 +176,7 @@ final class CollectorsPuzzleEngine {
         sequencer.play(queue.map { song in
             SetlistPlayer.Item(id: song.id, title: song.name, artist: song.artist,
                                lengthMs: song.length)
-        }, sourceSetlistId: nil)
+        }, sourceSetlistId: runTag)
         deadlineEpoch = now().timeIntervalSince1970 + Double(settings.roundSeconds)
         phase = .running
         startTicker()
@@ -184,6 +195,13 @@ final class CollectorsPuzzleEngine {
     /// One ticker turn — also the test seam (tests drive ticks directly, no timers).
     func tickOnce() {
         guard phase == .running else { return }
+        // Ownership first: another surface replaced the shared queue (the user popped to
+        // Browse and played a playlist). Its index says NOTHING about this round, so end
+        // the round cleanly — record the run, log nothing, and leave THEIR audio alone.
+        if sequencerTakenOver {
+            endRound(stopAudio: false)
+            return
+        }
         if now().timeIntervalSince1970 >= deadlineEpoch {
             endRound()
             return
@@ -191,24 +209,26 @@ final class CollectorsPuzzleEngine {
         // Drift re-sync: the audio advanced past the engine's position (natural track
         // end, or a lock-screen ⏭ the engine never saw) — each passed song EXPIRED
         // without a player action; audio stays authoritative for position.
-        if sequencer.isRunning, sequencer.index > queueIndex {
+        if ownsSequencer, sequencer.index > queueIndex {
             let target = min(sequencer.index, queue.count)
-            for i in queueIndex..<target {
-                decisions.record(roundId: roundId, songId: queue[i].id, action: "expired",
-                                 positionInRound: i, settings: settings)
-            }
+            // ONE persist for the whole burst (a per-row save re-encodes the entire
+            // ≤20k-row document — inside the 0.25 s ticker, per passed song).
+            decisions.recordBatch((queueIndex..<target).map {
+                (songId: queue[$0].id, action: "expired", positionInRound: $0)
+            }, roundId: roundId, settings: settings)
             queueIndex = target
         }
         // Top-up: never let the visible queue starve mid-round (single-flight).
         if queue.count - queueIndex < 10, !toppingUp, !poolExhausted {
             toppingUp = true
             let shown = Set(queue.map(\.id))
-            let inputs = snapshotInputs()
+            let raw = snapshotRawInputs()
             let settings = settings
             let rng = rng
             Task { [weak self] in
                 let extra = await Task.detached(priority: .userInitiated) {
-                    PuzzleSampler.sample(40, settings: settings, inputs: inputs,
+                    PuzzleSampler.sample(40, settings: settings,
+                                         inputs: PuzzleSampler.Inputs(raw: raw),
                                          rng: rng, excluding: shown)
                 }.value
                 guard let self else { return }
@@ -219,6 +239,10 @@ final class CollectorsPuzzleEngine {
                     return
                 }
                 self.queue.append(contentsOf: extra)
+                // The await above is a window in which someone else could have taken the
+                // sequencer — appending into THEIR queue would both corrupt this round's
+                // index mapping and hijack their playback.
+                guard self.ownsSequencer else { return }
                 self.sequencer.appendToQueue(extra.map {
                     SetlistPlayer.Item(id: $0.id, title: $0.name, artist: $0.artist,
                                        lengthMs: $0.length)
@@ -229,8 +253,9 @@ final class CollectorsPuzzleEngine {
 
     /// File the current song into target `i` — one point.
     func assign(toTargetIndex i: Int) {
-        guard phase == .running, let song = current,
-              settings.targetCollectionIds.indices.contains(i) else { return }
+        guard phase == .running else { return }
+        if sequencerTakenOver { endRound(stopAudio: false); return }
+        guard let song = current, settings.targetCollectionIds.indices.contains(i) else { return }
         let cid = settings.targetCollectionIds[i]
         let name = collectionName(cid)
         collections.addSong(song.id,
@@ -246,7 +271,9 @@ final class CollectorsPuzzleEngine {
 
     /// Pass on the current song — no point, logged as a real signal.
     func skip() {
-        guard phase == .running, let song = current else { return }
+        guard phase == .running else { return }
+        if sequencerTakenOver { endRound(stopAudio: false); return }
+        guard let song = current else { return }
         decisions.record(roundId: roundId, songId: song.id, action: "skipped",
                          positionInRound: queueIndex, settings: settings)
         advance()
@@ -254,15 +281,19 @@ final class CollectorsPuzzleEngine {
 
     private func advance() {
         queueIndex += 1
-        sequencer.skipNext()
+        // Only ever skip OUR run — a foreign queue's track is not ours to advance.
+        if ownsSequencer { sequencer.skipNext() }
     }
 
     /// End the round (deadline hit or the user's End button): stop audio, record the run.
-    func endRound() {
+    /// `stopAudio: false` is the ownership-lost path — the round is recorded and the
+    /// ticker torn down, but whatever ELSE is playing keeps playing.
+    func endRound(stopAudio: Bool = true) {
         guard phase == .running else { return }
         tickerTask?.cancel()
         tickerTask = nil
-        sequencer.stop()
+        if stopAudio, ownsSequencer { sequencer.stop() }
+        decisions.flush()   // land the round's rows before the summary/suspension
         phase = .finished
         let best = scoreboard.bestScore(.collectorsPuzzle) ?? 0
         isNewHighScore = score > best

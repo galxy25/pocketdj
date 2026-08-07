@@ -31,9 +31,22 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         config.protocolClasses = [MwFURLProtocol.self]
         store.urlSession = URLSession(configuration: config)
         store.deviceClientId = { "client-test" }
+        store.joinSecret = { "secret-test" }
         store.makePickModel = { nil }   // tests never touch FoundationModels
         store.scoreboard = GameScoreboardStore(fileURL: tempURL("scores"))
         return (store, defaults)
+    }
+
+    /// The app-scoped playback stack the leader's queue-accepted nicety writes into.
+    private func makeSequencer() -> SetlistPlayer {
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!,
+                             session: URLSession(configuration: .ephemeral))
+        let burns = BurnStore(rips: rips, fileURL: tempURL("burns"))
+        let player = PlayerEngine()
+        let coordinator = PlaybackCoordinator(
+            ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+            appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
+        return SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
     }
 
     private func seedEntry(_ store: MusicWithFriendsStore, defaults: UserDefaults,
@@ -57,9 +70,10 @@ final class MusicWithFriendsStoreTests: XCTestCase {
           "name": "Ada's MwF", "theme": "90s", "url": "https://jukebox.pocket-dj.com/mwf/abcd2345/",
           "expiresAt": 999999, "settings": { "turnSeconds": 120 } }
         """.utf8)
-        await store.create(name: "Ada's MwF", theme: "90s", displayName: "Ada",
-                           settings: MwFSettings(turnSeconds: 120, acceptOutsideTurn: false,
-                                                 turnEndsOnFirstSuggestion: true))
+        let err = await store.create(name: "Ada's MwF", theme: "90s", displayName: "Ada",
+                                     settings: MwFSettings(turnSeconds: 120, acceptOutsideTurn: false,
+                                                           turnEndsOnFirstSuggestion: true))
+        XCTAssertNil(err, "create RETURNS its error (the sheet owns the message, not a shared field)")
         XCTAssertNil(store.lastError)
         XCTAssertEqual(store.sessions.count, 1)
         let entry = store.sessions[0]
@@ -72,6 +86,8 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         let req = MwFURLProtocol.last(path: "/mwf")
         XCTAssertEqual(req?.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
         XCTAssertEqual(MwFURLProtocol.lastBodyJSON(path: "/mwf")?["clientId"] as? String, "client-test")
+        XCTAssertEqual(MwFURLProtocol.lastBodyJSON(path: "/mwf")?["joinSecret"] as? String, "secret-test",
+                       "the leader registers a re-join secret too")
         // Persisted: a fresh store on the same defaults reloads the entry.
         let store2 = MusicWithFriendsStore(defaults: defaults)
         store2.loadPersisted()
@@ -91,14 +107,41 @@ final class MusicWithFriendsStoreTests: XCTestCase {
           "sessionName": "Ada's MwF", "expiresAt": 999999 }
         """.utf8)
         let link = MwFLink(url: URL(string: "https://jukebox.pocket-dj.com/mwf/abcd2345/")!)!
-        await store.join(link: link, name: "Beth")
+        let err = await store.join(link: link, name: "Beth")
+        XCTAssertNil(err)
         XCTAssertNil(store.lastError)
         XCTAssertEqual(store.sessions.count, 1)
         XCTAssertFalse(store.sessions[0].isLeader)
         XCTAssertEqual(store.sessions[0].apiBase, "https://broker.test")
         XCTAssertEqual(store.sessions[0].name, "Ada's MwF")
         XCTAssertEqual(store.pendingOpenId, "abcd2345")
-        XCTAssertEqual(MwFURLProtocol.lastBodyJSON(path: "/mwf/abcd2345/join")?["name"] as? String, "Beth")
+        let body = MwFURLProtocol.lastBodyJSON(path: "/mwf/abcd2345/join")
+        XCTAssertEqual(body?["name"] as? String, "Beth")
+        // The re-join credential is the per-install SECRET, never the broadcast device id
+        // (the broker refuses a bare clientId as proof of identity).
+        XCTAssertEqual(body?["joinSecret"] as? String, "secret-test")
+        XCTAssertNotEqual(body?["joinSecret"] as? String, body?["clientId"] as? String)
+        XCTAssertNil(MwFURLProtocol.last(path: "/mwf/abcd2345/join")?
+            .value(forHTTPHeaderField: "Authorization"),
+                     "a first join presents no bearer — nothing to prove yet")
+    }
+
+    /// A device that still holds a memberKey re-binds by PRESENTING it (the only way the
+    /// broker hands an existing member's key back).
+    func testRejoinPresentsTheMemberKeyAsBearer() async throws {
+        let (store, defaults) = makeStore()
+        _ = seedEntry(store, defaults: defaults, id: "abcd2345", leader: false)
+        MwFURLProtocol.bodyByPath["/mwf/abcd2345/join"] = Data("""
+        { "memberId": "mb_me", "memberKey": "mk_me" }
+        """.utf8)
+        // Force the network path: the local entry short-circuits join(), so drive the
+        // client the way a re-join after a failed state poll would.
+        let client = MwFClient(baseURL: "https://broker.test", token: "tok", session: store.urlSession)
+        _ = try await client.join(apiBase: nil, sessionId: "abcd2345", name: "Me",
+                                  clientId: "client-test", joinSecret: "secret-test",
+                                  memberKey: "mk_me")
+        XCTAssertEqual(MwFURLProtocol.last(path: "/mwf/abcd2345/join")?
+            .value(forHTTPHeaderField: "Authorization"), "Bearer mk_me")
     }
 
     func testHandleOpenedLinkKnownOpensUnknownDrivesJoinSheet() {
@@ -109,8 +152,33 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         XCTAssertNil(store.pendingJoin)
         store.pendingOpenId = nil
         store.handleOpenedLink(MwFLink(url: URL(string: "pocketdj://mwf/zzzz7777")!)!)
-        XCTAssertNil(store.pendingOpenId)
         XCTAssertEqual(store.pendingJoin?.sessionId, "zzzz7777", "unknown session → the Join sheet")
+        XCTAssertEqual(store.pendingOpenId, "zzzz7777",
+                       "…AND the navigation signal, or the sheet is unreachable from another tab")
+    }
+
+    /// The 4 s poll must not write the field the create/join sheets read (multi-window:
+    /// one window's poll would erase or forge the other's message).
+    func testPollErrorNeverTouchesTheVerbErrorSurface() async throws {
+        let (store, defaults) = makeStore()
+        _ = seedEntry(store, defaults: defaults)
+        MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 500
+        _ = await store.refresh("abcd2345")
+        XCTAssertNotNil(store.pollError, "the poll reports on its own channel")
+        XCTAssertNil(store.lastError, "…and never on the sheets'")
+        // A create failing while that poll error stands returns ITS message.
+        MwFURLProtocol.statusCodeByPath["/mwf"] = 500
+        let err = await store.create(name: "n", theme: "t", displayName: "Ada",
+                                     settings: MwFSettings(turnSeconds: 120, acceptOutsideTurn: false,
+                                                           turnEndsOnFirstSuggestion: true))
+        XCTAssertNotNil(err)
+        XCTAssertNil(store.lastError)
+        // …and a later SUCCESSFUL poll can't retroactively "clear" it.
+        MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 200
+        MwFURLProtocol.bodyByPath["/mwf/abcd2345/state"] = Data("{\"sessionId\":\"abcd2345\"}".utf8)
+        _ = await store.refresh("abcd2345")
+        XCTAssertNil(store.pollError)
+        XCTAssertNotNil(err, "the sheet's message is local to the sheet")
     }
 
     // MARK: Refresh / final score
@@ -181,6 +249,33 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/suggestions/sg_9/plusone"] = 409
         await store.plusOne("abcd2345", suggestionId: "sg_9")
         XCTAssertNotNil(store.lastError)
+    }
+
+    /// The leader's "queue accepted songs" nicety rides the app-scoped sequencer — but a
+    /// Collectors Puzzle round maps ITS queue index onto that sequencer's, so an append
+    /// mid-round would desync the decision log's positions.
+    /// Assertions run synchronously after each call (the NowPlayingQueueTests discipline —
+    /// the sequencer's playCurrent Tasks haven't run).
+    func testAcceptedSongNeverAppendsIntoALivePuzzleRound() {
+        let (store, defaults) = makeStore()
+        _ = seedEntry(store, defaults: defaults)
+        let sequencer = makeSequencer()
+        store.sequencer = sequencer
+        let match = MwFMatch(songId: "sng_1", appleMusicId: nil, title: "Neon",
+                             artist: "Aria", lengthMs: 222000)
+
+        // A live puzzle round owns the sequencer → the accept must NOT append.
+        sequencer.play([SetlistPlayer.Item(id: "sng_2", title: "Pulse", artist: "Aria")],
+                       sourceSetlistId: "\(CollectorsPuzzleEngine.runTagPrefix)\(UUID().uuidString)")
+        store.queueMatchIfPlayable(match)
+        XCTAssertEqual(sequencer.queue.count, 1, "a puzzle round's queue is left exactly as it was")
+
+        // An ordinary set still takes the append (the nicety is unchanged elsewhere).
+        sequencer.play([SetlistPlayer.Item(id: "sng_2", title: "Pulse", artist: "Aria")],
+                       sourceSetlistId: "set_x")
+        store.queueMatchIfPlayable(match)
+        XCTAssertEqual(sequencer.queue.count, 2)
+        XCTAssertEqual(sequencer.queue.last?.id, "sng_1")
     }
 
     // MARK: Collection download

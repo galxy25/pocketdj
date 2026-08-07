@@ -147,4 +147,46 @@ final class PuzzleSamplerTests: XCTestCase {
                                      rng: PRNG.seededRng("seed-x"))
         XCTAssertEqual(a.map(\.id), b.map(\.id), "same seed ⇒ same draw")
     }
+
+    /// The main actor hands over RAW containers only; the ~96k-row genre map + the
+    /// membership Sets are built here, off-main.
+    func testInputsFromRawBuildsTheDerivedStructures() {
+        let s1 = songInAlbum("s1", albumId: "alb_rock")
+        let s2 = songInAlbum("s2", albumId: "alb_jazz")
+        let s3 = songInAlbum("s3", albumId: nil)     // album-less songs get no genre entry
+        let raw = PuzzleSampler.RawInputs(
+            songs: [s1, s2, s3],
+            albumsById: ["alb_rock": album("alb_rock", genre: "Classic Rock"),
+                         "alb_jazz": album("alb_jazz", genre: "Bebop Jazz")],
+            favoriteIds: ["s1"], playCounts: ["s2": 3],
+            membershipCollections: [["s1", "s2"], ["s2", "s3"]],
+            targetCollections: [["s1"], ["s2", "s3"]])
+        let built = PuzzleSampler.Inputs(raw: raw)
+        XCTAssertEqual(built.songs.map(\.id), ["s1", "s2", "s3"])
+        XCTAssertEqual(built.genreBySongId["s1"], Genre.category("Classic Rock"))
+        XCTAssertEqual(built.genreBySongId["s2"], Genre.category("Bebop Jazz"))
+        XCTAssertNil(built.genreBySongId["s3"])
+        XCTAssertEqual(built.membershipUnion, ["s1", "s2", "s3"], "membership collections UNION")
+        XCTAssertEqual(built.perTargetMembership, [["s1"], ["s2", "s3"]])
+        XCTAssertEqual(built.favoriteIds, ["s1"])
+        XCTAssertEqual(built.playCounts, ["s2": 3])
+        // …and the pool it feeds matches a hand-built Inputs exactly.
+        var settings = PuzzleSettings()
+        settings.genreCategories = [Genre.category("Classic Rock")]
+        XCTAssertEqual(PuzzleSampler.poolCount(settings: settings, inputs: built), 1)
+    }
+
+    private func songInAlbum(_ id: String, albumId: String?) -> IndexSong {
+        var obj: [String: Any] = ["id": id, "name": id, "artist": "A"]
+        if let albumId { obj["albumId"] = albumId }
+        let data = try! JSONSerialization.data(withJSONObject: obj)
+        return try! JSONDecoder().decode(IndexSong.self, from: data)
+    }
+
+    private func album(_ id: String, genre: String) -> IndexAlbum {
+        let obj: [String: Any] = ["id": id, "artist": "A", "name": id, "genre": genre,
+                                  "trackList": []]
+        let data = try! JSONSerialization.data(withJSONObject: obj)
+        return try! JSONDecoder().decode(IndexAlbum.self, from: data)
+    }
 }

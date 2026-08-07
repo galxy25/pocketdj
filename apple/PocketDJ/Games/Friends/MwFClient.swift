@@ -1,5 +1,25 @@
 import Foundation
 
+/// The per-install Music-with-Friends RE-JOIN credential — 32 random hex chars minted on
+/// first use and persisted under `pdj.mwf.joinSecret.v1`.
+///
+/// Deliberately NOT `DeviceIdentity.current`: that id is a broadcast correlation value (it
+/// rides every server call as `X-PocketDJ-Device` and the broker hands it to jukebox hosts
+/// in `/requests`), so a server that accepted it as proof-of-identity would hand a member's
+/// bearer `memberKey` to anyone who ever saw it. This value goes to exactly ONE endpoint
+/// (`POST /mwf/:id/join`), where the broker stores only its sha256.
+enum MwFJoinSecret {
+    private static let defaultsKey = "pdj.mwf.joinSecret.v1"
+
+    static var current: String {
+        let defaults = UserDefaults.standard
+        if let existing = defaults.string(forKey: defaultsKey), !existing.isEmpty { return existing }
+        let minted = (0..<32).map { _ in "0123456789abcdef".randomElement()! }.map(String.init).joined()
+        defaults.set(minted, forKey: defaultsKey)
+        return minted
+    }
+}
+
 /// Thin async client for the broker's Music with Friends routes (`/mwf/...` on the SAME
 /// jukebox server — `SettingsStore.jukeboxServerURL` / `jukeboxToken`, no new settings).
 /// Mirrors `JukeboxClient`: injectable URLSession, short timeouts, per-call bearer,
@@ -58,20 +78,24 @@ struct MwFClient {
     }
 
     func create(name: String, theme: String, leaderName: String, clientId: String,
-                settings: MwFSettings) async throws -> CreateResult {
+                joinSecret: String, settings: MwFSettings) async throws -> CreateResult {
         struct Body: Encodable {
             let name: String; let theme: String; let leaderName: String
-            let clientId: String; let settings: MwFSettings
+            let clientId: String; let joinSecret: String; let settings: MwFSettings
         }
         return try await run(
             try request("/mwf", method: "POST", bearer: token,
                         body: Body(name: name, theme: theme, leaderName: leaderName,
-                                   clientId: clientId, settings: settings), timeout: 30),
+                                   clientId: clientId, joinSecret: joinSecret, settings: settings),
+                        timeout: 30),
             as: CreateResult.self)
     }
 
-    /// `POST /mwf/:id/join` — public, idempotent by clientId. `apiBase` comes from the
-    /// public state.json (like `submitGuestRequest`), falling back to the configured server.
+    /// `POST /mwf/:id/join` — public, idempotent by the per-install `joinSecret` (NOT the
+    /// broadcast clientId, which the server refuses as proof of identity). A device that
+    /// still holds a `memberKey` presents it as the bearer, which re-binds that exact
+    /// member. `apiBase` comes from the public state.json (like `submitGuestRequest`),
+    /// falling back to the configured server.
     struct JoinResult: Decodable {
         var memberId: String?
         var memberKey: String?
@@ -82,12 +106,13 @@ struct MwFClient {
         var sessionName: String?
     }
 
-    func join(apiBase: String?, sessionId: String, name: String, clientId: String) async throws -> JoinResult {
-        struct Body: Encodable { let name: String; let clientId: String }
+    func join(apiBase: String?, sessionId: String, name: String, clientId: String,
+              joinSecret: String, memberKey: String? = nil) async throws -> JoinResult {
+        struct Body: Encodable { let name: String; let clientId: String; let joinSecret: String }
         let b = normalizedBase(apiBase)
         return try await run(
-            try request(base: b, "/mwf/\(sessionId)/join", method: "POST", bearer: nil,
-                        body: Body(name: name, clientId: clientId)),
+            try request(base: b, "/mwf/\(sessionId)/join", method: "POST", bearer: memberKey,
+                        body: Body(name: name, clientId: clientId, joinSecret: joinSecret)),
             as: JoinResult.self)
     }
 

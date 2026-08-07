@@ -59,10 +59,48 @@ final class PuzzleDecisionStoreTests: XCTestCase {
         settings.membershipCollectionIds = ["pls_a"]
         settings.targetCollectionIds = ["pkt_x", "pls_b"]
         store.record(roundId: UUID(), songId: "sng_1", action: "assigned", settings: settings)
+        store.flush()   // gameplay-rate saves coalesce; flush lands them synchronously
 
         let reloaded = PuzzleDecisionStore(fileURL: url)
         XCTAssertEqual(reloaded.decisions.first?.settings, settings,
                        "the full weighting snapshot survives the disk round-trip")
+    }
+
+    // MARK: Coalesced, off-main persistence (gameplay-rate records)
+
+    func testRecordBatchWritesOnceAndFlushLands() throws {
+        let url = tempURL()
+        let store = PuzzleDecisionStore(fileURL: url)
+        let round = UUID()
+        var settings = PuzzleSettings()
+        settings.roundSeconds = 90
+        // The drift re-sync's burst: one persist for the whole run of expired songs.
+        let made = store.recordBatch([(songId: "sng_1", action: "expired", positionInRound: 0),
+                                      (songId: "sng_2", action: "expired", positionInRound: 1),
+                                      (songId: "sng_3", action: "expired", positionInRound: 2)],
+                                     roundId: round, settings: settings)
+        XCTAssertEqual(made.count, 3)
+        XCTAssertEqual(store.decisions(forRound: round).map(\.positionInRound), [0, 1, 2])
+        XCTAssertEqual(store.decisions.last?.settings, settings)
+        XCTAssertTrue(store.hasUnsavedChanges, "the write is coalesced, not per-row")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "…and nothing hit the disk on the main actor yet")
+        store.flush()
+        XCTAssertFalse(store.hasUnsavedChanges)
+        XCTAssertEqual(PuzzleDecisionStore(fileURL: url).decisions.count, 3, "flush lands every row")
+    }
+
+    func testBurstOfRecordsCoalescesIntoOneDocument() async throws {
+        let url = tempURL()
+        let store = PuzzleDecisionStore(fileURL: url)
+        let round = UUID()
+        for i in 0..<20 { store.record(roundId: round, songId: "sng_\(i)", action: "skipped") }
+        XCTAssertTrue(store.hasUnsavedChanges)
+        // The debounced save lands off the main actor without any flush.
+        try await Task.sleep(for: .milliseconds(1200))
+        XCTAssertFalse(store.hasUnsavedChanges)
+        XCTAssertEqual(PuzzleDecisionStore(fileURL: url).decisions.count, 20,
+                       "the coalesced write carries the whole burst")
     }
 
     func testLenientDecode() throws {
