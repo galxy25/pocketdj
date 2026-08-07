@@ -571,9 +571,35 @@ function adhocRow(songId, adhoc) {
     length: Number(adhoc.lengthMs) || 0,
   };
 }
+// VARIANT rip ids ("<baseId>_clean" | "<baseId>_explicit") — a distinct EDITION of a
+// catalog song, keyed separately across the whole songId-keyed pipeline (S3 rips,
+// stems, analysis, burns). STRICT shape like ADHOC_ID: only `sng_<12hex>` bases parse,
+// and the base must exist in RIP_SOURCES, so a hostile id can't synthesize a row.
+const VARIANT_ID = /^(sng_[0-9a-f]{12})_(clean|explicit)$/;
+// Variant rip: synthesize a digital row from the base catalog song. appleMusicId MAY be
+// null (capture is by artist+title with a REQUIRED edition — see --require-explicitness);
+// the variant catalog id is used when the re-indexed source carries it. Registered in
+// songById so every downstream lookup (runJob, cancel, status, stems) resolves it — the
+// adhoc-row pattern. sourceType 'digital' routes runJob → runDigitalJob and makes the
+// single-flight key per-VARIANT-songId; the manifest key is the variant id, so the S3
+// object is rips/<baseId>_<variant>.mp3 and autoStemOnRip/analysis chase it under the
+// variant id automatically.
+function resolveVariantRow(songId) {
+  const existing = songById.get(songId);
+  if (existing) return existing;
+  const m = VARIANT_ID.exec(String(songId || ''));
+  if (!m) return null;
+  const base = songById.get(m[1]);
+  if (!base) return null;
+  const amId = m[2] === 'clean' ? (base.appleMusicIdClean || null) : (base.appleMusicIdExplicit || null);
+  const row = { ...base, id: songId, sourceType: 'digital', appleMusicId: amId, variant: m[2] };
+  songById.set(songId, row);
+  return row;
+}
+const findSongOrVariant = (id) => songById.get(id) || resolveVariantRow(id);
 
 function acceptRip(songId, ripFromCloud = false, adhoc = null) {
-  let song = songId && songById.get(songId);
+  let song = songId && findSongOrVariant(songId);
   // AD-HOC rip: a freshly-recognized Apple Music track (PocketDJ recognizer "add to
   // Apple Music + burn") that isn't in any indexed source yet. The digital worker
   // captures by artist+title (it searches Music.app), so a synthesized digital row is
@@ -792,6 +818,8 @@ function resumePending() {
       song = adhocRow(songId, rec.adhoc);
       songById.set(songId, song);
     }
+    // Variant rip: re-synthesize from the base catalog row (mirrors the adhoc resume).
+    if (!song && songId && VARIANT_ID.test(songId)) song = resolveVariantRow(songId);
     if (!song) { clearQueue(songId || f.replace('.json', '')); continue; }
     if (manifest[songId]) { clearQueue(songId); continue; } // already ripped while we were down
     // Reconstruct from the persisted RESOLVED preferCloud — do NOT re-probe the library
@@ -1092,6 +1120,9 @@ async function runDigitalJob(job, song) {
     '--bucket', CFG.bucket, '--region', CFG.region, '--profile', CFG.profile, '--tmp', CFG.tmp,
     '--ah-recordings-dir', CFG.ahRecDir,
   ];
+  // Variant rip: require the edition at capture (the worker fails with
+  // no-matching-edition rather than uploading wrong-edition audio under a variant key).
+  if (song.variant) args.push('--explicitness', song.variant);
   if (job.canceled) return fail(job, 'canceled'); // pre-spawn guard
   await new Promise((res) => {
     let p;
@@ -1415,7 +1446,9 @@ function kickBackfillCuts() {
 
 // status: 'unknown'|'ready'|'inflight'|'queued'|'ripping'|'needsCut'|'ineligible'
 function acceptStem(songId, ripFromCloud = false) {
-  const song = songId && songById.get(songId);
+  // findSongOrVariant: a stem request for a VARIANT id works before any rip exists
+  // (the synthesized row lets the not-ripped → acceptRip fallthrough enqueue it).
+  const song = songId && findSongOrVariant(songId);
   const e = songId ? manifest[songId] : undefined;
   // AD-HOC stem: a completed Discover/recognizer rip's synthesized row is evicted at
   // rip-terminal (runJob), so a later /stemify for the amrec_ id used to 404 even though
@@ -2140,6 +2173,9 @@ const server = http.createServer(async (req, res) => {
           songId,
           ripped: !!entry,
           url: entry ? publicUrl(entry.key) : null,
+          // iTunes trackExplicitness → tri-state: explicit / clean ('cleaned'/'notExplicit')
+          // / null (unclassified). Drives the app's Discover edition badge + re-rank.
+          explicit: t.trackExplicitness === 'explicit' ? true : (t.trackExplicitness ? false : null),
         };
       });
       return send(res, 200, { results });

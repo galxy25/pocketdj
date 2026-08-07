@@ -142,6 +142,10 @@ export function loadLibraryXML(file) {
     if (line.includes('<dict>')) { cur = {}; continue; }
     if (line.includes('</dict>') && cur) { if (cur.persistentID || cur.title) entries.push(cur); cur = null; continue; }
     if (!cur) continue;
+    // Boolean tags (<key>Explicit</key><true/>) don't match the string/integer regex below —
+    // capture the library's explicitness flag here so edition-aware capture can require it.
+    const mb = line.match(/<key>([^<]+)<\/key><(true|false)\/>/);
+    if (mb) { if (mb[1] === 'Explicit') cur.explicit = mb[2] === 'true'; continue; }
     const m = line.match(/<key>([^<]+)<\/key><(?:string|integer)>([^<]*)<\/(?:string|integer)>/);
     if (!m) continue;
     const k = m[1], v = unesc(m[2]);
@@ -161,23 +165,36 @@ export function loadLibraryTSV(file) {
 }
 export function indexLibrary(entries) {
   // exact: keyed by normArtist + comparableTitle (version-aware) — only this overwrites
-  //        / cloud-captures. byTitle: keyed by the looser normTitle (all parens stripped)
-  //        for diagnostics ('loose').
+  //        / cloud-captures. Values are ARRAYS in insertion order (explicit + clean
+  //        editions of one recording share a key — explicit/clean is cosmetic in
+  //        comparableTitle); list[0] preserves the historical first-in-wins entry for
+  //        every no-opts caller. byTitle: keyed by the looser normTitle (all parens
+  //        stripped) for diagnostics ('loose').
   const exact = new Map(), byTitle = new Map();
   for (const e of entries) {
     e.na = normArtist(e.artist); e.nt = normTitle(e.title); e.ct = comparableTitle(e.title);
     const k = e.na + '\x00' + e.ct;
-    if (!exact.has(k)) exact.set(k, e);
+    if (!exact.has(k)) exact.set(k, []);
+    exact.get(k).push(e);
     if (!byTitle.has(e.nt)) byTitle.set(e.nt, []);
     byTitle.get(e.nt).push(e);
   }
   return { exact, byTitle, count: entries.length };
 }
-export function findInLibrary(lib, artist, title) {
+export function findInLibrary(lib, artist, title, opts = {}) {
   const na = normArtist(artist), nt = normTitle(title), ct = comparableTitle(title);
   // exact: artist agrees AND titles agree on recording-altering version markers
   // (cosmetic markers ignored). Only 'exact' is used to overwrite / cloud-capture.
-  const ex = lib.exact.get(na + '\x00' + ct);
+  const list = lib.exact.get(na + '\x00' + ct) || [];
+  let ex = list[0] || null;
+  if (opts.explicitness && list.length) {
+    // Edition-required capture (variant rips): the library entry's Explicit flag must
+    // agree; required edition absent → NO exact hit (never capture the wrong edition).
+    // TSV entries carry no `explicit` (undefined !== true) → they satisfy 'clean' and
+    // fail 'explicit' — fail-open clean / fail-closed explicit, acceptable.
+    const want = opts.explicitness === 'explicit';
+    ex = list.find((e) => !!e.explicit === want) || null;
+  }
   if (ex) return { hit: ex, match: 'exact' };
   // loose: paren-stripped subset (diagnostics only — NEVER overwrites / captures).
   const loose = (lib.byTitle.get(nt) || []).find(e => subsetEither(e.na, na));

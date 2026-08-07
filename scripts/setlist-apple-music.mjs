@@ -133,7 +133,9 @@ for (const r of data) {
   const artist = song?.artist || (cArtist >= 0 ? r[cArtist] : '');
   const title = song?.name || (cTitle >= 0 ? r[cTitle] : '');
   const na = normArtist(artist), nt = normTitle(title);
-  let match = 'none', hit = lib.exact.get(na + '\x00' + nt) || null;
+  // lib.exact values are ARRAYS since the edition-aware matcher (first-in wins, the
+  // historical single-entry behavior).
+  let match = 'none', hit = (lib.exact.get(na + '\x00' + nt) || [])[0] || null;
   if (hit) match = 'exact';
   else { hit = (lib.byTitle.get(nt) || []).find(e => subsetEither(e.na, na)) || null; if (hit) match = 'loose'; }
   if (match !== 'none') { inLib++; match === 'exact' ? exactN++ : looseN++; }
