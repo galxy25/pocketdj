@@ -33,6 +33,22 @@ final class RecommendationServiceTests: XCTestCase {
         }
     }
 
+    /// Holds a transport suspended until `release()` — the only way to drive the "cancelled
+    /// mid-`postEvents`" race deterministically.
+    private actor Gate {
+        private var open = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        func wait() async {
+            if open { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        func release() {
+            open = true
+            for w in waiters { w.resume() }
+            waiters = []
+        }
+    }
+
     private struct Env {
         let svc: RecommendationService
         let spy: Spy
@@ -44,6 +60,16 @@ final class RecommendationServiceTests: XCTestCase {
         let keyURL: URL
     }
 
+    /// Poll a condition on the MainActor (every await yields, letting the other task run).
+    private func waitUntil(_ label: String, timeout: TimeInterval = 3,
+                           _ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTAssertTrue(condition(), "timed out waiting for: \(label)")
+    }
+
     private func tempURL(_ name: String) -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("pdj-rec-\(name)-\(UUID().uuidString).json")
@@ -52,10 +78,16 @@ final class RecommendationServiceTests: XCTestCase {
     }
 
     private func makeEnv(enabled: Bool, keyURL: URL? = nil, stateURL: URL? = nil,
-                         shared: Env? = nil) -> Env {
+                         shared: Env? = nil, gate: Gate? = nil) -> Env {
         let spy = Spy()
         let client = RecEngineClient(base: URL(string: "https://rec.test")!,
-                                     transport: { spy.record($0) })
+                                     transport: { req in
+                                         // Record FIRST, then park: that is the "cancelled while
+                                         // the POST is in flight" state the re-arm race needs.
+                                         let out = spy.record(req)
+                                         if let gate { await gate.wait() }
+                                         return out
+                                     })
         let settings: SettingsStore
         let history: PlayHistoryStore
         let favorites: FavoritesStore
@@ -96,6 +128,10 @@ final class RecommendationServiceTests: XCTestCase {
         await env.svc.refreshForYou()
         _ = await env.svc.collectionSuggestions(for: "sng_a")
         _ = await env.svc.rawCollectionSuggestions(for: "sng_a")
+        // The account-deletion retry is the one toggle-independent call, and with no pending
+        // deletion tombstone it must also stay silent.
+        await env.svc.retryPendingCloudDelete()
+        XCTAssertFalse(env.svc.hasPendingCloudDelete)
         XCTAssertEqual(env.spy.requests.count, 0,
                        "toggle OFF means literally zero network calls — the whole privacy story")
         XCTAssertTrue(env.svc.forYou.isEmpty)
@@ -183,6 +219,119 @@ final class RecommendationServiceTests: XCTestCase {
         await env2.svc.flushNow()
         let auth2 = env2.spy.requests.first?.value(forHTTPHeaderField: "Authorization")
         XCTAssertEqual(auth2, auth1)
+    }
+
+    /// THE cross-device case the pure high-water cursor got wrong: the Mac has the engine OFF
+    /// (settings are device-local), so it never uploads; its plays reach this device through the
+    /// CloudKit UNION merge carrying their ORIGINAL, older timestamps — BELOW this device's
+    /// cursor. With a strict `atMs > cursor` filter nobody ever uploaded them.
+    func testCloudMergedPeerEventsBelowTheCursorStillUpload() async throws {
+        let env = makeEnv(enabled: true)
+        env.history.record(songId: "sng_local", context: .browser, at: 5_000)
+        await env.svc.flushNow()
+        XCTAssertEqual(env.spy.requests.count, 1)
+
+        // A peer's play, made EARLIER, lands via a CloudKit pull: the sync writes the peer's
+        // document over the store's file and the store UNIONs it in.
+        let peer = PlayHistoryStore.PlayEvent(
+            id: UUID(), songId: "sng_peer", playedAt: 3_000, source: .browser,
+            contextId: nil, contextName: nil, title: "Peer", artist: "Mac",
+            originInstallId: "peer-install")
+        let doc = PlayHistoryStore.Document(installId: "peer-install", events: [peer])
+        try JSONEncoder().encode(doc).write(to: env.history.syncFileURL, options: .atomic)
+        env.history.reloadFromDisk()
+        XCTAssertTrue(env.history.events.contains { $0.songId == "sng_peer" })
+
+        await env.svc.flushNow()
+        XCTAssertEqual(env.spy.requests.count, 2, "the merged peer play must upload")
+        let plays = try XCTUnwrap(env.spy.json(1)["plays"] as? [[String: Any]])
+        XCTAssertEqual(plays.map { $0["songId"] as? String }, ["sng_peer"],
+                       "exactly the peer play — the already-acknowledged local play is not re-sent")
+
+        // …and it is not re-sent forever: the ack list closes the window behind it.
+        await env.svc.flushNow()
+        XCTAssertEqual(env.spy.requests.count, 2, "a quiet flush stays silent")
+    }
+
+    /// An off→on toggle while a flush is in flight used to leave the cancelled loop's tail
+    /// wiping the REPLACEMENT loop's handle — after which `startAutoFlush` armed a second,
+    /// uncancellable loop.
+    func testCancelledAutoFlushDoesNotDetachTheReplacementLoop() async {
+        let gate = Gate()
+        let env = makeEnv(enabled: true, gate: gate)
+        env.svc.autoFlushDelayNs = 0
+        env.svc.autoFlushPeriodNs = 5 * 1_000_000
+        env.history.record(songId: "sng_a", context: .browser, at: 1_000)
+
+        env.svc.startAutoFlush()                      // task A → blocks inside postEvents
+        await waitUntil("the first flush to be in flight") { env.spy.requests.count == 1 }
+
+        env.settings.recEngineEnabled = false
+        env.svc.enabledDidChange()                    // cancels A, detaches the handle
+        XCTAssertFalse(env.svc.isAutoFlushArmed)
+        env.settings.recEngineEnabled = true
+        env.svc.enabledDidChange()                    // arms B
+        XCTAssertTrue(env.svc.isAutoFlushArmed)
+
+        await gate.release()                          // A unwinds and runs its tail
+        try? await Task.sleep(nanoseconds: 50 * 1_000_000)
+        XCTAssertTrue(env.svc.isAutoFlushArmed,
+                      "the cancelled loop must not nil the handle of the loop that replaced it")
+
+        // …so a later toggle-off really does cancel the ONE live loop.
+        env.settings.recEngineEnabled = false
+        env.svc.enabledDidChange()
+        XCTAssertFalse(env.svc.isAutoFlushArmed)
+    }
+
+    /// Account deletion must not silently orphan the server-side state: the DELETE that failed
+    /// leaves a tombstone (and the key that authorizes it) so a later launch can finish.
+    func testFailedAccountDeleteTombstonesAndRetries() async {
+        let env = makeEnv(enabled: true)
+        env.history.record(songId: "sng_a", context: .browser, at: 1_000)
+        await env.svc.flushNow()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: env.keyURL.path))
+
+        // Offline / 503 at deletion time.
+        env.spy.status = 503
+        let deleted = await env.svc.deleteCloudData()
+        XCTAssertFalse(deleted)
+        env.svc.clearLocal(cloudDeleted: deleted)
+        XCTAssertTrue(env.svc.hasPendingCloudDelete, "the owed deletion is remembered")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: env.keyURL.path),
+                      "the key survives — it is the ONLY credential that can authorize the DELETE")
+
+        // A later launch, still failing → still owed.
+        let sent = env.spy.requests.count
+        await env.svc.retryPendingCloudDelete()
+        XCTAssertEqual(env.spy.requests.count, sent + 1)
+        XCTAssertEqual(env.spy.requests.last?.httpMethod, "DELETE")
+        XCTAssertTrue(env.svc.hasPendingCloudDelete)
+
+        // Network back: the retry lands, and both local files finally go.
+        env.spy.status = 200
+        env.spy.body = Data(#"{"deleted":true}"#.utf8)
+        await env.svc.retryPendingCloudDelete()
+        XCTAssertFalse(env.svc.hasPendingCloudDelete)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: env.keyURL.path))
+
+        // Idempotent: nothing owed → no further requests.
+        let after = env.spy.requests.count
+        await env.svc.retryPendingCloudDelete()
+        XCTAssertEqual(env.spy.requests.count, after)
+    }
+
+    /// The happy path keeps the old contract: a successful cloud delete wipes the key too.
+    func testSuccessfulAccountDeleteRemovesTheKeyAndLeavesNoTombstone() async {
+        let env = makeEnv(enabled: true)
+        env.history.record(songId: "sng_a", context: .browser, at: 1_000)
+        await env.svc.flushNow()
+        env.spy.body = Data(#"{"deleted":true}"#.utf8)
+        let deleted = await env.svc.deleteCloudData()
+        XCTAssertTrue(deleted)
+        env.svc.clearLocal(cloudDeleted: deleted)
+        XCTAssertFalse(env.svc.hasPendingCloudDelete)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: env.keyURL.path))
     }
 
     func testDeleteCloudDataResetsCursors() async {

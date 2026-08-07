@@ -989,8 +989,16 @@ struct PocketDJApp: App {
         // Recommendation engine rides account deletion via seams (the service's fixed store
         // list stays test-buildable without the rec graph): best-effort server delete while
         // the key still exists, then the local key + cursor wipe.
-        accountDeletion.recDeleteCloudData = { [weak recEngine] in _ = await recEngine?.deleteCloudData() }
-        accountDeletion.recClearLocal = { [weak recEngine] in recEngine?.clearLocal() }
+        // The Bool is load-bearing: a failed server delete (offline/503) must NOT take the key
+        // with it, or the profile's cloud state is orphaned forever (no key ⇒ no DELETE, and
+        // the bucket has no expiry). A missing engine means nothing is owed → true.
+        accountDeletion.recDeleteCloudData = { [weak recEngine] in
+            guard let recEngine else { return true }
+            return await recEngine.deleteCloudData()
+        }
+        accountDeletion.recClearLocal = { [weak recEngine] cloudDeleted in
+            recEngine?.clearLocal(cloudDeleted: cloudDeleted)
+        }
         _accountDeletion = State(initialValue: accountDeletion)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
@@ -1148,6 +1156,10 @@ struct PocketDJApp: App {
                         widgetSync.drainPendingCommand(now: Date().timeIntervalSince1970)
                         // Resume the background transfer reconcile on foreground (idempotent).
                         TransferCoordinator.shared.reconcileOnLaunch()
+                        // Finish an account deletion's rec-engine server wipe that the network
+                        // refused earlier (no tombstone ⇒ no request; runs toggle-independent
+                        // because the user asked for that data to be gone).
+                        Task { await recEngine.retryPendingCloudDelete() }
                         // Foreground fallback for the daily soft-cap prune (macOS has no
                         // BGTaskScheduler; iOS BGTasks are best-effort). Gated inside; a
                         // plain Task defers it past the activation tick so foregrounding

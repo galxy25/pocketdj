@@ -22,6 +22,22 @@ import CryptoKit
 ///  • `pocketdj-rec-sync.json` — per-device upload cursors, NOT CloudSync-registered on
 ///    purpose: the server dedupes by event id, so two devices uploading overlapping unions is
 ///    harmless, while shared cursors would let one device's advance starve the other's upload.
+///
+/// ── Why the cursors are a WINDOW, not a high-water mark ─────────────────────────────────────
+/// The three source stores are CloudKit-synced with UNION merges that insert a PEER's events
+/// carrying their ORIGINAL, older timestamps (`PlayHistoryStore.reloadFromDisk` and friends).
+/// The engine toggle lives in `SettingsStore` (UserDefaults, device-local by design), so
+/// "ON on the phone, OFF on the Mac" is the NORMAL configuration — the Mac uploads nothing and
+/// its plays arrive here below this device's high-water mark. A strict `atMs > cursor` filter
+/// therefore skipped them FOREVER, silently: the server's history permanently missed every
+/// play made on the other device.
+///
+/// So each stream selects `atMs >= cursor - overlapWindow` (30 days) MINUS the ids this device
+/// has already had acknowledged (`SyncState.uploaded*`, pruned by the same floor). Re-sends are
+/// harmless — the server dedupes plays/activity/puzzle by event id and merges favorites LWW —
+/// and the ack list is what keeps a quiet flush at zero requests instead of re-uploading the
+/// whole window every 10 minutes. It also fixes the exact-millisecond straddle at a batch
+/// boundary that the strict `>` could strand.
 @MainActor
 @Observable
 final class RecommendationService {
@@ -69,10 +85,18 @@ final class RecommendationService {
         var lastPuzzleAtMs: Double = 0
         var lastCollectionsHash: String?
         var lastSyncedAtMs: Double?
+        /// Acknowledged uploads inside the trailing overlap window, one `"<atMs>|<id>"` entry
+        /// each (see the type doc). ADDITIVE-OPTIONAL: an older doc decodes to empty, which
+        /// only costs one idempotent re-send of the window.
+        var uploadedPlays: [String] = []
+        var uploadedFavorites: [String] = []
+        var uploadedActivity: [String] = []
+        var uploadedPuzzle: [String] = []
 
         private enum CodingKeys: String, CodingKey {
             case schemaVersion, lastPlayAtMs, lastFavoriteAtMs, lastActivityAtMs,
-                 lastPuzzleAtMs, lastCollectionsHash, lastSyncedAtMs
+                 lastPuzzleAtMs, lastCollectionsHash, lastSyncedAtMs,
+                 uploadedPlays, uploadedFavorites, uploadedActivity, uploadedPuzzle
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -84,7 +108,20 @@ final class RecommendationService {
             lastPuzzleAtMs = (try? c.decode(Double.self, forKey: .lastPuzzleAtMs)) ?? 0
             lastCollectionsHash = try? c.decode(String.self, forKey: .lastCollectionsHash)
             lastSyncedAtMs = try? c.decode(Double.self, forKey: .lastSyncedAtMs)
+            uploadedPlays = (try? c.decode([String].self, forKey: .uploadedPlays)) ?? []
+            uploadedFavorites = (try? c.decode([String].self, forKey: .uploadedFavorites)) ?? []
+            uploadedActivity = (try? c.decode([String].self, forKey: .uploadedActivity)) ?? []
+            uploadedPuzzle = (try? c.decode([String].self, forKey: .uploadedPuzzle)) ?? []
         }
+    }
+
+    /// The account-deletion tombstone: the server-side DELETE that failed (offline / 503) so a
+    /// later launch can finish the erasure the user asked for. Deliberately NOT CloudSynced.
+    private struct PendingDeleteDoc: Codable {
+        var schemaVersion: Int?
+        var key: String?
+        var profileId: String?
+        var requestedAtMs: Double?
     }
 
     // MARK: - Dependencies
@@ -104,6 +141,12 @@ final class RecommendationService {
 
     @ObservationIgnored private let keyFileURL: URL
     @ObservationIgnored private let stateFileURL: URL
+    /// Sibling of the key doc — `…-rec-pending-delete.json` next to it.
+    @ObservationIgnored private var pendingDeleteFileURL: URL {
+        keyFileURL.deletingLastPathComponent()
+            .appendingPathComponent(keyFileURL.deletingPathExtension().lastPathComponent
+                                    + "-pending-delete.json")
+    }
     /// The on-disk key doc CloudSyncService syncs (same-URL doctrine as every store).
     var keySyncFileURL: URL { keyFileURL }
 
@@ -111,6 +154,9 @@ final class RecommendationService {
     @ObservationIgnored private var key: String?
     @ObservationIgnored private var isFlushing = false
     @ObservationIgnored private var autoFlushTask: Task<Void, Never>?
+    /// Which `startAutoFlush` armed the live loop. A cancelled loop's tail must not detach the
+    /// handle of the loop that REPLACED it (see `startAutoFlush`).
+    @ObservationIgnored private var autoFlushGeneration = 0
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     /// Per-song collection-suggestion cache (wire rows so the Add sheet can re-filter): LRU
     /// cap 20, TTL 15 min.
@@ -119,6 +165,19 @@ final class RecommendationService {
 
     private static let cacheTTLMs: Double = 15 * 60 * 1000
     private static let batchCap = 500
+    /// How far BELOW each cursor a flush still looks, so a peer event merged in by CloudKit with
+    /// an older timestamp still uploads (see the type doc). 30 days comfortably covers CloudKit
+    /// pull latency; anything older than that on a device that has been flushing is already
+    /// on the server.
+    private static let overlapWindowMs: Double = 30 * 24 * 60 * 60 * 1000
+    /// Safety bound on each remembered-ack list (the floor is what normally prunes it). An
+    /// evicted entry costs one idempotent re-send, never a lost event.
+    private static let ackCap = 10_000
+    /// Client-side mirrors of the server's snapshot caps (`cleanSnapshot` in index.mjs) — the
+    /// server truncates anyway; trimming here keeps the membership hash honest about what was
+    /// actually uploaded.
+    private static let snapshotCollectionCap = 500
+    private static let snapshotSongIdCap = 5_000
 
     init(client: RecEngineClient,
          settings: SettingsStore,
@@ -217,18 +276,39 @@ final class RecommendationService {
 
     // MARK: - Auto flush
 
-    /// Idempotent: one loop. Initial 20 s delay (launch settle), then flush every 10 min while
+    /// Launch-settle delay and loop period. Overridable so a unit test can drive the loop's
+    /// cancel/re-arm race without waiting 20 s (the `fixtureForTesting` seam idiom).
+    @ObservationIgnored var autoFlushDelayNs: UInt64 = 20 * 1_000_000_000
+    @ObservationIgnored var autoFlushPeriodNs: UInt64 = 600 * 1_000_000_000
+
+    /// Test-visible: is a loop armed? (the one-loop invariant this file guards).
+    var isAutoFlushArmed: Bool { autoFlushTask != nil }
+
+    /// Idempotent: ONE loop. Initial 20 s delay (launch settle), then flush every 10 min while
     /// enabled; exits when disabled (re-armed by `enabledDidChange`).
+    ///
+    /// The generation guard is load-bearing: a task cancelled mid-`postEvents` unwinds
+    /// ASYNCHRONOUSLY, so an off→on toggle can arm the replacement BEFORE the cancelled task
+    /// reaches its tail. An unconditional `autoFlushTask = nil` there wiped the replacement's
+    /// handle, defeating the `guard` below — the next arm (another toggle, or a second macOS
+    /// window's `.task`) then started a SECOND concurrent loop that no toggle-off could cancel.
     func startAutoFlush() {
         guard autoFlushTask == nil else { return }
+        autoFlushGeneration &+= 1
+        let generation = autoFlushGeneration
         autoFlushTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)
+            let delay = self?.autoFlushDelayNs ?? 20 * 1_000_000_000
+            try? await Task.sleep(nanoseconds: delay)
+            // Finishing an account deletion's server-side wipe is the ONE thing that runs
+            // regardless of the toggle — it only ever DELETES data the user asked to erase.
+            await self?.retryPendingCloudDelete()
             while !Task.isCancelled {
                 guard let self, self.isEnabled else { break }
                 await self.flushNow()
-                try? await Task.sleep(nanoseconds: 600 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: self.autoFlushPeriodNs)
             }
-            self?.autoFlushTask = nil
+            guard let self, self.autoFlushGeneration == generation else { return }
+            self.autoFlushTask = nil
         }
     }
 
@@ -245,9 +325,10 @@ final class RecommendationService {
 
     // MARK: - Flush
 
-    /// Upload everything past the cursors, in ≤500-per-stream batches until drained (the
-    /// server caps a batch at 2000 total events; 4 × 500 fits). Cursors advance ONLY to the
-    /// max atMs actually SENT, and only on 2xx.
+    /// Upload everything inside each stream's trailing window that the server hasn't
+    /// acknowledged yet, in ≤500-per-stream batches until drained (the server caps a batch at
+    /// 2000 total events; 4 × 500 fits). Cursors advance ONLY to the max atMs actually SENT,
+    /// acks are remembered ONLY on 2xx.
     func flushNow() async {
         guard isEnabled, !isFlushing else { return }
         isFlushing = true
@@ -255,23 +336,37 @@ final class RecommendationService {
         let key = ensureKey()
         let profileId = profileIdProvider()
 
+        // The trailing overlap floors — everything at/after them is a candidate, minus what the
+        // server already acknowledged. This is what lets a CloudKit-merged peer event (older
+        // timestamp, below the cursor) still reach the server. See the type doc.
+        let playFloor = Self.windowFloor(sync.lastPlayAtMs)
+        let favFloor = Self.windowFloor(sync.lastFavoriteAtMs)
+        let actFloor = Self.windowFloor(sync.lastActivityAtMs)
+        let puzzleFloor = Self.windowFloor(sync.lastPuzzleAtMs)
+        let sentPlays = Set(sync.uploadedPlays)
+        let sentFavs = Set(sync.uploadedFavorites)
+        let sentActs = Set(sync.uploadedActivity)
+        let sentPuzzle = Set(sync.uploadedPuzzle)
+
         // Snapshot the deltas ON MAIN (cheap value-type filters over @MainActor stores).
         var plays = history.events
-            .filter { $0.playedAt > sync.lastPlayAtMs }
+            .filter { $0.playedAt >= playFloor
+                      && !sentPlays.contains(Self.ack($0.playedAt, $0.id.uuidString)) }
             .sorted { $0.playedAt < $1.playedAt }
             .map { RecPlayEventWire(id: $0.id.uuidString, songId: $0.songId,
                                     atMs: $0.playedAt, source: $0.source.rawValue) }
         var favs = favorites.byId.values
-            .filter { $0.atMs > sync.lastFavoriteAtMs }
+            .filter { $0.atMs >= favFloor && !sentFavs.contains(Self.ack($0.atMs, $0.songId)) }
             .sorted { $0.atMs < $1.atMs }
             .map { RecFavoriteWire(songId: $0.songId, favorited: $0.favorited, atMs: $0.atMs) }
         var acts = activity.events
-            .filter { $0.at > sync.lastActivityAtMs }
+            .filter { $0.at >= actFloor && !sentActs.contains(Self.ack($0.at, $0.id.uuidString)) }
             .sorted { $0.at < $1.at }
             .map { RecActivityWire(id: $0.id.uuidString, atMs: $0.at, kind: $0.kind.rawValue,
                                    itemId: $0.itemId, collectionId: $0.collectionId,
                                    collectionKind: $0.collectionKind, collectionName: $0.collectionName) }
-        var puzzle = (puzzleEventsProvider?(sync.lastPuzzleAtMs) ?? [])
+        var puzzle = (puzzleEventsProvider?(puzzleFloor) ?? [])
+            .filter { !sentPuzzle.contains(Self.ack($0.atMs, $0.id)) }
             .sorted { $0.atMs < $1.atMs }
 
         let snapshot = collectionsSnapshotWire()
@@ -299,17 +394,26 @@ final class RecommendationService {
             do {
                 _ = try await client.postEvents(batch, key: key, profileId: profileId)
             } catch RecEngineClient.ClientError.keyMismatch {
-                syncError = "Recommendation key mismatch — try Delete cloud data, then toggle off and on."
+                syncError = Self.keyMismatchMessage
                 return   // cursors NOT advanced
             } catch {
                 syncError = "Couldn't reach the recommendation service."
                 return   // cursors NOT advanced; retry next cycle
             }
-            // 2xx: advance each cursor to the max atMs actually sent.
+            // 2xx: advance each cursor to the max atMs actually sent, and REMEMBER the ids so
+            // the overlap window doesn't re-send them next flush.
             if let last = batchPlays.last { sync.lastPlayAtMs = max(sync.lastPlayAtMs, last.atMs) }
             if let last = batchFavs.last { sync.lastFavoriteAtMs = max(sync.lastFavoriteAtMs, last.atMs) }
             if let last = batchActs.last { sync.lastActivityAtMs = max(sync.lastActivityAtMs, last.atMs) }
             if let last = batchPuzzle.last { sync.lastPuzzleAtMs = max(sync.lastPuzzleAtMs, last.atMs) }
+            sync.uploadedPlays = Self.remember(sync.uploadedPlays,
+                                               batchPlays.map { Self.ack($0.atMs, $0.id) }, floor: playFloor)
+            sync.uploadedFavorites = Self.remember(sync.uploadedFavorites,
+                                                   batchFavs.map { Self.ack($0.atMs, $0.songId) }, floor: favFloor)
+            sync.uploadedActivity = Self.remember(sync.uploadedActivity,
+                                                  batchActs.map { Self.ack($0.atMs, $0.id) }, floor: actFloor)
+            sync.uploadedPuzzle = Self.remember(sync.uploadedPuzzle,
+                                                batchPuzzle.map { Self.ack($0.atMs, $0.id) }, floor: puzzleFloor)
             if pendingSnapshot != nil { sync.lastCollectionsHash = snapshotHash }
             pendingSnapshot = nil
             plays.removeFirst(batchPlays.count)
@@ -324,13 +428,43 @@ final class RecommendationService {
         }
     }
 
+    // MARK: - Overlap-window bookkeeping
+
+    /// The floor a stream's flush filter uses: `cursor - overlapWindow`, never below 0.
+    private static func windowFloor(_ cursor: Double) -> Double {
+        max(0, cursor - overlapWindowMs)
+    }
+
+    /// One remembered ack, `"<atMs>|<id>"`. The timestamp rides so the list prunes EXACTLY by
+    /// the window floor — a size-only cap would oscillate (evict → re-send → evict).
+    private static func ack(_ atMs: Double, _ id: String) -> String {
+        "\(Int(atMs.rounded()))|\(id)"
+    }
+
+    private static func ackAtMs(_ entry: String) -> Double {
+        guard let sep = entry.firstIndex(of: "|") else { return 0 }
+        return Double(entry[entry.startIndex..<sep]) ?? 0
+    }
+
+    /// Append the acks of a delivered batch and drop everything now below the floor (with a
+    /// hard `ackCap` backstop, newest kept).
+    private static func remember(_ existing: [String], _ added: [String], floor: Double) -> [String] {
+        guard !added.isEmpty || !existing.isEmpty else { return existing }
+        var kept = (existing + added).filter { ackAtMs($0) >= floor }
+        if kept.count > ackCap { kept = Array(kept.suffix(ackCap)) }
+        return kept
+    }
+
     /// The current collections membership as the snapshot wire: pockets carry `songIds`
     /// directly; playlists flatten their `.song` node leaves recursively (membership, not
     /// resolution — albums/pockets are NOT expanded, mirroring `playlist(_:contains:)`).
+    /// Trimmed to the server's own snapshot caps so the membership hash describes what the
+    /// server actually stores.
     private func collectionsSnapshotWire() -> RecCollectionsSnapshotWire {
         var entries: [RecCollectionsSnapshotWire.Entry] = []
         for p in collections.pockets {
-            entries.append(.init(id: p.id, kind: "pocket", name: p.name, songIds: p.songIds))
+            entries.append(.init(id: p.id, kind: "pocket", name: p.name,
+                                 songIds: Array(p.songIds.prefix(Self.snapshotSongIdCap))))
         }
         for pl in collections.playlists {
             var ids: [String] = []
@@ -342,10 +476,11 @@ final class RecommendationService {
                 }
             }
             walk(pl.sequences)
-            entries.append(.init(id: pl.id, kind: "playlist", name: pl.name, songIds: ids))
+            entries.append(.init(id: pl.id, kind: "playlist", name: pl.name,
+                                 songIds: Array(ids.prefix(Self.snapshotSongIdCap))))
         }
         return RecCollectionsSnapshotWire(atMs: Date().timeIntervalSince1970 * 1000,
-                                          collections: entries)
+                                          collections: Array(entries.prefix(Self.snapshotCollectionCap)))
     }
 
     /// Stable membership hash: one `id|kind|name|joined-songIds` line per entry, sorted, SHA-256.
@@ -386,11 +521,18 @@ final class RecommendationService {
             forYouFetchedAtMs = Date().timeIntervalSince1970 * 1000
             syncError = nil
         } catch RecEngineClient.ClientError.keyMismatch {
-            syncError = "Recommendation key mismatch — try Delete cloud data, then toggle off and on."
+            syncError = Self.keyMismatchMessage
         } catch {
             if forYou.isEmpty { syncError = "Couldn't reach the recommendation service." }
         }
     }
+
+    /// The wedged-key message. It names a recovery that CAN succeed: "Delete cloud data" now
+    /// presents the enrollment secret, which the server accepts in place of the bound key
+    /// (before that it 403'd too, so the advice looped the user between two dead ends).
+    private static let keyMismatchMessage =
+        "This device's recommendation key doesn't match the cloud data. Tap Delete cloud data "
+        + "below to reset it — your recommendations rebuild from this device's history."
 
     /// Fixture canned rows (only under the seam). They render standalone — For You rows never
     /// require catalog resolution.
@@ -470,11 +612,21 @@ final class RecommendationService {
     /// "Delete cloud data": remove the server-side state object. On success the cursors reset
     /// to zero so a later re-enable re-uploads history fresh. Explicitly NOT invoked by the
     /// toggle — a toggle flip stays cheap/reversible.
+    ///
+    /// Works even when this device's key is the WRONG one (the wedge case): the request carries
+    /// the enrollment secret, which the server accepts in place of the bound key. It also works
+    /// when this device never minted a key — another device may have created state under the
+    /// same profile id, and the user asked for it gone.
     @discardableResult
     func deleteCloudData() async -> Bool {
-        guard let key else { return false }
+        let key = ensureKey()
         do {
             try await client.deleteState(key: key, profileId: profileIdProvider())
+        } catch RecEngineClient.ClientError.keyMismatch {
+            // Distinct from a transient failure: retrying with the same key can't help.
+            syncError = "The server refused to delete this profile's data. "
+                + "Update to the latest PocketDJ build and try again."
+            return false
         } catch {
             syncError = "Couldn't delete the cloud data — try again."
             return false
@@ -490,12 +642,25 @@ final class RecommendationService {
     }
 
     /// Account-deletion contract: remove both persisted files + in-memory reset.
-    func clearLocal() {
+    ///
+    /// `cloudDeleted` is the RESULT of the server-side delete that ran just before. When it
+    /// FAILED (offline, a 503), wiping the key file here used to orphan the profile's
+    /// `rec/state/<hash>.json` in S3 forever — the key was the only credential that could
+    /// authorize the DELETE, the profile id that addresses the object is reset moments later,
+    /// and the bucket has no lifecycle expiry. So on failure the key is PRESERVED and a
+    /// tombstone (key + profile id) is written; `retryPendingCloudDelete` finishes the job on
+    /// a later launch, then removes both.
+    func clearLocal(cloudDeleted: Bool = true) {
         autoFlushTask?.cancel(); autoFlushTask = nil
         debounceTask?.cancel(); debounceTask = nil
-        try? FileManager.default.removeItem(at: keyFileURL)
+        if cloudDeleted {
+            try? FileManager.default.removeItem(at: keyFileURL)
+            try? FileManager.default.removeItem(at: pendingDeleteFileURL)
+            key = nil
+        } else {
+            writePendingDelete()
+        }
         try? FileManager.default.removeItem(at: stateFileURL)
-        key = nil
         sync = SyncState()
         forYou = []
         forYouFetchedAtMs = nil
@@ -503,5 +668,42 @@ final class RecommendationService {
         suggestionCache = [:]
         suggestionCacheOrder = []
         syncError = nil
+    }
+
+    /// Is a server-side deletion still owed? (Settings ▸ Debug / tests; the retry is automatic.)
+    var hasPendingCloudDelete: Bool {
+        FileManager.default.fileExists(atPath: pendingDeleteFileURL.path)
+    }
+
+    private func writePendingDelete() {
+        guard let key else { return }
+        let doc = PendingDeleteDoc(schemaVersion: 1, key: key, profileId: profileIdProvider(),
+                                   requestedAtMs: Date().timeIntervalSince1970 * 1000)
+        if let data = try? JSONEncoder().encode(doc) {
+            try? data.write(to: pendingDeleteFileURL, options: .atomic)
+        }
+    }
+
+    /// Finish a deletion the network refused earlier. Runs on the auto-flush task's first pass
+    /// (launch) and on foreground, and — deliberately — REGARDLESS of the Settings toggle: the
+    /// user asked for their data to be erased, and this is the only call that can honor it.
+    /// It is the single exception to "toggle off ⇒ zero network", and it only ever DELETES.
+    /// No tombstone ⇒ no request at all, so a normal disabled install stays silent.
+    func retryPendingCloudDelete() async {
+        guard let data = try? Data(contentsOf: pendingDeleteFileURL),
+              let doc = try? JSONDecoder().decode(PendingDeleteDoc.self, from: data),
+              let pendingKey = doc.key, !pendingKey.isEmpty,
+              let pendingProfile = doc.profileId, !pendingProfile.isEmpty else { return }
+        do {
+            try await client.deleteState(key: pendingKey, profileId: pendingProfile)
+        } catch {
+            return   // still owed — the next launch/foreground tries again
+        }
+        try? FileManager.default.removeItem(at: pendingDeleteFileURL)
+        // The preserved key existed ONLY to authorize this delete.
+        if key == pendingKey {
+            try? FileManager.default.removeItem(at: keyFileURL)
+            key = nil
+        }
     }
 }
