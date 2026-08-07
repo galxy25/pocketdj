@@ -57,6 +57,9 @@ struct PocketDetailView: View {
             .forceSyncContextMenu(song: song, kind: .pocket, collectionId: pocketId)
             InlinePlayerSlot(songId: song.id)
         }
+        // Clean-versions-only skip indicator (see the PlaylistsView twin): a row this
+        // pocket would SKIP at ▶ Play dims. Styling only, no new a11y id.
+        .opacity(pocket?.cleanOnly == true && CleanOnly.isSkipped(song) ? 0.45 : 1)
         .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(song.id, fromPocket: pocketId) } }
     }
 
@@ -220,8 +223,9 @@ struct PocketDetailView: View {
                         }
                         .accessibilityIdentifier("pocket-link-source")
                     }
+                    cleanOnlyMenuItem
                     Divider()
-                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPocket: pocketId) }, noun: "pocket")
+                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPocket: pocketId) }, noun: "pocket")
                     Divider()
                     Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete pocket", systemImage: "trash") }
                         .accessibilityIdentifier("delete-pocket")
@@ -298,6 +302,15 @@ struct PocketDetailView: View {
     /// the type-checker budget for the whole List expression).
     private var syncResultShowing: Binding<Bool> {
         Binding(get: { syncResult != nil }, set: { if !$0 { syncResult = nil } })
+    }
+
+    /// Clean-versions-only toggle (see `CleanOnly`): explicit songs play/rip their clean
+    /// edition when one is resolved, else are skipped for this pocket.
+    @ViewBuilder private var cleanOnlyMenuItem: some View {
+        let b = Binding<Bool>(get: { pocket?.cleanOnly == true },
+                              set: { collections.setCleanOnly($0, forPocket: pocketId) })
+        Toggle(isOn: b) { Label("Clean versions only", systemImage: "c.square") }
+            .accessibilityIdentifier("pocket-clean-only")
     }
 
     /// Source-sync ⋯-menu items — shown only for a pocket converted from a source

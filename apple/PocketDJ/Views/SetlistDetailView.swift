@@ -85,9 +85,11 @@ struct SetlistDetailView: View {
         setlist.tracks
             .filter { $0.isText != true && !$0.songId.isEmpty }
             // `perPlayMs` (NOT `shownMs`) is the per-track boundary — the player loops the row
-            // `repeatCount` times, ending at each SINGLE play's end.
+            // `repeatCount` times, ending at each SINGLE play's end. `variant` carries a
+            // cleanOnly substitution's frozen edition into playback.
             .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist,
-                                      lengthMs: $0.perPlayMs, repeatCount: $0.repeatCount) }
+                                      lengthMs: $0.perPlayMs, repeatCount: $0.repeatCount,
+                                      variant: $0.songVariant) }
     }
 
     var body: some View {
@@ -262,7 +264,7 @@ struct SetlistDetailView: View {
         }
         ToolbarItem(placement: .primaryAction) {
             Menu {
-                CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
+                CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forSetlist: setlistId) }, noun: "set list")
             } label: { Image(systemName: "arrow.down.circle") }
                 .help("Rip or burn this set list").accessibilityIdentifier("setlist-ripburn-menu")
         }
@@ -324,7 +326,7 @@ struct SetlistDetailView: View {
             }.accessibilityIdentifier("setlist-add-note")
             // Rip + Burn rendered as TWO separate top-level items (the buttons render flat — they
             // were designed to sit directly in a Menu), not collapsed behind a "Rip / Burn" submenu.
-            CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forSetlist: setlistId) }, noun: "set list")
+            CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forSetlist: setlistId) }, noun: "set list")
             Button { nameDraft = setlist.name ?? ""; renaming = true } label: {
                 Label("Rename", systemImage: "pencil")
             }.accessibilityIdentifier("setlist-rename")

@@ -150,10 +150,21 @@ final class CollectionsStore {
     /// driven headlessly without the multi-step Browser ▸ Add-to dance. No-op in
     /// normal use.
     private func seedForUITestsIfRequested() {
-        guard ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"] != nil,
-              playlists.isEmpty else { return }
-        let pl = createPlaylist("Seeded Set")
-        addSong("sng_1", toPlaylist: pl.id)
+        if ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"] != nil, playlists.isEmpty {
+            let pl = createPlaylist("Seeded Set")
+            addSong("sng_1", toPlaylist: pl.id)
+        }
+        // Clean-versions-only seam: a deterministic 3-song playlist over the fixture's
+        // clean / substitutable / skip trio (sng_1 clean · sng_2 explicit WITH a clean id ·
+        // sng_6 explicit WITHOUT one). Keyed on the playlist NAME (not `playlists.isEmpty`)
+        // so it composes with PDJ_SEED_COLLECTIONS.
+        if ProcessInfo.processInfo.environment["PDJ_SEED_CLEANONLY"] != nil,
+           !playlists.contains(where: { $0.name == "Clean Test" }) {
+            let pl = createPlaylist("Clean Test")
+            addSong("sng_1", toPlaylist: pl.id)
+            addSong("sng_2", toPlaylist: pl.id)
+            addSong("sng_6", toPlaylist: pl.id)
+        }
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -803,6 +814,15 @@ final class CollectionsStore {
         mutatePlaylist(id) { $0.amSyncDirection = direction.rawValue }
     }
 
+    /// Clean-versions-only toggle (see `CleanOnly`). Stored as `true`/nil (never `false`)
+    /// so an untouched collection's serialized bytes are unchanged (CloudSync byte-compare).
+    func setCleanOnly(_ on: Bool, forPlaylist id: String) {
+        mutatePlaylist(id) { $0.cleanOnly = on ? true : nil }
+    }
+    func setCleanOnly(_ on: Bool, forPocket id: String) {
+        mutatePocket(id) { $0.cleanOnly = on ? true : nil }
+    }
+
     func setSourceSyncEnabled(_ enabled: Bool, forPocket id: String) {
         guard pocket(id)?.hasSource == true else { return }
         mutatePocket(id) { $0.sourceSyncEnabled = enabled }
@@ -1424,6 +1444,37 @@ final class CollectionsStore {
     /// A read-only "From your sources" playlist's song ids (already a flat list).
     func songIds(forSource source: SourcePlaylist) -> [String] { source.songIds }
 
+    // MARK: Collection → ripIds (the rip/burn/stem funnels — cleanOnly-aware)
+    //
+    // Same catalog-only resolution as `songIds(...)` but routed through `CleanOnly.ripIds`
+    // when the collection's cleanOnly toggle is on: explicit songs become their VARIANT id
+    // ("<baseId>_clean" — a distinct S3/burn key) or drop. `songIds(...)` itself is
+    // deliberately untouched — it also feeds CSV export + StorageView, where variant ids
+    // must never leak into tracklists.
+
+    /// Rip/burn/stem id list for a playlist (variant-substituted under cleanOnly).
+    func ripIds(forPlaylist id: String) -> [String] {
+        let ids = songIds(forPlaylist: id)
+        guard playlist(id)?.cleanOnly == true, let app else { return ids }
+        return CleanOnly.ripIds(ids: ids, songsById: app.songsById)
+    }
+    /// Rip/burn/stem id list for a pocket (variant-substituted under cleanOnly).
+    func ripIds(forPocket id: String) -> [String] {
+        let ids = songIds(forPocket: id)
+        guard pocket(id)?.cleanOnly == true, let app else { return ids }
+        return CleanOnly.ripIds(ids: ids, songsById: app.songsById)
+    }
+    /// Rip/burn/stem id list for a FROZEN setlist: same filters as `songIds(forSetlist:)`,
+    /// but each track's frozen `variant` stamp (a cleanOnly realize/playNow substitution)
+    /// yields its variant id — the freeze decided the edition, so rips follow it.
+    func ripIds(forSetlist id: String) -> [String] {
+        guard let sl = setlist(id) else { return [] }
+        return sl.tracks
+            .filter { $0.isText != true && !$0.songId.isEmpty && !StudioFactory.isStudioId($0.songId)
+                      && !ProfileSourceStore.isProfileSongId($0.songId) }
+            .map { t in t.songVariant.map { SongVariant.variantId(t.songId, $0) } ?? t.songId }
+    }
+
     // MARK: Collection → playableIds (playback companions — studio rows KEPT)
     //
     // Same resolution + order as `songIds(...)` but KEEPING studio ids: samples /
@@ -1476,8 +1527,12 @@ final class CollectionsStore {
     func burnTuples(_ songIds: [String]) -> [(id: String, title: String, artist: String)] {
         // Profile ("Pocket DJ") ids ARE in songsById (unlike studio ids), so skip them here too —
         // a device-local custom item must never be named into a BURN sidecar (a fourth fence).
+        // Metadata resolves by the BASE id (a variant id "sng_…_clean" isn't in the catalog);
+        // the tuple keeps the VARIANT id so the burn downloads + names the variant file.
         songIds.filter { !ProfileSourceStore.isProfileSongId($0) }
-            .compactMap { id in app?.songsById[id].map { (id: id, title: $0.name, artist: $0.artist) } }
+            .compactMap { id in
+                app?.songsById[SongVariant.baseId(id)].map { (id: id, title: $0.name, artist: $0.artist) }
+            }
     }
 
     // MARK: Setlists (Play → realize → freeze)
@@ -1552,7 +1607,21 @@ final class CollectionsStore {
         guard let pl = playlist(playlistId), let ctx = makeCtx(for: pl) else { return nil }
         let theSeed = seed ?? CollectionsFactory.uid()   // fresh seed ⇒ a different take each Play
         let theName = name ?? nextSetlistName(forPlaylist: playlistId)
-        let setlist = RealizeEngine.buildSetlist(pl, ctx, seed: theSeed, name: theName, now: now)
+        var setlist = RealizeEngine.buildSetlist(pl, ctx, seed: theSeed, name: theName, now: now)
+        // Clean-versions-only playlist: FREEZE the decision into the setlist — skipped
+        // songs drop, substituted ones carry `variant = "clean"` — so the frozen set plays
+        // (and rips) the same editions forever, even if the toggle later flips.
+        if pl.cleanOnly == true, let app {
+            setlist.tracks = setlist.tracks.compactMap { t in
+                guard t.isText != true, let s = app.songsById[t.songId] else { return t }
+                if CleanOnly.isSkipped(s) { return nil }
+                guard s.explicit == true else { return t }
+                var out = t
+                out.variant = SongVariant.clean.rawValue
+                return out
+            }
+            setlist.totalMs = setlist.tracks.reduce(0) { $0 + $1.shownMs }
+        }
         setlists.append(setlist)
         save()
         return setlist
@@ -1590,7 +1659,7 @@ final class CollectionsStore {
     @discardableResult
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
                  source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:],
-                 originId: String? = nil) -> Setlist? {
+                 originId: String? = nil, variants: [String: SongVariant] = [:]) -> Setlist? {
         guard let app else { return nil }
         nowPlayingSource = source
         nowPlayingOriginId = originId
@@ -1603,7 +1672,7 @@ final class CollectionsStore {
             // invents the 210 s fallback for a 4 s loop, bpm/camelot when known, and a
             // "Studio" artist so the row + Now Playing label read sensibly. Unresolvable
             // (seam unwired / item deleted) drops the row, exactly like an unknown
-            // catalog id on the line below.
+            // catalog id on the line below. (Variants never apply to studio rows.)
             if StudioFactory.isStudioId(id) {
                 guard let info = studioLookup?(id) else { return nil }
                 return SetlistTrack(songId: id, artist: studioArtist, name: info.title,
@@ -1613,7 +1682,8 @@ final class CollectionsStore {
             guard let s = app.songsById[id] else { return nil }   // drop unresolvable ids
             return SetlistTrack(songId: s.id, artist: s.artist, name: s.name,
                                 bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
-                                source: .explicit, repeatCount: rep)
+                                source: .explicit, repeatCount: rep,
+                                variant: variants[id]?.rawValue)
         }
         if shuffle { tracks.shuffle() }
         let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
@@ -1668,9 +1738,18 @@ final class CollectionsStore {
         // Stamp "recently played" here — the single funnel every collection-play entry point
         // (detail views, CarPlay, Siri/App Intents via IntentServices.playPlaylist) routes through.
         markPlayed(playlistId: playlistId)
-        return playNow(songIds: playableIds(forPlaylist: playlistId),
+        // Clean-versions-only: resolve the queue THROUGH CleanOnly at this single funnel
+        // (covers detail ▶, shuffle, CarPlay, Siri/App Intents) — explicit songs substitute
+        // their clean edition or drop; everything else passes untouched.
+        var ids = playableIds(forPlaylist: playlistId)
+        var variants: [String: SongVariant] = [:]
+        if playlist(playlistId)?.cleanOnly == true, let app {
+            let r = CleanOnly.resolve(ids: ids, songsById: app.songsById)
+            ids = r.ids; variants = r.variants
+        }
+        return playNow(songIds: ids,
                 name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
-                repeats: playlistRepeatMap(playlistId), originId: playlistId)
+                repeats: playlistRepeatMap(playlistId), originId: playlistId, variants: variants)
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
     /// `playableIds` for the same reason as the playlist variant above.
@@ -1679,9 +1758,15 @@ final class CollectionsStore {
         // Stamp "recently played" here — the single funnel every pocket-play entry point
         // (PocketsView, CarPlay, Siri/App Intents via IntentServices.playPocket) routes through.
         markPlayed(pocketId: pocketId)
-        return playNow(songIds: playableIds(forPocket: pocketId),
+        var ids = playableIds(forPocket: pocketId)
+        var variants: [String: SongVariant] = [:]
+        if pocket(pocketId)?.cleanOnly == true, let app {
+            let r = CleanOnly.resolve(ids: ids, songsById: app.songsById)
+            ids = r.ids; variants = r.variants
+        }
+        return playNow(songIds: ids,
                 name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
-                repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId)
+                repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId, variants: variants)
     }
 
     /// Best-effort songId → repeat-count map for a playlist's `.song` nodes (recursing into

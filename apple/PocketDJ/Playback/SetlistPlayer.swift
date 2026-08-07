@@ -26,12 +26,21 @@ final class SetlistPlayer {
         /// Total plays before advancing (a performance item's loop count). nil/≤1 ⇒ once.
         /// Excluded from equality — it's a playback parameter, not row identity.
         var repeatCount: Int? = nil
+        /// Edition override (a cleanOnly collection substituting the clean cut). Excluded
+        /// from equality like `repeatCount` — a playback parameter, not row identity
+        /// (`uid` covers instance identity).
+        var variant: SongVariant? = nil
         /// Per-INSTANCE identity for live-queue rows (a song can repeat in a set, so
         /// `id` can't identify a row). Lets the Now Playing panel remove exactly the
         /// row the user tapped even when the queue shifts underneath the tap (a track
         /// ending mid-interaction). Excluded from equality — two Items for the same
         /// track are still equal.
         let uid = UUID()
+
+        /// The id playback RESOLVES under — the variant songId when an edition override is
+        /// set (burned files, rips, stems, streams all key on it), else the base id.
+        /// History/stats/favorites keep keying `id` (the real song).
+        var resolveId: String { variant.map { SongVariant.variantId(id, $0) } ?? id }
 
         static func == (lhs: Item, rhs: Item) -> Bool {
             lhs.id == rhs.id && lhs.title == rhs.title
@@ -924,15 +933,19 @@ final class SetlistPlayer {
         // end-of-set advance raises the CRITIC-D banner. Mode-flip mid-set applies to the
         // NEXT track: the current track keeps playing under the mode it started with.
         if mode == .device {
-            if let res = burns.localURLForPlayback(forSong: it.id) {
+            // `resolveId` (NOT `id`) at every burned-file lookup: a cleanOnly substitution
+            // must play the CLEAN variant's burned file — an explicit base burn present on
+            // the device is deliberately not a fallback (skip-not-fallback). `songId: it.id`
+            // (base) stays in playLocalFile so history/stats key the real song.
+            if let res = burns.localURLForPlayback(forSong: it.resolveId) {
                 loadedAnyDeviceTrack = true
                 coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
                 // SHARED helper so nowPlaying + the inline player + the row toggle stay
                 // consistent with the single-row burned path. `res.release` keeps a user-folder
                 // file's security scope open through playback.
                 playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
-                              startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
-                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                              startMs: burns.startMs(forSong: it.resolveId), rips: rips, player: player,
+                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.resolveId)),
                               atMs: resumeAtMs, release: res.release)
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
@@ -943,15 +956,18 @@ final class SetlistPlayer {
 
         // CLOUD mode (default): prefer a burned local file when present (zero-latency,
         // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
-        if let res = burns.localURLForPlayback(forSong: it.id) {
+        // Same `resolveId` rule as device mode — a substituted row only ever plays its
+        // variant's audio (burned, streamed, or ripped), never the base explicit cut.
+        if let res = burns.localURLForPlayback(forSong: it.resolveId) {
             loadedAnyDeviceTrack = true
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
-                          startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
-                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                          startMs: burns.startMs(forSong: it.resolveId), rips: rips, player: player,
+                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.resolveId)),
                           atMs: resumeAtMs, release: res.release)
         } else {
-            await coordinator.play(id: it.id, title: it.title, artist: it.artist, atMs: resumeAtMs)
+            await coordinator.play(id: it.id, title: it.title, artist: it.artist,
+                                   atMs: resumeAtMs, variant: it.variant)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advanceToNext(); return }
             // Apple Music STREAM: MusicKit owns the audio. On iOS/CarPlay it writes NOTHING to
@@ -1007,7 +1023,8 @@ final class SetlistPlayer {
         guard !isRunning, !snap.queue.isEmpty else { return }
         queue = snap.queue.map {
             Item(id: $0.songId, title: $0.title, artist: $0.artist,
-                 lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+                 lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
+                 variant: $0.variant.flatMap(SongVariant.init(rawValue:)))
         }
         index = min(max(0, snap.index), queue.count - 1)
         sourceSetlistId = snap.source.id
@@ -1101,7 +1118,8 @@ final class SetlistPlayer {
         guard let sessionStore, isRunning else { return }
         let rows = queue.map {
             PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
-                                     lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+                                     lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
+                                     variant: $0.variant?.rawValue)
         }
         let ctx = capturedHistoryContext
         let snap = PlaybackSessionStore.Snapshot(
