@@ -146,7 +146,13 @@ final class PuzzleDecisionStore {
         decisions = byId.values.sorted { $0.at < $1.at }
         if decisions.count > Self.maxDecisions { decisions.removeFirst(decisions.count - Self.maxDecisions) }
         if addedFromDisk > 0 || weHoldRowsTheDocLacks { revision &+= 1 }
-        guard weHoldRowsTheDocLacks else { return false }
+        guard weHoldRowsTheDocLacks else {
+            // A coalesced save scheduled BEFORE this merge holds a pre-merge snapshot —
+            // letting it land would drop the rows we just pulled. Re-arm it on the merged
+            // document instead (scheduleSave cancels the stale one).
+            if pendingSave, addedFromDisk > 0 { scheduleSave() }
+            return false
+        }
         save()
         return true
     }

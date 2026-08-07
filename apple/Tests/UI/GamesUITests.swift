@@ -46,14 +46,10 @@ final class GamesUITests: XCTestCase {
         let targetRow = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "puzzle-target-")).firstMatch
         XCTAssertTrue(app.any("puzzle-round-length").waitForExistence(timeout: 10), "setup form opened")
-        var swipes = 0
-        while !targetRow.exists && swipes < 8 { app.swipeUp(); swipes += 1 }
-        XCTAssertTrue(targetRow.waitForExistence(timeout: 10), "the seeded collection lists as a target")
+        XCTAssertTrue(app.swipeTo(targetRow), "the seeded collection lists as a target")
         targetRow.tap()
         let start = app.el("puzzle-start")
-        swipes = 0
-        while !start.exists && swipes < 6 { app.swipeUp(); swipes += 1 }
-        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.swipeTo(start, maxSwipes: 6), "Start Round row scrolls into view")
         // The pool count must settle >0 before Start enables (debounced async count).
         let deadline = Date().addingTimeInterval(10)
         while !start.isEnabled && Date() < deadline { usleep(300_000) }

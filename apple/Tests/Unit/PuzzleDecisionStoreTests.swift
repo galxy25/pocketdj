@@ -103,6 +103,29 @@ final class PuzzleDecisionStoreTests: XCTestCase {
                        "the coalesced write carries the whole burst")
     }
 
+    /// A cloud pull merges peer rows in while a gameplay save is still coalescing — the
+    /// pre-merge snapshot must never land on top of the merged document.
+    func testPendingSaveNeverClobbersACloudMerge() async throws {
+        let url = tempURL()
+        let store = PuzzleDecisionStore(fileURL: url)
+        let round = UUID()
+        store.record(roundId: round, songId: "sng_mine", action: "assigned", at: 2000)
+        XCTAssertTrue(store.hasUnsavedChanges, "the local row is still coalescing")
+        // CloudSync pulls a peer document over the file, then calls reloadFromDisk.
+        let peer = PuzzleDecisionStore.Decision(
+            id: UUID(), roundId: round, at: 500, songId: "sng_peer", action: "skipped",
+            collectionId: nil, collectionName: nil, positionInRound: nil,
+            settings: nil, originInstallId: "peer")
+        try JSONEncoder().encode(PuzzleDecisionStore.Document(installId: "peer", decisions: [peer]))
+            .write(to: url)
+        _ = store.reloadFromDisk()
+        XCTAssertEqual(store.decisions.count, 2)
+        try await Task.sleep(for: .milliseconds(1200))   // every scheduled write lands
+        let onDisk = PuzzleDecisionStore(fileURL: url)
+        XCTAssertEqual(Set(onDisk.decisions.map(\.songId)), ["sng_mine", "sng_peer"],
+                       "the pulled row survives the in-flight local save")
+    }
+
     func testLenientDecode() throws {
         let url = tempURL()
         let good = PuzzleDecisionStore.Decision(
