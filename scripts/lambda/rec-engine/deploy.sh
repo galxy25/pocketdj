@@ -4,11 +4,21 @@
 # this endpoint holds no Apple credentials; auth is the per-profile TOFU bearer key the app
 # mints (see index.mjs header).
 #
-# Key recovery (single-user pragmatics): a genuinely wedged key — two devices enabled the
-# engine before CloudKit synced the rec-key doc AND the loser bound first — is fixed either by
-# temporarily setting REC_ALLOW_REBIND=1 on the function's env (dev only) or by deleting the
-# profile's rec/state/<hash>.json object from the bucket. "Delete cloud data" in-app needs the
-# matching key, so it can't unwedge itself.
+# ENROLLMENT SECRET (REC_ENROLL_SECRET): creating a NEW profile's state object requires this
+# shared secret in `x-pocketdj-enroll`; without it POST /events was an open write into a bucket
+# with no lifecycle expiry. The app ships the same value in `Config.recEngineEnrollSecret`, so
+# it is a capability token, not a per-user credential (see the index.mjs header for the
+# multi-user revisit). This script PRESERVES the deployed value across re-runs — changing it
+# de-facto rotates the token and every client build carrying the old one can no longer enroll,
+# so rotate deliberately: export REC_ENROLL_SECRET=<new> before running, then ship a build with
+# the new constant. If neither the env var nor a deployed value exists, one is minted and
+# printed for pasting into Config.swift.
+#
+# Key recovery (single-user pragmatics): a genuinely wedged key — a reinstall without iCloud, or
+# two devices enabling before CloudKit synced the rec-key doc — is fixed IN-APP now: "Delete
+# cloud data" presents the enrollment secret, which DELETE /state accepts in place of the bound
+# key, and the next upload re-binds fresh. The blunt instruments still exist: REC_ALLOW_REBIND=1
+# on the function's env (dev only) or deleting rec/state/<hash>.json from the bucket by hand.
 #
 # Idempotent-ish; safe to re-run to update code.
 set -euo pipefail
@@ -52,8 +62,21 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name "rec-state-access" --p
 ROLE_ARN="arn:aws:iam::${ACCT}:role/${ROLE}"
 
 # 3) package + create/update the function (index.mjs only; @aws-sdk is bundled in the runtime).
+#    Resolve the enrollment secret FIRST: $REC_ENROLL_SECRET wins (deliberate rotation), else the
+#    value already deployed (so a plain code re-run never invalidates shipped builds), else mint.
+ENROLL="${REC_ENROLL_SECRET:-}"
+if [ -z "$ENROLL" ]; then
+  ENROLL="$(aws lambda get-function-configuration --function-name "$FN" --region "$REGION" \
+    --query 'Environment.Variables.REC_ENROLL_SECRET' --output text 2>/dev/null || true)"
+  [ "$ENROLL" = "None" ] && ENROLL=""
+fi
+if [ -z "$ENROLL" ]; then
+  ENROLL="$(openssl rand -hex 24)"
+  say "MINTED a new enrollment secret — paste it into Config.recEngineEnrollSecret:"
+  say "    $ENROLL"
+fi
 ZIP="$(mktemp -d)/fn.zip"; ( cd "$SELF" && zip -q -r "$ZIP" index.mjs )
-ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL}"
+ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL,REC_ENROLL_SECRET=$ENROLL}"
 if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
   say "updating function code"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null
@@ -77,8 +100,13 @@ if [ "$API_ID" = "None" ] || [ -z "$API_ID" ]; then
 fi
 aws lambda add-permission --function-name "$FN" --statement-id apigw-invoke --action lambda:InvokeFunction \
   --principal apigateway.amazonaws.com --source-arn "arn:aws:execute-api:${REGION}:${ACCT}:${API_ID}/*" --region "$REGION" >/dev/null 2>&1 || true
+# Blast-radius cap: the account default is 10k rps, which for a one-user endpoint is only ever
+# an abuse budget. One device flushes every 10 minutes, so 20 rps / 40 burst is enormous headroom.
+aws apigatewayv2 update-stage --api-id "$API_ID" --stage-name '$default' --region "$REGION" \
+  --default-route-settings ThrottlingRateLimit=20,ThrottlingBurstLimit=40 >/dev/null
 API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com"
 echo "$API_URL" > "$SELF/.endpoint-url.txt"
 say "done. Endpoint: $API_URL  (also written to scripts/lambda/rec-engine/.endpoint-url.txt)"
 say "verify: curl -s $API_URL/health"
 say "NEXT: paste the endpoint into Config.recEngineBase (apple/PocketDJ/Support/Config.swift)"
+say "      and make sure Config.recEngineEnrollSecret matches REC_ENROLL_SECRET above."

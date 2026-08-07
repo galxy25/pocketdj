@@ -4,15 +4,41 @@
 // from that state plus a slim precomputed public catalog-features file (rec-features.json, built
 // by scripts/build-rec-features.mjs, served from the catalog CloudFront).
 //
-// ── Auth (single-user pragmatic, TOFU) ──────────────────────────────────────────────────────────
+// ── Auth (single-user pragmatic, ENROLLMENT SECRET + TOFU) ──────────────────────────────────────
 // Every route except /health requires the `x-pocketdj-profile` header (validated shape; 400 when
 // missing/invalid) and `authorization: Bearer <key>` (401 when missing). State S3 key =
-// rec/state/<sha256hex(profileId)>.json. The FIRST `POST /events` binds keyHash =
-// sha256hex(key) (trust-on-first-use); every later call must present the same key or 403
-// { error:'key-mismatch' }. A GET before any POST (no state object) returns the empty-recs 200s,
-// never 403. Recovery for a genuinely wedged key (two devices raced before CloudKit synced the
-// key doc AND the loser's uploads bound first): run with REC_ALLOW_REBIND=1 (dev only) or delete
-// the profile's rec/state object from S3 by hand.
+// rec/state/<sha256hex(profileId)>.json.
+//
+// CREATING state (the FIRST `POST /events` for a profile, which binds keyHash = sha256hex(key)
+// trust-on-first-use) additionally requires the shared ENROLLMENT SECRET in
+// `x-pocketdj-enroll` — `REC_ENROLL_SECRET` on the function's env, compared in constant time.
+// WITHOUT that gate any bearer + any profile header minted a brand-new state object, i.e. the
+// endpoint was an open, unbounded write into a bucket with no lifecycle expiry.
+// SINGLE-USER TRADEOFF, deliberately noted for the multi-user revisit: the secret ships inside
+// the app binary (`Config.recEngineEnrollSecret`), so it is a CAPABILITY TOKEN, not a per-user
+// credential — anyone who extracts it can still enroll profiles. It raises the bar from "curl
+// the public URL" to "reverse the binary", and it is rotatable (redeploy + ship a build). The
+// real fix when this stops being a one-user service is a per-user identity (Sign in with Apple /
+// CloudKit-verified user record) minting a per-profile token, at which point this header goes.
+// An ALREADY-BOUND profile keeps working with nothing but its TOFU key — the secret is only ever
+// consulted when state would be created (or destroyed, see below).
+//
+// Every later call must present the same key or 403 { error:'key-mismatch' }. A GET before any
+// POST (no state object) returns the empty-recs 200s, never 403. Recovery for a genuinely wedged
+// key (a reinstall without iCloud, or two devices racing before CloudKit synced the key doc):
+// `DELETE /state` accepts EITHER the bound key OR the enrollment secret, so the in-app "Delete
+// cloud data" button really can unwedge the profile — after it, the next POST re-binds fresh.
+// REC_ALLOW_REBIND=1 (dev only) still bypasses both checks.
+//
+// ── Size limits (every one of these is load-bearing; the state object is re-read + re-written on
+//    every /events call, inside a 1024 MB / 60 s Lambda) ──────────────────────────────────────────
+//   MAX_BODY_BYTES  — raw request body, checked BEFORE parsing
+//   MAX_BATCH_EVENTS— plays+favorites+activity+puzzle in one batch
+//   CAPS            — per-stream stored caps, favorites INCLUDED (a map that only ever grew)
+//   cleanSnapshot   — collections / songIds-per-collection / total-songIds truncation
+//   MAX_STR         — every stored string
+//   MAX_STATE_BYTES — hard backstop before the PUT, so no object can grow past what readState
+//                     can safely parse
 //
 // ── Routes ──────────────────────────────────────────────────────────────────────────────────────
 //   GET    /health                       -> { ok:true, service:'rec-engine', version:1 }
@@ -24,8 +50,9 @@
 // ── Test seams (zero AWS) ───────────────────────────────────────────────────────────────────────
 //   REC_LOCAL_DIR      — filesystem state store instead of S3 (the jukebox DRY_RUN idea)
 //   REC_FEATURES_FILE  — local features fixture path instead of fetching FEATURES_URL
+//   REC_ENROLL_SECRET  — read per request (not captured at module load) so a test can flip it
 
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
@@ -36,8 +63,19 @@ const LOCAL_DIR = process.env.REC_LOCAL_DIR || null;
 const FEATURES_FILE = process.env.REC_FEATURES_FILE || null;
 
 const PROFILE_RE = /^[A-Za-z0-9._-]{8,64}$/;
-const CAPS = { plays: 5000, activity: 3000, puzzle: 2000 };
+const CAPS = { plays: 5000, activity: 3000, puzzle: 2000, favorites: 5000 };
 const MAX_BATCH_EVENTS = 2000;
+/// Raw request body ceiling, checked before JSON.parse. Well under Lambda's 6 MB synchronous
+/// invocation payload limit, and far above any honest batch (2000 events ≈ 250 KB, a snapshot of
+/// a very large library ≈ 1 MB).
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+/// Hard ceiling on the SERIALIZED state object. readState GET+parses this on every route
+/// (DELETE included), so a state that can't be parsed is a permanently wedged profile.
+const MAX_STATE_BYTES = 20 * 1024 * 1024;
+const MAX_STR = 256;
+const MAX_COLLECTIONS = 500;
+const MAX_SONGIDS_PER_COLLECTION = 5000;
+const MAX_SNAPSHOT_SONGIDS = 100_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
@@ -79,6 +117,11 @@ async function readState(profileHash) {
 
 async function writeState(profileHash, state, { ifMatch } = {}) {
   const body = JSON.stringify(state);
+  // Backstop: the caps above should make this unreachable, so reaching it means a cap was
+  // missed — refuse the write rather than grow an object readState can no longer parse.
+  if (Buffer.byteLength(body, 'utf8') > MAX_STATE_BYTES) {
+    const err = new Error('state-too-large'); err.statusCode = 413; throw err;
+  }
   if (LOCAL_DIR) {
     const p = localStatePath(profileHash);
     if (ifMatch) {
@@ -192,13 +235,17 @@ function freshState(profileId) {
 }
 
 const num = (v) => (Number.isFinite(v) ? v : null);
-const str = (v) => (typeof v === 'string' && v ? v : null);
+/// Every stored string goes through here: absent/empty -> null, everything else TRUNCATED to
+/// MAX_STR. Truncation (not rejection) keeps an honest-but-long name/id ingesting, while a
+/// megabyte "id" can no longer be parked in the state object.
+const str = (v, max = MAX_STR) => (typeof v === 'string' && v ? v.slice(0, max) : null);
 
 function cleanPlay(e) {
   const id = str(e?.id); const songId = str(e?.songId); const atMs = num(e?.atMs);
   if (!id || !songId || atMs == null) return null;
   const out = { id, songId, atMs };
-  if (str(e.source)) out.source = e.source;
+  const source = str(e.source);
+  if (source) out.source = source;
   return out;
 }
 function cleanFavorite(e) {
@@ -211,24 +258,43 @@ function cleanActivity(e) {
   const kind = str(e?.kind); const itemId = str(e?.itemId);
   if (!id || atMs == null || !kind || !itemId) return null;
   const out = { id, atMs, kind, itemId };
-  for (const k of ['collectionId', 'collectionKind', 'collectionName']) if (str(e[k])) out[k] = e[k];
+  for (const k of ['collectionId', 'collectionKind', 'collectionName']) {
+    const v = str(e[k]);
+    if (v) out[k] = v;
+  }
   return out;
 }
 function cleanPuzzle(e) {
   const id = str(e?.id); const atMs = num(e?.atMs); const action = str(e?.action);
   if (!id || atMs == null || !action) return null;
   const out = { id, atMs, action };
-  for (const k of ['gameId', 'songId', 'collectionId']) if (str(e[k])) out[k] = e[k];
+  for (const k of ['gameId', 'songId', 'collectionId']) {
+    const v = str(e[k]);
+    if (v) out[k] = v;
+  }
   if (num(e.points) != null) out.points = e.points;
   return out;
 }
+/// The membership snapshot is stored WHOLESALE, and (unlike the event streams) it is not counted
+/// toward MAX_BATCH_EVENTS — a legitimate flush carries a full batch AND the snapshot, so
+/// counting it would reject honest uploads. It is bounded by TRUNCATION instead: at most
+/// MAX_COLLECTIONS entries, MAX_SONGIDS_PER_COLLECTION ids each, MAX_SNAPSHOT_SONGIDS in total.
 function cleanSnapshot(s) {
   if (!s || typeof s !== 'object' || !Array.isArray(s.collections)) return null;
   const list = [];
+  let budget = MAX_SNAPSHOT_SONGIDS;
   for (const c of s.collections) {
+    if (list.length >= MAX_COLLECTIONS) break;
     const id = str(c?.id); const kind = str(c?.kind); const name = str(c?.name) ?? '';
     if (!id || !kind || !Array.isArray(c?.songIds)) continue;
-    list.push({ id, kind, name, songIds: c.songIds.filter((x) => typeof x === 'string') });
+    const songIds = [];
+    for (const x of c.songIds) {
+      if (songIds.length >= MAX_SONGIDS_PER_COLLECTION || budget <= 0) break;
+      const v = str(x);
+      if (!v) continue;
+      songIds.push(v); budget -= 1;
+    }
+    list.push({ id, kind, name, songIds });
   }
   return { atMs: num(s.atMs) ?? Date.now(), list };
 }
@@ -236,6 +302,21 @@ function cleanSnapshot(s) {
 function capOldest(arr, cap) {
   if (arr.length <= cap) return arr;
   return [...arr].sort((a, b) => a.atMs - b.atMs || (a.id < b.id ? -1 : 1)).slice(arr.length - cap);
+}
+
+/// Favorites are a MAP keyed by songId, so `capOldest` doesn't fit — but an uncapped map was the
+/// one stream that only ever grew (2000 fresh songIds per batch, forever). Evict tombstones
+/// (un-hearts, the least valuable rows) first, then oldest-atMs, until the map fits CAPS.
+function capFavorites(favorites, cap) {
+  const keys = Object.keys(favorites);
+  if (keys.length <= cap) return favorites;
+  keys.sort((a, b) => {
+    const fa = favorites[a]; const fb = favorites[b];
+    const ta = fa?.favorited ? 1 : 0; const tb = fb?.favorited ? 1 : 0;
+    return ta - tb || (fa?.atMs || 0) - (fb?.atMs || 0) || (a < b ? -1 : 1);
+  });
+  for (const k of keys.slice(0, keys.length - cap)) delete favorites[k];
+  return favorites;
 }
 
 /** Pure ingest merge: dedupe by event id (plays/activity/puzzle — idempotent re-uploads are the
@@ -262,6 +343,7 @@ export function mergeBatch(state, batch) {
     state.favorites[e.songId] = { favorited: e.favorited, atMs: e.atMs };
     accepted.favorites += 1;
   }
+  state.favorites = capFavorites(state.favorites, CAPS.favorites);
 
   const actIds = new Set(state.activity.map((e) => e.id));
   for (const raw of batch.activity || []) {
@@ -510,6 +592,26 @@ function authOf(event) {
   return { profileId: profile, profileHash: sha256(profile), keyHash: sha256(key) };
 }
 
+/// Constant-time compare of the presented enrollment secret against `REC_ENROLL_SECRET`.
+/// FAIL-CLOSED: an unset/empty env var rejects every enrollment (a redeploy that forgets the
+/// variable must not silently re-open the write path). Read per call so tests can flip it.
+export function enrollOk(event) {
+  const want = process.env.REC_ENROLL_SECRET || '';
+  if (!want) return false;
+  const h = event.headers || {};
+  const got = h['x-pocketdj-enroll'] || h['X-PocketDJ-Enroll'] || '';
+  if (typeof got !== 'string' || got.length !== want.length) return false;
+  return timingSafeEqual(Buffer.from(got, 'utf8'), Buffer.from(want, 'utf8'));
+}
+
+/// Raw request-body size, BEFORE parsing (base64 bodies are 4/3 of their decoded length).
+function bodyBytes(event) {
+  if (!event.body) return 0;
+  return event.isBase64Encoded
+    ? Math.floor((event.body.length * 3) / 4)
+    : Buffer.byteLength(event.body, 'utf8');
+}
+
 function parseBody(event) {
   if (!event.body) return {};
   const text = event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString() : event.body;
@@ -531,6 +633,9 @@ export async function handler(event) {
 
   try {
     if (method === 'POST' && path === '/events') {
+      if (bodyBytes(event) > MAX_BODY_BYTES) {
+        return reply(413, { error: 'body-too-large', max: MAX_BODY_BYTES });
+      }
       let batch;
       try { batch = parseBody(event); } catch { return reply(400, { error: 'bad-request' }); }
       const total = (batch.plays?.length || 0) + (batch.favorites?.length || 0)
@@ -542,10 +647,17 @@ export async function handler(event) {
       for (let attempt = 0; attempt < 3; attempt++) {
         const read = await readState(auth.profileHash);
         const state = read ? read.state : freshState(auth.profileId);
-        if (state.keyHash && state.keyHash !== auth.keyHash && !allowRebind) {
+        if (!state.keyHash) {
+          // CREATING state for this profile — the enrollment gate (see the header). An
+          // already-bound profile never reaches this branch, so a legitimate device that
+          // enrolled under an older build keeps uploading with its key alone.
+          if (!allowRebind && !enrollOk(event)) return reply(403, { error: 'enrollment-required' });
+          state.keyHash = auth.keyHash;   // trust-on-first-use bind
+        } else if (state.keyHash !== auth.keyHash && !allowRebind) {
           return reply(403, { error: 'key-mismatch' });
+        } else if (allowRebind) {
+          state.keyHash = auth.keyHash;
         }
-        if (!state.keyHash || allowRebind) state.keyHash = auth.keyHash;   // trust-on-first-use bind
         const { accepted } = mergeBatch(state, batch);
         try {
           await writeState(auth.profileHash, state, { ifMatch: read?.etag });
@@ -555,7 +667,11 @@ export async function handler(event) {
         }
         return reply(200, {
           ok: true, accepted,
-          totals: { plays: state.plays.length, activity: state.activity.length, puzzle: state.puzzle.length },
+          totals: {
+            plays: state.plays.length, activity: state.activity.length,
+            puzzle: state.puzzle.length, favorites: Object.keys(state.favorites).length,
+            collections: state.collections?.list?.length || 0,
+          },
         });
       }
       return reply(503, { error: 'conflict-retry' });
@@ -584,7 +700,12 @@ export async function handler(event) {
     if (method === 'DELETE' && path === '/state') {
       const read = await readState(auth.profileHash);
       if (!read) return reply(200, { deleted: true });
-      if (read.state.keyHash && read.state.keyHash !== auth.keyHash && !allowRebind) {
+      // Deletion accepts the bound key OR the enrollment secret. That second door is what makes
+      // the in-app "Delete cloud data" a REAL recovery from a wedged key (it used to 403 too,
+      // so the app's own advice was a dead end); deletion is destructive-only and profile-scoped,
+      // and re-binding afterwards still requires the same enrollment secret.
+      if (read.state.keyHash && read.state.keyHash !== auth.keyHash
+          && !allowRebind && !enrollOk(event)) {
         return reply(403, { error: 'key-mismatch' });
       }
       await deleteState(auth.profileHash);

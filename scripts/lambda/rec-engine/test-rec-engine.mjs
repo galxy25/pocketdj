@@ -7,7 +7,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,6 +38,7 @@ writeFileSync(FEATURES, JSON.stringify(fixture));
 
 process.env.REC_LOCAL_DIR = HOME;
 process.env.REC_FEATURES_FILE = FEATURES;
+process.env.REC_ENROLL_SECRET = 'enroll-secret-for-tests';
 
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections } =
   await import('./index.mjs');
@@ -44,14 +46,18 @@ const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections } =
 const PROFILE = 'profile-test-1234';
 const KEY = 'a'.repeat(64);
 const OTHER_KEY = 'b'.repeat(64);
+const ENROLL = process.env.REC_ENROLL_SECRET;
 const NOW = Date.now();
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 
-function ev(method, path, { profile = PROFILE, key = KEY, body, qs } = {}) {
+/// `enroll` defaults to the right secret (every profile in this suite has to enroll once);
+/// pass `enroll: null` for "no header" or a wrong string to drive the rejection paths.
+function ev(method, path, { profile = PROFILE, key = KEY, enroll = ENROLL, body, qs } = {}) {
   const headers = {};
   if (profile !== null) headers['x-pocketdj-profile'] = profile;
   if (key !== null) headers.authorization = `Bearer ${key}`;
+  if (enroll !== null) headers['x-pocketdj-enroll'] = enroll;
   return {
     rawPath: path,
     requestContext: { http: { method } },
@@ -69,6 +75,10 @@ async function call(method, path, opts) {
 let n = 0;
 const uid = () => `evt_${String(n++).padStart(6, '0')}`;
 const play = (songId, atMs) => ({ id: uid(), songId, atMs, source: 'browser' });
+
+/// Where REC_LOCAL_DIR keeps a profile's state object (same layout as the S3 keys).
+const statePath = (profile) =>
+  join(HOME, 'rec', 'state', `${createHash('sha256').update(profile).digest('hex')}.json`);
 
 test('health ok', async () => {
   const r = await call('GET', '/health', { profile: null, key: null });
@@ -105,6 +115,120 @@ test('TOFU binds first key; wrong key 403; same key ok', async () => {
   assert.equal(wrongGet.status, 403);
   const same = await call('POST', '/events', { body: { v: 1 } });
   assert.equal(same.status, 200);
+});
+
+// ── Enrollment gate (the fix for "POST /events is an open write endpoint") ──────────────────────
+
+test('creating a profile requires the enrollment secret', async () => {
+  const profile = 'profile-enroll-01';
+  const body = { v: 1, plays: [play('sng_e1', NOW - DAY)] };
+  const none = await call('POST', '/events', { profile, enroll: null, body });
+  assert.equal(none.status, 403);
+  assert.equal(none.json.error, 'enrollment-required');
+  const wrong = await call('POST', '/events', { profile, enroll: 'not-the-secret-xxxxx', body });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.json.error, 'enrollment-required');
+  assert.equal(existsSync(statePath(profile)), false, 'a rejected enrollment writes NO state object');
+
+  const ok = await call('POST', '/events', { profile, body });
+  assert.equal(ok.status, 200);
+  assert.equal(existsSync(statePath(profile)), true);
+});
+
+test('an already-bound profile keeps uploading with its key alone', async () => {
+  const profile = 'profile-bound-001';
+  assert.equal((await call('POST', '/events', { profile, body: { v: 1 } })).status, 200);
+  // No enrollment header at all — the TOFU key is the only credential a bound profile needs.
+  const later = await call('POST', '/events', {
+    profile, enroll: null, body: { v: 1, plays: [play('sng_e1', NOW - DAY)] },
+  });
+  assert.equal(later.status, 200);
+  assert.equal(later.json.accepted.plays, 1);
+  // …and a WRONG key on a bound profile is still a key-mismatch, secret or not.
+  const wrongKey = await call('POST', '/events', { profile, key: OTHER_KEY, body: { v: 1 } });
+  assert.equal(wrongKey.status, 403);
+  assert.equal(wrongKey.json.error, 'key-mismatch');
+});
+
+test('DELETE /state unwedges a mismatched key with the enrollment secret', async () => {
+  const profile = 'profile-wedge-001';
+  await call('POST', '/events', { profile, body: { v: 1, plays: [play('sng_e1', NOW - DAY)] } });
+  // The wedged device: wrong key, no secret -> the old dead end.
+  const blocked = await call('DELETE', '/state', { profile, key: OTHER_KEY, enroll: null });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.json.error, 'key-mismatch');
+  // The app ships the secret, so "Delete cloud data" really can reset it.
+  const del = await call('DELETE', '/state', { profile, key: OTHER_KEY });
+  assert.equal(del.status, 200);
+  assert.equal(existsSync(statePath(profile)), false);
+  // …and the freed profile re-binds to the new key (enrollment secret still required).
+  const rebindNoSecret = await call('POST', '/events', { profile, key: OTHER_KEY, enroll: null, body: { v: 1 } });
+  assert.equal(rebindNoSecret.status, 403);
+  const rebind = await call('POST', '/events', { profile, key: OTHER_KEY, body: { v: 1 } });
+  assert.equal(rebind.status, 200);
+});
+
+// ── Payload / state size limits ─────────────────────────────────────────────────────────────────
+
+test('an oversized body is rejected before parsing', async () => {
+  const profile = 'profile-huge-0001';
+  const res = await handler(ev('POST', '/events', { profile, body: { v: 1, pad: 'x'.repeat(4.2 * 1024 * 1024) } }));
+  assert.equal(res.statusCode, 413);
+  assert.equal(JSON.parse(res.body).error, 'body-too-large');
+  assert.equal(existsSync(statePath(profile)), false, 'nothing was written');
+});
+
+test('a snapshot-only batch cannot grow the state without bound', async () => {
+  const profile = 'profile-snapcap-1';
+  const collections = [];
+  for (let c = 0; c < 600; c++) {
+    collections.push({ id: `pls_${c}`, kind: 'playlist', name: `C${c}`,
+                       songIds: Array.from({ length: 300 }, (_, i) => `s${c}_${i}`) });
+  }
+  const r = await call('POST', '/events', { profile, body: { v: 1, collectionsSnapshot: { atMs: NOW, collections } } });
+  assert.equal(r.status, 200, 'the snapshot batch is accepted (it bypasses MAX_BATCH_EVENTS by design)');
+  assert.equal(r.json.totals.collections, 500, 'stored collections truncated to MAX_COLLECTIONS');
+  const stored = JSON.parse(readFileSync(statePath(profile), 'utf8'));
+  const ids = stored.collections.list.reduce((n, c) => n + c.songIds.length, 0);
+  assert.equal(ids, 100_000, 'total stored songIds truncated to MAX_SNAPSHOT_SONGIDS');
+
+  // …and one fat collection is capped per-collection.
+  const fat = { atMs: NOW + 1, collections: [{ id: 'pls_fat', kind: 'playlist', name: 'Fat',
+                                               songIds: Array.from({ length: 6000 }, (_, i) => `f${i}`) }] };
+  await call('POST', '/events', { profile, body: { v: 1, collectionsSnapshot: fat } });
+  const after = JSON.parse(readFileSync(statePath(profile), 'utf8'));
+  assert.equal(after.collections.list[0].songIds.length, 5000, 'per-collection songIds capped');
+});
+
+test('favorites are capped like the event streams (tombstones evicted first)', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
+  const favorites = [];
+  for (let i = 0; i < 5100; i++) {
+    favorites.push({ songId: `sng_${i}`, favorited: i % 2 === 0, atMs: NOW - i });
+  }
+  mergeBatch(state, { favorites });
+  const keys = Object.keys(state.favorites);
+  assert.equal(keys.length, 5000, 'the favorites MAP is capped, not unbounded');
+  // atMs decreases with i, so the OLDEST rows are the highest i; odd i are tombstones. The 100
+  // evictions must all be the oldest tombstones — no heart is dropped while an un-heart survives.
+  const evicted = [...Array(5100).keys()].filter((i) => !(`sng_${i}` in state.favorites));
+  assert.equal(evicted.length, 100);
+  assert.ok(evicted.every((i) => i % 2 === 1), `only tombstones evicted: ${evicted.slice(0, 5)}`);
+  assert.ok(state.favorites.sng_5098?.favorited, 'the OLDEST heart survives every tombstone');
+});
+
+test('stored strings are truncated', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
+  const long = 'z'.repeat(5000);
+  mergeBatch(state, {
+    plays: [{ id: `p_${long}`, songId: `s_${long}`, atMs: NOW, source: long }],
+    collectionsSnapshot: { atMs: NOW, collections: [{ id: `c_${long}`, kind: 'playlist', name: long, songIds: [long] }] },
+  });
+  assert.equal(state.plays[0].id.length, 256);
+  assert.equal(state.plays[0].songId.length, 256);
+  assert.equal(state.plays[0].source.length, 256);
+  assert.equal(state.collections.list[0].name.length, 256);
+  assert.equal(state.collections.list[0].songIds[0].length, 256);
 });
 
 test('events dedupe by id and enforce caps', async () => {
