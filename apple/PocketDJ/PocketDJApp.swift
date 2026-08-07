@@ -20,6 +20,8 @@ struct PocketDJApp: App {
     /// A jukebox deep-link tapped during onboarding — deferred (like `pendingOpenURL`) and joined
     /// once onboarding completes, so a first-run link never joins behind the onboarding modal.
     @State private var pendingJukeboxLink: JukeboxLink?
+    /// A Music with Friends deep-link tapped during onboarding — same deferral doctrine.
+    @State private var pendingMwFLink: MwFLink?
 
     /// Import a tapped collection file and route to the newly-created item, so the open visibly
     /// lands on it. Mirrors the manual pickers (security-scoped access + collections.importAny);
@@ -200,6 +202,16 @@ struct PocketDJApp: App {
     /// polls guest song requests into the host's inbox. App-scoped so the party survives
     /// navigation; its session persists so it survives relaunches too.
     @State private var jukebox: JukeboxStore
+    /// Games tab — durable game-run scoreboard (CloudSync doc "game-scores").
+    @State private var gameScores: GameScoreboardStore
+    /// Games tab — the Collectors Puzzle's recommendation-readable decision log.
+    @State private var puzzleDecisions: PuzzleDecisionStore
+    /// APP-SCOPED Collectors Puzzle round engine — a running round survives tab switches;
+    /// audio rides the app-scoped SetlistPlayer (no new audio owner).
+    @State private var puzzle: CollectorsPuzzleEngine
+    /// APP-SCOPED Music with Friends engine — turn-based suggestion sessions on the
+    /// SAME jukebox broker; holds the persisted session list + deep-link signals.
+    @State private var friends: MusicWithFriendsStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -869,6 +881,44 @@ struct PocketDJApp: App {
         jukebox.profileIdProvider = { [weak profile] in profile?.id ?? "" }
         jukebox.loadJoinedSessions()
         _profile = State(initialValue: profile)
+
+        // ── Games tab: scoreboard + Collectors Puzzle + Music with Friends ─────
+        // Scoreboard + decision log are durable synced JSON (the PlayHistory union
+        // doctrine); the puzzle engine reuses the app-scoped sequencer (one audio
+        // owner); MwF rides the SAME jukebox broker settings + matcher seams.
+        let gameScores = GameScoreboardStore(fileURL: GameScoreboardStore.launchURL())
+        let puzzleDecisions = PuzzleDecisionStore(fileURL: PuzzleDecisionStore.launchURL())
+        let puzzle = CollectorsPuzzleEngine(app: app, sequencer: setlistPlayer,
+                                            collections: collections, favorites: favorites,
+                                            playStats: playStats, scoreboard: gameScores,
+                                            decisions: puzzleDecisions)
+        let friends = MusicWithFriendsStore()
+        friends.settings = settings
+        friends.appModel = app
+        friends.collectionsStore = collections
+        friends.scoreboard = gameScores
+        friends.sequencer = setlistPlayer
+        friends.searchAppleMusic = { [weak amProvider] term in
+            guard let amProvider, amProvider.canSearch else { return [] }
+            return (try? await amProvider.search(term, limit: 5)) ?? []
+        }
+        friends.push = PushRegistrationService.shared
+        friends.profileIdProvider = { [weak profile] in profile?.id ?? "" }
+        friends.profileNameProvider = { [weak profile] in profile?.name ?? "" }
+        friends.loadPersisted()
+        _gameScores = State(initialValue: gameScores)
+        _puzzleDecisions = State(initialValue: puzzleDecisions)
+        _puzzle = State(initialValue: puzzle)
+        _friends = State(initialValue: friends)
+        // Token receipt (first grant + rotation) re-registers every live MwF session;
+        // a tapped push routes to the Games tab via the pendingOpenId consume.
+        PushRegistrationService.shared.onToken = { [weak friends] hex in
+            Task { @MainActor in friends?.updateDeviceToken(hex) }
+        }
+        NotificationRouter.shared.install()
+        NotificationRouter.shared.onOpenMwFSession = { [weak friends] id in
+            Task { @MainActor in friends?.pendingOpenId = id }
+        }
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
@@ -923,6 +973,12 @@ struct PocketDJApp: App {
         }
         cloudSync.register("studio-cues", fileURL: studio.cueSyncFileURL) { [weak studio] in
             studio?.reloadCuesFromDisk()     // cue points follow the Apple ID (media-free; NOT the full studio doc)
+        }
+        cloudSync.register("game-scores", fileURL: gameScores.syncFileURL) { [weak gameScores] in
+            _ = gameScores?.reloadFromDisk() // union-by-run-id — a pull never clobbers local runs
+        }
+        cloudSync.register("puzzle-decisions", fileURL: puzzleDecisions.syncFileURL) { [weak puzzleDecisions] in
+            _ = puzzleDecisions?.reloadFromDisk()
         }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
@@ -1023,6 +1079,10 @@ struct PocketDJApp: App {
                 .environment(instrumentEngine)
                 .environment(instrumentPacks)
                 .environment(jukebox)
+                .environment(gameScores)
+                .environment(puzzleDecisions)
+                .environment(puzzle)
+                .environment(friends)
                 .environment(intents)
                 .environment(profile)
                 .environment(cloudSync)
@@ -1037,6 +1097,14 @@ struct PocketDJApp: App {
                 // A streaming provider's OAuth redirect (if any) comes back through
                 // here; route it to the owning provider.
                 .onOpenURL { url in
+                    // A Music with Friends link (https://jukebox.pocket-dj.com/mwf/<id>/ OR
+                    // pocketdj://mwf/<id>) — parsed BEFORE JukeboxLink. No collision risk:
+                    // "mwf" is 3 chars, so JukeboxLink's id validation rejects these URLs
+                    // anyway; the explicit order just documents the precedence.
+                    if let mwf = MwFLink(url: url) {
+                        if onboarding.isComplete { friends.handleOpenedLink(mwf) } else { pendingMwFLink = mwf }
+                        return
+                    }
                     // A shared jukebox link (Universal Link https://jukebox.pocket-dj.com/<id>/ OR
                     // the pocketdj://jukebox/<id> fallback) → JOIN it as a client. Parsed first
                     // because it's a non-file URL that would otherwise fall into the OAuth branch;
@@ -1060,6 +1128,7 @@ struct PocketDJApp: App {
                 .onChange(of: onboarding.isComplete) { _, done in
                     if done, let u = pendingOpenURL { pendingOpenURL = nil; importCollectionFile(u) }
                     if done, let link = pendingJukeboxLink { pendingJukeboxLink = nil; jukebox.addJoined(link) }
+                    if done, let mwf = pendingMwFLink { pendingMwFLink = nil; friends.handleOpenedLink(mwf) }
                     if done { syncFavoritesIfReady() }
                 }
                 // The LAUNCH favorites pass. It hangs off the catalog reaching `.loaded`

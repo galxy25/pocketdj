@@ -57,5 +57,11 @@
   <array>
     <string>applinks:jukebox.pocket-dj.com</string>
   </array>
+  <!-- APNs (Music with Friends pushes) — macOS uses the com.apple.developer.-prefixed
+       key (iOS/visionOS use bare aps-environment). Requires the Push Notifications
+       capability on the App ID (portal step at ship time); the distribution re-sign
+       flips "development" → "production". -->
+  <key>com.apple.developer.aps-environment</key>
+  <string>development</string>
 </dict>
 </plist>
