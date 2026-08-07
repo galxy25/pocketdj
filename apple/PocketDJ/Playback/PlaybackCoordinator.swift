@@ -64,6 +64,12 @@ final class PlaybackCoordinator {
     /// `appleMusicId`, so a serverless streamable row's ▶ enabled but always fell through to the
     /// rip provider's error). Injected in PocketDJApp, mirroring `sourceOfSong`.
     var appleMusicIdOfSong: (String) -> String? = { _ in nil }
+    /// VARIANT catalog id lookup (base song id + edition → the edition's catalog id, per
+    /// `IndexSong.appleMusicId(for:)`) — feeds the variant-play path below so a cleanOnly
+    /// substitution streams the CLEAN catalog row. Injected in PocketDJApp; nil-returning
+    /// default keeps tests inert (the variant song then resolves via edition-constrained
+    /// search, else the variant rip).
+    var variantAppleMusicIdOfSong: (String, SongVariant) -> String? = { _, _ in nil }
 
     /// Which backend last won the cycle (nil = nothing playing). Drives the inline player's
     /// branch (rip waveform vs. Apple Music position scrubber) + the "via …" badge.
@@ -103,7 +109,9 @@ final class PlaybackCoordinator {
         let amNamespaced = AppleMusicCatalog.storeID(fromSongID: song.id) != nil
         // BOTH Apple Music sources stream FIRST (public-user audit fix): the private catalog's
         // "Apple Music (Local)" AND the on-device "Apple Music" library.
-        let source = sourceOfSong(song.id)
+        // BASE id on purpose: a VARIANT of an AM-sourced song ("sng_…_clean") must inherit
+        // its base song's source so the clean edition streams first, not rip-first.
+        let source = sourceOfSong(SongVariant.baseId(song.id))
         let appleMusicSourced = source == Config.appleMusicSourceName
             || source == AppleMusicLibraryStore.sourceName
         if appleMusicSourced || amNamespaced, appleMusic.isReady {
@@ -135,7 +143,11 @@ final class PlaybackCoordinator {
     /// each backend's seek mechanism and the live-HLS "cannot seek" caveat (CuesView
     /// should pre-check `cueSeekSupported(for:)` and show the "still ripping" disabled
     /// state instead of playing a cue that would silently start at 0:00).
-    func play(_ song: IndexSong, atMs: Int? = nil) async {
+    /// `statsId` (internal, default nil) — the id to RECORD as played when it differs from
+    /// the resolving id: a variant play resolves under "<baseId>_clean" but history/stats/
+    /// favorites must key the BASE song (the real catalog identity). Callers other than the
+    /// id-convenience below pass nothing.
+    func play(_ song: IndexSong, atMs: Int? = nil, statsId: String? = nil) async {
         lastErrorMessage = nil
         for provider in providers(for: song) {
             // Switching backends: stop the previously-active one so two engines don't both
@@ -145,7 +157,7 @@ final class PlaybackCoordinator {
             }
             if await provider.tryPlay(song, atMs: atMs) {
                 activeBackend = provider.backend
-                onPlay?(song.id)
+                onPlay?(statsId ?? song.id)
                 // Ask the server to prepare this user's OWN copy, if they have one.
                 //
                 // SERVER CONTRACT (enforced server-side, not here): `/rip` processes ONLY
@@ -193,8 +205,19 @@ final class PlaybackCoordinator {
     /// Convenience for the row ▶ given only (id, title, artist) — projects a minimal
     /// `IndexSong` and plays it. (The provider chain only needs id/name/artist + the
     /// source map keyed by id, so a minimal projection is sufficient.) `atMs` = optional
-    /// cue offset, threaded through exactly like `play(_:atMs:)`.
-    func play(id: String, title: String, artist: String, atMs: Int? = nil) async {
+    /// cue offset, threaded through exactly like `play(_:atMs:)`. `variant` (a cleanOnly
+    /// substitution) plays the song UNDER ITS VARIANT identity — the minimal song's id
+    /// becomes "<id>_clean|_explicit" and its `appleMusicId` the edition's catalog id —
+    /// while `statsId` keeps history/stats keyed on the base song.
+    func play(id: String, title: String, artist: String, atMs: Int? = nil,
+              variant: SongVariant? = nil) async {
+        if let variant {
+            await play(IndexSong.minimal(id: SongVariant.variantId(id, variant),
+                                         name: title, artist: artist,
+                                         appleMusicId: variantAppleMusicIdOfSong(id, variant)),
+                       atMs: atMs, statsId: id)
+            return
+        }
         // Carry the catalog id (looked up) so the AM streaming provider is eligible — the
         // provider chain reads `appleMusicId` for a source-less streamable row.
         await play(IndexSong.minimal(id: id, name: title, artist: artist,

@@ -32,6 +32,7 @@ struct AppleMusicRecognitionSection: View {
     @Environment(StreamingStore.self) private var streaming
     @Environment(RipsStore.self) private var rips
     @Environment(BurnStore.self) private var burns
+    @Environment(SettingsStore.self) private var settings
     @Environment(\.openURL) private var openURL
 
     @State private var resolving = true
@@ -250,18 +251,29 @@ struct AppleMusicRecognitionSection: View {
         adding = true; errorText = nil
         Task {
             do {
-                try await contributor.addSongToLibrary(storeID: storeID)
+                // EDITION preference (Settings ▸ Apple Music ▸ Explicit versions): swap the
+                // recognized store id for its preferred-edition sibling — clean by default,
+                // explicit when preferred — when one verifiably exists. Best-effort: any
+                // miss keeps the recognized id. (Discover's `discoverAdd` deliberately does
+                // NOT do this — a tapped edition row is the user's authoritative pick.)
+                var chosen = storeID
+                if let provider = streaming.appleMusicProvider {
+                    chosen = await VariantResolver.preferredStoreID(
+                        storeID: storeID, title: title, artist: artist,
+                        preferExplicit: settings.preferExplicitVersions, using: provider)
+                }
+                try await contributor.addSongToLibrary(storeID: chosen)
                 added = true   // latch — don't re-offer ＋ during library-index lag
                 let catalogID = AppleMusicRecognition.indexSong(
-                    storeID: storeID, title: title, artist: artist, in: app.songs)?.id
-                let id = AppleMusicRecognition.burnSongID(catalogSongID: catalogID, storeID: storeID)
+                    storeID: chosen, title: title, artist: artist, in: app.songs)?.id
+                let id = AppleMusicRecognition.burnSongID(catalogSongID: catalogID, storeID: chosen)
                 burnSongID = id
                 // #TOUPDATE: this is the "prepare the user's own copy" step, but the call it
                 // makes today is a real-time Apple Music capture into a shared object. Repoint
                 // it at an owned-media prepare that fails closed on anything the user does not
                 // own — or delete it, so ＋ Add ends at `addSongToLibrary` above.
                 burns.startRipAndBurn(songId: id, title: title, artist: artist,
-                                      appleMusicId: storeID, lengthMs: nil)
+                                      appleMusicId: chosen, lengthMs: nil)
                 await resolve()   // flips the section to the in-library state
             } catch {
                 errorText = error.localizedDescription

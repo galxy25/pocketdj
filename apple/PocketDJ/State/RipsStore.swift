@@ -786,11 +786,40 @@ final class RipsStore {
         var songId: String
         var ripped: Bool? = nil
         var url: String? = nil
+        /// iTunes `trackExplicitness` mapped server-side (`/search`): true = explicit,
+        /// false = clean/notExplicit, nil = unclassified (older servers omit the key).
+        var explicit: Bool? = nil
         var id: String { songId }
     }
 
     /// The `/search` response envelope.
     private struct DiscoverResponse: Decodable { var results: [DiscoverHit] }
+
+    /// Edition-preference re-rank for Discover results (pure, order-stable). Hits sharing
+    /// a normalized (title, artist) form a GROUP anchored at the group's first appearance;
+    /// within a group the preferred edition sorts first (unclassified hits keep their
+    /// original relative order after the classified preference winners). Groups keep
+    /// their overall relative order, so relevance ranking survives the re-rank.
+    enum DiscoverExplicitRanking {
+        static func rank(_ hits: [DiscoverHit], preferExplicit: Bool) -> [DiscoverHit] {
+            var order: [String] = []                     // group keys, first-appearance order
+            var groups: [String: [DiscoverHit]] = [:]
+            for h in hits {
+                let key = ShazamCatalogMatch.norm(h.title) + "\u{0}" + ShazamCatalogMatch.norm(h.artist)
+                if groups[key] == nil { order.append(key) }
+                groups[key, default: []].append(h)
+            }
+            var out: [DiscoverHit] = []
+            for key in order {
+                let g = groups[key] ?? []
+                // Stable partition: preferred-edition hits first, everyone else after,
+                // both halves in original order (nil explicit is never "preferred").
+                out.append(contentsOf: g.filter { $0.explicit == preferExplicit })
+                out.append(contentsOf: g.filter { $0.explicit != preferExplicit })
+            }
+            return out
+        }
+    }
 
     /// Why the last Discover search/add failed (nil = healthy) — the Browse ▸ Discover
     /// inline notice. Strings already name the Settings pane to fix (URL vs token).

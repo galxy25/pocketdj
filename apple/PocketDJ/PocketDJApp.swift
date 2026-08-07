@@ -443,6 +443,13 @@ struct PocketDJApp: App {
         // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
         coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
         coordinator.appleMusicIdOfSong = { [weak app] id in app?.songsById[id]?.appleMusicId }
+        // Edition plumbing: variant catalog-id lookup for cleanOnly-substituted plays, and
+        // the TRI-STATE explicit-versions preference (raw: nil = never chosen ⇒ existing
+        // songs stream their primary cut untouched — the substitution-default safety gate).
+        coordinator.variantAppleMusicIdOfSong = { [weak app] id, v in
+            app?.songsById[id]?.appleMusicId(for: v)
+        }
+        amProvider.preferExplicitVersions = { [weak settings] in settings?.preferExplicitVersionsRaw }
         // Play-tracking hooks — every surface that starts a song notes it to BOTH the aggregate
         // playStats (for the storage prune) AND the append-only playHistory timeline (History
         // mode). Both stores share a 30 s re-count window that absorbs the burned-play overlap
