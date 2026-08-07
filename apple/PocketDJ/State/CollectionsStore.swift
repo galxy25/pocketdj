@@ -1080,6 +1080,49 @@ final class CollectionsStore {
         emitAddActivity(itemId: albumId, target: target)
     }
 
+    /// Batch membership add — the drag-&-drop / paste / multi-select "Add to" choke point.
+    /// ONE mutate → ONE document write. Pocket targets dedup against current membership;
+    /// playlist targets dedup against the playlist's existing SONG nodes (a fumbled
+    /// self-drop never mints duplicate nodes — the Add-to sheet stays the deliberate-
+    /// duplication path). Ids are prefix-agnostic (studio ids ride verbatim, same doctrine
+    /// as addSong(toPocket:)). MRU/lastAddTarget stamped once; activity + Apple Music
+    /// write-back emitted PER added id (parity with the single-add path). Returns the
+    /// count actually added; 0 ⇒ nothing saved.
+    @discardableResult
+    func addSongs(_ songIds: [String], to target: AddTarget) -> Int {
+        var toAdd: [String] = []
+        switch target.kind {
+        case .pocket:
+            guard let p = pocket(target.id) else { return 0 }
+            var seen = Set(p.songIds)
+            toAdd = songIds.filter { seen.insert($0).inserted }
+            guard !toAdd.isEmpty else { return 0 }
+            mutatePocket(target.id) { $0.songIds.append(contentsOf: toAdd) }
+        case .playlist:
+            guard let pl = playlist(target.id) else { return 0 }
+            var seen = Set(pl.sequences.flatMap { ($0.children ?? [])
+                .compactMap { $0.kind == .song ? $0.songId : nil } })
+            toAdd = songIds.filter { seen.insert($0).inserted }
+            guard !toAdd.isEmpty else { return 0 }
+            mutatePlaylist(target.id) { pl in
+                let seqIdx = target.sequenceId.flatMap { sid in
+                    pl.sequences.firstIndex { $0.nodeId == sid } } ?? 0
+                guard pl.sequences.indices.contains(seqIdx) else { return }
+                var children = pl.sequences[seqIdx].children ?? []
+                children.append(contentsOf: toAdd.map {
+                    PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: $0) })
+                pl.sequences[seqIdx].children = children
+            }
+        }
+        noteRecentTarget(target)
+        setLastAddTarget(target)
+        for id in toAdd {
+            emitAddActivity(itemId: id, target: target)
+            writeBackAddIfSourced(id, target: target)
+        }
+        return toAdd.count
+    }
+
     // MARK: Two-way source sync — push a converted/duplicated collection's add upstream
 
     /// Resolve `target`'s Apple Music provenance and, if this collection came from an Apple
