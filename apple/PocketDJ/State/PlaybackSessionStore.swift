@@ -61,6 +61,11 @@ final class PlaybackSessionStore {
         var artist: String
         var lengthMs: Int?
         var repeatCount: Int?
+        /// Edition override (`SongVariant` rawValue) for a cleanOnly-substituted row.
+        /// Optional/defaulted — additive, `playbackSessionSchemaVersion` stays 1, so
+        /// pre-existing session files (which lack the key) still restore. Without this
+        /// a relaunch restore of a cleanOnly set would silently play explicit editions.
+        var variant: String? = nil
     }
 
     struct Snapshot: Codable, Equatable {
