@@ -155,7 +155,13 @@ final class GameScoreboardStore {
     /// UI-test seam: `PDJ_SEED_GAMES` seeds 3 puzzle runs (5/9/7) + 1 MwF run (4) so the
     /// scoreboard renders populated deterministically. No-op when runs already exist.
     func seedFixtureIfRequested() {
-        guard ProcessInfo.processInfo.environment["PDJ_SEED_GAMES"] != nil, runs.isEmpty else { return }
+        guard ProcessInfo.processInfo.environment["PDJ_SEED_GAMES"] != nil else { return }
+        seedFixture()
+    }
+
+    /// The env-free seed body (unit-testable; the env gate lives above).
+    func seedFixture() {
+        guard runs.isEmpty else { return }
         let now = Date().timeIntervalSince1970 * 1000
         let hour = 3600.0 * 1000
         record(game: .collectorsPuzzle, score: 5, settingsSummary: "2:00 · 1 target", at: now - 30 * hour)

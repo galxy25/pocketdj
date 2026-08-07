@@ -95,8 +95,9 @@ struct MwFCreateSheet: View {
         .task {
             guard !seeded else { return }
             seeded = true
-            let name = friends.profileNameProvider?() ?? profile.name
-            displayName = name
+            let name = (friends.profileNameProvider?() ?? profile.name)
+                .trimmingCharacters(in: .whitespaces)
+            displayName = name.isEmpty ? "Player" : name   // the JukeboxView.defaultName convention
             sessionName = name.isEmpty ? "Music with Friends" : "\(name)'s Music with Friends"
         }
     }
@@ -170,7 +171,9 @@ struct MwFJoinSheet: View {
         .task {
             guard !seeded else { return }
             seeded = true
-            displayName = friends.profileNameProvider?() ?? profile.name
+            let name = (friends.profileNameProvider?() ?? profile.name)
+                .trimmingCharacters(in: .whitespaces)
+            displayName = name.isEmpty ? "Player" : name
             await loadPreview()
         }
         .onChange(of: pastedLink) { _, _ in Task { await loadPreview() } }
