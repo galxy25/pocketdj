@@ -132,8 +132,35 @@ function buildCommand(kind, args = {}) {
   }
 }
 
+// Every display-driving run — here or in any agent — must serialize on ONE lock.
+// This bit was broken and cost real time: agents took /tmp/pdj-uitest.lock while this
+// runner took nothing at all, so a runner job would happily walk into the middle of a
+// lock-abiding agent's suite, `killall PocketDJ`, and destroy both runs. The victim's
+// log reads "Failed to activate application" / "is not running", which looks exactly
+// like a product regression. Wrap the command so the OS enforces exclusion rather than
+// relying on everyone remembering the etiquette.
+const UI_LOCK = '/tmp/pdj-uitest.lock';
+function withDisplayLock(cmd, cmdArgs) {
+  const inner = [cmd, ...cmdArgs].map((s) => `'${String(s).replace(/'/g, `'\\''`)}'`).join(' ');
+  const py = `import fcntl,subprocess,sys,time
+f=open(${JSON.stringify(UI_LOCK)},"w")
+t0=time.time()
+try:
+    fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError:
+    print("[gui-runner] display busy — queued behind another UI run…",flush=True)
+    fcntl.flock(f,fcntl.LOCK_EX)
+    print("[gui-runner] acquired display lock after %ds"%(time.time()-t0),flush=True)
+sys.exit(subprocess.call(${JSON.stringify(inner)},shell=True))`;
+  return { cmd: '/usr/bin/python3', args: ['-c', py] };
+}
+
 function startJob(kind, args = {}) {
-  const { cmd, args: cmdArgs, cwd, produces } = buildCommand(kind, args);
+  const built = buildCommand(kind, args);
+  const { cwd, produces } = built;
+  // Screenshots are instantaneous and harmless; only real test runs need the lock.
+  const needsLock = kind !== 'screenshot';
+  const { cmd, args: cmdArgs } = needsLock ? withDisplayLock(built.cmd, built.args) : built;
   const id = randomUUID().slice(0, 8);
   const log = join(LOG_DIR, `${kind}-${id}.log`);
   writeFileSync(log, `# ${kind} ${JSON.stringify(args)}\n# ${cmd} ${cmdArgs.join(' ')}\n\n`);
