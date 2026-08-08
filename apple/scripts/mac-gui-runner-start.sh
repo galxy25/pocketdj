@@ -15,4 +15,25 @@ if [ -n "${SSH_CONNECTION:-}" ]; then
 fi
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+PORT="${PDJ_GUI_RUNNER_PORT:-8791}"
+
+# Reclaim the port from a stale copy of THIS server automatically — that's the common
+# case (a leftover smoke test, or a previous window). Anything else we leave alone and
+# report, rather than killing a process we don't recognise.
+if HOLDER_PID="$(lsof -ti:"$PORT" 2>/dev/null | head -1)" && [ -n "$HOLDER_PID" ]; then
+  HOLDER_CMD="$(ps -o command= -p "$HOLDER_PID" 2>/dev/null || true)"
+  if printf '%s' "$HOLDER_CMD" | grep -q "mac-gui-runner.mjs"; then
+    echo "↻ Port $PORT held by a stale mac-gui-runner (pid $HOLDER_PID) — replacing it."
+    kill -9 "$HOLDER_PID" 2>/dev/null || true
+    sleep 1
+  else
+    echo "❌ Port $PORT is held by something that is NOT this server:"
+    echo "   pid $HOLDER_PID: ${HOLDER_CMD:-unknown}"
+    echo "   Either stop it, or pick another port:"
+    echo "     PDJ_GUI_RUNNER_PORT=8792 bash apple/scripts/mac-gui-runner-start.sh"
+    echo "   (if you change it, tell Claude — .mcp.json points at $PORT)"
+    exit 1
+  fi
+fi
+
 exec node scripts/mac-gui-runner.mjs

@@ -266,6 +266,25 @@ const server = createServer(async (req, res) => {
   });
 });
 
+// A stale instance holding the port is the single most likely startup failure (an
+// agent's smoke test, or a previous window you forgot). Say so in one line and offer
+// the fix, rather than dumping an unhandled EADDRINUSE stack trace.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n  ❌ Port ${PORT} is already in use — something else is holding it.\n`);
+    console.error(`  Most likely a stale copy of this server. See what it is:`);
+    console.error(`      lsof -i :${PORT}`);
+    console.error(`  If it IS a stale mac-gui-runner, take the port back:`);
+    console.error(`      lsof -ti:${PORT} | xargs kill -9 && bash apple/scripts/mac-gui-runner-start.sh`);
+    console.error(`  Or just use another port:`);
+    console.error(`      PDJ_GUI_RUNNER_PORT=8792 bash apple/scripts/mac-gui-runner-start.sh`);
+    console.error(`  (if you change it, tell Claude — .mcp.json points at ${PORT})\n`);
+    process.exit(1);
+  }
+  console.error(`\n  ❌ Server error: ${err.message}\n`);
+  process.exit(1);
+});
+
 server.listen(PORT, '127.0.0.1', async () => {
   const gui = await checkGuiAccess();
   console.log(`\n  PocketDJ Mac GUI runner → http://127.0.0.1:${PORT}`);
