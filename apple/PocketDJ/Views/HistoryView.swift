@@ -25,6 +25,12 @@ struct HistoryView: View {
     /// Optional like `AddToCollectionView`/`AppleMusicSettingsView`: always injected by the app, but a
     /// preview/test host that renders History standalone should degrade to "no backfill", not trap.
     @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
+    /// The SHARED per-window multi-select (RootView-owned) — the same model Browse and the
+    /// collection details use. History used to run its own private `Set<String>`, which meant
+    /// two selection systems in one app: no ⌘-click/⇧-click ranges, no ⌥-click toggle, no
+    /// selection bar, and no Copy / Add to…. It's now one model, scoped to `selectionScope`
+    /// so arming Select here can never intercept taps in Browse.
+    @Environment(RowSelection.self) private var rowSelection
     @Binding var path: NavigationPath
 
     enum HistoryTab: String, CaseIterable {
@@ -56,12 +62,9 @@ struct HistoryView: View {
     @State private var groupBySong = false
     @State private var showFilter = false
     @State private var showSort = false
-    /// Multi-select share (Playback tab): whether we're selecting, and the chosen song ids. Tap a
-    /// row to toggle; the select-mode menu's "Select all" / "Deselect all" (touch-reachable) or
-    /// ⌘A / ⌃A select every song matching the current filters/sort — the WHOLE filtered universe,
-    /// not just the loaded page; Share exports one "Title — Artist + links" block per distinct song.
-    @State private var selecting = false
-    @State private var selection: Set<String> = []
+    /// History's `.searchable` field has focus ⇒ ⌘A belongs to the FIELD, not to select-all
+    /// (mirrors BrowseView; RootView's ⌘A shadow is gated on `RowSelection.textEntryFocused`).
+    @FocusState private var searchFocused: Bool
     /// Result of a manual write-back backfill (the "send my adds to Apple Music" toolbar action),
     /// shown in a one-off alert. nil ⇒ no alert.
     @State private var backfillMessage: String?
@@ -121,6 +124,7 @@ struct HistoryView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .searchable(text: $browse.query, prompt: "Search title or artist")
+            .searchFocused($searchFocused)
             .toolbar { toolbar }
             .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
             .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
@@ -154,6 +158,12 @@ struct HistoryView: View {
                 guard tab == .unified else { return }
                 unified = buildUnified()
             }
+            .modifier(HistorySelectionWiring(scope: Self.selectionScope,
+                                             active: tab == .playback,
+                                             pagingKey: pagingKey,
+                                             allIds: { displayedSongIds },
+                                             payload: { selectionPayload() },
+                                             searchFocused: searchFocused))
     }
 
     @ViewBuilder private var content: some View {
@@ -460,29 +470,49 @@ struct HistoryView: View {
         return List {
             ForEach(page) { item in
                 if case .song(let song, _, _, _, let play) = item, let play {
-                    HStack(spacing: 10) {
-                        if selecting {
-                            Image(systemName: selection.contains(song.id) ? "checkmark.circle.fill" : "circle")
-                                .font(.title3)
-                                .foregroundStyle(selection.contains(song.id) ? Theme.accent : Theme.fgDim)
-                        }
-                        row(song: song, play: play)
-                    }
-                    .contentShape(Rectangle())
-                    // Select mode: tap toggles the song; otherwise open its detail.
-                    .onTapGesture { if selecting { toggleSelect(song.id) } else { path.append(song) } }
-                    .onAppear { onRowAppear(item, rendered: page, fullCount: items.count) }
-                    // Single-row share (works in either mode) — right-click / long-press.
-                    .contextMenu {
-                        ShareLink(item: ShareText.forSong(song)) {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                        }
-                    }
+                    row(song: song, play: play)
+                        // The SHARED gestures: plain tap opens the song, ⌘/⇧-click extends a
+                        // range, ⌥-click toggles, Select mode toggles on plain taps — and the
+                        // row becomes a drag source. The range universe is the DEDUPED displayed
+                        // order: a song can appear on many rows (one per play), so the id space
+                        // has to collapse to one entry per song or a range would be ambiguous.
+                        .selectableSongRow(id: song.id, scope: Self.selectionScope,
+                                           orderedIds: { displayedSongIds },
+                                           payload: { dragPayload(for: song) },
+                                           onOpen: { path.append(song) })
+                        .onAppear { onRowAppear(item, rendered: page, fullCount: items.count) }
+                        .contextMenu { rowMenu(song) }
+                        // `.contain` (never a bare identifier on a tap-gesture row — the
+                        // Browse lesson): the row stays a CONTAINER so its own id is
+                        // queryable AND the title/artist/context labels keep theirs.
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("history-row-\(song.id)")
                 }
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // count · Select all · Add to ▸ · Copy · ✕ — the same bar Browse and the collection
+        // details ride, scoped to History so it only shows for a History selection.
+        .safeAreaInset(edge: .top, spacing: 0) { SelectionBar(scope: Self.selectionScope) }
+    }
+
+    /// Row context menu: Select (the touch entry point into multi-select), Copy (whole
+    /// selection when the row is part of it), Share.
+    @ViewBuilder private func rowMenu(_ song: IndexSong) -> some View {
+        Button {
+            rowSelection.enterSelectMode(scope: Self.selectionScope, initial: song.id)
+        } label: { Label("Select", systemImage: "checklist") }
+            .accessibilityIdentifier("history-select-song-\(song.id)")
+        Button {
+            rowSelection.copyRowOrSelection(rowId: song.id, scope: Self.selectionScope,
+                                            single: SongTransfer.make(ids: [song.id],
+                                                                      songsById: app.songsById))
+        } label: { Label("Copy", systemImage: "doc.on.doc") }
+            .accessibilityIdentifier("history-copy-song-\(song.id)")
+        ShareLink(item: ShareText.forSong(song)) {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
     }
 
     /// The last RENDERED row scrolled into view → grow the render budget toward the full result
@@ -624,26 +654,30 @@ struct HistoryView: View {
                             Label("Select all (\(displayedSongs.count))", systemImage: "checkmark.circle")
                         }
                         .accessibilityIdentifier("history-select-all")
-                        Button { selection = [] } label: {
+                        Button { rowSelection.deselectAll() } label: {
                             Label("Deselect all", systemImage: "circle")
                         }
-                        .disabled(selection.isEmpty)
+                        .disabled(!rowSelection.hasSelection)
                         .accessibilityIdentifier("history-deselect-all")
                     } label: {
                         Image(systemName: "checklist")
                     }
                     .accessibilityIdentifier("history-select-menu")
+                    // Share stays History's own action (the shared SelectionBar carries Copy /
+                    // Add to… / Clear): it exports one "Title — Artist + links" block per song.
                     ShareLink(item: ShareText.forSongs(selectedSongs),
-                              subject: Text("\(selection.count) songs")) {
-                        Label("Share (\(selection.count))", systemImage: "square.and.arrow.up")
+                              subject: Text("\(rowSelection.count) songs")) {
+                        Label("Share (\(rowSelection.count))", systemImage: "square.and.arrow.up")
                     }
-                    .disabled(selection.isEmpty)
+                    .disabled(!rowSelection.hasSelection)
                     .accessibilityIdentifier("history-share-selected")
-                    Button("Done") { selecting = false; selection = [] }
+                    Button("Done") { rowSelection.clearAndExit() }
                         .accessibilityIdentifier("history-select-done")
                 } else {
-                    Button { selecting = true } label: { Image(systemName: "checklist") }
-                        .help("Select songs to share")
+                    Button {
+                        rowSelection.enterSelectMode(scope: Self.selectionScope, initial: nil)
+                    } label: { Image(systemName: "checklist") }
+                        .help("Select songs to share, copy, or add to a collection")
                         .accessibilityIdentifier("history-select")
                     Button { showSort = true } label: { Image(systemName: "arrow.up.arrow.down") }
                         .accessibilityIdentifier("history-sort")
@@ -695,40 +729,66 @@ struct HistoryView: View {
                 .keyboardShortcut("f", modifiers: [.command, .option])
             Button("HistorySort-shadow") { showSort = true }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-            // ⌘A / ⌃A — select every song matching the current filters/sort (enters select mode).
-            // Both accelerators map to select-all-matching, per the spec.
-            Button("HistorySelectAll-cmd") { selectAllMatching() }
-                .keyboardShortcut("a", modifiers: .command)
+            // ⌃A — select every song matching the current filters/sort. ⌘A is NOT registered
+            // here any more: RootView's shared `SelectAllSongs-shadow` owns it for whichever
+            // list is registered (History's, while the Playback tab is up), and two live
+            // registrations of one key resolve ambiguously on macOS.
             Button("HistorySelectAll-ctrl") { selectAllMatching() }
                 .keyboardShortcut("a", modifiers: .control)
         }
         .frame(width: 1, height: 1).opacity(0.01)
     }
 
-    // MARK: - Multi-select share (Playback tab)
+    // MARK: - Multi-select (shared RowSelection, Playback tab)
 
-    private func toggleSelect(_ id: String) {
-        if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
-    }
+    /// One scope for History's play rows. Everything RowSelection does is keyed on it, which
+    /// is what keeps arming Select here from intercepting taps in Browse or a collection.
+    static let selectionScope = "history-plays"
+
+    /// The selection bar / select-mode toolbar shows while a History selection (or Select
+    /// mode) is live in THIS scope.
+    private var selecting: Bool { rowSelection.isActive(in: Self.selectionScope) }
 
     /// Every DISTINCT song currently matching the filters/sort (the displayed set), in order — the
     /// universe ⌘A selects and that Share exports from.
-    private var displayedSongs: [IndexSong] {
+    private var displayedSongs: [IndexSong] { Self.distinctSongs(browse.displayItems) }
+    /// Same universe as ids: the range/select-all id space (deduped, display order).
+    private var displayedSongIds: [String] { displayedSongs.map(\.id) }
+
+    /// Dedupe the History rows (one per PLAY) down to one entry per song, preserving display
+    /// order. Pure + static so it's unit-testable without a view host.
+    static func distinctSongs(_ items: [BrowseItem]) -> [IndexSong] {
         var seen = Set<String>(); var out: [IndexSong] = []
-        for item in browse.displayItems {
+        for item in items {
             if case .song(let song, _, _, _, _) = item, seen.insert(song.id).inserted { out.append(song) }
         }
         return out
     }
 
     /// The selected songs in displayed order (deduped — History rows are one-per-event).
-    private var selectedSongs: [IndexSong] { displayedSongs.filter { selection.contains($0.id) } }
+    private var selectedSongs: [IndexSong] {
+        displayedSongs.filter { rowSelection.isSelected($0.id, scope: Self.selectionScope) }
+    }
 
-    /// ⌘A / ⌃A — select every song matching the current filters (enters select mode). Playback only.
+    /// The ordered selection as a transfer payload — what Copy, the bar's Add to…, and a
+    /// multi-row drag all serialize.
+    private func selectionPayload() -> SongTransfer? {
+        let ordered = rowSelection.orderedSelection(in: displayedSongIds)
+        guard !ordered.isEmpty else { return nil }
+        return SongTransfer.make(ids: ordered, songsById: app.songsById)
+    }
+    private func dragPayload(for song: IndexSong) -> SongTransfer {
+        rowSelection.payloadForRow(song.id, scope: Self.selectionScope,
+                                   single: SongTransfer.make(ids: [song.id], songsById: app.songsById))
+    }
+
+    /// ⌃A / the toolbar's "Select all" — select every song matching the current filters, and
+    /// arm Select mode so the next plain tap toggles instead of navigating (the touch path).
+    /// Playback only.
     private func selectAllMatching() {
         guard tab == .playback else { return }
-        selecting = true
-        selection = Set(displayedSongs.map(\.id))
+        rowSelection.enterSelectMode(scope: Self.selectionScope, initial: nil)
+        rowSelection.selectAll()
     }
 
     // MARK: - Base rows from the event log
@@ -796,6 +856,47 @@ struct HistoryView: View {
 
     private static func relative(_ epochMs: Double) -> String {
         relativeFormatter.localizedString(for: Date(timeIntervalSince1970: epochMs / 1000), relativeTo: Date())
+    }
+}
+
+/// Registers History's Playback rows as the window's ACTIVE selectable list (so ⌘A / ⌘C /
+/// the bar's Add to… act on them), prunes a live selection when the result set changes, and
+/// parks the ⌘A shadow while the search field has focus.
+///
+/// A ViewModifier rather than four more chain entries on `HistoryView.body`: that chain is at
+/// the type-checker's budget (the file says so twice), and this is the same extraction
+/// `CollectionSelectionChrome` is for. `active` is "the Playback tab is showing" — Unified and
+/// Collection have no selectable song rows, so registering there would point ⌘A at rows that
+/// aren't on screen.
+private struct HistorySelectionWiring: ViewModifier {
+    @Environment(RowSelection.self) private var selection
+    let scope: String
+    let active: Bool
+    /// Cheap stand-in for "the result set changed" (the full id list is expensive to build on
+    /// every render — History can hold tens of thousands of events).
+    let pagingKey: String
+    let allIds: () -> [String]
+    let payload: () -> SongTransfer?
+    let searchFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { sync() }
+            .onChange(of: active) { sync() }
+            .onChange(of: pagingKey) {
+                guard selection.scopeId == scope, selection.hasSelection else { return }
+                selection.prune(validIds: Set(allIds()))
+            }
+            .onChange(of: searchFocused) { _, focused in selection.textEntryFocused = focused }
+            .onDisappear {
+                selection.unregisterActiveList(scope: scope)
+                selection.textEntryFocused = false   // never leave ⌘A suspended by stale focus
+            }
+    }
+
+    private func sync() {
+        guard active else { selection.unregisterActiveList(scope: scope); return }
+        selection.registerActiveList(scope: scope, allIds: allIds, payload: payload)
     }
 }
 

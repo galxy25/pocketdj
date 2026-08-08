@@ -207,6 +207,23 @@ final class RowSelectionTests: XCTestCase {
         XCTAssertNil(s.scopeId)
     }
 
+    /// History's "Deselect all": empties the selection but LEAVES Select mode armed (and the
+    /// scope latched), so the next plain tap keeps toggling instead of navigating away.
+    func testDeselectAllKeepsSelectModeAndScope() {
+        let s = RowSelection()
+        s.enterSelectMode(scope: scope, initial: "a")
+        _ = tap(s, "b")
+        XCTAssertEqual(s.ids, ["a", "b"])
+        s.deselectAll()
+        XCTAssertTrue(s.ids.isEmpty)
+        XCTAssertNil(s.anchorId)
+        XCTAssertTrue(s.selectMode)
+        XCTAssertTrue(s.isSelectMode(in: scope))
+        XCTAssertEqual(s.scopeId, scope)
+        XCTAssertEqual(tap(s, "c"), .selection)      // still toggling, not navigating
+        XCTAssertEqual(s.ids, ["c"])
+    }
+
     /// While a text field has focus, ⌘A belongs to the field — the shadow's presence gate
     /// (`canSelectAll`) must read false even with a registered list.
     func testTextEntryFocusSuspendsSelectAll() {

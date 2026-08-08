@@ -98,6 +98,10 @@ final class RowSelection {
     /// Clear the selection and exit Select mode. Also un-latches `scopeId` so post-clear
     /// guards (e.g. BrowseView's prune-after-recompute) stop matching a dead selection.
     func clearAndExit() { ids = []; anchorId = nil; selectModeScope = nil; scopeId = nil }
+    /// Empty the selection but STAY in Select mode (History's "Deselect all"): the user is
+    /// still picking, they just want to start over — `clearAndExit` would drop them back to
+    /// tap-to-navigate and make them re-arm. Keeps `scopeId` so the bar stays put.
+    func deselectAll() { ids = []; anchorId = nil }
     func prune(validIds: Set<String>) {
         ids.formIntersection(validIds)
         if let a = anchorId, !validIds.contains(a) { anchorId = nil }
