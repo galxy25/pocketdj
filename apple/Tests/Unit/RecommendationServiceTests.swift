@@ -193,6 +193,59 @@ final class RecommendationServiceTests: XCTestCase {
         XCTAssertEqual((retried["plays"] as? [[String: Any]])?.first?["songId"] as? String, "sng_a")
     }
 
+    // MARK: - The WS-D puzzle seam (PuzzleRecEventBridge)
+
+    /// The Games ↔ rec-engine seam, wired exactly as `PocketDJApp` wires it: a Collector's
+    /// Puzzle FILING rides the wire as `action: "added"`, a SKIP never does (the server reads
+    /// every puzzle event as a positive taste signal), and the engine's puzzle cursor advances
+    /// on the 2xx so the same filing is never re-sent.
+    func testPuzzleProviderYieldsFilingsAndAdvancesTheCursor() async throws {
+        let stateURL = tempURL("sync-puzzle")
+        let env = makeEnv(enabled: true, stateURL: stateURL)
+        let puzzle = PuzzleDecisionStore(fileURL: tempURL("puzzle-decisions"))
+        env.svc.puzzleEventsProvider = { [weak puzzle] sinceMs in
+            puzzle?.recPuzzleEvents(sinceMs: sinceMs) ?? []
+        }
+
+        let round = UUID()
+        let filed = puzzle.record(roundId: round, songId: "sng_a", action: "assigned",
+                                  collectionId: "pkt_warmup", collectionName: "Warmup",
+                                  positionInRound: 0, at: 1_000)
+        _ = puzzle.record(roundId: round, songId: "sng_skipped", action: "skipped",
+                          positionInRound: 1, at: 1_500)
+
+        await env.svc.flushNow()
+        let rows = try XCTUnwrap(env.spy.json(0)["puzzle"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 1, "a skip is not a positive signal — it must not ride")
+        XCTAssertEqual(rows[0]["id"] as? String, filed.id.uuidString)
+        XCTAssertEqual(rows[0]["atMs"] as? Double, 1_000)
+        XCTAssertEqual(rows[0]["songId"] as? String, "sng_a")
+        XCTAssertEqual(rows[0]["collectionId"] as? String, "pkt_warmup")
+        XCTAssertEqual(rows[0]["action"] as? String, "added")
+        XCTAssertEqual(rows[0]["gameId"] as? String, GameKind.collectorsPuzzle.rawValue)
+        XCTAssertEqual(rows[0]["points"] as? Int, 1)
+
+        // The cursor moved to the filing's timestamp and its ack was remembered.
+        let doc = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: stateURL))
+                                as? [String: Any])
+        XCTAssertEqual(doc["lastPuzzleAtMs"] as? Double, 1_000)
+        XCTAssertEqual((doc["uploadedPuzzle"] as? [String])?.count, 1)
+
+        // …so only a NEW filing rides the next flush.
+        let later = puzzle.record(roundId: round, songId: "sng_b", action: "assigned",
+                                  collectionId: "pls_set", collectionName: "Set", at: 2_000)
+        await env.svc.flushNow()
+        let rows2 = try XCTUnwrap(env.spy.json(1)["puzzle"] as? [[String: Any]])
+        XCTAssertEqual(rows2.count, 1, "the acked filing must not be re-sent")
+        XCTAssertEqual(rows2[0]["id"] as? String, later.id.uuidString)
+
+        // The projection's own floor, independent of the engine's bookkeeping.
+        XCTAssertEqual(puzzle.recPuzzleEvents(sinceMs: 0).map(\.id),
+                       [filed.id.uuidString, later.id.uuidString])
+        XCTAssertEqual(puzzle.recPuzzleEvents(sinceMs: 1_500).map(\.id), [later.id.uuidString])
+        XCTAssertTrue(puzzle.recPuzzleEvents(sinceMs: 3_000).isEmpty)
+    }
+
     func testCollectionsSnapshotSentOnlyWhenHashChanges() async {
         let env = makeEnv(enabled: true)
         env.history.record(songId: "sng_a", context: .browser, at: 1_000)

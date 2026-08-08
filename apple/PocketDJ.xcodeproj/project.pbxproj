@@ -219,6 +219,7 @@
 		7809D09089A8A5CD70496259 /* AppleMusicProviderCandidatesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 503B9B24B1423B5CDC2B21FC /* AppleMusicProviderCandidatesTests.swift */; };
 		785A2283E86AF6FBB36C7E97 /* NowPlayingSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E68B627E11B43B6DA0FFC32 /* NowPlayingSnapshot.swift */; };
 		78D5D207E3E13213F6FCA306 /* RecModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26EB9756A3F6BE9900D9478 /* RecModelsTests.swift */; };
+		78DB341E8C25943C1D932771 /* PuzzleRecEventBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22A16829C44B131DF2180318 /* PuzzleRecEventBridge.swift */; };
 		78EF1A8ECCC69029C9189883 /* PocketDJUTType.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */; };
 		79077DE77DA19996E79E74CE /* StudioMIDIImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A638839E33F70B5BB606068 /* StudioMIDIImportTests.swift */; };
 		795FD609679C7C11A4F7F170 /* StudioStepModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C408F5E0FE5F2891C7B35D7 /* StudioStepModeTests.swift */; };
@@ -554,6 +555,7 @@
 		2100545B470C52A2DC5DCA2F /* AlbumDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumDetailView.swift; sourceTree = "<group>"; };
 		2188F4AB4249E3486A6C5AC3 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		21B364FC3816A5B0C10876C7 /* MultitrackPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultitrackPlayer.swift; sourceTree = "<group>"; };
+		22A16829C44B131DF2180318 /* PuzzleRecEventBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleRecEventBridge.swift; sourceTree = "<group>"; };
 		22C3C362B77FD21D87261938 /* PlaybackModeToggle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackModeToggle.swift; sourceTree = "<group>"; };
 		23F69B0FC2598FDF62012E1E /* CollectionStatsCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionStatsCache.swift; sourceTree = "<group>"; };
 		247D8BE584DBA6EE7009B4FD /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -1177,6 +1179,7 @@
 				AAA73D1D6DC3707E58F15F6F /* CollectorsPuzzleView.swift */,
 				A94310FDEC42331710EE2749 /* PuzzleDecisionStore.swift */,
 				E31C32FD6DB5015C6BCCCC57 /* PuzzleModels.swift */,
+				22A16829C44B131DF2180318 /* PuzzleRecEventBridge.swift */,
 				6F96A6B05DE187E15E99EA3C /* PuzzleSampler.swift */,
 			);
 			path = CollectorsPuzzle;
@@ -2240,6 +2243,7 @@
 				FAFF167D94968127D663F64D /* PushRegistrationService.swift in Sources */,
 				C0869E451088257A4F5140D6 /* PuzzleDecisionStore.swift in Sources */,
 				A1714094CADBCA3D616BABC0 /* PuzzleModels.swift in Sources */,
+				78DB341E8C25943C1D932771 /* PuzzleRecEventBridge.swift in Sources */,
 				5CE092AE4750EFDE93619CDB /* PuzzleSampler.swift in Sources */,
 				346413F3F2C99B2F0AABCF1F /* QueueMenu.swift in Sources */,
 				7E35B738A41A9B816A97D4D6 /* RealizeEngine.swift in Sources */,

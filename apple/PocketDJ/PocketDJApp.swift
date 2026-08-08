@@ -988,8 +988,14 @@ struct PocketDJApp: App {
             client: recClient, settings: settings, history: playHistory,
             favorites: favorites, activity: collectionActivity, collections: collections,
             profileIdProvider: { [weak profile] in profile?.id ?? "" })
-        // WS-D (Games tab) wires Collector's Puzzle events here once its store lands.
-        recEngine.puzzleEventsProvider = nil
+        // WS-D (Games tab) seam, now CLOSED: the Collector's Puzzle decision log feeds the
+        // engine through `PuzzleRecEventBridge` (only `assigned` filings leave the device —
+        // see that file for why a skip must never ride this wire). Weak so the provider can
+        // never keep the store's graph alive past the app; nil store ⇒ no puzzle events,
+        // exactly the pre-merge behaviour.
+        recEngine.puzzleEventsProvider = { [weak puzzleDecisions] sinceMs in
+            puzzleDecisions?.recPuzzleEvents(sinceMs: sinceMs) ?? []
+        }
         _recEngine = State(initialValue: recEngine)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
