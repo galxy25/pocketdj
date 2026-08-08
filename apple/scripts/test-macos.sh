@@ -81,7 +81,12 @@ osascript -e 'tell application "PocketDJ" to quit' 2>/dev/null || true
 # product regression, and it cost hours of misdiagnosis. Match on the full macOS
 # bundle path instead; simulator processes live under CoreSimulator/Devices/… and
 # therefore never match.
-pkill -f '/Contents/MacOS/PocketDJ$' 2>/dev/null || true
+# Anchored on argv[0], NOT on the end of the argv string: a trailing `$` would also
+# match any command whose LAST ARGUMENT is that path — `codesign …/MacOS/PocketDJ`,
+# `tail -f …/PocketDJ` — which is the same class of collateral kill, just rarer.
+# Verified empirically against ad-hoc-signed binaries: kills the macOS app (with or
+# without args), spares Simulator-hosted PocketDJ, spares commands that merely name it.
+pkill -f '^/.*/PocketDJ\.app/Contents/MacOS/PocketDJ' 2>/dev/null || true
 sleep 1
 
 echo "▶ test-without-building (macOS)…"
