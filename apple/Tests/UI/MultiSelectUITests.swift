@@ -59,30 +59,45 @@ final class MultiSelectUITests: XCTestCase {
         return app.buttons[buttonId]
     }
 
+    /// Tap a CONTEXT-MENU item by its screen position instead of by element.
+    ///
+    /// `XCUIElement.tap()` re-resolves the element AFTER its "wait for app to idle", and a
+    /// long-pressed `.draggable` row leaves the app non-idle for the full 60 s timeout — long
+    /// enough for the menu to dismiss itself, at which point the tap dies with "No matches
+    /// found" and (continueAfterFailure = false) kills the test. Reading `.frame` resolves
+    /// against the snapshot that just proved the item exists, and a coordinate tap cannot
+    /// fail to resolve — so a menu that vanished under us lands a harmless tap on the list
+    /// instead, which the caller detects (no selection bar) and re-drives.
+    private func tapCenter(_ app: XCUIApplication, of element: XCUIElement) {
+        let f = element.frame
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: f.midX, dy: f.midY)).tap()
+    }
+
     /// Dismiss whatever menu/preview is on screen by tapping a neutral spot (the status-bar
     /// strip): a tap outside a UIKit menu only dismisses it, and with no menu up it hits
-    /// nothing actionable.
+    /// nothing actionable. Then undo any navigation a stray tap caused.
     private func dismissTransientUI(_ app: XCUIApplication) {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.01)).tap()
         usleep(400_000)
+        if app.any("song-detail").waitForExistence(timeout: 1) {
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            if back.exists { back.tap() }
+        }
     }
 
     /// Long-press a Browse song row → context-menu "Select" — arms Select mode with the row.
-    /// The WHOLE gesture retries: when the long-press latches a drag lift the menu opens but
-    /// its first tap is swallowed, so a tap that leaves no selection bar is re-driven rather
-    /// than reported as a product failure.
+    /// The WHOLE gesture retries: the long-press shares its recognizer with the row's drag
+    /// lift, so the menu can open and then close under the idle wait (see `tapCenter`). A
+    /// cycle that leaves no selection bar is re-driven rather than reported as a product bug.
     private func enterSelectMode(_ app: XCUIApplication, songId: String,
                                  file: StaticString = #filePath, line: UInt = #line) {
         let bar = app.any("selection-bar")
         for _ in 0..<3 {
             if let button = rowMenuButtonIfPresent(app, rowId: "song-\(songId)",
                                                    buttonId: "select-song-\(songId)", attempts: 3) {
-                button.tap()
-                if bar.waitForExistence(timeout: 6) { return }
-                if button.exists {              // menu still up: the tap never landed
-                    button.tap()
-                    if bar.waitForExistence(timeout: 6) { return }
-                }
+                tapCenter(app, of: button)
+                if bar.waitForExistence(timeout: 8) { return }
             }
             dismissTransientUI(app)
         }
@@ -234,7 +249,7 @@ final class MultiSelectUITests: XCTestCase {
     func testBrowseRowAddToPlaylistSheet() {
         let app = launch(seedCollections: true)
         showSongs(app)
-        rowMenuButton(app, rowId: "song-sng_2", buttonId: "add-to-song-sng_2").tap()
+        tapCenter(app, of: rowMenuButton(app, rowId: "song-sng_2", buttonId: "add-to-song-sng_2"))
         // The shared sheet: toggle the seeded playlist row, then Done.
         let target = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'add-playlist-pls_'")).firstMatch
