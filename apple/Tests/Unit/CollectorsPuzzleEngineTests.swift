@@ -190,6 +190,9 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertEqual(row.songId, first.id)
     }
 
+    /// Also the "silent round" contract: this stack never gets audio ownership, and the
+    /// round must top up anyway — a round is playable (assign/skip) with no audio at all,
+    /// so gating the queue growth on the sequencer would starve it mid-play.
     func testTopUpAppendsToQueue() async throws {
         let s = await makeStack(loader: BigLoader(), roundSeconds: 60)
         await s.engine.startRound()
@@ -221,8 +224,6 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertEqual(s.engine.roundId, bRound)
         XCTAssertEqual(s.engine.queue.map(\.id), bQueue,
                        "round A's 40-song sample never lands in round B's queue")
-        XCTAssertEqual(s.sequencer.queue.count, bQueue.count,
-                       "…nor in the sequencer's")
         XCTAssertFalse(s.engine.poolExhausted)
         // Round B's own top-up still works — the stale round didn't latch the flag.
         for _ in 0..<51 { s.engine.skip() }
@@ -231,9 +232,11 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertGreaterThan(s.engine.queue.count, 60, "round B tops up normally")
     }
 
-    /// Ownership lost DURING the top-up await: the extra songs must land in NEITHER queue —
-    /// appending to the engine's alone would desync the index mapping the scoring reads.
-    func testTopUpAfterTakeoverAppendsNowhere() async throws {
+    /// Ownership lost DURING the top-up await: the extras must never be pushed into the
+    /// FOREIGN audio queue (that would hijack someone else's playback). The round's own
+    /// queue may still grow — it is the engine's data, nothing reads the audio index while
+    /// unowned, and the next tick ends the taken-over round anyway.
+    func testTopUpAfterTakeoverNeverAppendsToTheForeignAudioQueue() async throws {
         let s = await makeStack(loader: BigLoader(), roundSeconds: 60)
         await s.engine.startRound()
         for _ in 0..<51 { s.engine.skip() }
@@ -242,9 +245,14 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         s.sequencer.play([SetlistPlayer.Item(id: "other_1", title: "Theirs", artist: "Someone")],
                          sourceSetlistId: "set_other")
         try await Task.sleep(for: .milliseconds(400))
-        XCTAssertEqual(s.engine.queue.count, 60,
-                       "no engine-only append — the queues stay in lockstep")
-        XCTAssertEqual(s.sequencer.queue.count, 1, "the foreign queue is untouched")
+        // The continuation DID run (the round's own queue grew — a silent or taken-over
+        // round still tops up)…
+        XCTAssertGreaterThan(s.engine.queue.count, 60)
+        // …but nothing puzzle-shaped was pushed into the foreign playback. (The audio queue
+        // itself is not asserted directly: this stack's items are unplayable, so the
+        // sequencer tears any queue down on the next runloop turn — an `await` sees [].)
+        XCTAssertTrue(Set(s.sequencer.queue.map(\.id)).isDisjoint(with: Set(s.engine.queue.map(\.id))),
+                      "no puzzle song was smuggled into their playback")
     }
 
     func testPoolExhaustionFlagsCatalogExhausted() async throws {

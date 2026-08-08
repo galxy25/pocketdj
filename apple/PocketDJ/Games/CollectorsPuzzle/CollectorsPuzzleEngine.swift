@@ -248,12 +248,17 @@ final class CollectorsPuzzleEngine {
                     self.poolExhausted = true
                     return
                 }
-                // The await above is a window in which someone else could have taken the
-                // sequencer — appending into THEIR queue would hijack their playback, and
-                // appending to OUR queue alone would desync the index mapping the scoring
-                // relies on. Ownership lost ⇒ append NOWHERE (the next tick ends the round).
-                guard self.ownsSequencer else { return }
+                // The ROUND's queue always grows: it is this engine's own data, and the
+                // round stays fully playable (assign/skip) even with no audio at all — a
+                // sequencer-gated append would silently starve a silent round mid-play.
                 self.queue.append(contentsOf: extra)
+                // The AUDIO queue only grows while we still own the sequencer: the await
+                // above is a window in which another surface could have played over it,
+                // and appending into THEIR queue would hijack that playback. Divergence is
+                // safe — every read of `sequencer.index` is ownership-gated, ownership is
+                // never re-acquired mid-round (only `startRound` stamps the run tag), and
+                // the very next tick ends a taken-over round.
+                guard self.ownsSequencer else { return }
                 self.sequencer.appendToQueue(extra.map {
                     SetlistPlayer.Item(id: $0.id, title: $0.name, artist: $0.artist,
                                        lengthMs: $0.length)
