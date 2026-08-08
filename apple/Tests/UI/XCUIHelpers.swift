@@ -289,19 +289,26 @@ extension XCUIElement {
 /// forwarding `LivOnboardingWalkUITests` uses for PDJ_SHOT_DIR), so read the UNPREFIXED name here.
 ///
 /// IF THE RUN DIES WITH "Timed out while enabling automation mode" (60s, before any test body
-/// executes), the cause measured on this Mac on 2026-08-08 was a STALE `AutomationModeUI`
-/// process holding the automation-mode session — orphaned from an earlier run, still alive
-/// hours later. It is NOT a display-sleep, screen-lock or TCC problem: the display was awake
-/// under `caffeinate -u` and the machine was otherwise idle, killing `testmanagerd` changed
-/// nothing, and the very next run reached "Running tests…" the moment the orphan was killed:
+/// executes), check TWO things — both were in play on 2026-08-08 and I could not fully separate
+/// them, so don't let this note talk you out of checking the other one:
 ///
-///     ps aux | grep '[A]utomationModeUI'   →   kill -9 <pid>     # relaunches on demand
+///  1. A STALE `AutomationModeUI` process holding the automation-mode session, orphaned from an
+///     earlier run and still alive hours later. OBSERVED: three runs timed out at exactly 60s;
+///     killing `testmanagerd` changed nothing; the next run after killing the orphan reached
+///     "Running tests…".
+///         ps aux | grep '[A]utomationModeUI'   →   kill -9 <pid>    # relaunches on demand
+///     Only kill an ORPHAN (no `PocketDJUITests-Runner` alive) — one of these legitimately
+///     serves a live run.
 ///
-/// Only kill an ORPHAN (no `PocketDJUITests-Runner` alive) — one of these legitimately serves
-/// a live run. Separately, macOS UI runs do need EXCLUSIVE window focus: a concurrent
-/// iOS-Simulator XCUITest run produces "Failed to activate application" / "Unable to find hit
-/// point for Application", which is contention, not a defect (see
-/// [[macos-ui-tests-need-exclusive-display]]).
+///  2. A LOCKED screen. `caffeinate -u` keeps the display awake but does NOT stop the session
+///     locking, and a locked session breaks macOS UI automation on its own. I could not
+///     retroactively establish the lock state across those three failures, so treat "it was the
+///     orphan" as the better-evidenced explanation rather than a proven sole cause.
+///
+/// Separately, macOS UI runs need EXCLUSIVE window focus: a concurrent iOS-Simulator XCUITest
+/// run produces "Failed to activate application" / "Unable to find hit point for Application",
+/// which is contention, not a defect (see [[macos-ui-tests-need-exclusive-display]]). Treat a
+/// log containing that string as CONTAMINATED and re-run, rather than triaging its failures.
 final class MacTreeDumpUITests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipIf(ProcessInfo.processInfo.environment["PDJ_DUMP_DIR"] == nil,
