@@ -94,6 +94,13 @@ targets:
               public.mime-type:
                 - application/x-pocketdj-collection
                 - application/zip
+          # Pasteboard/drag type for a list of song ids (multi-select drag & copy/paste).
+          # No filename extension / no CFBundleDocumentTypes entry — pasteboard-only type.
+          - UTTypeIdentifier: com.pocketdj.songlist
+            UTTypeDescription: PocketDJ Song List
+            UTTypeConformsTo:
+              - public.json
+              - public.data
         CFBundleDocumentTypes:
           - CFBundleTypeName: PocketDJ Collection
             CFBundleTypeRole: Editor

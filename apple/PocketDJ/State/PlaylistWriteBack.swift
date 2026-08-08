@@ -308,6 +308,66 @@ final class PlaylistWriteBack {
         return job
     }
 
+    /// One song owed to one playlist — `enqueue`'s parameters as data, for the batch path.
+    struct EnqueueItem: Sendable {
+        var indexPlaylistId: String
+        var playlistName: String
+        var songId: String
+        var appleMusicId: String?
+        var title: String
+        var artist: String
+        var album: String?
+        var durationMs: Int?
+    }
+
+    /// Batch twin of `enqueue` — the multi-select / drag-&-drop / paste add path. Identical
+    /// per-item eligibility + dedup semantics, but the queued/delivered and unresolvable
+    /// lookups run against Sets built ONCE, and `prune()` + `save()` run ONCE at the end —
+    /// a confirmed select-all-sized batch stays O(n), not O(n²) scans + n full-document
+    /// rewrites. The caller fires ONE `runSoon()` after. Returns the newly queued count.
+    @discardableResult
+    func enqueueMany(_ items: [EnqueueItem]) -> Int {
+        guard !items.isEmpty else { return 0 }
+        var live = Set<String>()                    // queued/delivered → skip
+        var unresolvableJobIds: [String: String] = [:]  // key → job id (supersede candidates)
+        for j in jobs {
+            let key = j.indexPlaylistId + "\u{1}" + j.songId
+            switch j.state {
+            case .queued, .delivered: live.insert(key)
+            case .unresolvable: unresolvableJobIds[key] = j.id
+            default: break
+            }
+        }
+        var newJobs: [Job] = []
+        var dropIds = Set<String>()
+        for item in items {
+            let amId = (item.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
+            let t = item.title.trimmingCharacters(in: .whitespaces)
+            let ar = item.artist.trimmingCharacters(in: .whitespaces)
+            guard !item.playlistName.isEmpty else { continue }
+            guard !amId.isEmpty || (!t.isEmpty && !ar.isEmpty) else { continue }
+            let key = item.indexPlaylistId + "\u{1}" + item.songId
+            guard !live.contains(key) else { continue }          // also dedups within the batch
+            if let stale = unresolvableJobIds[key] {             // same supersede rule as enqueue
+                if amId.isEmpty { continue }
+                dropIds.insert(stale)
+                unresolvableJobIds[key] = nil
+            }
+            live.insert(key)
+            newJobs.append(Job(id: "wbj_" + UUID().uuidString, indexPlaylistId: item.indexPlaylistId,
+                               playlistName: item.playlistName, songId: item.songId, appleMusicId: amId,
+                               title: t, artist: ar, album: item.album, durationMs: item.durationMs,
+                               queuedAtMs: Self.nowMs,
+                               musicKitPlaylistId: resolvedPlaylistIds[item.indexPlaylistId]))
+        }
+        guard !newJobs.isEmpty || !dropIds.isEmpty else { return 0 }
+        if !dropIds.isEmpty { jobs.removeAll { dropIds.contains($0.id) } }
+        jobs.append(contentsOf: newJobs)
+        prune()
+        save()
+        return newJobs.count
+    }
+
     /// A song the queue has DETERMINED can't be backed up to Apple Music — searched and found no
     /// confident catalog match (`.unresolvable`). Keyed by songId (unresolvability is a property
     /// of the song, not the playlist). Drives the collection row's `xmark.icloud` badge.
