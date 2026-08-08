@@ -24,6 +24,12 @@ extension XCUIApplication {
     /// wait (which never scrolls) starves for its whole timeout. Seen exactly once on
     /// the puzzle setup form's Start row, 2026-08-07. Alternating short waits with
     /// swipes keeps the scroll and the wait from diverging.
+    ///
+    /// iOS/iPadOS only IN PRACTICE — `swipeUp()` on the Application element can't resolve
+    /// a hit point on macOS, so every swipe throws. It carries no `#if` of its own because
+    /// it compiles everywhere and its only callers live inside `#if !os(macOS)` class
+    /// fences; a NEW macOS-running caller must fence itself (or take the touch-free path)
+    /// rather than un-fence this.
     @discardableResult
     func swipeTo(_ element: XCUIElement, maxSwipes: Int = 8) -> Bool {
         if element.waitForExistence(timeout: 2) { return true }
