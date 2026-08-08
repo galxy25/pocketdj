@@ -53,7 +53,11 @@ final class OnboardingUITests: XCTestCase {
         vinyl.tap(); digital.tap(); streaming.tap()
         let note = app.any("onboarding-own-library-note")
         XCTAssertTrue(note.waitForExistence(timeout: 5))
-        XCTAssertTrue(note.label.contains("No shared catalogs"),
+        // Read the text from `label` OR `value`. MEASURED on macOS: the element is found and the
+        // copy is on screen, but `label` does not contain it — this multi-line, centred `Text`
+        // carries its string in `value` there, while on iOS it is in `label`. (Same asymmetry as
+        // the History activity headline; short single-line rows keep using `label` on both.)
+        XCTAssertTrue(note.visibleText.contains("No shared catalogs"),
                       "zero picks should explain the own-library-only mode")
         XCTAssertTrue(app.el("onboarding-continue").isEnabled,
                       "Continue stays enabled with zero shared catalogs")

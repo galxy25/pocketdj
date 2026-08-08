@@ -10,6 +10,10 @@ import XCTest
 /// the ♥ does not fire the enclosing NavigationLink, and that the state survives the trip
 /// to disk and back on relaunch.
 ///
+/// macOS runs NOTHING from this class: every test here drives a ♥ that AppKit does not expose
+/// (see the fence below for the measurement and the mechanism). The store logic stays covered on
+/// every platform by the FavoritesStoreTests unit suite.
+///
 /// The Apple Music half is deliberately absent: two-way sync is owner-gated behind
 /// `Config.ownerICloudHashes` (which ships empty) and needs a signed-in Apple Music account,
 /// so it is not headless-testable and must be verified on-device.
@@ -33,16 +37,32 @@ final class FavoritesUITests: XCTestCase {
         return app
     }
 
-    /// The ♥ for a song, by id. Deliberately `any(_:)` (identifier across ALL element types)
-    /// rather than `el(_:)` (a `.buttons` query): on macOS `buttons["favorite-toggle-sng_1"]`
-    /// resolves to NOTHING while the identical lookup works on iOS, and that single miss is the
-    /// whole of this class's macOS failure (baseline: "each album track row has a ♥", both tests).
-    ///
-    /// It is NOT that the track table is unreachable on macOS — `BrowseUITests`
-    /// `testSongDetailFromTrackTable` taps `el("track-sng_1")` on the SAME screen and passes
-    /// there, so the row's own NavigationLink is a `.buttons` match. The difference is confined
-    /// to `FavoriteToggle`, whose label is a bare `Image` with no text; which AppKit element that
-    /// actually becomes is not established, so match by identifier and don't name a type.
+    // MARK: Album track table — iOS/iPadOS only
+    //
+    // FENCED, not ported: on macOS the album track row's ♥ is not in the accessibility tree at
+    // all, so there is no macOS idiom that can reach it. MEASURED — a type-agnostic
+    // `descendants(matching: .any).matching(identifier: "favorite-toggle-sng_1")` finds nothing
+    // after 5s on the open album page, while `el("track-sng_1")` on that same page resolves fine
+    // (BrowseUITests.testSongDetailFromTrackTable passes on macOS).
+    //
+    // MECHANISM: AlbumDetailView.trackTable wraps the whole row in
+    // `NavigationLink(value:) { TrackRow(...) }` (AlbumDetailView.swift:155-161), and AppKit
+    // flattens a link's label into ONE accessibility element — so every control nested inside
+    // that label (the ♥, and RowTransport's ▶/⤓) disappears from the tree on macOS. The Browse
+    // song list's ♥ is a different surface (CollectionSongRow) and is not affected.
+    //
+    // NOTE FOR A HUMAN: that flattening is also a real macOS ACCESSIBILITY gap — a VoiceOver
+    // user on the Mac cannot reach the per-track ♥ or transport in an album's track table. It is
+    // not a functional gap for mouse users (the buttons still draw and hit-test; `.borderless` is
+    // chosen in FavoriteToggle precisely so the enclosing link doesn't swallow the click), and I
+    // could not verify the mouse path headlessly. Fixing it properly is a product change —
+    // `.accessibilityElement(children: .contain)` on the link, or lifting the controls out of the
+    // label — and is deliberately NOT bundled into a test-debt branch.
+    #if !os(macOS)
+
+    /// The ♥ for a song, by id. `any(_:)` (identifier across ALL element types) rather than
+    /// `el(_:)` (a `.buttons` query), because `FavoriteToggle`'s label is a bare `Image` and the
+    /// element type it lands on is not worth betting on.
     private func heart(_ app: XCUIApplication, _ songId: String) -> XCUIElement {
         app.any("favorite-toggle-\(songId)")
     }
@@ -96,7 +116,6 @@ final class FavoritesUITests: XCTestCase {
                        "the ♥ was persisted and re-decoded at launch")
     }
 
-    #if !os(macOS)
     /// The Browse song list carries the same ♥, and the filter sheet exposes the tri-state
     /// favorite constraint. (iOS only: the Albums/Songs Picker and in-sheet Pickers are not
     /// drivable via XCUITest on macOS — the same limitation BrowseUITests documents.)
