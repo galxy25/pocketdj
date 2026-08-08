@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Observation
 
@@ -165,6 +166,62 @@ final class BurnStore {
         // the main actor when a background download finishes / fails). `wireTransfers()` also
         // supplies the burn-folder bookmark the nonisolated delegate re-resolves.
         wireTransfers()
+        seedForUITestsIfRequested()
+    }
+
+    /// Testing seam: `PDJ_SEED_BURNS=1` (alongside PDJ_USE_FIXTURE) writes a real 2 s tone
+    /// as the burned file for every fixture song, so a UI test can drive AUDIO THAT ACTUALLY
+    /// PLAYS on a Simulator with no network, no rip server, and no Apple Music subscription.
+    /// Without it the fixture catalog resolves to no source at all, which is exactly why the
+    /// puzzle round test had to run under `PDJ_HOLD_PLAYBACK` and could assert nothing about
+    /// playback. No-op in normal use.
+    private func seedForUITestsIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        // BOTH vars required: the fixture flag is what redirects this store to a throwaway
+        // index (`launchURL`), so seeding can never write tone files into a real library.
+        guard env["PDJ_SEED_BURNS"] == "1", env["PDJ_USE_FIXTURE"] != nil,
+              let dir = appBurnsDir() else { return }
+        for i in 1...7 {
+            let songId = "sng_\(i)"
+            // `.wav`, NOT `.mp3`: AVAudioFile picks its writer from the EXTENSION and cannot
+            // write mp3, so a `.mp3` name silently produced no file and seeded nothing.
+            let file = "\(songId).wav"
+            let url = dir.appendingPathComponent(file)
+            guard Self.writeSeedTone(to: url, seconds: 2.0) > 0 else { continue }
+            let bytes = (try? FileManager.default
+                .attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            items[songId] = BurnItem(
+                songId: songId, title: "Fixture \(i)", artist: "Fixture",
+                audioFileName: file, sidecarFileName: "\(songId).txt", source: "digital",
+                bpm: nil, musicalKey: nil, camelot: nil, durationMs: 2_000, startMs: nil,
+                bytes: bytes ?? 0, rippedAt: nil, downloadedAt: now, state: .ready,
+                error: nil, wasAppStorage: true)
+        }
+        save()
+    }
+
+    /// A 2 s 440 Hz tone (LPCM) — the seeded burn's audio body. Returns the frames written.
+    private static func writeSeedTone(to url: URL, seconds: Double) -> Int64 {
+        let sr = 44_100.0
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sr,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+        try? FileManager.default.removeItem(at: url)
+        guard let file = try? AVAudioFile(forWriting: url, settings: settings) else { return 0 }
+        let frames = AVAudioFrameCount(sr * seconds)
+        guard let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames)
+        else { return 0 }
+        buf.frameLength = frames
+        if let p = buf.floatChannelData?[0] {
+            for i in 0..<Int(frames) { p[i] = sinf(Float(i) * 2 * .pi * 440 / Float(sr)) * 0.5 }
+        }
+        guard (try? file.write(from: buf)) != nil else { return 0 }
+        return Int64(frames)
     }
 
     /// Connect the (optional) coordinator's main-actor finalize callbacks to this store, and
@@ -716,6 +773,13 @@ final class BurnStore {
     /// The subset of `ids` that are burned + ready (what a per-collection delete removes).
     func readyBurnedIds(in ids: [String]) -> [String] {
         ids.filter { items[$0]?.state == .ready }
+    }
+
+    /// EVERY song with a burned file ready on this device — audio that can start with no
+    /// network at all. (The Collectors Puzzle sampler takes this to guarantee the card it
+    /// shows is a card you can hear.)
+    var readyBurnedIds: Set<String> {
+        Set(items.compactMap { $0.value.state == .ready ? $0.key : nil })
     }
 
     /// Approximate on-disk bytes attributable to a set of burned songs (unique audio files
