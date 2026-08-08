@@ -76,8 +76,14 @@ struct PuzzleSettings: Codable, Equatable {
         case .notInAny: parts.append("not-in \(membershipCollectionIds.count)")
         case .off: break
         }
-        let n = targetCollectionIds.count
-        parts.append(n == 1 ? "1 target" : "\(n) targets")
+        // Targets are OPTIONAL: "0 targets" would be both ugly and wrong — a target-less
+        // round is the free-file mode, where every card goes through the Add-to picker.
+        // Old rows keep their old text (`settingsSummary` is a stored String?, never re-derived).
+        switch targetCollectionIds.count {
+        case 0: parts.append("free file")
+        case 1: parts.append("1 target")
+        case let n: parts.append("\(n) targets")
+        }
         return parts.joined(separator: " · ")
     }
 }

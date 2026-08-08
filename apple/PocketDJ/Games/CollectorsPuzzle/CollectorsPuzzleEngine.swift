@@ -31,7 +31,11 @@ final class CollectorsPuzzleEngine {
     /// Wall-clock round deadline (seconds since 1970) — backgrounding holds it.
     private(set) var deadlineEpoch: TimeInterval = 0
     var remainingSeconds: Int {
-        max(0, Int((deadlineEpoch - now().timeIntervalSince1970).rounded(.up)))
+        // While the Add-to sheet is open the clock is HELD (see `beginFiling`) — read it
+        // against the moment the sheet opened so the digits FREEZE behind the modal instead
+        // of counting down time `endFiling` is about to buy back.
+        let ref = filingSongId != nil ? filingStartedAt : now().timeIntervalSince1970
+        return max(0, Int((deadlineEpoch - ref).rounded(.up)))
     }
     private(set) var lastRunRecord: GameScoreboardStore.RunRecord?
     private(set) var isNewHighScore = false
@@ -39,6 +43,21 @@ final class CollectorsPuzzleEngine {
     /// True when a top-up found the whole pool exhausted — the view shows
     /// "Catalog exhausted!" and offers an early end.
     private(set) var poolExhausted = false
+
+    // MARK: - Filing through the Add-to picker ("file into ANY collection")
+
+    /// Non-nil while the Add-to sheet is open for THIS card's song id. While it is set the
+    /// round clock is HELD and the ticker's whole position/expiry/watchdog pass is suspended
+    /// (see `tickOnce`): the player is reading a picker, not passing on cards, so the audio
+    /// position says nothing about their position. The id is carried (not just a Bool) so a
+    /// mid-sheet drift or top-up can never make the sheet file the WRONG card.
+    private(set) var filingSongId: String?
+    @ObservationIgnored private var filingStartedAt: TimeInterval = 0
+    /// Max seconds of round clock a SINGLE sheet opening can buy back. Uncapped this is an
+    /// untimed game (leave the picker open, curate at leisure, one point, repeat); at 0 the
+    /// sheet path — the only scoring path when no targets are selected — is unplayable
+    /// against a one-tap target button. 20 s comfortably covers "search, read, tap".
+    static let maxFilingCreditSeconds: Double = 20
 
     private let app: AppModel
     private let sequencer: SetlistPlayer
@@ -185,14 +204,20 @@ final class CollectorsPuzzleEngine {
     }
 
     /// Start a round: sample → countdown → hand the queue to the sequencer → run.
+    ///
+    /// TARGETS ARE OPTIONAL (Levi 2026-08). A round needs exactly ONE thing to start: a
+    /// non-empty sample. With no targets there are no one-tap assign buttons — every card is
+    /// filed through the Add-to picker instead (`beginFiling`/`endFiling`), which files into
+    /// ANY collection, so a round with no targets is a fully playable, fully scorable round.
+    /// The pool is unaffected: `PuzzleSampler` already no-ops its all-targets filter on an
+    /// empty array, and `assign(toTargetIndex:)` already bails on an out-of-range index.
     func startRound() async {
         guard phase == .idle || phase == .finished else { return }
-        guard (1...3).contains(settings.targetCollectionIds.count) else {
-            lastError = "Pick 1–3 target collections."
-            return
-        }
         lastError = nil
         poolExhausted = false
+        // A sheet the PREVIOUS round left open (dismissed without its onChange landing) must
+        // never hold the new round's ticker hostage.
+        filingSongId = nil
         // A stale top-up from the PREVIOUS round may still be in flight; its continuation
         // is round-guarded (see tickOnce) and so can never clear this flag for us.
         toppingUp = false
@@ -262,6 +287,15 @@ final class CollectorsPuzzleEngine {
             endRound(stopAudio: false)
             return
         }
+        // FILING HOLD — the Add-to sheet owns the round. This return sits BEFORE the deadline
+        // check, the audio watchdog, the drift re-sync AND the top-up, deliberately, so the
+        // hold is one trivially-auditable early exit. The drift block is the dangerous one:
+        // `SetlistPlayer` has no pause API, so audio keeps running behind the sheet, and if
+        // the song ends naturally while the picker is open the drift re-sync would write
+        // "expired" rows and advance `queueIndex` PAST the very card the sheet is filing —
+        // the point would then score against the wrong song and the round would double-
+        // advance. `endFiling` re-syncs the clock and the audio when the sheet closes.
+        if filingSongId != nil { return }
         if now().timeIntervalSince1970 >= deadlineEpoch {
             endRound()
             return
@@ -341,16 +375,67 @@ final class CollectorsPuzzleEngine {
         if sequencerTakenOver { endRound(stopAudio: false); return }
         guard let song = current, settings.targetCollectionIds.indices.contains(i) else { return }
         let cid = settings.targetCollectionIds[i]
-        let name = collectionName(cid)
         collections.addSong(song.id,
                             to: AddTarget(kind: cid.hasPrefix("pkt_") ? .pocket : .playlist, id: cid))
+        creditFiling(song: song, collectionId: cid, collectionName: collectionName(cid))
+    }
+
+    /// THE ONE PLACE A FILING SCORES. Both the one-tap target buttons and the Add-to sheet
+    /// land here, so the point, the summary row, the decision row (the rec-engine's training
+    /// signal) and the advance can never drift apart between the two paths.
+    ///
+    /// ONE POINT PER CARD, not per collection: the card advances on the first successful add,
+    /// so the multi-select picker cannot be farmed (open the sheet, tap five collections, five
+    /// points). That is enforced STRUCTURALLY — `current` becomes the next song here — and it
+    /// is what keeps a new score comparable to every historical one ("One point per song").
+    private func creditFiling(song: IndexSong, collectionId: String, collectionName: String) {
         score += 1
         assignedThisRound.append((songId: song.id, title: song.name, artist: song.artist,
-                                  collectionId: cid, collectionName: name))
+                                  collectionId: collectionId, collectionName: collectionName))
         decisions.record(roundId: roundId, songId: song.id, action: "assigned",
-                         collectionId: cid, collectionName: name,
+                         collectionId: collectionId, collectionName: collectionName,
                          positionInRound: queueIndex, settings: settings)
         advance()
+    }
+
+    /// The view calls this BEFORE presenting the Add-to sheet. Returns false when there is
+    /// nothing to file (not running, no card, a sheet already up, or the sequencer was taken
+    /// over — which ends the round exactly as `assign`/`skip` do).
+    @discardableResult
+    func beginFiling() -> Bool {
+        guard phase == .running, let song = current, filingSongId == nil else { return false }
+        if sequencerTakenOver { endRound(stopAudio: false); return false }
+        filingSongId = song.id
+        filingStartedAt = now().timeIntervalSince1970
+        return true
+    }
+
+    /// The view calls this on dismiss — with a target (the player filed the card: score it) or
+    /// nil (cancelled: no point, NO advance, the card stays). IDEMPOTENT: it is reachable from
+    /// both the sheet's completion callback and the binding's `onChange`, and a second call
+    /// must not credit the clock twice or score twice.
+    ///
+    /// CANCEL IS NOT A SKIP, deliberately: a player may cancel to hit a target button instead,
+    /// and silently burning their card would be the worst possible surprise in a timed game.
+    /// `skip()` remains the explicit pass and still records `action: "skipped"`.
+    func endFiling(assignedTo target: AddTarget?) {
+        guard let songId = filingSongId else { return }
+        filingSongId = nil
+        // Credit the held time, capped — see `maxFilingCreditSeconds`.
+        deadlineEpoch += min(max(0, now().timeIntervalSince1970 - filingStartedAt),
+                             Self.maxFilingCreditSeconds)
+        // The card is verified BY ID: a stale sheet (the round ended, or the queue moved under
+        // it) files nothing rather than scoring against the wrong song.
+        if let target, phase == .running, let song = current, song.id == songId {
+            creditFiling(song: song, collectionId: target.id,
+                         collectionName: collectionName(target.id))
+        }
+        // Re-marry audio to the card the round is now showing. The audio ran on behind the
+        // sheet (no pause API), so this is the same one-line re-arm the watchdog uses.
+        if phase == .running, current != nil, !sequencerTakenOver,
+           !sequencer.isRunning || audioBaseIndex + sequencer.index != queueIndex {
+            armAudio(fromQueueIndex: queueIndex)
+        }
     }
 
     /// Pass on the current song — no point, logged as a real signal.
