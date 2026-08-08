@@ -18,6 +18,20 @@ final class ExplicitPreferenceUITests: XCTestCase {
         return element.exists
     }
 
+    /// Scroll BACK UP until `element` exists. Popping to the Settings root restores the
+    /// offset we left it at — after `reveal` scrolled down to the Apple Music row, a row
+    /// ABOVE the viewport (the first section's "Add source") is absent from a lazy Form
+    /// until we swipe the other way. Waiting alone would never find it.
+    @discardableResult
+    private func revealAbove(_ app: XCUIApplication, _ element: XCUIElement, tries: Int = 10) -> Bool {
+        var n = 0
+        while !element.exists && n < tries {
+            app.swipeDown()
+            n += 1
+        }
+        return element.exists
+    }
+
     /// Drive a SwiftUI Form Toggle to `on`. A center `.tap()` sometimes lands on the
     /// label and misses the switch, so if the value doesn't flip, tap the trailing thumb.
     private func setToggle(_ toggle: XCUIElement, on: Bool) {
@@ -52,8 +66,8 @@ final class ExplicitPreferenceUITests: XCTestCase {
 
         // Leave the pane (fires onDisappear persist) and re-enter — the choice stuck.
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.el("settings-add-source").waitForExistence(timeout: 10))   // root settled
-        XCTAssertTrue(amRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(revealAbove(app, app.el("settings-add-source")), "settings root settled")
+        XCTAssertTrue(reveal(app, amRow))
         amRow.tap()
         let again = app.switches["am-prefer-explicit"].firstMatch
         XCTAssertTrue(reveal(app, again))
