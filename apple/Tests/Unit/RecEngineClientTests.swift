@@ -74,6 +74,7 @@ final class RecEngineClientTests: XCTestCase {
     func test403MapsToKeyMismatch() async {
         let spy = Spy()
         spy.status = 403
+        spy.body = Data(#"{"error":"key-mismatch"}"#.utf8)
         let client = makeClient(spy)
         do {
             _ = try await client.forYou(limit: 50, key: "wrong", profileId: "p")
@@ -93,6 +94,39 @@ final class RecEngineClientTests: XCTestCase {
             XCTAssertEqual(e, .http(500))
         } catch {
             XCTFail("unexpected error type: \(error)")
+        }
+    }
+
+    /// The server's 403s are NOT one condition, and the recoveries differ: `key-mismatch` is
+    /// fixed in-app ("Delete cloud data"), `enrollment-required` (a rotated server secret) only
+    /// by an app update. Collapsing them sent the user to a reset that could never help.
+    func test403BodyDisambiguatesEnrollmentRequiredFromKeyMismatch() async {
+        let spy = Spy()
+        spy.status = 403
+        spy.body = Data(#"{"error":"enrollment-required"}"#.utf8)
+        let client = makeClient(spy)
+        do {
+            _ = try await client.postEvents(RecUploadBatch(deviceId: "d", sentAtMs: 1),
+                                            key: "k", profileId: "profile-abc-123")
+            XCTFail("a 403 must throw")
+        } catch let e as RecEngineClient.ClientError {
+            XCTAssertEqual(e, .enrollmentRequired)
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+
+        // Unknown/garbled 403 bodies keep the old mapping — the in-app reset is the only
+        // recovery the app can offer for a refusal it doesn't recognize.
+        for body in [#"{"error":"profile-cap-reached","max":10}"#, "not json", ""] {
+            spy.body = Data(body.utf8)
+            do {
+                _ = try await client.forYou(limit: 5, key: "k", profileId: "p")
+                XCTFail("a 403 must throw")
+            } catch let e as RecEngineClient.ClientError {
+                XCTAssertEqual(e, .keyMismatch, "body: \(body)")
+            } catch {
+                XCTFail("unexpected error type: \(error)")
+            }
         }
     }
 

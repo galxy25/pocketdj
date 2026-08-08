@@ -7,8 +7,15 @@ import Foundation
 ///
 /// Auth per call: `Authorization: Bearer <key>` (the per-profile random key
 /// `RecommendationService` mints + syncs via CloudKit) plus the standard
-/// `PDJIdentityHeaders` (`X-PocketDJ-Profile` / `X-PocketDJ-Device`). A 403 means the
-/// server's TOFU-bound key hash doesn't match this key → `.keyMismatch`.
+/// `PDJIdentityHeaders` (`X-PocketDJ-Profile` / `X-PocketDJ-Device`).
+///
+/// The `profileId` passed in is the caller's business, and `RecommendationService` deliberately
+/// does NOT pass the broadcast one: it derives `HMAC-SHA256(profileId, key: bearer)` so a
+/// user-configured third-party server (jukebox broker, shared rip server) that logged the
+/// broadcast `X-PocketDJ-Profile` can't address this profile's rec state. See that type's doc.
+///
+/// A 403 is not one condition — the body names it (`key-mismatch` vs `enrollment-required`)
+/// and the recoveries differ, so `run` maps it to distinct `ClientError`s.
 struct RecEngineClient {
     var base: URL = Config.recEngineBase
     /// The shared enrollment secret (`Config.recEngineEnrollSecret`) — see its doc: the server
@@ -25,6 +32,12 @@ struct RecEngineClient {
     enum ClientError: Error, Equatable {
         case http(Int)
         case keyMismatch
+        /// The server refused to CREATE state because the presented enrollment secret didn't
+        /// match (`{ error: 'enrollment-required' }`) — the deployed secret was rotated and this
+        /// build still carries the old constant. Distinct from `.keyMismatch` because the
+        /// recoveries differ: a key mismatch is fixed in-app ("Delete cloud data"), a rotated
+        /// secret only by updating the app.
+        case enrollmentRequired
         case badResponse
     }
 
@@ -54,12 +67,22 @@ struct RecEngineClient {
     private func run<T: Decodable>(_ req: URLRequest, as type: T.Type) async throws -> T {
         let (data, resp) = try await transport(req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        if code == 403 { throw ClientError.keyMismatch }
+        if code == 403 { throw Self.map403(data) }
         guard (200..<300).contains(code) else { throw ClientError.http(code) }
         guard let decoded = try? JSONDecoder().decode(T.self, from: data) else {
             throw ClientError.badResponse
         }
         return decoded
+    }
+
+    /// A 403's body names WHICH refusal this is (`enrollment-required` vs `key-mismatch` vs
+    /// `profile-cap-reached`) and the recoveries differ, so the client must not collapse them.
+    /// Anything unrecognized keeps the old `.keyMismatch` mapping — the in-app reset path is
+    /// the only recovery the app can offer for an unknown refusal anyway.
+    private static func map403(_ body: Data) -> ClientError {
+        struct Err: Decodable { let error: String? }
+        let kind = (try? JSONDecoder().decode(Err.self, from: body))?.error
+        return kind == "enrollment-required" ? .enrollmentRequired : .keyMismatch
     }
 
     /// `POST /events` — upload a delta batch. Longer timeout: a first-enable drain can carry
