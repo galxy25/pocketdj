@@ -27,10 +27,13 @@ final class VUMeterAndCueUITests: XCTestCase {
         // a synthesized long press does NOT produce one there — so `openContextMenu()` splits
         // rightClick (Mac) from press-and-hold (iOS/iPadOS).
         vu.openContextMenu()
-        let pre = app.buttons["deck-A-vu-pre"].firstMatch
-        let post = app.buttons["deck-A-vu-post"].firstMatch
-        XCTAssertTrue(pre.waitForExistence(timeout: 6), "Long-press reveals the Pre-fader option")
-        XCTAssertTrue(post.exists, "Long-press reveals the Post-fader option")
+        // Identifier across ALL element types, not `buttons[…]`: an opened `contextMenu` is a
+        // menu on macOS, whose entries are menu items rather than buttons, so a `.buttons` query
+        // can miss an entry that is visibly on screen. Same lookup works for the iOS menu.
+        let pre = firstWith("deck-A-vu-pre")
+        let post = firstWith("deck-A-vu-post")
+        XCTAssertTrue(pre.waitForExistence(timeout: 6), "the context menu offers Pre-fader")
+        XCTAssertTrue(post.exists, "the context menu offers Post-fader")
         save(app, "02-vu-prepost-menu")
         pre.tap()                                   // switch deck A to pre-fader
         XCTAssertTrue(firstWith("deck-A-vu").waitForExistence(timeout: 4),
@@ -54,7 +57,7 @@ final class VUMeterAndCueUITests: XCTestCase {
         XCTAssertTrue(app.any("studio-tab-picker").waitForExistence(timeout: 25)
                       || app.el("cue-search").waitForExistence(timeout: 5),
                       "Performance sub-tab shell should render")
-        app.selectStudioTab("5", label: "Cues")
+        app.selectStudioTab("5", label: "Cues", index: 4)
 
         // Search + select the seeded track (sng_1 = "Neon", which has 2 seeded cues).
         let search = firstWith("cue-search")
@@ -65,7 +68,11 @@ final class VUMeterAndCueUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 8), "Seeded track row should appear")
         row.tap()
 
-        XCTAssertTrue(app.buttons["cue-transport-playpause"].firstMatch.waitForExistence(timeout: 8),
+        // `firstWith` (identifier, any type) not `buttons[…]`: this is an image-only
+        // `.buttonStyle(.plain)` Button, the same shape as the ♥ that a `.buttons` query fails
+        // to resolve on macOS (see FavoritesUITests.heart). Its sibling `cue-transport-scrub`
+        // was already looked up this way.
+        XCTAssertTrue(firstWith("cue-transport-playpause").waitForExistence(timeout: 8),
                       "Cue transport play/pause button should render under the timeline")
         XCTAssertTrue(firstWith("cue-transport-scrub").exists, "Cue transport scrub bar should render")
         save(app, "04-cue-transport")

@@ -166,13 +166,23 @@ extension XCUIApplication {
     /// Producer ▸ a sub-tab, by its ⌘-number (⌘1 Samples … ⌘5 Cues … ⌘7 Tracks). The
     /// `studio-tab-picker` is a segmented Picker, so on macOS it is driven by the shadow
     /// shortcut rather than by tapping a segment.
-    func selectStudioTab(_ number: String, label: String) {
+    ///
+    /// iOS keeps the INDEX-based tap and only falls back to the label. That is not redundancy:
+    /// on compact widths PerformanceView renders each segment as an ICON ONLY, so there is no
+    /// "Cues" label to match and a label-only lookup fails on iPhone. (Learned the hard way —
+    /// replacing the index tap with `segment(label)` turned this green suite red.)
+    func selectStudioTab(_ number: String, label: String, index: Int) {
         #if os(macOS)
         activate()
         typeKey(number, modifierFlags: .command)
         #else
-        let seg = segment(label)
-        if seg.waitForExistence(timeout: 3) { seg.tap() }
+        let picker = segmentedControls["studio-tab-picker"].firstMatch
+        if picker.waitForExistence(timeout: 5) {
+            let seg = picker.buttons.element(boundBy: index)
+            if seg.exists { seg.tap(); return }
+        }
+        let byLabel = buttons[label].firstMatch
+        if byLabel.waitForExistence(timeout: 3) { byLabel.tap() }
         #endif
     }
 
@@ -249,10 +259,16 @@ extension XCUIElement {
 
     /// Drive a Toggle to `on`, tolerating the SwiftUI Form hazard where a centre `.tap()`
     /// lands on the label rather than the switch (see [[xcuitest-form-toggle-tap]]).
+    ///
+    /// The retry fires ONLY when the state is readable AND still wrong. That guard matters:
+    /// `isToggledOn` is nil for an element exposing no readable state, and "nil != on" is true,
+    /// so an unguarded retry would tap a second time on a toggle that had ALREADY flipped —
+    /// turning it straight back off and failing the very assertion it was meant to satisfy.
+    /// One tap and stop is the correct behaviour when we cannot see the state.
     func setToggled(_ on: Bool) {
         guard isToggledOn != on else { return }
         tap()
-        if isToggledOn != on {
+        if let state = isToggledOn, state != on {
             coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
         }
     }
@@ -272,7 +288,15 @@ extension XCUIElement {
 
 /// Writes the real macOS accessibility tree for each screen that carries UI-test debt, so those
 /// failures get triaged from EVIDENCE rather than from guesses about how AppKit renders a given
-/// SwiftUI view. This is what exposed the `playlist-mode-picker` selector collision.
+/// SwiftUI view.
+///
+/// NOT YET EXERCISED: at the time this landed the dump had never completed a run on this Mac
+/// (three attempts lost to the AutomationModeUI orphan below and to focus contention), so treat
+/// the individual dump bodies as unproven scaffolding rather than as a working tool. Everything
+/// the accompanying test fixes rely on was derived from macOS FAILURE OUTPUT plus reading the
+/// views — e.g. the `playlist-mode-picker` selector collision came from `PlaylistsView.swift:248`
+/// (`playlist-mode-picker`) sitting above `:541` (`playlist-\(pl.id)`) in the same subtree, not
+/// from a captured tree.
 ///
 /// OPT-IN: every test skips unless `PDJ_DUMP_DIR` is set, the same shape
 /// `BrowseLargeCatalogPerfTests` uses for its network smoke — so a normal suite pays nothing,
