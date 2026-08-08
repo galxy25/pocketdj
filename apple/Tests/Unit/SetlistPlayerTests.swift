@@ -249,11 +249,15 @@ final class SetlistPlayerTests: XCTestCase {
         let burns = makeBurns(rips)
         let player = PlayerEngine()
         let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_2")
         // The clean variant's rip is cached (manifest keyed by the VARIANT id) but NOT
         // burned → the coordinator streams it via the rip provider under the variant id.
-        rips.setManifest(["sng_1a7f6bc854af_clean": .init(key: "rips/sng_1a7f6bc854af_clean.mp3",
-                                                          source: "digital")])
-        await burn(rips, burns, songId: "sng_2")
+        // AFTER burn(): setManifest REPLACES the manifest wholesale (test seam), and
+        // burn() uses it for its own song.
+        rips.setManifest([
+            "sng_1a7f6bc854af_clean": .init(key: "rips/sng_1a7f6bc854af_clean.mp3", source: "digital"),
+            "sng_2": .init(key: "rips/sng_2.mp3", source: "digital"),
+        ])
         var statsIds: [String] = []
         rips.onPlay = { statsIds.append($0) }
 
