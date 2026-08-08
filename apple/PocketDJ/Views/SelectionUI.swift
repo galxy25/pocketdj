@@ -11,30 +11,44 @@ struct SelectableRowModifier: ViewModifier {
     #endif
     let id: String                       // song id (Browse/pocket/source) or nodeId (playlist)
     let scope: String
-    enum Container { case plain, list }  // .plain = ScrollView rows, .list = List rows
-    var container: Container
+    /// The row lives in a `ForEach` that owns `.onMove` (pocket songs, playlist chapter
+    /// nodes). An unconditional row `.draggable` claims the drag gesture and kills List's
+    /// direct-drag reorder (the only macOS reorder affordance), so reorder hosts attach the
+    /// drag source ONLY once the row is part of a selection / Select mode — plain drags
+    /// reorder, selected drags export.
+    var reorderHost = false
     let orderedIds: () -> [String]       // rendered display order (range universe)
     let payload: () -> SongTransfer      // selection-aware drag payload for this row
     let onOpen: () -> Void
 
     private var isSelected: Bool { selection.isSelected(id, scope: scope) }
     private var dragCount: Int { isSelected ? max(selection.count, 1) : 1 }
+    private var dragEnabled: Bool { !reorderHost || isSelected || selection.isSelectMode(in: scope) }
 
     func body(content: Content) -> some View {
         let row = content
             .contentShape(Rectangle())
             .onTapGesture { handleTap() }
-            .draggable(payload()) { SongDragChip(count: dragCount) }
-            .overlay(alignment: .topLeading) {
-                if selection.selectMode && selection.isActive(in: scope) { selectBadge }
+        // The if/else changes view identity when dragEnabled flips — acceptable: it flips on
+        // selection changes, which restyle the row anyway.
+        Group {
+            if dragEnabled {
+                row.draggable(payload()) { SongDragChip(count: dragCount) }
+            } else {
+                row
             }
-        switch container {
-        case .plain:
-            row.background(isSelected ? Theme.accent.opacity(0.26) : .clear,
-                           in: RoundedRectangle(cornerRadius: 6))
-        case .list:
-            row.listRowBackground(isSelected ? Theme.accent.opacity(0.26) : nil)
         }
+        .overlay(alignment: .topLeading) {
+            if selection.isSelectMode(in: scope) { selectBadge }
+        }
+        // One DRAWN fill for every container. (`.listRowBackground` looked right for List
+        // rows but is a row-root trait — applied here, nested inside the row's VStack, it
+        // silently did nothing, leaving modifier-click selections invisible.)
+        .background(isSelected ? Theme.accent.opacity(0.26) : .clear,
+                    in: RoundedRectangle(cornerRadius: 6))
+        // These rows replaced NavigationLink rows (tap-gesture navigation) — restore the
+        // activatable trait so VoiceOver announces them and the Buttons rotor finds them.
+        .accessibilityAddTraits(.isButton)
     }
     private var selectBadge: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -59,11 +73,11 @@ struct SelectableRowModifier: ViewModifier {
 
 extension View {
     func selectableSongRow(id: String, scope: String,
-                           container: SelectableRowModifier.Container,
+                           reorderHost: Bool = false,
                            orderedIds: @escaping () -> [String],
                            payload: @escaping () -> SongTransfer,
                            onOpen: @escaping () -> Void) -> some View {
-        modifier(SelectableRowModifier(id: id, scope: scope, container: container,
+        modifier(SelectableRowModifier(id: id, scope: scope, reorderHost: reorderHost,
                                        orderedIds: orderedIds, payload: payload, onOpen: onOpen))
     }
 }
@@ -148,7 +162,12 @@ struct SelectionBar: View {
         .accessibilityIdentifier("selection-add-to")
     }
     private func add(to target: AddTarget) {
-        guard let ids = selection.currentPayload()?.songIds, !ids.isEmpty else { return }
+        guard let ids = selection.currentPayload()?.songIds, !ids.isEmpty else {
+            // A stale selection resolved to nothing (the songs left the list under it) —
+            // clear rather than let the bar keep advertising a count that can't act.
+            selection.clearAndExit()
+            return
+        }
         collections.addSongs(ids, to: target)
     }
 }
@@ -190,6 +209,14 @@ struct CollectionSelectionChrome: ViewModifier {
     private func registered(_ content: Content) -> some View {
         content
             .safeAreaInset(edge: .top, spacing: 0) { SelectionBar(scope: scope) }
+            // The list's membership changed under an active selection (swipe-remove, source
+            // sync, sort/filter): drop ids that left the list so the bar's count and every
+            // batch action agree with what's on screen. Gated so the id-set is only built
+            // while a selection in THIS scope actually exists.
+            .onChange(of: allIds()) { _, ids in
+                guard selection.scopeId == scope, selection.hasSelection else { return }
+                selection.prune(validIds: Set(ids))
+            }
             .onAppear {
                 selection.registerActiveList(scope: scope, allIds: allIds, payload: payload)
                 if let acceptDrop {

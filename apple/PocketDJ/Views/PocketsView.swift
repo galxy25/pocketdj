@@ -56,7 +56,9 @@ struct PocketDetailView: View {
     @ViewBuilder private func pocketSongRow(_ song: IndexSong) -> some View {
         VStack(spacing: 0) {
             CollectionSongRow(song: song, syncsToSource: collections.pocket(pocketId)?.syncsWithSource ?? false)
-                .selectableSongRow(id: song.id, scope: selectionScope, container: .list,
+                // reorderHost: this ForEach owns .onMove — the drag source attaches only to
+                // selected rows so plain row-drags still reorder (macOS's only reorder path).
+                .selectableSongRow(id: song.id, scope: selectionScope, reorderHost: true,
                                    orderedIds: { displayedSongIds() },
                                    payload: { dragPayload(for: song) },
                                    onOpen: { path.append(song) })
@@ -119,7 +121,10 @@ struct PocketDetailView: View {
             single: SongTransfer.make(ids: [song.id], songsById: app.songsById))
     }
     private func acceptDrop(_ items: [SongTransfer]) -> Bool {
-        let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || StudioFactory.isStudioId($0) }
+        // Studio ids RESOLVE through studioLookup (the id must be backed by a real item on
+        // this device) — a bare prefix test would persist any foreign "smp_…" string from
+        // the cross-process pasteboard into the cloud-synced document.
+        let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
         guard !ids.isEmpty else { return false }
         return collections.addSongs(ids, to: AddTarget(kind: .pocket, id: pocketId)) > 0
     }

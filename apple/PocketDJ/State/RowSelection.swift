@@ -25,8 +25,16 @@ final class RowSelection {
     private(set) var scopeId: String?
     private(set) var ids: Set<String> = []
     private(set) var anchorId: String?
-    /// Touch fallback: plain taps toggle instead of navigating.
-    private(set) var selectMode = false
+    /// Touch fallback: plain taps toggle instead of navigating — armed PER SCOPE. A single
+    /// Bool here once swallowed the first tap in every OTHER list (armed in Browse, invisible
+    /// in a pocket, tap toggles instead of navigating), so the mode carries the scope it was
+    /// armed in and `handleTap` only intercepts taps in THAT scope.
+    private(set) var selectModeScope: String?
+    var selectMode: Bool { selectModeScope != nil }
+    func isSelectMode(in scope: String) -> Bool { selectModeScope == scope }
+    /// A text field (Browse search) currently has focus: suspend the ⌘A select-all shadow so
+    /// the field keeps its own select-all. Published by the view owning the FocusState.
+    var textEntryFocused = false
 
     // MARK: Active-list registration (frontmost selectable list of THIS window)
     struct ActiveList {
@@ -45,7 +53,8 @@ final class RowSelection {
     /// ⌘C is live only when the selection belongs to the list that can serialize it.
     var canCopy: Bool { hasSelection && activeList?.scope == scopeId }
     var canPaste: Bool { pasteTarget != nil }
-    var canSelectAll: Bool { activeList != nil }
+    /// ⌘A shadow presence: a registered list AND no focused text field (which owns its own ⌘A).
+    var canSelectAll: Bool { activeList != nil && !textEntryFocused }
 
     func isSelected(_ id: String, scope: String) -> Bool { scopeId == scope && ids.contains(id) }
     /// The bar shows for a scope while selecting there (or select mode is armed there).
@@ -71,12 +80,14 @@ final class RowSelection {
             }
             return .selection
         }
-        if selectMode { switchScopeIfNeeded(scope); toggle(id); return .selection }
+        // Select mode intercepts plain taps ONLY in the scope it was armed in — a tap in any
+        // other list navigates as normal (the mode is invisible there: no bar, no badges).
+        if selectModeScope == scope { switchScopeIfNeeded(scope); toggle(id); return .selection }
         return .navigate
     }
     func enterSelectMode(scope: String, initial: String?) {
         switchScopeIfNeeded(scope)
-        selectMode = true
+        selectModeScope = scope
         if let initial { ids.insert(initial); anchorId = initial }
     }
     func selectAll() {
@@ -84,7 +95,9 @@ final class RowSelection {
         switchScopeIfNeeded(al.scope)
         ids = Set(al.allIds())
     }
-    func clearAndExit() { ids = []; anchorId = nil; selectMode = false }
+    /// Clear the selection and exit Select mode. Also un-latches `scopeId` so post-clear
+    /// guards (e.g. BrowseView's prune-after-recompute) stop matching a dead selection.
+    func clearAndExit() { ids = []; anchorId = nil; selectModeScope = nil; scopeId = nil }
     func prune(validIds: Set<String>) {
         ids.formIntersection(validIds)
         if let a = anchorId, !validIds.contains(a) { anchorId = nil }
@@ -99,6 +112,9 @@ final class RowSelection {
     }
     func unregisterActiveList(scope: String) {           // no-op if another list took over
         if activeList?.scope == scope { activeList = nil }
+        // The list Select mode was armed in left the screen — disarm (the selection itself
+        // survives; only the tap-to-toggle mode ends with its owning list).
+        if selectModeScope == scope { selectModeScope = nil }
     }
     func registerPasteTarget(scope: String, handler: @escaping (SongTransfer) -> Void) {
         pasteTarget = PasteTarget(scope: scope, handler: handler)
@@ -138,6 +154,9 @@ final class RowSelection {
     private func switchScopeIfNeeded(_ scope: String) {
         guard scopeId != scope else { return }
         ids = []; anchorId = nil; scopeId = scope
+        // A genuine scope change (modifier-click in another list) also ends Select mode —
+        // safe for enterSelectMode, which sets selectModeScope AFTER calling this.
+        if selectModeScope != scope { selectModeScope = nil }
     }
 }
 

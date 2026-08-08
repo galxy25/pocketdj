@@ -546,10 +546,11 @@ struct PlaylistsView: View {
         // Multi-select drag & drop: dropping songs on the ROW adds them to the playlist's
         // default chapter (deduped batch — CollectionsStore.addSongs).
         .dropDestination(for: SongTransfer.self) { items, _ in
-            let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || StudioFactory.isStudioId($0) }
+            // Studio ids resolve through studioLookup (never a bare prefix test — foreign
+            // pasteboard strings must not persist into the cloud-synced document).
+            let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
             guard !ids.isEmpty else { return false }
-            collections.addSongs(ids, to: AddTarget(kind: .playlist, id: pl.id))
-            return true
+            return collections.addSongs(ids, to: AddTarget(kind: .playlist, id: pl.id)) > 0
         } isTargeted: { over in
             if over { dropTargetId = pl.id } else if dropTargetId == pl.id { dropTargetId = nil }
         }
@@ -599,10 +600,10 @@ struct PlaylistsView: View {
         // Multi-select drag & drop: dropping songs on the ROW adds them to the pocket
         // (deduped batch — CollectionsStore.addSongs).
         .dropDestination(for: SongTransfer.self) { items, _ in
-            let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || StudioFactory.isStudioId($0) }
+            // Same studio-id resolution rule as the playlist row above.
+            let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
             guard !ids.isEmpty else { return false }
-            collections.addSongs(ids, to: AddTarget(kind: .pocket, id: pocket.id))
-            return true
+            return collections.addSongs(ids, to: AddTarget(kind: .pocket, id: pocket.id)) > 0
         } isTargeted: { over in
             if over { dropTargetId = pocket.id } else if dropTargetId == pocket.id { dropTargetId = nil }
         }
@@ -870,7 +871,7 @@ struct IndexPlaylistDetailView: View {
                 ForEach(rows.prefix(shown)) { song in
                     VStack(spacing: 0) {
                         CollectionSongRow(song: song)
-                            .selectableSongRow(id: song.id, scope: selectionScope, container: .list,
+                            .selectableSongRow(id: song.id, scope: selectionScope,
                                                orderedIds: { songs.map(\.id) },
                                                payload: { dragPayload(for: song) },
                                                onOpen: { path.append(song) })
@@ -1030,7 +1031,8 @@ struct PlaylistDetailView: View {
     /// Drop/paste: dedup against every existing song node, land in the DEFAULT chapter
     /// (sequences[0] — AddTarget.sequenceId nil). Documented v1 behavior.
     private func acceptDrop(_ items: [SongTransfer]) -> Bool {
-        let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || StudioFactory.isStudioId($0) }
+        // Studio ids resolve through studioLookup — never a bare prefix test (see the row drops).
+        let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
         guard !ids.isEmpty else { return false }
         return collections.addSongs(ids, to: AddTarget(kind: .playlist, id: playlistId)) > 0
     }
@@ -1486,8 +1488,10 @@ struct PlaylistDetailView: View {
                 // chapter reorder items) — NOT here, or a second menu would shadow it.
                 VStack(spacing: 0) {
                     CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false)
+                        // reorderHost: this ForEach owns .onMove — drag source only on
+                        // selected rows so plain row-drags keep reordering (macOS path).
                         .selectableSongRow(id: node.nodeId, scope: selectionScope,
-                                           container: .list,
+                                           reorderHost: true,
                                            orderedIds: { displayedSongNodeIds() },
                                            payload: { dragPayload(node: node, song: song) },
                                            onOpen: { path.append(song) })

@@ -156,4 +156,66 @@ final class RowSelectionTests: XCTestCase {
         XCTAssertFalse(s.selectMode)
         XCTAssertFalse(s.hasSelection)
     }
+
+    // MARK: Select-mode scoping (the mode belongs to the list it was armed in)
+
+    /// Select mode armed in one list must never swallow the navigation tap in ANOTHER list —
+    /// the mode is invisible there (no bar, no badges), so a hijacked tap reads as "tapping
+    /// does nothing". The armed list keeps its mode and its selection.
+    func testSelectModeDoesNotHijackTapsInAnotherScope() {
+        let s = RowSelection()
+        s.enterSelectMode(scope: scope, initial: "a")
+        XCTAssertEqual(s.handleTap(id: "x", scope: "pocket-1", orderedIds: ["x", "y"], modifiers: []),
+                       .navigate)
+        XCTAssertEqual(s.ids, ["a"])                 // the armed scope's selection survives
+        XCTAssertEqual(s.scopeId, scope)
+        XCTAssertEqual(tap(s, "b"), .selection)      // …and select mode still works there
+        XCTAssertEqual(s.ids, ["a", "b"])
+    }
+
+    /// A deliberate modifier gesture in a DIFFERENT scope is a real scope switch — it takes
+    /// the selection over and disarms the stale Select mode.
+    func testModifierGestureInAnotherScopeExitsSelectMode() {
+        let s = RowSelection()
+        s.enterSelectMode(scope: scope, initial: "a")
+        _ = s.handleTap(id: "x", scope: "other", orderedIds: ["x", "y"], modifiers: .option)
+        XCTAssertFalse(s.selectMode)
+        XCTAssertEqual(s.scopeId, "other")
+        XCTAssertEqual(s.ids, ["x"])
+    }
+
+    /// The armed list leaving the screen disarms the mode (its bar/badges left with it);
+    /// the selection ids themselves survive. Another list's unregister never disarms.
+    func testUnregisterActiveListDisarmsSelectModeForThatScope() {
+        let s = RowSelection()
+        s.registerActiveList(scope: scope, allIds: { self.order }, payload: { nil })
+        s.enterSelectMode(scope: scope, initial: "a")
+        s.unregisterActiveList(scope: "someone-else")
+        XCTAssertTrue(s.selectMode)
+        s.unregisterActiveList(scope: scope)
+        XCTAssertFalse(s.selectMode)
+        XCTAssertEqual(s.ids, ["a"])
+    }
+
+    /// clearAndExit un-latches the scope too, so post-clear guards (BrowseView's
+    /// prune-after-recompute) stop matching a dead selection forever.
+    func testClearAndExitUnlatchesScope() {
+        let s = RowSelection()
+        _ = tap(s, "a", .option)
+        XCTAssertEqual(s.scopeId, scope)
+        s.clearAndExit()
+        XCTAssertNil(s.scopeId)
+    }
+
+    /// While a text field has focus, ⌘A belongs to the field — the shadow's presence gate
+    /// (`canSelectAll`) must read false even with a registered list.
+    func testTextEntryFocusSuspendsSelectAll() {
+        let s = RowSelection()
+        s.registerActiveList(scope: scope, allIds: { self.order }, payload: { nil })
+        XCTAssertTrue(s.canSelectAll)
+        s.textEntryFocused = true
+        XCTAssertFalse(s.canSelectAll)
+        s.textEntryFocused = false
+        XCTAssertTrue(s.canSelectAll)
+    }
 }

@@ -161,14 +161,29 @@ struct BrowseView: View {
         .task(id: effectiveDiscover ? "discover" : (effectiveOnline ? "online" : browse.recomputeSignature(app))) {
             if !effectiveOnline && !effectiveDiscover {
                 await browse.refreshResults(app)
-                // Filter/search changes drop now-hidden ids from the selection.
-                if rowSelection.scopeId == Self.songSelectionScope {
+                // Filter/search changes drop now-hidden ids from the selection. hasSelection
+                // gate: never pay the full-universe id-set walk for an EMPTY selection (a
+                // cleared selection would otherwise cost a catalog pass per keystroke).
+                if rowSelection.scopeId == Self.songSelectionScope, rowSelection.hasSelection {
                     rowSelection.prune(validIds: Set(selectionAllIds()))
                 }
             }
         }
+        // Online (server-paged) results land async and are REPLACED per query — the .task above
+        // never sees them (its id is the constant "online"), so prune on the page itself.
+        .onChange(of: online.items.map(\.id)) { _, ids in
+            guard effectiveOnline, rowSelection.scopeId == Self.songSelectionScope,
+                  rowSelection.hasSelection else { return }
+            rowSelection.prune(validIds: Set(ids))
+        }
+        // ⌘A stays the search field's own select-all while it has focus (the shadow's presence
+        // is gated on this through RowSelection.canSelectAll).
+        .onChange(of: searchFocused) { _, focused in rowSelection.textEntryFocused = focused }
         .onAppear { registerSelectionList() }
-        .onDisappear { rowSelection.unregisterActiveList(scope: Self.songSelectionScope) }
+        .onDisappear {
+            rowSelection.unregisterActiveList(scope: Self.songSelectionScope)
+            rowSelection.textEntryFocused = false   // never leave ⌘A suspended by a stale focus
+        }
     }
 
     /// Online (OpenSearch) search covers albums + songs only; the Artists kind is always on-device.
@@ -740,7 +755,6 @@ struct BrowseView: View {
                         SongRow(song: song, albumName: albumName,
                                 onAddTo: { presentAddTo(song) })
                             .selectableSongRow(id: song.id, scope: Self.songSelectionScope,
-                                               container: .plain,
                                                orderedIds: { renderedSongIds(items) },
                                                payload: { dragPayload(for: song) },
                                                onOpen: { path.append(song) })
