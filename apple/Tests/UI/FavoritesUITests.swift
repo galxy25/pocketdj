@@ -10,9 +10,9 @@ import XCTest
 /// the ♥ does not fire the enclosing NavigationLink, and that the state survives the trip
 /// to disk and back on relaunch.
 ///
-/// macOS runs NOTHING from this class: every test here drives a ♥ that AppKit does not expose
-/// (see the fence below for the measurement and the mechanism). The store logic stays covered on
-/// every platform by the FavoritesStoreTests unit suite.
+/// The album-track-table pair runs on macOS too. The Browse song-list pair does not — not
+/// because of the ♥, but because the Albums/Songs segmented Picker and the in-sheet Pickers
+/// aren't drivable by XCUITest there (the same limitation BrowseUITests documents).
 ///
 /// The Apple Music half is deliberately absent: two-way sync is owner-gated behind
 /// `Config.ownerICloudHashes` (which ships empty) and needs a signed-in Apple Music account,
@@ -37,28 +37,15 @@ final class FavoritesUITests: XCTestCase {
         return app
     }
 
-    // MARK: Album track table — iOS/iPadOS only
+    // MARK: Album track table — every platform
     //
-    // FENCED, not ported: on macOS the album track row's ♥ is not in the accessibility tree at
-    // all, so there is no macOS idiom that can reach it. MEASURED — a type-agnostic
-    // `descendants(matching: .any).matching(identifier: "favorite-toggle-sng_1")` finds nothing
-    // after 5s on the open album page, while `el("track-sng_1")` on that same page resolves fine
-    // (BrowseUITests.testSongDetailFromTrackTable passes on macOS).
-    //
-    // MECHANISM: AlbumDetailView.trackTable wraps the whole row in
-    // `NavigationLink(value:) { TrackRow(...) }` (AlbumDetailView.swift:155-161), and AppKit
-    // flattens a link's label into ONE accessibility element — so every control nested inside
-    // that label (the ♥, and RowTransport's ▶/⤓) disappears from the tree on macOS. The Browse
-    // song list's ♥ is a different surface (CollectionSongRow) and is not affected.
-    //
-    // NOTE FOR A HUMAN: that flattening is also a real macOS ACCESSIBILITY gap — a VoiceOver
-    // user on the Mac cannot reach the per-track ♥ or transport in an album's track table. It is
-    // not a functional gap for mouse users (the buttons still draw and hit-test; `.borderless` is
-    // chosen in FavoriteToggle precisely so the enclosing link doesn't swallow the click), and I
-    // could not verify the mouse path headlessly. Fixing it properly is a product change —
-    // `.accessibilityElement(children: .contain)` on the link, or lifting the controls out of the
-    // label — and is deliberately NOT bundled into a test-debt branch.
-    #if !os(macOS)
+    // These two RUN ON macOS, and they are the regression guard for a real macOS product bug
+    // fixed on this branch: the ♥ and the ▶/⤓ transport used to be nested inside the row's
+    // `NavigationLink` label, and AppKit collapses a link's label into ONE accessibility
+    // element — so `favorite-toggle-…` was absent from the macOS tree entirely and a click in
+    // that part of the row fell through to the link and opened the song instead. The controls
+    // are now siblings of the link (AlbumDetailView.trackTable), which is what makes these
+    // pass here. If they start failing on macOS again, suspect that nesting has come back.
 
     /// The ♥ for a song, by id. `any(_:)` (identifier across ALL element types) rather than
     /// `el(_:)` (a `.buttons` query), because `FavoriteToggle`'s label is a bare `Image` and the
@@ -115,6 +102,8 @@ final class FavoritesUITests: XCTestCase {
         XCTAssertEqual(self.heart(app, "sng_1").label, "Unfavorite",
                        "the ♥ was persisted and re-decoded at launch")
     }
+
+    #if !os(macOS)
 
     /// The Browse song list carries the same ♥, and the filter sheet exposes the tri-state
     /// favorite constraint. (iOS only: the Albums/Songs Picker and in-sheet Pickers are not
