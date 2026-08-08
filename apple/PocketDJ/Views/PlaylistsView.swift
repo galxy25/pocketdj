@@ -1011,8 +1011,9 @@ struct PlaylistDetailView: View {
                     // the smart-playlist setting; "Off" = never sync either way.
                     amSyncDirectionMenuItem
                     amSyncNowMenuItem
+                    cleanOnlyMenuItem
                     Divider()
-                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPlaylist: playlistId) }, noun: "playlist")
+                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPlaylist: playlistId) }, noun: "playlist")
                     Divider()
                     Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete playlist", systemImage: "trash") }
                         .accessibilityIdentifier("delete-playlist")
@@ -1094,6 +1095,15 @@ struct PlaylistDetailView: View {
             Label("Apple Music sync", systemImage: "arrow.up.arrow.down.circle")
         }
         .accessibilityIdentifier("playlist-am-sync-direction")
+    }
+
+    /// Clean-versions-only toggle (see `CleanOnly`): explicit songs play/rip their clean
+    /// edition when one is resolved, else are skipped for this playlist.
+    @ViewBuilder private var cleanOnlyMenuItem: some View {
+        let b = Binding<Bool>(get: { playlist?.cleanOnly == true },
+                              set: { collections.setCleanOnly($0, forPlaylist: playlistId) })
+        Toggle(isOn: b) { Label("Clean versions only", systemImage: "c.square") }
+            .accessibilityIdentifier("playlist-clean-only")
     }
 
     /// Send THIS playlist to Apple Music now, without waiting for (or sitting through) a whole-
@@ -1353,6 +1363,10 @@ struct PlaylistDetailView: View {
                     NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false) }
                     InlinePlayerSlot(songId: song.id)
                 }
+                // Clean-versions-only skip indicator: a row this playlist would SKIP at
+                // ▶ Play (explicit, no clean edition) dims. Styling only — verification is
+                // by queue count, and no new a11y id lands on a button container.
+                .opacity(playlist?.cleanOnly == true && CleanOnly.isSkipped(song) ? 0.45 : 1)
             } else if let id = node.songId, StudioFactory.isStudioId(id) {
                 // Performance items (sample/loop/sequence/instrumental) — studio-aware row with its
                 // repeat count. Previously fell to "(missing song)" because they aren't in the catalog.

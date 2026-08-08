@@ -1101,8 +1101,11 @@ final class BurnStore {
             // and DON'T await bytes (the delegate finalizes via `finalizeBurn`).
             if let transfers {
                 // CRITIC-A — resolve the catalog lookup BEFORE building the filenames so the
-                // descriptive name can use the IndexSong/IndexAlbum.
-                let (s, a) = lookup?(song.id) ?? (nil, nil)
+                // descriptive name can use the IndexSong/IndexAlbum. BASE id: a VARIANT burn
+                // ("sng_…_clean") isn't in the catalog — its base song names the file, while
+                // the filename's trailing "-<songId>" keeps the VARIANT id (distinct file,
+                // self-heal scan safe).
+                let (s, a) = lookup?(SongVariant.baseId(song.id)) ?? (nil, nil)
                 let (audioName, sidecarName) = fileNames(for: song.id, entry: entry, song: s, album: a)
                 let sidecar = Self.buildSidecar(songId: song.id, fallback: song, song: s, album: a, entry: entry)
                 let record = TransferCoordinator.TransferRecord(
@@ -1142,8 +1145,9 @@ final class BurnStore {
                 }
 
                 // CRITIC-A — resolve the catalog lookup BEFORE building the filenames so the
-                // descriptive name can use the IndexSong/IndexAlbum.
-                let (s, a) = lookup?(song.id) ?? (nil, nil)
+                // descriptive name can use the IndexSong/IndexAlbum. BASE id — see the
+                // background-path twin above.
+                let (s, a) = lookup?(SongVariant.baseId(song.id)) ?? (nil, nil)
                 let (audioName, sidecarName) = fileNames(for: song.id, entry: entry, song: s, album: a)
                 let audioURL = dir.appendingPathComponent(audioName)
 
@@ -1312,7 +1316,7 @@ final class BurnStore {
     /// A cut failure NEVER fails the burn (the album entry alone still plays + is the backcase).
     private func exportAnalogCut(songId: String, entry: RipsStore.ManifestEntry, dir: URL) async {
         guard entry.source == "analog", let cutKey = entry.cutKey else { return }
-        let (s, a) = lookup?(songId) ?? (nil, nil)
+        let (s, a) = lookup?(SongVariant.baseId(songId)) ?? (nil, nil)
         let cutName = Self.descriptiveName(
             prefix: Self.digitalSongPrefix(song: s, album: a, entry: entry),
             idSuffix: songId, ext: "mp3")

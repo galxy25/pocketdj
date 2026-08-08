@@ -20,6 +20,10 @@ const a = {};
 for (let i = 2; i < process.argv.length; i++) { const k = process.argv[i]; if (k.startsWith('--')) a[k.slice(2)] = process.argv[++i]; }
 const SONG = a['song-id'], ARTIST = a.artist || '', TITLE = a.title || '', ALBUM = a.album || '';
 const LENGTH_MS = parseInt(a['length-ms'] || '0', 10) || null;
+// Variant rip: require a specific EDITION ('clean' | 'explicit'). Threaded through to the
+// rip skill as --require-explicitness, which disables its live-search fallback for the
+// track — a variant key must never hold wrong-edition audio.
+const EXPL = a.explicitness === 'clean' || a.explicitness === 'explicit' ? a.explicitness : null;
 const LIBRARY_XML = (a['library-xml'] || join(homedir(), 'Downloads', 'Library.xml')).replace(/^~/, homedir());
 const BUCKET = a.bucket || 'pocketdj-rips-011183829623';
 const REGION = a.region || 'us-west-2';
@@ -117,7 +121,10 @@ async function main() {
       '--out-base', outBase, '--limit', '1', '--ah-recordings-dir', AH_REC_DIR,
       // single-track digital capture: if the song isn't in the frozen library export yet
       // (freshly added on another device, still iCloud-syncing), play it via a live search.
+      // (--require-explicitness overrides the fallback inside the skill: an edition-
+      // constrained capture must never live-search-play an unverifiable edition.)
       '--search-fallback',
+      ...(EXPL ? ['--require-explicitness', EXPL] : []),
     ], { cwd: REPO });
     let err = '';
     p.stderr.on('data', (d) => { err += d; });
@@ -135,7 +142,13 @@ async function main() {
     const files = dirs.length ? readdirSync(dirs[0]).filter((f) => /\.(m4a|aac|aiff|wav|mp3|caf|alac)$/i.test(f)) : [];
     if (files.length) ripped = join(dirs[0], files.sort()[0]);
   } catch { /* ignore */ }
-  if (!ripped) fail('no audio captured — is the track in the library and audio routed to system output?', 'no-match');
+  if (!ripped) {
+    // Edition-required capture with nothing produced ⇒ the required edition isn't
+    // (verifiably) in the library — a TERMINAL, expected outcome for a variant rip
+    // (deliberately no automatic library-adds; see the rip-server variant docs).
+    if (EXPL) fail(`required ${EXPL} edition not in the library — nothing captured`, 'no-matching-edition');
+    fail('no audio captured — is the track in the library and audio routed to system output?', 'no-match');
+  }
 
   // transcode to mp3 256 and upload
   status('uploading', { message: 'transcoding + uploading' });

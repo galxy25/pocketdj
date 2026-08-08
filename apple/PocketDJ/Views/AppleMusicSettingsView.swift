@@ -71,6 +71,7 @@ struct AppleMusicSettingsView: View {
                 collectionsSection
                 favoritesSyncSection
                 convertedAutoSection
+                explicitSection
                 privateSyncSection
                 writeBackSection
             } else {
@@ -592,6 +593,21 @@ struct AppleMusicSettingsView: View {
             Text("Account")
         } footer: {
             Text("Linking authorizes PocketDJ to play from your Apple Music subscription and to sync playlists and favorites with a token minted on this device — nothing is stored on a server.")
+        }
+    }
+
+    // MARK: Explicit versions — the global clean/explicit edition preference
+
+    /// One Toggle over the TRI-STATE `preferExplicitVersionsRaw` (get coalesces nil→false, so
+    /// an untouched install reads Off; setting it EITHER way makes the preference explicit,
+    /// which is what arms stream substitution of existing catalog songs — see SettingsStore).
+    /// Persistence rides this pane's `.onDisappear { settings.persist() }`.
+    private var explicitSection: some View {
+        Section {
+            Toggle("Prefer explicit versions", isOn: $settings.preferExplicitVersions)
+                .accessibilityIdentifier("am-prefer-explicit")
+        } header: { Text("Explicit versions") } footer: {
+            Text("Off: PocketDJ discovers, streams, and rips the non-explicit (clean) version of a song when one exists. On: prefers the explicit version. Your own recordings and downloads always keep the cut you have.")
         }
     }
 

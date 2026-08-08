@@ -26,12 +26,30 @@ final class SetlistPlayer {
         /// Total plays before advancing (a performance item's loop count). nil/≤1 ⇒ once.
         /// Excluded from equality — it's a playback parameter, not row identity.
         var repeatCount: Int? = nil
+        /// Edition override (a cleanOnly collection substituting the clean cut). Excluded
+        /// from equality like `repeatCount` — a playback parameter, not row identity
+        /// (`uid` covers instance identity).
+        var variant: SongVariant? = nil
         /// Per-INSTANCE identity for live-queue rows (a song can repeat in a set, so
         /// `id` can't identify a row). Lets the Now Playing panel remove exactly the
         /// row the user tapped even when the queue shifts underneath the tap (a track
         /// ending mid-interaction). Excluded from equality — two Items for the same
         /// track are still equal.
         let uid = UUID()
+
+        /// The id playback RESOLVES under — the variant songId when an edition override is
+        /// set (burned files, rips, stems, streams all key on it), else the base id.
+        /// History/stats/favorites keep keying `id` (the real song).
+        var resolveId: String { variant.map { SongVariant.variantId(id, $0) } ?? id }
+
+        /// Whether an OBSERVED now-playing id identifies THIS row — the ownership test every
+        /// end-of-track / jump guard uses. A substituted row answers to BOTH of its ids
+        /// because the two play paths stamp different ones: a stream / rip resolves under
+        /// `resolveId` ("sng_…_clean", set by the coordinator's minimal song), while a burned
+        /// file plays under the base `id` (`playLocalFile(songId: it.id)`, so the card + stats
+        /// keep the real song). A plain row's two ids coincide, so it never answers to a
+        /// variant id — a foreign edition of the same song stays a foreign play.
+        func matches(_ observedId: String) -> Bool { observedId == id || observedId == resolveId }
 
         static func == (lhs: Item, rhs: Item) -> Bool {
             lhs.id == rhs.id && lhs.title == rhs.title
@@ -554,9 +572,11 @@ final class SetlistPlayer {
     var currentTrackMixable: Bool {
         guard isRunning, index < queue.count, !isHeldForResume else { return false }
         guard coordinator.activeBackend != .appleMusic, !player.isLive else { return false }
-        guard let np = rips.nowPlaying, np.songId == queue[index].id, !np.live, np.url.isFileURL else { return false }
+        guard let np = rips.nowPlaying, queue[index].matches(np.songId), !np.live, np.url.isFileURL else { return false }
         // A local file is playing (burned OR studio). Studio ids have no BurnStore file but ARE local.
-        return StudioFactory.isStudioId(np.songId) || burns.localURL(forSong: np.songId) != nil
+        // The burn lookup keys `resolveId` (a substituted row's file lives under the variant id)
+        // even though `np.songId` is the base — the same split `playCurrent` resolves through.
+        return StudioFactory.isStudioId(np.songId) || burns.localURL(forSong: queue[index].resolveId) != nil
     }
 
     /// The full F4 eligibility gate: mixable current track AND no active Mix-tab session (mutually
@@ -670,7 +690,7 @@ final class SetlistPlayer {
     /// disambiguation available from the song id alone.
     private func nearestOccurrence(of id: String, to ref: Int) -> Int? {
         var best: Int?
-        for i in queue.indices where queue[i].id == id {
+        for i in queue.indices where queue[i].matches(id) {
             guard let b = best else { best = i; continue }
             let di = abs(i - ref), db = abs(b - ref)
             if di < db || (di == db && i >= ref) { best = i }
@@ -715,8 +735,11 @@ final class SetlistPlayer {
         // keying off the rip path alone left AM jumps unadopted (deck + widget stale on the
         // old track, transport routed to the idle engine, end guard silently stopping the set).
         let am = coordinator.activeBackend == .appleMusic
+        // `matches` (not `id ==`): the sequencer's OWN substituted play resolves under the
+        // VARIANT id ("sng_…_clean"), which must stay a no-op here — treating it as a foreign
+        // jump would run `endMixEngagement` against our own track.
         guard let npId = am ? coordinator.appleMusic.nowPlaying?.songId : rips.nowPlaying?.songId,
-              queue[index].id != npId else { return }
+              !queue[index].matches(npId) else { return }
         // F4 (double-audio guard): ANY nowPlaying change to a DIFFERENT track means the AVPlayer / AM
         // now owns that track's audio (its play path already reclaimed the card) — so tear down any
         // orphaned DSP engagement here, BEFORE the not-in-set early return below. Otherwise a NON-member
@@ -741,7 +764,8 @@ final class SetlistPlayer {
             // handoff `playCurrent`'s AM branch does (macOS: abdicate; iOS: impersonate).
             handOffCardToAppleMusic(for: queue[pos])
         } else {
-            if burns.localURL(forSong: queue[pos].id) != nil { loadedAnyDeviceTrack = true }
+            // `resolveId`: a substituted row's burned file lives under the variant id.
+            if burns.localURL(forSong: queue[pos].resolveId) != nil { loadedAnyDeviceTrack = true }
             player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs))
         }
     }
@@ -775,7 +799,7 @@ final class SetlistPlayer {
     /// `adoptNowPlayingIfJumped` (index moves onto it), so this guard then passes for it.
     private func handleEnded() {
         guard isRunning, index < queue.count,
-              rips.nowPlaying?.songId == queue[index].id else { return }
+              let npId = rips.nowPlaying?.songId, queue[index].matches(npId) else { return }
         // Repeat-ONE (whole-session mode) takes precedence: replay the current track from the top.
         // Only on a NATURAL end — an explicit ⏭ / dead source goes through `advanceToNext`.
         if repeatMode == .one {
@@ -801,7 +825,8 @@ final class SetlistPlayer {
     private func handleAppleMusicEnded() {
         guard isRunning, index < queue.count,
               coordinator.activeBackend == .appleMusic,
-              coordinator.appleMusic.nowPlaying?.songId == queue[index].id else { return }
+              let npId = coordinator.appleMusic.nowPlaying?.songId,
+              queue[index].matches(npId) else { return }
         // Repeat-ONE (whole-session mode): replay the current AM track from the top.
         if repeatMode == .one {
             Task { await playCurrent(fresh: true) }
@@ -821,7 +846,8 @@ final class SetlistPlayer {
     private func handleAppleMusicRestarted() {
         guard isRunning, index < queue.count,
               coordinator.activeBackend == .appleMusic,
-              coordinator.appleMusic.nowPlaying?.songId == queue[index].id else { return }
+              let npId = coordinator.appleMusic.nowPlaying?.songId,
+              queue[index].matches(npId) else { return }
         NPLog.trace("setlist AM restart → skipPrevious from index \(index)")
         skipPrevious()
     }
@@ -924,15 +950,19 @@ final class SetlistPlayer {
         // end-of-set advance raises the CRITIC-D banner. Mode-flip mid-set applies to the
         // NEXT track: the current track keeps playing under the mode it started with.
         if mode == .device {
-            if let res = burns.localURLForPlayback(forSong: it.id) {
+            // `resolveId` (NOT `id`) at every burned-file lookup: a cleanOnly substitution
+            // must play the CLEAN variant's burned file — an explicit base burn present on
+            // the device is deliberately not a fallback (skip-not-fallback). `songId: it.id`
+            // (base) stays in playLocalFile so history/stats key the real song.
+            if let res = burns.localURLForPlayback(forSong: it.resolveId) {
                 loadedAnyDeviceTrack = true
                 coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
                 // SHARED helper so nowPlaying + the inline player + the row toggle stay
                 // consistent with the single-row burned path. `res.release` keeps a user-folder
                 // file's security scope open through playback.
                 playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
-                              startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
-                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                              startMs: burns.startMs(forSong: it.resolveId), rips: rips, player: player,
+                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.resolveId)),
                               atMs: resumeAtMs, release: res.release)
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
@@ -943,15 +973,18 @@ final class SetlistPlayer {
 
         // CLOUD mode (default): prefer a burned local file when present (zero-latency,
         // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
-        if let res = burns.localURLForPlayback(forSong: it.id) {
+        // Same `resolveId` rule as device mode — a substituted row only ever plays its
+        // variant's audio (burned, streamed, or ripped), never the base explicit cut.
+        if let res = burns.localURLForPlayback(forSong: it.resolveId) {
             loadedAnyDeviceTrack = true
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
-                          startMs: burns.startMs(forSong: it.id), rips: rips, player: player,
-                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.id)),
+                          startMs: burns.startMs(forSong: it.resolveId), rips: rips, player: player,
+                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.resolveId)),
                           atMs: resumeAtMs, release: res.release)
         } else {
-            await coordinator.play(id: it.id, title: it.title, artist: it.artist, atMs: resumeAtMs)
+            await coordinator.play(id: it.id, title: it.title, artist: it.artist,
+                                   atMs: resumeAtMs, variant: it.variant)
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advanceToNext(); return }
             // Apple Music STREAM: MusicKit owns the audio. On iOS/CarPlay it writes NOTHING to
@@ -1007,7 +1040,8 @@ final class SetlistPlayer {
         guard !isRunning, !snap.queue.isEmpty else { return }
         queue = snap.queue.map {
             Item(id: $0.songId, title: $0.title, artist: $0.artist,
-                 lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+                 lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
+                 variant: $0.variant.flatMap(SongVariant.init(rawValue:)))
         }
         index = min(max(0, snap.index), queue.count - 1)
         sourceSetlistId = snap.source.id
@@ -1101,7 +1135,8 @@ final class SetlistPlayer {
         guard let sessionStore, isRunning else { return }
         let rows = queue.map {
             PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
-                                     lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
+                                     lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
+                                     variant: $0.variant?.rawValue)
         }
         let ctx = capturedHistoryContext
         let snap = PlaybackSessionStore.Snapshot(

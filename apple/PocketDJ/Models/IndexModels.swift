@@ -157,6 +157,14 @@ struct IndexSong: Decodable, Identifiable, Hashable {
     var spotifyUrl: String? = nil
     var youtubeUrl: String? = nil
 
+    /// Variant catalog ids resolved by `scripts/resolve-explicit-variants.mjs`. The primary
+    /// `appleMusicId` is the user's cut and is never rewritten; these are the sibling
+    /// EDITIONS of the same recording (explicit / clean), ADD-only in the index. Optional +
+    /// inline `= nil`: decode-tolerant of the (many) rows that lack them, and keeps the
+    /// synthesized memberwise init source-compatible for `applying(_:)`.
+    var appleMusicIdExplicit: String? = nil
+    var appleMusicIdClean: String? = nil
+
     /// Epoch milliseconds the track was added to the source library ("Date Added" in
     /// the Apple Music library, emitted by `index-apple-music.mjs`). Powers the
     /// "Recently added" virtual playlist's ranking of catalog (Apple-Music-library)
@@ -177,5 +185,17 @@ struct IndexSong: Decodable, Identifiable, Hashable {
         // of IndexSong's fields are all optional). A failure would be a programmer error.
         let data = try! JSONSerialization.data(withJSONObject: obj)
         return try! JSONDecoder().decode(IndexSong.self, from: data)
+    }
+}
+
+extension IndexSong {
+    /// The catalog id for a specific EDITION of this song. Falls back to the primary id
+    /// when the primary is ALREADY that edition (per the `explicit` flag); nil when the
+    /// edition is unknown/unresolved. Never invents an id.
+    func appleMusicId(for variant: SongVariant) -> String? {
+        switch variant {
+        case .clean:    return appleMusicIdClean    ?? (explicit == false ? appleMusicId : nil)
+        case .explicit: return appleMusicIdExplicit ?? (explicit == true  ? appleMusicId : nil)
+        }
     }
 }
