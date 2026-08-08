@@ -56,15 +56,21 @@ final class DiscoverSearchModel {
     /// Map a MusicKit catalog hit into the Discover row shape (the `amrec_` ad-hoc-rip
     /// id convention); `ripURL` is the LOCAL manifest's answer for that id (the add
     /// flow may already have prepared this song's copy).
+    /// The album NAME rides along whenever MusicKit knows it; the album ID usually does NOT
+    /// (a catalog search result carries no album relationship). Resolving one per row would
+    /// mean a `song.with([.albums])` fetch per hit — 25 extra round trips per keystroke — so
+    /// the id is resolved LAZILY on the detail screen instead (AlbumPreview tier 1).
     static func hit(from track: StreamingTrack, ripURL: URL?) -> RipsStore.DiscoverHit {
         RipsStore.DiscoverHit(appleMusicId: track.providerTrackID,
                               title: track.title,
                               artist: track.artist ?? "",
+                              album: track.albumTitle,
                               artworkUrl: track.artworkURL?.absoluteString,
                               durationMs: track.durationSeconds.map { $0 * 1000 },
                               songId: "amrec_\(track.providerTrackID)",
                               ripped: ripURL != nil,
-                              url: ripURL?.absoluteString)
+                              url: ripURL?.absoluteString,
+                              albumAppleMusicId: track.albumStoreID)
     }
 
     /// Merge doctrine: MusicKit's ranking leads; where the proxy knows the same track
@@ -127,6 +133,9 @@ struct DiscoverResultsList: View {
     let model: DiscoverSearchModel
     let query: String
     var artist: String = ""
+    /// The Browser's stack, so a row's ALBUM name can open the album preview. Optional so a
+    /// preview/host without a stack still compiles (the name renders as plain text there).
+    var path: Binding<NavigationPath>? = nil
 
     /// Edition-preference re-rank at DISPLAY time (pure + stable, so the model's merge
     /// ranking survives): clean editions lead by default; explicit leads when the user
@@ -209,7 +218,7 @@ struct DiscoverResultsList: View {
             LazyVStack(spacing: 0) {
                 // Index-keyed a11y ids (`discover-row-<i>`), identity by songId.
                 ForEach(Array(rankedHits.enumerated()), id: \.element.id) { index, hit in
-                    DiscoverRow(hit: hit, index: index)
+                    DiscoverRow(hit: hit, index: index, path: path)
                     // Same inline player the browser song rows get — a playing
                     // discover hit shows the standard transport under its row.
                     InlinePlayerSlot(songId: hit.songId).padding(.horizontal, 2)
@@ -253,6 +262,11 @@ private struct DiscoverRow: View {
     @Environment(AppModel.self) private var app
     let hit: RipsStore.DiscoverHit
     let index: Int
+    /// The Browser's stack — the ALBUM name in this row's subtitle opens the album preview
+    /// when we know the album's identity. Levi's report can be read as "the album shown on
+    /// the Discover row should be tappable", so it is: same destination the added song's
+    /// detail reaches, one step earlier.
+    var path: Binding<NavigationPath>? = nil
 
     /// Ripped = the server said so at search time OR the manifest has flipped since
     /// (the add-completion `refreshManifest` is what moves a row here live).
@@ -283,7 +297,7 @@ private struct DiscoverRow: View {
                             .accessibilityIdentifier("discover-explicit-badge")
                     }
                 }
-                Text(subtitle).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
+                subtitleLine
             }
             Spacer()
             if let ms = hit.durationMs, ms > 0 {
@@ -338,6 +352,36 @@ private struct DiscoverRow: View {
 
     private var subtitle: String {
         [hit.artist, hit.album ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// "artist · album", with the ALBUM half a live link to its preview when the hit carries
+    /// an album id (server hits always do; a MusicKit-only hit may not, and then it stays
+    /// plain text rather than becoming a dead tap).
+    @ViewBuilder private var subtitleLine: some View {
+        if let path, let cid = hit.albumAppleMusicId, !cid.isEmpty,
+           let name = hit.album, !name.isEmpty {
+            HStack(spacing: 4) {
+                if !hit.artist.isEmpty {
+                    Text("\(hit.artist) ·").font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
+                }
+                Button {
+                    path.wrappedValue.append(albumPreviewRef(collectionId: cid, name: name))
+                } label: {
+                    Text(name).font(.caption).foregroundStyle(Theme.accent).lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("discover-album-link-\(index)")
+            }
+        } else {
+            Text(subtitle).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
+        }
+    }
+
+    private func albumPreviewRef(collectionId: String, name: String) -> AppleMusicAlbumRef {
+        AppleMusicAlbumRef(storeID: collectionId, title: name, artist: hit.artist,
+                           year: hit.year,
+                           artworkURL: (hit.albumArtworkUrl ?? hit.artworkUrl).flatMap(URL.init(string:)),
+                           url: nil)
     }
 
     private var artwork: some View {
@@ -475,15 +519,10 @@ final class DiscoverAlbumSearchModel {
 
     /// Map a MusicKit album reference into the Discover album row shape (the
     /// `amrec_album_<collectionId>` provisional-id convention).
+    /// Delegates to `DiscoverAlbumHit(ref:)` — the ONE place the provisional album id is
+    /// synthesized, shared with the album preview screen's giant ＋ so the two can't drift.
     static func hit(from ref: AppleMusicAlbumRef) -> RipsStore.DiscoverAlbumHit {
-        RipsStore.DiscoverAlbumHit(appleMusicId: ref.storeID,
-                                   albumId: "amrec_album_\(ref.storeID)",
-                                   title: ref.title,
-                                   artist: ref.artist,
-                                   artworkUrl: ref.artworkURL?.absoluteString,
-                                   trackCount: nil,
-                                   year: ref.year,
-                                   url: ref.url?.absoluteString)
+        RipsStore.DiscoverAlbumHit(ref: ref)
     }
 
     /// Merge doctrine: MusicKit's ranking leads; proxy-only albums follow. Dedup by the

@@ -59,6 +59,12 @@ final class IntentServices {
     /// with `pendingRoute == .browseSearch`, which lands the user on the Browser.
     var pendingBrowseQuery: String?
 
+    /// Why a pending route could NOT be honoured (e.g. an album that is no longer in the
+    /// catalog and can't be previewed either). RootView surfaces it and clears it.
+    /// A navigation request must always produce a VISIBLE result — silently doing nothing
+    /// is indistinguishable from the blank-screen bug it replaced.
+    var routeMessage: String?
+
     /// One-shot guard so `ensureReady()` kicks the rips-manifest refresh only once per
     /// process (RootView.task does the same on a windowed launch — both are idempotent).
     private var kickedManifestRefresh = false

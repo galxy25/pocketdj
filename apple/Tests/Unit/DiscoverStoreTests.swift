@@ -491,6 +491,188 @@ final class DiscoverStoreTests: XCTestCase {
         XCTAssertEqual(DiscoverAlbumSearchModel.refine(hits, artist: "daft").map(\.appleMusicId), ["1"])
         XCTAssertEqual(DiscoverAlbumSearchModel.refine(hits, artist: "").count, 2, "empty refine passes through")
     }
+
+    // MARK: Album identity on the wire
+    //
+    // The `/search` proxy mapped `album: collectionName` and THREW AWAY iTunes'
+    // `collectionId`, so an added song could never resolve its album. These pin the
+    // decoded shape (new keys present) AND the back-compat shape (server without them).
+
+    func testDiscoverSearchDecodesAlbumAppleMusicIdAndTrackMetadata() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/search"] = Data("""
+        { "results": [
+            { "appleMusicId": "1440857781", "title": "Blue in Green", "artist": "Miles Davis",
+              "album": "Kind of Blue", "artworkUrl": "https://art/t.jpg",
+              "durationMs": 337000, "songId": "amrec_1440857781", "ripped": false,
+              "explicit": false,
+              "albumAppleMusicId": "268443788", "albumArtworkUrl": "https://art/c.jpg",
+              "trackNumber": 3, "discNumber": 1, "year": 1959 }
+          ] }
+        """.utf8)
+
+        let hits = await rips.discoverSearch("blue in green")
+
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits[0].albumAppleMusicId, "268443788",
+                       "the album's IDENTITY, not just its name — the whole point")
+        XCTAssertEqual(hits[0].albumArtworkUrl, "https://art/c.jpg")
+        XCTAssertEqual(hits[0].trackNumber, 3)
+        XCTAssertEqual(hits[0].discNumber, 1)
+        XCTAssertEqual(hits[0].year, 1959)
+    }
+
+    /// An OLD rip server (Levi's iMac until it's redeployed) emits none of the new keys.
+    /// It must still decode — every added field is optional-with-default and APPENDED.
+    func testDiscoverSearchToleratesServerWithoutNewFields() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/search"] = Data("""
+        { "results": [
+            { "appleMusicId": "123", "title": "Take On Me", "artist": "a-ha",
+              "album": "Hunting High and Low", "durationMs": 225000,
+              "songId": "amrec_123", "ripped": false }
+          ] }
+        """.utf8)
+
+        let hits = await rips.discoverSearch("take on me")
+
+        XCTAssertEqual(hits.count, 1, "an old server's response must still decode")
+        XCTAssertNil(rips.discoverError)
+        XCTAssertEqual(hits[0].album, "Hunting High and Low")
+        XCTAssertNil(hits[0].albumAppleMusicId)
+        XCTAssertNil(hits[0].trackNumber)
+        XCTAssertNil(hits[0].year)
+    }
+
+    /// A MusicKit hit carries the album NAME through `StreamingTrack` (the id is resolved
+    /// lazily on the detail screen — a per-row `with([.albums])` would be 25 round trips
+    /// per keystroke). Before, the MusicKit branch set no album at all.
+    func testHitMappingCarriesAlbumFromStreamingTrack() {
+        var t = track("777", "Instant Crush")
+        t.albumTitle = "Random Access Memories"
+        t.albumStoreID = "617154241"
+        let mapped = DiscoverSearchModel.hit(from: t, ripURL: nil)
+        XCTAssertEqual(mapped.album, "Random Access Memories")
+        XCTAssertEqual(mapped.albumAppleMusicId, "617154241")
+        // And a track with no album info degrades to nil, not to an empty string.
+        let bare = DiscoverSearchModel.hit(from: track("2", "T"), ripURL: nil)
+        XCTAssertNil(bare.album)
+        XCTAssertNil(bare.albumAppleMusicId)
+    }
+
+    /// `discoverAdd` must hand the album identity to the provisional store — otherwise the
+    /// wire carries it and the catalog still loses it.
+    func testDiscoverAddStampsAlbumIdentityOnTheProvisionalEntry() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/rip"] = Data("""
+        { "jobId": "j1", "songId": "amrec_5", "phase": "queued", "url": null }
+        """.utf8)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dadd-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let adds = DiscoverAddsStore(fileURL: url)
+        rips.discoverAdds = adds
+
+        var hit = RipsStore.DiscoverHit(appleMusicId: "5", title: "T", artist: "A",
+                                        album: "Kind of Blue", songId: "amrec_5")
+        hit.albumAppleMusicId = "268443788"
+        hit.albumArtworkUrl = "https://art/c.jpg"
+        hit.trackNumber = 3
+        hit.year = 1959
+        hit.explicit = false
+        await rips.discoverAdd(hit)
+
+        let entry = adds.entry(forSongId: "amrec_5")
+        XCTAssertEqual(entry?.albumAppleMusicId, "268443788")
+        XCTAssertEqual(entry?.albumArtworkUrl, "https://art/c.jpg")
+        XCTAssertEqual(entry?.trackNumber, 3)
+        XCTAssertEqual(entry?.year, 1959)
+        XCTAssertEqual(entry?.explicit, false)
+    }
+
+    /// The ALBUM add had `hit.albumId` in scope and still built its per-track entries
+    /// without it, so a track of an album you JUST added had no album to open.
+    func testDiscoverAddAlbumStampsAlbumIdOnEachTrackEntry() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/album-tracks"] = Data("""
+        { "id": "268443788",
+          "album": { "appleMusicId": "268443788", "albumId": "amrec_album_268443788",
+                     "title": "Kind of Blue", "artist": "Miles Davis", "year": 1959,
+                     "trackCount": 2, "url": "https://music/268443788" },
+          "tracks": [
+            { "id": "10", "title": "So What", "artist": "Miles Davis",
+              "discNumber": 1, "trackNumber": 1, "durationMs": 545000 },
+            { "id": "11", "title": "Blue in Green", "artist": "Miles Davis",
+              "discNumber": 1, "trackNumber": 3, "durationMs": 337000 }
+          ] }
+        """.utf8)
+        DiscoverURLProtocol.bodyByPath["/rip"] = Data("""
+        { "jobId": "j", "songId": "x", "phase": "queued", "url": null }
+        """.utf8)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dalb-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let adds = DiscoverAddsStore(fileURL: url)
+        rips.discoverAdds = adds
+
+        let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "268443788",
+                                             albumId: "amrec_album_268443788",
+                                             title: "Kind of Blue", artist: "Miles Davis",
+                                             artworkUrl: "https://art/c.jpg",
+                                             trackCount: 2, year: 1959)
+        await rips.discoverAddAlbum(hit)
+
+        XCTAssertEqual(adds.entries.count, 2)
+        XCTAssertEqual(adds.entries.map(\.albumId),
+                       ["amrec_album_268443788", "amrec_album_268443788"],
+                       "each track links to the album that was just added")
+        XCTAssertEqual(adds.entries.map(\.albumAppleMusicId), ["268443788", "268443788"])
+        XCTAssertEqual(adds.entries.map(\.trackNumber), [1, 3])
+        XCTAssertEqual(adds.entries.map(\.discNumber), [1, 1])
+        XCTAssertEqual(adds.entries.map(\.year), [1959, 1959])
+        // …and the synthesized catalog rows carry it through to the browser.
+        XCTAssertEqual(adds.entries.map { DiscoverAddsStore.indexSong($0).albumId },
+                       ["amrec_album_268443788", "amrec_album_268443788"])
+    }
+
+    /// The subscription-free tier the album preview is built on: `/album-tracks` now hands
+    /// back the COLLECTION row it used to drop, so a preview can be built from an id alone.
+    func testFetchAlbumReturnsRefFromProxy() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/album-tracks"] = Data("""
+        { "id": "268443788",
+          "album": { "appleMusicId": "268443788", "albumId": "amrec_album_268443788",
+                     "title": "Kind of Blue", "artist": "Miles Davis",
+                     "artworkUrl": "https://art/c.jpg", "trackCount": 5, "year": 1959,
+                     "url": "https://music/268443788" },
+          "tracks": [ { "id": "10", "title": "So What", "artist": "Miles Davis" } ] }
+        """.utf8)
+
+        let expansion = await rips.fetchAlbumExpansion(collectionId: "268443788")
+        XCTAssertEqual(expansion.tracks.count, 1)
+        let ref = expansion.album?.albumRef
+        XCTAssertEqual(ref?.storeID, "268443788")
+        XCTAssertEqual(ref?.title, "Kind of Blue")
+        XCTAssertEqual(ref?.artist, "Miles Davis")
+        XCTAssertEqual(ref?.year, 1959)
+        XCTAssertEqual(ref?.artworkURL?.absoluteString, "https://art/c.jpg")
+        XCTAssertEqual(ref?.url?.absoluteString, "https://music/268443788")
+        // Same request, single round trip — both accessors read one response.
+        let alone = await rips.fetchAlbum(collectionId: "268443788")
+        XCTAssertEqual(alone?.title, "Kind of Blue")
+    }
+
+    /// An OLD server omits `album` entirely; the tracks half must be unaffected.
+    func testFetchAlbumIsNilForServerWithoutTheCollectionRow() async {
+        let rips = makeStore()
+        DiscoverURLProtocol.bodyByPath["/album-tracks"] = Data("""
+        { "id": "1", "tracks": [ { "id": "10", "title": "T", "artist": "A" } ] }
+        """.utf8)
+        let album = await rips.fetchAlbum(collectionId: "1")
+        XCTAssertNil(album)
+        let tracks = await rips.fetchAlbumTracks(collectionId: "1")
+        XCTAssertEqual(tracks.count, 1)
+    }
 }
 
 /// Scriptable, request-recording `URLProtocol` standing in for the rip server —

@@ -15,6 +15,15 @@ struct SongDetailView: View {
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
     @Environment(\.dismiss) private var dismiss
     let song: IndexSong
+    /// The stack this detail was pushed onto, when it HAS one. Every presentation now passes
+    /// it (RootView, the Shazam sheet, and the two song-detail sheets, which grew their own
+    /// path + `pocketDJDestinations`), so the artist/album hotlinks can push DIRECTLY —
+    /// the mechanism `AlbumDetailView` has always used and the only one that works.
+    ///
+    /// The nil default is a compile-compatibility fallback for any future call site that
+    /// genuinely has no stack; it keeps the old `dismiss()` + `IntentRoute` round trip, which
+    /// is what produced the blank screen and must not be the default path.
+    var path: Binding<NavigationPath>? = nil
     @State private var showEdit = false
     @State private var showAdd = false
     /// "Remove from Library" (PocketDJ catalog) confirmation — only for user-added provisional
@@ -41,14 +50,62 @@ struct SongDetailView: View {
     private var current: IndexSong { app.songsById[song.id] ?? song }
     private var album: IndexAlbum? { current.albumId.flatMap { app.albumsById[$0] } }
 
+    /// The provisional Discover entry behind this song, when it is one. Carries the album
+    /// identity a ＋Add now records (`albumAppleMusicId`) even though no catalog album exists
+    /// for it — that id is what turns the album line into a tappable PREVIEW.
+    private var discoverEntry: DiscoverAddsStore.Entry? {
+        rips.discoverAdds?.entry(forSongId: current.id)
+    }
+
+    /// The Apple Music album this song belongs to, for songs whose album is NOT in the
+    /// catalog. Two sources, in order: what MusicKit already resolved for the library
+    /// affordance (free — `resolveForLibrary` fetches the album relationship and this view
+    /// used to throw it away), then the Discover entry's recorded album id.
+    private var albumRef: AppleMusicAlbumRef? {
+        if let resolved = libraryResolution?.album { return resolved }
+        guard let e = discoverEntry, let cid = e.albumAppleMusicId, !cid.isEmpty else { return nil }
+        return AppleMusicAlbumRef(
+            storeID: cid,
+            title: e.album ?? "Album",
+            artist: e.artist,
+            year: e.year,
+            artworkURL: (e.albumArtworkUrl ?? e.artworkUrl).flatMap(URL.init(string:)),
+            url: nil)
+    }
+
+    /// The album's NAME wherever it can be known — catalog album, resolved/recorded ref, or
+    /// the bare name the Discover row carried. Drives both the header line and the "Album"
+    /// metadata row, which used to be blank for every Discover add.
+    private var albumName: String? {
+        album?.name ?? albumRef?.title ?? discoverEntry?.album
+    }
+
+    /// Cover art URL for a song with no catalog album (the ref's art, else the row's).
+    private var fallbackArtworkURL: URL? {
+        albumRef?.artworkURL
+            ?? discoverEntry.flatMap { ($0.albumArtworkUrl ?? $0.artworkUrl).flatMap(URL.init(string:)) }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                // Cover art used to require a CATALOG album, so a Discover-added song showed
+                // none at all. Fall back to the album reference's / the added row's artwork.
                 if let album {
                     CoverImage(album: album)
                         .frame(width: 220, height: 220)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .accessibilityIdentifier("song-detail-art")
+                } else if let url = fallbackArtworkURL {
+                    AsyncImage(url: url) { img in
+                        img.resizable().scaledToFill()
+                    } placeholder: {
+                        Rectangle().fill(Theme.bgRaised)
+                    }
+                    .frame(width: 220, height: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .accessibilityIdentifier("song-detail-art")
                 }
                 header
                 Divider().overlay(Theme.border)
@@ -249,48 +306,80 @@ struct SongDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(current.name).font(.title2.bold()).foregroundStyle(Theme.fg)
-            // Artist + album are HOTLINKS into the Browser (Levi 2026-07-18). They route
-            // via IntentRoute (not NavigationLink) so they work from EVERY presentation —
-            // the browser push, the platter long-press sheet, the mix-session sheet —
-            // where an ad-hoc NavigationStack has no destinations registered. dismiss()
-            // closes a sheet first (a no-op-ish pop in the pushed context, whose stack
-            // the route consumption resets anyway).
-            Button {
-                let artist = current.artist
-                dismiss()
-                intents.pendingRoute = .artist(artist)
-            } label: {
+            // Artist + album are HOTLINKS into the Browser (Levi 2026-07-18).
+            //
+            // They PUSH onto the stack this view was given — the mechanism AlbumDetailView
+            // has always used (and whose UI test has always passed). They used to
+            // `dismiss()` and park an `IntentRoute`, which RootView consumed by re-rooting
+            // the path, swapping the section and staging the append 450 ms later. That round
+            // trip DROPPED the push: the destination rendered blank (proven on a plain
+            // catalog song, 2026-08-07). Every presentation now supplies a path AND registers
+            // `pocketDJDestinations`, so the long way round is no longer needed.
+            hotlink(id: "artist-hotlink", value: Artist(name: current.artist),
+                    route: .artist(current.artist)) {
                 Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("artist-hotlink")
             KeyChip(key: current.key, camelot: current.camelot)
             if let src = app.source(ofSong: current.id) {
                 Tag(text: src, color: Theme.fgDim)
                     .accessibilityIdentifier("source-tag")
             }
-            if let album {
-                Button {
-                    let id = album.id
-                    dismiss()
-                    intents.pendingRoute = .album(id)
-                } label: {
-                    Label(album.name, systemImage: "rectangle.stack")
-                        .font(.callout)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accent)
-                .accessibilityIdentifier("album-hotlink")
-            }
+            albumLink
         }
+    }
+
+    /// The album line. Shown whenever an album NAME is known — from the catalog album, or
+    /// (for a Discover ＋Add whose album isn't a catalog citizen) from the provisional entry.
+    /// Three outcomes, and none of them is a dead tap:
+    ///   • catalog album      → push the real `IndexAlbum`
+    ///   • Apple Music id only → push an `AppleMusicAlbumRef` → the PREVIEW screen, where the
+    ///                           giant ＋ pulls the whole album in
+    ///   • name only           → plain, unlinked label (nothing to open)
+    @ViewBuilder private var albumLink: some View {
+        if let album {
+            hotlink(id: "album-hotlink", value: album, route: .album(album.id)) {
+                Label(album.name, systemImage: "rectangle.stack").font(.callout)
+            }
+            .foregroundStyle(Theme.accent)
+        } else if let ref = albumRef {
+            hotlink(id: "album-hotlink", value: ref, route: nil) {
+                Label(ref.title, systemImage: "rectangle.stack").font(.callout)
+            }
+            .foregroundStyle(Theme.accent)
+        } else if let name = albumName {
+            Label(name, systemImage: "rectangle.stack")
+                .font(.callout)
+                .foregroundStyle(Theme.fgDim)
+                .accessibilityIdentifier("album-plain")
+        }
+    }
+
+    /// One hotlink button: push when we have a stack, else fall back to the legacy
+    /// cross-stack route (only reachable from a presentation that passed no path).
+    /// `route` nil ⇒ there IS no legacy equivalent, so a path-less host simply can't link it.
+    private func hotlink<V: Hashable, L: View>(id: String, value: V, route: IntentRoute?,
+                                               @ViewBuilder label: () -> L) -> some View {
+        Button {
+            if let path {
+                path.wrappedValue.append(value)
+            } else if let route {
+                dismiss()
+                intents.pendingRoute = route
+            }
+        } label: { label() }
+        .buttonStyle(.plain)
+        .disabled(path == nil && route == nil)
+        .accessibilityIdentifier(id)
     }
 
     private var rows: [(String, String)] {
         var r: [(String, String)] = []
         r.append(("Artist", current.artist))
-        if let album { r.append(("Album", album.name)) }
-        if let n = current.trackNumber { r.append(("Track #", String(n))) }
-        if let y = current.year { r.append(("Year", String(y))) }
+        // `albumName`, not `album?.name`: a Discover-added song has no catalog album, and
+        // showing no Album row at all is what made its detail screen look empty.
+        if let name = albumName { r.append(("Album", name)) }
+        if let n = current.trackNumber ?? discoverEntry?.trackNumber { r.append(("Track #", String(n))) }
+        if let y = current.year ?? discoverEntry?.year ?? albumRef?.year { r.append(("Year", String(y))) }
         r.append(("BPM", Fmt.bpm(current.bpm)))
         if let k = current.key { r.append(("Key", k)) }
         if let c = current.camelot { r.append(("Camelot", c)) }

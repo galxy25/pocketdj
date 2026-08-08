@@ -5,7 +5,7 @@ import SwiftUI
 /// **library** and offers exactly one primary action —
 ///   • not linked  → "Connect Apple Music"
 ///   • in library  → open its album (in-app when the album is in our index, else the
-///                    synthesized `RecognizedAlbumView`)
+///                    synthesized `AlbumPreviewView`)
 ///   • not in library → ＋ "Add to Apple Music", which saves the song to the user's OWN
 ///     Apple Music library — a complete action in its own right — and THEN separately asks
 ///     the server to prepare the user's own copy and save it to this device (store-owned,

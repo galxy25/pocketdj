@@ -227,4 +227,161 @@ final class DiscoverAddsStoreTests: XCTestCase {
         let reloaded = CollectionsStore(fileURL: url)
         XCTAssertEqual(reloaded.pocket(pk.id)?.songIds.first, "am_real9")
     }
+
+    // MARK: Album identity + metadata on the synthesized catalog row
+    //
+    // `indexSong` used to build the row from {id, name, artist, appleMusicId, length} ONLY.
+    // Everything the entry knew about the album, the position and the release was dropped on
+    // the floor, so a Discover-added song reached the catalog with `albumId == nil` — no
+    // cover art, no "Album" row and NO album to tap. This is that regression, pinned.
+
+    func testIndexSongCarriesAlbumIdAndMetadata() {
+        let e = DiscoverAddsStore.Entry(
+            songId: "amrec_1440857781", appleMusicId: "1440857781", title: "Blue in Green",
+            artist: "Miles Davis", album: "Kind of Blue", artworkUrl: "https://a/t.jpg",
+            durationMs: 337_000, addedAtMs: 1_700_000_000_000,
+            albumId: "amrec_album_268443788", albumAppleMusicId: "268443788",
+            albumArtworkUrl: "https://a/c.jpg", trackNumber: 3, discNumber: 1,
+            year: 1959, genre: "Jazz", explicit: false)
+
+        let song = DiscoverAddsStore.indexSong(e)
+
+        XCTAssertEqual(song.id, "amrec_1440857781")
+        XCTAssertEqual(song.albumId, "amrec_album_268443788",
+                       "the catalog row must link to its album — this is the album hotlink")
+        XCTAssertEqual(song.trackNumber, 3)
+        XCTAssertEqual(song.year, 1959)
+        XCTAssertEqual(song.explicit, false)
+        XCTAssertEqual(song.length, 337_000)
+        XCTAssertEqual(song.appleMusicId, "1440857781")
+        XCTAssertEqual(song.dateAdded, 1_700_000_000_000, "Recently-added ranks on this")
+    }
+
+    /// A SONG-scope add records no provisional album, so it must NOT emit a dangling
+    /// `albumId` — the album screen for it is the Apple Music preview, reached through
+    /// `albumAppleMusicId`, which the entry still carries.
+    func testSongScopeAddCarriesAlbumIdentityWithoutADanglingAlbumId() {
+        let s = store()
+        var injected: [IndexSong] = []
+        s.onAdded = { injected.append($0) }
+        s.add(songId: "amrec_9", appleMusicId: "9", title: "T", artist: "A",
+              album: "Kind of Blue", durationMs: 1000,
+              albumAppleMusicId: "268443788", albumArtworkUrl: "https://a/c.jpg",
+              trackNumber: 2, year: 1959)
+
+        XCTAssertEqual(injected.count, 1)
+        XCTAssertNil(injected[0].albumId, "no provisional album row exists — never point at one")
+        XCTAssertEqual(injected[0].trackNumber, 2)
+        XCTAssertEqual(injected[0].year, 1959)
+        // The identity the preview screen needs survives on the entry.
+        let entry = s.entry(forSongId: "amrec_9")
+        XCTAssertEqual(entry?.albumAppleMusicId, "268443788")
+        XCTAssertEqual(entry?.album, "Kind of Blue")
+        XCTAssertEqual(entry?.albumArtworkUrl, "https://a/c.jpg")
+        XCTAssertTrue(s.albums.isEmpty, "a song add must not mint a fake one-track album")
+    }
+
+    /// The ALBUM-scope add's tracks must link BACK to the album that was just added — the
+    /// half that used to be dropped even though the album id was in scope.
+    func testAlbumBatchLinksTracksToTheirAlbum() {
+        let s = store()
+        var batchSongs: [IndexSong] = []
+        var batchAlbum: IndexAlbum?
+        s.onAlbumBatchAdded = { songs, album in batchSongs = songs; batchAlbum = album }
+        let t1 = DiscoverAddsStore.Entry(songId: "amrec_10", appleMusicId: "10", title: "So What",
+                                         artist: "Miles Davis", album: "Kind of Blue",
+                                         durationMs: 545_000, addedAtMs: 0,
+                                         albumId: "amrec_album_268443788",
+                                         albumAppleMusicId: "268443788",
+                                         trackNumber: 1, year: 1959)
+        let t2 = DiscoverAddsStore.Entry(songId: "amrec_11", appleMusicId: "11", title: "Blue in Green",
+                                         artist: "Miles Davis", album: "Kind of Blue",
+                                         durationMs: 337_000, addedAtMs: 0,
+                                         albumId: "amrec_album_268443788",
+                                         albumAppleMusicId: "268443788",
+                                         trackNumber: 3, year: 1959)
+        s.addAlbumBatch(albumId: "amrec_album_268443788", appleMusicId: "268443788",
+                        title: "Kind of Blue", artist: "Miles Davis",
+                        trackIds: ["amrec_10", "amrec_11"], artworkUrl: "https://a/c.jpg",
+                        year: 1959, trackCount: 5, genre: "Jazz",
+                        url: "https://music.apple.com/album/268443788", songs: [t1, t2])
+
+        XCTAssertEqual(batchAlbum?.id, "amrec_album_268443788")
+        XCTAssertEqual(batchAlbum?.genre, "Jazz")
+        XCTAssertEqual(batchSongs.map(\.albumId), ["amrec_album_268443788", "amrec_album_268443788"],
+                       "every track of an added album links to that album")
+        XCTAssertEqual(batchSongs.map(\.trackNumber), [1, 3])
+        // The album entry keeps the extra fields the preview shows.
+        XCTAssertEqual(s.albums.first?.trackCount, 5)
+        XCTAssertEqual(s.albums.first?.url, "https://music.apple.com/album/268443788")
+        XCTAssertEqual(s.album(forAppleMusicId: "268443788")?.albumId, "amrec_album_268443788")
+    }
+
+    /// `entry(forSongId:)` is memoized (SongDetailView asks several times per render). The
+    /// memo must follow EVERY mutation — including a cloud pull that swaps one entry for
+    /// another and leaves the count unchanged, which a count-keyed cache would miss.
+    func testEntryLookupFollowsMutationsIncludingASameSizeReplacement() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-idx-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let s = DiscoverAddsStore(fileURL: url)
+        s.add(songId: "amrec_1", appleMusicId: "1", title: "A", artist: "X", albumAppleMusicId: "11")
+        XCTAssertEqual(s.entry(forSongId: "amrec_1")?.albumAppleMusicId, "11")   // primes the memo
+        s.add(songId: "amrec_2", appleMusicId: "2", title: "B", artist: "Y", albumAppleMusicId: "22")
+        XCTAssertEqual(s.entry(forSongId: "amrec_2")?.albumAppleMusicId, "22", "an add must be visible")
+        s.userRemove(songId: "amrec_1")
+        XCTAssertNil(s.entry(forSongId: "amrec_1"), "a removal must be visible")
+
+        // SAME-SIZE replacement via a cloud pull: one entry out, a different one in.
+        let peer = DiscoverAddsStore(fileURL: url)
+        peer.userRemove(songId: "amrec_2")
+        peer.add(songId: "amrec_3", appleMusicId: "3", title: "C", artist: "Z", albumAppleMusicId: "33")
+        XCTAssertEqual(peer.entries.count, s.entries.count, "the count is unchanged — the trap")
+        s.reloadFromDisk()
+        XCTAssertNil(s.entry(forSongId: "amrec_2"), "the pulled-away entry must be gone from the memo")
+        XCTAssertEqual(s.entry(forSongId: "amrec_3")?.albumAppleMusicId, "33")
+    }
+
+    /// WIPE-SAFETY, second edition. The album-identity keys are OPTIONAL and the schema
+    /// version stays 1, so a document written by ANY older build — including one synced down
+    /// from a peer device that never heard of these keys — decodes with everything intact.
+    /// A single non-optional key here would throw on decode and silently erase the user's
+    /// Discover adds on every device.
+    func testOldDocumentWithoutNewEntryKeysDecodesIntact() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-oldkeys-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let legacy = """
+        { "schemaVersion": 1,
+          "entries": [
+            { "songId": "amrec_1", "appleMusicId": "1", "title": "Old", "artist": "X",
+              "album": "Older", "durationMs": 1000, "addedAtMs": 5 }
+          ],
+          "albums": [
+            { "albumId": "amrec_album_2", "appleMusicId": "2", "title": "A", "artist": "B",
+              "addedAtMs": 6 }
+          ] }
+        """
+        try Data(legacy.utf8).write(to: url)
+
+        let s = DiscoverAddsStore(fileURL: url)
+        XCTAssertEqual(s.entries.map(\.songId), ["amrec_1"], "legacy entries survive (no wipe)")
+        XCTAssertEqual(s.entries.first?.album, "Older")
+        XCTAssertNil(s.entries.first?.albumAppleMusicId)
+        XCTAssertNil(s.entries.first?.trackNumber)
+        XCTAssertEqual(s.albums.map(\.albumId), ["amrec_album_2"])
+        XCTAssertNil(s.albums.first?.trackCount)
+        // A legacy entry still synthesizes a usable catalog row (no albumId to dangle).
+        let row = DiscoverAddsStore.indexSong(s.entries[0])
+        XCTAssertNil(row.albumId)
+        XCTAssertEqual(row.name, "Old")
+        // And writing a NEW-shape entry alongside it round-trips both.
+        s.add(songId: "amrec_2", appleMusicId: "2", title: "New", artist: "Y",
+              albumAppleMusicId: "77", trackNumber: 4)
+        let reloaded = DiscoverAddsStore(fileURL: url)
+        XCTAssertEqual(reloaded.entries.map(\.songId), ["amrec_1", "amrec_2"])
+        XCTAssertEqual(reloaded.entries.last?.albumAppleMusicId, "77")
+        XCTAssertEqual(reloaded.entries.last?.trackNumber, 4)
+        XCTAssertEqual(reloaded.entries.first?.album, "Older", "the old row is untouched")
+    }
 }

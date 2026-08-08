@@ -93,7 +93,10 @@ struct BrowseView: View {
                 if discoverScope == .album {
                     DiscoverAlbumResultsList(model: discoverAlbums, query: browse.query, artist: discoverArtist)
                 } else {
-                    DiscoverResultsList(model: discover, query: browse.query, artist: discoverArtist)
+                    // `path` so a row's ALBUM name opens the album preview (the same screen
+                    // the added song's detail links to, one step earlier).
+                    DiscoverResultsList(model: discover, query: browse.query,
+                                        artist: discoverArtist, path: $path)
                 }
             } else {
                 shazamRow

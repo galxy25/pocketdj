@@ -158,21 +158,9 @@ struct RootView: View {
             #endif
         } detail: {
             NavigationStack(path: $path) {
-                detail
-                    .navigationDestination(for: IndexAlbum.self) { AlbumDetailView(album: $0, path: $path) }
-                    .navigationDestination(for: IndexSong.self) { SongDetailView(song: $0) }
-                    .navigationDestination(for: Artist.self) { ArtistDetailView(artistName: $0.name, path: $path) }
-                    .navigationDestination(for: Pocket.self) { PocketDetailView(pocketId: $0.id, path: $path) }
-                    .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlistId: $0.id, path: $path) }
-                    .navigationDestination(for: SourcePlaylist.self) { IndexPlaylistDetailView(source: $0, path: $path) }
-                    .navigationDestination(for: Setlist.self) { SetlistDetailView(setlistId: $0.id, path: $path) }
-                    .navigationDestination(for: SetlistLaunch.self) { SetlistDetailView(setlistId: $0.setlistId, autoplay: $0.autoplay, path: $path) }
-                    .navigationDestination(for: MixSessionsRoute.self) { _ in MixSessionsView() }
-                    .navigationDestination(for: MixSessionRoute.self) { MixSessionDetailView(sessionId: $0.sessionId) }
-                    .navigationDestination(for: JukeboxRoute.self) { _ in JukeboxView() }
-                    .navigationDestination(for: JukeboxJoinRoute.self) { JukeboxJoinView(entry: $0.entry) }
-                    .navigationDestination(for: CollectorsPuzzleRoute.self) { _ in CollectorsPuzzleView(path: $path) }
-                    .navigationDestination(for: MwFSessionRoute.self) { MusicWithFriendsSessionView(sessionId: $0.sessionId, path: $path) }
+                // ONE registry, shared with every other stack in the app — see
+                // NavigationDestinations.swift for why an unregistered push renders blank.
+                detail.pocketDJDestinations(path: $path)
             }
         }
         .environment(rowSelection)
@@ -200,6 +188,14 @@ struct RootView: View {
         } message: { pending in
             Text("Also add these \(pending.count) songs to your Apple Music playlist “\(pending.playlistName)”? PocketDJ can’t undo Apple Music adds.")
         }
+        // A navigation request that COULDN'T be honoured says so out loud. Silence here is
+        // what a blank pushed screen looks like from the user's side, and we no longer ship it.
+        .alert("Can’t open that",
+               isPresented: Binding(get: { intents.routeMessage != nil },
+                                    set: { if !$0 { intents.routeMessage = nil } }),
+               presenting: intents.routeMessage) { _ in
+            Button("OK", role: .cancel) { intents.routeMessage = nil }
+        } message: { Text($0) }
         // Intent-driven navigation (Spotlight "Open playlist/pocket"): the intent parks a
         // route on the bridge; this view owns the NavigationPath, so it consumes it —
         // whether the app was already open (`onChange`) or launched by the intent (`.task`).
@@ -432,7 +428,16 @@ struct RootView: View {
             if let s = collections.setlist(id) { push = { path.append(s) } }
         case .album(let id):
             section = .browse
-            if let a = app.albumsById[id] { push = { path.append(a) } }
+            if let a = app.albumsById[id] {
+                push = { path.append(a) }
+            } else if let ref = Self.albumPreviewRef(forAlbumId: id, discoverAdds: rips.discoverAdds) {
+                // Not (or no longer) a catalog album, but its Apple Music identity is
+                // recoverable → open the PREVIEW instead of no-oping. A route that silently
+                // does nothing looks exactly like the blank screen this change removed.
+                push = { path.append(ref) }
+            } else {
+                intents.routeMessage = "That album isn’t in your library."
+            }
         case .artist(let name):
             section = .browse
             push = { path.append(Artist(name: name)) }
@@ -451,6 +456,27 @@ struct RootView: View {
                 push()
             }
         }
+    }
+
+    /// Recover an Apple Music album REFERENCE from a catalog album id that no longer resolves.
+    /// Two sources, in order: the provisional Discover album this device recorded (full
+    /// metadata), then the `amrec_album_<collectionId>` id convention alone — a bare id is
+    /// enough, because the preview screen resolves title/artist/art from it. Pure + static so
+    /// it is exercised without a view. nil ⇒ nothing recoverable; the caller must say so.
+    static func albumPreviewRef(forAlbumId id: String,
+                                discoverAdds: DiscoverAddsStore?) -> AppleMusicAlbumRef? {
+        let prefix = "amrec_album_"
+        guard id.hasPrefix(prefix) else { return nil }
+        let storeID = String(id.dropFirst(prefix.count))
+        guard !storeID.isEmpty else { return nil }
+        if let e = discoverAdds?.album(forAppleMusicId: storeID) {
+            return AppleMusicAlbumRef(storeID: storeID, title: e.title, artist: e.artist,
+                                      year: e.year,
+                                      artworkURL: e.artworkUrl.flatMap(URL.init(string:)),
+                                      url: e.url.flatMap(URL.init(string:)))
+        }
+        return AppleMusicAlbumRef(storeID: storeID, title: "Album", artist: "",
+                                  year: nil, artworkURL: nil, url: nil)
     }
 
     /// Consume a pending jukebox deep-link (shared link / "Open in PocketDJ" banner): switch to the

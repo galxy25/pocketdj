@@ -128,6 +128,9 @@ struct MixSessionDetailView: View {
     /// A tapped `.load` action's song, presented as a metadata sheet (nil ⇒ closed). Wrapped so
     /// `.sheet(item:)` has an Identifiable.
     @State private var metadataItem: SongMetadataItem?
+    /// The metadata sheet's own navigation stack, so the detail's artist/album hotlinks
+    /// push IN PLACE instead of dismissing and routing across stacks (which rendered blank).
+    @State private var metadataPath = NavigationPath()
     @State private var showCSVExporter = false
     @State private var csvDoc = CSVFile(data: Data())
 
@@ -205,8 +208,9 @@ struct MixSessionDetailView: View {
         .fileExporter(isPresented: $showCSVExporter, document: csvDoc, contentType: .commaSeparatedText,
                       defaultFilename: csvFilename) { _ in }
         .sheet(item: $metadataItem) { item in
-            NavigationStack {
-                SongDetailView(song: item.song)
+            NavigationStack(path: $metadataPath) {
+                SongDetailView(song: item.song, path: $metadataPath)
+                    .pocketDJDestinations(path: $metadataPath)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Done") { metadataItem = nil }.accessibilityIdentifier("mix-replay-song-done")

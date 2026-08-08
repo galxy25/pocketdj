@@ -795,6 +795,22 @@ final class RipsStore {
         /// iTunes `trackExplicitness` mapped server-side (`/search`): true = explicit,
         /// false = clean/notExplicit, nil = unclassified (older servers omit the key).
         var explicit: Bool? = nil
+
+        // ── Album identity + richer metadata ────────────────────────────────────────
+        // ALL optional-with-default and APPENDED (never inserted): an older rip server
+        // that doesn't emit these keys still decodes, and every existing memberwise-init
+        // call site keeps compiling. Without `albumAppleMusicId` a Discover ＋Add lands a
+        // catalog song with no album at all — no cover art, no "Album" row, and no
+        // `album-hotlink` to tap. That was half of the "tapping the album shows a blank
+        // screen" report; the other half was the hotlink's routing (SongDetailView).
+        /// iTunes `collectionId` of the album this track belongs to.
+        var albumAppleMusicId: String? = nil
+        /// Album cover URL (iTunes `artworkUrl100`) — the preview screen's art when the
+        /// track's own artwork is absent.
+        var albumArtworkUrl: String? = nil
+        var trackNumber: Int? = nil
+        var discNumber: Int? = nil
+        var year: Int? = nil
         var id: String { songId }
     }
 
@@ -932,7 +948,16 @@ final class RipsStore {
             || !hasServer {
             discoverAdds?.add(songId: hit.songId, appleMusicId: hit.appleMusicId,
                               title: hit.title, artist: hit.artist, album: hit.album,
-                              artworkUrl: hit.artworkUrl, durationMs: hit.durationMs)
+                              artworkUrl: hit.artworkUrl ?? hit.albumArtworkUrl,
+                              durationMs: hit.durationMs,
+                              // The album IDENTITY (not just its name) is what makes the added
+                              // song's album tappable — see DiscoverHit's note. A song-scope add
+                              // records NO provisional album row (albumId stays nil): the album
+                              // screen for it is the PREVIEW, reached via albumAppleMusicId.
+                              albumAppleMusicId: hit.albumAppleMusicId,
+                              albumArtworkUrl: hit.albumArtworkUrl,
+                              trackNumber: hit.trackNumber, discNumber: hit.discNumber,
+                              year: hit.year, explicit: hit.explicit)
         }
     }
 
@@ -976,6 +1001,7 @@ final class RipsStore {
 
     private struct DiscoverAlbumResponse: Decodable { var results: [DiscoverAlbumHit] }
 
+
     /// One track from `GET /album-tracks` — the subscription-free expansion source. The
     /// server returns tracks already ordered by (discNumber, trackNumber); `discNumber` is
     /// carried for faithfulness (multi-disc albums), though the app consumes server order.
@@ -988,7 +1014,21 @@ final class RipsStore {
         var durationMs: Int? = nil
     }
 
-    private struct AlbumTracksResponse: Decodable { var tracks: [AlbumTrack] }
+    /// `GET /album-tracks` envelope. `album` is OPTIONAL: the server started returning the
+    /// collection row alongside the tracks so a PREVIEW can be built from an id alone
+    /// (subscription-free tier 2); a server that predates it simply omits the key.
+    private struct AlbumTracksResponse: Decodable {
+        var tracks: [AlbumTrack]
+        var album: DiscoverAlbumHit? = nil
+    }
+
+    /// One `/album-tracks` round trip, both halves. The preview screen needs the album row
+    /// AND its tracks, and asking twice would double the latency for no reason.
+    struct AlbumExpansion: Equatable {
+        var album: DiscoverAlbumHit?
+        var tracks: [AlbumTrack]
+        static let empty = AlbumExpansion(album: nil, tracks: [])
+    }
 
     /// Search the Apple Music catalog for ALBUMS via `/search?entity=album`. Same error
     /// doctrine as `discoverSearch` (returns [] + sets `discoverError`, never throws).
@@ -1039,19 +1079,33 @@ final class RipsStore {
     /// the subscription-free fallback used when MusicKit `albumTracks` isn't available.
     /// Returns [] on any failure (the caller decides how to surface an empty expansion).
     func fetchAlbumTracks(collectionId: String) async -> [AlbumTrack] {
+        await fetchAlbumExpansion(collectionId: collectionId).tracks
+    }
+
+    /// The album ROW alone, by collection id — tier 2 of the album PREVIEW (no Apple Music
+    /// subscription needed). nil when there's no server, the lookup fails, or the server is
+    /// old enough not to return the collection row.
+    func fetchAlbum(collectionId: String) async -> DiscoverAlbumHit? {
+        await fetchAlbumExpansion(collectionId: collectionId).album
+    }
+
+    /// One request, both halves (see `AlbumExpansion`). Returns `.empty` on any failure —
+    /// the callers decide how to surface an empty expansion, exactly as before.
+    func fetchAlbumExpansion(collectionId: String) async -> AlbumExpansion {
         let id = collectionId.trimmingCharacters(in: .whitespaces)
         guard !id.isEmpty, hasServer,
-              var comps = URLComponents(string: "\(serverUrl)/album-tracks") else { return [] }
+              var comps = URLComponents(string: "\(serverUrl)/album-tracks") else { return .empty }
         comps.queryItems = [URLQueryItem(name: "id", value: id)]
-        guard let url = comps.url else { return [] }
+        guard let url = comps.url else { return .empty }
         var req = URLRequest(url: url)
         req.timeoutInterval = 12
         applyAuth(&req, token: token)
         do {
             let (data, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return [] }
-            return try JSONDecoder().decode(AlbumTracksResponse.self, from: data).tracks
-        } catch { return [] }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return .empty }
+            let decoded = try JSONDecoder().decode(AlbumTracksResponse.self, from: data)
+            return AlbumExpansion(album: decoded.album, tracks: decoded.tracks)
+        } catch { return .empty }
     }
 
     /// "＋ Add" for a Discover ALBUM — three app-side actions:
@@ -1070,21 +1124,27 @@ final class RipsStore {
             try? await library.addAlbumToLibrary(storeID: hit.appleMusicId)
         }
 
-        // 2) Expand tracks — MusicKit first (needs auth), else the free proxy.
-        var descs: [(songId: String, title: String, artist: String, appleMusicId: String, lengthMs: Int?)] = []
+        // 2) Expand tracks — MusicKit first (needs auth), else the free proxy. `trackNumber`
+        //    / `discNumber` ride along so each provisional song lands with its POSITION on
+        //    the album, not just its title (the metadata the detail screen shows).
+        var descs: [AlbumTrackDesc] = []
         if let library, library.canContribute {
             let rows = await library.albumTracks(albumStoreID: hit.appleMusicId)
             descs = rows.map { r in
-                (songId: "amrec_\(r.storeID)", title: r.title, artist: r.artist,
-                 appleMusicId: r.storeID,
-                 lengthMs: r.durationSeconds.map { Int(($0 * 1000).rounded()) })
+                AlbumTrackDesc(songId: "amrec_\(r.storeID)", title: r.title, artist: r.artist,
+                               appleMusicId: r.storeID,
+                               lengthMs: r.durationSeconds.map { Int(($0 * 1000).rounded()) },
+                               trackNumber: r.trackNumber, discNumber: nil,
+                               explicit: r.isExplicit)
             }
         }
         if descs.isEmpty {
             let tracks = await fetchAlbumTracks(collectionId: hit.appleMusicId)
             descs = tracks.map { t in
-                (songId: "amrec_\(t.id)", title: t.title, artist: t.artist,
-                 appleMusicId: t.id, lengthMs: t.durationMs)
+                AlbumTrackDesc(songId: "amrec_\(t.id)", title: t.title, artist: t.artist,
+                               appleMusicId: t.id, lengthMs: t.durationMs,
+                               trackNumber: t.trackNumber, discNumber: t.discNumber,
+                               explicit: nil)
             }
         }
         guard !descs.isEmpty else {
@@ -1119,7 +1179,15 @@ final class RipsStore {
             accepted.append(DiscoverAddsStore.Entry(
                 songId: d.songId, appleMusicId: d.appleMusicId, title: d.title, artist: d.artist,
                 album: hit.title, artworkUrl: hit.artworkUrl, durationMs: d.lengthMs,
-                addedAtMs: addedAt))
+                addedAtMs: addedAt,
+                // The album's identity, on EVERY track. `albumId` is the provisional catalog
+                // album this batch also records, so each track's detail screen resolves a real
+                // `IndexAlbum` and its album hotlink opens the album we just added — the album
+                // add used to drop this even though `hit.albumId` was right here in scope.
+                albumId: hit.albumId, albumAppleMusicId: hit.appleMusicId,
+                albumArtworkUrl: hit.artworkUrl,
+                trackNumber: d.trackNumber, discNumber: d.discNumber,
+                year: hit.year, explicit: d.explicit))
         }
 
         // 4) ZERO tracks accepted (no server / all-miss) → record NOTHING: no dead album row,
@@ -1136,7 +1204,22 @@ final class RipsStore {
         //    per track — 13+ synchronous ~90k-row rebuilds on a full album).
         discoverAdds?.addAlbumBatch(albumId: hit.albumId, appleMusicId: hit.appleMusicId,
                                     title: hit.title, artist: hit.artist, trackIds: trackIds,
-                                    artworkUrl: hit.artworkUrl, year: hit.year, songs: accepted)
+                                    artworkUrl: hit.artworkUrl, year: hit.year,
+                                    trackCount: hit.trackCount ?? trackIds.count, url: hit.url,
+                                    songs: accepted)
+    }
+
+    /// One expanded album track, from either expansion tier (MusicKit or the `/album-tracks`
+    /// proxy). A named struct rather than a tuple so the two tiers can't silently drift.
+    private struct AlbumTrackDesc {
+        var songId: String
+        var title: String
+        var artist: String
+        var appleMusicId: String
+        var lengthMs: Int?
+        var trackNumber: Int?
+        var discNumber: Int?
+        var explicit: Bool?
     }
 
     /// Refresh a single song's job from `/jobs/<id>` (used by the recognizer rip→burn poll
@@ -1654,4 +1737,42 @@ extension CharacterSet {
         set.insert(charactersIn: "-._~")
         return set
     }()
+}
+
+// ============================================================================
+// MARK: - Discover album ⇄ catalog album reference
+// ============================================================================
+
+extension RipsStore.DiscoverAlbumHit {
+    /// Build the add-flow's hit from a catalog album REFERENCE. Hoisted out of
+    /// `DiscoverAlbumSearchModel.hit(from:)` (which now calls this) so the album PREVIEW
+    /// screen's giant ＋ and the Discover ▸ Albums row's ＋ synthesize the SAME provisional
+    /// id (`amrec_album_<collectionId>`) from the same fields. If the two ever drifted,
+    /// "add" from one surface would mint a DIFFERENT album than the other and neither would
+    /// recognise the other's result as already-added.
+    ///
+    /// Lives in an extension, not the struct body: an `init` declared inside the declaration
+    /// would suppress the synthesized memberwise init the decoder + every call site rely on.
+    init(ref: AppleMusicAlbumRef, trackCount: Int? = nil) {
+        self.init(appleMusicId: ref.storeID,
+                  albumId: "amrec_album_\(ref.storeID)",
+                  title: ref.title,
+                  artist: ref.artist,
+                  artworkUrl: ref.artworkURL?.absoluteString,
+                  trackCount: trackCount,
+                  year: ref.year,
+                  url: ref.url?.absoluteString)
+    }
+
+    /// The reverse mapping — a subscription-free (`/search?entity=album` or `/album-tracks`)
+    /// album row rendered as the same `AppleMusicAlbumRef` value the preview screen and the
+    /// recognizer flow both speak. This is what lets a NON-subscriber reach the album preview.
+    var albumRef: AppleMusicAlbumRef {
+        AppleMusicAlbumRef(storeID: appleMusicId,
+                           title: title,
+                           artist: artist,
+                           year: year,
+                           artworkURL: artworkUrl.flatMap(URL.init(string:)),
+                           url: url.flatMap(URL.init(string:)))
+    }
 }
