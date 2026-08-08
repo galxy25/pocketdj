@@ -57,6 +57,30 @@ final class GamesUITests: XCTestCase {
                       file: file, line: line)
     }
 
+    /// Scroll `element` until it is clear of the PINNED Start bar, then return it.
+    ///
+    /// `swipeTo` stops as soon as the row EXISTS — and a Form row exists while it is still
+    /// drawn underneath the translucent bottom bar, where XCUITest happily reports it
+    /// `isHittable` (the bar is a sibling view, not something the frame check knows about)
+    /// and every tap lands on the bar instead. That is the same "exists ≠ usable" trap in
+    /// miniature, so the helper keeps scrolling until the row's bottom edge is above the
+    /// bar's top edge, which is the only state a finger can actually use.
+    @discardableResult
+    private func scrollClearOfStartBar(_ element: XCUIElement, _ app: XCUIApplication,
+                                       file: StaticString = #file, line: UInt = #line) -> XCUIElement {
+        XCTAssertTrue(app.swipeTo(element), "\(element.identifier) never came into view",
+                      file: file, line: line)
+        let bar = app.el("puzzle-start")
+        for _ in 0..<10 {
+            let barTop = bar.exists ? bar.frame.minY : app.frame.maxY
+            if element.frame.maxY <= barTop { return element }
+            app.swipeUp()
+        }
+        XCTFail("\(element.identifier) never scrolled clear of the Start bar (row \(element.frame), bar \(bar.frame))",
+                file: file, line: line)
+        return element
+    }
+
     /// Poll the `PDJ_TEST_PROBE` readout of the shared `PlayerEngine` until it reads
     /// `playing`. This is the ONLY honest way to assert "the card on screen makes sound":
     /// it reflects real AVPlayer state, whatever surface started it.
@@ -116,8 +140,7 @@ final class GamesUITests: XCTestCase {
         // …and enables once one is, still without scrolling the button anywhere.
         let target = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "puzzle-target-")).firstMatch
-        XCTAssertTrue(app.swipeTo(target), "a target collection lists in the form")
-        target.tap()
+        scrollClearOfStartBar(target, app).tap()
         let start = app.el("puzzle-start")
         let deadline = Date().addingTimeInterval(15)
         while !start.isEnabled && Date() < deadline { usleep(300_000) }
@@ -141,8 +164,7 @@ final class GamesUITests: XCTestCase {
 
         let target = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "puzzle-target-")).firstMatch
-        XCTAssertTrue(app.swipeTo(target), "the seeded collection lists as a target")
-        target.tap()
+        scrollClearOfStartBar(target, app).tap()
         let start = app.el("puzzle-start")
         // The pool count must settle >0 before Start enables (debounced async count).
         let deadline = Date().addingTimeInterval(15)
