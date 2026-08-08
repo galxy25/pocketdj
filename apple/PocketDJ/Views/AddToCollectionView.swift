@@ -111,10 +111,18 @@ struct AddToCollectionView: View {
     /// Nothing anywhere matches the query — the sheet says so instead of looking broken.
     /// (The "New pocket"/"New playlist" rows stay on screen: not finding it is exactly when
     /// you want to make it.)
+    /// Deliberately NOT `filteredX.isEmpty && …`: that would re-sort and re-rank every
+    /// section a SECOND time per body render (the "derivations in SwiftUI bodies" trap). A
+    /// short-circuiting existence test over the UNSORTED arrays stops at the first hit, which
+    /// is the normal case.
     private var hasNoMatches: Bool {
-        isSearching && filteredPockets.isEmpty && filteredPlaylists.isEmpty
-            && filteredSourcePlaylists.isEmpty && filteredRecentTargets.isEmpty
-            && filteredSuggestedTargets.isEmpty
+        guard isSearching else { return false }
+        func hit(_ name: String) -> Bool { FuzzyMatch.matches(query: search, candidate: name) }
+        if collections.pockets.contains(where: { hit($0.name) }) { return false }
+        if collections.playlists.contains(where: { hit($0.name) }) { return false }
+        if songId != nil, app.indexPlaylists.contains(where: { hit($0.name) }) { return false }
+        if recentTargets.contains(where: { hit(collections.lastTargetLabel($0) ?? "") }) { return false }
+        return !suggestedTargets.contains(where: { hit(collections.lastTargetLabel($0) ?? "") })
     }
 
     /// Pinned above the list (a `safeAreaInset`, not a Section — a Section header scrolls
