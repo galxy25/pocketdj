@@ -85,6 +85,40 @@ matrix, and the macOS targeting note.
 
 ## macOS
 
+> ### ⚠️ macOS **UI** tests cannot be run from an SSH/agent session — use the GUI runner
+>
+> Claude usually reaches this Mac over SSH, which lands in a launchd **Background**
+> session (`launchctl managername` → `Background`) with **no window server**. In that
+> context every macOS UI test fails for environmental reasons that look exactly like
+> product bugs:
+> `screencapture -x` → *"could not create image from display"*, every app reports
+> **0 windows** to System Events, and XCUITest dies at *"Timed out while enabling
+> automation mode"*. `ioreg`'s `CGSSessionScreenIsLocked` even reads **true** while the
+> user is sitting at an unlocked desk — it describes a session the SSH process can't see.
+> `launchctl asuser` would bridge it but needs root, and `sudo` wants a password.
+>
+> **Before believing ANY macOS UI failure, run the one-line check:**
+> ```bash
+> screencapture -x /tmp/x.png && echo "display OK" || echo "NO display — results are meaningless"
+> ```
+>
+> **The fix — `scripts/mac-gui-runner.mjs`.** A human starts it *from Terminal.app on the
+> Mac*, so it inherits the GUI session; the agent then drives it over loopback HTTP:
+> ```bash
+> bash apple/scripts/mac-gui-runner-start.sh      # on the Mac, leave the window open
+> ```
+> It self-checks at startup (captures a real screenshot) and refuses to pretend: if it
+> reports `gui: false` it was started in the wrong session. Two interfaces on
+> `127.0.0.1:8791` — **MCP** at `/mcp` (registered in `.mcp.json`, so Claude Code picks
+> up `mac_health` / `mac_run_tests` / `mac_job_status` / `mac_screenshot` as tools) and
+> plain REST (`GET /health`, `POST /run`, `GET /jobs/:id`). Logs land in
+> `index-out/gui-runner/` on the shared filesystem, so the agent can read the full
+> xcodebuild output directly. Always call `mac_health` first.
+>
+> **What still works fine over SSH:** everything non-UI — macOS *unit* tests, all
+> compiles/archives, and every iOS-Simulator test (the simulator has its own window
+> server; `xcrun simctl io … screenshot` needs no Screen Recording permission).
+
 Gatekeeper kills the unsigned XCUITest runner ("damaged"), so the runner **must be
 signed** — but a plain `xcodebuild test` also hangs (`The test runner hung before
 establishing connection`). Use the ad-hoc helper, which **ad-hoc signs** the app +
@@ -106,12 +140,27 @@ found"*. Fixing that means registering the iMac's UDID in the Developer portal a
 minting a Mac App Development profile — a portal action that buys nothing over ad-hoc
 for local testing. So: **sign ad-hoc; don't chase a provisioning profile.**
 
-**First-run permission (one-time, not a signing issue):** the very first ad-hoc UI run
-can fail with `Timed out while enabling automation mode` / `The test runner failed to
-initialize for UI testing`. That's the macOS **Automation/Accessibility (TCC)**
-permission for the test runner, *not* a signing problem — granting Automation to the
-runner once (and quitting any stale `PocketDJ` instance the script's `killall` missed)
-clears it permanently. Re-run; no signing change helps.
+**`Timed out while enabling automation mode` has FOUR distinct causes.** Work through
+them in this order — each produces near-identical noise, and misreading one for another
+has already cost this project days:
+
+1. **Wrong session** (most common for agents) — you're on SSH with no window server.
+   Check `screencapture -x /tmp/x.png`; if it errors, use the GUI runner above. No
+   signing, TCC, or retry change will help.
+2. **Stale `AutomationModeUI`** holding the automation session:
+   `ps aux | grep '[A]utomationModeUI'` → `kill -9 <pid>` (it relaunches on demand).
+   Killing `testmanagerd` does *not* fix this.
+3. **Machine starvation** — a booted simulator can spawn a runaway `mediaanalysisd` at
+   250-500% CPU. Check `uptime`; a load average over ~20 means stop and investigate.
+   `launchctl disable` won't hold it; `xcrun simctl shutdown <udid>` does.
+4. **First-run TCC** — genuinely the Automation/Accessibility permission for the runner.
+   Grant it once (and quit any stale `PocketDJ` the script's `killall` missed); it
+   clears permanently.
+
+**Never run a macOS UI suite concurrently with an iOS-Simulator UI suite** — they fight
+over window focus and the loser fails with *"Failed to activate application"*. Unit
+suites are safe to parallelize. Serialize display-driving runs through
+`scratchpad/uitest.sh`-style locking.
 
 ## Proof / debugging
 
