@@ -38,6 +38,22 @@ import CryptoKit
 /// and the ack list is what keeps a quiet flush at zero requests instead of re-uploading the
 /// whole window every 10 minutes. It also fixes the exact-millisecond straddle at a batch
 /// boundary that the strict `>` could strand.
+///
+/// ── Why the rec server sees a DERIVED profile id, not the broadcast one ─────────────────────
+/// `PDJIdentityHeaders` stamps the raw profile id onto every authenticated PocketDJ call —
+/// including calls to USER-CONFIGURED third-party endpoints (a friend's jukebox broker, a
+/// shared rip server), which is exactly what the header is for. But the rec engine keys its
+/// state object AND its `DELETE /state` route by that same header, so any hostile host the
+/// user ever pointed the app at learned enough to target this profile's rec data for deletion
+/// or a rebind race (the enrollment secret it also needs ships in every .ipa — extractable).
+/// The rec engine therefore gets its OWN id: `HMAC-SHA256(profileId, key: bearerKey)` —
+/// computable only with the bearer key, which never leaves this app's CloudKit-private key
+/// doc. Same-Apple-ID devices share both inputs, so they still converge on one server-side
+/// state object. Profiles enrolled by older builds under the RAW id are migrated by a
+/// one-time `DELETE` of the old object on the first flush (`migrateOffBroadcastProfileId`),
+/// which also RESETS the cursors so this device's whole local window re-uploads under the
+/// scoped id on that same flush — the scoped id addresses an empty object, and without the
+/// reset the acks would suppress exactly the history the deleted object used to hold.
 @MainActor
 @Observable
 final class RecommendationService {
@@ -92,11 +108,16 @@ final class RecommendationService {
         var uploadedFavorites: [String] = []
         var uploadedActivity: [String] = []
         var uploadedPuzzle: [String] = []
+        /// Has this device finished the one-time move off the broadcast profile id (see the
+        /// type doc)? ADDITIVE-OPTIONAL: a pre-scoped-id doc decodes to false, which is
+        /// exactly what schedules its migration.
+        var didMigrateScopedProfile: Bool = false
 
         private enum CodingKeys: String, CodingKey {
             case schemaVersion, lastPlayAtMs, lastFavoriteAtMs, lastActivityAtMs,
                  lastPuzzleAtMs, lastCollectionsHash, lastSyncedAtMs,
-                 uploadedPlays, uploadedFavorites, uploadedActivity, uploadedPuzzle
+                 uploadedPlays, uploadedFavorites, uploadedActivity, uploadedPuzzle,
+                 didMigrateScopedProfile
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -112,16 +133,28 @@ final class RecommendationService {
             uploadedFavorites = (try? c.decode([String].self, forKey: .uploadedFavorites)) ?? []
             uploadedActivity = (try? c.decode([String].self, forKey: .uploadedActivity)) ?? []
             uploadedPuzzle = (try? c.decode([String].self, forKey: .uploadedPuzzle)) ?? []
+            didMigrateScopedProfile = (try? c.decode(Bool.self, forKey: .didMigrateScopedProfile)) ?? false
         }
     }
 
     /// The account-deletion tombstone: the server-side DELETE that failed (offline / 503) so a
-    /// later launch can finish the erasure the user asked for. Deliberately NOT CloudSynced.
+    /// later launch can finish the erasure the user asked for. Deliberately NOT CloudSynced
+    /// (only "rec-key" is registered with CloudSyncService — see PocketDJApp) — it carries the
+    /// bearer key, which after `clearLocal(cloudDeleted: false)` lives NOWHERE else: the key
+    /// file itself is removed so a re-enable mints a FRESH identity instead of resurrecting
+    /// the one whose data the user just asked to erase.
     private struct PendingDeleteDoc: Codable {
         var schemaVersion: Int?
         var key: String?
         var profileId: String?
         var requestedAtMs: Double?
+        /// Failed retries so far (transient failures only — a 403 is terminal immediately).
+        /// Optional so a doc written by an older build decodes; it just starts counting late.
+        var attempts: Int?
+        /// The RAW (broadcast) profile id, carried only while the scoped-id migration had not
+        /// finished at deletion time: the old server object may still exist under it, and the
+        /// user asked for that gone too.
+        var legacyProfileId: String?
     }
 
     // MARK: - Dependencies
@@ -153,6 +186,16 @@ final class RecommendationService {
     @ObservationIgnored private var sync = SyncState()
     @ObservationIgnored private var key: String?
     @ObservationIgnored private var isFlushing = false
+    /// The in-flight flush drain, if any — `deleteCloudData` awaits it so a DELETE can never
+    /// race a batch that would re-create the state object it just removed.
+    @ObservationIgnored private var flushTask: Task<Void, Never>?
+    /// Invalidation epoch for in-flight flushes: bumped by `clearLocal`, `deleteCloudData`,
+    /// `enabledDidChange` and a key-doc rebind. `performFlush` captures it at entry and
+    /// re-checks after EVERY await — moved means ABANDON: no cursor advance, no ack append,
+    /// no persist, no further batches, no error surfaced. Without it a delete/toggle-off that
+    /// landed mid-drain was overwritten moments later by the drain's own bookkeeping
+    /// (resurrected cursors pointing past batches the server no longer has).
+    @ObservationIgnored private var flushEpoch = 0
     @ObservationIgnored private var autoFlushTask: Task<Void, Never>?
     /// Which `startAutoFlush` armed the live loop. A cancelled loop's tail must not detach the
     /// handle of the loop that REPLACED it (see `startAutoFlush`).
@@ -171,13 +214,25 @@ final class RecommendationService {
     /// on the server.
     private static let overlapWindowMs: Double = 30 * 24 * 60 * 60 * 1000
     /// Safety bound on each remembered-ack list (the floor is what normally prunes it). An
-    /// evicted entry costs one idempotent re-send, never a lost event.
-    private static let ackCap = 10_000
+    /// evicted entry costs one idempotent re-send, never a lost event — but ONLY when eviction
+    /// keeps the NEWEST acks (see `remember`): dropping by append order oscillated (evict →
+    /// re-send → re-ack → evict) once a window held more than the cap. 25k comfortably covers
+    /// a 30-day window at heavy use (~800 events/day) so the cap is a true backstop.
+    static let ackCap = 25_000
     /// Client-side mirrors of the server's snapshot caps (`cleanSnapshot` in index.mjs) — the
     /// server truncates anyway; trimming here keeps the membership hash honest about what was
-    /// actually uploaded.
+    /// actually uploaded. `snapshotTotalSongIdCap` mirrors MAX_SNAPSHOT_SONGIDS across ALL
+    /// collections; `snapshotByteCap` keeps the encoded snapshot well under the server's 4 MB
+    /// body ceiling even riding alongside a full 2000-event batch.
     private static let snapshotCollectionCap = 500
     private static let snapshotSongIdCap = 5_000
+    private static let snapshotTotalSongIdCap = 100_000
+    private static let snapshotByteCap = 3_500_000
+    /// Bounded lifetime of the account-deletion retry tombstone: give up (and clean up) after
+    /// 20 transient failures or 30 days, whichever comes first. A 403 is terminal immediately —
+    /// the carried credential can never succeed, so retrying it is pure noise.
+    private static let pendingDeleteMaxAttempts = 20
+    private static let pendingDeleteMaxAgeMs: Double = 30 * 24 * 60 * 60 * 1000
 
     init(client: RecEngineClient,
          settings: SettingsStore,
@@ -259,19 +314,55 @@ final class RecommendationService {
 
     /// Re-decode after CloudSyncService pulled a peer's key doc — the self-heal for the
     /// two-devices-enabled-simultaneously race (the pulled key wins; next flush uses it).
+    ///
+    /// When the pulled key REPLACES a different local one, this device lost that race — and
+    /// because the server-side profile id is DERIVED from the key (see the type doc), any
+    /// batches it already uploaded live in a state object addressed by the LOSING key's id,
+    /// which nothing will ever read again. So on a genuine rebind: reset the cursors (every
+    /// event re-uploads under the winner's id — the server dedupes), and best-effort DELETE
+    /// the orphaned object while the old key can still authorize it. That delete is the same
+    /// "only ever destroys this profile's own rec data" exception `retryPendingCloudDelete`
+    /// already carved out of the toggle gate.
     func reloadKeyFromDisk() {
-        if let pulled = Self.decodeKey(keyFileURL) { key = pulled }
+        guard let pulled = Self.decodeKey(keyFileURL), pulled != key else { return }
+        let losing = key
+        key = pulled
+        guard let losing else { return }   // first key on this device — nothing uploaded yet
+        flushEpoch &+= 1                   // an in-flight flush is acking into the orphan
+        let orphanProfile = scopedProfileId(key: losing)
+        let migrated = sync.didMigrateScopedProfile
+        sync = SyncState()
+        sync.didMigrateScopedProfile = migrated
+        persistSyncState()
+        let client = client
+        Task { try? await client.deleteState(key: losing, profileId: orphanProfile) }
     }
 
     /// The key, minted + persisted on first use (32 random bytes, hex).
     private func ensureKey() -> String {
         if let key { return key }
-        let minted = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+        let minted = Self.mintKeyValue()
         key = minted
         if let data = try? JSONEncoder().encode(KeyDoc(schemaVersion: 1, key: minted)) {
             try? data.write(to: keyFileURL, options: .atomic)
         }
         return minted
+    }
+
+    /// 32 random bytes, hex — the raw VALUE only. `ensureKey` persists it; `deleteCloudData`
+    /// uses one as a NON-persisted throwaway bearer, because the delete path must never mint
+    /// identity that outlives the request (R1).
+    private static func mintKeyValue() -> String {
+        (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+    }
+
+    /// The rec-engine-scoped profile id: `HMAC-SHA256(profileId, key: bearer)` hex. See the
+    /// type doc — third parties that learned the broadcast `X-PocketDJ-Profile` cannot compute
+    /// this without the bearer key, so they can no longer address this profile's rec state.
+    private func scopedProfileId(key: String) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(profileIdProvider().utf8),
+                                                  using: SymmetricKey(data: Data(key.utf8)))
+        return mac.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Auto flush
@@ -329,12 +420,33 @@ final class RecommendationService {
     /// acknowledged yet, in ≤500-per-stream batches until drained (the server caps a batch at
     /// 2000 total events; 4 × 500 fits). Cursors advance ONLY to the max atMs actually SENT,
     /// acks are remembered ONLY on 2xx.
+    ///
+    /// The drain runs inside a stored `Task` so `deleteCloudData` can AWAIT an in-flight flush
+    /// before issuing its DELETE — otherwise a suspended `postEvents` could land at the server
+    /// after the deletion and re-create the state object (the batch carries the enrollment
+    /// secret, so it enrolls). The epoch capture is what makes the abandoned drain inert on
+    /// this side (see `flushEpoch`).
     func flushNow() async {
         guard isEnabled, !isFlushing else { return }
         isFlushing = true
+        let epoch = flushEpoch
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performFlush(epoch: epoch)
+        }
+        flushTask = task
+        _ = await task.value
+        if flushTask == task { flushTask = nil }
+    }
+
+    private func performFlush(epoch: Int) async {
         defer { isFlushing = false }
         let key = ensureKey()
-        let profileId = profileIdProvider()
+        let profileId = scopedProfileId(key: key)
+
+        // One-time move off the broadcast profile id (see the type doc). Ordered BEFORE the
+        // upload so the old object can't outlive the first scoped-id enrollment.
+        guard await migrateOffBroadcastProfileId(key: key, epoch: epoch) else { return }
 
         // The trailing overlap floors — everything at/after them is a candidate, minus what the
         // server already acknowledged. This is what lets a CloudKit-merged peer event (older
@@ -373,6 +485,13 @@ final class RecommendationService {
         let snapshotHash = Self.snapshotHash(snapshot)
         var pendingSnapshot: RecCollectionsSnapshotWire? =
             snapshotHash != sync.lastCollectionsHash ? snapshot : nil
+        // Encoded-size guard: a pathological membership (100k long ids) can encode past the
+        // server's body ceiling — never let the snapshot make an EVENT batch undeliverable.
+        // The hash deliberately stays un-advanced, so a later, smaller membership re-attempts.
+        if let snap = pendingSnapshot, let encoded = try? JSONEncoder().encode(snap),
+           encoded.count > Self.snapshotByteCap {
+            pendingSnapshot = nil
+        }
 
         guard !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
                 || pendingSnapshot != nil else { return }
@@ -383,23 +502,53 @@ final class RecommendationService {
             let batchFavs = Array(favs.prefix(Self.batchCap))
             let batchActs = Array(acts.prefix(Self.batchCap))
             let batchPuzzle = Array(puzzle.prefix(Self.batchCap))
-            let batch = RecUploadBatch(
-                deviceId: DeviceIdentity.current,
-                sentAtMs: Date().timeIntervalSince1970 * 1000,
-                plays: batchPlays.isEmpty ? nil : batchPlays,
-                favorites: batchFavs.isEmpty ? nil : batchFavs,
-                activity: batchActs.isEmpty ? nil : batchActs,
-                puzzle: batchPuzzle.isEmpty ? nil : batchPuzzle,
-                collectionsSnapshot: pendingSnapshot)
+            func makeBatch(_ snap: RecCollectionsSnapshotWire?) -> RecUploadBatch {
+                RecUploadBatch(
+                    deviceId: DeviceIdentity.current,
+                    sentAtMs: Date().timeIntervalSince1970 * 1000,
+                    plays: batchPlays.isEmpty ? nil : batchPlays,
+                    favorites: batchFavs.isEmpty ? nil : batchFavs,
+                    activity: batchActs.isEmpty ? nil : batchActs,
+                    puzzle: batchPuzzle.isEmpty ? nil : batchPuzzle,
+                    collectionsSnapshot: snap)
+            }
+            var snapshotDelivered = pendingSnapshot != nil
             do {
-                _ = try await client.postEvents(batch, key: key, profileId: profileId)
+                do {
+                    _ = try await client.postEvents(makeBatch(pendingSnapshot), key: key,
+                                                    profileId: profileId)
+                } catch RecEngineClient.ClientError.http(413) where pendingSnapshot != nil {
+                    // The snapshot is what blew the body ceiling — drop IT, not the events.
+                    // Its hash stays un-advanced so a smaller membership re-attempts later;
+                    // the events must never wedge behind it.
+                    guard epoch == flushEpoch else { return }
+                    snapshotDelivered = false
+                    if batchPlays.isEmpty && batchFavs.isEmpty && batchActs.isEmpty
+                        && batchPuzzle.isEmpty {
+                        pendingSnapshot = nil
+                        continue   // snapshot-only batch: nothing left to deliver this round
+                    }
+                    _ = try await client.postEvents(makeBatch(nil), key: key,
+                                                    profileId: profileId)
+                }
+            } catch is CancellationError {
+                return   // torn down mid-flight — never a user-facing error (cursors keep)
+            } catch let e as URLError where e.code == .cancelled {
+                return
             } catch RecEngineClient.ClientError.keyMismatch {
+                guard epoch == flushEpoch else { return }
                 syncError = Self.keyMismatchMessage
                 return   // cursors NOT advanced
+            } catch RecEngineClient.ClientError.enrollmentRequired {
+                guard epoch == flushEpoch else { return }
+                syncError = Self.enrollmentRequiredMessage
+                return   // cursors NOT advanced
             } catch {
+                guard epoch == flushEpoch else { return }
                 syncError = "Couldn't reach the recommendation service."
                 return   // cursors NOT advanced; retry next cycle
             }
+            guard epoch == flushEpoch else { return }   // deleted/cleared while in flight
             // 2xx: advance each cursor to the max atMs actually sent, and REMEMBER the ids so
             // the overlap window doesn't re-send them next flush.
             if let last = batchPlays.last { sync.lastPlayAtMs = max(sync.lastPlayAtMs, last.atMs) }
@@ -414,7 +563,7 @@ final class RecommendationService {
                                                   batchActs.map { Self.ack($0.atMs, $0.id) }, floor: actFloor)
             sync.uploadedPuzzle = Self.remember(sync.uploadedPuzzle,
                                                 batchPuzzle.map { Self.ack($0.atMs, $0.id) }, floor: puzzleFloor)
-            if pendingSnapshot != nil { sync.lastCollectionsHash = snapshotHash }
+            if snapshotDelivered { sync.lastCollectionsHash = snapshotHash }
             pendingSnapshot = nil
             plays.removeFirst(batchPlays.count)
             favs.removeFirst(batchFavs.count)
@@ -426,6 +575,44 @@ final class RecommendationService {
             syncError = nil
             persistSyncState()
         }
+    }
+
+    /// The one-time move off the broadcast profile id (see the type doc). Returns `false` when
+    /// the caller must ABANDON this flush — a transient failure (retry next cycle) or a moved
+    /// epoch (a delete/toggle landed).
+    ///
+    /// On success the cursors RESET. The scoped id addresses a brand-new, empty state object;
+    /// every event this device already acked was acked by the object that just got deleted, so
+    /// leaving the acks in place would have suppressed the entire history instead of migrating
+    /// it. A full re-upload is the migration — the server dedupes by event id, so a peer that
+    /// already migrated pays nothing for it.
+    private func migrateOffBroadcastProfileId(key: String, epoch: Int) async -> Bool {
+        if sync.didMigrateScopedProfile { return true }
+        if sync.lastSyncedAtMs == nil {
+            // Never uploaded under ANY id — nothing server-side to migrate, nothing to re-send.
+            sync.didMigrateScopedProfile = true
+            persistSyncState()
+            return true
+        }
+        do {
+            try await client.deleteState(key: key, profileId: profileIdProvider())
+        } catch let e as RecEngineClient.ClientError {
+            guard epoch == flushEpoch else { return false }
+            switch e {
+            case .keyMismatch, .enrollmentRequired, .http(400..<500):
+                break   // can never succeed with this credential (a peer already deleted it,
+                        // or the secret rotated) — stop retrying and re-enroll the scoped id
+            case .http, .badResponse:
+                return false   // transient server trouble — retry the migration next flush
+            }
+        } catch {
+            return false       // offline / cancelled — retry the migration next flush
+        }
+        guard epoch == flushEpoch else { return false }
+        sync = SyncState()
+        sync.didMigrateScopedProfile = true
+        persistSyncState()
+        return true
     }
 
     // MARK: - Overlap-window bookkeeping
@@ -441,17 +628,32 @@ final class RecommendationService {
         "\(Int(atMs.rounded()))|\(id)"
     }
 
-    private static func ackAtMs(_ entry: String) -> Double {
+    static func ackAtMs(_ entry: String) -> Double {
         guard let sep = entry.firstIndex(of: "|") else { return 0 }
         return Double(entry[entry.startIndex..<sep]) ?? 0
     }
 
     /// Append the acks of a delivered batch and drop everything now below the floor (with a
-    /// hard `ackCap` backstop, newest kept).
-    private static func remember(_ existing: [String], _ added: [String], floor: Double) -> [String] {
+    /// hard `cap` backstop, newest-by-`ackAtMs` kept).
+    ///
+    /// The cap must evict by TIMESTAMP, not append order: the list is `old-acks + new-batch`,
+    /// and a batch of freshly-merged PEER events carries OLD timestamps at the list's TAIL. A
+    /// `suffix(cap)` there evicted the newest local acks to keep older peer ones — and every
+    /// evicted ack is re-sent, re-acked, re-appended next flush, evicting a different slice
+    /// each time: a permanent re-send churn instead of a one-off. Sorting first makes the cap
+    /// hit the genuinely oldest acks, which the window floor was about to prune anyway.
+    /// (Internal + parameterized cap so the eviction rule itself is testable.)
+    static func remember(_ existing: [String], _ added: [String], floor: Double,
+                         cap: Int = ackCap) -> [String] {
         guard !added.isEmpty || !existing.isEmpty else { return existing }
         var kept = (existing + added).filter { ackAtMs($0) >= floor }
-        if kept.count > ackCap { kept = Array(kept.suffix(ackCap)) }
+        if kept.count > cap {
+            kept.sort { a, b in
+                let ta = ackAtMs(a); let tb = ackAtMs(b)
+                return ta != tb ? ta < tb : a < b
+            }
+            kept = Array(kept.suffix(cap))
+        }
         return kept
     }
 
@@ -462,11 +664,20 @@ final class RecommendationService {
     /// server actually stores.
     private func collectionsSnapshotWire() -> RecCollectionsSnapshotWire {
         var entries: [RecCollectionsSnapshotWire.Entry] = []
-        for p in collections.pockets {
-            entries.append(.init(id: p.id, kind: "pocket", name: p.name,
-                                 songIds: Array(p.songIds.prefix(Self.snapshotSongIdCap))))
+        // Total-songIds budget across ALL entries (mirrors the server's MAX_SNAPSHOT_SONGIDS):
+        // without it, 500 collections × 5000 ids each is a legal 2.5M-id snapshot — 25× what
+        // the server will keep and (encoded) far past its request-body ceiling.
+        var budget = Self.snapshotTotalSongIdCap
+        func capped(_ ids: [String]) -> [String] {
+            let take = min(ids.count, Self.snapshotSongIdCap, max(0, budget))
+            budget -= take
+            return Array(ids.prefix(take))
         }
-        for pl in collections.playlists {
+        for p in collections.pockets where entries.count < Self.snapshotCollectionCap {
+            entries.append(.init(id: p.id, kind: "pocket", name: p.name,
+                                 songIds: capped(p.songIds)))
+        }
+        for pl in collections.playlists where entries.count < Self.snapshotCollectionCap {
             var ids: [String] = []
             var seen = Set<String>()
             func walk(_ nodes: [PlaylistNode]) {
@@ -477,10 +688,10 @@ final class RecommendationService {
             }
             walk(pl.sequences)
             entries.append(.init(id: pl.id, kind: "playlist", name: pl.name,
-                                 songIds: Array(ids.prefix(Self.snapshotSongIdCap))))
+                                 songIds: capped(ids)))
         }
         return RecCollectionsSnapshotWire(atMs: Date().timeIntervalSince1970 * 1000,
-                                          collections: Array(entries.prefix(Self.snapshotCollectionCap)))
+                                          collections: entries)
     }
 
     /// Stable membership hash: one `id|kind|name|joined-songIds` line per entry, sorted, SHA-256.
@@ -513,7 +724,9 @@ final class RecommendationService {
         defer { isLoadingForYou = false }
         await flushNow()   // recs should see the latest plays
         do {
-            let resp = try await client.forYou(limit: 50, key: ensureKey(), profileId: profileIdProvider())
+            let key = ensureKey()
+            let resp = try await client.forYou(limit: 50, key: key,
+                                               profileId: scopedProfileId(key: key))
             forYou = resp.songs.map {
                 SongSuggestion(songId: $0.songId, name: $0.name ?? $0.songId,
                                artist: $0.artist ?? "", reasons: $0.reasons ?? [])
@@ -533,6 +746,13 @@ final class RecommendationService {
     private static let keyMismatchMessage =
         "This device's recommendation key doesn't match the cloud data. Tap Delete cloud data "
         + "below to reset it — your recommendations rebuild from this device's history."
+
+    /// The rotated-secret message (server 403 `enrollment-required` on an upload that would
+    /// CREATE state): this build's baked-in secret predates a server rotation, and no in-app
+    /// action can mint a new one — only an app update carries the fresh secret.
+    private static let enrollmentRequiredMessage =
+        "This PocketDJ build predates a recommendation-service reset. "
+        + "Update the app to reconnect — your listening history is safe on this device."
 
     /// Fixture canned rows (only under the seam). They render standalone — For You rows never
     /// require catalog resolution.
@@ -572,8 +792,9 @@ final class RecommendationService {
         let now = Date().timeIntervalSince1970 * 1000
         if let hit = suggestionCache[songId], now - hit.atMs < Self.cacheTTLMs { return hit.wire }
         do {
-            let resp = try await client.collectionSuggestions(songId: songId, key: ensureKey(),
-                                                              profileId: profileIdProvider())
+            let key = ensureKey()
+            let resp = try await client.collectionSuggestions(songId: songId, key: key,
+                                                              profileId: scopedProfileId(key: key))
             cacheSuggestions(songId: songId, wire: resp.suggestions, atMs: now)
             return resp.suggestions
         } catch {
@@ -596,6 +817,7 @@ final class RecommendationService {
     /// + key are RETAINED — re-enable resumes incrementally; server state persists until the
     /// explicit "Delete cloud data"). ON: arm the auto-flush.
     func enabledDidChange() {
+        flushEpoch &+= 1   // any in-flight drain must not outlive the toggle that saw it start
         if isEnabled {
             startAutoFlush()
         } else {
@@ -614,16 +836,29 @@ final class RecommendationService {
     /// toggle — a toggle flip stays cheap/reversible.
     ///
     /// Works even when this device's key is the WRONG one (the wedge case): the request carries
-    /// the enrollment secret, which the server accepts in place of the bound key. It also works
-    /// when this device never minted a key — another device may have created state under the
-    /// same profile id, and the user asked for it gone.
+    /// the enrollment secret, which the server accepts in place of the bound key.
+    ///
+    /// NEVER MINTS (R1): a device that has no key, no tombstone, and no upload history owes the
+    /// server nothing — the old unconditional `ensureKey()` here manufactured + persisted a
+    /// brand-new identity (and a network call) out of an offline account deletion on a machine
+    /// where the feature was never even on. If state must be addressed keyless (an edge that
+    /// requires sync evidence WITHOUT a key), the bearer is a throwaway that never touches disk;
+    /// the DELETE it authorizes rides on the enrollment secret.
     @discardableResult
     func deleteCloudData() async -> Bool {
-        let key = ensureKey()
+        flushEpoch &+= 1
+        if let inflight = flushTask { _ = await inflight.value }   // no batch may land after the DELETE
+        if hasPendingCloudDelete { await retryPendingCloudDelete() }   // finish an owed deletion first
+        let hasSyncEvidence = sync.lastSyncedAtMs != nil
+            || FileManager.default.fileExists(atPath: stateFileURL.path)
+        if key == nil, !hasPendingCloudDelete, !hasSyncEvidence {
+            return true   // nothing owed — zero network, zero mint
+        }
+        let bearer = key ?? Self.mintKeyValue()   // throwaway when keyless — NOT persisted
         do {
-            try await client.deleteState(key: key, profileId: profileIdProvider())
-        } catch RecEngineClient.ClientError.keyMismatch {
-            // Distinct from a transient failure: retrying with the same key can't help.
+            try await client.deleteState(key: bearer, profileId: scopedProfileId(key: bearer))
+        } catch RecEngineClient.ClientError.keyMismatch, RecEngineClient.ClientError.enrollmentRequired {
+            // Distinct from a transient failure: retrying with the same credential can't help.
             syncError = "The server refused to delete this profile's data. "
                 + "Update to the latest PocketDJ build and try again."
             return false
@@ -631,7 +866,14 @@ final class RecommendationService {
             syncError = "Couldn't delete the cloud data — try again."
             return false
         }
+        // Pre-scoped-id builds enrolled under the BROADCAST profile id; until the migration
+        // flag is set that old object may still exist, and the user asked for it gone too.
+        // Best-effort (the secret authorizes it even keyless): a miss is a clean 200.
+        if !sync.didMigrateScopedProfile {
+            try? await client.deleteState(key: bearer, profileId: profileIdProvider())
+        }
         sync = SyncState()
+        sync.didMigrateScopedProfile = true   // both ids are gone — nothing left to migrate
         persistSyncState()
         forYou = []
         forYouFetchedAtMs = nil
@@ -644,22 +886,28 @@ final class RecommendationService {
     /// Account-deletion contract: remove both persisted files + in-memory reset.
     ///
     /// `cloudDeleted` is the RESULT of the server-side delete that ran just before. When it
-    /// FAILED (offline, a 503), wiping the key file here used to orphan the profile's
-    /// `rec/state/<hash>.json` in S3 forever — the key was the only credential that could
-    /// authorize the DELETE, the profile id that addresses the object is reset moments later,
-    /// and the bucket has no lifecycle expiry. So on failure the key is PRESERVED and a
-    /// tombstone (key + profile id) is written; `retryPendingCloudDelete` finishes the job on
-    /// a later launch, then removes both.
+    /// FAILED (offline, a 503), wiping the credential entirely would orphan the profile's
+    /// `rec/state/<hash>.json` in S3 forever — the key is the only thing that can authorize
+    /// the DELETE, the profile id that addresses the object is reset moments later, and the
+    /// bucket has no lifecycle expiry. So on failure the credential moves INTO the tombstone
+    /// (key + the exact profile id the delete must target); `retryPendingCloudDelete` finishes
+    /// the job on a later launch, then removes it.
+    ///
+    /// The KEY FILE is removed in BOTH branches (R3): the tombstone is the credential's only
+    /// legitimate afterlife. Leaving the CloudSynced key doc in place meant a re-enable reused
+    /// the identity whose data the user had just asked to erase — and once the retry finally
+    /// landed, it deleted the NEW profile's uploads out from under it (the wedge).
     func clearLocal(cloudDeleted: Bool = true) {
+        flushEpoch &+= 1
         autoFlushTask?.cancel(); autoFlushTask = nil
         debounceTask?.cancel(); debounceTask = nil
         if cloudDeleted {
-            try? FileManager.default.removeItem(at: keyFileURL)
             try? FileManager.default.removeItem(at: pendingDeleteFileURL)
-            key = nil
         } else {
-            writePendingDelete()
+            writePendingDelete()   // moves the credential into the tombstone (needs `key` set)
         }
+        try? FileManager.default.removeItem(at: keyFileURL)
+        key = nil
         try? FileManager.default.removeItem(at: stateFileURL)
         sync = SyncState()
         forYou = []
@@ -677,8 +925,10 @@ final class RecommendationService {
 
     private func writePendingDelete() {
         guard let key else { return }
-        let doc = PendingDeleteDoc(schemaVersion: 1, key: key, profileId: profileIdProvider(),
-                                   requestedAtMs: Date().timeIntervalSince1970 * 1000)
+        let doc = PendingDeleteDoc(
+            schemaVersion: 1, key: key, profileId: scopedProfileId(key: key),
+            requestedAtMs: Date().timeIntervalSince1970 * 1000, attempts: 0,
+            legacyProfileId: sync.didMigrateScopedProfile ? nil : profileIdProvider())
         if let data = try? JSONEncoder().encode(doc) {
             try? data.write(to: pendingDeleteFileURL, options: .atomic)
         }
@@ -689,21 +939,52 @@ final class RecommendationService {
     /// user asked for their data to be erased, and this is the only call that can honor it.
     /// It is the single exception to "toggle off ⇒ zero network", and it only ever DELETES.
     /// No tombstone ⇒ no request at all, so a normal disabled install stays silent.
+    ///
+    /// BOUNDED (R3): a 403 is terminal on the spot — key-mismatch and enrollment-required alike
+    /// mean this stored credential can never succeed, so the tombstone is removed and a one-time
+    /// notice surfaced instead of retrying a dead request forever. Transient failures count up
+    /// to `pendingDeleteMaxAttempts` (or `pendingDeleteMaxAgeMs`, whichever first), then the
+    /// tombstone gives up and cleans up the same way.
     func retryPendingCloudDelete() async {
         guard let data = try? Data(contentsOf: pendingDeleteFileURL),
               let doc = try? JSONDecoder().decode(PendingDeleteDoc.self, from: data),
               let pendingKey = doc.key, !pendingKey.isEmpty,
               let pendingProfile = doc.profileId, !pendingProfile.isEmpty else { return }
+        let attempts = doc.attempts ?? 0
+        let ageMs = Date().timeIntervalSince1970 * 1000 - (doc.requestedAtMs ?? 0)
+        if attempts >= Self.pendingDeleteMaxAttempts || ageMs > Self.pendingDeleteMaxAgeMs {
+            try? FileManager.default.removeItem(at: pendingDeleteFileURL)
+            syncError = Self.pendingDeleteGaveUpMessage
+            return
+        }
         do {
             try await client.deleteState(key: pendingKey, profileId: pendingProfile)
+        } catch RecEngineClient.ClientError.keyMismatch, RecEngineClient.ClientError.enrollmentRequired {
+            // Terminal: the server has already refused this exact credential — a peer finished
+            // the deletion, or the secret rotated. Either way retrying is pure noise.
+            try? FileManager.default.removeItem(at: pendingDeleteFileURL)
+            syncError = Self.pendingDeleteGaveUpMessage
+            return
         } catch {
+            var updated = doc
+            updated.attempts = attempts + 1
+            if let data = try? JSONEncoder().encode(updated) {
+                try? data.write(to: pendingDeleteFileURL, options: .atomic)
+            }
             return   // still owed — the next launch/foreground tries again
         }
-        try? FileManager.default.removeItem(at: pendingDeleteFileURL)
-        // The preserved key existed ONLY to authorize this delete.
-        if key == pendingKey {
-            try? FileManager.default.removeItem(at: keyFileURL)
-            key = nil
+        // The scoped-id object is gone; sweep the pre-migration broadcast-id object too when
+        // the tombstone carried one (best-effort — the enrollment secret authorizes it).
+        if let legacy = doc.legacyProfileId, !legacy.isEmpty {
+            try? await client.deleteState(key: pendingKey, profileId: legacy)
         }
+        try? FileManager.default.removeItem(at: pendingDeleteFileURL)
+        // The key file was already removed by `clearLocal`; the tombstone was the credential's
+        // last copy and it just did its job.
     }
+
+    /// One-time notice when the owed deletion is abandoned (terminal 403 / retry ceiling).
+    private static let pendingDeleteGaveUpMessage =
+        "PocketDJ couldn't finish deleting this profile's old recommendation data from the "
+        + "server and has stopped retrying."
 }

@@ -52,9 +52,10 @@ final class AccountDeletionService {
     ///    landed: unlike the CloudKit deletes above (the user's own iCloud account, which
     ///    self-heals), this state lives in the developer's S3 bucket with no lifecycle expiry,
     ///    so a swallowed failure orphans it permanently. Absent seam ⇒ `true` (nothing owed).
-    ///  • `recClearLocal` — removes the cursor document, and the key document ONLY when the
-    ///    cloud delete succeeded; on failure the service keeps the key + writes a tombstone so
-    ///    a later launch can finish the erasure.
+    ///  • `recClearLocal` — removes the cursor document AND the key document; when the cloud
+    ///    delete failed, the credential first moves into a device-local tombstone (key + the
+    ///    profile id the delete must target) so a later launch can finish the erasure — a
+    ///    re-enable meanwhile mints a FRESH identity instead of resurrecting the erased one.
     var recDeleteCloudData: (() async -> Bool)?
     var recClearLocal: ((_ cloudDeleted: Bool) -> Void)?
 
