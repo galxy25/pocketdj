@@ -46,9 +46,16 @@ struct SelectableRowModifier: ViewModifier {
         // silently did nothing, leaving modifier-click selections invisible.)
         .background(isSelected ? Theme.accent.opacity(0.26) : .clear,
                     in: RoundedRectangle(cornerRadius: 6))
-        // These rows replaced NavigationLink rows (tap-gesture navigation) — restore the
-        // activatable trait so VoiceOver announces them and the Buttons rotor finds them.
-        .accessibilityAddTraits(.isButton)
+        // NO row-level `.accessibilityAddTraits(.isButton)` here. A SwiftUI accessibility
+        // modifier on a view that is NOT itself an accessibility element propagates to EVERY
+        // descendant element, so the trait landed on the title, artist, BPM, key-chip and
+        // duration individually: VoiceOver read "Neon, button / Aria, button / 128, button…"
+        // (worse than the missing row trait it was meant to restore) and XCUITest reported
+        // every one of those labels as a Button instead of a StaticText — captured in the
+        // failing run's accessibility hierarchy. Browse rows have always been plain
+        // tap-gesture rows, so the collection details now simply match the shipping norm;
+        // giving the row ONE activatable element needs a row-level element (a real Button /
+        // NavigationLink), not a trait sprayed over its parts.
     }
     private var selectBadge: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -134,10 +141,15 @@ struct SelectionBar: View {
 
     private var addToMenu: some View {
         Menu {
+            // Every row carries a STABLE identifier (`…-<collection id>`): the visible label is
+            // the user's collection name, which a UI test can only match by label — and a
+            // submenu row's element type is UIKit's business (an inline-expanded submenu does
+            // not necessarily publish `Button`s), so label+type matching is not addressable.
             let recents = Array(collections.recentAddTargets.prefix(3))
             ForEach(Array(recents.enumerated()), id: \.offset) { _, t in
                 if let label = collections.lastTargetLabel(t) {
                     Button(label) { add(to: t) }
+                        .accessibilityIdentifier("selection-add-recent-\(t.id)")
                 }
             }
             if !recents.isEmpty { Divider() }
@@ -146,16 +158,20 @@ struct SelectionBar: View {
                     ForEach(collections.pockets.sorted {
                         $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { p in
                         Button(p.name) { add(to: AddTarget(kind: .pocket, id: p.id)) }
+                            .accessibilityIdentifier("selection-add-pocket-\(p.id)")
                     }
                 }
+                .accessibilityIdentifier("selection-add-pockets")
             }
             if !collections.playlists.isEmpty {
                 Menu("Playlists") {
                     ForEach(collections.playlists.sorted {
                         $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { pl in
                         Button(pl.name) { add(to: AddTarget(kind: .playlist, id: pl.id)) }
+                            .accessibilityIdentifier("selection-add-playlist-\(pl.id)")
                     }
                 }
+                .accessibilityIdentifier("selection-add-playlists")
             }
         } label: { Label("Add to", systemImage: "plus.circle").font(.caption) }
         .disabled(!selection.canCopy)

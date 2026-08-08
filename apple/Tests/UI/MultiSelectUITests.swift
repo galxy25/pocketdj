@@ -37,27 +37,56 @@ final class MultiSelectUITests: XCTestCase {
     /// source (`.draggable`), and the drag lift shares the long-press interaction with the
     /// context menu — a single synthesized press occasionally starts a lift instead of
     /// opening the menu (the design's documented iOS risk), so retry a few times.
-    private func rowMenuButton(_ app: XCUIApplication, rowId: String,
-                               buttonId: String,
-                               file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+    /// Returns nil instead of failing so callers can retry the WHOLE gesture.
+    private func rowMenuButtonIfPresent(_ app: XCUIApplication, rowId: String,
+                                        buttonId: String, attempts: Int = 4) -> XCUIElement? {
         let row = app.any(rowId)
-        XCTAssertTrue(row.waitForExistence(timeout: 10), file: file, line: line)
+        guard row.waitForExistence(timeout: 10) else { return nil }
         let button = app.buttons[buttonId]
-        for attempt in 0..<4 {
+        for attempt in 0..<attempts {
             row.press(forDuration: attempt == 0 ? 1.2 : 0.8)
             if button.waitForExistence(timeout: 4) { return button }
             usleep(500_000)   // let a latched drag lift settle before re-pressing
         }
+        return nil
+    }
+
+    private func rowMenuButton(_ app: XCUIApplication, rowId: String,
+                               buttonId: String,
+                               file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        if let b = rowMenuButtonIfPresent(app, rowId: rowId, buttonId: buttonId) { return b }
         XCTFail("context-menu button \(buttonId) never appeared for \(rowId)", file: file, line: line)
-        return button
+        return app.buttons[buttonId]
+    }
+
+    /// Dismiss whatever menu/preview is on screen by tapping a neutral spot (the status-bar
+    /// strip): a tap outside a UIKit menu only dismisses it, and with no menu up it hits
+    /// nothing actionable.
+    private func dismissTransientUI(_ app: XCUIApplication) {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.01)).tap()
+        usleep(400_000)
     }
 
     /// Long-press a Browse song row → context-menu "Select" — arms Select mode with the row.
+    /// The WHOLE gesture retries: when the long-press latches a drag lift the menu opens but
+    /// its first tap is swallowed, so a tap that leaves no selection bar is re-driven rather
+    /// than reported as a product failure.
     private func enterSelectMode(_ app: XCUIApplication, songId: String,
                                  file: StaticString = #filePath, line: UInt = #line) {
-        rowMenuButton(app, rowId: "song-\(songId)", buttonId: "select-song-\(songId)",
-                      file: file, line: line).tap()
-        XCTAssertTrue(app.any("selection-bar").waitForExistence(timeout: 5), file: file, line: line)
+        let bar = app.any("selection-bar")
+        for _ in 0..<3 {
+            if let button = rowMenuButtonIfPresent(app, rowId: "song-\(songId)",
+                                                   buttonId: "select-song-\(songId)", attempts: 3) {
+                button.tap()
+                if bar.waitForExistence(timeout: 6) { return }
+                if button.exists {              // menu still up: the tap never landed
+                    button.tap()
+                    if bar.waitForExistence(timeout: 6) { return }
+                }
+            }
+            dismissTransientUI(app)
+        }
+        XCTFail("Select mode never armed for song-\(songId)", file: file, line: line)
     }
 
     /// Poll the selection-count readout until it shows `expected`.
@@ -142,10 +171,15 @@ final class MultiSelectUITests: XCTestCase {
         app.any("song-sng_3").tap()
         assertCount(app, "2")
         app.el("selection-add-to").tap()
-        let playlistsMenu = app.buttons["Playlists"]
+        let playlistsMenu = app.any("selection-add-playlists")
         XCTAssertTrue(playlistsMenu.waitForExistence(timeout: 5))
         playlistsMenu.tap()
-        let target = app.buttons["Seeded Set"]
+        // By IDENTIFIER, not label: the submenu expands inline and its rows are not
+        // guaranteed to publish as `Button`s (the label-typed query found nothing while
+        // "Seeded Set" was plainly on screen — see the run's screen recording).
+        let target = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'selection-add-playlist-pls_'"))
+            .firstMatch
         XCTAssertTrue(target.waitForExistence(timeout: 5))
         target.tap()
         app.el("selection-clear").tap()
@@ -180,7 +214,11 @@ final class MultiSelectUITests: XCTestCase {
         XCTAssertTrue(select.waitForExistence(timeout: 5))
         select.tap()
         // Tap the (single) seeded song row — select-mode toggle, not navigation.
-        let row = app.staticTexts["Neon"]
+        // ALSO the regression guard for the row accessibility traits: a row-level
+        // `.accessibilityAddTraits(.isButton)` propagates to every descendant element, which
+        // re-types the title/artist/BPM/duration labels as Buttons app-wide (and mis-reads
+        // them to VoiceOver). If this StaticText stops resolving, that came back.
+        let row = app.staticTexts["Neon"].firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         row.tap()
         assertCount(app, "1")
