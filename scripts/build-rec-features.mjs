@@ -5,6 +5,16 @@
 // of fields the scorer needs, and writes one compact JSON document that deploys with the catalog
 // via scripts/deploy.sh (publish-s3) — no new upload path.
 //
+// REGENERATION IS WIRED IN — the committed copy is a bootstrap snapshot, not the source of
+// truth, and the indexes it derives from churn nightly (am-sync 04:00, digital-sync 05:00,
+// streaming-links 06:00). It is rebuilt automatically by:
+//   • scripts/deploy.sh — before every PWA build (soft-fail), shipped no-cache with the shell;
+//   • scripts/streaming-links-nightly.sh stage 4 — nightly regen; the normalized-hash change
+//     gate commits + publishes it to the PROD bucket ONLY when its content actually moved
+//     (root generatedAt is ignored by the gate, so an unchanged catalog ships nothing).
+// The Lambda refetches the CDN copy with If-None-Match on a 15-minute TTL, so a shipped
+// regen reaches live scoring within minutes without a Lambda redeploy.
+//
 //   node scripts/build-rec-features.mjs [--from-cdn]
 //
 // Output shape (nulls stay ABSENT — omitted keys shrink the file):

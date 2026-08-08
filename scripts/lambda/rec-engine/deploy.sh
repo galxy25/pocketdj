@@ -88,14 +88,14 @@ fi
 # plenty to tell "the deployment matches the shipped Config constant" from "it doesn't".
 FP="$(printf %s "$ENROLL" | shasum -a 256 | cut -c1-16)"
 if [ "$MINTED" = "1" ]; then
-  say "MINTED a new enrollment secret (sha256 $FP…) — it must go into Config.recEngineEnrollSecret."
+  say "MINTED a new enrollment secret (sha256 ${FP}…) — it must go into Config.recEngineEnrollSecret."
   if [ "$SHOW_SECRET" = "1" ]; then
     say "    $ENROLL"
   else
     say "    re-run with --show-secret to print it (nothing else can recover it but the Lambda env)."
   fi
 else
-  say "enrollment secret unchanged (sha256 $FP…)"
+  say "enrollment secret unchanged (sha256 ${FP}…)"
   [ "$SHOW_SECRET" = "1" ] && say "    $ENROLL"
 fi
 # Enrollment flood cap — same preserve-then-default rule as the secret.

@@ -8,6 +8,12 @@
 // Every route except /health requires the `x-pocketdj-profile` header (validated shape; 400 when
 // missing/invalid) and `authorization: Bearer <key>` (401 when missing). State S3 key =
 // rec/state/<sha256hex(profileId)>.json.
+// The id in that header is OPAQUE here, and since the scoped-profile-id client change it is NOT
+// the broadcast X-PocketDJ-Profile the app sends to user-configured third-party servers (jukebox
+// brokers, shared rip servers): the client derives `HMAC-SHA256(profileId, key: bearerKey)`, so a
+// hostile third party that logged the broadcast id cannot address this profile's state for
+// DELETE / rebind. Old builds still present the raw id and keep working (back-compat is just
+// "another opaque id"); migrating clients one-time DELETE their raw-id object on first flush.
 //
 // CREATING state (the FIRST `POST /events` for a profile, which binds keyHash = sha256hex(key)
 // trust-on-first-use) additionally requires the shared ENROLLMENT SECRET in
