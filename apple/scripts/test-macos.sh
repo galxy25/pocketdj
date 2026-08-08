@@ -71,9 +71,17 @@ find "$PRODUCTS" -maxdepth 1 \( -name "*.app" -o -name "*.xctest" \) -print0 \
 # Kill any stray PocketDJ instance — a second instance of the same bundle id
 # steals focus from the XCUITest-launched app, so keyboard commands + taps never
 # reach the window under test. (Also: keep hands off the keyboard during the run.)
-echo "▶ closing any running PocketDJ…"
+echo "▶ closing any running macOS PocketDJ…"
 osascript -e 'tell application "PocketDJ" to quit' 2>/dev/null || true
-killall PocketDJ 2>/dev/null || true
+# Kill ONLY the macOS app. A bare `killall PocketDJ` also matches the process the
+# iOS **Simulator** runs under the same executable name, so it silently destroys a
+# concurrent iOS XCUITest suite on another agent's simulator. The victim's log then
+# reads "Application com.levi.pocketdj is not running" / "Lost connection to the
+# application" / "Test crashed with signal kill" — indistinguishable from a real
+# product regression, and it cost hours of misdiagnosis. Match on the full macOS
+# bundle path instead; simulator processes live under CoreSimulator/Devices/… and
+# therefore never match.
+pkill -f '/Contents/MacOS/PocketDJ$' 2>/dev/null || true
 sleep 1
 
 echo "▶ test-without-building (macOS)…"
