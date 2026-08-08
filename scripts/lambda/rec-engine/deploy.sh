@@ -11,8 +11,16 @@
 # multi-user revisit). This script PRESERVES the deployed value across re-runs — changing it
 # de-facto rotates the token and every client build carrying the old one can no longer enroll,
 # so rotate deliberately: export REC_ENROLL_SECRET=<new> before running, then ship a build with
-# the new constant. If neither the env var nor a deployed value exists, one is minted and
-# printed for pasting into Config.swift.
+# the new constant. If neither the env var nor a deployed value exists, one is minted.
+#
+# The secret is NEVER echoed by default — only its sha256 fingerprint, which is enough to check
+# that the deployment and Config.recEngineEnrollSecret agree without putting the token itself in
+# a terminal scrollback, a CI log, or an agent transcript. Pass --show-secret when you actually
+# need the value to paste into Config.swift (i.e. right after a mint or a rotation).
+#
+# MAX_PROFILES (default 10) caps how many distinct profiles this deployment will ENROLL — the
+# defence in depth for that in-binary secret (extractable by anyone with the .ipa). Preserved
+# across re-runs the same way; export MAX_PROFILES=<n> to change it.
 #
 # Key recovery (single-user pragmatics): a genuinely wedged key — a reinstall without iCloud, or
 # two devices enabling before CloudKit synced the rec-key doc — is fixed IN-APP now: "Delete
@@ -22,6 +30,8 @@
 #
 # Idempotent-ish; safe to re-run to update code.
 set -euo pipefail
+SHOW_SECRET=0
+for arg in "$@"; do [ "$arg" = "--show-secret" ] && SHOW_SECRET=1; done
 export AWS_PROFILE="${AWS_PROFILE:-levi}"
 REGION="us-west-2"; ACCT="011183829623"
 FN="pocketdj-rec-engine"; ROLE="pocketdj-rec-engine-role"; API_NAME="pocketdj-rec-engine"
@@ -70,13 +80,34 @@ if [ -z "$ENROLL" ]; then
     --query 'Environment.Variables.REC_ENROLL_SECRET' --output text 2>/dev/null || true)"
   [ "$ENROLL" = "None" ] && ENROLL=""
 fi
+MINTED=0
 if [ -z "$ENROLL" ]; then
-  ENROLL="$(openssl rand -hex 24)"
-  say "MINTED a new enrollment secret — paste it into Config.recEngineEnrollSecret:"
-  say "    $ENROLL"
+  ENROLL="$(openssl rand -hex 24)"; MINTED=1
 fi
+# Identify the secret by FINGERPRINT, never by value (see the header). 16 hex chars of sha256 is
+# plenty to tell "the deployment matches the shipped Config constant" from "it doesn't".
+FP="$(printf %s "$ENROLL" | shasum -a 256 | cut -c1-16)"
+if [ "$MINTED" = "1" ]; then
+  say "MINTED a new enrollment secret (sha256 $FP…) — it must go into Config.recEngineEnrollSecret."
+  if [ "$SHOW_SECRET" = "1" ]; then
+    say "    $ENROLL"
+  else
+    say "    re-run with --show-secret to print it (nothing else can recover it but the Lambda env)."
+  fi
+else
+  say "enrollment secret unchanged (sha256 $FP…)"
+  [ "$SHOW_SECRET" = "1" ] && say "    $ENROLL"
+fi
+# Enrollment flood cap — same preserve-then-default rule as the secret.
+MAXP="${MAX_PROFILES:-}"
+if [ -z "$MAXP" ]; then
+  MAXP="$(aws lambda get-function-configuration --function-name "$FN" --region "$REGION" \
+    --query 'Environment.Variables.MAX_PROFILES' --output text 2>/dev/null || true)"
+  { [ "$MAXP" = "None" ] || [ -z "$MAXP" ]; } && MAXP="10"
+fi
+say "profile enrollment cap: $MAXP"
 ZIP="$(mktemp -d)/fn.zip"; ( cd "$SELF" && zip -q -r "$ZIP" index.mjs )
-ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL,REC_ENROLL_SECRET=$ENROLL}"
+ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL,REC_ENROLL_SECRET=$ENROLL,MAX_PROFILES=$MAXP}"
 if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
   say "updating function code"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null
@@ -109,4 +140,5 @@ echo "$API_URL" > "$SELF/.endpoint-url.txt"
 say "done. Endpoint: $API_URL  (also written to scripts/lambda/rec-engine/.endpoint-url.txt)"
 say "verify: curl -s $API_URL/health"
 say "NEXT: paste the endpoint into Config.recEngineBase (apple/PocketDJ/Support/Config.swift)"
-say "      and make sure Config.recEngineEnrollSecret matches REC_ENROLL_SECRET above."
+say "      and check the shipped secret matches: printf %s \"\$SECRET\" | shasum -a 256 | cut -c1-16"
+say "      must print $FP"

@@ -39,8 +39,11 @@ writeFileSync(FEATURES, JSON.stringify(fixture));
 process.env.REC_LOCAL_DIR = HOME;
 process.env.REC_FEATURES_FILE = FEATURES;
 process.env.REC_ENROLL_SECRET = 'enroll-secret-for-tests';
+/// This suite enrolls a fresh profile per scenario — far more than any real deployment would —
+/// so the flood cap is lifted here and driven deliberately in its own test.
+process.env.MAX_PROFILES = '1000';
 
-const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections } =
+const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -75,6 +78,10 @@ async function call(method, path, opts) {
 let n = 0;
 const uid = () => `evt_${String(n++).padStart(6, '0')}`;
 const play = (songId, atMs) => ({ id: uid(), songId, atMs, source: 'browser' });
+
+/// U+0001: one UTF-16 unit, SIX characters once JSON-escaped. The cheapest way to make a string
+/// whose stored cost is 6× its length — which is exactly what the byte-budget tests need.
+const CTRL = String.fromCharCode(1);
 
 /// Where REC_LOCAL_DIR keeps a profile's state object (same layout as the S3 keys).
 const statePath = (profile) =>
@@ -168,6 +175,41 @@ test('DELETE /state unwedges a mismatched key with the enrollment secret', async
   assert.equal(rebind.status, 200);
 });
 
+/// The enrollment secret ships inside the app binary, so "extractable" is a when, not an if. The
+/// profile cap is what turns a leaked token from "unbounded objects in a bucket with no lifecycle
+/// expiry" into "at most MAX_PROFILES of them" — and it must never touch a profile that already
+/// exists, or the real user's own devices would be the ones locked out.
+test('the enrollment cap bounds NEW profiles and leaves existing ones alone', async () => {
+  const established = 'profile-cap-prior';
+  assert.equal((await call('POST', '/events', { profile: established, body: { v: 1 } })).status, 200);
+
+  const previous = process.env.MAX_PROFILES;
+  process.env.MAX_PROFILES = '1';   // the bucket already holds far more than one
+  try {
+    const fresh = await call('POST', '/events', {
+      profile: 'profile-cap-new01', body: { v: 1, plays: [play('sng_e1', NOW - DAY)] },
+    });
+    assert.equal(fresh.status, 403);
+    assert.equal(fresh.json.error, 'profile-cap-reached');
+    assert.equal(fresh.json.max, 1, 'the response names the cap it hit');
+    assert.equal(existsSync(statePath('profile-cap-new01')), false, 'no object was created');
+
+    // The cap gates ENROLLMENT only: an already-bound profile keeps uploading straight through it.
+    const existing = await call('POST', '/events', {
+      profile: established, body: { v: 1, plays: [play('sng_e2', NOW - DAY)] },
+    });
+    assert.equal(existing.status, 200);
+    assert.equal(existing.json.accepted.plays, 1);
+  } finally {
+    if (previous === undefined) delete process.env.MAX_PROFILES;
+    else process.env.MAX_PROFILES = previous;
+  }
+
+  // Cap lifted -> the same new profile enrolls normally.
+  const after = await call('POST', '/events', { profile: 'profile-cap-new01', body: { v: 1 } });
+  assert.equal(after.status, 200);
+});
+
 // ── Payload / state size limits ─────────────────────────────────────────────────────────────────
 
 test('an oversized body is rejected before parsing', async () => {
@@ -200,7 +242,7 @@ test('a snapshot-only batch cannot grow the state without bound', async () => {
   assert.equal(after.collections.list[0].songIds.length, 5000, 'per-collection songIds capped');
 });
 
-test('favorites are capped like the event streams (tombstones evicted first)', () => {
+test('favorites are capped like the event streams (OLDEST evicted, not tombstones)', () => {
   const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
   const favorites = [];
   for (let i = 0; i < 5100; i++) {
@@ -209,12 +251,32 @@ test('favorites are capped like the event streams (tombstones evicted first)', (
   mergeBatch(state, { favorites });
   const keys = Object.keys(state.favorites);
   assert.equal(keys.length, 5000, 'the favorites MAP is capped, not unbounded');
-  // atMs decreases with i, so the OLDEST rows are the highest i; odd i are tombstones. The 100
-  // evictions must all be the oldest tombstones — no heart is dropped while an un-heart survives.
+  // atMs decreases with i, so the OLDEST rows are exactly i = 5000…5099 — hearts and tombstones
+  // alike. Eviction follows the same time order the merge does; nothing else.
   const evicted = [...Array(5100).keys()].filter((i) => !(`sng_${i}` in state.favorites));
-  assert.equal(evicted.length, 100);
-  assert.ok(evicted.every((i) => i % 2 === 1), `only tombstones evicted: ${evicted.slice(0, 5)}`);
-  assert.ok(state.favorites.sng_5098?.favorited, 'the OLDEST heart survives every tombstone');
+  assert.deepEqual(evicted, [...Array(100).keys()].map((k) => 5000 + k),
+                   'exactly the 100 oldest rows, regardless of favorited/tombstone');
+});
+
+/// The reason eviction may not prefer hearts: doing so INVERTS last-writer-wins. A device that
+/// has been offline for a week still carries the old heart inside its 30-day overlap window, so
+/// an eviction that keeps the stale heart and drops the fresh un-heart hands that device a
+/// resurrection on its very next upload — the user's un-favorite undoes itself.
+test('capFavorites keeps a fresh tombstone over a stale heart (LWW is not inverted)', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
+  const favorites = [];
+  // 5000 middle-aged hearts fill the cap exactly…
+  for (let i = 0; i < 5000; i++) favorites.push({ songId: `mid_${i}`, favorited: true, atMs: NOW - DAY });
+  // …then one ancient heart and one just-now un-heart arrive. Only one of the 5002 can be cut.
+  favorites.push({ songId: 'sng_stale_heart', favorited: true, atMs: NOW - 400 * DAY });
+  favorites.push({ songId: 'sng_fresh_unheart', favorited: false, atMs: NOW });
+  mergeBatch(state, { favorites });
+
+  assert.equal(Object.keys(state.favorites).length, 5000);
+  assert.equal(state.favorites.sng_fresh_unheart?.favorited, false,
+               'the newest write survives — a lagging device cannot resurrect the un-favorite');
+  assert.equal('sng_stale_heart' in state.favorites, false,
+               'the oldest row goes, even though it is a heart');
 });
 
 test('stored strings are truncated', () => {
@@ -229,6 +291,75 @@ test('stored strings are truncated', () => {
   assert.equal(state.plays[0].source.length, 256);
   assert.equal(state.collections.list[0].name.length, 256);
   assert.equal(state.collections.list[0].songIds[0].length, 256);
+});
+
+/// The bound is SERIALIZED BYTES, not UTF-16 units. `'\u0001'` is one unit but six characters
+/// once JSON-escaped, so a unit-based slice(0,256) stored 1536 bytes per "256-character" string —
+/// 6× the intended budget on every field of every row, which is how a legal-looking batch used to
+/// push the state object past MAX_STATE_BYTES.
+test('string truncation bounds serialized BYTES, not UTF-16 units', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
+  const cost = (s) => JSON.stringify(s).length - 2;
+  mergeBatch(state, {
+    plays: [
+      { id: CTRL.repeat(5000), songId: CTRL.repeat(5000), atMs: NOW, source: '\u201c'.repeat(5000) },
+      { id: 'p_multibyte', songId: '\ud834\udd1e'.repeat(5000), atMs: NOW + 1, source: 'ok' },
+    ],
+  });
+  for (const p of state.plays) {
+    for (const field of [p.id, p.songId, p.source]) {
+      if (field == null) continue;
+      assert.ok(cost(field) <= 256, `serialized cost ${cost(field)} must stay within 256`);
+    }
+  }
+  assert.ok(state.plays[0].id.length < 256, 'escaped control chars cut the stored length well below 256');
+  // …and an honest ASCII string is untouched by the byte rule.
+  const plain = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
+  mergeBatch(plain, { plays: [{ id: 'z'.repeat(300), songId: 'sng_ok', atMs: NOW }] });
+  assert.equal(plain.plays[0].id.length, 256);
+});
+
+/// The wedge this closes: writeState used to REFUSE (413) a state that outgrew MAX_STATE_BYTES.
+/// Since every later upload re-read the same too-big object, re-merged and hit the same refusal,
+/// the profile could never write again — a permanent, silent dead end. Now the oldest rows are
+/// SHED instead, and the profile stays writable.
+test('an adversarial batch sheds old rows instead of wedging the profile', async () => {
+  const profile = 'profile-shed-0001';
+  // 300 control chars per field: 1800 serialized bytes each ON THE WIRE, so 500 rows per batch
+  // stays comfortably under MAX_BODY_BYTES. The old UTF-16 slice(0,256) then STORED 1536 bytes of
+  // them per field — ~4.6 KB a row, and the 5000-row plays cap put the object at ~23 MB, past
+  // MAX_STATE_BYTES. Every upload from that point on 413'd forever.
+  const pad = CTRL.repeat(300);
+  const fat = (i) => ({ id: `fat_${String(i).padStart(6, '0')}_${pad}`, songId: `s_${pad}`,
+                        atMs: NOW - (100000 - i), source: pad });
+  for (let batch = 0; batch < 10; batch++) {
+    const plays = Array.from({ length: 500 }, (_, i) => fat(batch * 500 + i));
+    const r = await call('POST', '/events', { profile, body: { v: 1, plays } });
+    assert.equal(r.status, 200, `batch ${batch} must be accepted, not 413`);
+  }
+  const stored = JSON.parse(readFileSync(statePath(profile), 'utf8'));
+  assert.equal(stored.plays.length, 5000, 'the row cap still holds');
+  assert.ok(Buffer.byteLength(JSON.stringify(stored), 'utf8') <= 20 * 1024 * 1024,
+            'the stored object stays inside MAX_STATE_BYTES');
+
+  // The profile is still WRITABLE, which is the whole point — a fresh, ordinary play lands.
+  const after = await call('POST', '/events', { profile, body: { v: 1, plays: [play('sng_e1', NOW)] } });
+  assert.equal(after.status, 200);
+  assert.equal(after.json.accepted.plays, 1, 'a normal upload still works after the adversarial load');
+});
+
+test('shedToFit drops oldest rows first and leaves the state under budget', () => {
+  const state = {
+    v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [] },
+  };
+  for (let i = 0; i < 4000; i++) state.plays.push({ id: `p${i}`, songId: 'x'.repeat(200), atMs: i });
+  const before = Buffer.byteLength(JSON.stringify(state), 'utf8');
+  const { bytes, shed } = shedToFit(state, Math.floor(before / 2));
+  assert.ok(shed > 0, 'rows were shed');
+  assert.ok(bytes <= Math.floor(before / 2), 'the result fits the budget');
+  assert.equal(state.plays[0].atMs > 0, true, 'the surviving rows are the NEWEST (oldest shed first)');
+  assert.equal(shedToFit(state, 50 * 1024 * 1024).shed, 0, 'an already-fitting state is untouched');
 });
 
 test('events dedupe by id and enforce caps', async () => {

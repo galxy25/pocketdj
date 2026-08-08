@@ -14,6 +14,11 @@
 // `x-pocketdj-enroll` — `REC_ENROLL_SECRET` on the function's env, compared in constant time.
 // WITHOUT that gate any bearer + any profile header minted a brand-new state object, i.e. the
 // endpoint was an open, unbounded write into a bucket with no lifecycle expiry.
+// DEFENCE IN DEPTH, because that secret ships in the binary and is therefore extractable: the
+// enroll path is ALSO capped at MAX_PROFILES (default 10) distinct state objects, counted with a
+// single `rec/state/` LIST. Someone who reverses the token can enroll up to the cap and no
+// further; already-enrolled profiles never touch that branch, so the cap can never lock the real
+// user out of their own data.
 // SINGLE-USER TRADEOFF, deliberately noted for the multi-user revisit: the secret ships inside
 // the app binary (`Config.recEngineEnrollSecret`), so it is a CAPABILITY TOKEN, not a per-user
 // credential — anyone who extracts it can still enroll profiles. It raises the bar from "curl
@@ -36,9 +41,9 @@
 //   MAX_BATCH_EVENTS— plays+favorites+activity+puzzle in one batch
 //   CAPS            — per-stream stored caps, favorites INCLUDED (a map that only ever grew)
 //   cleanSnapshot   — collections / songIds-per-collection / total-songIds truncation
-//   MAX_STR         — every stored string
-//   MAX_STATE_BYTES — hard backstop before the PUT, so no object can grow past what readState
-//                     can safely parse
+//   MAX_STR         — every stored string, bounded by SERIALIZED BYTES (not UTF-16 units)
+//   MAX_STATE_BYTES — budget enforced before the PUT by SHEDDING the oldest rows, so no object
+//                     can grow past what readState can safely parse
 //
 // ── Routes ──────────────────────────────────────────────────────────────────────────────────────
 //   GET    /health                       -> { ok:true, service:'rec-engine', version:1 }
@@ -51,9 +56,10 @@
 //   REC_LOCAL_DIR      — filesystem state store instead of S3 (the jukebox DRY_RUN idea)
 //   REC_FEATURES_FILE  — local features fixture path instead of fetching FEATURES_URL
 //   REC_ENROLL_SECRET  — read per request (not captured at module load) so a test can flip it
+//   MAX_PROFILES       — likewise per request, so a test can drive the enrollment cap
 
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
 const REGION = process.env.AWS_REGION || 'us-west-2';
@@ -72,7 +78,15 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 /// Hard ceiling on the SERIALIZED state object. readState GET+parses this on every route
 /// (DELETE included), so a state that can't be parsed is a permanently wedged profile.
 const MAX_STATE_BYTES = 20 * 1024 * 1024;
+/// Per-string ceiling, in SERIALIZED BYTES (see `str`).
 const MAX_STR = 256;
+/// How many distinct profiles this deployment will ever ENROLL. See the header: the enrollment
+/// secret ships inside the app binary, so the cap is what bounds a leaked-token flood. Read per
+/// request (a test flips it); a non-positive/absent value means the default.
+const defaultMaxProfiles = () => {
+  const n = Number(process.env.MAX_PROFILES);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 10;
+};
 const MAX_COLLECTIONS = 500;
 const MAX_SONGIDS_PER_COLLECTION = 5000;
 const MAX_SNAPSHOT_SONGIDS = 100_000;
@@ -115,10 +129,73 @@ async function readState(profileHash) {
   }
 }
 
+/// How many profiles already have a state object. Only ever called on the ENROLL branch (a
+/// profile that has no state yet), so the steady-state cost is zero: one prefix LIST on the
+/// handful of requests that would create something. Stops as soon as the cap is reached.
+async function countProfiles(cap) {
+  if (LOCAL_DIR) {
+    const dir = join(LOCAL_DIR, 'rec', 'state');
+    if (!existsSync(dir)) return 0;
+    return readdirSync(dir).filter((f) => f.endsWith('.json')).length;
+  }
+  const { client, mod } = await s3();
+  let count = 0; let token;
+  do {
+    const out = await client.send(new mod.ListObjectsV2Command({
+      Bucket: REC_BUCKET, Prefix: 'rec/state/', ContinuationToken: token, MaxKeys: 1000,
+    }));
+    count += out.KeyCount || 0;
+    if (count >= cap) return count;
+    token = out.IsTruncated ? out.NextContinuationToken : undefined;
+  } while (token);
+  return count;
+}
+
+const serializedBytes = (obj) => Buffer.byteLength(JSON.stringify(obj), 'utf8');
+
+/// Bring a state object back under `max` by SHEDDING its oldest rows.
+///
+/// The per-stream caps make this unreachable for honest data — but they cap ROW COUNT, and a
+/// batch of pathologically long strings can blow the byte ceiling at any row count. REFUSING the
+/// write there (what this used to do) wedged the profile FOREVER: every later upload re-read the
+/// same too-big state, re-merged, and 413'd again, with no path back. Shedding costs the oldest
+/// history's recommendation value instead, which the client simply re-uploads inside its 30-day
+/// overlap window.
+///
+/// Order is least-valuable-first: plays and activity (the bulk, and the most redundant), then
+/// puzzle, then favorites by the same rule `capFavorites` uses, and only then the membership
+/// snapshot. Quarter-at-a-time so a 20 MB object converges in a few dozen re-serializations.
+export function shedToFit(state, max = MAX_STATE_BYTES) {
+  let bytes = serializedBytes(state);
+  if (bytes <= max) return { bytes, shed: 0 };
+  let shed = 0;
+  const dropOldest = (arr) => {
+    const n = Math.max(1, Math.ceil(arr.length / 4));
+    arr.sort((a, b) => a.atMs - b.atMs || (a.id < b.id ? -1 : 1));
+    return arr.splice(0, n).length;
+  };
+  for (let guard = 0; guard < 400 && bytes > max; guard++) {
+    if (state.plays?.length) shed += dropOldest(state.plays);
+    else if (state.activity?.length) shed += dropOldest(state.activity);
+    else if (state.puzzle?.length) shed += dropOldest(state.puzzle);
+    else if (Object.keys(state.favorites || {}).length) {
+      const before = Object.keys(state.favorites).length;
+      capFavorites(state.favorites, Math.max(0, before - Math.max(1, Math.ceil(before / 4))));
+      shed += before - Object.keys(state.favorites).length;
+    } else if (state.collections?.list?.length) {
+      state.collections.list.pop(); shed += 1;
+    } else break;
+    bytes = serializedBytes(state);
+  }
+  return { bytes, shed };
+}
+
 async function writeState(profileHash, state, { ifMatch } = {}) {
+  // Enforce the byte budget by shedding, not by refusing — see shedToFit.
+  shedToFit(state);
   const body = JSON.stringify(state);
-  // Backstop: the caps above should make this unreachable, so reaching it means a cap was
-  // missed — refuse the write rather than grow an object readState can no longer parse.
+  // Only reachable now if a SINGLE remaining row is itself over budget, which the MAX_STR bound
+  // makes impossible; keep the throw as the assertion it has become.
   if (Buffer.byteLength(body, 'utf8') > MAX_STATE_BYTES) {
     const err = new Error('state-too-large'); err.statusCode = 413; throw err;
   }
@@ -235,10 +312,32 @@ function freshState(profileId) {
 }
 
 const num = (v) => (Number.isFinite(v) ? v : null);
+
+/// What one string COSTS in the serialized state object: its JSON form minus the two quotes.
+const jsonCost = (s) => JSON.stringify(s).length - 2;
+
 /// Every stored string goes through here: absent/empty -> null, everything else TRUNCATED to
-/// MAX_STR. Truncation (not rejection) keeps an honest-but-long name/id ingesting, while a
-/// megabyte "id" can no longer be parked in the state object.
-const str = (v, max = MAX_STR) => (typeof v === 'string' && v ? v.slice(0, max) : null);
+/// `max` SERIALIZED BYTES. Truncation (not rejection) keeps an honest-but-long name/id ingesting,
+/// while a megabyte "id" can no longer be parked in the state object.
+///
+/// The budget is bytes-on-the-wire, NOT UTF-16 units, because those differ by 6×: `''`
+/// is one unit but serializes to the six characters ``, and any non-ASCII character is 2-4
+/// UTF-8 bytes. A unit-based `slice(0, 256)` therefore let an adversarial batch of control
+/// characters push the state object past MAX_STATE_BYTES at a perfectly legal row count.
+const str = (v, max = MAX_STR) => {
+  if (typeof v !== 'string' || v === '') return null;
+  let s = v.length > max ? v.slice(0, max) : v;
+  // Converges in a couple of passes: each step scales the length by the budget/cost ratio and
+  // always removes at least one unit.
+  while (s.length > 0 && jsonCost(s) > max) {
+    const next = Math.min(s.length - 1, Math.max(0, Math.floor((s.length * max) / jsonCost(s))));
+    s = s.slice(0, next);
+  }
+  // A slice can land between a surrogate pair; drop the orphan rather than store a lone half.
+  const lastCode = s.charCodeAt(s.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) s = s.slice(0, -1);
+  return s === '' ? null : s;
+};
 
 function cleanPlay(e) {
   const id = str(e?.id); const songId = str(e?.songId); const atMs = num(e?.atMs);
@@ -305,15 +404,21 @@ function capOldest(arr, cap) {
 }
 
 /// Favorites are a MAP keyed by songId, so `capOldest` doesn't fit — but an uncapped map was the
-/// one stream that only ever grew (2000 fresh songIds per batch, forever). Evict tombstones
-/// (un-hearts, the least valuable rows) first, then oldest-atMs, until the map fits CAPS.
+/// one stream that only ever grew (2000 fresh songIds per batch, forever). Evict OLDEST-atMs
+/// first, exactly like every other stream; heart-over-tombstone only breaks an atMs TIE.
+///
+/// Preferring hearts as the PRIMARY key (what this did) quietly broke last-writer-wins, the rule
+/// the whole favorites merge is built on: a FRESH un-heart arriving at the cap was evicted while
+/// a STALE heart survived, and the next upload from a lagging device — which still carries that
+/// old heart inside its 30-day overlap window — then re-merged it as if it were current. The
+/// user's un-favorite came back on its own. Eviction must never invert the merge's time order.
 function capFavorites(favorites, cap) {
   const keys = Object.keys(favorites);
   if (keys.length <= cap) return favorites;
   keys.sort((a, b) => {
     const fa = favorites[a]; const fb = favorites[b];
     const ta = fa?.favorited ? 1 : 0; const tb = fb?.favorited ? 1 : 0;
-    return ta - tb || (fa?.atMs || 0) - (fb?.atMs || 0) || (a < b ? -1 : 1);
+    return (fa?.atMs || 0) - (fb?.atMs || 0) || ta - tb || (a < b ? -1 : 1);
   });
   for (const k of keys.slice(0, keys.length - cap)) delete favorites[k];
   return favorites;
@@ -652,6 +757,13 @@ export async function handler(event) {
           // already-bound profile never reaches this branch, so a legitimate device that
           // enrolled under an older build keeps uploading with its key alone.
           if (!allowRebind && !enrollOk(event)) return reply(403, { error: 'enrollment-required' });
+          // …and the flood cap, for the day the in-binary secret leaks. Counted here and only
+          // here: one LIST on the rare request that would create an object, none on the steady
+          // upload path, and existing profiles are never re-checked.
+          const maxProfiles = defaultMaxProfiles();
+          if (!allowRebind && await countProfiles(maxProfiles) >= maxProfiles) {
+            return reply(403, { error: 'profile-cap-reached', max: maxProfiles });
+          }
           state.keyHash = auth.keyHash;   // trust-on-first-use bind
         } else if (state.keyHash !== auth.keyHash && !allowRebind) {
           return reply(403, { error: 'key-mismatch' });
