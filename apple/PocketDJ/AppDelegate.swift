@@ -60,6 +60,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         MainActor.assumeIsolated { RecordingExitBridge.shared.finalize?() }
     }
 
+    // MARK: APNs device token (Music with Friends pushes)
+
+    func application(_ application: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { @MainActor in PushRegistrationService.shared.handleToken(deviceToken) }
+    }
+
+    func application(_ application: UIApplication,
+                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // Log only — the 4 s poll is the fallback everywhere.
+        print("[push] register failed: \(error.localizedDescription)")
+    }
+
     // MARK: BGTaskScheduler
 
     private func registerBackgroundTasks() {
@@ -181,6 +194,19 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated { RecordingExitBridge.shared.finalize?() }
         return .terminateNow
+    }
+
+    // MARK: APNs device token (Music with Friends pushes)
+
+    func application(_ application: NSApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { @MainActor in PushRegistrationService.shared.handleToken(deviceToken) }
+    }
+
+    func application(_ application: NSApplication,
+                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // Log only — the 4 s poll is the fallback everywhere.
+        print("[push] register failed: \(error.localizedDescription)")
     }
 }
 #endif

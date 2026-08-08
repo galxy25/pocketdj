@@ -102,6 +102,10 @@ final class PlayStatsStore {
     func lastPlayedAtLocally(_ songId: String) -> Double? { stats[songId]?.lastPlayedAt }
     func playCount(_ songId: String) -> Int { stats[songId]?.playCount ?? 0 }
 
+    /// A pure copy of the play counts for OFF-MAIN weighting (the Collectors Puzzle
+    /// sampler snapshots this on the main actor, then samples detached).
+    func playCountsSnapshot() -> [String: Int] { stats.mapValues(\.playCount) }
+
     /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
     /// (whole-document LWW — see the sync design doc).
     func reloadFromDisk() {

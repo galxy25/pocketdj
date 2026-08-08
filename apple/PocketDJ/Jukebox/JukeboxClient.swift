@@ -29,11 +29,13 @@ struct JukeboxClient {
         }
     }
 
-    /// `GET /health` — reachability + version, for the Settings test button.
+    /// `GET /health` — reachability + version, for the Settings test button and the MwF
+    /// capability gate (`mwf` advertised since server v3).
     struct Health: Decodable {
         let ok: Bool?
         let service: String?
         let version: Int?
+        let mwf: Bool?
     }
 
     private var base: String {
