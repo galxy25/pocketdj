@@ -244,6 +244,9 @@ struct PocketDJApp: App {
     @State private var profileSource: ProfileSourceStore
     /// The user's synced identity (PocketDJ name + durable id) — see ProfileStore.
     @State private var profile: ProfileStore
+    /// The cloud recommendation-engine orchestrator (WS-E) — inert (zero network) unless the
+    /// Settings toggle "Use PocketDJ Recommendation Engine" is ON. See RecommendationService.
+    @State private var recEngine: RecommendationService
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
     /// launch task awaits its launch pass BEFORE the durable-session restores so a fresh
     /// device restores cloud session files, not empty ones.
@@ -965,6 +968,29 @@ struct PocketDJApp: App {
         NotificationRouter.shared.onOpenMwFSession = { [weak friends] id in
             Task { @MainActor in friends?.pendingOpenId = id }
         }
+        // ── Recommendation engine (WS-E) ───────────────────────────────────────
+        // Batch-uploads deltas from the EXISTING stores (no new recording hooks) and serves
+        // History ▸ For You + the Suggested-collections rows — ONLY while the Settings toggle
+        // is on (default OFF; the service guards every network call).
+        // Fixture guard (the cloudKitOff doctrine): a UI-test run that flips the toggle must
+        // never write fixture data to the REAL endpoint — swap in a stub transport.
+        let recClient: RecEngineClient
+        if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
+            recClient = RecEngineClient(transport: { req in
+                (Data("{}".utf8), HTTPURLResponse(url: req.url ?? Config.recEngineBase,
+                                                  statusCode: 200, httpVersion: nil,
+                                                  headerFields: nil)!)
+            })
+        } else {
+            recClient = RecEngineClient()
+        }
+        let recEngine = RecommendationService(
+            client: recClient, settings: settings, history: playHistory,
+            favorites: favorites, activity: collectionActivity, collections: collections,
+            profileIdProvider: { [weak profile] in profile?.id ?? "" })
+        // WS-D (Games tab) wires Collector's Puzzle events here once its store lands.
+        recEngine.puzzleEventsProvider = nil
+        _recEngine = State(initialValue: recEngine)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
@@ -1032,6 +1058,9 @@ struct PocketDJApp: App {
             // reloadFromDisk ever read it (peer rows dropped locally AND, via LWW, in cloud).
             puzzleDecisions?.applyPulledPayload(data)
         })
+        cloudSync.register("rec-key", fileURL: recEngine.keySyncFileURL) { [weak recEngine] in
+            recEngine?.reloadKeyFromDisk()   // the rec bearer key follows the Apple ID (TOFU-per-profile)
+        }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the
@@ -1065,6 +1094,19 @@ struct PocketDJApp: App {
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
             gameScores: gameScores, puzzleDecisions: puzzleDecisions, friends: friends,
             streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)
+        // Recommendation engine rides account deletion via seams (the service's fixed store
+        // list stays test-buildable without the rec graph): best-effort server delete while
+        // the key still exists, then the local key + cursor wipe.
+        // The Bool is load-bearing: a failed server delete (offline/503) must NOT take the key
+        // with it, or the profile's cloud state is orphaned forever (no key ⇒ no DELETE, and
+        // the bucket has no expiry). A missing engine means nothing is owed → true.
+        accountDeletion.recDeleteCloudData = { [weak recEngine] in
+            guard let recEngine else { return true }
+            return await recEngine.deleteCloudData()
+        }
+        accountDeletion.recClearLocal = { [weak recEngine] cloudDeleted in
+            recEngine?.clearLocal(cloudDeleted: cloudDeleted)
+        }
         _accountDeletion = State(initialValue: accountDeletion)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
@@ -1145,6 +1187,7 @@ struct PocketDJApp: App {
                 .environment(playlistWriteBack)
                 .environment(playlistSync)
                 .environment(accountDeletion)
+                .environment(recEngine)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -1189,6 +1232,9 @@ struct PocketDJApp: App {
                 // catalog ids against the catalog — running it earlier would ask about an
                 // empty id space and pull nothing.
                 .onChange(of: app.state) { _, _ in syncFavoritesIfReady() }
+                // Recommendation-engine auto-flush: idempotent, and internally a no-op while
+                // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
+                .task { recEngine.startAutoFlush() }
                 // Periodic while-active tick for the DAILY auto-sync: an app left open across
                 // its fire time (default 4:20 PM) still runs the pass — launch/foreground alone
                 // would miss it. 15-min cadence; every check is cheap and single-flighted.
@@ -1231,6 +1277,10 @@ struct PocketDJApp: App {
                         widgetSync.drainPendingCommand(now: Date().timeIntervalSince1970)
                         // Resume the background transfer reconcile on foreground (idempotent).
                         TransferCoordinator.shared.reconcileOnLaunch()
+                        // Finish an account deletion's rec-engine server wipe that the network
+                        // refused earlier (no tombstone ⇒ no request; runs toggle-independent
+                        // because the user asked for that data to be gone).
+                        Task { await recEngine.retryPendingCloudDelete() }
                         // Foreground fallback for the daily soft-cap prune (macOS has no
                         // BGTaskScheduler; iOS BGTasks are best-effort). Gated inside; a
                         // plain Task defers it past the activation tick so foregrounding
@@ -1253,6 +1303,9 @@ struct PocketDJApp: App {
                         // Mix-deck session: same doctrine — the decks' latest playheads (and any
                         // debounced slider value still in memory) land before a suspension→kill.
                         mixDeckSession.flush()
+                        // Recommendation engine: land the pending deltas before a possible
+                        // suspension→kill (5 s debounce; inert while the toggle is off).
+                        recEngine.flushSoon()
                         // Push any session documents whose files advanced since the last
                         // sync — AFTER the flushes above so the freshest bytes upload.
                         // (pushAllowed also refuses inside while onboarding is unresolved.)

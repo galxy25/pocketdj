@@ -8,6 +8,10 @@ import Foundation
 /// Pure, ordered substring matcher (NOT a fixed lookup): iterate categories in
 /// priority order; the first whose ANY keyword is a substring of the normalized
 /// genre wins. Empty/unmappable → "Other".
+///
+/// KEEP IN SYNC with scripts/build-rec-features.mjs (`genreCategory`): the recommendation
+/// engine's feature builder ports this table + matcher verbatim — drift between the two
+/// silently skews the engine's genre scoring.
 enum Genre {
     static let other = "Other"
 

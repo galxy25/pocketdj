@@ -293,6 +293,12 @@ final class SettingsStore {
     /// With this off, sync only touches collections the user EXPLICITLY linked — converted pockets
     /// and duplicated playlists. Turning it on restores the import-everything behaviour.
     var amImportNewPlaylists: Bool
+    /// Use the cloud PocketDJ RECOMMENDATION ENGINE (Settings ▸ Recommendations). OFF by
+    /// default — while off, NOTHING leaves the device: `RecommendationService` gates every
+    /// network call on this flag and no other code can reach its client. ON sends listening
+    /// history / favorites / collection updates / Collector's Puzzle results to
+    /// `Config.recEngineBase` to compute the For You + Suggested-collections surfaces.
+    var recEngineEnabled: Bool
     /// Minutes past local midnight for the daily auto-sync (default 4:20 PM = 980). Clamped.
     var amAutoSyncMinutes: Int {
         didSet {
@@ -397,6 +403,7 @@ final class SettingsStore {
         self.applyOwnerFavoritesSeed = data.applyOwnerFavoritesSeed ?? false
         self.amAutoSyncEnabled = data.amAutoSyncEnabled ?? true
         self.amImportNewPlaylists = data.amImportNewPlaylists ?? false
+        self.recEngineEnabled = data.recEngineEnabled ?? false
         self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
         self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -559,7 +566,8 @@ final class SettingsStore {
             amAutoSyncEnabled: amAutoSyncEnabled,
             amImportNewPlaylists: amImportNewPlaylists,
             amAutoSyncMinutes: amAutoSyncMinutes,
-            lastAMAutoSyncAtMs: lastAMAutoSyncAtMs)
+            lastAMAutoSyncAtMs: lastAMAutoSyncAtMs,
+            recEngineEnabled: recEngineEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -622,6 +630,7 @@ final class SettingsStore {
         applyOwnerFavoritesSeed = d.applyOwnerFavoritesSeed ?? false
         amAutoSyncEnabled = d.amAutoSyncEnabled ?? true
         amImportNewPlaylists = d.amImportNewPlaylists ?? false
+        recEngineEnabled = d.recEngineEnabled ?? false
         amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
         lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -744,6 +753,11 @@ struct SettingsData: Codable {
     var amAutoSyncMinutes: Int?
     /// Optional — epoch ms of the last auto-sync claim.
     var lastAMAutoSyncAtMs: Double?
+    /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — a
+    /// non-optional Bool would fail decode and silently reset ALL settings to defaults.
+    /// Coalesced to FALSE at the read sites: the recommendation engine is a deliberate opt-in
+    /// (nothing leaves the device while off).
+    var recEngineEnabled: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -796,5 +810,6 @@ struct SettingsData: Codable {
         amAutoSyncEnabled: nil,
         amImportNewPlaylists: nil,
         amAutoSyncMinutes: nil,
-        lastAMAutoSyncAtMs: nil)
+        lastAMAutoSyncAtMs: nil,
+        recEngineEnabled: nil)
 }

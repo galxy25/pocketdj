@@ -22,6 +22,8 @@ struct AddToCollectionView: View {
     /// Optional for the same reason `writeBack` is: always injected by the app, but a preview or a
     /// test host that renders the picker standalone should degrade, not trap.
     @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
+    /// Optional-degrade too — nil (or engine off) just hides the Suggested section.
+    @Environment(RecommendationService.self) private var recEngine: RecommendationService?
     @Environment(\.dismiss) private var dismiss
     let item: Item
 
@@ -39,6 +41,9 @@ struct AddToCollectionView: View {
     /// says so — the sheet never dismisses on add, so a silent no-op would be
     /// indistinguishable from success.
     @State private var batchNotice: String?
+    /// Recommendation-engine suggestions (wire rows; `RecSuggestionFilter` resolves them to
+    /// live targets at render so a deleted collection drops out without a refetch).
+    @State private var suggestedWire: [RecCollectionSuggestionWire] = []
 
     private var isStudio: Bool { if case .studio = item { return true }; return false }
 
@@ -111,6 +116,27 @@ struct AddToCollectionView: View {
                         Text("Adding")
                     } footer: {
                         Text("How many times this \(studioKindLabel.lowercased()) plays before the collection moves on.")
+                    }
+                }
+
+                // SUGGESTED (recommendation engine): the server's collection matches for this
+                // song, above Recent. Deduped against Recent by (kind,id); hidden when the
+                // engine is off, the song has no suggestions, or none still resolve locally.
+                if !suggestedTargets.isEmpty {
+                    Section("Suggested") {
+                        ForEach(Array(suggestedTargets.enumerated()), id: \.offset) { idx, target in
+                            Button { toggleTarget(target) } label: {
+                                HStack {
+                                    Image(systemName: target.kind == .pocket ? "rectangle.stack" : "music.note.list")
+                                        .foregroundStyle(Theme.accent2)
+                                    Text(collections.lastTargetLabel(target) ?? "").foregroundStyle(Theme.fg)
+                                    Spacer()
+                                    Image(systemName: isMember(target) ? "checkmark" : "sparkles")
+                                        .foregroundStyle(isMember(target) ? Theme.accent : Theme.fgDim)
+                                }
+                            }
+                            .accessibilityIdentifier("suggested-add-\(idx)")
+                        }
                     }
                 }
 
@@ -218,7 +244,20 @@ struct AddToCollectionView: View {
             } message: {
                 Text(batchNotice ?? "")
             }
+            .task {
+                if let songId, let rec = recEngine, rec.isEnabled {
+                    suggestedWire = await rec.rawCollectionSuggestions(for: songId)
+                }
+            }
         }
+    }
+
+    /// The engine's suggestions resolved to live AddTargets: unresolvable ids dropped, deduped
+    /// against the Recent row by (kind,id), capped at 3.
+    private var suggestedTargets: [AddTarget] {
+        RecSuggestionFilter.resolveTargets(suggestedWire, pockets: collections.pockets,
+                                           playlists: collections.playlists,
+                                           excluding: recentTargets, limit: 3)
     }
 
     // MARK: - Source ("From your sources") playlists — the two-way add

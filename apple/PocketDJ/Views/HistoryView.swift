@@ -29,13 +29,18 @@ struct HistoryView: View {
 
     enum HistoryTab: String, CaseIterable {
         case unified = "Unified", playback = "Playback", collection = "Collection"
+        case forYou = "For You"
         var symbol: String {
             switch self {
             case .unified:    return "square.stack.3d.up.fill"
             case .playback:   return "play.circle.fill"
             case .collection: return "rectangle.stack.fill"
+            case .forYou:     return "sparkles"
             }
         }
+        /// Accessibility-id token: identical to the lowercased rawValue for the three
+        /// single-word tabs (no test churn); "For You" becomes "for-you".
+        var a11y: String { rawValue.lowercased().replacingOccurrences(of: " ", with: "-") }
     }
     @State private var tab: HistoryTab = .unified
     /// The History row a rewind is pending on — nil unless the confirmation is up.
@@ -169,22 +174,37 @@ struct HistoryView: View {
                 }
             case .collection:
                 activityContent
+            case .forYou:
+                ForYouListView(path: $path)
             }
         }
         // Match every other tab's dark-blue canvas (the Lists are made transparent via
         // .scrollContentBackground(.hidden), so this shows through instead of the system black).
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
+        // Lives HERE (not on the body chain — that chain is at the type-checker's budget):
+        // the engine turned off while For You was showing → fall back to Unified.
+        .onChange(of: settings.recEngineEnabled) {
+            if !settings.recEngineEnabled && tab == .forYou { tab = .unified }
+        }
     }
 
     // MARK: - Tab control (two destinations = the views you're NOT in)
 
+    /// The recommendation-engine fixture seam — mirrors `RecommendationService.fixtureOn` so a
+    /// UI test can light the For You tab without the Settings toggle.
+    private var recFixtureOn: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["PDJ_REC_FIXTURE"] == "1" && env["PDJ_USE_FIXTURE"] != nil
+    }
+
     private var altTabs: [HistoryTab] {
-        switch tab {
-        case .unified:    return [.playback, .collection]
-        case .playback:   return [.collection, .unified]
-        case .collection: return [.playback, .unified]
-        }
+        // For You joins the destinations only while the recommendation engine is on (or its
+        // UI-test fixture seam); the control still shows every view you're NOT currently in.
+        let available: [HistoryTab] = (settings.recEngineEnabled || recFixtureOn)
+            ? HistoryTab.allCases
+            : [.unified, .playback, .collection]
+        return available.filter { $0 != tab }
     }
 
     /// Custom two-button control (not a segmented `Picker`) so it renders prominently and identically
@@ -213,7 +233,7 @@ struct HistoryView: View {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(Theme.accent.opacity(0.45), lineWidth: 1)
                 )
-                .accessibilityIdentifier("history-tab-\(t.rawValue.lowercased())")
+                .accessibilityIdentifier("history-tab-\(t.a11y)")
             }
         }
         .padding(.horizontal).padding(.vertical, 8)
@@ -634,7 +654,7 @@ struct HistoryView: View {
                     }
                     .accessibilityIdentifier("history-filter")
                 }
-            } else if canBackfill {
+            } else if tab != .forYou, canBackfill {
                 // Collection + Unified show your ADDs — offer to (re)send the recent ones to the
                 // Apple Music playlists they came from, for adds that never made it upstream (added
                 // before write-back shipped, or while offline / signed out). The look-back window

@@ -42,8 +42,22 @@ final class AccountDeletionService {
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
         "collection-activity", "mix-sessions", "playback-session", "mix-decks",
         "discover-adds", "imported-songs", "profile-source", "apple-music-library", "studio-cues",
-        "game-scores", "puzzle-decisions",
+        "game-scores", "puzzle-decisions", "rec-key",
     ]
+
+    /// Recommendation-engine wipe seams (WS-E), wired in PocketDJApp. Optional so tests that
+    /// construct the service without the rec engine degrade to a no-op:
+    ///  • `recDeleteCloudData` — DELETE of the profile's server-side rec state (needs the live
+    ///    key, so it runs BEFORE the local wipe removes it). It RETURNS whether the delete
+    ///    landed: unlike the CloudKit deletes above (the user's own iCloud account, which
+    ///    self-heals), this state lives in the developer's S3 bucket with no lifecycle expiry,
+    ///    so a swallowed failure orphans it permanently. Absent seam ⇒ `true` (nothing owed).
+    ///  • `recClearLocal` — removes the cursor document AND the key document; when the cloud
+    ///    delete failed, the credential first moves into a device-local tombstone (key + the
+    ///    profile id the delete must target) so a later launch can finish the erasure — a
+    ///    re-enable meanwhile mints a FRESH identity instead of resurrecting the erased one.
+    var recDeleteCloudData: (() async -> Bool)?
+    var recClearLocal: ((_ cloudDeleted: Bool) -> Void)?
 
     private static let log = Logger(subsystem: "com.levi.pocketdj", category: "account-deletion")
 
@@ -191,6 +205,13 @@ final class AccountDeletionService {
         } else {
             Self.log.notice("CloudKit deletion skipped (disabled / test run)")
         }
+        // Recommendation-engine server state: must run while the bearer key still exists
+        // locally. NOT best-effort-and-forget — the result decides whether the local key can be
+        // erased (see the seam docs); a failure here leaves a retry tombstone instead.
+        let recCloudDeleted = await recDeleteCloudData?() ?? true
+        if !recCloudDeleted {
+            Self.log.error("Rec-engine cloud delete failed — tombstoned for retry on a later launch")
+        }
 
         // ── 3) CLEAR EVERY LOCAL STORE ───────────────────────────────────────
         // All non-throwing by contract, so one can never skip the next; each resets its
@@ -225,6 +246,7 @@ final class AccountDeletionService {
         // die with the session's 24 h TTL anyway).
         await friends.unregisterPushEverywhere()
         friends.eraseAll()
+        recClearLocal?(recCloudDeleted)   // rec-engine cursor doc (+ the key IF the cloud delete landed)
 
         // ── 4) CLEAR THE KEYCHAIN (streaming account links) ──────────────────
         // Each provider's `logout()` severs the link and forgets its stored token — for a

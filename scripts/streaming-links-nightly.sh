@@ -42,8 +42,11 @@ PROFILE="${AWS_PROFILE:-levi}"
 # Per-index CDN home (mirrors deploy.sh:77-78): vinyl + Apple Music → PROD, My Digital → DEV.
 CF_DEV="E123GKAO9JVETP"
 CF_PROD="E1SP8M1SIF7Q8D"
-# The three published indexes this pipeline can touch.
-PUBLISH_INDEXES=("public/current-index.json" "public/apple-music-index.json" "public/digital-index.json")
+# The published documents this pipeline can touch: the three catalog indexes plus the
+# recommendation-engine feature file DERIVED from them (stage 4) — the rec Lambda scores
+# against the CDN copy, so every index change must carry the derived file with it or the
+# engine drifts against a stale snapshot.
+PUBLISH_INDEXES=("public/current-index.json" "public/apple-music-index.json" "public/digital-index.json" "public/rec-features.json")
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -51,20 +54,24 @@ mkdir -p "$(dirname "$LOG")"
 log() { echo "[streaming-links-nightly $(date -u +%FT%TZ)] $*" | tee -a "$LOG"; }
 run() { if [ "$DRY_RUN" = 1 ]; then echo "DRYRUN: $*" | tee -a "$LOG"; else "$@"; fi; }
 
-# Normalized index hash — IGNORES manifest.generatedAt, so an unchanged catalog compares equal
+# Normalized index hash — IGNORES manifest.generatedAt AND a root-level generatedAt
+# (rec-features.json stamps the latter), so an unchanged document compares equal
 # night-to-night. Prints "ERR" on a missing/corrupt file (never a false match).
 norm_hash() {
   "$NODE" -e '
     const fs=require("fs"),crypto=require("crypto");
     try{const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
       if(j&&j.manifest)delete j.manifest.generatedAt;
+      if(j)delete j.generatedAt;
       process.stdout.write(crypto.createHash("sha256").update(JSON.stringify(j)).digest("hex"));
     }catch(e){process.stdout.write("ERR")}' "$1"
 }
-# Which env's bucket/distribution serves a given index basename.
+# Which env's bucket/distribution serves a given index basename. rec-features.json is PROD:
+# the rec-engine Lambda's FEATURES_URL points at the prod CloudFront (see
+# scripts/lambda/rec-engine/deploy.sh).
 index_env() {
   case "$(basename "$1")" in
-    current-index.json|apple-music-index.json) echo prod ;;
+    current-index.json|apple-music-index.json|rec-features.json) echo prod ;;
     digital-index.json) echo dev ;;
     *) echo "" ;;
   esac
@@ -150,6 +157,13 @@ done
 # ---- stage 3: fold the resolved links into the catalog indexes --------------------
 log "stage 3: fold resolved Spotify/YouTube links into the indexes"
 run "$NODE" "$REPO/scripts/fold-streaming-links.mjs" --apply --cache "$CACHE" 2>&1 | tee -a "$LOG"
+
+# ---- stage 4: regenerate the rec-engine feature file from the (possibly updated) indexes
+# Derived, deterministic, cheap (~seconds); the change gate below ships it only when its
+# normalized content actually moved. Soft-fail: a regen bug must not block the link fold.
+log "stage 4: regenerate public/rec-features.json (rec-engine feature file)"
+run "$NODE" "$REPO/scripts/build-rec-features.mjs" 2>&1 | tee -a "$LOG" \
+  || log "⚠ rec-features regeneration failed — keeping the committed copy"
 
 if [ "$DRY_RUN" = 1 ]; then log "(dry-run) stop before change detection / commit / publish"; exit 0; fi
 
