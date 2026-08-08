@@ -289,21 +289,31 @@ extension XCUIElement {
 /// forwarding `LivOnboardingWalkUITests` uses for PDJ_SHOT_DIR), so read the UNPREFIXED name here.
 ///
 /// IF THE RUN DIES WITH "Timed out while enabling automation mode" (60s, before any test body
-/// executes), check TWO things — both were in play on 2026-08-08 and I could not fully separate
-/// them, so don't let this note talk you out of checking the other one:
+/// executes), the FIRST thing to check is which launchd session your shell is in:
 ///
-///  1. A STALE `AutomationModeUI` process holding the automation-mode session, orphaned from an
-///     earlier run and still alive hours later. OBSERVED: three runs timed out at exactly 60s;
-///     killing `testmanagerd` changed nothing; the next run after killing the orphan reached
-///     "Running tests…".
-///         ps aux | grep '[A]utomationModeUI'   →   kill -9 <pid>    # relaunches on demand
-///     Only kill an ORPHAN (no `PocketDJUITests-Runner` alive) — one of these legitimately
-///     serves a live run.
+///     launchctl managername          # "Aqua" = fine.  "Background" = nothing here can work.
 ///
-///  2. A LOCKED screen. `caffeinate -u` keeps the display awake but does NOT stop the session
-///     locking, and a locked session breaks macOS UI automation on its own. I could not
-///     retroactively establish the lock state across those three failures, so treat "it was the
-///     orphan" as the better-evidenced explanation rather than a proven sole cause.
+/// An SSH / agent shell lives in a **Background** session with no attachment to the logged-in
+/// user's window server. macOS UI automation is then impossible no matter what the code under
+/// test does, and every symptom is silent and easy to misread as a product bug:
+///   • `screencapture -x` → "could not create image from display"
+///   • System Events reports 0 windows for every app
+///   • XCUITest dies at "Timed out while enabling automation mode"
+///   • `CGSSessionScreenIsLocked` reads true even at an unlocked desk — it is describing a
+///     session this process cannot see, so do NOT conclude the Mac is locked from it
+///
+/// Verified on 2026-08-08 from an agent shell: `launchctl managername` → Background and
+/// `screencapture -x` → "could not create image from display", while the user was sitting at an
+/// unlocked machine. `launchctl asuser 501 …` would bridge it but needs root. The workable route
+/// is `scripts/mac-gui-runner.mjs`, started BY A HUMAN from Terminal.app on the Mac so it
+/// inherits the Aqua session, which then runs the suite on the agent's behalf.
+///
+/// TWO RED HERRINGS, recorded so the next person doesn't re-derive them:
+///   • A stale `AutomationModeUI` process. Killing an orphaned one was followed by a run that
+///     reached "Running tests…", which looked causal and is what I first wrote down. It was not
+///     the root cause — the session type was — and that run still produced nothing.
+///   • Screen lock. See the CGSSessionScreenIsLocked note above; the reading is meaningless
+///     from a Background session.
 ///
 /// Separately, macOS UI runs need EXCLUSIVE window focus: a concurrent iOS-Simulator XCUITest
 /// run produces "Failed to activate application" / "Unable to find hit point for Application",
